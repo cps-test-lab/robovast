@@ -36,7 +36,7 @@ import signal
 import subprocess  # nosec - invokes the generated, trusted robovast run script
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from robovast.common import prepare_campaign_configs
@@ -70,8 +70,13 @@ class RunOptions:
     start_only: bool = False
     abort_on_failure: bool = False
     # None ⇒ resolve via resolve_robovast_image() (config / ROBOVAST_IMAGE / default);
-    # a non-None value is an explicit ``--image`` and wins over everything.
+    # a non-None value is an explicit ``--image``. It addresses the container the
+    # scenario runs in — the only one a single ``--image`` flag can mean.
     image: str | None = None
+    # Concrete refs for containers whose image was *built*, keyed by container name.
+    # Filled by the build lifecycle before the backend runs; a container absent from
+    # here uses its declared image verbatim.
+    images: dict = field(default_factory=dict)
     log_tree: bool = False
     debug: bool = False
     skip_resource_allocation: bool = True
@@ -90,6 +95,21 @@ class RunOptions:
     # provider. Off by default; a per-campaign option (travels with the options, not
     # the process env) exactly like ``postprocess``.
     upload_to_share: bool = False
+
+
+def _scenario_image(execution: dict, options: RunOptions) -> str:
+    """The image for the container the scenario runs in.
+
+    One place, because both entry points into the local lane need it and a second copy
+    would be free to drift. Sidecars are *not* resolved here: they come from the
+    container plan, which is built once from the same ``execution`` mapping.
+    """
+    from robovast.common.config import SCENARIO_CONTAINER
+    containers = execution.get("containers") or {}
+    declared = (containers.get(SCENARIO_CONTAINER) or {}).get("image")
+    built = (options.images or {}).get(SCENARIO_CONTAINER)
+    return resolve_robovast_image(required=True, explicit=options.image,
+                                  config_image=built or declared)
 
 
 class ExecutionBackend(ABC):
@@ -190,8 +210,7 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     ``prepare-run`` (staging into a persistent, inspectable directory).
     """
     execution = campaign_data.get("execution", {})
-    image = resolve_robovast_image(required=True, explicit=options.image,
-                                   config_image=execution.get("image"))
+    image = _scenario_image(execution, options)
     config_path_result = os.path.join(work_dir, "out_template")
     # gui selects the execution.local.gui parameter overrides, so it has to reach both the
     # staged scenario.config and the packed job documents the local run actually mounts.
@@ -204,7 +223,7 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
         image, results_dir, run_script,
         skip_resource_allocation=options.skip_resource_allocation,
         log_tree=options.log_tree, debug=options.debug, job_prefix=job_prefix,
-        gui=options.gui)
+        gui=options.gui, built_images=options.images)
     return run_script
 
 
@@ -238,9 +257,7 @@ class DockerBackend(ExecutionBackend):
         # local backend already writes results straight into campaign_root.
         del whole_campaign
         os.makedirs(campaign_root, exist_ok=True)
-        image = resolve_robovast_image(
-            required=True, explicit=options.image,
-            config_image=campaign_data.get("execution", {}).get("image"))
+        image = _scenario_image(campaign_data.get("execution", {}), options)
 
         # Stage the prepared configs + run.sh in a temp dir (not the results dir);
         # run.sh copies out_template into the campaign root, so only results +

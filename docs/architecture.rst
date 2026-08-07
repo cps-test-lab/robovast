@@ -74,6 +74,18 @@ the phase survives a service restart instead of reconstructing as an ambiguous
 ``"finished"``. Every terminal-phase filter (listings, the ``--wait-and-download``
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
+Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
+handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
+clock starts, and the layers that would otherwise fight the teardown consult it. Two
+of them do. The driver's S3 client no longer restarts the ``kubectl port-forward`` on
+a timeout that is simply the shutdown itself — and ``ClusterService`` refuses to open
+one at all once the flag is up, so a read still in flight cannot resurrect the tunnel
+and leak a ``kubectl`` child past exit. The SSE streams no longer *wait* for their
+next pull either: a watchdog closes the stream the moment shutdown is announced and
+abandons the worker thread, because a pull that returns after the deadline gets its
+response task cancelled and the cancellation logged as an "Exception in ASGI
+application" traceback with the server already gone.
+
 .. code-block:: text
 
            MCP tools ─┐
@@ -88,6 +100,32 @@ waiter, cleanup's live-set) counts ``"stopped"`` as done.
 The service core is **backend-agnostic**: it dispatches execution to
 ``DockerBackend`` (local) or ``KubernetesBackend`` (cluster). See
 :ref:`deployment` for the three deployment modes and how a client reaches each.
+
+One container plan, built once
+------------------------------
+
+A campaign declares its containers by name (:ref:`execution.containers <config-containers>`)
+and :func:`robovast.common.containers.plan_containers` turns that into the containers a run
+actually starts. **Both lanes, the image builds, ``exec_in_container`` and the docs read that
+one map.** A second lookup anywhere would be free to disagree with what the pod started, and
+the disagreement would be silent -- a diagnostic entering one container while the campaign
+ran another.
+
+Two consequences worth stating, because they invert what every pre-v2 campaign assumed:
+
+* **The scenario's container is not necessarily the campaign's "the image".** With a
+  simulator or a system under test in its own container, "the main container's image" is no
+  longer a synonym for "what this campaign is testing". Anything that treated the two as one
+  -- digest capture, ``execution.yaml``, the compat check, ``exec_in_container`` -- resolves
+  through the plan instead.
+* **A role is not a container count.** ``scenario`` / ``simulation`` / ``sut`` are always
+  valid names to ask about; one campaign backs all three with a single container and another
+  with three. Only ``scenario`` is guaranteed to exist.
+
+Simulators are declared, not assembled: a backend
+(:mod:`robovast.common.simulators`, :doc:`simulators`) contributes container blocks, an
+environment and a ``SimulationInterface`` ref before the plan is built, so nothing downstream
+knows which simulator it is looking at.
 
 Workspaces vs. campaigns
 ------------------------

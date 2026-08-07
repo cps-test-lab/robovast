@@ -1,12 +1,14 @@
-version: 1
+version: 2
 metadata:
   name: ros2_service
 configuration:
 - name: minimal
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
-  resources:
-    cpu: 1
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 1
   runs: 1
   env:
   - ENABLE_X11: "false"

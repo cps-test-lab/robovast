@@ -35,7 +35,7 @@ def test_compress_and_unknown_postprocessing(tmp_path):
 
 def test_malformed_yaml_returns_problem_without_exiting(tmp_path):
     bad = tmp_path / "bad.vast"
-    bad.write_text("version: 1\nexecution: {scenario_file: x.osc\n  oops: [unclosed\n")
+    bad.write_text("version: 2\nexecution: {scenario_file: x.osc\n  oops: [unclosed\n")
     # Must not raise SystemExit / kill the process.
     report = validate_project_file(str(bad))
     assert report["valid"] is False
@@ -51,8 +51,9 @@ def test_missing_file_is_a_problem_not_an_exception(tmp_path):
 def test_multiple_errors_collected_with_locations(tmp_path):
     vast = tmp_path / "multi.vast"
     vast.write_text(
-        "version: 1\n"
+        "version: 2\n"
         "execution:\n"
+        "  containers: {scenario: {image: example:latest}}\n"
         "  scenario_file: does_not_exist.osc\n"
         "configuration:\n"
         "  - name: c1\n"
@@ -82,8 +83,9 @@ def test_local_plugin_refs_are_interface_checked(tmp_path):
 
     vast = tmp_path / "broken.vast"
     vast.write_text(
-        "version: 1\n"
+        "version: 2\n"
         "execution:\n"
+        "  containers: {scenario: {image: example:latest}}\n"
         "  scenario_file: scenario.osc\n"
         "search:\n"
         "  strategy: plugins/bad_strategy.py:BadStrategy\n"
@@ -125,7 +127,7 @@ def test_valid_project_reports_counts(tmp_path):
     (tmp_path / "scenario.osc").write_text("scenario test:\n    timeout(10s)\n")
     vast = tmp_path / "valid.vast"
     vast.write_text(
-        "version: 1\n"
+        "version: 2\n"
         "configuration:\n"
         "- name: c1\n"
         "  variations:\n"
@@ -133,7 +135,7 @@ def test_valid_project_reports_counts(tmp_path):
         "      name: growth_rate\n"
         "      values: [0.1, 0.2, 0.3]\n"
         "execution:\n"
-        "  image: example:latest\n"
+        "  containers: {scenario: {image: example:latest}}\n"
         "  runs: 2\n"
         "  scenario_file: scenario.osc\n"
     )
@@ -144,86 +146,47 @@ def test_valid_project_reports_counts(tmp_path):
     assert report["total_trials"] == report["configs"] * report["runs_per_config"]
 
 
-def test_scene3d_without_recording_is_refused(tmp_path):
-    """A scene3d panel replays a run capture, so the runs must be asked to record one.
+def test_scene3d_without_a_capture_producing_simulator_is_refused():
+    """A scene3d panel replays a run capture, so the configured simulator must make one.
 
-    The same failure the campaign-scope descriptor check exists for, one artifact over: nothing
-    otherwise declares the dependency, so the campaign runs, passes, and shows a motionless world
-    whenever someone finally opens it.
+    Asked of the backend rather than pattern-matched out of the campaign's wheel names:
+    in the shape where the simulator runs from its own image, a campaign installs no
+    simulator packages at all, so the old signal would have found nothing.
     """
     from robovast.common.config_validation import _run_capture_problems
+    from robovast.common.simulators import SimulatorBackend
+    import robovast.common.simulators as sim_mod
+
+    class _NoCapture(SimulatorBackend):
+        pass
 
     raw = {
-        "execution": {
-            "simulation": "rst.scenario_adapter:MujocoSim",
-            "env": [{"ROBOSITO_WORLD": "/config/files/depot.yaml"}],
-        },
-        "visualization": {"panels": [{"scene3d": {"scene": {"path": "scene/scene.json"}}}]},
+        "execution": {"mode": "ros2", "containers": {
+            "simulation": {"backend": "nocapture", "stage": "x"}}},
+        "visualization": {"panels": [{"scene3d": {}}]},
     }
-    problems = _run_capture_problems(raw)
-    assert len(problems) == 1
-    assert "ROBOSITO_RECORD" in problems[0]["message"]
-    assert "ROBOSITO_CAPTURE_EXPORT_DIR" in problems[0]["message"]
-    assert problems[0]["field"] == "visualization.panels[0]"
 
-    # With both set, it is clean -- and a plain mapping is accepted as well as the list form.
-    raw["execution"]["env"].extend(
-        [{"ROBOSITO_RECORD": "run.npz"}, {"ROBOSITO_CAPTURE_EXPORT_DIR": "capture"}])
-    assert _run_capture_problems(raw) == []
-    raw["execution"]["env"] = {
-        "ROBOSITO_RECORD": "run.npz", "ROBOSITO_CAPTURE_EXPORT_DIR": "capture"}
-    assert _run_capture_problems(raw) == []
+    original = sim_mod.resolve_backend
+    try:
+        sim_mod.resolve_backend = lambda name, base_dir="": _NoCapture()
+        problems = _run_capture_problems(raw)
+        assert len(problems) == 1
+        assert "does not produce one" in problems[0]["message"]
+        assert problems[0]["field"] == "visualization.panels[0]"
+
+        class _WithCapture(SimulatorBackend):
+            def produces_run_capture(self, cfg, execution):
+                return True
+
+        sim_mod.resolve_backend = lambda name, base_dir="": _WithCapture()
+        assert _run_capture_problems(raw) == []
+    finally:
+        sim_mod.resolve_backend = original
 
 
-def test_scene3d_recording_check_only_applies_to_rst():
-    """Another simulator producing the same format is not second-guessed by rst's variable names."""
+def test_the_capture_check_stays_quiet_without_a_backend():
+    """Nothing here could tell where an unconfigured simulator's capture would come from."""
     from robovast.common.config_validation import _run_capture_problems
-
-    raw = {
-        "execution": {"simulation": "some_other.adapter:Sim", "env": []},
-        "visualization": {"panels": [{"scene3d": {}}]},
-    }
+    raw = {"execution": {"containers": {"scenario": {"image": "a"}}},
+           "visualization": {"panels": [{"scene3d": {}}]}}
     assert _run_capture_problems(raw) == []
-
-
-def test_panels_without_scene3d_need_no_recording():
-    """gazebo.vast's four panels declare no scene3d, so the check must leave it alone."""
-    from robovast.common.config_validation import _run_capture_problems
-
-    raw = {
-        "execution": {"simulation": "rst.scenario_adapter:MujocoSim", "env": []},
-        "visualization": {"panels": ["playback", {"costmap": {"layers": {}}}]},
-    }
-    assert _run_capture_problems(raw) == []
-
-
-def test_recording_check_fires_for_a_launch_driven_rst_campaign():
-    """rst_basic_nav declares no `simulation` -- it starts the simulator from a ROS launch file.
-
-    Keying only on `execution.simulation` would have left exactly the campaign this feature was built
-    for unprotected, so the wheels a campaign installs count as evidence too.
-    """
-    from robovast.common.config_validation import _run_capture_problems, _uses_rst
-
-    raw = {
-        "build": {"python_packages": [
-            "mujoco>=3.0",
-            ["wheels/rst-0.1.0-py3-none-any.whl", "wheels/rst_mobile-0.1.0-py3-none-any.whl"],
-        ]},
-        "execution": {"env": [{"PYTHONUNBUFFERED": "1"}]},
-        "visualization": {"panels": [{"scene3d": {}}]},
-    }
-    assert _uses_rst(raw)
-    assert len(_run_capture_problems(raw)) == 1
-
-    # A campaign with no rst anywhere is left alone -- its capture may come from somewhere else.
-    other = {
-        "build": {"python_packages": ["numpy", "some_other_sim"]},
-        "execution": {"env": []},
-        "visualization": {"panels": [{"scene3d": {}}]},
-    }
-    assert not _uses_rst(other)
-    assert _run_capture_problems(other) == []
-
-    # And the word boundary holds: "burst_sim" is not rst.
-    assert not _uses_rst({"build": {"python_packages": ["burst_sim", "worst-case-tools"]}})

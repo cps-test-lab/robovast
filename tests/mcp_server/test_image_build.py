@@ -33,13 +33,18 @@ def test_build_experiment_image_delegates(monkeypatch):
     class _Client:
         def build_image(self, request):
             captured["request"] = request
-            return SimpleNamespace(build_id="imgbuild-foo-abc", tag="foo", cached=True)
+            return SimpleNamespace(build_id="imgbuild-sut-abc", tag="sut", cached=True,
+                                   builds={"sut": "imgbuild-sut-abc"})
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Client())
     out = cc.build_experiment_image(workspace_id="ws1", config_path="a.vast")
-    assert out == {"build_id": "imgbuild-foo-abc", "tag": "foo", "cached": True}
+    # ``builds`` carries every image the request started; ``build_id`` names only one, so
+    # a campaign building two is not silently reported as having built one.
+    assert out == {"build_id": "imgbuild-sut-abc", "tag": "sut", "cached": True,
+                   "builds": {"sut": "imgbuild-sut-abc"}}
     assert captured["request"].workspace_id == "ws1"
     assert captured["request"].config_path == "a.vast"
+    assert captured["request"].container is None
 
 
 def test_get_image_build_status_surfaces_structured_error(monkeypatch):

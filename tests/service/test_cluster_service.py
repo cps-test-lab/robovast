@@ -208,13 +208,17 @@ def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
 
 # -- a build the lane cannot do is a config error, not a crash ---------------
 
-def _project_needing_a_build(tmp_path):
-    import types
+def _project_needing_a_build(tmp_path, python_packages=None):
+    """A validated config whose scenario container adds packages, so an image is built."""
+    from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
-    build = types.SimpleNamespace(tag="sim:v3", base_image=None,
-                                  system_packages=[], python_packages=[])
-    return (types.SimpleNamespace(config_path=str(tmp_path / "p.vast")),
-            types.SimpleNamespace(build=build))
+    campaign_config = validate_config({
+        "version": 2,
+        "execution": {"runs": 1, "containers": {"scenario": {
+            "image": "base:1",
+            "python_packages": python_packages or ["shapely>=2.0"]}}}})
+    import types
+    return (types.SimpleNamespace(config_path=str(tmp_path / "p.vast")), campaign_config)
 
 
 def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
@@ -235,18 +239,18 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
     project, campaign_config = _project_needing_a_build(tmp_path)
 
     with pytest.raises(CampaignConfigError, match="no container registry"):
-        cs._start_build_image(project, campaign_config)
+        cs._start_build_images(project, campaign_config)
     assert CampaignConfigError.include_traceback is False
 
 
 def test_a_broken_build_section_is_a_config_error_too(cs, monkeypatch, tmp_path):
     from robovast.common.errors import CampaignConfigError
 
-    project, campaign_config = _project_needing_a_build(tmp_path)
-    campaign_config.build.python_packages = ["./not_here"]
+    project, campaign_config = _project_needing_a_build(
+        tmp_path, python_packages=["./not_here"])
 
-    with pytest.raises(CampaignConfigError, match="build.python_packages"):
-        cs._start_build_image(project, campaign_config)
+    with pytest.raises(CampaignConfigError, match="python_packages"):
+        cs._start_build_images(project, campaign_config)
 
 
 # -- discovery: the object store is the durable home ------------------------

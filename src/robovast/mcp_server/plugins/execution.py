@@ -168,6 +168,11 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
         from robovast.service.interface import (DESCRIPTION_MAX_LEN,
                                                 CreateCampaignRequest)
+        # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
+        # Decoded before the length check so the description is measured as the text that
+        # will actually be stored.
+        from robovast.mcp_server.client_text import unescape_client_text
+        description = unescape_client_text(description)
         # Checked here rather than left to the request model's validator: this returns
         # the actionable "shorten it and call again" instead of a pydantic traceback
         # string, and it refuses before anything is launched.
@@ -540,38 +545,37 @@ def get_resource_usage(backend: str = "") -> dict:
 
 
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
-                           backend: str = "") -> dict:
-    """Bake new code or system packages into the experiment image, from ``build:``.
+                           backend: str = "", container: str = "") -> dict:
+    """Bake new code or system packages into a container's image.
 
-    Needed only when the experiment needs something *in the container* — a new
-    ``sim_suite`` package, an apt dependency. Files shipped to ``/config`` at runtime
-    (``run_files``, ``scenario_file``) never need a build.
+    Needed only when a container needs something *inside* it. Files shipped to
+    ``/config`` at runtime never need a build.
 
-    **Optional**: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first step.
-    Call this to build ahead of time. Idempotent — a no-op cache hit when nothing changed.
-    Poll ``get_image_build_status``. You never handle a registry ref or credentials.
+    **Optional**: ``start_campaign`` builds what it needs as its first step. Call this to
+    build ahead of time. Idempotent — a no-op cache hit when nothing changed. Poll
+    ``get_image_build_status``. You never handle a registry ref or credentials.
 
-    Declare it in the ``.vast``::
+    A campaign may build **several** images, one per container that adds packages, and
+    this starts them all. ``image`` is what a container starts FROM; packages are what
+    it adds::
 
-        build:
-          system_packages: [ros-jazzy-nav2-smac-planner]  # apt
-          python_packages: [packages/sim_suite_mobile]    # source dir / pip spec / wheel
-          tag: sim-suite-mobile
         execution:
-          image: build:sim-suite-mobile
+          containers:
+            sut: {image: ghcr.io/…/robovast_jazzy,
+                  system_packages: [ros-jazzy-nav2-smac-planner]}
 
     ``python_packages`` is a list of **install groups**: a flat list is one pip pass, so
-    its order does not matter (a local wheel resolves its siblings from the same pass).
-    Nest — ``[a, b]`` — to split it into layers, with what changes most often **last**;
-    a change then only rebuilds that group onward.
+    order does not matter; nest — ``[a, b]`` — to split into layers, volatile last.
 
     Args:
         workspace_id: **Required** — whose project to build (as ``start_campaign``).
         config_path: Which ``.vast``, when the workspace holds several.
         backend: Build for the lane you will run on — ``"local"`` or ``"cluster"``.
+        container: Build only this one's image. Omit to build every one that needs it.
 
     Returns:
-        ``{build_id, tag, cached}`` or ``{error}``.
+        ``{build_id, tag, cached, builds}`` or ``{error}``. ``builds`` maps each container
+        to its build id; ``build_id`` names only one, so poll the rest through there.
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
@@ -582,8 +586,9 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     try:
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path,
-            backend=backend or None))
-        return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached}
+            backend=backend or None, container=container or None))
+        return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
+                "builds": ref.builds}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -592,12 +597,14 @@ def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. On failure, ``error_detail`` says what to change.
 
     ``error_detail`` names the ``phase`` (apt / pip / source-build / base-pull / push /
-    resource), the offending ``build:`` ``entry``, a ``message``, and ``fixable_by`` —
-    ``agent`` (edit the ``build:`` section) or ``infra`` (a registry/base problem no
-    ``.vast`` edit will fix). Read this before reaching for the builder log.
+    resource), the offending package ``entry``, a ``message``, and ``fixable_by`` —
+    ``agent`` (edit that container's ``system_packages`` / ``python_packages``) or
+    ``infra`` (a registry/base problem no ``.vast`` edit will fix). Read this before
+    reaching for the builder log.
 
     Args:
-        build_id: The id from ``build_experiment_image``.
+        build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value
+            in its ``builds`` map when the campaign builds several images.
 
     Returns:
         ``{build_id, tag, phase, done, cached, image_ref[, error_detail]}`` or ``{error}``.
@@ -663,7 +670,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
                       keep_alive: bool = False, show_gui: bool = False,
-                      tail: int = 200, backend: str = "") -> dict:
+                      tail: int = 200, backend: str = "", container: str = "") -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
     **Produces no campaign data** — nothing durable, no provenance, no repetitions, no
@@ -673,19 +680,18 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     Three questions it answers:
 
     - is the image set up correctly? Omit ``config_name`` — imports, ``ros2 pkg list``,
-      file checks. Build the image first if the project declares one.
+      file checks. Build first if it declares packages.
     - does one config run? Name a ``config_name``; an empty ``command`` starts that
       config's scenario, detached, so a follow-up call can inspect it.
     - what does the bring-up look like? The same, plus ``keep_alive=True`` and
-      ``show_gui=True``: the scenario starts with the simulator's window on the serve
-      host, and later calls inspect it while it runs.
+      ``show_gui=True`` — the window opens on the serve host and later calls inspect it.
 
     ``keep_alive=True`` holds the container open for follow-up calls; ``stop_container``
     ends it. **At most one container exists at a time**, so ``reused: false`` means a
     fresh one — anything the previous container was running is gone.
 
-    A started scenario logs to the returned ``log_path`` *inside* the container, not to
-    ``stdout``; read it with a follow-up ``command="tail -200 <log_path>"``.
+    A started scenario logs to ``log_path`` *inside* the container, not ``stdout``; read
+    it with a follow-up ``command="tail -200 <log_path>"``.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
@@ -694,6 +700,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             exactly one source, this or ``workspace_id``. A *running* campaign's
             container is never touched; to inspect a live stack, start it here.
         config_name: Stage this config. Omitted always means the bare image.
+        container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
+            Asking for one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
         show_gui: Show the simulator's window on the serve host's display. **Only a local
             ``vast serve`` on its local Docker backend can do this**; see
@@ -721,7 +729,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         result = client.exec_in_container(ExecRequest(
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive, show_gui=show_gui, backend=backend or None))
+            keep_alive=keep_alive, show_gui=show_gui, backend=backend or None,
+            container=container))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
     out = result.model_dump()

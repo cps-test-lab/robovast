@@ -1,4 +1,4 @@
-version: 1
+version: 2
 configuration:
 - name: example
   parameters:
@@ -15935,9 +15935,11 @@ configuration:
           z: 0.5
       xacro_arguments: width:=0.5, length:=0.5, height:=1.0
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
-  resources:
-    cpu: 9
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 9
   runs: 3
   scenario_file: scenario.osc
   run_files:
@@ -15946,9 +15948,9 @@ execution:
   - 'small_dataset_maps/**/maps/*'
 results_processing:
   postprocessing:
-    - rosbags_to_csv
-    - rosbags_tf_to_csv:
-        frames: [base_link, turtlebot4_base_link_gt]
+  - rosbags_to_csv
+  - rosbags_tf_to_csv:
+      frames: [base_link, turtlebot4_base_link_gt]
 evaluation:
   visualization:
   - Analysis:

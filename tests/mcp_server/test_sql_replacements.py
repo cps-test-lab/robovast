@@ -31,7 +31,7 @@ def campaign(tmp_path):
     """Two configs × two runs, sharing one job, with a .vast well over the cell cap."""
     # A config big enough that `SELECT config_json` would be truncated — the case
     # config_view exists for.
-    config = {"execution": {"image": "sim:1", "runs": 2},
+    config = {"execution": {"containers": {"scenario": {"image": "sim:1"}}, "runs": 2},
               "notes": ["padding item %d" % i for i in range(400)]}
     assert len(json.dumps(config)) > _MAX_CELL_BYTES
 
@@ -143,7 +143,7 @@ def test_config_view_never_returns_a_truncated_config(campaign):
     # And it is genuinely usable for the thing it replaces: reading the config.
     execution = {r["fullkey"]: r["value"] for r in _rows(
         campaign, "SELECT fullkey, value FROM config_view WHERE fullkey LIKE '$.execution%'")}
-    assert execution["$.execution.image"] == "sim:1"
+    assert execution["$.execution.containers.scenario.image"] == "sim:1"
     assert execution["$.execution.runs"] == 2
 
 

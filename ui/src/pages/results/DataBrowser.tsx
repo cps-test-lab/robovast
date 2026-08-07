@@ -30,6 +30,7 @@ import {
 import { FailureBox } from '@/components/StatusView'
 import { formatDataFetchLabel } from '@/lib/format'
 import { VegaLiteChart } from '@/preview/VegaLiteChart'
+import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
 
 const DEFAULT_SQL = 'SELECT * FROM runs LIMIT 500'
@@ -61,11 +62,13 @@ export function DataBrowser({
   campaignId,
   campaigns,
   onCampaignChange,
+  refresh,
   sqlRequest,
 }: {
   campaignId: string
   campaigns: CampaignSummary[]
   onCampaignChange: (campaignId: string) => void
+  refresh: ResultsRefresh
   sqlRequest?: SqlRequest
 }) {
   const qc = useQueryClient()
@@ -202,6 +205,9 @@ export function DataBrowser({
             </MenuItem>
           ))}
         </TextField>
+        {/* Beside the selector it feeds: the reload is what puts a newly finished campaign into
+            that list. */}
+        <RefreshResultsButton state={refresh} />
       </Stack>
 
       {!campaignId ? (

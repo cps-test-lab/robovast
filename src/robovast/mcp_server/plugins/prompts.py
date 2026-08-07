@@ -113,11 +113,12 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    `get_plugin_details` describe the `.vast` and each variation's parameters.
 2. **Check before spending compute.** `validate_project` returns *every* problem at once;
    fix them in one pass. `preview_configurations` shows what the sweep expands to — read
-   the cell count before launching, not after. Then check the *image*, which validation
-   cannot see into: `build_experiment_image` if the project declares a `build:` section,
-   then `exec_in_container` to run an import, `ros2 pkg list`, or one config's scenario
-   inside it. Do this instead of learning from a failed campaign that a package is
-   missing — that is the same answer, minutes later.
+   the cell count before launching, not after. Then check the *images*, which validation
+   cannot see into: `build_experiment_image` if any container adds packages, then
+   `exec_in_container` to run an import, `ros2 pkg list`, or one config's scenario inside
+   it. Pass `container=` to pick which one — the check that matters is usually not in the
+   same container as the thing you are debugging. Do this instead of learning from a
+   failed campaign that a package is missing — that is the same answer, minutes later.
 3. **Size it.** `get_resource_usage` for the lane you intend to use. It touches the lane,
    so it also tells you the lane is actually reachable.
 4. **Pilot, then scale.** One configuration, `runs=1`, and confirm it produced data.
@@ -132,12 +133,40 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
 7. **Verify the output, not the exit code.** `get_campaign_summary`, then
    `list_files("/results/<campaign_id>/")` to see the runs actually wrote something.
 
-## Images
+## Containers
 
-Only when the experiment needs code or system packages *inside* the container: add a
-`build:` section, set `execution.image: build:<tag>`, and `start_campaign` builds it as
-its first step. A failed build is a **failed campaign, not a failed request** — the start
-succeeded, so read `get_campaign_status`, do not retry and create a second campaign.
+A campaign declares every container it runs under `execution.containers`, keyed by name.
+Three names have a defined meaning, and how many *actual* containers back them depends on
+the campaign — you never have to know which:
+
+- `scenario` — runs scenario-execution. Every campaign has one.
+- `simulation` — the simulator. May be its own container, or the same one as `scenario`
+  (a simulator stepped in-process), or the same one as `sut` (a stack that bundles its own).
+- `sut` — the system under test.
+
+Anything else is an ad-hoc container and must state its own `image` and `command`.
+
+Every block takes the same keys: `image` (what the container **starts from**),
+`system_packages`, `python_packages`, `command`, `resources`. There is no `base_image`
+and no tag: with no package keys the image is what runs, and with them a derived image is
+built on top — so a campaign states what a container *adds*, never what it adds to.
+
+A simulator is named rather than assembled: `simulation: {backend: <name>, ...}` lets the
+backend supply the image, the packages, the environment and how it is started. Its own
+keys (e.g. robosito's `config`) ride alongside `backend`; `get_config_schema` shows them.
+
+The same three names address a container everywhere else: `exec_in_container(container=)`,
+and a scenario's `remote("ipc:///ipc/sut")`.
+
+`start_campaign` builds whatever a container needs as its first step, so a build is
+rarely a separate act. A failed build is then a **failed campaign, not a failed
+request** — the start succeeded, so read `get_campaign_status`; do not retry and create
+a second campaign.
+
+Config version 2 replaced `execution.image`, `execution.resources`,
+`execution.secondary_containers` and the top-level `build:` section with `containers`.
+A version-1 file is refused with a message naming what each key became; there is no
+automatic migration.
 """
 
 

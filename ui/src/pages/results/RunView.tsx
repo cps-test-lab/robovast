@@ -28,6 +28,7 @@ import { dbDataProvider } from '@/lib/dashboard/dataProvider'
 import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
 import { PanelHost } from '@/lib/dashboard/PanelHost'
 import { ResultsTree } from './ResultsTree'
+import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { DEFAULT_CAPTURE_PATH } from '@/panels/Scene3DPanel'
 import '@/panels' // registers the built-in panels
 
@@ -65,10 +66,12 @@ export function RunView({
   campaignId,
   campaigns,
   onCampaignChange,
+  refresh,
 }: {
   campaignId: string
   campaigns: CampaignSummary[]
   onCampaignChange: (campaignId: string) => void
+  refresh: ResultsRefresh
 }) {
   const queryClient = useQueryClient()
 
@@ -233,6 +236,9 @@ export function RunView({
             {run ? `${campaignId} · ${run.config_name} · run ${run.run_id}` : 'Select run'}
           </Box>
         </Button>
+        {/* Beside the picker it feeds: the reload is what puts a newly finished campaign into
+            that tree. */}
+        <RefreshResultsButton state={refresh} />
         <Button
           variant="text"
           size="small"

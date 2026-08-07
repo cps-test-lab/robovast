@@ -343,6 +343,8 @@ class _S3StorageClient(StorageClient):
         from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
             ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
             ReadTimeoutError)
+        from robovast.common.shutdown import \
+            is_shutting_down  # pylint: disable=import-outside-toplevel
         transient = (ReadTimeoutError, ConnectTimeoutError,
                      EndpointConnectionError, ConnectionClosedError)
         last = None
@@ -352,6 +354,15 @@ class _S3StorageClient(StorageClient):
             except transient as exc:
                 last = exc
                 if attempt + 1 >= self._RECONNECT_ATTEMPTS:
+                    break
+                if is_shutting_down():
+                    # A timeout during shutdown is the shutdown itself: the endpoint
+                    # went away because the service is closing the port-forward.
+                    # Reconnecting would re-open the tunnel the process is tearing
+                    # down and leak the kubectl child past exit, so fail with the
+                    # network error instead.
+                    logger.debug("S3 endpoint unreachable during shutdown (%s); "
+                                 "not reconnecting", type(exc).__name__)
                     break
                 logger.warning(
                     "S3 endpoint timed out (%s); restarting port-forward and "

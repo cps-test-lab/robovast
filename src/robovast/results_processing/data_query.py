@@ -364,10 +364,10 @@ _TABLE_DESCRIPTIONS = {
         "job_dir and sysinfo_json are NULL when the campaign has no recorded host info."),
     ("temp", "config_view"): (
         "The campaign's .vast configuration as rows, one per key. Query unqualified: "
-        "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.image'), key, "
+        "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.containers.scenario.image'), key, "
         "parent, type, value. value is NULL on 'object' and 'array' rows — descend with "
         "fullkey LIKE '$.execution%' instead of expecting a subtree. Use this to explore; "
-        "when the path is known, json_extract(campaign.config_json,'$.execution.image') is "
+        "when the path is known, json_extract(campaign.config_json,'$.execution.containers.scenario.image') is "
         "cheaper. "
         "This is the config AS RUN, with defaults filled in — a defaulted key is "
         "indistinguishable from one the author wrote, and comments and anchors are gone. "
@@ -410,7 +410,7 @@ _TABLE_DESCRIPTIONS = {
         "whether two runs used the same image. "
         "stop_kind/stop_reason/batches explain why a search terminated. strategy_state is "
         "an opaque BLOB (masked in results). "
-        "config_json is the whole .vast: json_extract(config_json,'$.execution.image') for "
+        "config_json is the whole .vast: json_extract(config_json,'$.execution.containers.scenario.image') for "
         "a known path, but do NOT 'SELECT config_json' — it exceeds the per-cell limit and "
         "returns truncated. Use config_view to explore it."),
     ("campaign", "batch"): (

@@ -14,6 +14,7 @@ import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
+import { ErrorText } from '@/components/StatusView'
 
 // Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can prefill "Runs per config"
 // with whatever the file declares. We scan for the top-level `execution:` block and read the integer
@@ -202,7 +203,7 @@ export function LaunchBar() {
               onChange={(e) => setBackend(e.target.value)}
               size="small"
               sx={{ minWidth: 130 }}
-              helperText={backend === 'local' ? 'pilot (Docker)' : 'scaled (cluster)'}
+              helperText={backend === 'local' ? 'pilot (Docker)' : undefined}
             >
               {backends.map((b) => (
                 <MenuItem key={b} value={b}>
@@ -299,7 +300,10 @@ export function LaunchBar() {
         </Collapse>
 
         {create.isError ? (
-          <Alert severity="error">Launch failed: {(create.error as Error).message}</Alert>
+          <Alert severity="error">
+            Launch failed.
+            <ErrorText>{(create.error as Error).message}</ErrorText>
+          </Alert>
         ) : null}
       </Stack>
     </Paper>

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 metadata:
   name: navigation_search
 # Iterative search over COMPLEX variations. Run with:  vast execution local run
@@ -10,9 +10,11 @@ metadata:
 # block — most parameters are fixed inline, and the searched ones reference a
 # search_space variable with a $name marker (see docs/search.rst).
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
-  resources:
-    cpu: 8
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 8
   runs: 5
   scenario_file: scenario.osc
   run_files:
@@ -21,9 +23,9 @@ search:
   strategy: random
   # The searched VARIABLES (not direct scenario params): they feed the template.
   search_space:
-    path_length:  {type: float, low: 5.0, high: 15.0}
-    obstacle_amt: {type: int,   low: 0,   high: 5}
-    path_seed:    {type: int,   low: 0,   high: 100000}
+    path_length: {type: float, low: 5.0, high: 15.0}
+    obstacle_amt: {type: int, low: 0, high: 5}
+    path_seed: {type: int, low: 0, high: 100000}
     # A choice dim NOT referenced in the template -> falls back to a direct
     # scenario parameter (same name), exactly like a simple sweep.
     laserscan_gaussian_noise_std_deviation: {type: choice, values: [0.0, 0.1]}

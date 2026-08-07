@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from robovast.common.config import (ChoiceDim, ConfigV1, FloatDim, IntDim,
                                     validate_config)
 
-BASE = {"version": 1, "execution": {"image": "img", "runs": 2}}
+BASE = {"version": 2, "execution": {"containers": {"scenario": {"image": "img"}}, "runs": 2}}
 
 
 def _with_search(**search):

@@ -522,10 +522,11 @@ a filtered read is never silently passed off as a complete one.
 Building experiment images
 ---------------------------
 
-When an experiment needs new code or system packages **baked into its container
-image** (a new ``sim_suite`` package, an apt dependency), the assistant declares a
-:ref:`build section <config-build-section>` in the ``.vast`` and sets
-``execution.image: build:<tag>``. The ``execution`` plugin then exposes:
+When a container needs new code or system packages **baked into its image**, the
+assistant adds ``system_packages`` / ``python_packages`` to that
+:ref:`container's block <config-containers>` in the ``.vast``. A campaign may build
+several images -- one per container that adds packages -- so the ``execution`` plugin
+exposes:
 
 * ``build_experiment_image`` — build (or reuse) the image from the project's
   ``build:`` section. Returns ``{build_id, tag, cached}``.
@@ -606,7 +607,7 @@ cheaper way to ask.
 
 * omitted — the bare image: ``python3 -c 'import rst'``, ``ros2 pkg list | grep <pkg>``,
   ``ls`` of an install tree. This is the loop that diagnoses the ament/``AMENT_PREFIX_PATH``
-  pitfalls in :ref:`configuration <config-build-section>` in one call each.
+  pitfalls in :ref:`configuration <config-containers>` in one call each.
 * named — that configuration staged exactly as a campaign stages it, so an empty
   ``command`` starts its scenario.
 

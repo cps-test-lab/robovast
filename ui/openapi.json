@@ -179,6 +179,17 @@
             "title": "Config Path",
             "type": "string"
           },
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container"
+          },
           "workspace_id": {
             "title": "Workspace Id",
             "type": "string"
@@ -827,6 +838,11 @@
             "title": "Config Path",
             "type": "string"
           },
+          "container": {
+            "default": "",
+            "title": "Container",
+            "type": "string"
+          },
           "keep_alive": {
             "default": false,
             "title": "Keep Alive",
@@ -1028,6 +1044,12 @@
             "title": "Build Id",
             "type": "string"
           },
+          "builds": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Builds",
+            "type": "object"
+          },
           "cached": {
             "default": false,
             "title": "Cached",
@@ -1041,6 +1063,7 @@
         },
         "required": [
           "build_id",
+          "builds",
           "cached",
           "tag"
         ],

@@ -76,14 +76,15 @@ def campaign_vast(campaign_dir) -> Path:
 
 
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Find the .vast file from the most recent campaign in results_dir.
+    """The ``.vast`` for *results_dir* -- its own if it is a campaign, else a recent one.
 
-    Searches ``results_dir/<campaign-name>-<timestamp>/_config/*.vast`` and returns the
-    path from the last (most recent, lexicographically) campaign that has a
-    ``.vast`` file.
+    Two callers, two meanings, and getting them the same answer was a bug: postprocessing
+    passes a **campaign directory** and must get that campaign's own snapshot, while a
+    bare "show me a config" caller passes a **results root** and just wants a plausible
+    one. Only the second wants the scan.
 
     Args:
-        results_dir: Path to the project results directory (parent of campaign directories).
+        results_dir: A campaign directory, or a results root holding several.
 
     Returns:
         Tuple ``(vast_file_path, config_dir)`` where *config_dir* is the
@@ -94,7 +95,20 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
     if not root.is_dir():
         return None, None
 
-    # Reverse-sorted so the most recent campaign comes first
+    # *This* campaign first, when the caller handed us one. Postprocessing passes the
+    # campaign root, and a campaign's own snapshot is the only correct answer for it --
+    # falling through to the scan below made a campaign read a **different experiment's**
+    # ``results_processing`` config, silently, whenever its own was not the one the scan
+    # happened to land on.
+    own = _vast_in_config_dir(root / "_config")
+    if own is not None:
+        return own
+
+    # Otherwise scan the campaign directories under a results *root*, newest last-sorted
+    # first. Note this orders by directory name, and a name is ``<experiment>-<timestamp>``
+    # -- so it is only "most recent" among campaigns of the same experiment. Good enough
+    # for a bare "give me some campaign's config" caller, and no longer reached by one
+    # that knows which campaign it means.
     for campaign_item in sorted(root.iterdir(), reverse=True):
         if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
             continue
@@ -110,3 +124,18 @@ def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[s
             if vast_files:
                 return str(vast_files[0]), str(config_dir)
     return None, None
+
+
+def _vast_in_config_dir(config_dir: Path) -> "Optional[tuple[str, str]]":
+    """The single ``.vast`` in one ``_config/``, or ``None`` if there is no such dir."""
+    if not config_dir.is_dir():
+        return None
+    vast_files = [f for f in sorted(config_dir.iterdir())
+                  if f.is_file() and f.suffix == ".vast"]
+    if len(vast_files) > 1:
+        names = ", ".join(f.name for f in vast_files)
+        raise ValueError(
+            f"Multiple .vast files found in {config_dir}: {names}. Expected exactly one.")
+    if not vast_files:
+        return None
+    return str(vast_files[0]), str(config_dir)

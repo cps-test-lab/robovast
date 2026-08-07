@@ -212,182 +212,89 @@ Execution Section
 
 The ``execution`` section specifies how and where tests are executed.
 
-image
-^^^^^
+.. _config-containers:
 
-**Type:** String (Docker image reference)
+containers
+^^^^^^^^^^
+
+**Type:** Mapping of container name → container block
 
 **Required:** Yes
 
-Docker container image to use for execution. Can be a public image or a private registry image.
+Every container this campaign runs. One namespace, shared by the schema, by
+``exec_in_container(container=...)`` and by a scenario's ``remote("ipc:///ipc/<name>")``,
+so a name means the same thing everywhere.
+
+**Three names have a defined meaning**, and how many *actual* containers back them
+depends on the campaign — a caller never has to know which:
+
+``scenario``
+   Runs scenario-execution. Every campaign has one.
+``simulation``
+   The simulator. May be its own container, the *same* container as ``scenario`` (a
+   simulator stepped in-process by scenario-execution), or the same one as ``sut`` (a
+   stack that bundles its own simulator).
+``sut``
+   The system under test.
+
+Any other key is an ad-hoc container and must state its own ``image`` (and normally
+``command``) — only the known roles have a default.
 
 .. code-block:: yaml
 
    execution:
-     image: ghcr.io/cps-test-lab/robovast:latest
+     containers:
+       scenario:
+         image: ghcr.io/cps-test-lab/robovast:latest
+         resources: {cpu: 8}
+       sut:
+         image: ghcr.io/cps-test-lab/robovast:latest
+         system_packages: [ros-jazzy-navigation2]
 
-It may also be a symbolic ``build:<tag>`` reference to an image produced by the
-:ref:`build section <config-build-section>` (built on demand, wherever the
-backend runs). See below.
+Every block takes the same keys:
 
-.. _config-build-section:
+``image``
+   **What the container starts from.** With no package keys that is also what it runs;
+   with them, a derived image is built on top. There is no separate ``base_image`` and no
+   author-chosen tag — the tag is the container's name — so a campaign states what a
+   container *adds*, never what it adds to. May be omitted on ``scenario`` to mean the
+   framework's own image (``ROBOVAST_IMAGE`` / the built-in default).
+``system_packages``
+   apt packages (``apt-get install -y``).
+``python_packages``
+   Python packages, as **install groups**. Same vocabulary as the top-level ``plugins:``
+   field — an index pin (``shapely>=2.0``), a git URL
+   (``pkg @ git+https://host/repo@ref``), an uploaded workspace wheel
+   (``./plugins/foo.whl``) — plus a source directory relative to this ``.vast``
+   (``packages/my_pkg``), which works here because the build copies the project dir into
+   the image build context.
 
-build (optional)
-----------------
+   Each element is either a spec (a group of one) or a **list** of specs installed
+   together in one pip pass, which is one image layer. If no element is a list the whole
+   list is a single group — the common case, and the one where order does not matter at
+   all, because pip sees every local wheel at once and resolves an inter-package
+   dependency against its sibling instead of against PyPI. Nest as soon as you want to
+   choose the layer boundaries: order *of* groups is install order, and is what the layer
+   cache keys on.
+``command``
+   What the container runs. Omitted for the roles RoboVAST drives itself — the scenario
+   runner, and a sidecar's scenario-execution server (which is what makes it drivable
+   from a scenario with ``remote()``). Required for an ad-hoc container.
+``resources``
+   ``cpu`` / ``memory``, per container. See :ref:`resources <config-resources>`.
+``backend``
+   **``simulation`` only** — a simulator backend, which supplies the image, packages,
+   environment and start command so the campaign does not restate them. See
+   :doc:`simulators`.
 
-Most iteration needs **no** image build: the scenario, ``run_files`` and config
-are delivered to the container at runtime. A ``build:`` section is only needed
-when the experiment must **bake code or system packages into the image** — e.g. a
-new or updated Python package (a new robot in ``sim_suite_mobile``), or an Ubuntu
-(apt) dependency. When present, set ``execution.image: build:<tag>``; the service
-builds the image on demand and resolves that symbolic reference to the real
-(registry-qualified) image — you never handle a registry reference or credentials.
+This replaces four keys that version 1 had: ``execution.image``,
+``execution.resources``, ``execution.secondary_containers`` and the top-level ``build:``
+section. A version-1 file is refused with a message naming what each became.
 
-.. code-block:: yaml
-
-   build:
-     # base_image is optional: omit for the deployment's default base, or give a
-     # published base *alias* (never a registry URL — you need no registry knowledge).
-     system_packages:                       # apt-get install (Ubuntu deps)
-       - ros-jazzy-nav2-smac-planner
-     python_packages:                       # same vocabulary as top-level `plugins:` ...
-       - packages/sim_suite_mobile          #   • a source dir relative to this .vast (pip install -e)
-       - shapely>=2.0                        #   • an index pin
-       - my_ext @ git+https://github.com/org/repo@v1   # • a git URL
-       - ./plugins/my_ext-1.0-py3-none-any.whl          # • an uploaded workspace wheel
-     tag: sim-suite-mobile                  # a bare name; the registry prefix is added server-side
-   execution:
-     image: build:sim-suite-mobile          # symbolic → the built image
-
-The list above is **one install group**: pip resolves all of it in a single pass, so the
-order does not matter — a local wheel depending on a sibling resolves against the sibling
-rather than against the index. Nest to choose the layer boundaries instead:
-
-.. code-block:: yaml
-
-   python_packages:
-     - mujoco>=3.0                          # a bare spec is a group of one
-     - [wheels/assets-0.1.0-…whl,           # one group: installed together,
-        wheels/robots-0.1.0-…whl]           #   order inside it is irrelevant
-     - wheels/my_nodes-0.1.0-…whl           # its own layer, rebuilt on every code change
-
-Each group is one ``pip install`` and one image layer. Order *of* groups is install order
-— a later group may depend on an earlier one — and is what the layer cache keys on.
-
-Where the packages land
-^^^^^^^^^^^^^^^^^^^^^^^
-
-``python_packages`` installs into a **virtualenv at** ``/usr/local``, created by the
-generated Dockerfile. That prefix is where pip on a Debian base already installed, so
-``PATH``, ``share/ament_index`` and ``AMENT_PREFIX_PATH`` are unchanged; only the python
-package directory moves (``site-packages`` rather than ``dist-packages``), and a one-line
-``robovast_venv.pth`` hands it back to ``/usr/bin/python3`` — the interpreter ``ros2
-launch`` starts nodes with — ahead of Debian's own packages.
-
-The venv is what makes a dependency upgrade possible at all. Debian-packaged
-distributions (``numpy``, ``scipy``, ``opencv`` …) carry no ``RECORD`` file, so pip
-cannot uninstall them; before the venv, any resolver decision that wanted to *replace*
-one killed the build minutes in with ``Cannot uninstall numpy 1.26.4, RECORD file not
-found``. Inside a venv pip leaves what is outside it alone (``Not uninstalling numpy at
-/usr/lib/python3/dist-packages, outside environment /usr/local``) and installs its own
-copy, which the path order then shadows.
-
-One constraint is applied on top, from the base image itself: **numpy<2**, because the
-base's ``python3-transforms3d`` is built against the 1.x API and raises
-``np.maximum_sctype was removed in the NumPy 2.0 release`` under numpy 2. It steers the
-resolver rather than blocking it (``scipy>=1.13`` lands on a 1.x-compatible scipy), and a
-requirement that truly needs numpy 2 gets an honest resolver conflict instead of a
-runtime break. A project needing otherwise sets its own ``build.base_image``.
-
-One way a ``build:`` fails that the schema cannot catch
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-``validate_project`` checks that every entry is *resolvable*, not that the resulting
-image will build. This is the failure that actually happens, and it costs a full apt+pip
-cycle before it surfaces.
-
-**An ``ament_python`` package installed as a wheel has no ament libexec dir.**
-``python_packages`` installs with pip, which puts console scripts in
-``/usr/local/bin``. ``launch_ros``'s ``Node(package=..., executable=...)`` and
-``ros2 run`` both resolve executables through the package's ament libexec directory,
-which a wheel never creates::
-
-    package 'my_pkg' found at '/usr/local', but libexec directory
-    '/usr/local/lib/my_pkg' does not exist
-
-Launch files and ``share/`` data still resolve normally — only executables break, so
-this surfaces at *launch* time. Start your own nodes with ``ExecuteProcess`` running
-``python3 -m my_pkg.my_node`` (append ``--ros-args`` for parameters); that works under
-both a wheel and a colcon install. Nodes from properly colcon-built packages
-(``rviz2``, ``robot_state_publisher``, ``nav2_*``) are unaffected.
-
-``AMENT_PREFIX_PATH`` needs no attention: the generated Dockerfile sets it to the prefix
-it installs into, so ``ros2 launch <pkg> ...`` finds a pip-installed ament package's
-``share/`` without the project saying anything. (A ``.vast`` that still sets
-``AMENT_PREFIX_PATH: "/usr/local"`` by hand is a harmless no-op.)
-
-The build is **idempotent** (content-addressed): rebuild only happens when the
-``build:`` section or a referenced source changes. It runs **wherever the backend
-runs** — a local ``docker buildx`` for a local ``vast serve``, an in-cluster
-BuildKit Job on the cluster — so the same ``.vast`` works everywhere. Trigger it
-explicitly with the ``build_experiment_image`` MCP tool / ``vast image build``, or
-implicitly: ``start_campaign`` (re)builds a ``build:<tag>`` image as its first
-step. See :doc:`mcp` and :doc:`cluster_execution`.
-
-On a cluster the build additionally needs a container registry to push to, which is a
-deployment setting rather than a project one. It does **not** need any particular object
-storage mode: it stages its context in the storage the deployment already uses (a
-dedicated ``robovast-image-builds`` bucket where campaigns get their own buckets), so
-enabling builds never changes where campaign results live. The staged context is scratch
-and is removed once the build ends, so the credentials the service uses need delete
-permission under the ``image-builds/`` prefix — see
-:ref:`Where the build context is staged <cluster-build-context-staging>`.
-
-.. _config-build-caching:
-
-Caching, and how the grouping affects it
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Two independent caches apply, and the second one is worth authoring for.
-
-*Whole image.* The cache key covers the base image, the apt list (order-insensitive),
-each ``python_packages`` entry and how the entries are grouped — for a workspace wheel
-by its **logical zip content** (member names, CRCs, sizes), not its bytes. Rebuilding a
-wheel from unchanged sources therefore does **not** trigger an image rebuild, even though
-the regenerated file differs byte-for-byte (pip stamps zip members with their source
-mtimes, so a branch switch or a fresh clone rewrites all of them). Nothing outside
-``build:`` is part of the key: editing the ``.vast``, the scenario or a run file never
-rebuilds the image.
-
-*Layers.* Every entry is copied in its **own** ``COPY`` layer, and every install *group*
-is one ``pip install`` layer, in the order listed — so a change inside group *k* rebuilds
-that group's install and everything after it, and never re-copies its siblings. Group so
-that what changes often comes **last**:
-
-.. code-block:: yaml
-
-   python_packages:
-     - mujoco>=3.0                       # index pin: no context, never invalidated
-     - [wheels/assets-0.1.0-...whl,      # ~100 MB of meshes/textures, changes rarely
-        wheels/robots-0.1.0-...whl]
-     - wheels/my_nodes-0.1.0-...whl      # a few KB of code, changes constantly
-
-With that grouping an edit to ``my_nodes`` reuses the asset layers instead of
-reinstalling them. Dependencies no longer constrain the *entries* — a group is resolved
-in one pip pass, so its members can be in any order — only the groups, since a group may
-depend on one installed before it. Grouping is a caching decision; leaving the list flat
-is always correct. pip's download cache is a BuildKit cache mount, so even a rebuilt
-layer does not re-download from the index.
-
-On the cluster each build runs in a fresh BuildKit pod, so layer reuse there comes
-from a registry-backed cache (``<prefix>/<tag>:buildcache``) rather than a local one;
-see :doc:`cluster_execution`.
-
-The ``build:`` section is distinct from the top-level ``plugins:`` field:
-``plugins:`` installs *variation-type* packages into the **composer** (before
-config generation); ``build:`` bakes code/apt into the **scenario container**
-(before execution). They share the ``python_packages`` vocabulary but scope
-different environments.
+The ``containers`` package keys are distinct from the top-level ``plugins:`` field:
+``plugins:`` installs *variation-type* packages into the **composer** (before config
+generation), while these bake code and apt into a **container** (before execution). They
+share the ``python_packages`` vocabulary but scope different environments.
 
 runs
 ^^^^
@@ -767,81 +674,62 @@ Additional environment variables to set in the run container. Each list item sho
      - CUSTOM_VAR: custom_value
      - ENABLE_X11: "false"
 
+.. _config-resources:
+
 resources
 ^^^^^^^^^
 
-**Type:** Dictionary
+**Type:** Dictionary, inside a :ref:`container block <config-containers>`
 
 **Required:** No
 
 **Applies to:** Local and cluster execution
 
-CPU and memory limits for the main (primary) container. Used by Docker Compose for local runs and by Kubernetes for cluster runs. These values are also exposed as ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` environment variables inside the container.
+CPU and memory limits, declared **per container** — Docker Compose enforces them locally,
+Kubernetes on the cluster. The scenario container's values are also exposed as
+``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` inside it.
 
 .. code-block:: yaml
 
    execution:
-     resources:
-       cpu: 6
-       memory: 8Gi
+     containers:
+       scenario:
+         image: ghcr.io/cps-test-lab/robovast:latest
+         resources: {cpu: 2}
+       sut:
+         image: ghcr.io/cps-test-lab/robovast:latest
+         resources: {cpu: 3, memory: 4Gi}
+       simulation:
+         image: ghcr.io/cps-test-lab/rst-ros:jazzy
+         command: [rst, sim, worlds/depot.yaml, --ros, --headless]
+         resources: {cpu: 5, memory: 8Gi, gpu: 1}
 
 **Available fields:**
 
 - ``cpu`` (Optional): Number of CPU cores (integer), or a per-cluster list
-- ``memory`` (Optional): Memory limit (e.g., ``8Gi``, ``4096Mi``), or a per-cluster list
+- ``memory`` (Optional): Memory limit (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
+- ``gpu`` (Optional): Number of GPUs (enables the NVIDIA runtime when set)
 
-**Per-cluster resource values** are supported when multiple clusters need
-different allocations.  See :ref:`cluster-execution` for the full syntax.
-
-.. code-block:: yaml
-
-   execution:
-     resources:
-       cpu:
-         - gcp-c4: 4     # 4 CPUs on the gcp-c4 cluster
-         - local:   8     # 8 CPUs when running locally
-
-secondary_containers
-^^^^^^^^^^^^^^^^^^^^
-
-**Type:** List of container definitions
-
-**Required:** No
-
-**Applies to:** Local and cluster execution
-
-Additional containers that run alongside the main ``robovast`` container in the same pod (Kubernetes) or Docker Compose stack (local). Use this to run separate processes such as the navigation stack or simulation in dedicated containers, each with its own CPU and memory allocation. All containers share the same network namespace and can communicate via localhost.
-
-Each entry is either a container name (string) or a dictionary with the container name as key and optional ``resources`` as value. All secondary containers use the same Docker image as the main container.
+**Per-cluster resource values** are supported when multiple clusters need different
+allocations. See :ref:`cluster-execution` for the full syntax.
 
 .. code-block:: yaml
 
    execution:
-     resources:
-       cpu: 2
-     secondary_containers:
-     - nav:
+     containers:
+       scenario:
          resources:
-           cpu: 3
-           memory: 4Gi
-     - simulation:
-         resources:
-           cpu: 5
-           memory: 8Gi
-           gpu: 1
-
-**Per-container resources:**
-
-- ``cpu`` (Optional): Number of CPU cores for this container, or a per-cluster list
-- ``memory`` (Optional): Memory limit (e.g., ``4Gi``, ``4096Mi``), or a per-cluster list
-- ``gpu`` (Optional): Number of GPUs (enables NVIDIA runtime when set)
-
-Per-cluster lists follow the same syntax as the main ``resources`` field.
-See :ref:`cluster-execution` for details.
+           cpu:
+             - gcp-c4: 4      # 4 CPUs on the gcp-c4 cluster
+             - local:   8     # 8 CPUs when running locally
 
 .. note::
 
-   Secondary containers run the ``secondary_entrypoint.sh`` script and receive ``CONTAINER_NAME`` and ``ROS_LOG_DIR`` environment variables. Ensure your scenario or entrypoint logic handles multiple containers appropriately.
+   Every container other than ``scenario`` runs alongside it in the same pod (Kubernetes)
+   or Compose stack (local), sharing its network and IPC namespaces — so they reach each
+   other over localhost, and over ``/ipc``. One that declares no ``command`` runs
+   ``secondary_entrypoint.sh``, i.e. a ``scenario_execution_server`` the scenario drives
+   with ``remote("ipc:///ipc/<name>")``; one that declares a command runs that instead.
 
 local
 ^^^^^
@@ -1264,16 +1152,18 @@ Here's a complete example showing all major configuration options:
      - velocity: 2.0
      - obstacle_count: 5
    execution:
-     image: ghcr.io/cps-test-lab/robovast:latest
-     runs: 20
-     resources:
-       cpu: 4
-       memory: 8Gi
-     secondary_containers:
-     - nav:
+     containers:
+       scenario:
+         image: ghcr.io/cps-test-lab/robovast:latest
+         resources:
+           cpu: 4
+           memory: 8Gi
+       sut:
+         image: ghcr.io/cps-test-lab/robovast:latest
          resources:
            cpu: 3
            memory: 4Gi
+     runs: 20
      pre_command: /config/files/prepare_test.sh
      post_command: /config/files/post_command.sh
      run_as_user: 1000

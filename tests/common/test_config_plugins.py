@@ -244,7 +244,7 @@ def test_plugin_specs_from_vast(tmp_path):
                  "  - ''\nexecution:\n  image: i\n")
     assert cp._plugin_specs_from_vast(str(v)) == ["foo==1.2.3", "bar @ git+https://h/r@ref"]
     # No plugins key / unreadable → empty (never raises).
-    (tmp_path / "none.vast").write_text("version: 1\nexecution:\n  image: i\n")
+    (tmp_path / "none.vast").write_text("version: 2\nexecution:\n  image: i\n")
     assert cp._plugin_specs_from_vast(str(tmp_path / "none.vast")) == []
     assert cp._plugin_specs_from_vast(str(tmp_path / "missing.vast")) == []
 
@@ -265,7 +265,7 @@ def test_ensure_postprocessing_plugins_prepends_existing_dir_without_specs(tmp_p
     """No plugins: but a staged .robovast_plugins/ (compose) is still put on sys.path."""
     pd = tmp_path / PLUGIN_DIRNAME
     pd.mkdir()
-    (tmp_path / "c.vast").write_text("version: 1\nexecution:\n  image: i\n")
+    (tmp_path / "c.vast").write_text("version: 2\nexecution:\n  image: i\n")
     cp.ensure_postprocessing_plugins(str(tmp_path))
     assert sys.path[0] == str(pd)
 

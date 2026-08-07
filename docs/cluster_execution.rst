@@ -259,7 +259,7 @@ Experiment image builds (registry)
 -----------------------------------
 
 Agent-built experiment images (a project's :ref:`build section
-<config-build-section>`) are built **in-cluster** by a BuildKit Job and pushed to a
+<config-containers>`) are built **in-cluster** by a BuildKit Job and pushed to a
 container registry the cluster can pull from. Point the deployment at a registry in
 your ``.env`` before ``setup`` (or a later ``setup --force``) — the values are stored in the
 service pod's environment (like the share/ntfy credentials) and read back by the
@@ -421,9 +421,9 @@ between builds. Two registry-backed mechanisms replace that:
   build slower. Both refs inherit the deployment's ``INSECURE`` / CA settings, since
   they address the same registry as the push.
 
-The registry therefore needs room for one extra tag per ``build.tag``. Grouping the
+The registry therefore needs room for one extra tag per built container. Grouping the
 ``python_packages`` list by change frequency is what makes the layer cache pay off —
-see :ref:`the build section <config-build-caching>`.
+see :ref:`containers <config-containers>`.
 
 .. note::
 

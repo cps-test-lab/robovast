@@ -66,8 +66,8 @@ import time
 import yaml
 from kubernetes import client
 
-from robovast.common import (COMPAT_VERSION, get_execution_env_variables, scenario_env,
-                             normalize_secondary_containers)
+from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
+                             plan_containers, scenario_env)
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
@@ -263,7 +263,8 @@ class BatchJobRunner:
 
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
-                  namespace, image, kube_context=None, log_tree=False, state=None):
+                  namespace, image, kube_context=None, log_tree=False, state=None,
+                  built_images=None):
         self = cls()
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -292,13 +293,15 @@ class BatchJobRunner:
         self.post_command = execution_params.get("post_command")
         self.run_as_user = execution_params.get("run_as_user", 1000)
 
-        # Builds self.manifest and sets self.env / self.secondary_containers.
+        # One container plan, shared with the local lane and exec_in_container.
+        self.plan = plan_containers(execution_params, images=built_images,
+                                    explicit_main=image)
+        # Builds self.manifest and sets self.env.
         self.manifest = self.get_job_manifest(
-            image,
-            execution_params.get("resources") or {},
+            self.plan.main.image or image,
+            self.plan.main.resources or {},
             execution_params.get("env", []),
             self.run_as_user,
-            execution_params.get("secondary_containers") or [],
         )
         # Always cap a Job's wall-clock time so a scenario that never shuts itself
         # down is force-killed by Kubernetes (``DeadlineExceeded``) instead of hanging
@@ -516,9 +519,9 @@ class BatchJobRunner:
 
         # Add secondary containers (they receive the same packed env so a
         # sim/SUT server resolves file-valued reset parameters identically).
-        for sc in self.secondary_containers:
-            sc_name = sc['name']
-            sc_resources = resolve_resources(sc['resources'], self.kube_context)
+        for sc in self.plan.sidecars:
+            sc_name = sc.name
+            sc_resources = resolve_resources(sc.resources, self.kube_context)
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
@@ -531,8 +534,12 @@ class BatchJobRunner:
                         secondary_env.append({'name': key, 'value': str(value)})
             secondary_spec = {
                 'name': sc_name,
-                'image': job_manifest['spec']['template']['spec']['containers'][0]['image'],
-                'command': ['/usr/bin/tini', '--', '/bin/bash', '/config/secondary_entrypoint.sh'],
+                'image': sc.image,
+                # A sidecar with no command runs the scenario-execution server, so the
+                # scenario can drive it with remote(). One that declares a command runs
+                # that instead -- a simulator, or a stack RoboVAST does not drive.
+                'command': (list(sc.command) if sc.command else
+                            ['/usr/bin/tini', '--', '/bin/bash', '/config/secondary_entrypoint.sh']),
                 'env': secondary_env,
                 'resources': {
                     'requests': {},
@@ -720,16 +727,15 @@ class BatchJobRunner:
         except client.rest.ApiException as e:
             logger.error(f"Error deleting pods with label selector: {e}")
 
-    def get_job_manifest(self, image: str, resources: dict, env: list, run_as_user: int = None,
-                         secondary_containers: list = None) -> dict:
+    def get_job_manifest(self, image: str, resources: dict, env: list,
+                         run_as_user: int = None) -> dict:
         """Generate the base Kubernetes job manifest from templates.
 
         Args:
-            image: Docker image to use
-            resources: Resource limits/requests for the main container (cpu, memory)
+            image: Image for the container the scenario runs in
+            resources: Resource limits/requests for that container (cpu, memory)
             env: List of environment variables
             run_as_user: UID to run container as (defaults to 1000 if None)
-            secondary_containers: List of secondary container configs (name + resources)
 
         Returns:
             Dictionary containing the job manifest
@@ -744,8 +750,6 @@ class BatchJobRunner:
         # Resolve per-cluster resource values for the active Kubernetes context
         resources = resolve_resources(resources, self.kube_context)
 
-        # Normalize secondary_containers: may be Pydantic models, normalized dicts, or raw YAML dicts
-        self.secondary_containers = normalize_secondary_containers(secondary_containers)
         self.env = env or []
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
@@ -1084,11 +1088,8 @@ class KubernetesBackend(ExecutionBackend):
                   runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         execution_params = campaign_data.get("execution", {}) or {}
-        image = resolve_robovast_image(
-            required=True,
-            explicit=options.image,
-            config_image=execution_params.get("image"),
-        )
+        from robovast.execution.backends import _scenario_image
+        image = _scenario_image(execution_params, options)
         runner = BatchJobRunner.for_batch(
             campaign_data=campaign_data,
             campaign_id=campaign_id,
@@ -1100,6 +1101,7 @@ class KubernetesBackend(ExecutionBackend):
             kube_context=self.kube_context,
             log_tree=self.log_tree or options.log_tree,
             state=self._state,
+            built_images=options.images,
         )
         runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
 

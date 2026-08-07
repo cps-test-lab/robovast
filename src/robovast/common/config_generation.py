@@ -1075,13 +1075,22 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             cfg[field] = normalized
 
     # Extract execution parameters from execution section
-    execution_section = parameters.get('execution', {})
+    #
+    # A simulator backend's contributions are merged in *here*, once, so everything
+    # downstream -- the container plan, the image builds, the run environment -- reads
+    # one already-complete picture instead of each re-asking the backend and risking a
+    # different answer. The campaign always wins; a backend fills in what was left out.
+    from robovast.common.simulators import \
+        apply_backend  # pylint: disable=import-outside-toplevel
+    execution_section = apply_backend(parameters.get('execution', {}) or {},
+                                      base_dir=os.path.dirname(variation_file))
     execution_params = {
         "env": execution_section.get('env'),
         "run_as_user": execution_section.get('run_as_user'),
-        "image": execution_section.get('image'),
-        "resources": execution_section.get('resources'),
-        "secondary_containers": execution_section.get('secondary_containers'),
+        # Every container the run starts. This is a *whitelist*, not a copy: both lanes
+        # read only what is listed here, so a key omitted below never arrives and the
+        # campaign runs as if it were unset.
+        "containers": execution_section.get('containers'),
         "local": execution_section.get('local'),
         # `runs` is what the campaign's size is reported in (validate, `config info`,
         # preview_configurations all read it here). It was missing, so every campaign was reported as
@@ -1091,6 +1100,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "runs_per_job": execution_section.get('runs_per_job', 1),
         "simulation": execution_section.get('simulation'),
         "mode": execution_section.get('mode'),
+        # Environment the backend supplies (see apply_backend). Kept separate from
+        # ``env`` so precedence stays explicit where it is applied: a campaign's own
+        # execution.env wins over it.
+        "_backend_env": execution_section.get('_backend_env'),
     }
 
     # Build result dictionary

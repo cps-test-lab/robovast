@@ -130,9 +130,22 @@ def _schema_problems(raw):
 
     problems = []
     version = raw.get("version")
-    if version != 1:
+    if version == 1:
+        # Report what moved where, not just the version number. There is no migration
+        # tool and no v1 reader, so this text is the migration path -- and this is the
+        # collect-all validator, the surface an agent or the web editor hits first.
+        from robovast.common.config import \
+            _V1_MIGRATION  # pylint: disable=import-outside-toplevel
         problems.append(_problem(
-            "version", f"Unsupported config version: {version!r} (expected 1).",
+            "version",
+            "config version 1 is no longer supported. Version 2 replaces "
+            "execution.image, execution.resources, execution.secondary_containers and "
+            "the top-level build: section with a single execution.containers "
+            "mapping.\n\n" + _V1_MIGRATION + "\n\nThen set 'version: 2'.",
+            field="version"))
+    elif version != 2:
+        problems.append(_problem(
+            "version", f"Unsupported config version: {version!r} (expected 2).",
             field="version"))
     try:
         ConfigV1(**raw)
@@ -345,64 +358,53 @@ def _env_names(raw):
     return names
 
 
-#: An rst package, as a simulation ref, a wheel filename or a source dir. Anchored on a word boundary
-#: so it does not fire on an unrelated word that merely contains "rst".
-_RST_PACKAGE = re.compile(r"(^|[^A-Za-z0-9_])rst([._-]|$)")
-
-
-def _uses_rst(raw):
-    """Whether this campaign evidently runs rst, by simulation ref or by the packages it installs."""
-    execution = raw.get("execution") or {}
-    if _RST_PACKAGE.search(str(execution.get("simulation") or "")):
-        return True
-    # python_packages is a list of install *groups*, so entries may be nested one level.
-    packages = ((raw.get("build") or {}).get("python_packages")) or []
-    flat = []
-    for entry in packages:
-        flat.extend(entry if isinstance(entry, list) else [entry])
-    return any(_RST_PACKAGE.search(str(entry)) for entry in flat)
-
-
 def _run_capture_problems(raw):
     """A ``scene3d`` panel replays a **run capture**, so the runs have to produce one.
 
-    The same failure the descriptor check exists for, one artifact over: nothing in the campaign
-    declares the dependency, so a campaign runs, passes, and shows a motionless world when someone
-    finally opens it. A capture is written per run at simulation time, so unlike a campaign-scope
-    descriptor it cannot be checked for on disk -- but what *can* be checked is whether the run was
-    ever asked to record, which is the mistake actually made.
+    Nothing else in the campaign declares that dependency, so without this check a campaign
+    runs, passes, and shows a motionless world whenever someone finally opens it. The capture
+    is written per run at simulation time, so unlike a campaign-scope descriptor it cannot be
+    looked for on disk -- what *can* be established is whether the configured simulator
+    produces one at all, which is the mistake actually made.
 
-    Only the rst producer's variables are known here, so this fires only for a campaign that is
-    evidently running rst -- either through its scenario adapter or by shipping its packages. A
-    different simulator producing the same format is deliberately not second-guessed, since nothing
-    here could tell where *its* capture comes from.
+    Asked of the **backend**, not inferred from the campaign's wheel names. The old check
+    pattern-matched ``rst`` in the simulation ref and the installed packages, which was the
+    only signal available before a simulator was a first-class thing -- and which now finds
+    nothing at all in the shape where the simulator runs from its own image and the campaign
+    installs no simulator packages whatsoever.
 
-    Both signals are needed: a campaign may name ``rst.scenario_adapter:MujocoSim`` as its simulation,
-    or (as ``rst_basic_nav`` does) declare no ``simulation`` at all and start the simulator from a ROS
-    launch file, which is invisible here except through the wheels it installs.
+    A campaign with no backend is not second-guessed: nothing here could tell where its
+    capture would come from.
     """
     problems = []
     viz = raw.get("visualization") or {}
     if not isinstance(viz, dict):
         return problems
-    if not _uses_rst(raw):
+    panels = [(i, entry) for i, entry in enumerate(viz.get("panels") or [])
+              if _panel_entry(entry)[0] == "scene3d"]
+    if not panels:
         return problems
-    env = _env_names(raw)
-    for i, entry in enumerate(viz.get("panels") or []):
-        ptype, _props = _panel_entry(entry)
-        if ptype != "scene3d":
-            continue
-        missing = [v for v in ("ROBOSITO_RECORD", "ROBOSITO_CAPTURE_EXPORT_DIR") if v not in env]
-        if not missing:
-            continue
-        problems.append(_problem(
-            "panel",
-            f"the scene3d panel replays a run capture, but this campaign never asks its runs to "
-            f"write one: {', '.join(missing)} missing from execution.env. The campaign would run and "
-            f"pass, and the 3D view would show a world that never moves. Set ROBOSITO_RECORD (the "
-            f".npz path) and ROBOSITO_CAPTURE_EXPORT_DIR (the capture directory).",
-            field=f"visualization.panels[{i}]"))
-    return problems
+
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, resolve_backend)
+    execution = raw.get("execution") or {}
+    name = backend_name(execution)
+    if not name:
+        return problems
+    try:
+        backend = resolve_backend(name)
+        cfg = (execution.get("containers") or {}).get("simulation") or {}
+        if backend.produces_run_capture(cfg, execution):
+            return problems
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return problems
+
+    return [_problem(
+        "panel",
+        f"the scene3d panel replays a run capture, but the '{name}' simulator does not "
+        f"produce one. The campaign would run and pass, and the 3D view would show a world "
+        f"that never moves.",
+        field=f"visualization.panels[{i}]") for i, _entry in panels]
 
 
 def _panel_problems(raw, vast_dir):

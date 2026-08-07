@@ -1423,9 +1423,11 @@ def prepare_run(output, config, runs, cluster_config, options, log_tree, kube_co
                     raise click.ClickException(f"No configs matched pattern '{config}'")
                 campaign_data["configs"] = matched
 
+            from robovast.common.config import SCENARIO_CONTAINER
+            _containers = (campaign_data.get("execution") or {}).get("containers") or {}
             image = resolve_robovast_image(
                 required=True,
-                config_image=(campaign_data.get("execution") or {}).get("image"))
+                config_image=(_containers.get(SCENARIO_CONTAINER) or {}).get("image"))
             job_runner = BatchJobRunner.for_batch(
                 campaign_data=campaign_data, campaign_id=campaign_id, batch_tag=None,
                 runs=num_runs, cluster_config=cluster_config, namespace=namespace,

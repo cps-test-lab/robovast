@@ -98,18 +98,36 @@ def test_bt_log_can_be_turned_off(monkeypatch):
     assert main_env["BT_LOG"] == "false"
 
 
-def test_secondary_container_is_appended(monkeypatch):
-    r = _runner(monkeypatch, execution={
-        "secondary_containers": [{"name": "sim", "resources": {"cpu": 2, "memory": "1Gi"}}]})
+def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
+    """A sidecar no longer inherits the main container's image: it states one, which is
+    what lets the system under test be a vanilla vendor image."""
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "sut": {"image": "nav2:humble", "resources": {"cpu": 2, "memory": "1Gi"}}}})
     job = r._build_jobs()[0]
     m = r.create_job_manifest(job, total_jobs=1)
 
     containers = m["spec"]["template"]["spec"]["containers"]
     names = [c["name"] for c in containers]
-    assert "sim" in names
-    sim = next(c for c in containers if c["name"] == "sim")
-    assert sim["command"][-1].endswith("secondary_entrypoint.sh")
-    assert sim["resources"]["requests"]["cpu"] == "2"
+    assert "sut" in names
+    sut = next(c for c in containers if c["name"] == "sut")
+    assert sut["image"] == "nav2:humble"
+    # No command declared -> the scenario-execution server, so a scenario can drive it
+    # with remote("ipc:///ipc/sut").
+    assert sut["command"][-1].endswith("secondary_entrypoint.sh")
+    assert sut["resources"]["requests"]["cpu"] == "2"
+
+
+def test_a_sidecar_with_a_command_runs_it_instead_of_the_server(monkeypatch):
+    """How a simulator, or any stack RoboVAST does not drive, is started."""
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "simulation": {"image": "rst-ros:jazzy",
+                       "command": ["rst", "sim", "w.yaml", "--ros", "--headless"]}}})
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    sim = next(c for c in m["spec"]["template"]["spec"]["containers"]
+               if c["name"] == "simulation")
+    assert sim["command"] == ["rst", "sim", "w.yaml", "--ros", "--headless"]
 
 
 def test_job_tag_and_artifact_path_are_batch_namespaced(monkeypatch):

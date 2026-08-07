@@ -111,76 +111,120 @@ class ResourcesConfig(BaseModel):
     memory: Optional[Union[str, list[dict[str, str]]]] = None
 
 
-class SecondaryContainerConfig(BaseModel):
-    name: str
-    resources: Optional[ResourcesConfig] = None
+#: The container that runs scenario-execution. Always present; when a simulator backend
+#: is declared it may be supplied by the backend rather than named by the campaign.
+SCENARIO_CONTAINER = 'scenario'
+#: The container the simulator runs in. May resolve to the same container as
+#: :data:`SCENARIO_CONTAINER` (a stepped, in-process simulator) or to the same one as
+#: :data:`SUT_CONTAINER` (a stack that bundles its own simulator).
+SIMULATION_CONTAINER = 'simulation'
+#: The system under test.
+SUT_CONTAINER = 'sut'
 
-    @model_validator(mode='before')
-    @classmethod
-    def extract_name(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {'name': data, 'resources': None}
-        if isinstance(data, dict):
-            name = next((k for k in data if k != 'resources'), None)
-            if name is None:
-                raise ValueError("Secondary container entry must have a name key alongside 'resources'")
-            resources = data.get('resources') or None
-            return {'name': name, 'resources': resources}
-        return data
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema, handler):
-        # The ``mode='before'`` validator accepts shapes the post-validation model
-        # can't express: a bare string (the container name), or a mapping whose
-        # name is the *key* rather than a ``name`` property (e.g. ``- nav:``).
-        # The default schema would require a literal ``name`` property, so the web
-        # editor flags valid YAML as ``Missing property "name"``. Reflect the real
-        # accepted forms here instead.
-        default = handler(core_schema)
-        resources_schema = default.get('properties', {}).get('resources', {})
-        return {
-            'anyOf': [
-                {'type': 'string'},
-                {
-                    'type': 'object',
-                    'properties': {'resources': resources_schema},
-                    'additionalProperties': True,
-                },
-            ]
-        }
+#: The names with a defined meaning and a default image. Any other key in
+#: ``execution.containers`` is an ad-hoc container and must state its own ``image``.
+#:
+#: These are *roles*, not a container count: one campaign may back all three with a
+#: single container and another with three. Every tool that addresses a container --
+#: ``exec_in_container``, a scenario's ``remote("ipc:///ipc/<name>")`` -- takes a name
+#: from this same namespace, so a caller never has to know which.
+CONTAINER_ROLES = (SCENARIO_CONTAINER, SIMULATION_CONTAINER, SUT_CONTAINER)
 
 
-def normalize_secondary_containers(secondary_containers) -> list[dict]:
-    """Normalize secondary container entries to a uniform dict format with 'name' and 'resources' keys.
+class ContainerConfig(BaseModel):
+    """One container of a campaign: what it starts from, and what it adds.
 
-    Handles three input shapes:
-    - Pydantic SecondaryContainerConfig objects (with .name / .resources attributes)
-    - Already-normalized dicts with a 'name' key
-    - Raw YAML dicts of the form {<container_name>: None, 'resources': {...}}
+    The same shape for every entry in ``execution.containers``, whether it is one of
+    the known roles (:data:`CONTAINER_ROLES`) or an ad-hoc container.
+
+    **One rule for ``image``: it is what the container *starts from*.** With no package
+    keys that is also what it runs; with them, a derived image is built on top. There is
+    no separate ``base_image`` and no author-chosen tag -- the tag is derived from the
+    container's name, so a campaign states what a container *adds* and never what it
+    adds to.
     """
-    result = []
-    for sc in (secondary_containers or []):
-        if hasattr(sc, 'name'):
-            result.append({
-                'name': sc.name,
-                'resources': {'cpu': sc.resources.cpu, 'memory': sc.resources.memory}
-                if sc.resources is not None else {}
-            })
-        elif isinstance(sc, dict) and 'name' in sc:
-            result.append(sc)
-        elif isinstance(sc, dict):
-            # Raw YAML format: {<name>: None, 'resources': {...}}
-            name = next((k for k in sc if k != 'resources'), None)
-            if name is None:
-                raise ValueError(f"Cannot extract container name from secondary_containers entry: {sc}")
-            result.append({'name': name, 'resources': sc.get('resources') or {}})
-    return result
+    model_config = ConfigDict(extra='allow')
+
+    #: Image to start from. Optional for a known role whose default comes from a
+    #: simulator backend; required otherwise.
+    image: Optional[str] = None
+    #: apt packages installed into the image (``apt-get install -y``).
+    system_packages: Optional[list[str]] = None
+    #: Python packages installed into the image, as **install groups**. Same vocabulary
+    #: as the top-level ``plugins:`` field -- an index pin (``shapely>=2.0``), a git URL
+    #: (``pkg @ git+https://host/repo@ref``), or an uploaded workspace wheel
+    #: (``./plugins/foo.whl``) -- PLUS a source directory relative to this ``.vast``
+    #: (``packages/my_pkg``), which works here because the build copies the project dir
+    #: into the image build context.
+    #:
+    #: Each element is either a spec (a group of one) or a **list** of specs installed
+    #: together in one pip resolution pass, which is one image layer. If no element is a
+    #: list the whole list is a single group -- the common case, and the one where order
+    #: does not matter at all, because pip sees every local wheel at once and resolves an
+    #: inter-package dependency against it instead of against PyPI.
+    python_packages: Optional[list[Union[str, list[str]]]] = None
+    #: What the container runs. Omitted for the roles RoboVAST drives itself (the
+    #: scenario runner, a sidecar's scenario-execution server); required for an ad-hoc
+    #: container, which nothing else knows how to start.
+    command: Optional[list[str]] = None
+    resources: Optional[ResourcesConfig] = None
+    #: Simulator backend entry point (``simulation`` role only) -- a name in the
+    #: ``robovast.simulators`` group, or a ``module:ATTR`` / ``.vast``-relative file ref.
+    #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
+    backend: Optional[str] = None
+
+    @field_validator('system_packages')
+    @classmethod
+    def _validate_nonempty_strings(cls, v):
+        if v is None:
+            return v
+        for entry in v:
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError("each entry must be a non-empty string")
+        return v
+
+    @field_validator('python_packages')
+    @classmethod
+    def _validate_install_groups(cls, v):
+        """Only what the ``str | list[str]`` annotation cannot say itself.
+
+        Shape (a spec is a string, a group is a flat list of strings) is the
+        annotation's job and pydantic rejects the rest before this runs; repeating it
+        here would be two validators with one opinion. What is left is emptiness: a
+        blank spec and an empty group both pass the type and mean nothing.
+        """
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            if isinstance(entry, str):
+                if not entry.strip():
+                    raise ValueError(f"entry {i} is blank; expected a package spec")
+                continue
+            if not entry:
+                raise ValueError(
+                    f"entry {i} is an empty install group; a group holds the specs "
+                    "installed in one pip pass")
+            for j, spec in enumerate(entry):
+                if not spec.strip():
+                    raise ValueError(
+                        f"entry {i}, item {j} is blank; expected a package spec")
+        return v
+
+    def builds_image(self) -> bool:
+        """Whether this container needs an image built on top of :attr:`image`."""
+        return bool(self.system_packages or self.python_packages)
 
 
 class ExecutionConfig(BaseModel):
-    image: str
-    resources: Optional[ResourcesConfig] = None
-    secondary_containers: Optional[list[SecondaryContainerConfig]] = None
+    #: Every container this campaign runs, keyed by name -- the one namespace shared by
+    #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
+    #: names have a defined meaning (:data:`CONTAINER_ROLES`); anything else is an
+    #: ad-hoc container. Replaces the former ``image`` / ``resources`` /
+    #: ``secondary_containers`` / top-level ``build:``, which are gone in version 2.
+    containers: dict[str, ContainerConfig]
+    #: Campaign-wide, and reaches every container. There is deliberately no
+    #: per-container ``env``: nothing needs one, and an injection is harmless where it
+    #: is not read.
     env: Optional[list[dict[str, str]]] = None
     runs: int
     scenario_file: Optional[str] = None
@@ -270,6 +314,62 @@ class ExecutionConfig(BaseModel):
             raise ValueError(f"execution.mode must be one of {sorted(allowed)}, got '{v}'")
         return v
 
+    @field_validator('containers')
+    @classmethod
+    def validate_containers(cls, v: dict[str, 'ContainerConfig']) -> dict[str, 'ContainerConfig']:
+        if not v:
+            raise ValueError(
+                "execution.containers must declare at least one container; the campaign "
+                f"has nothing to run. The known roles are {', '.join(CONTAINER_ROLES)}.")
+        for name, container in v.items():
+            extras = set(container.model_extra or {})
+            if name == SIMULATION_CONTAINER:
+                # A backend's own keys (e.g. robosito's `config`) ride alongside
+                # `backend` and are validated against its CONFIG_CLASS once resolved.
+                if extras and not container.backend:
+                    raise ValueError(
+                        f"execution.containers.{name} has unknown keys "
+                        f"({', '.join(sorted(extras))}) and no 'backend' to validate them "
+                        "against; a simulator backend owns its own keys.")
+                continue
+            if container.backend:
+                raise ValueError(
+                    f"execution.containers.{name} sets 'backend', which only the "
+                    f"'{SIMULATION_CONTAINER}' container has.")
+            if extras:
+                raise ValueError(
+                    f"execution.containers.{name} has unknown keys: "
+                    f"{', '.join(sorted(extras))}")
+            if name not in CONTAINER_ROLES and not container.image:
+                raise ValueError(
+                    f"execution.containers.{name} is an ad-hoc container and must state "
+                    "an 'image'; only the known roles "
+                    f"({', '.join(CONTAINER_ROLES)}) have a default.")
+        return v
+
+    # No schema check that the scenario container has an image: omitting it is
+    # meaningful (build on / run the framework's own image, as an absent
+    # ``build.base_image`` used to mean), and whether that resolves depends on
+    # ``ROBOVAST_IMAGE``, which the schema cannot see. ``resolve_robovast_image`` makes
+    # the call at run time and already refuses to fall back to a mutable default tag.
+    # A *sidecar* is different -- it has no fallback at all -- and is checked above.
+
+    @model_validator(mode='after')
+    def _mode_auto_is_ambiguous_with_a_backend(self):
+        """``auto`` resolves inside the container, too late for a backend to plan.
+
+        The entrypoint picks the runner by testing whether ``ros2`` is on PATH, so the
+        same ``.vast`` would get a different topology in a different image -- silently.
+        A backend needs the answer at preparation time.
+        """
+        simulation = self.containers.get(SIMULATION_CONTAINER)
+        if simulation is not None and simulation.backend and self.mode == "auto":
+            raise ValueError(
+                "execution.mode must be 'ros2' or 'base' when a simulator backend is "
+                "declared: 'auto' is resolved inside the container by testing for ros2 "
+                "on PATH, which would silently change the topology between images.")
+        return self
+
 
 #: Fallback wall-clock budget *per run* when ``execution.timeout`` is unset. One hour:
 #: long enough for any scenario this substrate runs, short enough that a run which
@@ -308,109 +408,6 @@ def per_run_deadline_seconds(execution_params: dict) -> int:
     which says so in the generated ``run.sh``).
     """
     return declared_per_run_seconds(execution_params) or DEFAULT_RUN_DEADLINE_SECONDS
-
-
-#: A symbolic ``execution.image`` value that points at the image produced by the
-#: ``build:`` section. The bare name after the prefix is the ``build.tag``. The
-#: real (registry-qualified, digest-pinned) image is resolved server-side; no
-#: client ever handles a registry ref.
-BUILD_IMAGE_PREFIX = "build:"
-
-#: A bare image name[:version] with no registry host or namespace (no ``/``). The
-#: registry prefix is added server-side, so the agent stays free of registry
-#: knowledge.
-_BUILD_TAG_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*(:[A-Za-z0-9._-]+)?$')
-
-
-class BuildConfig(BaseModel):
-    """Declarative spec for the experiment container image the scenario runs inside.
-
-    Present only when the experiment needs code or system packages *baked into the
-    image* (e.g. new ``sim_suite`` packages, or an apt dependency). Files that ship
-    to ``/config`` at runtime (``run_files``, ``scenario_file``) never require a
-    build. When absent, ``execution.image`` is used verbatim.
-
-    The built image is referenced from ``execution.image`` via a symbolic
-    ``build:<tag>`` ref (see :data:`BUILD_IMAGE_PREFIX`); the service resolves it to
-    the pushed, digest-pinned image. The client/agent never handles a
-    registry-qualified ref, endpoint, or credential -- registry details live only in
-    the cluster config server-side.
-    """
-    model_config = ConfigDict(extra='forbid')
-    #: Base image to build ``FROM``. Optional: omit for the server-provided default
-    #: base, or give a robovast-published base *alias* (e.g. ``"sim-suite"``). Never
-    #: a registry URL from the agent's side.
-    base_image: Optional[str] = None
-    #: apt packages installed into the image (``apt-get install -y``).
-    system_packages: Optional[list[str]] = None
-    #: Python packages installed into the image, as **install groups**. Same
-    #: vocabulary as the top-level ``plugins:`` field -- an index pin
-    #: (``shapely>=2.0``), a git URL (``pkg @ git+https://host/repo@ref``), or an
-    #: uploaded workspace wheel (``./plugins/foo.whl``) -- PLUS a source directory
-    #: relative to this ``.vast`` (``packages/sim_suite_mobile``, installed with
-    #: ``pip install -e``). The source-dir flavor works here (and not in
-    #: ``plugins:``) because the build copies the workspace project dir into the
-    #: image build context.
-    #:
-    #: Each element is either a spec (a group of one) or a **list** of specs
-    #: installed together in one pip resolution pass, which is one image layer. If
-    #: no element is a list the whole list is a single group -- the common case, and
-    #: the one where the order does not matter at all, because pip sees every local
-    #: wheel at once and resolves an inter-package dependency against it instead of
-    #: against PyPI. Nest as soon as you want to choose the layer boundaries: order
-    #: *of* groups is install order (a group may depend on an earlier one) and is
-    #: what the layer cache keys on.
-    python_packages: Optional[list[Union[str, list[str]]]] = None
-    #: Bare image name, optionally ``name:version`` -- no registry host/namespace.
-    #: The registry prefix and a content hash are added server-side.
-    tag: str
-
-    @field_validator('system_packages')
-    @classmethod
-    def _validate_nonempty_strings(cls, v):
-        if v is None:
-            return v
-        for entry in v:
-            if not isinstance(entry, str) or not entry.strip():
-                raise ValueError("each entry must be a non-empty string")
-        return v
-
-    @field_validator('python_packages')
-    @classmethod
-    def _validate_install_groups(cls, v):
-        """Only what the ``str | list[str]`` annotation cannot say itself.
-
-        Shape (a spec is a string, a group is a flat list of strings) is the
-        annotation's job and pydantic rejects the rest before this runs; repeating it
-        here would be two validators with one opinion. What is left is emptiness: a
-        blank spec and an empty group both pass the type and mean nothing.
-        """
-        if v is None:
-            return v
-        for i, entry in enumerate(v):
-            if isinstance(entry, str):
-                if not entry.strip():
-                    raise ValueError(f"entry {i} is blank; expected a package spec")
-                continue
-            if not entry:
-                raise ValueError(
-                    f"entry {i} is an empty install group; a group holds the specs "
-                    "installed in one pip pass")
-            for j, spec in enumerate(entry):
-                if not spec.strip():
-                    raise ValueError(
-                        f"entry {i}, item {j} is blank; expected a package spec")
-        return v
-
-    @field_validator('tag')
-    @classmethod
-    def _validate_tag(cls, v):
-        if not isinstance(v, str) or not _BUILD_TAG_RE.match(v):
-            raise ValueError(
-                "build.tag must be a bare image name (optionally 'name:version') "
-                "with no registry host or '/'; the registry prefix is added "
-                f"server-side. Got '{v}'")
-        return v
 
 
 class ResultsConfig(BaseModel):
@@ -916,9 +913,6 @@ class ConfigV1(BaseModel):
     )
     configuration: Optional[list[ConfigurationConfig]] = None
     execution: ExecutionConfig
-    #: Optional declarative image build (see :class:`BuildConfig`). Present only when
-    #: the experiment needs code/system packages baked into ``execution.image``.
-    build: Optional[BuildConfig] = None
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
     evaluation: Optional[EvaluationConfig] = None
@@ -943,31 +937,6 @@ class ConfigV1(BaseModel):
         return v
 
     @model_validator(mode='after')
-    def _build_image_ref_consistency(self):
-        # A symbolic ``execution.image: build:<tag>`` requires a matching build:
-        # section, and vice-versa the section's tag must be the one referenced.
-        # Catch the mismatch at validation time (fail-fast at submit) rather than
-        # only when the build/run starts.
-        image = (self.execution.image or "").strip()
-        if image.startswith(BUILD_IMAGE_PREFIX):
-            ref_tag = image[len(BUILD_IMAGE_PREFIX):]
-            if self.build is None:
-                raise ValueError(
-                    f"execution.image '{image}' references a build, but no 'build:' "
-                    "section is defined")
-            if ref_tag != self.build.tag:
-                raise ValueError(
-                    f"execution.image '{image}' does not match build.tag "
-                    f"'{self.build.tag}'; expected "
-                    f"'{BUILD_IMAGE_PREFIX}{self.build.tag}'")
-        elif self.build is not None:
-            raise ValueError(
-                f"a 'build:' section is defined but execution.image does not "
-                f"reference it; set execution.image: '{BUILD_IMAGE_PREFIX}"
-                f"{self.build.tag}'")
-        return self
-
-    @model_validator(mode='after')
     def _search_xor_configuration(self):
         # Batch and search are mutually exclusive modes of the same `run`
         # command. A `search:` section synthesizes its configurations from
@@ -981,6 +950,26 @@ class ConfigV1(BaseModel):
         return self
 
 
+#: What a version 1 config has to become. There is no migration tool and no v1 reader,
+#: so this message *is* the migration path -- it has to be instructions, not a
+#: complaint. Keep each entry as "what you wrote" -> "what it becomes".
+_V1_MIGRATION = (
+    "  execution.image: <img>          ->  execution.containers.scenario.image: <img>\n"
+    "  execution.resources: {...}      ->  execution.containers.scenario.resources: {...}\n"
+    "  execution.secondary_containers: ->  one execution.containers.<name> entry each\n"
+    "    - nav: {resources: {...}}     ->    nav: {image: <img>, command: [...], resources: {...}}\n"
+    "  build: {base_image: <img>,      ->  execution.containers.<role>:\n"
+    "          system_packages: [...],       image: <img>            # what it starts FROM\n"
+    "          python_packages: [...],       system_packages: [...]\n"
+    "          tag: <tag>}                   python_packages: [...]\n"
+    "                                  (no 'tag' and no 'base_image': the tag comes from the\n"
+    "                                   container name, and 'image' IS the base)\n"
+    "\n"
+    "The known container roles are 'scenario' (runs scenario-execution), 'simulation' "
+    "(the simulator) and 'sut' (the system under test); any other name is an ad-hoc "
+    "container and must state its own image and command.")
+
+
 def validate_config(config: dict):
     """
     Validate the configuration settings.
@@ -992,8 +981,19 @@ def validate_config(config: dict):
     """
     logger.debug("Validating configuration")
     version = config.get("version", None)
-    if version != 1:
-        logger.error(f"Unsupported config version: {version}")
+    if version == 1:
+        # Version 1 is not read at all -- there is no dual-parse path. Say what moved
+        # where, because nothing else will: a campaign's archived _config/*.vast stays
+        # v1 forever and simply stops being re-readable.
+        raise ValueError(
+            "config version 1 is no longer supported. Version 2 replaces "
+            "execution.image, execution.resources, execution.secondary_containers and "
+            "the top-level build: section with a single execution.containers mapping.\n"
+            "\n" + _V1_MIGRATION + "\n\n"
+            "Then set 'version: 2'.")
+    if version != 2:
+        # Raised, not logged-and-raised: every caller reports the failure it catches,
+        # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")
     logger.debug(f"Config version {version} is supported")
     return get_validated_config(config, ConfigV1)
@@ -1011,9 +1011,7 @@ def get_validated_config(config: dict, config_class):
                 field = ".".join(str(loc) for loc in error['loc'])
                 msg = error['msg']
                 errors.append(f"  - {field}: {msg}")
-            error_msg = f"Config validation failed:\n" + "\n".join(errors)
-            logger.error(error_msg)
+            error_msg = "Config validation failed:\n" + "\n".join(errors)
             raise ValueError(error_msg) from None
-        logger.error(f"Config validation failed: {str(e)}")
         raise ValueError(f"Config validation failed: {str(e)}") from None
     return config

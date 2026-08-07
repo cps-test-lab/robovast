@@ -190,6 +190,47 @@ def build_app(impl: RobovastInterface):
         except (TypeError, ValueError):
             return 0
 
+    #: How often the shutdown watchdog re-checks while a pull is in flight.
+    _SSE_EXIT_POLL_S = 0.05
+
+    async def _pull_or_exit(pull):
+        """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
+
+        The pulls behind these streams are network I/O — a cluster job log is an S3
+        read over a ``kubectl port-forward``, which takes tens of seconds when the
+        tunnel has stalled. Simply awaiting one means a Ctrl+C is not noticed until it
+        returns: the stream then misses uvicorn's graceful-shutdown deadline, uvicorn
+        cancels the response task, and (because the thread cannot be cancelled) the
+        cancellation only lands after the pull finally finishes, logged as an
+        "Exception in ASGI application" traceback *after* the server has already
+        stopped. So a watchdog cancels the wait the moment ``should_exit`` flips and
+        the worker thread is abandoned — it is a daemon and dies with the process.
+
+        Returns the pulled value, ``None`` if shutdown won the race, or the exception
+        the pull raised. The exception is *returned* rather than raised because a task
+        group would wrap it in an ``ExceptionGroup``, hiding the message the caller
+        has to put on the wire.
+        """
+        outcome = None
+
+        async def _watch():
+            while not app.state.should_exit():
+                await anyio.sleep(_SSE_EXIT_POLL_S)
+            task_group.cancel_scope.cancel()
+
+        async def _run():
+            nonlocal outcome
+            try:
+                outcome = await anyio.to_thread.run_sync(pull, abandon_on_cancel=True)
+            except Exception as exc:  # noqa: BLE001 - handed to the caller to report
+                outcome = exc
+            task_group.cancel_scope.cancel()
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(_watch)
+            task_group.start_soon(_run)
+        return outcome
+
     async def _sse_log_stream(request: Request, fetch, start_offset: int):
         """SSE generator tailing a ``fetch(offset) -> LogChunk`` pull.
 
@@ -206,10 +247,11 @@ def build_app(impl: RobovastInterface):
         while not app.state.should_exit():
             if await request.is_disconnected():
                 return
-            try:
-                chunk = await anyio.to_thread.run_sync(fetch, offset)
-            except Exception as e:  # noqa: BLE001 - surface, never 500 the stream
-                yield f"event: streamerror\ndata: {_json.dumps(str(e))}\n\n"
+            chunk = await _pull_or_exit(lambda: fetch(offset))
+            if chunk is None:  # shutting down — close the stream, don't wait
+                return
+            if isinstance(chunk, Exception):  # surface, never 500 the stream
+                yield f"event: streamerror\ndata: {_json.dumps(str(chunk))}\n\n"
                 yield "event: eof\ndata: {}\n\n"
                 return
             if chunk.text:
@@ -241,13 +283,17 @@ def build_app(impl: RobovastInterface):
         while not app.state.should_exit():
             if await request.is_disconnected():
                 return
-            try:
-                resp = await anyio.to_thread.run_sync(
-                    lambda: impl.list_campaigns(
-                        ListCampaignsRequest(limit=100, offset=0)))
-                encoded = _json.dumps(resp.model_dump(), default=str)
-            except Exception as e:  # noqa: BLE001 - surface, never 500 the stream
-                yield f"event: streamerror\ndata: {_json.dumps(str(e))}\n\n"
+            # Encoded on the worker thread with the pull it came from, so a
+            # serialization failure takes the same streamerror path as a failed pull.
+            encoded = await _pull_or_exit(
+                lambda: _json.dumps(
+                    impl.list_campaigns(
+                        ListCampaignsRequest(limit=100, offset=0)).model_dump(),
+                    default=str))
+            if encoded is None:  # shutting down — close the stream, don't wait
+                return
+            if isinstance(encoded, Exception):  # surface, never 500 the stream
+                yield f"event: streamerror\ndata: {_json.dumps(str(encoded))}\n\n"
                 return
             if encoded != last:
                 last = encoded
@@ -911,6 +957,24 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.shutdown import \
+        begin_shutdown  # pylint: disable=import-outside-toplevel
+
+    class _Server(uvicorn.Server):
+        """uvicorn server that announces the shutdown before it starts winding down.
+
+        ``handle_exit`` runs in the signal handler — the first moment the process
+        knows a Ctrl+C happened, ahead of the graceful-shutdown clock. Raising the
+        process-wide flag here is what lets blocking I/O several layers down (an S3
+        read retrying over a ``kubectl port-forward``) fail fast instead of repairing
+        a connection this process is about to close; see
+        :mod:`robovast.common.shutdown`.
+        """
+
+        def handle_exit(self, sig, frame):
+            begin_shutdown()
+            super().handle_exit(sig, frame)
+
     app = build_app(impl)
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs)", host, port)
     # Drive uvicorn via an explicit Server so the SSE generators can probe
@@ -920,7 +984,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     config = uvicorn.Config(app, host=host, port=port, log_level=log_level,
                             log_config=_quiet_access_log_config(),
                             timeout_graceful_shutdown=5)
-    server = uvicorn.Server(config)
+    server = _Server(config)
     app.state.should_exit = lambda: server.should_exit
     server.run()
 

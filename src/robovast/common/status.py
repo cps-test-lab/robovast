@@ -291,6 +291,13 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     "Available configs:" list), then the tail of the traceback for genuine bugs.
     Shared by the local worker and the in-process cluster worker so both record
     failures the same way.
+
+    The frames are formatted *without* the trailing ``Type: message`` line, because
+    that line is the message already printed above it: appending the raw
+    ``format_exception`` output made every recorded failure state its reason twice,
+    and a long message (the version-1 migration text runs some twenty lines) then
+    consumed the whole ``tail_lines`` budget, so the duplicate crowded out the very
+    frames the tail exists to show.
     """
     import traceback
     message = str(exc) or exc.__class__.__name__
@@ -299,6 +306,11 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     # trace in the durable record would only be noise.
     if not getattr(exc, "include_traceback", True):
         return message
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    tb_tail = "".join(tb.splitlines(keepends=True)[-tail_lines:])
+    parts = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    # The final element(s) are exactly the "Type: message" block; a chained cause
+    # keeps its own, which names a *different* failure and is worth reading.
+    final = traceback.format_exception_only(type(exc), exc)
+    if len(parts) > len(final) and parts[-len(final):] == final:
+        parts = parts[:-len(final)]
+    tb_tail = "".join("".join(parts).splitlines(keepends=True)[-tail_lines:])
     return f"{message}\n\n{tb_tail}".strip()

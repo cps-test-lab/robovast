@@ -295,6 +295,7 @@ class ClusterService(LocalTransport):
         matches the live endpoint, another caller already rotated the forward since —
         return the fresh endpoint untouched instead of tearing it down again.
         """
+        from robovast.common.shutdown import is_shutting_down
         from robovast.execution.cluster_execution.bucket_ops import \
             open_minio_port_forward
         with self._pf_lock:
@@ -306,6 +307,13 @@ class ClusterService(LocalTransport):
             elif self._minio_pf is not None and self._minio_pf.poll() is not None:
                 self._minio_pf = None  # forward died; drop it and reopen below
             if self._minio_pf is None:
+                # Opening one now would hand the process a kubectl child it is no
+                # longer around to reap: shutdown() has closed (or is closing) the
+                # forward, and a late caller — an in-flight S3 read on a worker
+                # thread — would resurrect it and leak the tunnel past exit.
+                if is_shutting_down():
+                    raise RuntimeError(
+                        "service is shutting down; not opening a MinIO port-forward")
                 self._minio_pf, port = open_minio_port_forward(
                     self.namespace, self.kube_context)
                 self._minio_pf_endpoint = f"http://localhost:{port}"
@@ -716,27 +724,37 @@ class ClusterService(LocalTransport):
         return state
 
     def _build_context(self, request):
-        """Resolve (spec, project_dir, cfg, registry) for a build request.
+        """Resolve (specs, project_dir, cfg, registry) for a build request.
 
-        Raises ``ValueError`` (→ 400) with an actionable message when the project
-        has no ``build:`` section, the section is invalid, or the deployment has no
-        registry configured (registry details live only in the cluster config).
+        *specs* maps container name → :class:`BuildSpec`: a campaign may build several
+        images. Raises ``ValueError`` (→ 400) with an actionable message when nothing
+        needs building, a container's package lists are invalid, or the deployment has
+        no registry configured (registry details live only in the cluster config).
         """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
-        from robovast.service.image_build import (extract_build_spec,
+        from robovast.service.image_build import (extract_build_specs,
                                                    validate_build_spec)
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
-        spec = extract_build_spec(campaign_config)
-        if spec is None:
+        specs = extract_build_specs(campaign_config)
+        if not specs:
             raise ValueError(
-                "project has no 'build:' section — nothing to build (set a build: "
-                "section and execution.image: build:<tag>)")
+                "nothing to build: no container adds system_packages or "
+                "python_packages, so every image is used as declared")
+        wanted = getattr(request, "container", None)
+        if wanted:
+            if wanted not in specs:
+                raise ValueError(
+                    f"container '{wanted}' builds no image; the ones that do are: "
+                    + ", ".join(sorted(specs)))
+            specs = {wanted: specs[wanted]}
         project_dir = Path(project.config_path).resolve().parent
-        problems = validate_build_spec(spec, project_dir)
-        if problems:
-            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
+        for name, spec in specs.items():
+            problems = validate_build_spec(spec, project_dir)
+            if problems:
+                raise ValueError(f"invalid execution.containers.{name}:\n  - "
+                                 + "\n  - ".join(problems))
         cfg = self._cluster_config()
         registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
@@ -748,7 +766,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution.cluster_image_build import \
             build_context_bucket
         bucket = build_context_bucket(cfg)
-        return project, campaign_config, spec, project_dir, cfg, registry, bucket
+        return project, campaign_config, specs, project_dir, cfg, registry, bucket
 
     def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
         """Return (concrete_registry_ref, image_hash) for a project's build image."""
@@ -763,9 +781,16 @@ class ClusterService(LocalTransport):
         return ref, image_hash
 
     def build_image(self, request):
-        (_project, _cc, spec, project_dir, cfg, registry, bucket) = \
+        from robovast.common.config import SCENARIO_CONTAINER
+        (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
             self._build_context(request)
-        return self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+        refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+                for name, spec in specs.items()}
+        # Every build is started; the handle names one. Prefer the container the
+        # scenario runs in, and carry the rest so the others can still be polled.
+        primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))
+        primary.builds = {name: ref.build_id for name, ref in refs.items()}
+        return primary
 
     def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
@@ -775,7 +800,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         from robovast.service.image_build import generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
-        from robovast.common.config import BUILD_IMAGE_PREFIX
+        from robovast.common.execution import BUILD_IMAGE_PREFIX
         from robovast.common.execution import resolve_build_base_image
 
         image_ref, image_hash = self._resolve_build_ref(spec, project_dir, registry)
@@ -1159,45 +1184,47 @@ class ClusterService(LocalTransport):
         which reads as a RoboVAST bug rather than as something to go and configure.
         """
         from robovast.common.errors import CampaignConfigError
-        from robovast.service.image_build import (extract_build_spec,
+        from robovast.service.image_build import (extract_build_specs,
                                                   validate_build_spec)
-        spec = extract_build_spec(campaign_config)
-        if spec is None:
+        specs = extract_build_specs(campaign_config)
+        if not specs:
             return None
         project_dir = Path(project.config_path).resolve().parent
-        problems = validate_build_spec(spec, project_dir)
-        if problems:
-            raise CampaignConfigError(
-                "invalid build: section:\n  - " + "\n  - ".join(problems))
+        for name, spec in specs.items():
+            problems = validate_build_spec(spec, project_dir)
+            if problems:
+                raise CampaignConfigError(
+                    f"invalid execution.containers.{name}:\n  - " + "\n  - ".join(problems))
         cfg = self._cluster_config()
         registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
             raise CampaignConfigError(
-                "execution.image is a build:<tag> ref but no container registry is "
+                "this campaign builds a container image, but no container registry is "
                 "configured for this cluster (see 'vast exec cluster setup').")
-        return spec, project_dir, cfg, registry
+        return specs, project_dir, cfg, registry
 
-    def _start_build_image(self, project, campaign_config):
-        """Submit (or join) the in-cluster BuildKit Job for this campaign's image.
+    def _start_build_images(self, project, campaign_config) -> list:
+        """Submit (or join) an in-cluster BuildKit Job per image this campaign builds.
 
-        Returns as soon as the build has a handle; ``LocalTransport._await_build_image``
-        waits on it over the interface, so both lanes share one wait loop.
+        Returns as soon as each build has a handle; ``LocalTransport._await_build_image``
+        waits on them over the interface, so both lanes share one wait loop.
         """
         resolved = self._campaign_build_context(project, campaign_config)
         if resolved is None:
-            return None
-        spec, project_dir, cfg, registry = resolved
+            return []
+        specs, project_dir, cfg, registry = resolved
         from robovast.execution.cluster_execution.cluster_image_build import \
             build_context_bucket
-        return self._start_cluster_build(spec, project_dir, cfg, registry,
-                                         build_context_bucket(cfg))
+        bucket = build_context_bucket(cfg)
+        return [self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+                for spec in specs.values()]
 
-    def _resolve_built_image(self, project, campaign_config) -> str:
-        """The concrete registry ref to pin as the campaign's explicit image."""
-        spec, project_dir, _cfg, registry = self._campaign_build_context(
+    def _resolve_built_images(self, project, campaign_config) -> dict:
+        """Concrete registry refs to pin, by container name."""
+        specs, project_dir, _cfg, registry = self._campaign_build_context(
             project, campaign_config)
-        image_ref, _hash = self._resolve_build_ref(spec, project_dir, registry)
-        return image_ref
+        return {name: self._resolve_build_ref(spec, project_dir, registry)[0]
+                for name, spec in specs.items()}
 
     # ``list_campaigns`` is inherited from LocalTransport. Its id set is "on disk ∪ durable
     # ∪ being driven", and this lane contributes the middle one via

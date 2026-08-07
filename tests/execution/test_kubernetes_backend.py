@@ -155,21 +155,19 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
     monkeypatch.setattr("robovast.common.execution.create_execution_yaml",
                         lambda runs, out, **kw: calls.append((runs, out, kw)))
     monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend.resolve_robovast_image",
-        lambda **kw: "img:test")
-    monkeypatch.setattr(
         BatchJobRunner, "for_batch",
         classmethod(lambda cls, **kw: types.SimpleNamespace(
             run_batch_in_pod=lambda campaign_root, whole_campaign=False: None)))
 
-    _backend().run_batch({"execution": {"image": "img:test"}},
-                         campaign_root=str(tmp_path), batch_tag="b", runs=3,
-                         options=RunOptions())
+    # The declared image is enough: resolution needs no env when the campaign names one.
+    _backend().run_batch(
+        {"execution": {"containers": {"scenario": {"image": "img:test"}}}},
+        campaign_root=str(tmp_path), batch_tag="b", runs=3, options=RunOptions())
 
     assert len(calls) == 1
     runs, out, kw = calls[0]
     assert runs == 3 and out == str(tmp_path)
-    assert kw["execution_params"] == {"image": "img:test"}
+    assert kw["execution_params"] == {"containers": {"scenario": {"image": "img:test"}}}
 
 
 def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):

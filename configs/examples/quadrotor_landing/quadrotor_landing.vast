@@ -1,4 +1,4 @@
-version: 1
+version: 2
 metadata:
   name: quadrotor_landing
 # Batch-mode example (no search block). Run with:
@@ -26,7 +26,9 @@ configuration:
       name: descent_rate
       values: [1.5, 2.5]
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
   runs: 5
   scenario_file: scenario.osc
   run_files:
@@ -50,29 +52,29 @@ evaluation:
 # table; `timeline` points the playback clock at its `t` column. The same generic panels
 # that render nav runs render this one -- no source-specific code.
 visualization:
-  timeline: { table: trajectory, time_column: t }
+  timeline: {table: trajectory, time_column: t}
   panels:
   - playback:
   - scene:
       title: Descent (x vs altitude)
-      position: { anchor: center, width: 460, height: 420 }
-      source: { table: trajectory, time_column: t }
+      position: {anchor: center, width: 460, height: 420}
+      source: {table: trajectory, time_column: t}
       x: x
       y: z
       trail: true
   - timeseries:
       title: Signals
-      position: { anchor: bottom-right, width: 480, height: 240 }
-      source: { table: trajectory, time_column: t }
+      position: {anchor: bottom-right, width: 480, height: 240}
+      source: {table: trajectory, time_column: t}
       series:
-      - { column: z, label: altitude }
-      - { column: tilt, label: tilt }
-      - { column: vz, label: descent vel }
+      - {column: z, label: altitude}
+      - {column: tilt, label: tilt}
+      - {column: vz, label: descent vel}
   - state:
       title: Now
-      position: { anchor: top-left, width: 240 }
-      source: { table: trajectory, time_column: t }
+      position: {anchor: top-left, width: 240}
+      source: {table: trajectory, time_column: t}
       fields:
-      - { column: z, label: height, unit: m }
-      - { column: tilt, label: tilt, unit: rad }
-      - { column: vz, label: descent, unit: m/s }
+      - {column: z, label: height, unit: m}
+      - {column: tilt, label: tilt, unit: rad}
+      - {column: vz, label: descent, unit: m/s}

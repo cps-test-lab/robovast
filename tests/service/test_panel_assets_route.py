@@ -52,7 +52,7 @@ def _make_campaign(tmp_path):
     cfg = tmp_path / "camp-1" / "_config"
     (cfg / "panels" / "my").mkdir(parents=True)
     (cfg / "camp.vast").write_text(
-        "version: 1\n"
+        "version: 2\n"
         "visualization:\n"
         "  panels:\n"
         "  - playback:\n"

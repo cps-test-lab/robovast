@@ -83,14 +83,19 @@ def test_the_surface_offers_no_way_to_reach_a_campaigns_container():
     """A campaign in flight is provenance-recorded compute; attaching would perturb it.
 
     ``campaign_id`` here names a *config source* (its read-only ``_config/``), never a
-    container — so there must be no ``job_name``/pod selector on this tool.
+    container — so there must be no pod/job selector on this tool.
+
+    ``container`` is **not** such a selector, which is worth stating because the word
+    invites the assumption: it picks which of the campaign's declared containers a fresh
+    throwaway one is started *from* (``scenario`` / ``simulation`` / ``sut``). Nothing
+    here can reach a container a campaign is running.
     """
     import inspect
     params = inspect.signature(execution.exec_in_container).parameters
     assert "job_name" not in params
     assert "pod" not in params
-    assert "container" not in params
     assert "campaign_id" in params
+    assert "container" in params
 
 
 # -- routing ----------------------------------------------------------------

@@ -1,0 +1,175 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""The ``robovast.simulators`` backend API.
+
+Driven by a **stub** backend rather than the real robosito one, which is itself the
+property under test: RoboVAST's own suite must never import a simulator. The stub's
+config key is deliberately ``stage``, not ``world`` or ``config``, so anything that
+hard-codes robosito's vocabulary fails here.
+"""
+
+import pytest
+from pydantic import BaseModel, ConfigDict
+
+from robovast.common.containers import plan_containers
+from robovast.common.execution import scenario_env
+from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED,
+                                        SimulatorBackend, apply_backend,
+                                        shape_for)
+
+
+class StageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stage: str
+    fidelity: str = "low"
+
+
+class StubBackend(SimulatorBackend):
+    CONFIG_CLASS = StageConfig
+    SUPPORTED_SHAPES = (SHAPE_STEPPED, SHAPE_ROS)
+
+    def containers(self, cfg, execution):
+        if shape_for(execution.get("mode")) == SHAPE_ROS:
+            return {"simulation": {"image": "vendor/sim:1",
+                                   "command": ["sim", "--stage", cfg.stage]}}
+        return {"scenario": {"image": "combined/sim:1"}}
+
+    def simulation_ref(self, cfg, execution):
+        return "stub.adapter:StubSim"
+
+    def env(self, cfg, execution):
+        return {"STUB_STAGE": cfg.stage, "STUB_FIDELITY": cfg.fidelity}
+
+    def produces_run_capture(self, cfg, execution):
+        return True
+
+
+class RosOnlyBackend(SimulatorBackend):
+    """Like a simulator with no SimulationInterface at all -- Gazebo, Isaac."""
+    SUPPORTED_SHAPES = (SHAPE_ROS,)
+
+    def containers(self, cfg, execution):
+        return {"simulation": {"image": "gz:harmonic", "command": ["gz", "sim", "-s"]}}
+
+
+@pytest.fixture(autouse=True)
+def _register(monkeypatch):
+    """Resolve 'stub'/'rosonly' without installing an entry point."""
+    import robovast.common.simulators as mod
+    backends = {"stub": StubBackend, "rosonly": RosOnlyBackend}
+    monkeypatch.setattr(mod, "resolve_backend",
+                        lambda name, base_dir="": backends[name]())
+
+
+def _execution(mode="base", **sim):
+    return {"mode": mode, "runs": 1,
+            "containers": {"simulation": dict(backend="stub", **sim)}}
+
+
+# -- what a backend contributes ----------------------------------------------------
+
+def test_the_stepped_shape_folds_the_simulator_into_the_scenario_container():
+    ex = apply_backend(_execution("base", stage="cell.usd"))
+    plan = plan_containers(ex)
+    assert plan.names() == ["scenario"]
+    assert plan.main.image == "combined/sim:1"
+    # The name still resolves -- a caller never has to know which shape it is looking at.
+    assert plan.by_name("simulation").name == "scenario"
+
+
+def test_the_ros_shape_gives_the_simulator_its_own_container():
+    ex = apply_backend(_execution("ros2", stage="cell.usd"))
+    plan = plan_containers(ex)
+    assert plan.names() == ["scenario", "simulation"]
+    sim = plan.by_name("simulation")
+    assert sim.image == "vendor/sim:1"
+    assert sim.command == ["sim", "--stage", "cell.usd"]
+
+
+def test_a_simulation_ref_is_only_for_the_stepped_shape():
+    """In the ROS shape the simulator is a process, not a SimulationInterface -- which is
+    why a simulator that has none fits the API unchanged."""
+    assert apply_backend(_execution("base", stage="s")).get("simulation") == \
+        "stub.adapter:StubSim"
+    assert apply_backend(_execution("ros2", stage="s")).get("simulation") is None
+
+
+def test_a_backend_serves_only_the_shapes_it_declares():
+    ex = {"mode": "base", "containers": {"simulation": {"backend": "rosonly"}}}
+    with pytest.raises(ValueError, match="does not support the stepped shape"):
+        apply_backend(ex)
+
+
+def test_a_ros_only_backend_needs_no_simulation_interface():
+    ex = apply_backend({"mode": "ros2",
+                        "containers": {"simulation": {"backend": "rosonly"}}})
+    assert ex.get("simulation") is None
+    assert plan_containers(ex).by_name("simulation").image == "gz:harmonic"
+
+
+# -- the campaign always wins -------------------------------------------------------
+
+def test_an_authored_image_beats_the_backend_default():
+    ex = apply_backend({"mode": "ros2", "containers": {
+        "simulation": {"backend": "stub", "stage": "s", "image": "mine:1"}}})
+    assert plan_containers(ex).by_name("simulation").image == "mine:1"
+
+
+def test_an_authored_env_value_beats_the_backend():
+    """A backend supplies defaults it knows, not decisions it takes away.
+
+    ``scenario_env`` carries only *derived* variables; a campaign's own ``execution.env``
+    is emitted separately by each lane. So winning here means the backend's value is
+    **withheld** -- emitting it too would leave two entries for one name, resolved by
+    emission order, which is exactly the ambiguity this precedence exists to remove.
+    """
+    ex = apply_backend(_execution("base", stage="cell.usd"))
+    ex["env"] = [{"STUB_FIDELITY": "high"}]
+    env = scenario_env({"execution": ex})
+    assert "STUB_FIDELITY" not in env        # authored: left to execution.env alone
+    assert env["STUB_STAGE"] == "cell.usd"   # backend-supplied, untouched
+
+
+def test_backend_env_reaches_scenario_env():
+    ex = apply_backend(_execution("base", stage="cell.usd"))
+    env = scenario_env({"execution": ex})
+    assert env["STUB_STAGE"] == "cell.usd"
+    assert env["SIMULATION"] == "stub.adapter:StubSim"
+
+
+def test_extending_a_folded_simulation_container_still_builds():
+    """The campaign's own plugins must reach the container the simulator runs in."""
+    ex = apply_backend(_execution("base", stage="s", python_packages=["./mine"]))
+    plan = plan_containers(ex)
+    assert plan.main.builds
+    assert plan.main.python_packages == ("./mine",)
+
+
+# -- the backend owns its own vocabulary --------------------------------------------
+
+def test_an_undeclared_key_is_rejected_naming_the_backend():
+    with pytest.raises(ValueError, match="backend 'stub'"):
+        apply_backend(_execution("base", stage="s", wrold="typo"))
+
+
+def test_a_missing_required_key_is_rejected_naming_the_backend():
+    with pytest.raises(ValueError, match="backend 'stub'"):
+        apply_backend(_execution("base"))
+
+
+def test_robovast_keys_are_not_offered_to_the_backend():
+    """image/command/resources are RoboVAST's; a backend's CONFIG_CLASS forbids extras,
+    so handing them over would reject every campaign that sets one."""
+    ex = apply_backend(_execution("base", stage="s", image="mine:1",
+                                  resources={"cpu": 2}))
+    assert plan_containers(ex).main.image == "mine:1"
+
+
+def test_no_backend_is_a_no_op():
+    ex = {"mode": "base", "containers": {"scenario": {"image": "a"}}}
+    assert apply_backend(ex) is ex
+
+
+def test_shape_is_derived_from_mode_not_declared_twice():
+    assert shape_for("ros2") == SHAPE_ROS
+    assert shape_for("base") == SHAPE_STEPPED

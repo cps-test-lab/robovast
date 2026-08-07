@@ -13,7 +13,7 @@ import click
 
 from robovast.common.cli.project_config import resolve_vast_file
 
-_VAST = "version: 1\nexecution:\n  image: i\n  runs: 1\n"
+_VAST = "version: 2\nexecution:\n  image: i\n  runs: 1\n"
 
 
 def _write_project(directory, config_name, write_config=True):

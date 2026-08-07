@@ -1100,6 +1100,8 @@ export interface components {
              * @default
              */
             config_path: string;
+            /** Container */
+            container?: string | null;
             /** Workspace Id */
             workspace_id: string;
         };
@@ -1515,6 +1517,11 @@ export interface components {
              */
             config_path: string;
             /**
+             * Container
+             * @default
+             */
+            container: string;
+            /**
              * Keep Alive
              * @default false
              */
@@ -1664,6 +1671,13 @@ export interface components {
         ImageBuildRef: {
             /** Build Id */
             build_id: string;
+            /**
+             * Builds
+             * @default {}
+             */
+            builds: {
+                [key: string]: unknown;
+            };
             /**
              * Cached
              * @default false

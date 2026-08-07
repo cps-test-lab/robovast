@@ -21,9 +21,9 @@ from robovast.execution.cluster_execution.cluster_setup import (
 _JOBS = {'node-pool': 'primary'}
 _CONTROL = {'node-pool': 'extra'}
 
-_VAST = """version: 1
+_VAST = """version: 2
 execution:
-  image: i
+  containers: {scenario: {image: i}}
   runs: 1
   kubernetes:
     jobs:

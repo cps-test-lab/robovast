@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import fnmatch
+import json
 import logging
 import os
 import sys
@@ -22,11 +23,12 @@ import tempfile
 
 from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
-                             normalize_secondary_containers,
-                             prepare_campaign_configs, scenario_env)
+                             plan_containers, prepare_campaign_configs,
+                             scenario_env)
 from robovast.common.cli import get_project_config
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import declared_per_run_seconds
+from robovast.common.config import (SCENARIO_CONTAINER,
+                                    declared_per_run_seconds)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents,
@@ -71,7 +73,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
     docker_image = resolve_robovast_image(
-        required=True, config_image=execution_parameters.get("image"))
+        required=True, config_image=_declared_scenario_image(execution_parameters))
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir
@@ -402,7 +404,7 @@ def _build_packed_compose_yaml(
     main_cpu,
     main_memory,
     main_gpu,
-    secondary_containers,
+    plan,
     use_gui_block,
     skip_resource_allocation=True,
     scenario_execution_params='',
@@ -417,12 +419,16 @@ def _build_packed_compose_yaml(
     mounted under ``/config/<config-name>/`` to avoid collisions. Used for both
     single-config (one config per job) and packed (several configs per job) runs.
 
-    Secondary containers (e.g. a ``scenario_execution_server`` simulation server)
-    are started once and span the whole job: the main ``scenario_execution``
-    drives a per-config ``reset(params)`` over the ``/ipc`` socket between the
-    job's configs. They receive the same packed param file and namespaced
-    per-config file mounts as the main container so file-valued reset parameters
-    resolve identically.
+    *plan* is the campaign's :class:`~robovast.common.containers.ContainerPlan`: its
+    main container runs the scenario, and every other one becomes a sidecar sharing the
+    main container's network and IPC namespaces.
+
+    A sidecar with no ``command`` runs ``secondary_entrypoint.sh``, i.e. a
+    ``scenario_execution_server`` the scenario drives over the ``/ipc/<name>`` socket
+    with ``remote()``. One that declares a command runs that instead -- how a simulator
+    or a stack that RoboVAST does not drive is started. Either way it receives the same
+    packed param file and namespaced per-config file mounts as the main container, so
+    file-valued parameters resolve identically on both sides.
     """
 
     def quote(s):
@@ -433,7 +439,8 @@ def _build_packed_compose_yaml(
     scenario_env_vars = dict(scenario_env_vars or {})
     scenario_file_name = scenario_env_vars.get('SCENARIO_FILE', 'scenario.osc')
 
-    has_secondaries = bool(secondary_containers)
+    sidecars = plan.sidecars
+    has_secondaries = bool(sidecars)
 
     def _packed_config_mounts():
         """Volume mount lines shared by the main and secondary containers."""
@@ -528,14 +535,14 @@ def _build_packed_compose_yaml(
     lines.append("    tty: ${ROBOVAST_TTY}")
     lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
-    for sc in secondary_containers:
-        sc_name = sc['name']
-        sc_cpu = sc['resources'].get('cpu')
-        sc_memory = sc['resources'].get('memory')
-        sc_gpu = sc['resources'].get('gpu')
+    for sc in sidecars:
+        sc_name = sc.name
+        sc_cpu = sc.resources.get('cpu')
+        sc_memory = sc.resources.get('memory')
+        sc_gpu = sc.resources.get('gpu')
 
         lines.append(f"  {sc_name}:")
-        lines.append(f"    image: ${{DOCKER_IMAGE}}")
+        lines.append(f"    image: {sc.image}")
         lines.append(f"    container_name: {sc_name}")
         if sc_gpu:
             lines.append("    runtime: nvidia")
@@ -574,7 +581,10 @@ def _build_packed_compose_yaml(
         lines.append(f"    user: \"{uid}:{gid}\"")
         lines.append("    stop_signal: SIGINT")
         lines.append("    stop_grace_period: 5s")
-        lines.append("    command: ${SECONDARY_COMMAND}")
+        if sc.command:
+            lines.append("    command: " + json.dumps(list(sc.command)))
+        else:
+            lines.append("    command: ${SECONDARY_COMMAND}")
         lines.append("    tty: ${ROBOVAST_TTY}")
         lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
@@ -748,10 +758,16 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
     return s
 
 
+def _declared_scenario_image(execution_params: dict):
+    """The image declared for the container the scenario runs in, if any."""
+    containers = execution_params.get("containers") or {}
+    return (containers.get(SCENARIO_CONTAINER) or {}).get("image")
+
+
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False, debug=False,
-                                job_prefix='', gui=False):
+                                job_prefix='', gui=False, built_images=None):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -760,7 +776,10 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         config_path_result: Path to the config results directory
         pre_command: Command to run before execution (optional)
         post_command: Command to run after execution (optional)
-        docker_image: Docker image to use
+        docker_image: Image for the container the scenario runs in (an explicit
+            ``--image`` / the resolved default). Sidecars come from the plan.
+        built_images: Concrete refs for containers whose image was built, by container
+            name. A container absent from here runs its declared image verbatim.
         results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
         gui: Whether this run has the host display wired in. Selects the
@@ -779,8 +798,12 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     uid = run_as_user
     gid = run_as_user
 
-    # Resources for main container
-    resources = execution_params.get("resources") or {}
+    # Every container this campaign runs, with its image already resolved. One map,
+    # shared with the cluster lane and exec_in_container -- a second lookup here would be
+    # free to disagree with what the pod actually starts.
+    plan = plan_containers(execution_params, images=built_images,
+                           explicit_main=docker_image)
+    resources = plan.main.resources or {}
     main_cpu = resources.get("cpu")
     main_memory = resources.get("memory")
     main_gpu = resources.get("gpu")
@@ -799,10 +822,6 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     declared_timeout = declared_per_run_seconds(execution_params)
     runs_per_job = int(execution_params.get("runs_per_job") or 1)
     step_timeout_s = declared_timeout * runs_per_job if declared_timeout else None
-
-    # Secondary containers
-    secondary_containers = execution_params.get("secondary_containers") or []
-    normalized_secondary = normalize_secondary_containers(secondary_containers)
 
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
@@ -864,7 +883,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         s += 'fi\n\n'
         return s
 
-    has_secondaries = bool(normalized_secondary)
+    has_secondaries = bool(plan.sidecars)
 
     # Every run goes through the job mechanism: runs_per_job=1 yields one job
     # per (config, run), >1 packs several configs per job. Both produce the same
@@ -922,7 +941,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             job=job, param_file_rel=param_rel, run_files=run_files, env_vars=env_vars,
             pre_command=pre_command, post_command=post_command, uid=uid, gid=gid,
             main_cpu=main_cpu, main_memory=main_memory, main_gpu=main_gpu,
-            secondary_containers=normalized_secondary, use_gui_block=True,
+            plan=plan, use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
             scenario_env_vars=scenario_env_vars,

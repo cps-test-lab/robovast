@@ -12,6 +12,7 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import Editor from '@monaco-editor/react'
 import { robovast } from '@/lib/robovastClient'
+import { ErrorText } from '@/components/StatusView'
 
 // The 'Retrigger postprocessing' modal. A campaign is self-contained — it carries the `.vast`
 // that ran — so the only way to compute different metrics used to be hand-editing that file.
@@ -88,7 +89,9 @@ export function PostprocessingDialog({
             progress in the campaign view.
           </Typography>
           {src.isError ? (
-            <Alert severity="error">{(src.error as Error).message}</Alert>
+            <Alert severity="error">
+              <ErrorText>{(src.error as Error).message}</ErrorText>
+            </Alert>
           ) : null}
           <Paper variant="outlined" sx={{ height: 360, overflow: 'hidden' }}>
             <Editor
@@ -107,10 +110,14 @@ export function PostprocessingDialog({
             />
           </Paper>
           {saveAndRerun.isError ? (
-            <Alert severity="error">{(saveAndRerun.error as Error).message}</Alert>
+            <Alert severity="error">
+              <ErrorText>{(saveAndRerun.error as Error).message}</ErrorText>
+            </Alert>
           ) : result && !result.ok ? (
             // A successful dispatch closes the dialog; only the busy guard lands here.
-            <Alert severity="warning">{result.message ?? 'Could not start the rerun.'}</Alert>
+            <Alert severity="warning">
+              <ErrorText>{result.message ?? 'Could not start the rerun.'}</ErrorText>
+            </Alert>
           ) : null}
         </Stack>
       </DialogContent>

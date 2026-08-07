@@ -55,11 +55,12 @@ DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
 DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
 
 
-# A symbolic ``execution.image`` that points at the image produced by the
-# ``build:`` section (see ``robovast.common.config.BUILD_IMAGE_PREFIX``). Kept in
-# sync here so this module needs no import from ``config`` (which would risk a
-# cycle). ``build:<tag>`` is resolved to a concrete image *before* it reaches a
-# pod/compose spec, by the build lifecycle (which knows the registry + digest).
+# Marks an image ref that is *produced by a build* rather than pulled: ``build:<name>``,
+# where the name is the container whose packages produced it. Internal only -- no .vast
+# writes one, and it is resolved to a concrete image before reaching a pod/compose spec
+# by the build lifecycle (which knows the registry + digest). It survives as the guard
+# that catches an unresolved ref reaching a container spec, where it would otherwise be
+# used verbatim as an invalid image name.
 BUILD_IMAGE_PREFIX = "build:"
 
 
@@ -438,6 +439,21 @@ def scenario_env(campaign_data):
     # than failing (both runners use parse_known_args), so the run still succeeds; it just
     # produces no behaviors.jsonl.
     env['BT_LOG'] = 'true' if execution.get("bt_log", True) else 'false'
+
+    # A simulator backend's environment, resolved *here* rather than by each emitter.
+    # The three emitters disagreed about precedence -- compose let the later block win,
+    # the cluster emitted duplicate keys and left it to the runtime, and container-exec
+    # let the user win -- so a backend contribution would have meant something different
+    # on each lane. One dict, one rule: the campaign's own execution.env wins, because a
+    # backend supplies defaults it knows, not decisions it takes away.
+    backend_env = execution.get("_backend_env") or {}
+    if backend_env:
+        authored = set()
+        for entry in (execution.get("env") or []):
+            authored.update(entry.keys() if isinstance(entry, dict) else [entry])
+        for key, value in backend_env.items():
+            if key not in authored:
+                env[key] = str(value)
     return env
 
 
@@ -1236,13 +1252,26 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     execution_yaml_path = os.path.join(execution_dir, "execution.yaml")
     execution_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    image = execution_params.get('image')
+    # 'image' stays the container the scenario ran in -- postprocessing and the store
+    # read it as "the campaign's image". 'images' records every container, because with
+    # a simulator or a system under test in its own container that single field no
+    # longer describes what ran.
+    # Imported here, not at module scope: this module is kept free of ``config``
+    # imports to avoid a cycle (see BUILD_IMAGE_PREFIX above, duplicated for the same
+    # reason). One name is not worth duplicating a third time.
+    from robovast.common.config import \
+        SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+    containers = execution_params.get('containers') or {}
+    images = {name: (block or {}).get('image')
+              for name, block in containers.items() if (block or {}).get('image')}
+    image = images.get(SCENARIO_CONTAINER)
     execution_data = {
         'execution_time': execution_time,
         'robovast_version': get_app_version(),
         'runs': runs,
         'execution_type': 'cluster',
         'image': image,
+        'images': images,
         'image_revision': image_digest or _get_image_revision(image),
     }
 

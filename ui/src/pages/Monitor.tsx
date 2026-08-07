@@ -5,6 +5,7 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
+import Collapse from '@mui/material/Collapse'
 import IconButton from '@mui/material/IconButton'
 import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
@@ -18,6 +19,8 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
+import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import Typography from '@mui/material/Typography'
 import {
@@ -29,7 +32,7 @@ import {
 } from '@/lib/robovastClient'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
-import { StatusView } from '@/components/StatusView'
+import { ErrorText, StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
@@ -46,8 +49,76 @@ const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
   'initializing', 'building', 'starting', 'plugin install', 'variation',
 ])
 
-// One campaign row: fetches its own live Status and polls until the campaign reaches a terminal phase.
-function CampaignCard({ summary }: { summary: CampaignSummary }) {
+// A post-run step that failed (postprocessing, upload-to-share). The headline names the step and
+// what to do about it, and is always visible — that is what the phase indicator's warning refers
+// to. The backend's text below it opens by itself only on the newest campaign: on a long list of
+// finished campaigns, every older traceback expanded turns the page into a wall of stack frames
+// nobody asked for. Anyone who wants an old one opens it.
+//
+// What toggles it is deliberately not the whole bar. The headline and the chevron always do,
+// either direction. The bar's empty space opens it while collapsed — a big target for the common
+// direction — but does nothing once open, and the error text itself never toggles at all: that is
+// the part people drag across to copy a path out of, and a collapse mid-selection would take the
+// text away as they read it.
+function StepFailure({
+  headline,
+  error,
+  defaultOpen,
+}: {
+  headline: string
+  error: string
+  defaultOpen: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 1, cursor: open ? 'default' : 'pointer' }}
+      onClick={() => !open && setOpen(true)}
+      action={
+        <IconButton
+          color="inherit"
+          size="small"
+          aria-label={open ? 'Hide error details' : 'Show error details'}
+          aria-expanded={open}
+          // The bar's own handler ignores clicks while open, so this only guards the
+          // collapsed case, where both handlers would otherwise fire for one click.
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen((o) => !o)
+          }}
+        >
+          {open ? (
+            <KeyboardArrowUpRoundedIcon fontSize="small" />
+          ) : (
+            <KeyboardArrowDownRoundedIcon fontSize="small" />
+          )}
+        </IconButton>
+      }
+    >
+      {/* Not selectable: it is a click target, and a double-click meant as a toggle would
+          otherwise leave a word highlighted. The error text below stays selectable. */}
+      <Box
+        component="span"
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((o) => !o)
+        }}
+        sx={{ display: 'block', cursor: 'pointer', userSelect: 'none' }}
+      >
+        {headline}
+      </Box>
+      <Collapse in={open} unmountOnExit>
+        <ErrorText>{error}</ErrorText>
+      </Collapse>
+    </Alert>
+  )
+}
+
+// One campaign row: fetches its own live Status and polls until the campaign reaches a terminal
+// phase. `newest` is the top card in the (newest-first) list — the campaign the user is here to
+// watch. It is the only one whose post-run failures open by themselves; see StepFailure.
+function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: boolean }) {
   const qc = useQueryClient()
   const id = summary.campaign_id
 
@@ -59,13 +130,21 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   })
 
   // Live per-job listing (running count + the clickable jobs list). Polled while the
-  // campaign runs; one final read once it is terminal so the completed jobs still show.
+  // campaign runs.
+  const terminal = isTerminalPhase((status.data as Status | undefined)?.phase)
   const jobs = useQuery({
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
-    refetchInterval: () =>
-      isTerminalPhase((status.data as Status | undefined)?.phase) ? false : 2000,
+    refetchInterval: () => (terminal ? false : 2000),
   })
+
+  // Stopping the poll on its own leaves the last in-flight listing on screen forever —
+  // jobs that were still `running` up to one poll before the campaign ended keep their
+  // rows, so the live view never empties out. Read once more after the phase turns
+  // terminal to pick up their final state.
+  useEffect(() => {
+    if (terminal) qc.invalidateQueries({ queryKey: ['jobs', id] })
+  }, [terminal, id, qc])
 
   const stop = useMutation({
     mutationFn: () => robovast.stop(id),
@@ -151,6 +230,13 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   // prefer the live status, fall back to the list summary. Re-triggerable via the menu.
   const postprocError = status.data?.postprocessing_error ?? summary.postprocessing_error
   const shareError = status.data?.share_error ?? summary.share_error
+  // …and that failure must reach the phase indicator, which otherwise paints such a campaign
+  // green: `finished` describes the runs, not the results. Suppressed while running, where the
+  // error belongs to the attempt currently being retried.
+  const failedSteps = running
+    ? []
+    : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
+  const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
 
   // The postprocessed archive is streamed from the object store — only a cluster
   // service serves it (a local service's results are already on its filesystem).
@@ -160,7 +246,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
   return (
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
-        <PhaseDot phase={phase} />
+        <PhaseDot phase={phase} issue={stepIssue} />
         {phaseAge ? (
           <Typography variant="caption" color="text.secondary">
             {phaseAge}
@@ -263,53 +349,64 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         </Typography>
       ) : null}
 
+      {/* The headline stays one line and the backend's own text goes below it in ErrorText — a
+          traceback spliced into the middle of a sentence buries the advice that follows it. */}
       {stop.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
-          Stop failed: {(stop.error as Error).message}
+          Stop failed.
+          <ErrorText>{(stop.error as Error).message}</ErrorText>
         </Alert>
       ) : stop.data && !stop.data.ok ? (
         <Alert severity="warning" sx={{ mb: 1 }}>
-          {stop.data.message ?? 'Stop had no effect.'}
+          <ErrorText>{stop.data.message ?? 'Stop had no effect.'}</ErrorText>
         </Alert>
       ) : null}
 
       {del.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
-          Delete failed: {(del.error as Error).message}
+          Delete failed.
+          <ErrorText>{(del.error as Error).message}</ErrorText>
         </Alert>
       ) : null}
 
       {share.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
-          Upload-to-share failed: {(share.error as Error).message}
+          Upload-to-share failed.
+          <ErrorText>{(share.error as Error).message}</ErrorText>
         </Alert>
       ) : share.data && !share.data.ok ? (
         <Alert severity="warning" sx={{ mb: 1 }}>
-          {share.data.message ?? 'Upload-to-share had no effect.'}
+          <ErrorText>{share.data.message ?? 'Upload-to-share had no effect.'}</ErrorText>
         </Alert>
       ) : share.data?.ok ? (
         <Alert severity="success" sx={{ mb: 1 }}>
-          {share.data.message ?? 'Upload-to-share complete.'}
+          <ErrorText>{share.data.message ?? 'Upload-to-share complete.'}</ErrorText>
         </Alert>
       ) : null}
 
       {!running && postprocError ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          Postprocessing failed: {postprocError} — the runs finished; retrigger
-          postprocessing from the actions menu.
-        </Alert>
+        <StepFailure
+          headline={
+            'Postprocessing failed — the runs finished; retrigger postprocessing from the ' +
+            'actions menu.'
+          }
+          error={postprocError}
+          defaultOpen={newest}
+        />
       ) : null}
 
       {!running && shareError ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          Upload-to-share failed: {shareError} — retrigger it from the actions menu.
-        </Alert>
+        <StepFailure
+          headline="Upload-to-share failed — retrigger it from the actions menu."
+          error={shareError}
+          defaultOpen={newest}
+        />
       ) : null}
 
       {status.isError ? (
-        <Stack direction="row" spacing={1} alignItems="center">
-          <PhaseChip phase={phase} />
-          <Typography variant="caption" color="text.secondary">
+        <Stack direction="row" spacing={1} alignItems="flex-start">
+          <PhaseChip phase={phase} issue={stepIssue} />
+          <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
             no live status ({(status.error as Error).message})
           </Typography>
         </Stack>
@@ -317,7 +414,7 @@ function CampaignCard({ summary }: { summary: CampaignSummary }) {
         <StatusView status={status.data} jobs={jobs.data} startedAt={summary.started_at} liveOnly />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">
-          <PhaseChip phase={phase} />
+          <PhaseChip phase={phase} issue={stepIssue} />
           <Typography variant="caption" color="text.secondary">
             {summary.num_passed}/{summary.num_runs} passed
             {summary.num_failed ? ` · ${summary.num_failed} failed` : ''}
@@ -389,7 +486,10 @@ export function Monitor() {
       </Stack>
 
       {error ? (
-        <Alert severity="error">Could not reach the service: {error}</Alert>
+        <Alert severity="error">
+          Could not reach the service.
+          <ErrorText>{error}</ErrorText>
+        </Alert>
       ) : !data ? (
         <CircularProgress size={24} />
       ) : !data.campaigns.length ? (
@@ -397,8 +497,8 @@ export function Monitor() {
           No campaigns yet — start one from the Launcher.
         </Alert>
       ) : (
-        data.campaigns.map((c) => (
-          <CampaignCard key={c.campaign_id} summary={c} />
+        data.campaigns.map((c, i) => (
+          <CampaignCard key={c.campaign_id} summary={c} newest={i === 0} />
         ))
       )}
     </Stack>

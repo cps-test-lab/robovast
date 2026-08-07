@@ -27,20 +27,49 @@ const LIVE_PHASES = [
   'postprocessing', 'sharing',
 ]
 
-export function PhaseChip({ phase, size = 'small' }: { phase: string; size?: 'small' | 'medium' }) {
-  return <Chip size={size} label={phase} color={COLOR[phase] ?? 'default'} />
+// A campaign reaches `finished` as soon as its runs are done, so a failed post-run step
+// (postprocessing, upload-to-share) still leaves the phase green — the run data exists, but the
+// derived data the user came for does not. `issue` names that step: it downgrades the indicator to
+// warning and says so on the label, so a campaign missing its results never reads as a clean one.
+// Warning rather than error is deliberate — the runs really did finish, and the step is
+// re-triggerable from the actions menu.
+function issueColor(phase: string, issue?: string | null) {
+  return issue ? ('warning' as const) : (COLOR[phase] ?? 'default')
+}
+
+const issueTitle = (issue: string) =>
+  `The runs finished, but ${issue}. Retrigger it from the campaign's actions menu.`
+
+export function PhaseChip({
+  phase,
+  issue,
+  size = 'small',
+}: {
+  phase: string
+  issue?: string | null
+  size?: 'small' | 'medium'
+}) {
+  return (
+    <Chip
+      size={size}
+      label={issue ? `${phase} · ${issue}` : phase}
+      color={issueColor(phase, issue)}
+      title={issue ? issueTitle(issue) : undefined}
+    />
+  )
 }
 
 // The compact form of PhaseChip: a phase-colored bullet pill with the phase name
 // inside, sitting in front of a campaign name. The leading dot pulses while the
 // campaign is live so a running campaign is obvious at a glance.
-export function PhaseDot({ phase }: { phase: string }) {
+export function PhaseDot({ phase, issue }: { phase: string; issue?: string | null }) {
   const live = LIVE_PHASES.includes(phase)
-  const color =
-    COLOR[phase] && COLOR[phase] !== 'default' ? `${COLOR[phase]}.main` : 'text.disabled'
+  const tone = issueColor(phase, issue)
+  const color = tone !== 'default' ? `${tone}.main` : 'text.disabled'
   return (
     <Box
       component="span"
+      title={issue ? issueTitle(issue) : undefined}
       sx={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -70,7 +99,7 @@ export function PhaseDot({ phase }: { phase: string }) {
         }}
       />
       <Box component="span" sx={{ fontSize: '0.75rem', fontWeight: 600, lineHeight: 1 }}>
-        {phase}
+        {issue ? `${phase} · ${issue}` : phase}
       </Box>
     </Box>
   )

@@ -3,8 +3,10 @@
 from .common import (convert_dataclasses_to_dict, filter_configs,
                      get_scenario_parameters, is_scenario_parameter,
                      load_config)
-from .config import (VariationConfig, get_validated_config,
-                     normalize_secondary_containers)
+from .config import (CONTAINER_ROLES, SCENARIO_CONTAINER,
+                     SIMULATION_CONTAINER, SUT_CONTAINER, ContainerConfig,
+                     VariationConfig, get_validated_config)
+from .containers import ContainerPlan, PlannedContainer, plan_containers
 from .config_generation import execute_variation, generate_scenario_variations
 from .errors import CampaignConfigError, missing_input_error
 from .execution import (COMPAT_VERSION, check_campaign_inputs,
@@ -41,6 +43,13 @@ __all__ = [
     'is_campaign_dir',
     'generate_execution_yaml_script',
     'create_execution_yaml',
-    'normalize_secondary_containers',
     'COMPAT_VERSION',
+    'CONTAINER_ROLES',
+    'SCENARIO_CONTAINER',
+    'SIMULATION_CONTAINER',
+    'SUT_CONTAINER',
+    'ContainerConfig',
+    'ContainerPlan',
+    'PlannedContainer',
+    'plan_containers',
 ]

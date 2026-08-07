@@ -211,6 +211,21 @@ def test_start_without_description_sends_empty(service):
     assert req.description == ""
 
 
+def test_start_unescapes_html_escaped_description(service):
+    """A client that HTML-escapes prompt text must not leave "&gt;" in the stored
+    description, where it would show up verbatim in list_campaigns and the web UI."""
+    execution.start_campaign(description="wheels rebuilt post SIM_SUITE_-&gt;ROBOSITO_")
+    _name, req = service.calls[-1]
+    assert req.description == "wheels rebuilt post SIM_SUITE_->ROBOSITO_"
+
+
+def test_start_description_unescape_is_single_level(service):
+    """An escaped ampersand yields the literal entity, not a second round of decoding."""
+    execution.start_campaign(description="a &amp;gt; b &amp;&amp; c")
+    _name, req = service.calls[-1]
+    assert req.description == "a &gt; b && c"
+
+
 def test_start_rejects_overlong_description(service):
     """Refused before launch, with the limit named — not a pydantic traceback."""
     from robovast.service.interface import DESCRIPTION_MAX_LEN

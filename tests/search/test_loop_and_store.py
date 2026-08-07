@@ -63,7 +63,7 @@ class FakeBackend(ExecutionBackend):
 class FakeCompose:
     def compose(self, param_sets, output_dir):
         name_by_id = {ps.id: f"c{ps.id}" for ps in param_sets}
-        campaign_data = {"execution": {"image": "img", "runs": 1},
+        campaign_data = {"execution": {"containers": {"scenario": {"image": "img"}}, "runs": 1},
                          "configs": [{"name": n} for n in name_by_id.values()]}
         return campaign_data, name_by_id
 
@@ -205,7 +205,7 @@ def test_end_batch_progress_reports_resultless_runs(tmp_path):
 def test_batch_mode_records_one_batch(tmp_path):
     store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
     backend = FakeBackend()
-    campaign_data = {"execution": {"image": "img", "runs": 2},
+    campaign_data = {"execution": {"containers": {"scenario": {"image": "img"}}, "runs": 2},
                      "configs": [{"name": "ca", "config": {"speed": 1.0}},
                                  {"name": "cb", "config": {"speed": 2.0}}]}
     controller = CampaignController(

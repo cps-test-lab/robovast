@@ -597,6 +597,35 @@ graph.
    ``rdflib`` is a required dependency of the core ``robovast`` package.
 
 
+.. _extending-simulators:
+
+Add a Simulator Backend
+^^^^^^^^^^^^^^^^^^^^^^^
+
+A backend supplies what a campaign would otherwise restate for every simulator run: the
+image, the packages, the environment, and how the simulator is started. Registered in the
+``robovast.simulators`` entry-point group; implementation:
+:mod:`robovast.common.simulators`. The user-facing side, the two shapes, and a worked
+example are in :doc:`simulators`.
+
+Two constraints that are not obvious from the base class:
+
+**It must import without its simulator installed.** ``apply_backend`` runs in the
+long-lived service process, which has no reason to carry a MuJoCo or an Isaac runtime.
+A backend declares strings and container specs; anything genuinely needing the simulator
+returns a ``ContainerSpec`` from ``input_files`` and runs *inside the simulator's image*.
+
+**It cannot arrive through** ``plugins:``. The image and environment hooks run during
+composition, long before ``_install_plugins`` — and that install is deliberately
+``add_to_path=False``. So a backend is an ordinary installed distribution of the service
+environment, like ``robovast_nav``, or is named by a ``.vast``-relative file ref.
+
+**Where it runs in composition.** ``apply_backend()`` is called once at the top of the
+``execution`` extraction in ``generate_scenario_variations()``, so the container plan, the
+image builds and the run environment all read one already-merged mapping instead of each
+re-asking the backend and risking different answers. The campaign always wins: a backend
+fills in keys the author left out and never overrides one they set.
+
 .. _extending-input-generation:
 
 Add Input Generator Plugin

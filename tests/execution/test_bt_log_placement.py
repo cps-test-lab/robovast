@@ -82,6 +82,13 @@ def _write_inputs(tmp_path, job):
     return scenario, params
 
 
+def _plan():
+    """The container plan the compose generator now takes; one container is the
+    ordinary shape for a campaign with no simulator."""
+    from robovast.common.containers import plan_containers
+    return plan_containers({"containers": {"scenario": {"image": "img:test"}}})
+
+
 def test_output_dir_is_per_run(tmp_path):
     """The documents place each item at <config>/<run> — relative to -o, not absolute."""
     job = JobSpec(items=[_item("cfg-a", 0), _item("cfg-a", 1), _item("cfg-b", 0)], index=0)
@@ -146,13 +153,13 @@ def test_local_lane_compose_carries_the_flag(tmp_path):
     """The env the local lane derives reaches the compose file as a plain variable."""
     from robovast.execution.execution_utils.execute_local import _build_packed_compose_yaml
 
-    campaign_data = {"execution": {"image": "img:test", "runs": 1},
+    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1},
                      "scenario_file": "scenario.osc"}
     yaml_text = _build_packed_compose_yaml(
         docker_image="img:test", out_path=str(tmp_path), results_dir_var="${RESULTS}",
         job=JobSpec(items=[_item("cfg-a", 0)], index=0), param_file_rel="p.yaml",
         run_files=[], env_vars={}, pre_command=None, post_command=None, uid=1000, gid=1000,
-        main_cpu=1, main_memory=None, main_gpu=False, secondary_containers=[],
+        main_cpu=1, main_memory=None, main_gpu=False, plan=_plan(),
         use_gui_block=False, scenario_env_vars=scenario_env(campaign_data))
     assert "- BT_LOG=true" in yaml_text
 
@@ -160,12 +167,12 @@ def test_local_lane_compose_carries_the_flag(tmp_path):
 def test_local_lane_compose_states_an_opt_out(tmp_path):
     from robovast.execution.execution_utils.execute_local import _build_packed_compose_yaml
 
-    campaign_data = {"execution": {"image": "img:test", "runs": 1, "bt_log": False},
+    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1, "bt_log": False},
                      "scenario_file": "scenario.osc"}
     yaml_text = _build_packed_compose_yaml(
         docker_image="img:test", out_path=str(tmp_path), results_dir_var="${RESULTS}",
         job=JobSpec(items=[_item("cfg-a", 0)], index=0), param_file_rel="p.yaml",
         run_files=[], env_vars={}, pre_command=None, post_command=None, uid=1000, gid=1000,
-        main_cpu=1, main_memory=None, main_gpu=False, secondary_containers=[],
+        main_cpu=1, main_memory=None, main_gpu=False, plan=_plan(),
         use_gui_block=False, scenario_env_vars=scenario_env(campaign_data))
     assert "- BT_LOG=false" in yaml_text

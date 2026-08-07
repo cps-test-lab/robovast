@@ -1,26 +1,50 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
+import IconButton from '@mui/material/IconButton'
+import InputAdornment from '@mui/material/InputAdornment'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
+import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
+import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import type { ResultsTreeItem } from '@/lib/resultsTree'
 import { ResultsTree } from './ResultsTree'
+import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 
 // Results → Explorer: a campaign → config → run tree with green/red status, all from the DB. The
 // tree is the campaign selector; clicking a node renders its evaluation.visualization notebooks.
-export function ExplorerView({ campaigns }: { campaigns: CampaignSummary[] }) {
+export function ExplorerView({
+  campaigns,
+  refresh,
+}: {
+  campaigns: CampaignSummary[]
+  refresh: ResultsRefresh
+}) {
   const [selected, setSelected] = useState<ResultsTreeItem | undefined>()
+  const [filter, setFilter] = useState('')
+
+  // Campaign ids only: configs and runs are lazy-loaded per expanded campaign, so matching them
+  // would hide branches whose children simply have not been fetched yet.
+  const needle = filter.trim().toLowerCase()
+  const shown = useMemo(
+    () => (needle ? campaigns.filter((c) => c.campaign_id.toLowerCase().includes(needle)) : campaigns),
+    [campaigns, needle],
+  )
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h6">Explorer</Typography>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Typography variant="h6">Explorer</Typography>
+        <RefreshResultsButton state={refresh} />
+      </Stack>
 
       {!campaigns.length ? (
         <Alert severity="info" variant="outlined">
@@ -39,12 +63,49 @@ export function ExplorerView({ campaigns }: { campaigns: CampaignSummary[] }) {
             minHeight: 0,
           }}
         >
-          <Paper sx={{ p: 1, overflow: 'auto', minHeight: 0 }}>
-            <ResultsTree
-              campaigns={campaigns}
-              selectedId={selected?.id ?? ''}
-              onSelect={setSelected}
+          {/* Filter above, tree below: the Paper owns the column height and only the tree scrolls,
+              so the field stays put while the list is paged through. */}
+          <Paper sx={{ p: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <TextField
+              size="small"
+              placeholder="Filter campaigns"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              sx={{ flexShrink: 0 }}
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchRoundedIcon fontSize="small" color="disabled" />
+                    </InputAdornment>
+                  ),
+                  endAdornment: filter ? (
+                    <InputAdornment position="end">
+                      <IconButton
+                        size="small"
+                        aria-label="Clear filter"
+                        onClick={() => setFilter('')}
+                      >
+                        <ClearRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : null,
+                },
+              }}
             />
+            <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              {shown.length ? (
+                <ResultsTree
+                  campaigns={shown}
+                  selectedId={selected?.id ?? ''}
+                  onSelect={setSelected}
+                />
+              ) : (
+                <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>
+                  No campaign matches “{filter}”.
+                </Typography>
+              )}
+            </Box>
           </Paper>
 
           <SelectionDetail item={selected} />

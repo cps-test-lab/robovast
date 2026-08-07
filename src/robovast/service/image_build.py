@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from robovast.common.containers import plan_containers
 from robovast.common.build_context import (BUILD_CONTEXT_IGNORE,
                                            render_dockerignore)
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
@@ -146,17 +147,40 @@ class BuildSpec:
         return [spec for group in self.install_groups for spec in group]
 
 
-def extract_build_spec(campaign_config) -> Optional[BuildSpec]:
-    """Pull the ``build:`` section off a validated config, or ``None`` if absent."""
-    build = getattr(campaign_config, "build", None)
-    if build is None:
-        return None
-    return BuildSpec(
-        tag=build.tag,
-        base_image=build.base_image,
-        system_packages=list(build.system_packages or []),
-        python_packages=list(build.python_packages or []),
-    )
+def extract_build_specs(campaign_config) -> dict:
+    """One :class:`BuildSpec` per container that adds packages, keyed by container name.
+
+    A campaign may build several images -- a system under test, and a scenario or
+    simulation container carrying the experiment's own plugins -- so this returns a map
+    rather than the single spec the removed ``build:`` section produced. A container
+    with no ``system_packages``/``python_packages`` is absent: it runs its image as-is.
+
+    The tag is the container's **name**, not something the author chose. There is one
+    image per container per campaign, so the name already identifies it uniquely, and a
+    hand-picked tag was only ever a second thing to keep in sync with
+    ``execution.image``.
+    """
+    execution = getattr(campaign_config, "execution", None)
+    if execution is None:
+        return {}
+    containers = getattr(execution, "containers", None) or {}
+    specs = {}
+    plan = plan_containers({
+        'containers': {
+            name: (block if isinstance(block, dict) else block.model_dump())
+            for name, block in containers.items()
+        }
+    })
+    for container in plan.containers:
+        if not container.builds:
+            continue
+        specs[container.name] = BuildSpec(
+            tag=container.name,
+            base_image=container.image,
+            system_packages=list(container.system_packages),
+            python_packages=list(container.python_packages),
+        )
+    return specs
 
 
 # ---------------------------------------------------------------------------
@@ -614,13 +638,13 @@ def _read_text(path: Path) -> str:
 
 
 def project_build_spec(target) -> "Optional[BuildSpec]":
-    """Load + validate a config and return its :class:`BuildSpec`.
+    """Load + validate a config and return its :class:`BuildSpec` map.
 
     ``target`` is anything carrying a ``config_path`` — a
     :class:`~robovast.service.local_transport.WorkspaceTarget` from the service, or the
-    CLI's ``ProjectConfig``. Returns ``None`` when there is no ``build:`` section.
+    CLI's ``ProjectConfig``. Empty when no container adds packages.
     """
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
     campaign_config = validate_config(load_config(target.config_path))
-    return extract_build_spec(campaign_config)
+    return extract_build_specs(campaign_config)

@@ -514,8 +514,8 @@ def test_a_one_shot_cleans_up_its_own_staging():
 
 
 def test_a_project_directory_with_several_vast_files_must_name_one(tmp_path):
-    (tmp_path / "a.vast").write_text("version: 1\n")
-    (tmp_path / "b.vast").write_text("version: 1\n")
+    (tmp_path / "a.vast").write_text("version: 2\n")
+    (tmp_path / "b.vast").write_text("version: 2\n")
     with pytest.raises(ValueError, match="several .vast files"):
         ce.vast_in_dir(str(tmp_path))
     assert ce.vast_in_dir(str(tmp_path), "a.vast").endswith("a.vast")

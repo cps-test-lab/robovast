@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
@@ -256,7 +256,13 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
       {job.detail ? (
         <Typography
           variant="caption"
-          sx={{ display: 'block', color: 'error.main', pl: 0.5, wordBreak: 'break-word' }}
+          sx={{
+            display: 'block',
+            color: 'error.main',
+            pl: 0.5,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
         >
           {job.detail}
         </Typography>
@@ -432,6 +438,30 @@ export function CampaignLog({ campaignId }: { campaignId: string }) {
       {open ? (
         <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
       ) : null}
+    </Box>
+  )
+}
+
+// One backend error string, shown verbatim. These are multi-line — an exception message plus a
+// traceback tail — and inline in an Alert or a Typography the browser collapses every newline,
+// running the whole trace into one paragraph. Anywhere such a string is printed goes through here.
+export function ErrorText({ children }: { children: ReactNode }) {
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'block',
+        mt: 0.5,
+        fontFamily: 'monospace',
+        fontSize: '0.75rem',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        // A long trace should scroll inside the box rather than push the campaign card open.
+        maxHeight: 200,
+        overflowY: 'auto',
+      }}
+    >
+      {children}
     </Box>
   )
 }

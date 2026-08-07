@@ -191,7 +191,7 @@ def test_changing_show_gui_is_a_different_container(local, monkeypatch):
     monkeypatch.setattr(LocalTransport, "_exec_manager", property(lambda self: _Mgr()))
     monkeypatch.setattr(LocalTransport, "_exec_vast_file",
                         lambda self, request: "x.vast")
-    monkeypatch.setattr(LocalTransport, "_exec_image", lambda self, vast: "img")
+    monkeypatch.setattr(LocalTransport, "_exec_image", lambda self, vast, container=None: "img")
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
     monkeypatch.setattr(
         "robovast.service.container_exec.stage",

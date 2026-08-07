@@ -30,6 +30,20 @@ from .file_cache import FileCache
 logger = logging.getLogger(__name__)
 
 
+def _warn_unsupported_version(config, config_file, subsection):
+    """Note an old snapshot once, without refusing to read a section out of it.
+
+    Reading e.g. ``results_processing`` from a version-1 file is fine -- that section is
+    unchanged -- but a caller should still know the file predates the current schema, in
+    case what they read looks stale.
+    """
+    version = (config or {}).get("version")
+    if version is not None and version != 2:
+        logger.debug(
+            "reading '%s' from %s, which declares config version %s (current is 2); the "
+            "section itself is version-independent", subsection, config_file, version)
+
+
 def load_config(config_file, subsection=None, allow_missing=False):
     """Load and parse scenario variation file.
 
@@ -59,8 +73,20 @@ def load_config(config_file, subsection=None, allow_missing=False):
                 raise ValueError("No documents found in scenario file")
             config = documents[0]
 
-            # Validate the configuration
-            validate_config(config)
+            # Reading one *section* does not need the whole document to validate. That
+            # coupling made postprocessing fail on a perfectly good campaign: it
+            # discovers a ``.vast`` from the shared results directory, which also holds
+            # older campaigns' archived snapshots, and one of those being version 1 was
+            # enough to stop a v2 campaign from producing its results.
+            #
+            # Sections like ``results_processing`` did not change between versions, so a
+            # reader of one is not entitled to an opinion about the rest of the file. A
+            # caller loading the *whole* config still gets full validation, which is
+            # where an unsupported version genuinely matters.
+            if subsection:
+                _warn_unsupported_version(config, config_file, subsection)
+            else:
+                validate_config(config)
 
             if subsection:
                 subsection_data = config.get(subsection, None)

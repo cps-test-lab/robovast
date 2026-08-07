@@ -1,4 +1,4 @@
-version: 1
+version: 2
 configuration:
 - name: test
   variations:
@@ -21,20 +21,22 @@ configuration:
           x: 21.0
           y: -6.0
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
-  resources:
-    cpu: 8
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 8
   runs: 5
   scenario_file: scenario.osc
   run_files:
   - "files/*"
 results_processing:
   postprocessing:
-    - rosbags_tf_to_csv:
+  - rosbags_tf_to_csv:
         # base_link -> robot marker + driven path; odom -> places the local costmap in the map frame.
-        frames: [base_link, odom, turtlebot4_base_link_gt]
-    - rosbags_costmap_to_csv:
-        topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
+      frames: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_costmap_to_csv:
+      topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
 evaluation:
   visualization:
   - Analysis:
@@ -44,29 +46,29 @@ evaluation:
 # Web Run view (Results -> Run view): replay one run over its rosbag timeline.
 visualization:
   panels:
-    - playback:
-    - costmap:
-        title: Nav2 costmaps
-        position: { anchor: top-right, width: 400, height: 550 }
-        minimizable: true
-        layers:
-          map: { topic: /map }
-          global: { topic: /global_costmap/costmap }
-          local: { topic: /local_costmap/costmap }
-          poses: { table: poses }
-    - scenario_tree:
-        position: { anchor: left, width: 320 }
-        minimizable: true
-        source: { table: behaviors }
+  - playback:
+  - costmap:
+      title: Nav2 costmaps
+      position: {anchor: top-right, width: 400, height: 550}
+      minimizable: true
+      layers:
+        map: {topic: /map}
+        global: {topic: /global_costmap/costmap}
+        local: {topic: /local_costmap/costmap}
+        poses: {table: poses}
+  - scenario_tree:
+      position: {anchor: left, width: 320}
+      minimizable: true
+      source: {table: behaviors}
     # The same generic timeseries panel the quadrotor example uses, here over a
     # rosbag-derived table: the base_link pose from `poses` (filtered to that frame,
     # since the table also holds odom/ground-truth frames).
-    - timeseries:
-        title: base_link pose
-        position: { anchor: bottom-right, width: 460, height: 220 }
-        minimizable: true
-        source: { table: poses, filter: { frame: base_link } }
-        series:
-        - { column: position.x, label: x }
-        - { column: position.y, label: y }
-        - { column: orientation.yaw, label: yaw }
+  - timeseries:
+      title: base_link pose
+      position: {anchor: bottom-right, width: 460, height: 220}
+      minimizable: true
+      source: {table: poses, filter: {frame: base_link}}
+      series:
+      - {column: position.x, label: x}
+      - {column: position.y, label: y}
+      - {column: orientation.yaw, label: yaw}

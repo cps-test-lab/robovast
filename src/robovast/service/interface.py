@@ -119,14 +119,22 @@ class BuildImageRequest(BaseModel):
     workspace_id: str
     config_path: str = ""            # which .vast (workspace-relative); "" = the sole .vast
     backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
+    #: Which container's image to build, when more than one adds packages
+    #: (``scenario`` / ``simulation`` / ``sut``, or an ad-hoc container's name).
+    #: Omit to build every one of them.
+    container: Optional[str] = None
 
 
 class ImageBuildRef(BaseModel):
     """Identifies a launched (or cache-hit) image build."""
 
     build_id: str
-    tag: str = ""                    # the bare ``build.tag`` (image = ``build:<tag>``)
+    tag: str = ""                    # the container whose image this is
     cached: bool = False             # True if an existing image was reused (no build ran)
+    #: Every build this request started, as ``{container: build_id}``. A campaign may
+    #: build several images, and :attr:`build_id` names only one of them — poll the
+    #: rest through here rather than assuming "the image" is a single thing.
+    builds: dict = {}
 
 
 class ImageBuildError(BaseModel):
@@ -191,6 +199,11 @@ class ExecRequest(BaseModel):
     #: the X11 mount can only be established when the container is created, so changing
     #: this replaces the container rather than exec'ing into a mount-less one.
     show_gui: bool = False
+    #: Which container to run in: ``scenario`` (the default -- where the scenario runs,
+    #: and the only container a campaign without a simulator has), ``simulation``,
+    #: ``sut``, or an ad-hoc container's name. The names are the same ones a scenario's
+    #: ``remote("ipc:///ipc/<name>")`` uses, so there is one vocabulary to learn.
+    container: str = ""
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.

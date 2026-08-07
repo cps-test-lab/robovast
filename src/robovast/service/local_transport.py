@@ -784,10 +784,10 @@ class LocalTransport(RobovastInterface):
         # for a campaign that went on to succeed, and left the caller with no id to poll.
         # The phase means the campaign is **waiting for** its image — builds are
         # content-addressed and shared, so it is not necessarily performing one.
-        spec, _ = self._build_spec_for(target, campaign_config)
-        if spec is not None:
+        specs, _ = self._build_specs_for(target, campaign_config)
+        if specs:
             state.set_phase(Phase.BUILDING,
-                            stage=f"waiting for image {spec.tag}")
+                            stage="waiting for image(s) " + ", ".join(sorted(specs)))
 
         def _worker():
             from robovast.execution.backends import CampaignStopped
@@ -801,10 +801,11 @@ class LocalTransport(RobovastInterface):
                 # resolve_robovast_image). A failed build is no longer a failed *request*:
                 # it raises into the handler below and becomes an inspectable ``failed``
                 # campaign, with the reason in its status and the output in its own log.
-                build = self._start_build_image(target, campaign_config)
-                if build is not None:
+                builds = self._start_build_images(target, campaign_config)
+                for build in builds:
                     self._await_build_image(build.build_id, state, campaign_root)
-                    options.image = self._resolve_built_image(target, campaign_config)
+                if builds:
+                    options.images = self._resolve_built_images(target, campaign_config)
                 state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
@@ -875,34 +876,39 @@ class LocalTransport(RobovastInterface):
             self._image_build_mgr = mgr
         return mgr
 
-    def _build_spec_for(self, project, campaign_config):
-        """Return (BuildSpec, project_dir) for a project, or (None, None)."""
+    def _build_specs_for(self, project, campaign_config):
+        """Return ({container name: BuildSpec}, project_dir) for a project.
+
+        A campaign may build several images — a system under test, and a scenario or
+        simulation container carrying the experiment's own plugins — so this is a map.
+        Empty when no container adds packages.
+        """
         from pathlib import Path as _Path
 
-        from robovast.service.image_build import extract_build_spec
-        spec = extract_build_spec(campaign_config)
-        if spec is None:
-            return None, None
+        from robovast.service.image_build import extract_build_specs
+        specs = extract_build_specs(campaign_config)
+        if not specs:
+            return {}, None
         project_dir = _Path(project.config_path).resolve().parent
-        return spec, project_dir
+        return specs, project_dir
 
-    def _start_build_image(self, project, campaign_config) -> "ImageBuildRef | None":
-        """Submit (or join) the build of the project's ``build:`` image; return its ref.
+    def _start_build_images(self, project, campaign_config) -> list:
+        """Submit (or join) each container's image build; return their refs.
 
-        ``None`` when the project has no ``build:`` section. Returns as soon as the build
-        has a *handle* — it does not wait for it; :meth:`_await_build_image` does that, on
-        the campaign's own worker thread. Overridden by :class:`ClusterService` for the
+        Empty when nothing needs building. Returns as soon as each build has a
+        *handle* — it does not wait; :meth:`_await_build_image` does that, on the
+        campaign's own worker thread. Overridden by :class:`ClusterService` for the
         in-cluster BuildKit Job.
         """
-        spec, project_dir = self._build_spec_for(project, campaign_config)
-        if spec is None:
-            return None
-        return self._image_builds.start(spec, project_dir)
+        specs, project_dir = self._build_specs_for(project, campaign_config)
+        return [self._image_builds.start(spec, project_dir)
+                for spec in specs.values()]
 
-    def _resolve_built_image(self, project, campaign_config) -> str:
-        """The concrete image ref to pin once the build is done (see ``_run_options``)."""
-        spec, project_dir = self._build_spec_for(project, campaign_config)
-        return self._image_builds.resolve_ref(spec, project_dir)
+    def _resolve_built_images(self, project, campaign_config) -> dict:
+        """Concrete image refs to pin once the builds are done, by container name."""
+        specs, project_dir = self._build_specs_for(project, campaign_config)
+        return {name: self._image_builds.resolve_ref(spec, project_dir)
+                for name, spec in specs.items()}
 
     #: Poll cadence of :meth:`_await_build_image`. Each tick is one build-status read plus
     #: one build-log read, so it is also how often the campaign's ``build.log`` grows.
@@ -987,17 +993,34 @@ class LocalTransport(RobovastInterface):
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
         from robovast.service.image_build import validate_build_spec
+        from robovast.common.config import SCENARIO_CONTAINER
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
-        spec, project_dir = self._build_spec_for(project, campaign_config)
-        if spec is None:
+        specs, project_dir = self._build_specs_for(project, campaign_config)
+        if not specs:
             raise ValueError(
-                "project has no 'build:' section — nothing to build (set a build: "
-                "section and execution.image: build:<tag>)")
-        problems = validate_build_spec(spec, project_dir)
-        if problems:
-            raise ValueError("invalid build: section:\n  - " + "\n  - ".join(problems))
-        return self._image_builds.start(spec, project_dir)
+                "nothing to build: no container adds system_packages or "
+                "python_packages, so every image is used as declared")
+        wanted = request.container
+        if wanted:
+            if wanted not in specs:
+                raise ValueError(
+                    f"container '{wanted}' builds no image; the ones that do are: "
+                    + ", ".join(sorted(specs)))
+            specs = {wanted: specs[wanted]}
+        for name, spec in specs.items():
+            problems = validate_build_spec(spec, project_dir)
+            if problems:
+                raise ValueError(f"invalid execution.containers.{name}:\n  - "
+                                 + "\n  - ".join(problems))
+        refs = {name: self._image_builds.start(spec, project_dir)
+                for name, spec in specs.items()}
+        # Every build is started; the returned handle names one of them. Prefer the
+        # container the scenario runs in — it is the one a caller most likely means —
+        # and carry the rest so nothing has to be guessed at.
+        primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))
+        primary.builds = {name: ref.build_id for name, ref in refs.items()}
+        return primary
 
     def get_image_build_status(self, build_id: str):
         return self._image_builds.status(build_id)
@@ -1078,7 +1101,7 @@ class LocalTransport(RobovastInterface):
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
         try:
-            spec.image = self._exec_image(vast_file)
+            spec.image = self._exec_image(vast_file, request.container or None)
             if is_build_image_ref(spec.image):
                 # Defensive: _exec_image resolves build: refs, and handing docker a
                 # symbolic one would fail with a confusing pull error instead.
@@ -1107,34 +1130,41 @@ class LocalTransport(RobovastInterface):
                            duration_s=time.monotonic() - started,
                            container=self._exec_manager.state())
 
-    def _exec_image(self, vast_file: str) -> str:
+    def _exec_image(self, vast_file: str, container: "str | None" = None) -> str:
         """The concrete image to exec in, resolved exactly as a run would resolve it.
 
-        A ``build:<tag>`` must already exist locally: building implicitly would turn a
-        seconds-long check into a multi-minute one the caller never asked for. A project
-        with **no** ``build:`` section is ordinary, not an error — it falls back to
-        ``execution.image`` and then the default, like any run.
+        *container* is a role or container name (``scenario`` / ``simulation`` / ``sut``
+        or an ad-hoc one); the default is the container the scenario runs in, which for
+        a campaign with no simulator is the only one — so an unqualified call answers
+        the same question it always did.
+
+        A built image must already exist locally: building implicitly would turn a
+        seconds-long check into a multi-minute one the caller never asked for.
         """
         from robovast.common.common import load_config
-        from robovast.common.execution import (is_build_image_ref,
-                                               resolve_robovast_image)
-        campaign_config = load_config(vast_file) or {}
-        configured = (campaign_config.get("execution") or {}).get("image")
-        if not is_build_image_ref(configured):
-            return resolve_robovast_image(config_image=configured, required=True)
+        from robovast.common.config import validate_config
+        from robovast.common.containers import plan_containers
+        from robovast.common.execution import resolve_robovast_image
 
-        target = WorkspaceTarget(config_path=vast_file)
-        spec, project_dir = self._build_spec_for(target, campaign_config)
-        if spec is None:
-            raise ValueError(
-                f"execution.image is {configured!r} but the project has no 'build:' "
-                "section to resolve it from")
-        ref = self._image_builds.resolve_ref(spec, project_dir)
+        # Validate rather than reading the raw mapping: the build specs come off the
+        # *model*, so handing this path a plain dict yields "no build section" for every
+        # project that has one.
+        campaign_config = validate_config(load_config(vast_file))
+        plan = plan_containers(campaign_config.execution.model_dump())
+        target = plan.by_name(container) if container else plan.main
+
+        if not target.builds:
+            return resolve_robovast_image(
+                config_image=target.image, required=not target.is_main)
+
+        specs, project_dir = self._build_specs_for(
+            WorkspaceTarget(config_path=vast_file), campaign_config)
+        ref = self._image_builds.resolve_ref(specs[target.name], project_dir)
         if not self._image_builds.image_exists(ref):
             raise ValueError(
-                f"image {configured!r} is not built — call build_experiment_image "
-                "first. This never builds implicitly, so a quick check cannot silently "
-                "become a full image build.")
+                f"the image for container '{target.name}' is not built — call "
+                "build_experiment_image first. This never builds implicitly, so a "
+                "quick check cannot silently become a full image build.")
         return ref
 
     def stop_exec_container(self, backend: "str | None" = None) -> "ExecStopResult":  # noqa: F821
