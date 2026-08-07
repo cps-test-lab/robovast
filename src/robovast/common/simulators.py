@@ -112,15 +112,28 @@ class SimulatorBackend:
         """
         return {}
 
-    def input_files(self, cfg, execution: dict):
-        """Files that must travel with the campaign, or ``None`` for nothing.
+    def input_files(self, cfg, execution: dict) -> list:
+        """Files the simulator needs that the campaign owns, relative to the ``.vast``.
 
-        Returns a ``ContainerSpec`` when working it out needs the simulator itself --
-        enumerating what a world references means parsing it, and the service must not
-        import a simulator to do that. The spec runs in the simulator's own image, which
-        also means the answer comes from the very image that will run the campaign.
+        For robosito: a world declared as a path rather than a package ref. A packaged
+        world travels inside the image and needs nothing here, which is the default.
+
+        RoboVAST adds these to the campaign's ``run_files``, so each is mounted at
+        ``/config/<path>`` where the simulator opens it, archived into
+        ``<campaign>/_config/`` where the run view rebuilds geometry from it, and hashed
+        into the configuration identity -- a changed world is a changed experiment.
+
+        Declared here rather than written by the campaign because a ``.vast`` naming its
+        world under ``config:`` and again under ``run_files:`` states one fact twice, and
+        forgetting the second fails far from the cause: the simulator cannot open a path
+        that was never mounted.
+
+        Only the files the campaign itself owns. A world that ``extends`` another
+        *campaign* file is not followed -- enumerating that needs the simulator, which
+        must not be imported here. Such a run fails loudly in the container on a world it
+        cannot resolve, rather than silently rendering the wrong one.
         """
-        return None
+        return []
 
     def produces_run_capture(self, cfg, execution: dict) -> bool:
         """Whether runs write the capture a ``scene3d`` panel replays.

@@ -20,6 +20,12 @@ export interface SeriesOptions {
   columns?: string[]
   maxRows?: number
   match?: Record<string, string | number>
+  /** Thin the result to one row per 1/`hz` second (per distinct `key` value when given). Requires
+   *  `columns`: the SQL names them because the time column becomes an aggregate. A viewer needs far
+   *  less resolution than a bag records, and the service caps a query at 5000 rows -- so for any
+   *  table that is a *recording* rather than a summary, this is what keeps the tail of a run from
+   *  being cut off. */
+  decimate?: { hz: number; key?: string }
 }
 
 export interface DataProvider {

@@ -119,24 +119,39 @@ function parseLayers(config: Record<string, unknown>): { layers: LayerCfg[]; pos
   return { layers, posesTable }
 }
 
-async function loadPoses(data: DataProvider, table: string): Promise<Map<string, Pose[]>> {
-  const byFrame = new Map<string, Pose[]>()
-  if (!(await data.has(table))) return byFrame
-  const rows = await data.series(table)
-  for (const r of rows) {
-    const frame = String(r.frame ?? '')
-    if (!frame) continue
-    const arr = byFrame.get(frame) ?? []
-    arr.push({
-      t: Number(r.timestamp),
-      x: Number(r['position.x']),
-      y: Number(r['position.y']),
-      yaw: Number(r['orientation.yaw']),
-    })
-    byFrame.set(frame, arr)
-  }
-  for (const arr of byFrame.values()) arr.sort((a, b) => a.t - b.t)
-  return byFrame
+// The service clamps any data.db query at 5000 rows and cuts by TIME, so a query that asks for more
+// than that silently loses the end of the run rather than failing. `poses` is a recording, not a
+// summary: with `rosbags_tf_to_csv: {frames: all}` it holds every TF frame that resolves against map
+// -- a TB4 nav run carries base_link, odom, both wheels and the ground-truth frame at ~50 Hz, which
+// is 10.7k rows over 100 s. Reading the whole table in one query therefore returned poses up to t=53 s
+// and nothing after: the driven path and the robot marker froze half way while the costmap layers,
+// fetched per-time from their own endpoint, kept following the robot to the end.
+//
+// Two things keep that from recurring, and both are needed. One query PER FRAME, issued only for the
+// frames this panel actually draws (the robot frame, plus whatever frame a costmap grid turns out to
+// be in), so the budget no longer divides by however many frames the world happens to publish -- that
+// count is unbounded, since `all` grows with every walker bone and movable prop a scene gains. And
+// decimation, so one frame's own length cannot reach the cap either: 20 Hz is well past what scrubbing
+// a trail can show and buys 250 s of run before the cap is anywhere near.
+const POSE_COLUMNS = ['timestamp', 'position.x', 'position.y', 'orientation.yaw']
+const POSE_HZ = 20
+const POSE_MAX_ROWS = 5000 // the service's hard cap; asking for more does not raise it
+
+async function loadFramePoses(data: DataProvider, table: string, frame: string): Promise<Pose[]> {
+  const rows = await data.series(table, {
+    match: { frame },
+    columns: POSE_COLUMNS,
+    decimate: { hz: POSE_HZ },
+    maxRows: POSE_MAX_ROWS,
+  })
+  const poses = rows.map((r) => ({
+    t: Number(r.timestamp),
+    x: Number(r['position.x']),
+    y: Number(r['position.y']),
+    yaw: Number(r['orientation.yaw']),
+  }))
+  poses.sort((a, b) => a.t - b.t)
+  return poses
 }
 
 /** Nearest pose (by time) for a frame, or null. */
@@ -158,6 +173,8 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
   const extentRef = useRef<Extent | null>(null)
   const layersRef = useRef<LayerRuntime[]>(layers.map((cfg) => ({ cfg, frameId: 'map' })))
   const posesRef = useRef<Map<string, Pose[]>>(new Map())
+  const poseLoadsRef = useRef<Set<string>>(new Set())
+  const posesTableOkRef = useRef<Promise<boolean> | null>(null)
   const tRef = useRef(clock.t)
   const rafRef = useRef<number | null>(null)
   const fetchingRef = useRef(false)
@@ -269,6 +286,53 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
     viewRef.current = { cx: (ext.minX + ext.maxX) / 2, cy: (ext.minY + ext.maxY) / 2, ppm }
   }, [])
 
+  // Load one frame's poses, once, on first use. Fire-and-forget: the next redraw picks the result up,
+  // and until then the layer needing that frame simply isn't drawn.
+  const ensureFrame = useCallback(
+    (frameId: string) => {
+      if (!frameId || frameId === 'map') return // the map frame is the reference, not a lookup
+      if (poseLoadsRef.current.has(frameId)) return
+      poseLoadsRef.current.add(frameId)
+      posesTableOkRef.current ??= data.has(posesTable)
+      void posesTableOkRef.current
+        .then((ok) => (ok ? loadFramePoses(data, posesTable, frameId) : []))
+        .then((poses) => {
+          posesRef.current.set(frameId, poses)
+          // Hitting the cap even decimated means the run outgrew POSE_HZ: say so, because the symptom
+          // is a path that just stops, which reads as the robot having stopped.
+          if (poses.length >= POSE_MAX_ROWS)
+            setError(
+              `${posesTable}['${frameId}'] hit the ${POSE_MAX_ROWS}-row query cap at ${POSE_HZ} Hz, ` +
+                `so the trail and robot marker end before the run does. Lower POSE_HZ.`,
+            )
+          // If no costmap ever arrives, still fit to the driven path so the panel isn't blank.
+          if (viewRef.current == null && frameId === robotFrame && poses.length) {
+            const xs = poses.map((q) => q.x)
+            const ys = poses.map((q) => q.y)
+            fitToExtent({
+              minX: Math.min(...xs),
+              maxX: Math.max(...xs),
+              minY: Math.min(...ys),
+              maxY: Math.max(...ys),
+            })
+          }
+          requestDraw()
+        })
+        .catch((e) => setError((e as Error).message))
+    },
+    [data, posesTable, robotFrame, fitToExtent, requestDraw],
+  )
+
+  // The robot frame is needed unconditionally (driven path + marker); every other frame is pulled in
+  // by fetchFrames when a grid arrives declaring it. Rebinding to another run/table drops what the
+  // previous one loaded -- these are refs, so nothing else clears them.
+  useEffect(() => {
+    posesRef.current = new Map()
+    poseLoadsRef.current = new Set()
+    posesTableOkRef.current = null
+    ensureFrame(robotFrame)
+  }, [ensureFrame, robotFrame])
+
   // Fetch the nearest grid frame for every costmap layer at time `t` (throttled by the caller).
   const fetchFrames = useCallback(
     async (t: number) => {
@@ -285,6 +349,10 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
           rt.grid = grid
           rt.canvas = canvas
           rt.frameId = frame.frame_id
+          // The grid states which frame it is in (the local costmap is in `odom`), and that is the
+          // only place that frame is named -- nothing in the .vast declares it -- so this is where
+          // its poses get pulled in.
+          ensureFrame(frame.frame_id)
           // Auto-fit the view to the first map-frame grid we see.
           if (viewRef.current == null && (frame.frame_id === 'map' || !frame.frame_id)) {
             const ext = gridExtentInMap(grid, IDENTITY_PLANAR)
@@ -299,35 +367,8 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
         fetchingRef.current = false
       }
     },
-    [data, fitToExtent, requestDraw],
+    [data, ensureFrame, fitToExtent, requestDraw],
   )
-
-  // Load poses once for the run (frame->map transforms + the driven path).
-  useEffect(() => {
-    let alive = true
-    loadPoses(data, posesTable)
-      .then((p) => {
-        if (!alive) return
-        posesRef.current = p
-        // If no costmap ever arrives, still fit to the driven path so the panel isn't blank.
-        const trail = p.get(robotFrame)
-        if (viewRef.current == null && trail?.length) {
-          const xs = trail.map((q) => q.x)
-          const ys = trail.map((q) => q.y)
-          fitToExtent({
-            minX: Math.min(...xs),
-            maxX: Math.max(...xs),
-            minY: Math.min(...ys),
-            maxY: Math.max(...ys),
-          })
-        }
-        requestDraw()
-      })
-      .catch((e) => setError((e as Error).message))
-    return () => {
-      alive = false
-    }
-  }, [data, posesTable, robotFrame, fitToExtent, requestDraw])
 
   // Follow the clock: redraw every change; re-fetch grid frames on a wall-clock throttle.
   useEffect(() => {

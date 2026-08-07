@@ -180,6 +180,39 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     return configs, input_files, campaign_transient_files, config_transient_files
 
 
+def _backend_run_files(vast_dir, parameters):
+    """Files the simulator backend declares its simulator needs, relative to the ``.vast``.
+
+    Empty when no backend is declared, when the backend declares nothing, or when it
+    cannot be resolved -- composition must not fail here on a backend problem that
+    validation reports properly elsewhere.
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, resolve_backend)
+
+    execution = parameters.get("execution", {}) or {}
+    name = backend_name(execution)
+    if not name:
+        return []
+    try:
+        backend = resolve_backend(name, vast_dir)
+        cfg = _backend_cfg(backend, execution, name)
+        return [str(p) for p in (backend.input_files(cfg, execution) or [])]
+    except Exception as exc:  # noqa: BLE001 - reported by validation, not here
+        logger.debug("simulator backend declared no input files: %s", exc)
+        return []
+
+
+def _backend_cfg(backend, execution, name):
+    """The backend's own validated config block."""
+    from robovast.common.config import \
+        SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import \
+        _validated_cfg  # pylint: disable=import-outside-toplevel
+    block = (execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {}
+    return _validated_cfg(backend, dict(block), name)
+
+
 def _generated_run_files(vast_dir, parameters, records):
     """Files produced by ``execution.generate``, as paths relative to the ``.vast``.
 
@@ -822,6 +855,21 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # isolated subprocess this re-derives them from `out` on disk without loading any
     # generator (generated_records is empty there).
     for rel in _generated_run_files(vast_dir, parameters, generated_records):
+        if rel not in run_files:
+            run_files.append(rel)
+
+    # And what the simulator backend says has to travel -- for robosito, a world declared
+    # as a path rather than a package ref. Also run_files, for the same reason generated
+    # outputs are: the file has to be MOUNTED at /config/<path> for the simulator to open
+    # it, archived into <campaign>/_config/ for the run view to rebuild geometry from, and
+    # hashed into the config identity because a changed world is a changed experiment.
+    # `_input_files` does only the middle one, so it is the wrong list.
+    #
+    # Declared by the backend rather than written by the campaign: a `.vast` naming its
+    # world under `config:` and then again under `run_files:` states one fact twice, and
+    # the failure when the second is forgotten is remote from the cause -- the simulator
+    # cannot open a path that was never mounted.
+    for rel in _backend_run_files(vast_dir, parameters):
         if rel not in run_files:
             run_files.append(rel)
 

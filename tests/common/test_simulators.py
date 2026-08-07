@@ -43,6 +43,10 @@ class StubBackend(SimulatorBackend):
     def produces_run_capture(self, cfg, execution):
         return True
 
+    def input_files(self, cfg, execution):
+        # A path travels with the campaign; a `pkg:name` ref lives in the image.
+        return [] if ":" in cfg.stage else [cfg.stage]
+
 
 class RosOnlyBackend(SimulatorBackend):
     """Like a simulator with no SimulationInterface at all -- Gazebo, Isaac."""
@@ -264,3 +268,35 @@ def test_a_campaigns_own_env_still_beats_the_backend_on_a_sidecar():
     ex["env"] = [{"STUB_FIDELITY": "high"}]
     assert sidecar_backend_env(ex, "simulation")["STUB_STAGE"] == "s"
     assert "STUB_FIDELITY" not in sidecar_backend_env(ex, "simulation")
+
+
+# -- what the backend says has to travel --------------------------------------------
+
+def test_a_backend_declares_the_files_its_simulator_needs(tmp_path):
+    """So a campaign names its world once, under `config:`, and not again in run_files.
+
+    They become run_files rather than _input_files, because the file must be MOUNTED at
+    /config/<path> for the simulator to open it -- _input_files are only archived. It also
+    has to be hashed into the configuration identity: a changed world is a changed
+    experiment.
+    """
+    from robovast.common.config_generation import _backend_run_files
+
+    params = {"execution": _execution("ros2", stage="worlds/cell.usd")}
+    assert _backend_run_files(str(tmp_path), params) == ["worlds/cell.usd"]
+
+
+def test_a_backend_that_declares_nothing_adds_nothing(tmp_path):
+    from robovast.common.config_generation import _backend_run_files
+
+    # RosOnlyBackend implements no input_files at all -> the base class default.
+    params = {"execution": {"mode": "ros2",
+                            "containers": {"simulation": {"backend": "rosonly"}}}}
+    assert _backend_run_files(str(tmp_path), params) == []
+
+
+def test_no_backend_means_no_extra_run_files(tmp_path):
+    from robovast.common.config_generation import _backend_run_files
+
+    params = {"execution": {"containers": {"scenario": {"image": "img:1"}}}}
+    assert _backend_run_files(str(tmp_path), params) == []
