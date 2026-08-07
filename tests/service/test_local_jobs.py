@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
+from robovast.execution.control_server import ControllerState
 from robovast.service.client import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -144,3 +145,54 @@ def test_get_job_log_rejects_path_traversal(transport):
     (transport._campaigns_root() / cid).mkdir(parents=True)
     with pytest.raises(KeyError):
         transport.get_job_log(cid, "../../etc")
+
+
+# -- the /usage jobs tally --------------------------------------------------
+#
+# The sidebar's jobs meter used to be hard-wired to "0/0" on this lane: the fields were
+# documented as belonging to backends that run Kubernetes Jobs, but local *does* execute
+# scenario runs — sequentially, as containers. The counts come off the controller
+# snapshot, not off disk: list_jobs above calls a run with no test.xml "running" while the
+# campaign is live, so a run that died without writing one would be reported as still
+# executing for the rest of the campaign.
+
+
+def _live(transport, cid, phase, *, total=0, completed=0):
+    """Register a campaign in the phase and run-progress a live controller would report."""
+    from robovast.service.local_transport import _LocalCampaign
+    state = ControllerState(phase=phase, runs={"total": total, "completed": completed})
+    entry = _LocalCampaign(campaign_id=cid, results_dir=str(transport._campaigns_root() / cid),
+                           state=state)
+    transport._campaigns[cid] = entry
+    # The 10s memoisation in resource_usage would otherwise serve an earlier sample.
+    transport._usage_cache = None
+    return entry
+
+
+def test_usage_tally_reports_the_executing_run_and_the_rest_pending(transport):
+    _live(transport, "campaign-2026-07-17-130000", "running", total=5, completed=2)
+    usage = transport.resource_usage()
+    # 0-or-1 running by construction: the lane is single-flight, which is also what
+    # parallel_runs advertises — a consumer sizing a sweep must see the same story twice.
+    assert (usage.jobs_running, usage.jobs_pending) == (1, 2)
+    assert usage.parallel_runs is False
+
+
+def test_usage_tally_counts_a_batch_that_has_not_started_executing(transport):
+    """Before the ``running`` phase nothing executes, but the batch is still owed."""
+    _live(transport, "campaign-2026-07-17-131000", "building", total=5)
+    usage = transport.resource_usage()
+    assert (usage.jobs_running, usage.jobs_pending) == (0, 5)
+
+
+def test_usage_tally_ignores_finished_campaigns(transport):
+    """A terminal campaign is past work: it counts in neither bucket, which is what
+    lets the UI hide the row instead of showing a full bar forever."""
+    _live(transport, "campaign-2026-07-17-132000", "finished", total=5, completed=5)
+    usage = transport.resource_usage()
+    assert (usage.jobs_running, usage.jobs_pending) == (0, 0)
+
+
+def test_usage_tally_is_zero_with_no_campaigns(transport):
+    usage = transport.resource_usage()
+    assert (usage.jobs_running, usage.jobs_pending) == (0, 0)

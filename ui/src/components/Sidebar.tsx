@@ -134,8 +134,11 @@ export function Sidebar({
 }
 
 // Passive service-connection + usage indicator, pinned to the sidebar footer (moved here from the
-// old top AppBar). Three stacked meters — jobs, cpu, mem — each labelled and captioned with its own
-// hover tooltip; the whole block reads "disconnected" until the backend answers.
+// old top AppBar). Stacked meters — cpu, mem, and jobs while there is scenario work — each labelled
+// and captioned with its own hover tooltip; the whole block reads "disconnected" until the backend
+// answers. Jobs is conditional because an always-present "0/0" on an empty track was indis-
+// tinguishable from a dead widget, on a lane that is simply idle. Hidden now means nothing is
+// running or queued; "disconnected" remains the only way to read a service that isn't answering.
 function ConnectionStatus() {
   const usage = useQuery({
     queryKey: ['usage'],
@@ -154,13 +157,15 @@ function ConnectionStatus() {
   const jobsTotal = u.jobs_running + u.jobs_pending
   return (
     <Stack spacing={0.5} sx={{ px: 1 }}>
-      <UsageRow
-        label="Jobs"
-        tip={`${u.jobs_running} running, ${u.jobs_pending} pending`}
-        fraction={jobsTotal > 0 ? u.jobs_running / jobsTotal : 0}
-        color="info.main"
-        text={`${u.jobs_running}/${u.jobs_pending}`}
-      />
+      {jobsTotal > 0 ? (
+        <UsageRow
+          label="Jobs"
+          tip={`${u.jobs_running} running, ${u.jobs_pending} pending`}
+          fraction={u.jobs_running / jobsTotal}
+          color="info.main"
+          text={`${u.jobs_running}/${jobsTotal}`}
+        />
+      ) : null}
       <UsageRow
         label="CPU"
         tip={`${formatCores(u.cpu_used)} out of ${formatCores(u.cpu_capacity)} CPUs used`}
@@ -182,7 +187,9 @@ function ConnectionStatus() {
 // One labelled meter row: a fixed-width caption ("Jobs"/"CPU"/"Mem") beside a MeterBar
 // whose in-track text is the compact "used/total". The whole row carries its own hover
 // tooltip spelling the numbers out in words. `color` overrides the auto green→red fill
-// (jobs use a fixed info tint since "full" isn't a warning there).
+// (jobs use a fixed info tint since "full" isn't a warning there — for jobs "total" is
+// the outstanding work, running+pending, not a capacity, so a full bar means the queue
+// has drained; the tooltip is what splits the two numbers apart).
 function UsageRow({
   label,
   tip,

@@ -98,6 +98,22 @@ def test_bt_log_can_be_turned_off(monkeypatch):
     assert main_env["BT_LOG"] == "false"
 
 
+def _sidecar(manifest, name):
+    """Sidecars are NATIVE sidecars: init containers with restartPolicy Always.
+
+    That is what makes the pod's lifetime track the scenario. As ordinary containers a
+    simulator sidecar never exits, so the Job stayed at 0/1 after the scenario had
+    finished and uploaded its results. Asserting the location, not just the content, is
+    the point -- put one back in spec.containers and the campaign hangs at the end.
+    """
+    spec = manifest["spec"]["template"]["spec"]
+    assert name not in [c["name"] for c in spec["containers"]], \
+        f"{name} must be a native sidecar, not a regular container"
+    sc = next(c for c in spec["initContainers"] if c["name"] == name)
+    assert sc["restartPolicy"] == "Always"
+    return sc
+
+
 def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
     """A sidecar no longer inherits the main container's image: it states one, which is
     what lets the system under test be a vanilla vendor image."""
@@ -107,10 +123,7 @@ def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
     job = r._build_jobs()[0]
     m = r.create_job_manifest(job, total_jobs=1)
 
-    containers = m["spec"]["template"]["spec"]["containers"]
-    names = [c["name"] for c in containers]
-    assert "sut" in names
-    sut = next(c for c in containers if c["name"] == "sut")
+    sut = _sidecar(m, "sut")
     assert sut["image"] == "nav2:humble"
     # No command declared -> the scenario-execution server, so a scenario can drive it
     # with remote("ipc:///ipc/sut").
@@ -138,8 +151,7 @@ def test_a_sidecar_with_a_command_runs_it_through_the_entrypoint(monkeypatch):
         "simulation": {"image": "rst-ros:jazzy",
                        "command": ["rst", "sim", "w.yaml", "--ros", "--headless"]}}})
     m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
-    sim = next(c for c in m["spec"]["template"]["spec"]["containers"]
-               if c["name"] == "simulation")
+    sim = _sidecar(m, "simulation")
     assert sim["command"] == ["/usr/bin/tini", "--", "/bin/bash",
                               "/config/secondary_entrypoint.sh"]
     env = {e["name"]: e["value"] for e in sim["env"]}
@@ -152,8 +164,7 @@ def test_a_sidecar_without_a_command_still_runs_the_server(monkeypatch):
         "scenario": {"image": "img:test"},
         "sut": {"image": "nav2:jazzy"}}})
     m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
-    sut = next(c for c in m["spec"]["template"]["spec"]["containers"]
-               if c["name"] == "sut")
+    sut = _sidecar(m, "sut")
     assert sut["command"] == ["/usr/bin/tini", "--", "/bin/bash",
                               "/config/secondary_entrypoint.sh"]
     assert "ROBOVAST_CONTAINER_COMMAND" not in {e["name"] for e in sut["env"]}

@@ -37,12 +37,88 @@ def test_stopped_outcome_survives_reconstruction(tmp_path):
 
 
 def test_derives_finished_without_outcome(tmp_path):
-    """No durable record: derive an optimistic 'finished' from artifacts."""
+    """No durable record: derive a 'finished' from artifacts."""
     campaign = tmp_path / "camp-2026-01-01-000002"
     campaign.mkdir()
     st = reconstruct_status_from_disk(campaign, expected_total=5)
     assert st.phase == Phase.FINISHED
     assert st.runs.total == 5  # expected_total surfaced when no artifacts counted
+    # Nothing on disk delivered a verdict, so nothing may be reported as passing:
+    # the five runs are resultless, not silently complete.
+    assert (st.runs.completed, st.runs.failed, st.runs.no_result) == (0, 0, 5)
+
+
+# -- the run tally comes from the run table, not from the journal --------------
+
+def _store_with_runs(campaign: Path, statuses: dict[str, int]) -> None:
+    """Write a minimal ``campaign.db`` whose ``run`` rows carry *statuses*.
+
+    Only the columns :func:`read_run_counts` reads are needed — it aggregates
+    ``run.status`` alone — so this stays independent of the full store schema.
+    """
+    import sqlite3
+    with sqlite3.connect(campaign / "campaign.db") as conn:
+        conn.execute("CREATE TABLE run (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.executemany("INSERT INTO run (status) VALUES (?)",
+                         [(s,) for s, n in statuses.items() for _ in range(n)])
+
+
+def test_run_table_supersedes_a_stale_outcome_tally(tmp_path):
+    """A journal claiming no failures cannot outvote the runs that failed.
+
+    The regression: an ``outcome.json`` written before the controller tallied failing
+    trials reports ``failed: 0`` for a campaign whose trials failed, and every reader
+    of the status then presents it as clean.
+    """
+    campaign = tmp_path / "camp-2026-01-01-000003"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.FINISHED, campaign_id=campaign.name,
+                         runs={"completed": 80, "total": 80, "failed": 0}))
+    _store_with_runs(campaign, {"passed": 31, "failed": 47, "error": 2})
+    st = reconstruct_status_from_disk(campaign)
+    assert st.phase == Phase.FINISHED          # the journal still owns the phase
+    # ...and an errored run is a failure like any other, as CampaignSummary tallies it.
+    assert (st.runs.completed, st.runs.total) == (80, 80)
+    assert (st.runs.failed, st.runs.no_result) == (49, 0)
+
+
+def test_run_table_fills_a_derived_tally(tmp_path):
+    """No journal at all: the run table still decides passed vs failed."""
+    campaign = tmp_path / "camp-2026-01-01-000004"
+    campaign.mkdir()
+    _store_with_runs(campaign, {"passed": 1, "failed": 1})
+    st = reconstruct_status_from_disk(campaign)
+    assert st.phase == Phase.FINISHED
+    assert (st.runs.completed, st.runs.total, st.runs.failed) == (2, 2, 1)
+
+
+def test_search_tally_grows_past_the_last_batch(tmp_path):
+    """A search journal counts its last batch; the run table counts every one.
+
+    ``total`` has to follow the larger of the two, or the recovered status reports
+    more completed runs than it claims to have expected.
+    """
+    campaign = tmp_path / "camp-2026-01-01-000005"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.FINISHED, campaign_id=campaign.name, mode="search",
+                         runs={"completed": 16, "total": 16, "failed": 0}))
+    _store_with_runs(campaign, {"passed": 60, "failed": 20})
+    st = reconstruct_status_from_disk(campaign)
+    assert (st.runs.completed, st.runs.total, st.runs.failed) == (80, 80, 20)
+
+
+def test_empty_run_table_leaves_the_journal_alone(tmp_path):
+    """A store with no run rows says nothing, so the journal's tally stands."""
+    campaign = tmp_path / "camp-2026-01-01-000006"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.FINISHED, campaign_id=campaign.name,
+                         runs={"completed": 4, "total": 4, "failed": 1}))
+    _store_with_runs(campaign, {})
+    st = reconstruct_status_from_disk(campaign)
+    assert (st.runs.completed, st.runs.total, st.runs.failed) == (4, 4, 1)
 
 
 # -- terminal vocabulary must not drift: 'stopped' stays terminal -------------

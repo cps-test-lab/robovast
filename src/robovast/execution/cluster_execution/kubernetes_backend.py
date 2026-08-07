@@ -546,6 +546,21 @@ class BatchJobRunner:
             secondary_spec = {
                 'name': sc_name,
                 'image': sc.image,
+                # A NATIVE SIDECAR: an init container with restartPolicy Always. That is
+                # what ties the pod's lifetime to the scenario rather than to whichever
+                # container happens to run longest. As an ordinary container, a sidecar
+                # running a simulator never exits -- `rst sim` has no reason to -- so the
+                # Job stayed at 0/1 forever after the scenario had finished and uploaded
+                # its results, and the controller polled "1/1 job(s) still running" until
+                # something killed it. The command-less sidecars hid this: their
+                # scenario-execution server has a --watchdog that ends it when the client
+                # disconnects, so `sut` stopped and only `simulation` was left behind.
+                #
+                # Kubelet starts native sidecars before the regular containers and
+                # terminates them after the last one exits, so this also fixes the
+                # start-up order for free: the simulator is up before the scenario.
+                # Stable since k8s 1.29.
+                'restartPolicy': 'Always',
                 'command': ['/usr/bin/tini', '--', '/bin/bash',
                             '/config/secondary_entrypoint.sh'],
                 'env': secondary_env,
@@ -563,7 +578,10 @@ class BatchJobRunner:
                 secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
             if self.run_as_user is not None:
                 secondary_spec.setdefault('securityContext', {})['runAsUser'] = self.run_as_user
-            containers.append(secondary_spec)
+            # Appended AFTER s3-init, which is an ordinary init container and therefore
+            # runs to completion first -- it is what populates /config, and a sidecar
+            # reads secondary_entrypoint.sh from there.
+            spec['initContainers'].append(secondary_spec)
 
         return job_manifest
 

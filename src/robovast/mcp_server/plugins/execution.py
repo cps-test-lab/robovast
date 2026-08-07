@@ -530,9 +530,12 @@ def get_resource_usage(backend: str = "") -> dict:
 
     Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs}`` — cores and bytes — or ``{error}``. ``exec_container`` appears
-        while an ``exec_in_container`` container is held: it can hold a stack's worth of
-        memory, so a full lane names it rather than leaving you to guess.
+        parallel_runs, jobs_running, jobs_pending}`` — cores and bytes — or ``{error}``.
+        ``jobs_running``/``jobs_pending`` are what the lane is *already* busy with across
+        every campaign (executing, and accepted-but-not-executing), so a lane with free
+        cores and a long pending queue is not as free as it looks. ``exec_container``
+        appears while an ``exec_in_container`` container is held: it can hold a stack's
+        worth of memory, so a full lane names it rather than leaving you to guess.
     """
     if backend and backend not in ("local", "cluster"):
         return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}

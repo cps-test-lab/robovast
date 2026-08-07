@@ -126,7 +126,13 @@ class RunProgress(BaseModel):
 
     ``completed`` counts runs that produced results — including failing ones — and
     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
-    failed=1`` means every run delivered data and one trial did not pass: 24 usable."""
+    failed=1`` means every run delivered data and one trial did not pass: 24 usable.
+    A reader showing ``completed`` as a success count is therefore wrong; successes are
+    ``completed - failed``.
+
+    The per-batch scope holds for a **live** status. One recovered from disk
+    (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports
+    the whole campaign instead — there is no current batch for it to be relative to."""
     completed: int = 0
     total: int = 0
     no_result: int = 0

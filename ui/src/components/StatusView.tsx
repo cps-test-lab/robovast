@@ -72,12 +72,17 @@ export function StatusView({
   const terminal = isTerminalPhase(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
-  // Failures for the bar's red segment: prefer the live job count so a failure shows
-  // in real time (the status counters only settle once the batch reaches a terminal
-  // state). runs.no_result is the fallback — a job that delivered nothing is what the
-  // bar's red segment means; a failing *trial* did deliver its result and is reported
-  // separately in the caption.
-  const failed = counts?.failed ?? runs.no_result
+  // Runs that delivered nothing, for the bar's dim red segment: prefer the live job
+  // count so a failure shows in real time (the status counters only settle once the
+  // batch reaches a terminal state). runs.no_result is the fallback.
+  const noResult = counts?.failed ?? runs.no_result
+  // Green is *successes*, not "produced a result". `runs.completed` counts every run
+  // that delivered a result artifact, including the ones whose own verdict is a
+  // failure — so painting `completed` green reported a campaign whose every trial
+  // failed as fully passed. The two failure axes the status keeps apart stay apart in
+  // the bar too (see RunProgress): a trial that ran and failed is solid red, a run
+  // that delivered nothing is the dimmer red.
+  const succeeded = Math.max(0, runs.completed - runs.failed)
   // The jobs list mirrors what actually exists on the cluster — the same set `k9s`
   // shows: jobs that own a pod. A `waiting` job is the un-admitted Kueue backlog: it has
   // no pod, nothing distinguishes one queued job from the next, and there is no log to
@@ -107,8 +112,6 @@ export function StatusView({
   // Only a search campaign has multiple batches; a plain batch run always has one,
   // so the "batch N" counter is noise there and is shown for search only.
   const isSearch = status.mode === 'search'
-  // The lighter buffer segment is what's currently running, layered over the solid
-  // segment of finished runs.
   return (
     <Stack spacing={1.5}>
       <Box>
@@ -147,12 +150,16 @@ export function StatusView({
               : ''}
           </Typography>
         </Stack>
+        {/* `running` stays last: MeterBar clamps the running offset but does not rescale,
+            so a transient over-100% sum clips the final segment — and what is still
+            running is the least final thing to lose. */}
         <MeterBar
           segments={
             runs.total > 0
               ? [
-                  { fraction: runs.completed / runs.total, color: 'success.main' },
-                  { fraction: failed / runs.total, color: 'error.main' },
+                  { fraction: succeeded / runs.total, color: 'success.main' },
+                  { fraction: runs.failed / runs.total, color: 'error.main' },
+                  { fraction: noResult / runs.total, color: 'error.main', opacity: 0.45 },
                   { fraction: running / runs.total, color: 'info.main', striped: true },
                 ]
               : []

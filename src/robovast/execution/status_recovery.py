@@ -28,11 +28,21 @@ Precedence, loud and fixed:
 
 1. ``_execution/outcome.json`` — the durable terminal record the controller
    writes on any terminal exit (finished / failed / stopped / crashed). This is
-   the canonical status journal and always wins when present.
-2. Otherwise, derive an optimistic ``finished`` from the on-disk result
-   artifacts (how many runs produced a ``test.xml``).
+   the canonical status journal and wins when present — with the one exception
+   spelled out below.
+2. Otherwise, derive a ``finished`` from the on-disk result artifacts (each run's
+   ``test.xml``).
 3. A campaign directory that does not exist is ``unknown`` — genuinely
    unrecoverable, reported as such rather than guessed.
+
+The one thing ``outcome.json`` does *not* get the last word on is the run tally.
+It journals how the campaign **ended**; the store's ``run`` table records what its
+runs **did**, so the tally comes from there whenever the table has rows. Without
+that split a record written before the controller learned to count failing trials —
+or by one that never saw the verdicts — reports ``failed: 0`` for a campaign whose
+trials failed, and every reader (CLI, MCP, web UI) then paints it green. Neither
+source is asked to guess: what has no verdict on disk is reported as resultless
+rather than assumed to have passed.
 
 This module depends only *downward* on ``robovast.common`` (the outcome/data
 readers and the results store); nothing here reaches back up into ``service`` or
@@ -45,8 +55,29 @@ from typing import Optional
 from robovast.common.campaign_data import (get_vast_configuration_info,
                                            read_execution_outcome,
                                            write_execution_outcome)
-from robovast.common.store import read_campaign_mode
+from robovast.common.store import read_campaign_mode, read_run_counts
 from robovast.execution.control_server import Phase, Status
+
+
+def _runs_from_verdicts(counts: dict, total: int) -> dict:
+    """A :class:`~robovast.common.status.RunProgress` payload from verdict tallies.
+
+    *counts* carries the ``num_runs`` / ``num_passed`` / ``num_failed`` /
+    ``num_errors`` keys that both :func:`read_run_counts` (the store's ``run`` table)
+    and :func:`get_vast_configuration_info` (the ``test.xml`` walk) return — the two
+    ways this module learns what the runs did. A run that errored is a failure like
+    any other, matching how ``CampaignSummary.num_failed`` is tallied; a run with no
+    verdict at all delivered no result, which is the other failure axis and must not
+    be folded into the passing ones.
+    """
+    failed = counts.get("num_failed", 0) + counts.get("num_errors", 0)
+    completed = counts.get("num_passed", 0) + failed
+    # A recovered status reports the whole campaign, so `total` can only grow here: a
+    # search campaign's durable record counts its last batch while the run table counts
+    # every batch, and "80 completed of 16" is not a thing a reader can render.
+    total = max(total, counts.get("num_runs", 0), completed)
+    return {"completed": completed, "total": total, "failed": failed,
+            "no_result": max(0, total - completed)}
 
 
 def reconstruct_status_from_disk(campaign_dir: str | Path,
@@ -61,8 +92,9 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
             ``outcome.json`` carries its own totals and ignores this.
 
     Returns:
-        The durable ``outcome.json`` Status when present; otherwise a derived
-        ``finished`` Status counting the runs that produced results; otherwise an
+        The durable ``outcome.json`` Status when present, with its run tally taken
+        from the store's ``run`` table where that has rows; otherwise a derived
+        ``finished`` Status tallying each run's verdict on disk; otherwise an
         ``unknown`` Status for a missing directory.
     """
     campaign_dir = Path(campaign_dir)
@@ -77,22 +109,39 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
     # reports it consistently — the single recovery path stays authoritative.
     postprocessed = (campaign_dir / "_execution" / "data.db").is_file()
 
-    # The durable terminal record wins — prefer it over reconstructing an
-    # optimistic "finished" (it also carries the real phase: failed / stopped).
+    # Who counted the runs: the store's ``run`` table, in one indexed read. ``None``
+    # when there is no store to ask (absent, or a schema-v1 one with no such table),
+    # and no rows when nothing was recorded — either way the tally comes from the
+    # artifact walk below instead.
+    counts = read_run_counts(campaign_dir)
+    if counts is not None and counts["num_runs"] == 0:
+        counts = None
+
+    # The durable terminal record wins — prefer it over reconstructing a "finished"
+    # from artifacts (it also carries the real phase: failed / stopped). Its run tally
+    # is the exception: it may never have been given the verdicts, so the run table
+    # supersedes it where there is one (see the module docstring).
     outcome = read_execution_outcome(campaign_dir)
     if outcome is not None:
         outcome.postprocessed = outcome.postprocessed or postprocessed
+        if counts is not None:
+            outcome.runs = _runs_from_verdicts(counts, outcome.runs.total)
         return outcome
 
-    try:
-        info = get_vast_configuration_info(campaign_dir)
-        total = info.get("num_runs", 0)
-    except (FileNotFoundError, OSError, ValueError, TypeError):
-        total = 0
+    # No durable record. Nothing here may claim a run passed without a verdict saying
+    # so: this used to report `completed == total`, painting a campaign green having
+    # never looked at what its runs did. The artifact walk carries the verdicts too, so
+    # it stands in for the store when there is none.
+    if counts is None:
+        try:
+            counts = get_vast_configuration_info(campaign_dir)
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            counts = {}
     return Status(phase=Phase.FINISHED, campaign_id=campaign_id,
                   mode=read_campaign_mode(campaign_dir),
                   postprocessed=postprocessed,
-                  runs={"completed": total, "total": expected_total or total})
+                  runs=_runs_from_verdicts(
+                      counts, expected_total or counts.get("num_runs", 0)))
 
 
 def record_step_outcome(campaign_dir: str | Path, *,

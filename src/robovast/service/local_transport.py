@@ -623,6 +623,7 @@ class LocalTransport(RobovastInterface):
         import psutil  # pylint: disable=import-outside-toplevel
         vm = psutil.virtual_memory()
         cores = psutil.cpu_count(logical=True)
+        jobs_running, jobs_pending = self._scenario_job_tally()
         return ResourceUsage(
             backend="docker",
             cpu_capacity=float(cores),
@@ -630,7 +631,41 @@ class LocalTransport(RobovastInterface):
             memory_capacity_bytes=vm.total,
             memory_used_bytes=vm.used,
             parallel_runs=False,   # Docker backend is single-flight: runs are sequential
+            jobs_running=jobs_running,
+            jobs_pending=jobs_pending,
         )
+
+    def _scenario_job_tally(self) -> "tuple[int, int]":
+        """``(running, pending)`` scenario runs across this lane's live campaigns.
+
+        Read from the controller snapshot, not from disk: :meth:`list_jobs` discovers
+        runs as ``<config>/<run>/`` directories and calls any without a ``test.xml``
+        ``running`` while the campaign is live, so a run that died without writing one
+        would be reported as still executing for the rest of the campaign. The
+        snapshot is what the controller actually believes, and costs no I/O.
+
+        ``running`` is 0 or 1 by construction, not by clamping: this lane is
+        single-flight (``parallel_runs=False`` — the Docker backend hardcodes one
+        container name), so a batch has at most one run executing, and the phases
+        before ``running`` (``initializing``/``building``/``variation``) have none.
+        ``pending`` is the rest of the current batch — accepted work that is not
+        executing, the same population the cluster lane's ``waiting``+``pending`` Jobs
+        are, so a consumer can read the pair without knowing which lane answered.
+
+        Summed over live campaigns even though :meth:`_guard_new_campaign` admits one
+        at a time, so this stays correct if that guard ever relaxes.
+        """
+        with self._lock:
+            entries = [e for e in self._campaigns.values() if not self._is_done(e)]
+        running = pending = 0
+        for entry in entries:
+            snap = entry.state.snapshot()
+            active = 1 if snap.phase == Phase.RUNNING else 0
+            total = snap.runs.total if snap.runs else 0
+            done = snap.runs.completed if snap.runs else 0
+            running += active
+            pending += max(0, total - done - active)
+        return running, pending
 
     # -- launch hooks (overridden by ClusterService) -------------------------
     #

@@ -1982,11 +1982,20 @@ export interface components {
          *     actually fit is left to the consumer, which knows each project's per-run
          *     reservation — the service does not.
          *
-         *     ``jobs_running`` / ``jobs_pending`` are backend-wide scenario-run counts (every
-         *     campaign, not one), pod-accurate: ``running`` counts pods actually in phase
-         *     ``Running`` and ``pending`` the rest still waiting — the same distinction the
-         *     per-campaign :class:`JobCounts` draws. Both are ``0`` on backends that don't run
-         *     Jobs (local Docker).
+         *     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
+         *     this backend is driving, not one. One definition, both lanes: ``running`` is what is
+         *     **executing right now**, ``pending`` is work the backend has **accepted but is not
+         *     executing**. On the cluster that means Kueue-waiting + pod-pending + blocked Jobs;
+         *     locally it is the remainder of the current batch, with ``running`` 0 or 1 because
+         *     the Docker lane is single-flight. So the pair can be read — and summed into an
+         *     "outstanding work" total — without branching on ``backend``.
+         *
+         *     The two counts deliberately answer a different question from ``cpu_used`` above:
+         *     they include work that has been accepted but has no compute granted yet, which is
+         *     why counting it as *usage* reported more cores in use than the cluster had.
+         *     ``completed`` and ``failed`` runs are past work and appear in neither; the
+         *     per-campaign :class:`JobCounts` is the finer-grained view (it keeps ``waiting`` and
+         *     ``blocked`` apart, which a capacity meter has no use for).
          */
         ResourceUsage: {
             /** Backend */
@@ -2044,6 +2053,12 @@ export interface components {
          *     ``completed`` counts runs that produced results — including failing ones — and
          *     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
          *     failed=1`` means every run delivered data and one trial did not pass: 24 usable.
+         *     A reader showing ``completed`` as a success count is therefore wrong; successes are
+         *     ``completed - failed``.
+         *
+         *     The per-batch scope holds for a **live** status. One recovered from disk
+         *     (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports
+         *     the whole campaign instead — there is no current batch for it to be relative to.
          */
         RunProgress: {
             /**

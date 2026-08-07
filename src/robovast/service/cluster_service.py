@@ -208,9 +208,8 @@ class ClusterService(LocalTransport):
         pod sum does not: a pod still waiting for a node (or left behind by one that
         was removed) requests resources nothing has granted, so a queue of pending
         scenario runs used to report more cores in use than the cluster has —
-        "29.7/24" on a 24-core workstation. Pending work is already visible as
-        ``jobs_pending``, which is why that tally deliberately stays outside the
-        node filter below.
+        "29.7/24" on a 24-core workstation. Pending work is visible as
+        ``jobs_pending`` instead, counted from Jobs by :meth:`_scenario_job_tally`.
 
         Requires the service's ClusterRole (nodes/pods get,list — see
         ``service_deploy._service_rbac_manifests``).
@@ -230,25 +229,25 @@ class ClusterService(LocalTransport):
 
         cpu_used = 0.0
         mem_used = 0
-        jobs_running = 0
-        jobs_pending = 0
         pods = v1.list_pod_for_all_namespaces(
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         for pod in pods.items:
             if getattr(pod.spec, "node_name", None) in node_names:
-                for container in (pod.spec.containers or []):
+                # Native sidecars (init containers with restartPolicy Always) run for the
+                # pod's whole life, and Kubernetes adds their requests to the pod's
+                # effective total rather than taking the max as it does for ordinary init
+                # containers. Counting only spec.containers would therefore under-report a
+                # scenario job by its simulator and its SUT -- the two biggest reservations
+                # in a three-container campaign -- and this number is what sizes a sweep.
+                sidecars = [c for c in (getattr(pod.spec, "init_containers", None) or [])
+                            if getattr(c, "restart_policy", None) == "Always"]
+                for container in list(pod.spec.containers or []) + sidecars:
                     requests = (container.resources.requests
                                 if container.resources else None) or {}
                     cpu_used += _parse_resource(requests.get("cpu"))
                     mem_used += int(_parse_resource(requests.get("memory")))
-            # Backend-wide scenario-run tally, pod-accurate (Running vs still-waiting)
-            # so the sidebar's jobs bar matches k9s. Free — same pod list as above.
-            if (pod.metadata.labels or {}).get("jobgroup") == "scenario-runs":
-                if pod.status and pod.status.phase == "Running":
-                    jobs_running += 1
-                else:
-                    jobs_pending += 1
 
+        jobs_running, jobs_pending = self._scenario_job_tally()
         return ResourceUsage(
             backend="kubernetes",
             cpu_capacity=cpu_capacity,
@@ -259,6 +258,37 @@ class ClusterService(LocalTransport):
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,
         )
+
+    def _scenario_job_tally(self) -> "tuple[int, int]":
+        """``(running, pending)`` over every scenario-run Job in this namespace.
+
+        Counted from **Jobs**, not pods, because a Kueue-suspended Job has no pod at
+        all (see :func:`list_jobs_with_phase`) — and that is the state every cluster
+        batch *starts* in. Reading pods therefore reported a freshly launched 25-run
+        sweep as ``0/0`` while its whole queue waited for quota, which is exactly the
+        "nothing is happening" the sidebar's jobs bar is there to contradict.
+
+        Classification is delegated rather than repeated: ``list_jobs_with_phase`` is
+        the single place that turns Jobs + pods into a phase, and the previous
+        hand-rolled pod check here was a consumer that had drifted from it.
+        ``pending`` folds in ``waiting`` (queued for quota) and ``blocked`` (cannot
+        start on its own) — both are accepted work that is not executing; the
+        per-campaign :class:`JobCounts` keeps them apart for the campaign view, which
+        is where a blocked job needs its own treatment. ``completed``/``failed`` are
+        past work and belong in neither.
+
+        Namespace-scoped, unlike the CPU/memory figures above: those must stay
+        cluster-wide because the nodes are shared, but the job tally answers "what is
+        *this* service running", the same question :meth:`list_jobs` answers per
+        campaign. A read failure propagates — a silently zero tally is the bug this
+        method exists to fix.
+        """
+        from robovast.execution.cluster_execution.cluster_execution import \
+            list_jobs_with_phase  # pylint: disable=import-outside-toplevel
+        phases = [phase for _job, phase, _detail in list_jobs_with_phase(
+            self._k8s_batch(), self._k8s(), self.namespace, "jobgroup=scenario-runs")]
+        return (sum(1 for p in phases if p == "running"),
+                sum(1 for p in phases if p in ("pending", "waiting", "blocked")))
 
     # -- helpers ------------------------------------------------------------
 

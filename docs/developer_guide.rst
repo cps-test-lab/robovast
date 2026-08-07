@@ -1679,7 +1679,22 @@ in the implementations: ``LocalTransport._compute_resource_usage`` reads the hos
 those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
 never branch on backend. Summing both sides over one node set is what keeps ``used <=
 capacity``: a pod still queued for a node requests cores nothing has granted, and counting
-it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage. Both share one
+it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage.
+
+That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
+both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Kueue-suspended Job
+has no pod at all — the state every cluster batch *starts* in — so the original pod-based count
+reported a freshly launched sweep as ``0/0`` with its whole queue waiting for quota.
+``ClusterService._scenario_job_tally`` therefore delegates to
+``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
+consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-
+scoped because it answers "what is *this* service running" while CPU/memory must stay cluster-wide.
+``LocalTransport._scenario_job_tally`` reads the same pair off the live campaigns' controller
+snapshots — ``running`` is 0 or 1, the lane being single-flight — rather than off disk, which would
+call a run that died without a ``test.xml`` "running" forever. The UI's sidebar meter reads
+``running/(running+pending)`` and hides itself when both are zero.
+
+Both share one
 TTL-cached path on the base class (``LocalTransport.resource_usage`` memoises for
 ``_USAGE_CACHE_TTL`` under a lock), so many polling clients cost one sampling per window.
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
