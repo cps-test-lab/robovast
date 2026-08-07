@@ -33,6 +33,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -179,20 +180,6 @@ def _config_previews(config: dict, remotes: dict) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _read_log_slice(path: Path, offset: int, eof: bool) -> LogChunk:
-    """Read a single log file from byte *offset* onward into a :class:`LogChunk`.
-
-    The same offset-poll contract as the campaign log: ``next_offset`` is the new
-    end of file, ``eof`` signals no more bytes will be written. A not-yet-created
-    log (the run just started) reads as an empty, non-terminal chunk.
-    """
-    if not path.is_file():
-        return LogChunk(text="", next_offset=offset, eof=eof)
-    data = path.read_bytes()
-    return LogChunk(text=data[offset:].decode("utf-8", errors="replace"),
-                    next_offset=len(data), eof=eof)
-
-
 def _show_gui_note(request, raw_config: dict) -> str:
     """Warn when ``show_gui`` was accepted but the project will still run headless.
 
@@ -286,9 +273,18 @@ class LocalTransport(RobovastInterface):
     #: sampling per window, not N.
     _USAGE_CACHE_TTL = 10.0
 
+    #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
+    _JOB_LOG_CACHE_MAX = 128
+
     def __init__(self, store=None, workspace_dir=None):
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
+        # Incremental job-log tails, so a log panel polling twice a second folds in only
+        # each container's delta instead of re-reading whole files. LRU-bounded so a
+        # long-lived service does not accumulate buffers. Shared with ClusterService,
+        # which caches a PodLogTail in the same map (see _new_job_log_tail).
+        self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
+        self._job_log_guard = threading.Lock()
         # Container exec gets its own lock: creating its manager reaps a stray container
         # first, and on the cluster that waits for a pod to finish terminating. Doing
         # that under the campaign lock would stall every status read and campaign start
@@ -1364,18 +1360,49 @@ class LocalTransport(RobovastInterface):
             total=len(jobs) + pending)
         return ListJobsResponse(jobs=jobs, counts=counts)
 
+    def _new_job_log_tail(self, campaign_id: str, job_name: str):
+        """Build this lane's tail for a job. Overridden by the cluster lane."""
+        from robovast.service.local_job_log import LocalJobLogTail
+        return LocalJobLogTail()
+
+    def _job_log_tail(self, campaign_id: str, job_name: str):
+        """The cached log tail for a job, created on first use (LRU-bounded)."""
+        key = (campaign_id, job_name)
+        with self._job_log_guard:
+            tail = self._job_log_tails.get(key)
+            if tail is None:
+                tail = self._new_job_log_tail(campaign_id, job_name)
+                self._job_log_tails[key] = tail
+                while len(self._job_log_tails) > self._JOB_LOG_CACHE_MAX:
+                    self._job_log_tails.popitem(last=False)
+            else:
+                self._job_log_tails.move_to_end(key)
+            return tail
+
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a run's live ``job/logs/system.log`` (``job_name`` = ``<config>/<run>``).
+        """Serve a run's live container logs, merged (``job_name`` = ``<config>/<run>``).
 
-        The run writes this file in place as it executes, so the same read serves a
-        running and a finished run; ``eof`` is set once the run has a result or the
-        campaign is no longer driven here.
+        The containers write these files in place as they execute, so the same read
+        serves a running and a finished run.
 
-        The container writes this to the JOB's artifact dir (``_jobs[/<batch>]/job-<j>``),
+        **All** of the job's containers, not just the main one: the ROS shape runs the
+        simulator and the system under test in their own containers, which write
+        ``logs/system_<name>.log`` beside the main container's ``logs/system.log``. Only
+        the latter used to be read, so the panel showed scenario-execution and neither
+        the simulator nor nav2 -- the two whose output explains a failed run. See
+        :class:`~robovast.service.local_job_log.LocalJobLogTail` for how concurrent files
+        are merged without breaking the byte-offset contract.
+
+        The containers write to the JOB's artifact dir (``_jobs[/<batch>]/job-<j>``),
         not to the config/run dir -- ``<config>/<run>/logs/`` exists but stays empty, so
         reading there returns a silently blank job log even though the same output is
         visible in the campaign log (the local backend also folds container stdout into
         ``controller.log``). :func:`job_artifact_dir` resolves the real dir.
+
+        ``eof`` needs the run finished **and** a settled poll. A sidecar flushes during
+        compose's stop grace, i.e. after the main container wrote ``test.xml``, so ending
+        the stream on ``test.xml`` alone would close the panel on exactly the shutdown
+        output that says whether the simulator saved its recording.
         """
         from robovast.common.campaign_data import read_test_result
         from robovast.common.execution import job_artifact_dir
@@ -1402,8 +1429,13 @@ class LocalTransport(RobovastInterface):
             # Before the first job starts there is no manifest yet; that is the
             # documented startup race, not a broken layout.
             return LogChunk(text="", next_offset=offset, eof=run_done or not live)
-        return _read_log_slice(job_dir / "logs" / "system.log", offset,
-                               eof=run_done or not live)
+        finished = run_done or not live
+        tail = self._job_log_tail(campaign_id, job_name)
+        with tail.lock:
+            grew = tail.read(job_dir / "logs", flush_partial=finished)
+            text, next_offset = tail.merged.slice_from(offset)
+        return LogChunk(text=text, next_offset=next_offset,
+                        eof=(not live) or (finished and not grew))
 
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop and kill the compute so the worker unblocks.

@@ -32,6 +32,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
 
+from robovast.common.kube import pod_workload_containers
+from robovast.common.log_tail import MergedLogBuffer, tag_width
+
 from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
 
 logger = logging.getLogger(__name__)
@@ -144,74 +147,6 @@ def pod_termination_reason(pod) -> "tuple[str, str] | None":
     return None
 
 
-def _loggable_container_names(pod) -> "list[str]":
-    """Names of *pod*'s regular containers (the main ``robovast`` plus any secondary
-    sim/SUT servers), in spec order. Init containers (e.g. ``s3-init``) are startup
-    noise and excluded."""
-    spec = getattr(pod, "spec", None)
-    containers = getattr(spec, "containers", None) or [] if spec else []
-    return [c.name for c in containers if getattr(c, "name", None)]
-
-
-def read_pod_logs_merged(core, pod, namespace) -> str:
-    """Merge every regular container's log of *pod* into one readable stream.
-
-    A scenario-run pod has a main ``robovast`` container plus zero or more named
-    secondary containers (sim / SUT servers). This returns them as a single log:
-
-    * one container → its plain log, unchanged (byte-identical to the old behaviour);
-    * many containers → each line tagged ``[<container>] `` and all lines
-      merge-sorted by the kubelet's per-line RFC3339 timestamp (fetched with
-      ``timestamps=True``). Because every container shares the node clock and logs
-      only ever grow forward in time, the merged text is append-only across repeated
-      reads — which keeps the byte-offset streaming protocol correct.
-
-    A container that has not started yet (``Waiting``) or whose log is otherwise
-    unavailable is skipped rather than failing the whole read.
-    """
-    names = _loggable_container_names(pod)
-    pod_name = pod.metadata.name
-
-    def _read(container, timestamps):
-        try:
-            return core.read_namespaced_pod_log(
-                name=pod_name, namespace=namespace, container=container,
-                timestamps=timestamps)
-        except client.exceptions.ApiException as e:
-            # 404: pod/container gone; 400: container waiting / no log yet.
-            if e.status in (400, 404):
-                return None
-            raise
-
-    if len(names) <= 1:
-        container = names[0] if names else "robovast"
-        return _read(container, timestamps=False) or ""
-
-    width = max(len(n) for n in names)
-    entries = []  # (timestamp, container_order, line_order, rendered_line)
-    for order, name in enumerate(names):
-        text = _read(name, timestamps=True)
-        if not text:
-            continue
-        prefix = f"[{name}]".ljust(width + 2)
-        last_ts = ""
-        for line_order, line in enumerate(text.split("\n")):
-            if not line:
-                continue
-            ts, _, message = line.partition(" ")
-            # kubelet timestamps are RFC3339 and sort lexicographically; a line
-            # without one (rare continuation) inherits its container's last ts so
-            # it stays next to its neighbours instead of jumping to the top.
-            if "T" in ts and (ts[:1].isdigit()):
-                last_ts = ts
-            else:
-                message = line
-            entries.append((last_ts, order, line_order, f"{prefix} {message}"))
-    entries.sort(key=lambda e: (e[0], e[1], e[2]))
-    merged = "\n".join(e[3] for e in entries)
-    return merged + "\n" if merged else ""
-
-
 def _after_last(lines, needle):
     """Lines after the last occurrence of *needle* in *lines*, or ``None`` if absent."""
     for i in range(len(lines) - 1, -1, -1):
@@ -230,11 +165,15 @@ class PodLogTail:
     straight onto it, but each :meth:`read` only pulls a small trailing window from
     the API (``since_seconds``) and appends the lines it has not seen yet.
 
-    Same append-only assumption as :func:`read_pod_logs_merged`: a pod's containers
-    share the node clock and logs only grow forward, so lines fetched in a later poll
-    always sort after everything already buffered. Dedup across the overlapping
+    Append-only by construction, which is what the byte-offset protocol rests on: a pod's
+    containers share the node clock and logs only grow forward, so lines fetched in a later
+    poll always sort after everything already buffered. Dedup across the overlapping
     ``since_seconds`` windows is by exact last-consumed line per container, which is
     unique because kubelet stamps every line with a nanosecond timestamp.
+
+    The tagging and appending live in :class:`robovast.common.log_tail.MergedLogBuffer`,
+    shared with the local lane so the same campaign reads the same either way. What is
+    kube-specific — the ``since_seconds`` window, the anchor dedup, the re-anchor — is here.
     """
 
     #: Slack (seconds) added to the since-window so a poll never misses lines written
@@ -242,7 +181,7 @@ class PodLogTail:
     _SINCE_SLACK = 2
 
     def __init__(self):
-        self.buf = bytearray()          # full merged log so far (offset maps onto it)
+        self.merged = MergedLogBuffer()  # the stream so far; a client's offset indexes it
         self.terminal = False
         self._last_line = {}            # container -> last raw "<ts> msg" line consumed
         self._last_ts = {}              # container -> last seen ts (for continuation lines)
@@ -251,9 +190,10 @@ class PodLogTail:
 
     def read(self, core, pod, namespace, now) -> bool:
         """Fetch the delta since the last read, append it, and return ``terminal``."""
-        names = _loggable_container_names(pod) or ["robovast"]
+        names = [c.name for c in pod_workload_containers(pod) if getattr(c, "name", None)]
+        names = names or ["robovast"]
         multi = len(names) > 1
-        width = max(len(n) for n in names) if multi else 0
+        width = tag_width(names) if multi else 0
         # First read pulls the whole log; later reads only the elapsed window + slack.
         since = None
         if self._last_wall is not None:
@@ -276,9 +216,20 @@ class PodLogTail:
                 out.pop()  # trailing newline from the API is not a real line
             return out
 
-        new = []  # (ts, container_order, line_order, rendered_line)
-        for order, name in enumerate(names):
-            lines = _lines(_fetch(name, since))
+        # Concurrently, because this runs every 0.5s per open panel and a three-container
+        # job would otherwise cost three serial round-trips -- over a `kubectl
+        # port-forward` (a service driving the lane from off-cluster) that is enough to
+        # make the panel visibly trail the run. The merge below sorts by timestamp, so
+        # completion order does not affect the output.
+        if len(names) > 1:
+            with ThreadPoolExecutor(max_workers=len(names)) as pool:
+                fetched = list(pool.map(lambda n: _fetch(n, since), names))
+        else:
+            fetched = [_fetch(names[0], since)]
+
+        new = []  # ((ts, container_order, line_order), container, message)
+        for order, (name, raw) in enumerate(zip(names, fetched)):
+            lines = _lines(raw)
             last = self._last_line.get(name)
             if last is not None:
                 fresh = _after_last(lines, last)
@@ -310,18 +261,9 @@ class PodLogTail:
                 else:
                     message = line  # continuation line: keep it whole, inherit last ts
                 cur_ts = self._last_ts.get(name, "")
-                if multi:
-                    prefix = f"[{name}]".ljust(width + 2)
-                    new.append((cur_ts, order, line_order, f"{prefix} {message}"))
-                else:
-                    new.append((cur_ts, order, line_order, message))
+                new.append(((cur_ts, order, line_order), name, message))
 
-        new.sort(key=lambda e: (e[0], e[1], e[2]))
-        text = "\n".join(e[3] for e in new)
-        if text:
-            if self.buf and not self.buf.endswith(b"\n"):
-                self.buf += b"\n"
-            self.buf += text.encode("utf-8", "replace") + b"\n"
+        self.merged.append(new, multi=multi, width=width)
         self._last_wall = now
         self.terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
         return self.terminal

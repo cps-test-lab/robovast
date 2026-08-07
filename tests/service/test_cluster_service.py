@@ -866,10 +866,21 @@ class _UsageCore:
         return self._job_pods
 
 
-def _pod(name="pod-1", phase="Running"):
+def _pod(name="pod-1", phase="Running", sidecars=()):
+    """A scenario-run pod: the main ``robovast`` container plus *sidecars* by name.
+
+    Sidecars go where Kubernetes puts native ones — ``initContainers`` with
+    ``restartPolicy: Always`` — alongside the ordinary ``s3-init``, so a test that says
+    "all three containers" is testing the real pod shape.
+    """
     import types
+    init = [types.SimpleNamespace(name="s3-init", restart_policy=None)]
+    init += [types.SimpleNamespace(name=n, restart_policy="Always") for n in sidecars]
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name),
+        spec=types.SimpleNamespace(
+            containers=[types.SimpleNamespace(name="robovast")],
+            init_containers=init),
         status=types.SimpleNamespace(phase=phase))
 
 
@@ -912,23 +923,67 @@ def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
     assert cs.get_job_log("camp", "j").eof is True
 
 
-def test_get_job_log_pending_pod_returns_empty(cs, monkeypatch):
-    """A pod still Pending has no log yet — empty, non-terminal, no log call."""
+def _api_exception(status):
+    """The kube API's "container is waiting to start" (400) / "gone" (404)."""
+    from kubernetes import client
+    return client.exceptions.ApiException(status=status)
+
+
+def test_get_job_log_reads_a_pending_pods_sidecars(cs, monkeypatch):
+    """A Pending pod is still read: its native sidecars are already logging.
+
+    Kubelet runs native sidecars during the init phase, so the pod stays ``Pending``
+    while the simulator starts — and a simulator that cannot load its world says so
+    there and then keeps the pod Pending forever. Short-circuiting on the phase, as this
+    used to, discarded exactly the output that explains the hang.
+    """
     import types
-    called = {"log": False}
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(items=[_pod(phase="Pending")])
+            return types.SimpleNamespace(
+                items=[_pod(phase="Pending", sidecars=["simulation"])])
 
-        def read_namespaced_pod_log(self, *a, **k):
-            called["log"] = True
-            return ""
+        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
+            if container == "simulation":
+                return "2026-08-07T10:00:00Z could not load world\n"
+            raise _api_exception(400)  # the scenario container has not started yet
 
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
     chunk = cs.get_job_log("camp", "j")
-    assert chunk.text == "" and chunk.eof is False
-    assert called["log"] is False
+    assert "could not load world" in chunk.text
+    assert "[simulation]" in chunk.text
+    assert chunk.eof is False  # still Pending → keep polling
+
+
+def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
+    """The reported break: sidecars moved to initContainers and vanished from the panel.
+
+    Every line must carry a ``[container]`` prefix — that is what the web UI colors —
+    and the three containers must interleave by kubelet's per-line timestamp rather than
+    arriving in three blocks.
+    """
+    import types
+
+    logs = {
+        "robovast": "2026-08-07T10:00:02Z executing scenario\n",
+        "simulation": "2026-08-07T10:00:01Z mujoco model loaded\n",
+        "sut": "2026-08-07T10:00:03Z bt_navigator ready\n",
+    }
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector):
+            return types.SimpleNamespace(
+                items=[_pod(sidecars=["simulation", "sut"])])
+
+        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
+            return logs[container]
+
+    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    lines = cs.get_job_log("camp", "j").text.splitlines()
+    assert [line.split("]")[0] + "]" for line in lines] == [
+        "[simulation]", "[robovast]", "[sut]"]  # timestamp order, not spec order
+    assert "mujoco model loaded" in lines[0]
 
 
 def test_get_job_log_missing_pod_raises(cs, monkeypatch):

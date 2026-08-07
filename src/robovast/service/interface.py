@@ -1319,8 +1319,13 @@ class RobovastInterface(ABC):
 
         Same streaming protocol as :meth:`get_campaign_logs` (poll, append
         :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
-        only — the running pod's log on the cluster, the live ``logs/system.log`` file
+        only — the running pod on the cluster, the job's ``logs/system*.log`` files
         locally. Raises if the job's log source is gone.
+
+        **Every** container the job runs, merged into one stream: a job is not one
+        container (the ROS shape gives the simulator and the system under test their
+        own), and their output only explains a failure when read together. Each line is
+        tagged ``[<container>]`` when there is more than one.
         """
 
     @abstractmethod

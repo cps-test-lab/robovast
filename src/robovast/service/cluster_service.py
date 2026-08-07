@@ -49,7 +49,6 @@ import time
 import logging
 import os
 import threading
-from collections import OrderedDict
 from pathlib import Path
 
 from robovast.execution.control_server import Phase, is_running
@@ -139,11 +138,6 @@ class ClusterService(LocalTransport):
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
         self._last_fetch: dict[str, tuple[int, float]] = {}
-        # Incremental, cache-backed job-log tails so a polling log panel fetches only
-        # the delta each 1.5s instead of re-reading the whole pod log (see get_job_log
-        # / PodLogTail). LRU-bounded so long-lived services don't accumulate buffers.
-        self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
-        self._job_log_guard = threading.Lock()
         # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
         # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
         # re-lists once a second; see _campaign_index.
@@ -214,6 +208,8 @@ class ClusterService(LocalTransport):
         Requires the service's ClusterRole (nodes/pods get,list — see
         ``service_deploy._service_rbac_manifests``).
         """
+        from robovast.common.kube import \
+            pod_workload_containers  # pylint: disable=import-outside-toplevel
         from robovast.execution.cluster_execution.kubernetes_kueue import \
             _parse_resource  # pylint: disable=import-outside-toplevel
         v1 = self._k8s()
@@ -233,15 +229,12 @@ class ClusterService(LocalTransport):
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         for pod in pods.items:
             if getattr(pod.spec, "node_name", None) in node_names:
-                # Native sidecars (init containers with restartPolicy Always) run for the
-                # pod's whole life, and Kubernetes adds their requests to the pod's
+                # Native sidecars included: Kubernetes adds their requests to the pod's
                 # effective total rather than taking the max as it does for ordinary init
                 # containers. Counting only spec.containers would therefore under-report a
                 # scenario job by its simulator and its SUT -- the two biggest reservations
                 # in a three-container campaign -- and this number is what sizes a sweep.
-                sidecars = [c for c in (getattr(pod.spec, "init_containers", None) or [])
-                            if getattr(c, "restart_policy", None) == "Always"]
-                for container in list(pod.spec.containers or []) + sidecars:
+                for container in pod_workload_containers(pod):
                     requests = (container.resources.requests
                                 if container.resources else None) or {}
                     cpu_used += _parse_resource(requests.get("cpu"))
@@ -810,34 +803,28 @@ class ClusterService(LocalTransport):
             return full[len(campaign_id) + 1:]
         return full
 
-    #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
-    _JOB_LOG_CACHE_MAX = 128
-
-    def _job_log_tail(self, campaign_id: str, job_name: str):
-        """The cached :class:`PodLogTail` for a job, created on first use (LRU-bounded)."""
+    def _new_job_log_tail(self, campaign_id: str, job_name: str):
+        """This lane's tail reads a pod's containers, not a job dir's files."""
         from robovast.execution.cluster_execution.cluster_execution import PodLogTail
-        key = (campaign_id, job_name)
-        with self._job_log_guard:
-            tail = self._job_log_tails.get(key)
-            if tail is None:
-                tail = PodLogTail()
-                self._job_log_tails[key] = tail
-                while len(self._job_log_tails) > self._JOB_LOG_CACHE_MAX:
-                    self._job_log_tails.popitem(last=False)
-            else:
-                self._job_log_tails.move_to_end(key)
-            return tail
+        return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
         """Serve a running Job's live pod log from byte *offset* onward.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
-        plus any secondary sim/SUT servers; see :class:`PodLogTail`). Reads are
+        plus any sim/SUT sidecars; see :class:`PodLogTail`). Reads are
         incremental: a cached tail keeps the full assembled text so the byte offset
         still maps onto it, but each poll only pulls the delta from the kube API
-        rather than the whole log. Live source only: a pod still ``Pending`` has no
-        log yet (empty, non-terminal chunk); a missing pod raises (→ 404).
+        rather than the whole log. Live source only; a missing pod raises (→ 404).
+
+        A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
+        native sidecars, so kubelet runs them *during* the init phase, while the pod is
+        still Pending. They are already logging -- and a simulator that cannot load its
+        world says so there and then keeps the pod Pending forever. Short-circuiting on
+        the phase, as this did, threw away exactly the output that explains the hang.
+        A container with no log yet is handled a layer down, where ``PodLogTail._fetch``
+        swallows the API's 400/404 and contributes nothing.
         """
         from kubernetes import client
         from robovast.execution.cluster_execution.cluster_execution import \
@@ -849,20 +836,17 @@ class ClusterService(LocalTransport):
         if not pods.items:
             raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}")
         pod = pods.items[0]
-        if pod.status and pod.status.phase == "Pending":
-            return LogChunk(text="", next_offset=offset, eof=False)
         tail = self._job_log_tail(campaign_id, job_name)
         try:
             with tail.lock:
                 terminal = tail.read(core, pod, self.namespace, time.time())
-                raw = bytes(tail.buf)
+                text, next_offset = tail.merged.slice_from(offset)
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 raise KeyError(
                     f"pod for job {job_name!r} is gone (campaign {campaign_id!r})") from e
             raise
-        return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
-                        next_offset=len(raw), eof=terminal)
+        return LogChunk(text=text, next_offset=next_offset, eof=terminal)
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 

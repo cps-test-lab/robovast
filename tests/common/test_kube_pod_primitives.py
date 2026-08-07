@@ -11,9 +11,12 @@ weaker version.
 No cluster is needed: the API surface used here is small enough to fake.
 """
 
+import types
+
 import pytest
 
-from robovast.common.kube import (exec_stream, pod_pending_reason, wait_pod_gone,
+from robovast.common.kube import (exec_stream, pod_pending_reason,
+                                  pod_workload_containers, wait_pod_gone,
                                   wait_pod_ready)
 
 
@@ -214,3 +217,61 @@ def test_exec_stream_writes_stdin_when_given(monkeypatch):
     core = type("C", (), {"connect_get_namespaced_pod_exec": object()})()
     exec_stream(core, "p", "ns", "c", ["cat"], limit_s=5, stdin_data="payload")
     assert resp.stdin == ["payload"]
+
+
+# --- which containers a pod actually runs -----------------------------------
+#
+# "Init container" is overloaded: one with restartPolicy Always is a NATIVE SIDECAR that
+# runs for the pod's whole life. Three call sites answered "which containers?" from
+# spec.containers alone and each was wrong the same way once the simulator and the SUT
+# became sidecars — resource accounting dropped the two biggest reservations, image
+# pinning pinned every role to the scenario's digest, and the job log showed one
+# container out of three. These pin the shared answer.
+
+
+def _spec_container(name, restart_policy=None, cpu=None):
+    resources = types.SimpleNamespace(requests={"cpu": cpu}) if cpu else None
+    return types.SimpleNamespace(name=name, restart_policy=restart_policy,
+                                 resources=resources)
+
+
+def _scenario_pod(init=None, containers=None):
+    return types.SimpleNamespace(spec=types.SimpleNamespace(
+        containers=containers if containers is not None else [_spec_container("robovast")],
+        init_containers=init))
+
+
+def test_workload_containers_includes_native_sidecars_and_orders_main_first():
+    pod = _scenario_pod(init=[
+        _spec_container("s3-init"),                              # ordinary: staging, exits
+        _spec_container("simulation", restart_policy="Always"),
+        _spec_container("sut", restart_policy="Always"),
+    ])
+    assert [c.name for c in pod_workload_containers(pod)] == [
+        "robovast", "simulation", "sut"]
+
+
+def test_workload_containers_excludes_ordinary_init_containers():
+    """``s3-init`` populates /config and exits; counting it would double-count its CPU
+    and put its (empty) log in the panel."""
+    pod = _scenario_pod(init=[_spec_container("s3-init")])
+    assert [c.name for c in pod_workload_containers(pod)] == ["robovast"]
+
+
+def test_workload_containers_returns_specs_not_names():
+    """Resource accounting reads ``.resources`` off these; the log path reads ``.name``.
+    Returning names would force one of the two callers to re-fetch."""
+    pod = _scenario_pod(init=[_spec_container("simulation", "Always", cpu="4")])
+    sidecar = pod_workload_containers(pod)[1]
+    assert sidecar.resources.requests["cpu"] == "4"
+
+
+@pytest.mark.parametrize("pod", [
+    types.SimpleNamespace(spec=None),                    # not scheduled yet
+    _scenario_pod(init=None),                            # a pod with no init containers
+    _scenario_pod(init=None, containers=None),
+])
+def test_workload_containers_tolerates_a_pod_without_the_fields(pod):
+    """Every field here is optional in the kube API, and this runs against arbitrary
+    pods on the node during resource accounting — not only RoboVAST's own."""
+    assert isinstance(pod_workload_containers(pod), list)

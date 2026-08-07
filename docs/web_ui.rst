@@ -32,8 +32,11 @@ It provides four views, one per desktop GUI:
   appears next to that count once at least one run has
   finished, extrapolating from the average time per completed run. A collapsible **Jobs** list shows
   each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
-  cluster — with its status; expanding a running one streams that **job's own live log**
-  (its scenario container's output). The campaign **live log** panel below is the
+  cluster — with its status; expanding a running one streams that **job's own live log**:
+  every container it runs, merged into one stream, each line tagged ``[<container>]``
+  and colored per container when the job has more than one. That matters in the ROS
+  shape, where the simulator and the system under test have their own containers and a
+  failure is only legible when their output is read against the scenario's. The campaign **live log** panel below is the
   campaign's unified *infrastructure* log — the variation (config generation), run
   (controller) and postprocessing phases assembled into one stream with
   ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.

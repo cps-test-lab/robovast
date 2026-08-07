@@ -161,6 +161,34 @@ def pod_pending_reason(pod) -> str:
     return ""
 
 
+def pod_workload_containers(pod) -> list:
+    """*pod*'s containers that run for its whole life, main first then sidecars.
+
+    Kubernetes overloads "init container": one with ``restartPolicy: Always`` is a
+    **native sidecar**, which kubelet starts before the regular containers and stops only
+    after the last one exits. It is a workload container that happens to be declared in
+    ``initContainers`` — the opposite of what the field name suggests. Ordinary init
+    containers (``s3-init``, which populates ``/config`` and exits) are one-shot staging
+    and excluded.
+
+    Anything asking "which containers does this pod actually run?" must ask it here.
+    Three places answered it from ``spec.containers`` alone and each was wrong in the same
+    way once the simulator and the system under test became sidecars: resource accounting
+    dropped the two biggest reservations, image pinning pinned every role to the scenario's
+    digest, and the job log showed one container out of three.
+
+    Returns the container *specs*, not names — callers need ``.resources`` as often as
+    ``.name``.
+    """
+    spec = getattr(pod, "spec", None)
+    if spec is None:
+        return []
+    regular = list(getattr(spec, "containers", None) or [])
+    sidecars = [c for c in (getattr(spec, "init_containers", None) or [])
+                if getattr(c, "restart_policy", None) == "Always"]
+    return regular + sidecars
+
+
 def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0) -> None:
     """Block until *name* can be exec'd into, or fail saying why it cannot.
 

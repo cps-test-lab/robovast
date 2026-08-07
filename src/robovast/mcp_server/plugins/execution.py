@@ -455,8 +455,8 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
     of times, which is a single line here.
 
     Live source only — a finished job whose pod was garbage-collected has none; read the
-    campaign log instead. On the cluster every container in the pod is merged in
-    timestamp order, each line tagged ``[<container>]`` when there is more than one.
+    campaign log instead. Every container the job runs is merged into one stream, each
+    line tagged ``[<container>]`` when there is more than one.
 
     Args:
         campaign_id: The id from ``start_campaign``.

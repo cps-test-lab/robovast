@@ -55,6 +55,19 @@ fi
 exec > >(stdbuf -oL tee -a "${LOG_FILE}")
 exec 2>&1
 
+# `stdbuf -oL` above unbuffers TEE, which is not where the buffering is: the workload's
+# stdout is now a pipe, so libc block-buffers it at the source in 4-8 KB chunks and tee
+# cannot flush what it was never given. The simulator's log panel then goes quiet for a
+# minute and dumps a wall of text -- which is the difference between watching a run and
+# reading its transcript afterwards.
+#
+# The main container is only spared this by accident: PYTHONUNBUFFERED is set in the
+# RoboVAST image's Dockerfile. A SIDECAR is explicitly allowed to be a vanilla image --
+# that is the whole claim of the ROS shape, "point it at any nav2 image and it works" --
+# so it cannot inherit anything, and the promise that its image can be stock is exactly
+# what breaks its liveness. Hence: state it here, for whatever image runs.
+export PYTHONUNBUFFERED=1
+
 SOCKET="/ipc/${CONTAINER_NAME}"
 
 # Start resource monitor
@@ -100,7 +113,11 @@ _forward() { [ -n "${_child}" ] && kill -TERM "${_child}" 2>/dev/null; return 0;
 trap _forward TERM INT
 
 run_child() {
-    "$@" &
+    # Line-buffered, for the same reason as PYTHONUNBUFFERED above but for the half of a
+    # ROS stack that is not Python: stdbuf's LD_PRELOAD is inherited, so a `ros2 launch`
+    # here reaches the C++ nodes it spawns. A binary that ignores it (static, setuid) is
+    # simply unaffected -- this can make output more live, never less.
+    stdbuf -oL -eL "$@" &
     _child=$!
     # `|| _rc=$?` and not a bare `wait`: this script runs under `set -e`, and a `wait`
     # interrupted by a trapped signal returns 128+signo. A bare one therefore exits the

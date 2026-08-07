@@ -627,9 +627,13 @@ lives in the ``run_data`` MCP plugin):
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
   / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
   (the current batch's execution units and a single running job's log); each transport
-  implements them over its own source — the local run dirs + their ``logs/system.log``
+  implements them over its own source — the local job dirs + their ``logs/system*.log``
   (``LocalTransport``), or the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
-  (``ClusterService``). They report live state only; the persisted per-run logs remain
+  (``ClusterService``). Both merge **every** container the job runs into one append-only
+  stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
+  container: the ROS shape gives the simulator and the system under test their own, and
+  on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
+  are found via ``common.kube.pod_workload_containers``. They report live state only; the persisted per-run logs remain
   part of the campaign result data, served by ``get_campaign_logs`` unchanged.
   ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
   the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign

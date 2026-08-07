@@ -128,6 +128,14 @@ if [ "$#" -eq 0 ] || [[ "$@" != *"bash"* && "$@" != *"sh"* ]]; then
     exec 2>&1
 fi
 
+# `stdbuf -oL` above unbuffers TEE, which is not where the buffering is: the workload's
+# stdout is now a pipe, so libc block-buffers it at the source in 4-8 KB chunks and tee
+# cannot flush what it was never given. The live log panel then goes quiet for a minute
+# and dumps a wall of text -- output that is technically complete and useless to watch.
+# This image sets PYTHONUNBUFFERED itself, but a campaign may name any image for a
+# container, so state it here where it holds for every one of them.
+export PYTHONUNBUFFERED=1
+
 log "Entrypoint script initialized"
 
 if [ "$#" -ne 0 ]; then

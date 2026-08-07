@@ -50,7 +50,7 @@ Under ``/results/<campaign_id>/``:
   _execution/           outcome.json (why it ended), execution.yaml, controller.log,
                         postprocessing.log, data.db (query with SQL, do not read)
   _transient/           configurations.yaml, entrypoint.sh
-  _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system.log
+  _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log
   <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
   <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, scene/scene.json
 

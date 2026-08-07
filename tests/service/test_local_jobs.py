@@ -38,26 +38,37 @@ _FAIL_XML = ('<testsuite errors="0" failures="1" tests="1">'
 
 
 def _run(campaign_dir: Path, config: str, run: str, *, xml=None, log=None,
-         job_index=0, job_prefix="batch-0") -> Path:
+         sidecar_logs=None, job_index=0, job_prefix="batch-0") -> Path:
     """Materialise one run exactly the way a local campaign does.
 
     The empty ``<config>/<run>/logs/`` is created deliberately: the runner makes it and
     never writes there, so a reader looking in it sees a silently blank log.
+
+    ``sidecar_logs`` is ``{container: text}`` written as ``logs/system_<container>.log``,
+    which is what ``secondary_entrypoint.sh`` produces for the simulator and the SUT.
     """
     run_dir = campaign_dir / config / run
-    (run_dir / "logs").mkdir(parents=True)
+    (run_dir / "logs").mkdir(parents=True, exist_ok=True)
     if xml is not None:
         (run_dir / "test.xml").write_text(xml)
-    if log is not None:
+    if log is not None or sidecar_logs:
         job_rel = job_artifact_rel(job_index, job_prefix)
-        (campaign_dir / "_jobs" / job_rel / "logs").mkdir(parents=True, exist_ok=True)
-        (campaign_dir / "_jobs" / job_rel / "logs" / "system.log").write_text(log)
+        logs = campaign_dir / "_jobs" / job_rel / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        if log is not None:
+            (logs / "system.log").write_text(log)
+        for name, text in (sidecar_logs or {}).items():
+            (logs / f"system_{name}.log").write_text(text)
         manifest = campaign_dir / "_transient" / JOB_LINKS_MANIFEST
         manifest.parent.mkdir(parents=True, exist_ok=True)
         links = yaml.safe_load(manifest.read_text()) if manifest.is_file() else {}
         links[f"{config}/{run}/job"] = f"../../_jobs/{job_rel}"
         manifest.write_text(yaml.safe_dump(links))
     return run_dir
+
+
+def _job_logs_dir(campaign_dir: Path, job_prefix="batch-0", job_index=0) -> Path:
+    return campaign_dir / "_jobs" / job_artifact_rel(job_index, job_prefix) / "logs"
 
 
 def test_list_jobs_classifies_runs(transport):
@@ -196,3 +207,130 @@ def test_usage_tally_ignores_finished_campaigns(transport):
 def test_usage_tally_is_zero_with_no_campaigns(transport):
     usage = transport.resource_usage()
     assert (usage.jobs_running, usage.jobs_pending) == (0, 0)
+
+
+# --- three containers -------------------------------------------------------
+#
+# The ROS shape runs the simulator and the system under test in their own containers,
+# which write logs/system_<name>.log beside the main container's logs/system.log. Only
+# the latter was read, so the panel showed scenario-execution and neither the simulator
+# nor nav2 -- the two whose output explains a failed run.
+
+
+def test_get_job_log_merges_every_containers_log(transport):
+    cid = "campaign-2026-07-17-123000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML, log="executing scenario\n",
+         sidecar_logs={"simulation": "mujoco loaded\n", "sut": "bt_navigator ready\n"})
+
+    text = transport.get_job_log(cid, "cfgA/0").text
+    assert "mujoco loaded" in text and "bt_navigator ready" in text
+    # Tagged, because that prefix is what the web UI parses and colors per container.
+    assert "[robovast]" in text and "[simulation]" in text and "[sut]" in text
+    # Main container first: it matches the container plan's order and the cluster lane's.
+    assert text.index("[robovast]") < text.index("[simulation]")
+
+
+def test_get_job_log_leaves_a_single_container_untagged(transport):
+    """A one-container job reads exactly as it did before -- no prefix to explain."""
+    cid = "campaign-2026-07-17-123100"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML, log="line1\nline2\n")
+    assert transport.get_job_log(cid, "cfgA/0").text == "line1\nline2\n"
+
+
+def test_get_job_log_stays_append_only_as_files_grow_concurrently(transport):
+    """The property the whole byte-offset protocol rests on.
+
+    Concatenating the files per read would satisfy the first poll and corrupt the second:
+    system.log growing shifts every later container's section, so the client's offset
+    lands mid-line in output it has already seen. This is the test that catches that.
+    """
+    cid = "campaign-2026-07-17-123200"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", log="scenario a\n", sidecar_logs={"sut": "nav a\n"})
+    logs = _job_logs_dir(cdir)
+
+    first = transport.get_job_log(cid, "cfgA/0")
+    # Both files grow between polls, which is the case concatenation cannot survive.
+    with open(logs / "system.log", "a") as fh:
+        fh.write("scenario b\n")
+    with open(logs / "system_sut.log", "a") as fh:
+        fh.write("nav b\n")
+    second = transport.get_job_log(cid, "cfgA/0", offset=first.next_offset)
+
+    assert second.next_offset > first.next_offset
+    assert "scenario b" in second.text and "nav b" in second.text
+    # A pure suffix: nothing already delivered is repeated.
+    assert "scenario a" not in second.text and "nav a" not in second.text
+    whole = transport.get_job_log(cid, "cfgA/0", offset=0).text
+    assert whole == first.text + second.text
+
+
+def test_get_job_log_withholds_a_half_written_line_while_live(transport, monkeypatch):
+    """A line still being written must not be interleaved between two containers'.
+
+    It is emitted whole on a later poll -- and flushed even without its newline once the
+    run is over, or a container killed mid-line loses its last words (often the traceback).
+    """
+    cid = "campaign-2026-07-17-123300"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", log="done\n", sidecar_logs={"sut": "complete\nhalf"})
+    monkeypatch.setattr(transport, "_is_done", lambda _entry: False)
+    transport._campaigns[cid] = object()  # campaign is live → run not finished
+
+    live = transport.get_job_log(cid, "cfgA/0")
+    assert "complete" in live.text and "half" not in live.text
+    assert live.eof is False
+
+    del transport._campaigns[cid]  # campaign gone → flush whatever is left
+    rest = transport.get_job_log(cid, "cfgA/0", offset=live.next_offset)
+    assert "half" in rest.text
+
+
+def test_get_job_log_holds_eof_until_a_sidecar_stops_writing(transport, monkeypatch):
+    """A sidecar flushes during compose's stop grace -- after test.xml exists.
+
+    The run is done (test.xml written by the main container) while the campaign is still
+    live and the simulator is still writing. Ending the stream on test.xml alone closed
+    the panel on exactly the shutdown output that says whether it saved its recording.
+    """
+    cid = "campaign-2026-07-17-123400"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML, log="scenario done\n",
+         sidecar_logs={"simulation": "still flushing\n"})
+    monkeypatch.setattr(transport, "_is_done", lambda _entry: False)
+    transport._campaigns[cid] = object()  # campaign still tearing the job down
+
+    first = transport.get_job_log(cid, "cfgA/0")
+    assert "still flushing" in first.text
+    assert first.eof is False, "this poll delivered bytes; more may follow"
+
+    settled = transport.get_job_log(cid, "cfgA/0", offset=first.next_offset)
+    assert settled.eof is True  # a poll with nothing new → the log has settled
+
+
+def test_get_job_log_never_duplicates_after_a_truncation(transport):
+    """Re-reading a shrunk file from 0 would duplicate it into an append-only stream a
+    client already holds an offset into."""
+    cid = "campaign-2026-07-17-123500"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", log="one\ntwo\n")
+    first = transport.get_job_log(cid, "cfgA/0")
+
+    (_job_logs_dir(cdir) / "system.log").write_text("x\n")  # rotated under us
+    second = transport.get_job_log(cid, "cfgA/0", offset=first.next_offset)
+    assert second.text == ""
+    assert second.next_offset == first.next_offset
+
+
+def test_job_log_tails_are_lru_bounded(transport):
+    """A long-lived service must not accumulate one buffer per job it ever served."""
+    cid = "campaign-2026-07-17-123600"
+    cdir = transport._campaigns_root() / cid
+    for i in range(transport._JOB_LOG_CACHE_MAX + 5):
+        _run(cdir, f"cfg{i}", "0", log=f"job {i}\n", job_index=i)
+        transport.get_job_log(cid, f"cfg{i}/0")
+
+    assert len(transport._job_log_tails) == transport._JOB_LOG_CACHE_MAX
+    assert (cid, "cfg0/0") not in transport._job_log_tails  # oldest evicted
