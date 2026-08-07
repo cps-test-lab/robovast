@@ -277,3 +277,42 @@ def test_ensure_postprocessing_plugins_never_raises(tmp_path, monkeypatch):
     (tmp_path / "c.vast").write_text(
         "version: 1\nplugins:\n  - x==1\nexecution:\n  image: i\n")
     cp.ensure_postprocessing_plugins(str(tmp_path))  # must not raise
+
+
+# -- workspace-relative wheel paths ------------------------------------------
+#
+# `plugins:` documents "a workspace-relative path to a wheel you uploaded
+# ('./plugins/my_plugin-1.0-py3-none-any.whl')", and relative is the whole point: the
+# author cannot know where the service unpacked the workspace. pip resolves a relative
+# path against the PROCESS cwd, which for the in-cluster service is /opt/robovast -- so
+# the documented form failed with a FileNotFoundError naming a path nobody wrote.
+
+
+def test_a_workspace_relative_wheel_resolves_against_the_vast_dir():
+    from robovast.common.config_plugins import _resolve_local_specs
+    got = _resolve_local_specs("/srv/sources/ws-1",
+                               ["./plugins/my_plugin-1.0-py3-none-any.whl"])
+    assert got == ["/srv/sources/ws-1/plugins/my_plugin-1.0-py3-none-any.whl"]
+
+
+def test_index_pins_and_git_urls_are_left_alone():
+    """A bare name must keep meaning the package, never a directory sharing its name."""
+    from robovast.common.config_plugins import _resolve_local_specs
+    specs = [
+        "my_plugin==1.2.3",
+        "scenario_mt @ git+https://github.com/org/repo@ref",
+        "/absolute/already.whl",
+    ]
+    assert _resolve_local_specs("/srv/sources/ws-1", specs) == specs
+
+
+def test_a_pep508_direct_reference_to_a_local_path_is_resolved():
+    from robovast.common.config_plugins import _resolve_local_specs
+    got = _resolve_local_specs("/srv/sources/ws-1", ["my_plugin @ ./plugins/p.whl"])
+    assert got == ["my_plugin @ /srv/sources/ws-1/plugins/p.whl"]
+
+
+def test_a_parent_relative_path_is_normalized():
+    from robovast.common.config_plugins import _resolve_local_specs
+    got = _resolve_local_specs("/srv/sources/ws-1/sub", ["../plugins/p.whl"])
+    assert got == ["/srv/sources/ws-1/plugins/p.whl"]

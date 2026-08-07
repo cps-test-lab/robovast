@@ -244,6 +244,40 @@ def _install_target(target_dir: str, specs) -> None:
         raise RuntimeError(_diagnose_pip_failure(specs, "\n".join(output_lines)))
 
 
+def _resolve_local_specs(vast_dir: str, specs) -> list:
+    """Make workspace-relative wheel/sdist paths absolute against *vast_dir*.
+
+    ``plugins:`` documents "a workspace-relative path to a wheel you uploaded
+    ('./plugins/my_plugin-1.0-py3-none-any.whl')", and the relative part is the whole
+    point: the author cannot know where the service unpacked the workspace. pip,
+    however, resolves a relative path against the *process* CWD -- which for a
+    long-lived service is its install dir, so the documented form looked for the wheel
+    in ``/opt/robovast/plugins/`` and failed with a FileNotFoundError naming a path the
+    user never wrote.
+
+    Only leading-``./``/``../`` forms are touched. An index pin (``foo==1.2``), a git
+    URL and an absolute path are all passed through untouched -- a bare ``foo`` must
+    keep meaning the package ``foo``, never a directory that happens to share its name.
+    """
+    def _resolve(path: str) -> str:
+        return os.path.normpath(os.path.join(os.path.abspath(vast_dir), path))
+
+    out = []
+    for spec in specs:
+        text = str(spec).strip()
+        if text.startswith(("./", "../")):
+            out.append(_resolve(text))
+        elif " @ " in text:
+            # PEP 508 direct reference: ``name @ <url-or-path>``.
+            name, _, ref = text.partition(" @ ")
+            ref = ref.strip()
+            out.append(f"{name.strip()} @ {_resolve(ref)}"
+                       if ref.startswith(("./", "../")) else text)
+        else:
+            out.append(text)
+    return out
+
+
 def _warn_if_already_loaded(specs) -> None:
     """Warn for each declared plugin already importable from *elsewhere*.
 
@@ -373,7 +407,7 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
         _warn_if_already_loaded(to_install)
         logger.info("Installing %d variation plugin(s) into %s: %s",
                     len(to_install), target_dir, ", ".join(to_install))
-        _install_target(target_dir, to_install)
+        _install_target(target_dir, _resolve_local_specs(vast_dir, to_install))
         with open(marker, "w", encoding="utf-8") as f:
             f.write(want)
 
