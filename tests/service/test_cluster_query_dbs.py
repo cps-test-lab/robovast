@@ -53,8 +53,10 @@ def _service(monkeypatch, tmp_path, objects):
     svc._fetch_locks = {}
     svc._fetch_locks_guard = __import__("threading").Lock()
     svc._last_fetch = {}
+    # ``interactive=`` only selects the timeout budget (fail-fast for polled request paths
+    # vs patient for bulk transfers), which nothing here observes — accept and ignore it.
     monkeypatch.setattr(ClusterService, "_campaign_object_location",
-                        lambda self, cid: (storage, "bucket", f"{cid}/"))
+                        lambda self, cid, *, interactive=False: (storage, "bucket", f"{cid}/"))
     monkeypatch.setattr(ClusterService, "_cache_dir",
                         lambda self, cid: tmp_path / cid)
     monkeypatch.setattr(ClusterService, "fetch_campaign",

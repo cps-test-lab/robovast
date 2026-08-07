@@ -9,6 +9,7 @@ replaced the old controller-pod sidecar.
 """
 
 import tempfile
+import time
 
 import pytest
 
@@ -306,11 +307,14 @@ def indexed(cs, monkeypatch, tmp_path):
     storage = _IndexStorage()
     monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path / "results")
     monkeypatch.setattr(cs, "_cache_dir", lambda cid: tmp_path / "cache" / cid)
+    # ``interactive=`` selects the timeout budget (fail-fast for polled request paths vs
+    # patient for bulk transfers); it changes no behaviour these tests observe, so the
+    # doubles accept and ignore it rather than each caller having to know.
     monkeypatch.setattr(cs, "_campaign_object_location",
-                        lambda cid: (storage, "bkt", ""))
+                        lambda cid, *, interactive=False: (storage, "bkt", ""))
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.in_pod_storage.storage_client_for",
-        lambda cfg: storage)
+        lambda cfg, *, interactive=False: storage)
     monkeypatch.setattr(cs, "_cluster_config", lambda: object())
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.in_pod_storage.campaign_index_bucket",
@@ -432,15 +436,183 @@ def test_an_unreachable_store_keeps_the_last_known_index(indexed, monkeypatch):
     assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
 
 
+def test_a_campaign_start_leaves_the_index_cache_warm(indexed):
+    """Starting a campaign must not force a cold listing.
+
+    Dropping the cache here was the worst possible timing: the campaign whose start
+    invalidated it is about to saturate the same connection with its own uploads, and the
+    1 Hz campaign-list poll would then meet a cold cache on every tick until some listing
+    finally returned. The marker is the one fact a listing would have added, so add it.
+    """
+    cs, storage = indexed
+    cs._campaign_index()                      # populate the cache
+    cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
+
+    cached = cs._index_cache
+    assert cached is not None, "the start must not drop the cache"
+    assert cached[1]["camp-2026-07-17-120000"] == "2026-07-17T12:00:00+00:00"
+
+
+def test_only_one_caller_lists_the_index_at_a_time(indexed, monkeypatch):
+    """Single-flight: concurrent pollers take the stale value instead of each listing.
+
+    The listing deliberately runs outside ``_index_lock`` (network I/O under a lock would
+    queue every reader), which without this let every caller past a cold cache start its
+    own round-trip. Behind a 1 Hz SSE poll against a slow store that grows without bound,
+    each in-flight listing holding a worker thread — the mechanism that took the API down.
+    """
+    import threading
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    in_pod_storage.mark_campaign_indexed(storage, object(), "c-2026-07-17-120000", "t")
+    cs._campaign_index()                      # warm, so there is a stale value to serve
+    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])   # expire the TTL
+
+    in_listing, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow_list(*a):
+        calls.append(1)
+        in_listing.set()
+        release.wait(5)          # hold the "network" open, like a stalled tunnel
+        return {"c-2026-07-17-120000": "t"}.items()
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
+        slow_list)
+
+    refresher = threading.Thread(target=cs._campaign_index, daemon=True)
+    refresher.start()
+    assert in_listing.wait(5), "the first caller should be out listing"
+
+    # A second poll arriving mid-listing must return immediately with the stale value.
+    assert cs._campaign_index() == {"c-2026-07-17-120000": "t"}
+    assert len(calls) == 1, "the second caller must not start its own listing"
+
+    release.set()
+    refresher.join(5)
+    assert len(calls) == 1
+
+
+def test_a_failed_listing_releases_the_single_flight_flag(indexed, monkeypatch):
+    """Otherwise one error would wedge the index on its stale value forever."""
+    cs, storage = indexed
+    cs._campaign_index()
+    cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))
+
+    cs._campaign_index()
+    assert cs._index_refreshing is False
+
+
+# -- the MinIO port-forward keep-alive --------------------------------------
+
+class _FakePf:
+    """A ``kubectl port-forward`` child that stays alive, like the real stalled one."""
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+@pytest.fixture
+def pf(cs, monkeypatch):
+    """*cs* with a fake port-forward, and a knob for whether the tunnel serves.
+
+    Returns ``(cs, serving, opened)``: flip ``serving["ok"]`` to simulate the tunnel going
+    stalled-but-alive, and read ``opened`` for the ports handed out.
+    """
+    import robovast.execution.cluster_execution.bucket_ops as bo
+    serving, opened = {"ok": True}, []
+
+    def _open(ns, ctx):
+        port = 40000 + len(opened)
+        opened.append(port)
+        return _FakePf(), port
+
+    monkeypatch.setattr(bo, "open_minio_port_forward", _open)
+    monkeypatch.setattr(bo, "forward_is_serving",
+                        lambda port, timeout_s=5.0: serving["ok"])
+    cs._PF_PROBE_INTERVAL_S = 0.05      # the cadence is not what these tests are about
+    yield cs, serving, opened
+    cs._pf_monitor_stop.set()
+
+
+def test_a_healthy_forward_is_never_rotated(pf):
+    """The keep-alive must be invisible when nothing is wrong — rotating a working tunnel
+    would break the transfers running over it."""
+    cs, _serving, opened = pf
+    cs._minio_port_forward_endpoint()
+    time.sleep(0.4)                     # many probe intervals
+    assert opened == [40000], "a serving forward was replaced"
+    assert cs._pf_generation == 1
+
+
+def test_a_stalled_forward_is_rotated_without_a_request_waiting_on_it(pf):
+    """The point of the keep-alive.
+
+    Before it, a stalled-but-alive tunnel was discovered only by an S3 request *timing
+    out* — so the discovery cost that request its whole timeout budget, and every
+    concurrent request paid it too. Nothing here issues an S3 call at all.
+    """
+    cs, serving, opened = pf
+    first = cs._minio_port_forward_endpoint()
+    serving["ok"] = False
+
+    deadline = time.monotonic() + 5
+    while cs._pf_generation < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cs._pf_generation >= 2, "the stalled forward was never rotated"
+    assert cs._minio_pf_endpoint != first
+    assert len(opened) >= 2
+
+
+def test_one_missed_probe_does_not_rotate(pf):
+    """Two consecutive failures, so a single dropped probe — a tunnel busy mid-transfer,
+    a GC pause — does not throw away a forward that is fine."""
+    cs, serving, opened = pf
+    cs._minio_port_forward_endpoint()
+    assert cs._PF_FAILURES_BEFORE_ROTATE >= 2
+
+    serving["ok"] = False               # exactly one probe fails, then it recovers
+    time.sleep(cs._PF_PROBE_INTERVAL_S * 1.5)
+    serving["ok"] = True
+    time.sleep(0.3)
+    assert opened == [40000], "a single missed probe rotated the forward"
+
+
+def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
+    """Otherwise the keep-alive reads the teardown as a stall and reopens the tunnel the
+    process is closing — leaking a kubectl child past exit."""
+    cs, _serving, _opened = pf
+    cs._minio_port_forward_endpoint()
+    monitor = cs._pf_monitor
+    assert monitor is not None and monitor.is_alive()
+
+    cs.shutdown()
+    assert not monitor.is_alive()
+    assert cs._pf_monitor is None
+    assert cs._minio_pf is None and cs._minio_pf_port is None
+
+
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
     import types
     ann = {"job-name-full": full} if full is not None else {}
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
-        spec=types.SimpleNamespace(template=types.SimpleNamespace(
+        # suspend: Kueue creates every Job suspended and un-suspends it on admission.
+        # A suspended Job has no pod, so only this flag reveals it exists.
+        spec=types.SimpleNamespace(suspend=suspend, template=types.SimpleNamespace(
             metadata=types.SimpleNamespace(annotations=ann))))
 
 
@@ -513,19 +685,103 @@ def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
 
 
 def test_resource_usage_counts_scenario_jobs_pod_accurate(cs, monkeypatch):
-    """Backend-wide jobs tally splits Running from still-waiting scenario-run pods,
-    ignoring non-scenario pods (the service pod, someone else's workload)."""
+    """The jobs tally splits Running from still-waiting scenario runs, and ignores
+    non-scenario workloads (the service pod, someone else's) entirely."""
+    jobs = [_job("j-run-1", active=1), _job("j-run-2", active=1), _job("j-admitted", active=1)]
     pods = [
         _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="n1"),
-        _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="n1"),
-        _usage_pod({"jobgroup": "scenario-runs"}, "Pending"),
         _usage_pod({"app": "robovast-service"}, "Running", node="n1"),  # not a scenario run
     ]
+    # j-admitted is 'active' but its pod has not reached Running, so it is pending.
+    job_pods = [_job_pod("j-run-1"), _job_pod("j-run-2"),
+                _job_pod("j-admitted", phase="Pending")]
 
-    monkeypatch.setattr(cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], pods))
+    _fake_kueue(monkeypatch)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch(jobs))
+    monkeypatch.setattr(
+        cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], pods, job_pods))
     usage = cs.resource_usage()
 
     assert (usage.jobs_running, usage.jobs_pending) == (2, 1)
+
+
+def test_resource_usage_counts_kueue_suspended_jobs_as_pending(cs, monkeypatch):
+    """A Kueue-suspended Job has **no pod**, and must still count as pending.
+
+    Regression: the tally read pods, so the state every cluster batch *starts* in —
+    the whole batch suspended, waiting for quota — reported ``0/0``, and the sidebar's
+    jobs bar said nothing was happening while 3 runs were queued.
+    """
+    jobs = [_job("j-queued-1", suspend=True), _job("j-queued-2", suspend=True),
+            _job("j-queued-3", suspend=True)]
+    batch = _UsageBatch(jobs)
+
+    _fake_kueue(monkeypatch)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
+    monkeypatch.setattr(
+        cs, "_k8s", lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [], []))
+    usage = cs.resource_usage()
+
+    assert batch.calls == 1, "the tally must read Jobs — pods cannot see a suspended one"
+    assert (usage.jobs_running, usage.jobs_pending) == (0, 3)
+
+
+def test_resource_usage_counts_blocked_job_as_pending(cs, monkeypatch):
+    """A job that cannot start on its own is accepted-but-not-executing: pending.
+
+    The per-campaign ``JobCounts`` keeps ``blocked`` apart because that view has to act
+    on it; a capacity meter only needs "not executing".
+    """
+    _fake_kueue(monkeypatch)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([_job("j-stuck", active=1)]))
+    monkeypatch.setattr(
+        cs, "_k8s",
+        lambda: _UsageCore([_usage_node("n1", "4", "8Gi")], [],
+                           [_blocked_job_pod("j-stuck")]))
+    usage = cs.resource_usage()
+
+    assert (usage.jobs_running, usage.jobs_pending) == (0, 1)
+
+
+def _fake_kueue(monkeypatch):
+    """Stub Kueue's wait-reason lookup — it builds a CustomObjectsApi against whatever
+    kube config the host has, which no test has (it degrades to ``{}``, but only after
+    trying to reach an API server)."""
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_kueue.workload_wait_reasons",
+        lambda namespace, job_names=None, k8s_custom=None: {
+            name: "insufficient unused quota for cpu" for name in (job_names or ())})
+
+
+def _blocked_job_pod(job_name):
+    """A job pod stuck on an unpullable image — ``pod_block_reason`` reads it as blocked."""
+    import types
+    pod = _job_pod(job_name, phase="Pending")
+    pod.status.container_statuses = [types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            waiting=types.SimpleNamespace(
+                reason="ImagePullBackOff", message="Back-off pulling image"),
+            terminated=None))]
+    return pod
+
+
+class _UsageBatch:
+    """``list_namespaced_job`` for the scenario-run tally, counting its own calls.
+
+    The count is asserted on, so a tally that stopped reading Jobs (and went back to
+    guessing from pods) cannot leave these tests passing.
+    """
+
+    def __init__(self, jobs):
+        import types
+        self._items = types.SimpleNamespace(items=jobs)
+        self.calls = 0
+
+    def list_namespaced_job(self, namespace, label_selector):
+        assert label_selector == "jobgroup=scenario-runs"   # every campaign, not one
+        assert namespace == "ns1"
+        self.calls += 1
+        return self._items
 
 
 def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
@@ -544,10 +800,17 @@ def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
         _usage_pod({"jobgroup": "scenario-runs"}, "Running", node="gone", cpu="8",
                    mem=str(8 * 1024 ** 3)),
     ]
+    # The same five runs as Jobs: three own a Running pod, two are still queued.
+    jobs = [_job(f"j-run-{i}", active=1) for i in range(3)] + \
+           [_job(f"j-queued-{i}", suspend=True) for i in range(2)]
+    job_pods = [_job_pod(f"j-run-{i}") for i in range(3)]
 
+    _fake_kueue(monkeypatch)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch(jobs))
     monkeypatch.setattr(
         cs, "_k8s",
-        lambda: _UsageCore([_usage_node("workstation", "24", str(64 * 1024 ** 3))], pods))
+        lambda: _UsageCore([_usage_node("workstation", "24", str(64 * 1024 ** 3))],
+                           pods, job_pods))
     usage = cs.resource_usage()
 
     assert usage.cpu_capacity == 24
@@ -581,16 +844,26 @@ def _usage_pod(labels, phase, node=None, cpu=None, mem=None):
 
 
 class _UsageCore:
-    def __init__(self, nodes, pods):
+    """Two distinct pod reads: cluster-wide for CPU/memory, namespaced for the job tally.
+
+    They are separate on purpose — capacity and usage must be summed over every node the
+    cluster has, while the scenario-run tally answers "what is *this* service running".
+    """
+
+    def __init__(self, nodes, pods, job_pods=()):
         import types
         self._nodes = types.SimpleNamespace(items=nodes)
         self._pods = types.SimpleNamespace(items=pods)
+        self._job_pods = types.SimpleNamespace(items=list(job_pods))
 
     def list_node(self):
         return self._nodes
 
     def list_pod_for_all_namespaces(self, field_selector):
         return self._pods
+
+    def list_namespaced_pod(self, namespace, label_selector):
+        return self._job_pods
 
 
 def _pod(name="pod-1", phase="Running"):

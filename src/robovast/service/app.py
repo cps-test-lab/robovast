@@ -68,6 +68,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8800
 
+
+def _sse_pull_limiter():
+    """Worker-thread budget for SSE stream pulls, separate from anyio's shared default.
+
+    Sized well under anyio's 40-token default so the streams cannot consume the pool the
+    ~56 sync routes are served from; see ``_pull_or_exit``. Created eagerly (anyio 4 binds
+    the adapter to a backend on first use, not at construction) so it is one shared object
+    across every request rather than a per-call limiter, which would bound nothing.
+
+    Caveat, deliberately not papered over: this bounds *concurrent waiters*, not stalled
+    threads. ``_pull_or_exit`` abandons its thread on cancellation, and anyio releases the
+    token at that moment while the thread is still inside the blocking call — so a stream
+    that keeps dropping and reconnecting can leave more live threads than there are tokens.
+    What actually bounds those is the pull's own timeout budget (see
+    ``in_pod_storage.storage_client_for(interactive=True)``, ~10 s); this limiter's job is
+    isolation between subsystems, not a hard thread cap.
+    """
+    import anyio  # pylint: disable=import-outside-toplevel
+    return anyio.CapacityLimiter(8)
+
+
+_SSE_PULL_LIMITER = _sse_pull_limiter()
+
 #: Routes FastAPI registers for itself. Real, but they describe FastAPI, not this service.
 FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 
@@ -210,6 +233,15 @@ def build_app(impl: RobovastInterface):
         the pull raised. The exception is *returned* rather than raised because a task
         group would wrap it in an ``ExceptionGroup``, hiding the message the caller
         has to put on the wire.
+
+        Runs against :data:`_SSE_PULL_LIMITER` rather than anyio's shared 40-token default,
+        so these streams cannot starve the rest of the API. Nearly every route here is a
+        sync ``def`` served from that same pool, and stream pulls are the requests most
+        likely to block for a long time *and* the most numerous — one per open browser tab,
+        re-issued on a timer, each auto-reconnecting when it drops. Left sharing the default
+        pool, a slow object store let them take every token, at which point unrelated
+        endpoints stopped answering too. A separate pool converts that into "the streams are
+        slow" instead of "the service is down".
         """
         outcome = None
 
@@ -221,7 +253,8 @@ def build_app(impl: RobovastInterface):
         async def _run():
             nonlocal outcome
             try:
-                outcome = await anyio.to_thread.run_sync(pull, abandon_on_cancel=True)
+                outcome = await anyio.to_thread.run_sync(
+                    pull, abandon_on_cancel=True, limiter=_SSE_PULL_LIMITER)
             except Exception as exc:  # noqa: BLE001 - handed to the caller to report
                 outcome = exc
             task_group.cancel_scope.cancel()
@@ -976,6 +1009,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
             super().handle_exit(sig, frame)
 
     app = build_app(impl)
+    _enable_thread_dump_signal()
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs)", host, port)
     # Drive uvicorn via an explicit Server so the SSE generators can probe
     # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection
@@ -987,6 +1021,36 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     server = _Server(config)
     app.state.should_exit = lambda: server.should_exit
     server.run()
+
+
+def _enable_thread_dump_signal() -> None:
+    """Make ``kill -USR1 <pid>`` dump every thread's stack to stderr.
+
+    A service that stops answering is diagnosed from *where its threads are parked*, and
+    that evidence only exists while it is still hung — by the time anyone restarts it, it
+    is gone. Most of this API is sync ``def`` handlers running in anyio's worker
+    threadpool, so a hang shows up as N threads inside one blocking call (an S3 read over
+    a stalled ``kubectl port-forward``, say) and the dump names it outright. Without this
+    the same investigation has to be re-derived from the code every time.
+
+    ``faulthandler.enable()`` also gives a native traceback on a hard crash (segfault in
+    a C extension), which the Python-level handler cannot report.
+    """
+    import faulthandler  # pylint: disable=import-outside-toplevel
+    import os  # pylint: disable=import-outside-toplevel
+    import signal  # pylint: disable=import-outside-toplevel
+
+    faulthandler.enable()
+    # Not on Windows, and not if something else already claimed SIGUSR1: a diagnostic
+    # must never be the reason the service fails to start.
+    if not hasattr(signal, "SIGUSR1"):
+        return
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=True)
+    except (AttributeError, OSError, RuntimeError, ValueError) as e:
+        logger.debug("could not register the SIGUSR1 thread dump: %s", e)
+        return
+    logger.debug("thread dump: kill -USR1 %d", os.getpid())
 
 
 def _quiet_access_log_config() -> dict:

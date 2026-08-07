@@ -34,7 +34,6 @@ since per-batch search runs target different prefixes within a campaign.
 
 import logging
 import os
-import socket
 import tempfile
 import time
 
@@ -272,14 +271,33 @@ class StorageClient:
 class _S3StorageClient(StorageClient):
     """boto3-backed client for MinIO / S3 reachable from inside the cluster."""
 
-    # boto's own ``retries`` re-run a request against the *same* connection, which
-    # is useless when an off-cluster driver's ``kubectl port-forward`` tunnel has
-    # gone stalled-but-alive — every attempt then read-times-out identically. On
-    # these errors we instead rebuild the client against a freshly-restarted
-    # forward (``_reconnect``) and re-run the whole operation, up to this many times.
-    _RECONNECT_ATTEMPTS = 3
+    #: Timeout budgets, keyed by ``interactive``. The distinction matters because the two
+    #: kinds of caller have opposite failure preferences, and one budget cannot serve both:
+    #:
+    #: * **bulk** — a campaign's rosbag upload/download. Minutes of legitimate transfer, so
+    #:   a patient read timeout and several retries are correct; giving up loses real work.
+    #: * **interactive** — a listing or a status read behind the web UI's 1 Hz SSE poll.
+    #:   Here the whole budget must be *smaller than the poll interval's tolerance*: the
+    #:   caller has a documented degraded answer available (``_campaign_index`` serves its
+    #:   stale cache), so failing in seconds is strictly better than blocking. With the
+    #:   bulk budget one such call could occupy a worker thread for
+    #:   ``read_timeout × max_attempts × reconnect_attempts`` ≈ 18 minutes while the poll
+    #:   kept launching more — which is how a single stalled tunnel took the whole API down.
+    #:
+    #: ``reconnect_attempts`` is separate from boto's own ``max_attempts`` because they do
+    #: different things: boto re-runs a request on the *same* connection, which is useless
+    #: once an off-cluster ``kubectl port-forward`` has gone stalled-but-alive (every
+    #: attempt then read-times-out identically), so on those errors ``_resilient`` rebuilds
+    #: the client against a fresh forward and re-runs the whole operation instead.
+    _BUDGETS = {
+        False: {"connect_timeout": 10, "read_timeout": 120,
+                "max_attempts": 3, "reconnect_attempts": 3},
+        True: {"connect_timeout": 5, "read_timeout": 10,
+               "max_attempts": 1, "reconnect_attempts": 1},
+    }
 
-    def __init__(self, *, endpoint_resolver, access_key, secret_key, region):
+    def __init__(self, *, endpoint_resolver, access_key, secret_key, region,
+                 interactive: bool = False):
         # ``endpoint_resolver(force_reconnect=False)`` returns the host-reachable S3
         # endpoint; passing ``True`` tears down a stalled port-forward and opens a
         # fresh one (see BaseConfig.get_driver_s3_endpoint). In-cluster it is a
@@ -288,12 +306,17 @@ class _S3StorageClient(StorageClient):
         self._access_key = access_key
         self._secret_key = secret_key
         self._region = region
+        self._budget = self._BUDGETS[bool(interactive)]
+        self._reconnect_attempts = self._budget["reconnect_attempts"]
         # The endpoint this client is currently bound to; passed back to the resolver
         # on a forced reconnect so a shared port-forward is torn down only once per
         # stall (see ClusterService._minio_port_forward_endpoint). ``None`` until the
         # first connect, so that first resolve behaves exactly as before.
         self._endpoint = None
-        socket.setdefaulttimeout(120)
+        # No ``socket.setdefaulttimeout`` here: it is process-global, so a client built
+        # for one campaign silently retimed every other socket in the service — the
+        # kubernetes client, urllib, the port-forward probe. The per-client botocore
+        # timeouts below cover the intent without the action at a distance.
         self._connect(force_reconnect=False)
 
     def _connect(self, *, force_reconnect: bool) -> None:
@@ -318,9 +341,9 @@ class _S3StorageClient(StorageClient):
                 s3={"addressing_style": "path"},
                 request_checksum_calculation="when_required",
                 response_checksum_validation="when_required",
-                connect_timeout=10,
-                read_timeout=120,
-                retries={"max_attempts": 3},
+                connect_timeout=self._budget["connect_timeout"],
+                read_timeout=self._budget["read_timeout"],
+                retries={"max_attempts": self._budget["max_attempts"]},
             ),
         )
 
@@ -339,6 +362,15 @@ class _S3StorageClient(StorageClient):
         request — every S3 op here is idempotent (uploads overwrite,
         ``download_prefix`` skips same-size files, reads/lists are pure), so a
         clean re-run is safe and, for downloads, near-free for what already landed.
+
+        **Only the bulk profile reaches the reconnect.** An interactive client has
+        ``reconnect_attempts == 1``, so it fails on the first timeout and lets its caller
+        serve a degraded answer; repairing the tunnel is the keep-alive's job
+        (``ClusterService._pf_monitor_loop``), which finds the same stall in ~10 s without
+        a request waiting on it. A bulk transfer is the case that cannot wait — it has real
+        work in flight and no degraded answer — so it still asks for the repair itself, and
+        the ``current``-coalescing in ``_minio_port_forward_endpoint`` keeps concurrent
+        bulk clients from tearing down each other's fresh tunnel.
         """
         from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
             ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
@@ -348,12 +380,12 @@ class _S3StorageClient(StorageClient):
         transient = (ReadTimeoutError, ConnectTimeoutError,
                      EndpointConnectionError, ConnectionClosedError)
         last = None
-        for attempt in range(self._RECONNECT_ATTEMPTS):
+        for attempt in range(self._reconnect_attempts):
             try:
                 return op()
             except transient as exc:
                 last = exc
-                if attempt + 1 >= self._RECONNECT_ATTEMPTS:
+                if attempt + 1 >= self._reconnect_attempts:
                     break
                 if is_shutting_down():
                     # A timeout during shutdown is the shutdown itself: the endpoint
@@ -367,7 +399,7 @@ class _S3StorageClient(StorageClient):
                 logger.warning(
                     "S3 endpoint timed out (%s); restarting port-forward and "
                     "retrying (attempt %d/%d)",
-                    type(exc).__name__, attempt + 2, self._RECONNECT_ATTEMPTS)
+                    type(exc).__name__, attempt + 2, self._reconnect_attempts)
                 self._connect(force_reconnect=True)
         raise last
 
@@ -777,12 +809,19 @@ def _index_key(campaign_id: str, created_at: str) -> str:
     return f"{CAMPAIGN_INDEX_PREFIX}/{campaign_id}/{created_at}"
 
 
-def storage_client_for(cluster_config) -> StorageClient:
+def storage_client_for(cluster_config, *, interactive: bool = False) -> StorageClient:
     """Build a :class:`StorageClient` from a reconstructed cluster config.
 
     Selects S3 (MinIO) or GCS based on ``cluster_config.get_storage_backend()``,
     using its endpoint / credentials — the same values the host and the job
     init/entrypoint containers use.
+
+    Pass ``interactive=True`` for a client serving a *request*, not a transfer — a
+    listing or a status read behind the web UI's poll. It trades the patient
+    transfer-sized timeout budget for one that fails in seconds, so a stalled tunnel
+    degrades the answer instead of occupying a worker thread for minutes; see
+    :attr:`_S3StorageClient._BUDGETS`. The default stays the bulk budget, because
+    losing a campaign's upload to an impatient timeout is the worse failure.
     """
     if cluster_config.get_storage_backend() == "gcs":
         return _GcsStorageClient(key_json=cluster_config.get_gcs_key_json())
@@ -792,4 +831,5 @@ def storage_client_for(cluster_config) -> StorageClient:
         access_key=access_key,
         secret_key=secret_key,
         region=cluster_config.get_s3_region(),
+        interactive=interactive,
     )

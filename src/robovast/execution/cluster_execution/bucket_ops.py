@@ -68,6 +68,44 @@ def _find_available_port(start_port: int = 18080, max_attempts: int = 100) -> in
     )
 
 
+#: Per-attempt deadline for :func:`forward_is_serving`. Short on purpose: this probe is
+#: what a stall detector polls, so it must report "not serving" in seconds rather than
+#: inheriting an S3 client's transfer-sized read timeout.
+FORWARD_PROBE_TIMEOUT_S = 5.0
+
+
+def forward_is_serving(local_port: int,
+                       timeout_s: float = FORWARD_PROBE_TIMEOUT_S) -> bool:
+    """Is the forward on *local_port* actually proxying to MinIO right now?
+
+    A TCP connect cannot answer this. ``kubectl port-forward`` opens its local listener
+    immediately, before (and regardless of whether) the tunnel to the pod carries data —
+    and a forward that has gone *stalled-but-alive* keeps accepting connections while
+    proxying nothing. So a connect-only check passes on a tunnel that is dead, which is
+    precisely the state this codebase spends the most effort recovering from.
+
+    Asking MinIO's unauthenticated readiness endpoint requires a byte to come *back*
+    through the tunnel, so it distinguishes the two. Any failure is a "no": the caller's
+    only decision is whether to keep this forward or replace it.
+    """
+    import urllib.error  # pylint: disable=import-outside-toplevel
+    import urllib.request  # pylint: disable=import-outside-toplevel
+
+    url = f"http://localhost:{local_port}/minio/health/ready"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310 - fixed localhost URL
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        # An HTTP status came back through the tunnel, so it *is* proxying. MinIO answers
+        # this path 200/503 only, but treating any status as "serving" keeps the probe a
+        # tunnel check rather than a MinIO health check — pod readiness is kubelet's job.
+        logger.debug("MinIO readiness on port %d answered HTTP %s", local_port, e.code)
+        return True
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        logger.debug("MinIO readiness probe on port %d failed: %s", local_port, e)
+        return False
+
+
 def open_minio_port_forward(namespace: str, context: Optional[str]):
     """Open a ``kubectl port-forward`` to the embedded MinIO pod on a free local port.
 
@@ -75,6 +113,11 @@ def open_minio_port_forward(namespace: str, context: Optional[str]):
     forwarded local port (S3 reachable at ``http://localhost:<local_port>``). The
     caller owns *proc* and must terminate it. Raises ``RuntimeError`` if the
     tunnel does not become ready in time.
+
+    Readiness is :func:`forward_is_serving`, not a TCP connect: this function is also the
+    *repair* path for a stalled tunnel, and a connect-only check would happily hand back a
+    replacement that is just as dead — turning one stall into a rotation loop that reports
+    success every time.
 
     Shared between host-side one-shot ops (:func:`_s3_connection`, which tears the
     forward down after the call) and the off-cluster service, which keeps one
@@ -94,15 +137,20 @@ def open_minio_port_forward(namespace: str, context: Optional[str]):
         stderr=subprocess.PIPE,
         text=True,
     )
-    for _ in range(20):
+    # Budget, not iteration count: each probe now costs up to FORWARD_PROBE_TIMEOUT_S
+    # (the old connect took ~0ms), so a fixed 20 rounds would stretch to a minute and a
+    # half of blocking. kubectl's own tunnel setup is sub-second when the pod is up.
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if pf_proc.poll() is not None:
+            break  # kubectl exited (bad pod/namespace/context) — no amount of waiting helps
         time.sleep(0.5)
-        try:
-            with socket.create_connection(("localhost", local_port), timeout=1):
-                return pf_proc, local_port
-        except OSError:
-            continue
+        if forward_is_serving(local_port, timeout_s=2.0):
+            return pf_proc, local_port
     pf_proc.terminate()
-    raise RuntimeError("kubectl port-forward did not become ready in time")
+    raise RuntimeError(
+        f"kubectl port-forward to pod/robovast:{_S3_PORT} on local port {local_port} "
+        "never served MinIO's readiness endpoint")
 
 
 @contextlib.contextmanager

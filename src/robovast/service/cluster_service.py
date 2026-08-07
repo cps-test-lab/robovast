@@ -120,7 +120,15 @@ class ClusterService(LocalTransport):
         # host-reachable S3 endpoint (see _driver_s3_endpoint / _cluster_config).
         self._minio_pf = None
         self._minio_pf_endpoint = None
+        self._minio_pf_port: "int | None" = None
         self._pf_lock = threading.Lock()
+        # Bumped every time a forward is opened. A storage client that timed out watches
+        # this instead of tearing the tunnel down itself: the keep-alive
+        # (_pf_monitor_loop) is the single rotator, so "has it been replaced yet?" is the
+        # only question a client needs answered. Guarded by _pf_lock.
+        self._pf_generation = 0
+        self._pf_monitor: "threading.Thread | None" = None
+        self._pf_monitor_stop = threading.Event()
         # Per-campaign locks so concurrent data queries don't each re-download the
         # same campaign into the shared cache dir (the results explorer fires one
         # query per sub-view on first load). Guarded by ``_fetch_locks_guard``.
@@ -141,6 +149,10 @@ class ClusterService(LocalTransport):
         # re-lists once a second; see _campaign_index.
         self._index_cache: "tuple[float, dict] | None" = None
         self._index_lock = threading.Lock()
+        # True while one caller is out doing the listing. Guards the single-flight in
+        # _campaign_index: the listing itself must not hold _index_lock (it is network
+        # I/O), so this is what stops a poll from launching a second one behind the first.
+        self._index_refreshing = False
         if reap_on_start:
             self.reap_orphans()
 
@@ -317,14 +329,84 @@ class ClusterService(LocalTransport):
                 self._minio_pf, port = open_minio_port_forward(
                     self.namespace, self.kube_context)
                 self._minio_pf_endpoint = f"http://localhost:{port}"
-                logger.info("Opened MinIO port-forward for driver S3 at %s",
-                            self._minio_pf_endpoint)
+                self._minio_pf_port = port
+                self._pf_generation += 1
+                logger.info("Opened MinIO port-forward for driver S3 at %s (generation %d)",
+                            self._minio_pf_endpoint, self._pf_generation)
+                self._start_pf_monitor_locked()
             return self._minio_pf_endpoint
+
+    #: How often the keep-alive probes the forward, and how many consecutive failures it
+    #: takes to rotate. Two failures rather than one so a single dropped probe — a busy
+    #: tunnel mid-transfer, a GC pause — does not throw away a working forward.
+    _PF_PROBE_INTERVAL_S = 5.0
+    _PF_FAILURES_BEFORE_ROTATE = 2
+
+    def _start_pf_monitor_locked(self) -> None:
+        """Start the keep-alive thread, once. Caller must hold ``_pf_lock``."""
+        if self._pf_monitor is not None:
+            return
+        self._pf_monitor = threading.Thread(
+            target=self._pf_monitor_loop, name="robovast-minio-pf-keepalive", daemon=True)
+        self._pf_monitor.start()
+
+    def _pf_monitor_loop(self) -> None:
+        """Probe the shared forward on a timer and rotate it when it stops serving.
+
+        Stall detection belongs here rather than on the request path. Discovering a stalled
+        tunnel by *waiting for an S3 request to time out* costs that request its whole
+        timeout budget, and every concurrent request pays it too — which is how one stalled
+        forward turned into an unresponsive API. A 5 s probe with a 5 s deadline finds the
+        same fact for a fixed, tiny cost and off the path serving users.
+
+        This is also the **only** rotator, which is what makes it safe to rotate at all:
+        when N storage clients all time out on one stalled forward and each asks for a
+        restart, every teardown kills the tunnel a sibling just opened (the thundering-herd
+        mutual teardown the ``current``-coalescing in
+        :meth:`_minio_port_forward_endpoint` exists to blunt). One prober cannot race
+        itself, so clients no longer need to force anything — they wait for
+        ``_pf_generation`` to move and re-resolve.
+        """
+        from robovast.common.shutdown import is_shutting_down
+        from robovast.execution.cluster_execution.bucket_ops import forward_is_serving
+        failures = 0
+        while not self._pf_monitor_stop.wait(self._PF_PROBE_INTERVAL_S):
+            if is_shutting_down():
+                return
+            with self._pf_lock:
+                port = self._minio_pf_port
+                pf = self._minio_pf
+            if pf is None or port is None:
+                failures = 0
+                continue          # nothing open right now; the next caller opens one
+            if forward_is_serving(port):
+                failures = 0
+                continue
+            failures += 1
+            if failures < self._PF_FAILURES_BEFORE_ROTATE:
+                logger.debug("MinIO port-forward on %d missed a probe (%d/%d)",
+                             port, failures, self._PF_FAILURES_BEFORE_ROTATE)
+                continue
+            failures = 0
+            logger.warning(
+                "MinIO port-forward on port %d stopped serving; rotating it", port)
+            try:
+                with self._pf_lock:
+                    # Re-check under the lock: a caller may have rotated it since the probe.
+                    if self._minio_pf_port != port:
+                        continue
+                    self._close_minio_pf_locked()
+                # Reopened outside the lock is wrong (two callers could both open one), so
+                # go through the normal path, which holds the lock and bumps the generation.
+                self._minio_port_forward_endpoint()
+            except Exception as e:  # noqa: BLE001 - a keep-alive must outlive one failure
+                logger.warning("Could not rotate the MinIO port-forward: %s", e)
 
     def _close_minio_pf_locked(self) -> None:
         """Terminate the current MinIO port-forward. Caller must hold ``_pf_lock``."""
         pf, self._minio_pf = self._minio_pf, None
         self._minio_pf_endpoint = None
+        self._minio_pf_port = None
         if pf is not None and pf.poll() is None:
             pf.terminate()
             try:
@@ -514,6 +596,15 @@ class ClusterService(LocalTransport):
         the honest response is to list what we *can* see rather than fail the listing. The
         stale cache is kept in that case, so a brief outage does not make every stored
         campaign blink out of the list and back.
+
+        **Single-flight.** The listing runs outside ``_index_lock`` on purpose — holding the
+        lock across network I/O would queue every reader behind it — but that alone let
+        *every* concurrent caller past a cold cache issue its own listing. Behind a 1 Hz SSE
+        poll and a slow store that compounds: each tick starts another round-trip that the
+        previous tick has not finished, so the work in flight grows without bound and each
+        piece of it holds a worker thread. So one caller refreshes and the rest take the
+        stale value immediately; a slightly-late listing is worth far more than a
+        pile-up. ``{}`` is only returned when there is nothing cached at all.
         """
         from robovast.execution.cluster_execution import in_pod_storage
         now = time.monotonic()
@@ -521,15 +612,28 @@ class ClusterService(LocalTransport):
             cached = self._index_cache
             if cached is not None and now - cached[0] < self._INDEX_CACHE_TTL:
                 return cached[1]
+            if self._index_refreshing:
+                return {} if cached is None else cached[1]
+            self._index_refreshing = True
         try:
             cfg = self._cluster_config()
-            storage = in_pod_storage.storage_client_for(cfg)
+            # Interactive: this listing sits under the campaign-list SSE's 1 Hz poll, and
+            # the ``except`` below already has a good degraded answer (the stale cache).
+            # With the bulk budget a stalled tunnel made each poll block for minutes.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             index = dict(in_pod_storage.list_indexed_campaigns(storage, cfg))
         except Exception as e:  # noqa: BLE001 - never fail a listing over discovery
             logger.warning("Could not read the campaign index: %s", e)
             with self._index_lock:
+                self._index_refreshing = False
                 return {} if self._index_cache is None else self._index_cache[1]
         with self._index_lock:
+            self._index_refreshing = False
+            # A marker ``_on_campaign_started`` added while this listing was in flight is
+            # simply overwritten, and that is fine: ``list_campaigns`` unions the live
+            # registry into its id set (``LocalTransport._extra_live_ids``), so a campaign
+            # this process just started stays listed without the index, and the next
+            # refresh picks the marker up from the store.
             self._index_cache = (now, index)
         return index
 
@@ -548,21 +652,35 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import in_pod_storage
         try:
             cfg = self._cluster_config()
-            storage = in_pod_storage.storage_client_for(cfg)
+            # Interactive: one tiny marker PUT, already best-effort, and it runs at the
+            # head of the driver — a start must not sit for minutes on a stalled tunnel.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
         except Exception as e:  # noqa: BLE001 - discoverability, not correctness
             logger.warning("Could not index campaign %s for discovery: %s",
                            campaign_id, e)
             return
         with self._index_lock:
-            self._index_cache = None  # so the next listing sees it without waiting out the TTL
+            # Add the new marker to the cache rather than dropping it. Dropping it forced a
+            # cold listing at the *worst* moment: the campaign whose start just invalidated
+            # it is about to saturate the same connection with its own uploads, and the
+            # campaign-list poll would meet a cold cache on every tick until one listing
+            # completed. Inserting the one fact the listing would have told us keeps the
+            # campaign instantly discoverable and the cache warm. Nothing else about the
+            # index can have changed as a result of *this* call.
+            cached = self._index_cache
+            if cached is None:
+                self._index_cache = None  # nothing to extend; the next caller lists
+            else:
+                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at})
 
     def _unmark_campaign(self, campaign_id: str) -> None:
         """Drop a deleted campaign's index marker, so it stops being listed."""
         from robovast.execution.cluster_execution import in_pod_storage
         try:
             cfg = self._cluster_config()
-            storage = in_pod_storage.storage_client_for(cfg)
+            # Interactive: one tiny marker delete on a request path, already best-effort.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
             in_pod_storage.unmark_campaign_indexed(storage, cfg, campaign_id)
         except Exception as e:  # noqa: BLE001 - the data itself is already gone
             logger.warning("Could not remove campaign %s from the index: %s",
@@ -597,7 +715,9 @@ class ClusterService(LocalTransport):
         try:
             cfg = self._cluster_config()
             bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage = in_pod_storage.storage_client_for(cfg)
+            # Interactive: this tail sits behind the log SSE stream, which re-polls while
+            # the user watches. Returning an empty chunk beats blocking the stream.
+            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
         except Exception as e:  # noqa: BLE001 - best-effort; empty if unavailable
             logger.debug("could not resolve object store for %s: %s", campaign_id, e)
             return LogChunk(text="", next_offset=offset, eof=True)
@@ -1338,6 +1458,12 @@ class ClusterService(LocalTransport):
 
     def shutdown(self) -> None:
         """Stop running campaigns, then tear down the shared MinIO port-forward."""
+        # Stop the keep-alive first, and outside the lock: it must not observe the
+        # teardown below as a stall and helpfully reopen the tunnel this is closing.
+        self._pf_monitor_stop.set()
+        monitor, self._pf_monitor = self._pf_monitor, None
+        if monitor is not None:
+            monitor.join(timeout=self._PF_PROBE_INTERVAL_S + 1)
         try:
             super().shutdown()
         finally:
@@ -1488,7 +1614,8 @@ class ClusterService(LocalTransport):
     #: queryable before postprocessing has built ``data.db``.
     _QUERY_DBS = ("_execution/data.db", "campaign.db")
 
-    def _materialize(self, campaign_id: str, rel_paths, subject: str) -> Path:
+    def _materialize(self, campaign_id: str, rel_paths, subject: str, *,
+                     interactive: bool = False) -> Path:
         """Copy named objects of a campaign into its cache dir; return the dir.
 
         A **single-object** fetch per path — the same discipline as the ``/results`` file
@@ -1511,7 +1638,8 @@ class ClusterService(LocalTransport):
 
         from robovast.common.progress import fmt_size
         dest = self._cache_dir(campaign_id)
-        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        storage, bucket, prefix = self._campaign_object_location(
+            campaign_id, interactive=interactive)
         with self._fetch_locks_guard:
             lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
         # The same lock ``fetch_campaign`` takes: concurrent first-load reads (the results
@@ -1563,7 +1691,8 @@ class ClusterService(LocalTransport):
         25-run campaign is rosbags. The run's capture manifest is fetched by ``_scene_capture`` below,
         because its path depends on the run.
         """
-        self._materialize(campaign_id, ("_execution/execution.yaml",), "execution metadata")
+        self._materialize(campaign_id, ("_execution/execution.yaml",), "execution metadata",
+                          interactive=True)
         return str(self._cache_dir(campaign_id))
 
     def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
@@ -1573,7 +1702,7 @@ class ClusterService(LocalTransport):
         ``exec_in_container(campaign_id=…)`` fail for a campaign this service did not drive.
         """
         rel = f"{config_name}/{run_id}/capture/capture.json"
-        self._materialize(campaign_id, (rel,), "run capture manifest")
+        self._materialize(campaign_id, (rel,), "run capture manifest", interactive=True)
         return super()._scene_capture(campaign_id, config_name, run_id)
 
     def _scene_runner_context(self, campaign_id: str, identity: dict):
@@ -1661,7 +1790,10 @@ class ClusterService(LocalTransport):
         if cid not in self._campaign_index():
             return local
         try:
-            return self._materialize(cid, self._RECORD_OBJECTS, "campaign records")
+            # Interactive: two small objects, and ``list_campaigns`` reaches here per row
+            # on a 1 Hz poll. The ``except`` below already degrades to "unknown".
+            return self._materialize(cid, self._RECORD_OBJECTS, "campaign records",
+                                     interactive=True)
         except (RuntimeError, KeyError) as e:
             # Unreachable store, or no bucket for this campaign. Absent records are not a
             # failed listing: the inherited readers report ``unknown`` / no start time,
@@ -1678,7 +1810,10 @@ class ClusterService(LocalTransport):
         from robovast.service.interface import CampaignDataStatus
         in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
         dest = self._cache_dir(campaign_id)
-        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        # Interactive: two ``stat_object`` calls whose whole purpose is to be cheap enough
+        # to ask before a query — a minutes-long block here defeats the seam.
+        storage, bucket, prefix = self._campaign_object_location(
+            campaign_id, interactive=True)
         db_bytes, cached = 0, True
         for rel in self._QUERY_DBS:
             size = storage.stat_object(bucket, f"{prefix}{rel}")
@@ -1743,12 +1878,18 @@ class ClusterService(LocalTransport):
         storage, bucket, prefix = self._campaign_object_location(campaign_id)
         return storage, bucket, f"{prefix}{rel_path}"
 
-    def _campaign_object_location(self, campaign_id: str):
-        """``(storage, bucket, prefix)`` for a campaign's objects."""
+    def _campaign_object_location(self, campaign_id: str, *, interactive: bool = False):
+        """``(storage, bucket, prefix)`` for a campaign's objects.
+
+        *interactive* selects the fail-fast timeout budget, for the callers whose objects
+        are a couple of KB on a polled request path rather than a campaign's worth of
+        rosbags; see :func:`in_pod_storage.storage_client_for`.
+        """
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        return in_pod_storage.storage_client_for(cfg), bucket, prefix
+        return (in_pod_storage.storage_client_for(cfg, interactive=interactive),
+                bucket, prefix)
 
     def read_file_bytes(self, address: str) -> bytes:
         parts = self._results_parts(address)
