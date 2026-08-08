@@ -83,10 +83,13 @@ export function StatusView({
   // the bar too (see RunProgress): a trial that ran and failed is solid red, a run
   // that delivered nothing is the dimmer red.
   const succeeded = Math.max(0, runs.completed - runs.failed)
-  // Which job rows have their log open. Owned here, above the `liveOnly` filter, rather
-  // than inside each row: the filter drops a job the instant it completes, which
-  // unmounted the row and threw away the log the reader was in the middle of. A job
-  // whose log is open survives its own completion until it is collapsed again.
+  // The jobs list's expansion state, kept here rather than in JobsSection / JobRow
+  // because both of those unmount underneath the reader: the section whenever the live
+  // set momentarily empties (local runs are sequential, so between every pair of runs),
+  // a row the instant its job completes and the `liveOnly` filter below drops it —
+  // which threw away the log the reader was in the middle of. `expandedJobs` also feeds
+  // that filter, so a job whose log is open survives its own completion until collapsed.
+  const [jobsOpen, setJobsOpen] = useState(false)
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(() => new Set())
   const toggleJob = (jobName: string) =>
     setExpandedJobs((prev) => {
@@ -210,14 +213,16 @@ export function StatusView({
         </Typography>
       ) : null}
       {status.error ? <FailureBox error={status.error} /> : null}
-      {/* Rendered as soon as a listing exists, empty or not: gating on the row count
-          unmounted the whole section every time the live set momentarily emptied (local
-          runs are sequential, so it does between every pair of runs), silently
-          collapsing it again under a reader who had just expanded it. */}
-      {cid && shownJobs ? (
+      {/* Nothing to show means no affordance: a "Show jobs (0)" button opens onto an
+          empty list, so it is only noise. The section may therefore come and go as the
+          live set empties and refills between runs, which is why neither piece of its
+          expansion state lives inside it — see jobsOpen / expandedJobs. */}
+      {cid && shownJobs && shownJobs.length > 0 ? (
         <JobsSection
           campaignId={cid}
           jobs={shownJobs}
+          open={jobsOpen}
+          onToggleOpen={() => setJobsOpen((o) => !o)}
           expanded={expandedJobs}
           onToggle={toggleJob}
         />
@@ -245,20 +250,25 @@ const JOBS_RENDER_CAP = 100
 function JobsSection({
   campaignId,
   jobs,
+  open,
+  onToggleOpen,
   expanded,
   onToggle,
 }: {
   campaignId: string
   jobs: JobSummary[]
-  // Job names whose log is open; owned by StatusView so a row can outlive the filter.
+  // Both halves of the expansion state are owned by StatusView, because this section is
+  // unmounted whenever the live set empties: `open` is whether the list is unfolded,
+  // `expanded` the job names whose log is unfolded within it.
+  open: boolean
+  onToggleOpen: () => void
   expanded: Set<string>
   onToggle: (jobName: string) => void
 }) {
-  const [open, setOpen] = useState(false)
   const shown = jobs.slice(0, JOBS_RENDER_CAP)
   return (
     <Box>
-      <Button size="small" variant="text" onClick={() => setOpen((o) => !o)}>
+      <Button size="small" variant="text" onClick={onToggleOpen}>
         {open ? 'Hide jobs' : `Show jobs (${jobs.length})`}
       </Button>
       {open ? (
@@ -272,11 +282,6 @@ function JobsSection({
               onToggle={() => onToggle(job.job_name)}
             />
           ))}
-          {jobs.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              no live jobs
-            </Typography>
-          ) : null}
           {jobs.length > shown.length ? (
             <Typography variant="caption" color="text.secondary">
               … {jobs.length - shown.length} more not shown
