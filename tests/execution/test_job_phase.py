@@ -85,7 +85,7 @@ class _Core:
 
 
 def test_job_phase_without_pod_truth_treats_active_as_running():
-    """No pod set supplied → fall back to the Job-level view."""
+    """No pod map supplied → fall back to the Job-level view."""
     assert job_phase(_job("j", active=1)) == "running"
     assert job_phase(_job("j", succeeded=1)) == "completed"
     assert job_phase(_job("j", failed=1)) == "failed"
@@ -94,8 +94,19 @@ def test_job_phase_without_pod_truth_treats_active_as_running():
 
 def test_job_phase_active_pod_pending_is_pending():
     """An active Job whose pod is Pending must classify as pending, not running."""
-    assert job_phase(_job("j", active=1), running_job_names=set()) == "pending"
-    assert job_phase(_job("j", active=1), running_job_names={"j"}) == "running"
+    assert job_phase(_job("j", active=1), pod_phases={}) == "pending"
+    assert job_phase(_job("j", active=1), pod_phases={"j": "Pending"}) == "pending"
+    assert job_phase(_job("j", active=1), pod_phases={"j": "Running"}) == "running"
+
+
+def test_job_phase_finished_pod_never_goes_back_to_pending():
+    """The regression this file exists for: a Job's ``status.succeeded`` lags its pod's
+    termination by however long the job controller takes to remove the pod finalizer.
+    Reading "active, pod not Running" as pending sent every finishing job backwards —
+    a finished run showed a ``pending`` chip in the campaign view. One pod per Job,
+    never retried, so the pod's verdict is the Job's."""
+    assert job_phase(_job("j", active=1), pod_phases={"j": "Succeeded"}) == "completed"
+    assert job_phase(_job("j", active=1), pod_phases={"j": "Failed"}) == "failed"
 
 
 def test_running_scenario_job_names_only_counts_running_pods():
@@ -120,7 +131,11 @@ def test_pod_refinement_raises_on_api_error():
 
 def test_list_jobs_with_phase_degrades_explicitly_on_pod_error():
     """The advisory listing tolerates a transient pod-list hiccup (Job-level view),
-    without raising — the safety-critical escalation is handled elsewhere."""
+    without raising — the safety-critical escalation is handled elsewhere.
+
+    The phase assertion is the point: an *empty* pod map is pod truth saying "this job
+    has no pod", which reports every active job pending, so a single failed pod list
+    painted a whole running batch as not-yet-started. The fallback must be Job-level."""
     class _Batch:
         def list_namespaced_job(self, namespace, label_selector):
             job = _job("a", active=1)
@@ -128,7 +143,7 @@ def test_list_jobs_with_phase_degrades_explicitly_on_pod_error():
 
     # Does not raise; still lists the job (Job-level phase, no pod-derived detail).
     out = list_jobs_with_phase(_Batch(), _BoomCore(), "ns", "sel")
-    assert [j.metadata.name for j, _p, _d in out] == ["a"]
+    assert [(j.metadata.name, p) for j, p, _d in out] == [("a", "running")]
     assert all(detail is None for _j, _p, detail in out)
 
 
@@ -143,6 +158,16 @@ def test_list_jobs_with_phase_uses_pod_truth():
                   for j, p, _ in list_jobs_with_phase(batch, core, "ns", "sel"))
     assert phases == {"running-job": "running", "pending-job": "pending",
                       "done-job": "completed"}
+
+
+def test_list_jobs_with_phase_reports_finished_pod_of_still_active_job():
+    """End to end over the seam the campaign view reads: the Job says active because
+    the job controller has not caught up, but its pod is already Succeeded/Failed."""
+    jobs = [_job("just-finished", active=1), _job("just-failed", active=1)]
+    core = _Core([_pod("just-finished", "Succeeded"), _pod("just-failed", "Failed")])
+    result = {j.metadata.name: p
+              for j, p, _ in list_jobs_with_phase(_Batch(jobs), core, "ns", "sel")}
+    assert result == {"just-finished": "completed", "just-failed": "failed"}
 
 
 def test_blocked_job_reasons_reports_image_pull_failures():

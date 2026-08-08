@@ -83,6 +83,17 @@ export function StatusView({
   // the bar too (see RunProgress): a trial that ran and failed is solid red, a run
   // that delivered nothing is the dimmer red.
   const succeeded = Math.max(0, runs.completed - runs.failed)
+  // Which job rows have their log open. Owned here, above the `liveOnly` filter, rather
+  // than inside each row: the filter drops a job the instant it completes, which
+  // unmounted the row and threw away the log the reader was in the middle of. A job
+  // whose log is open survives its own completion until it is collapsed again.
+  const [expandedJobs, setExpandedJobs] = useState<Set<string>>(() => new Set())
+  const toggleJob = (jobName: string) =>
+    setExpandedJobs((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(jobName)) next.add(jobName)
+      return next
+    })
   // The jobs list mirrors what actually exists on the cluster — the same set `k9s`
   // shows: jobs that own a pod. A `waiting` job is the un-admitted Kueue backlog: it has
   // no pod, nothing distinguishes one queued job from the next, and there is no log to
@@ -90,7 +101,9 @@ export function StatusView({
   // them buries the handful of jobs that are really doing something. The backlog is
   // reported by the `waiting N` counter instead, which is what makes it legible anyway.
   const shownJobs = jobs?.jobs.filter(
-    (j) => j.status !== 'waiting' && (!liveOnly || j.status !== 'completed'),
+    (j) =>
+      j.status !== 'waiting' &&
+      (!liveOnly || j.status !== 'completed' || expandedJobs.has(j.job_name)),
   )
   // Live-view count summary: every non-completed state that is present. `waiting` is
   // the only way the queued backlog shows up at all now that it has no rows.
@@ -197,8 +210,17 @@ export function StatusView({
         </Typography>
       ) : null}
       {status.error ? <FailureBox error={status.error} /> : null}
-      {cid && shownJobs && shownJobs.length > 0 ? (
-        <JobsSection campaignId={cid} jobs={shownJobs} />
+      {/* Rendered as soon as a listing exists, empty or not: gating on the row count
+          unmounted the whole section every time the live set momentarily emptied (local
+          runs are sequential, so it does between every pair of runs), silently
+          collapsing it again under a reader who had just expanded it. */}
+      {cid && shownJobs ? (
+        <JobsSection
+          campaignId={cid}
+          jobs={shownJobs}
+          expanded={expandedJobs}
+          onToggle={toggleJob}
+        />
       ) : null}
       {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
@@ -220,7 +242,18 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
 // huge fan-out stays responsive.
 const JOBS_RENDER_CAP = 100
 
-function JobsSection({ campaignId, jobs }: { campaignId: string; jobs: JobSummary[] }) {
+function JobsSection({
+  campaignId,
+  jobs,
+  expanded,
+  onToggle,
+}: {
+  campaignId: string
+  jobs: JobSummary[]
+  // Job names whose log is open; owned by StatusView so a row can outlive the filter.
+  expanded: Set<string>
+  onToggle: (jobName: string) => void
+}) {
   const [open, setOpen] = useState(false)
   const shown = jobs.slice(0, JOBS_RENDER_CAP)
   return (
@@ -231,8 +264,19 @@ function JobsSection({ campaignId, jobs }: { campaignId: string; jobs: JobSummar
       {open ? (
         <Stack spacing={0.5} sx={{ mt: 0.5 }}>
           {shown.map((job) => (
-            <JobRow key={job.job_name} campaignId={campaignId} job={job} />
+            <JobRow
+              key={job.job_name}
+              campaignId={campaignId}
+              job={job}
+              open={expanded.has(job.job_name)}
+              onToggle={() => onToggle(job.job_name)}
+            />
           ))}
+          {jobs.length === 0 ? (
+            <Typography variant="caption" color="text.secondary">
+              no live jobs
+            </Typography>
+          ) : null}
           {jobs.length > shown.length ? (
             <Typography variant="caption" color="text.secondary">
               … {jobs.length - shown.length} more not shown
@@ -244,8 +288,17 @@ function JobsSection({ campaignId, jobs }: { campaignId: string; jobs: JobSummar
   )
 }
 
-function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
-  const [open, setOpen] = useState(false)
+function JobRow({
+  campaignId,
+  job,
+  open,
+  onToggle,
+}: {
+  campaignId: string
+  job: JobSummary
+  open: boolean
+  onToggle: () => void
+}) {
   return (
     <Box>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -258,7 +311,7 @@ function JobRow({ campaignId, job }: { campaignId: string; job: JobSummary }) {
         <Button
           size="small"
           variant="text"
-          onClick={() => setOpen((o) => !o)}
+          onClick={onToggle}
           sx={{ textTransform: 'none', justifyContent: 'flex-start', minWidth: 0 }}
         >
           {job.display_name || job.job_name}
@@ -389,6 +442,10 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
 
   // Footer status shown under the log body: nothing while healthily streaming, an
   // explicit note while reconnecting / errored / (when empty) connecting or ended.
+  // An open stream with nothing in it is not loading — the connection is up and the
+  // source has produced no bytes (a job whose containers have not started writing yet;
+  // PodLogTail swallows the API's 400 for a container with no log). Saying `loading…`
+  // there promised output that nothing was on its way to deliver.
   const footer =
     state === 'reconnecting'
       ? 'reconnecting…'
@@ -397,7 +454,9 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
         : !lines
           ? state === 'eof'
             ? '(no log)'
-            : 'loading…'
+            : state === 'open'
+              ? '(no output yet)'
+              : 'loading…'
           : null
 
   return (

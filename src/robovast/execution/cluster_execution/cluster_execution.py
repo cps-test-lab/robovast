@@ -49,17 +49,27 @@ def _label_safe_campaign(campaign: str) -> str:
     return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
 
 
-def job_phase(job, running_job_names=None) -> str:
+def job_phase(job, pod_phases=None) -> str:
     """Classify a scenario-run Job into ``completed``/``running``/``failed``/``pending``.
 
     Shared by the aggregate counter and the per-job lister so the two never drift.
 
-    A Job's ``status.active`` counts pods that are Pending *or* Running, so a Job
-    whose pod is still unscheduled / pulling its image / freshly Kueue-admitted looks
-    "active" while ``k9s`` shows the pod ``Pending``. When *running_job_names* is
-    supplied (the set of Job names that own an actually-``Running`` pod — see
-    :func:`running_scenario_job_names`), an active Job is only reported ``running``
-    if it is in that set; otherwise it is still ``pending``.
+    A Job's ``status.active`` counts pods that are Pending *or* Running, so a Job whose
+    pod is still unscheduled / pulling its image / freshly Kueue-admitted looks "active"
+    while ``k9s`` shows the pod ``Pending``. When *pod_phases* is supplied (Job name →
+    its pod's phase — see :func:`_pod_signals`), an active Job is classified by that pod
+    instead, so ``pending`` means exactly one thing: **the pod has not started yet**.
+
+    Both terminal pod phases are honoured, not just ``Running``, and that is what keeps
+    the classification monotone. The Job's ``status.succeeded`` is only incremented once
+    the job controller has observed the pod's termination and removed its finalizer,
+    seconds after the pod itself reached ``Succeeded``. Reading "active, and its pod is
+    not Running" as ``pending`` therefore sent every finishing job *backwards* — a
+    finished run showed up as not-yet-started for as long as the controller lagged.
+    Trusting the pod is sound here because the scenario Job template (see
+    :data:`~.manifests.JOB_TEMPLATE`) is ``backoffLimit: 0`` with the default
+    ``completions``/``parallelism`` of 1: one pod, never retried, so that pod's verdict
+    *is* the Job's and the Job status is only slower to say so.
     """
     status = job.status
     if status is None:
@@ -67,9 +77,16 @@ def job_phase(job, running_job_names=None) -> str:
     if (status.succeeded or 0) >= 1:
         return "completed"
     if (status.active or 0) >= 1:
-        if running_job_names is not None:
-            return "running" if job.metadata.name in running_job_names else "pending"
-        return "running"
+        if pod_phases is None:
+            return "running"  # no pod truth available — Job-level view
+        phase = pod_phases.get(job.metadata.name)
+        if phase == "Running":
+            return "running"
+        if phase == "Succeeded":
+            return "completed"
+        if phase == "Failed":
+            return "failed"
+        return "pending"  # no pod yet, or the pod is still Pending
     if (status.failed or 0) >= 1:
         return "failed"
     return "pending"
@@ -269,15 +286,24 @@ class PodLogTail:
         return self.terminal
 
 
-def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict, dict]":
-    """One pod list → ``(running_job_names, blocked_job_reasons, terminated_reasons)``.
+#: Pod phases ranked by how far the pod got, so a Job that somehow owns more than one
+#: pod is classified deterministically rather than by list order. A live pod outranks a
+#: finished one (that is the state a reader is asking about), and both outrank a pod
+#: that has not started.
+_POD_PHASE_RANK = {"Pending": 0, "Failed": 1, "Succeeded": 2, "Running": 3}
 
-    ``running_job_names``: Jobs owning a pod in phase ``Running`` (the truth a Job's
-    ``status.active`` can't give — it counts Pending pods too). ``blocked_job_reasons``:
-    Job name → ``"<reason>: <message>"`` for pods that cannot start (image pull /
-    container-config errors). ``terminated_reasons``: Job name → reason string for a
-    pod that ended abnormally (OOMKilled / evicted / deadline — see
-    :func:`pod_termination_reason`), so a *failed* job can explain itself.
+
+def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[dict, dict, dict]":
+    """One pod list → ``(pod_phases, blocked_job_reasons, terminated_reasons)``.
+
+    ``pod_phases``: Job name → its pod's phase — the truth a Job's ``status`` can't
+    give, in both directions. ``status.active`` counts Pending pods as active, and it
+    keeps counting a pod that has already terminated until the job controller catches
+    up (see :func:`job_phase`). ``blocked_job_reasons``: Job name →
+    ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
+    errors). ``terminated_reasons``: Job name → reason string for a pod that ended
+    abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
+    a *failed* job can explain itself.
 
     Raises on a pod-list error rather than returning empties: a silent empty result
     is indistinguishable from "nothing is blocked", which let the run loop's grace
@@ -287,13 +313,17 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict, dict]
     never as "unblocked".
     """
     pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
-    running, blocked, terminated = set(), {}, {}
+    phases, blocked, terminated = {}, {}, {}
     for pod in pods:
         name = _pod_job_name(pod)
         if not name:
             continue
-        if pod.status and pod.status.phase == "Running":
-            running.add(name)
+        phase = pod.status.phase if pod.status else None
+        if phase is not None:
+            known = phases.get(name)
+            if known is None or _POD_PHASE_RANK.get(phase, -1) > _POD_PHASE_RANK.get(
+                    known, -1):
+                phases[name] = phase
         reason = pod_block_reason(pod)
         if reason:
             r, msg = reason
@@ -302,13 +332,14 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[set, dict, dict]
         if term:
             r, msg = term
             terminated[name] = f"{r}: {msg}" if msg else r
-    return running, blocked, terminated
+    return phases, blocked, terminated
 
 
 def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
     """Set of Job names that currently own a pod in phase ``Running`` (see
     :func:`_pod_signals`)."""
-    return _pod_signals(k8s_core, namespace, label_selector)[0]
+    phases = _pod_signals(k8s_core, namespace, label_selector)[0]
+    return {name for name, phase in phases.items() if phase == "Running"}
 
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
@@ -342,9 +373,11 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     (service :meth:`ClusterService.list_jobs`, the CLI monitor, MCP — all of which go
     through one of those) classifies identically and can never drift. The pod list is
     fetched once (:func:`_pod_signals`) so an active-but-Pending pod is reported
-    ``pending`` rather than ``running``, and a pod that cannot start (image pull /
-    config error) is reported ``blocked`` with a human ``detail`` (Kubernetes' own
-    message) instead of sitting ``pending`` forever.
+    ``pending`` rather than ``running`` — and an active Job whose pod has already
+    finished is reported ``completed``/``failed`` rather than falling back to
+    ``pending`` while the job controller catches up (see :func:`job_phase`). A pod that
+    cannot start (image pull / config error) is reported ``blocked`` with a human
+    ``detail`` (Kubernetes' own message) instead of sitting ``pending`` forever.
 
     A Kueue-**suspended** Job is its own phase, ``waiting``, carrying Kueue's wait
     message as ``detail``. It has no pod at all, so the pod-level probe cannot see it
@@ -367,15 +400,20 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
-        running, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
+        phases, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
     except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
         # A transient pod-list hiccup: report Job-level phases for this listing only
         # (it self-corrects on the next poll). The safety-critical blocked-job
         # escalation does NOT come through here — it calls blocked_job_reasons and
         # handles a failed probe itself, so it is not weakened by this fallback.
+        #
+        # `None`, not an empty mapping: to job_phase an empty mapping is pod truth
+        # saying "no job has a pod", which reports every active job pending — so one
+        # failed pod list painted the whole batch as not-yet-started. `None` is the
+        # documented "no pod truth" signal that actually falls back to Job level.
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
-        running, blocked, terminated = set(), {}, {}
+        phases, blocked, terminated = None, {}, {}
     suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
@@ -385,7 +423,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         elif job.metadata.name in suspended:
             phase, detail = "waiting", suspended[job.metadata.name]
         else:
-            phase = job_phase(job, running)
+            phase = job_phase(job, phases)
         # A failed job whose pod was OOM-killed / evicted / deadline-exceeded would
         # otherwise show no cause (its scenario log is truncated) — surface it.
         if phase == "failed" and not detail:
