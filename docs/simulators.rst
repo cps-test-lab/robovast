@@ -118,8 +118,8 @@ Writing a backend
 -----------------
 
 Register it in the ``robovast.simulators`` entry-point group, or point at it directly with
-a ``module:ATTR`` ref or a ``.vast``-relative file — the last is the escape hatch when the
-service environment does not have the package installed.
+a ``.vast``-relative ``<file>.py:<Class>`` ref — the escape hatch when the service
+environment does not have the package installed.
 
 .. code-block:: python
 
@@ -162,18 +162,35 @@ working out which files a world is made of — return a ``ContainerSpec`` and le
 *inside the simulator's own image*, which also means the answer comes from the very image
 that will run the campaign.
 
-**A backend must be installed in the RoboVAST service environment.** The image and
-environment hooks run before a campaign's ``plugins:`` are installed, so a backend cannot
-arrive that way. On a cluster this means the service image needs it — or the campaign uses
-the file-ref form above. Nothing in the ``.vast`` shows this, which is why it is stated
+**A backend must be resolvable where the campaign is COMPOSED**, which is not always
+where you typed the command: a local run composes in your own environment, but ``vast
+serve --attach`` holds only a tunnel and the in-cluster service composes in *its* image.
+Three ways to satisfy that, in the order you should reach for them:
+
+1. **Installed in the service environment** — the normal answer, and the only one that
+   costs a campaign nothing. ``robosito`` is there by default (see below).
+2. **Shipped with the campaign** in ``plugins:``. Installed into ``.robovast_plugins/``
+   and put on ``sys.path`` before the build specs are extracted, so a backend really can
+   arrive this way; it just means a wheel per campaign.
+3. **A ``.vast``-relative file ref**, for a backend not packaged at all.
+
+Nothing in the ``.vast`` shows which of the three is in play, which is why it is stated
 here.
 
 The robosito backend
 --------------------
 
-Ships as root-level glue in the ``rrp`` repo (``robovast_sim_robosito``) rather than
-inside either project: RoboVAST must not name a simulator and robosito must not name a
-campaign runner, so the coupling lives in the repo that already depends on both.
+Ships as its own distribution (``robovast-sim-robosito``, ``src/robovast_sim_robosito``)
+behind the ``robosito`` extra, rather than as part of RoboVAST: the framework must not
+*require* a simulator, and robosito must not name a campaign runner, so the coupling is a
+third package that depends on neither. ``pip install robovast`` therefore names no
+simulator; ``pip install 'robovast[robosito]'`` adds this backend's entry point.
+
+The **service/controller image installs that extra by default**, which is what lets a
+campaign say ``backend: robosito`` on a cluster without shipping anything in ``plugins:``.
+It is affordable there precisely because the backend is container specs and strings whose
+only dependency RoboVAST already has — no MuJoCo enters that image. The simulator itself
+lives in the images named below, which the backend only *refers to*.
 
 It serves **both** shapes:
 

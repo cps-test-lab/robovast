@@ -169,7 +169,7 @@ class ContainerConfig(BaseModel):
     command: Optional[list[str]] = None
     resources: Optional[ResourcesConfig] = None
     #: Simulator backend entry point (``simulation`` role only) -- a name in the
-    #: ``robovast.simulators`` group, or a ``module:ATTR`` / ``.vast``-relative file ref.
+    #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
     #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
     backend: Optional[str] = None
 

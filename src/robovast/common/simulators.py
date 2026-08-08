@@ -145,7 +145,7 @@ class SimulatorBackend:
 
 
 def resolve_backend(name: str, base_dir: str = "") -> SimulatorBackend:
-    """Load a backend by entry-point name, ``module:ATTR`` ref, or ``.vast``-relative file.
+    """Load a backend by entry-point name, or by ``.vast``-relative ``<file>.py:<Class>``.
 
     The file form is the escape hatch for a campaign whose service environment does not
     have the backend installed: a descriptor next to the ``.vast`` works without any

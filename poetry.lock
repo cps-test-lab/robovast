@@ -4324,7 +4324,7 @@ tests = ["pytest", "pytest-cov"]
 
 [[package]]
 name = "robovast-nav"
-version = "1.0.0"
+version = "2.0.0"
 description = "Navigation-specific variation types for RoboVAST"
 optional = true
 python-versions = ">=3.12,<3.14"
@@ -4343,6 +4343,22 @@ scipy = "^1.11"
 [package.source]
 type = "directory"
 url = "src/robovast_nav"
+
+[[package]]
+name = "robovast-sim-robosito"
+version = "0.1.0"
+description = "The robosito simulator backend for RoboVAST"
+optional = true
+python-versions = ">=3.10,<3.14"
+files = []
+develop = false
+
+[package.dependencies]
+pydantic = "^2.0"
+
+[package.source]
+type = "directory"
+url = "src/robovast_sim_robosito"
 
 [[package]]
 name = "rpds-py"
@@ -5688,9 +5704,10 @@ gui = ["pyside6-addons", "pyside6-essentials"]
 nav = ["robovast-nav"]
 optuna = ["optuna"]
 qd = ["ribs", "shapely"]
+robosito = ["robovast-sim-robosito"]
 test = ["optuna", "pytest", "ribs", "shapely"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "6df532710646954f295605efea36faa1adedd81687e05a25ded7734cf42a9698"
+content-hash = "e921a02a29d8695038c2d4293319b8f8c56e15f98f33ec68270609541a3fc860"

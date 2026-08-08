@@ -63,37 +63,50 @@ RUN apt-get update \
 WORKDIR /opt/robovast
 
 # Project metadata + source, then install robovast with its dependencies, the
-# search-strategy extras the controller runs (qd → pyribs/shapely, optuna), and
-# the nav extra (robovast-nav, a path dependency on src/robovast_nav) so the
+# search-strategy extras the controller runs (qd → pyribs/shapely, optuna), the
+# nav extra (robovast-nav, a path dependency on src/robovast_nav) so the
 # controller can resolve nav-specific variation plugins (FloorplanVariation,
 # PathVariation*, ObstacleVariation*) when composing scenario variations
-# in-cluster. The robovast(.gui) Qt extra itself is intentionally omitted
-# (headless); rosbag postprocessing runs in the ROS image, not here. Note:
-# robovast-nav currently hard-depends on pyside6-essentials (its variation
-# classes import Qt-based helpers at module level, not lazily), so this extra
-# does pull PySide6 into the image despite the controller being otherwise
-# headless — and PySide6 ships no linux-aarch64 wheels.
+# in-cluster, and the robosito extra (robovast-sim-robosito, a path dependency on
+# src/robovast_sim_robosito) for the `backend: robosito` entry point.
+#
+# The robosito extra is here because a simulator backend has to be importable
+# wherever a campaign is COMPOSED, and for `vast serve --attach` that is this
+# image — the client side holds only a tunnel. Without it a campaign has to ship
+# the backend itself in `plugins:`, which is a wheel to build per campaign. It
+# costs nothing to carry: the backend is container specs and strings, its only
+# dependency (pydantic) is already here, and it imports nothing from robosito —
+# no MuJoCo runtime enters this image. Contrast the nav extra below.
+#
+# The robovast(.gui) Qt extra itself is intentionally omitted (headless); rosbag
+# postprocessing runs in the ROS image, not here. Note: robovast-nav currently
+# hard-depends on pyside6-essentials (its variation classes import Qt-based
+# helpers at module level, not lazily), so that extra does pull PySide6 into the
+# image despite the controller being otherwise headless — and PySide6 ships no
+# linux-aarch64 wheels.
 # Split into two layers so editing robovast/robovast_nav source doesn't force a
 # full reinstall of the (large, slow) third-party dependency set — notably
 # PySide6, pulled in by the nav extra.
 #
 # Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
 # Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
-# touch it. --no-root skips the robovast project and --no-directory skips the
-# robovast-nav path dependency (src/robovast_nav); both are installed in layer 2.
+# touch it. --no-root skips the robovast project and --no-directory skips both
+# path dependencies (src/robovast_nav, src/robovast_sim_robosito); all three are
+# installed in layer 2.
 COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
- && poetry install --only main --extras "qd optuna nav" \
+ && poetry install --only main --extras "qd optuna nav robosito" \
         --no-root --no-directory --no-cache
 
 # Layer 2 (cheap, invalidated by any source edit): copy the source and install
-# the two local packages (robovast root + robovast-nav path dep) on top of the
-# already-present dependencies. Poetry sees the heavy deps as satisfied, so this
-# only builds/installs robovast and robovast-nav — fast.
+# the three local packages (robovast root + the robovast-nav and
+# robovast-sim-robosito path deps) on top of the already-present dependencies.
+# Poetry sees the heavy deps as satisfied, so this only builds/installs the three
+# — fast.
 COPY README.md ./
 COPY src ./src
-RUN poetry install --only main --extras "qd optuna nav" --no-cache
+RUN poetry install --only main --extras "qd optuna nav robosito" --no-cache
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
 # path cannot be derived from the source tree (robovast is installed into
