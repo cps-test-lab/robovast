@@ -50,8 +50,12 @@ def test_a_run_that_does_not_name_its_world_is_refused(tmp_path):
 
 
 def test_a_mutable_tag_refuses_to_cache(tmp_path):
-    """A tag can name different bytes tomorrow, so an entry keyed on it may be silently stale."""
-    with pytest.raises(scene_cache.SceneUnavailable, match="no immutable image identity"):
+    """A tag can name different bytes tomorrow, so an entry keyed on it may be silently stale.
+
+    The refusal now comes from ``campaign_role_image``, which reports every source it tried;
+    matching on the tag itself keeps this pinned to the behaviour rather than the wording.
+    """
+    with pytest.raises(scene_cache.SceneUnavailable, match="harbor/x:latest"):
         scene_cache.world_identity(_campaign(tmp_path, image="harbor/x:latest"), _manifest())
 
 

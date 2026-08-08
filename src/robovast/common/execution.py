@@ -1206,23 +1206,46 @@ def create_job_links(campaign_dir) -> int:
     return created
 
 
-def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}"):
+def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}",
+                                   role_images=None):
     """Generate shell script code to create execution.yaml with ISO formatted timestamp.
 
     Args:
         runs: Number of runs
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
+        role_images: ``{role: image}`` for every container role this run starts, from the
+            campaign's ``ContainerPlan``. Recorded as ``images`` plus a per-role
+            ``image_revisions``, which is the same contract the cluster lane writes -- see
+            below for why a single campaign-level image is not enough.
 
     Returns:
         String containing shell script code to create execution.yaml
     """
     if execution_params is None:
         execution_params = {}
+    role_images = role_images or {}
 
     script = f'echo "Creating execution.yaml..."\n'
     script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
-    script += f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" 2>/dev/null || echo "unknown")\n'
+    # `| tr -d` + `|| true`, not `|| echo unknown`: for an image it does not have, `docker
+    # inspect` prints an empty line on stdout *and* exits non-zero, so the old form captured
+    # "\nunknown" -- a newline inside a YAML scalar, which made the whole file unparseable
+    # rather than merely unknown. Empty now means "could not inspect", defaulted below.
+    script += (f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" '
+               f'2>/dev/null | tr -d "[:space:]" || true)\n')
+    # One digest per ROLE, not just the campaign's. "The campaign's image" stopped describing
+    # a run once the simulator, the system under test and the scenario got their own
+    # containers, and anything attributing an artifact to the bytes that produced it has to
+    # name the role: the run view compiles its geometry from the world the capture names, and
+    # that world -- with the exporter that reads it -- lives in the SIMULATION image. Without
+    # this the reader fell back to the campaign image and ran the exporter in a container that
+    # had neither, which surfaced only as an exit 127 from a docker command.
+    # Deduplicated by image because roles commonly share one, and `docker inspect` is a
+    # process each.
+    for i, image in enumerate(sorted(set(role_images.values()))):
+        script += (f'ROLE_REVISION_{i}=$(docker inspect --format=\'{{{{.Id}}}}\' '
+                   f'"{image}" 2>/dev/null | tr -d "[:space:]" || true)\n')
     script += f'mkdir -p "{output_dir_var}/_execution"\n'
     script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     script += "execution_time: '${EXECUTION_TIME}'\n"
@@ -1233,7 +1256,26 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     # entry is symbolic, and postprocessing re-runs its container from this file -- `docker run
     # build:<tag>` finds no such image, which surfaces as a bogus "compat version <missing>".
     script += "image: '${DOCKER_IMAGE}'\n"
-    script += 'image_revision: ${IMAGE_REVISION}\n'
+    script += 'image_revision: ${IMAGE_REVISION:-unknown}\n'
+    if role_images:
+        slot = {image: i for i, image in enumerate(sorted(set(role_images.values())))}
+        script += 'images:\n'
+        for role, image in sorted(role_images.items()):
+            script += f"  {role}: '{image}'\n"
+        # Written by the shell, one `if` per role, so a role whose image could not be
+        # inspected is OMITTED rather than recorded as "unknown". A recorded non-answer would
+        # satisfy the reader's first source and defeat the point of recording at all.
+        script += 'EOF\n'
+        script += f'echo "image_revisions:" >> "{output_dir_var}/_execution/execution.yaml"\n'
+        # `if`, not `[ ... ] && echo`: the latter exits non-zero when the test fails, which
+        # would abort the run under `set -e` for the entirely normal case of one
+        # uninspectable image.
+        for role, image in sorted(role_images.items()):
+            var = f'ROLE_REVISION_{slot[image]}'
+            script += (f'if [ -n "${{{var}}}" ]; then '
+                       f'echo "  {role}: ${{{var}}}" '
+                       f'>> "{output_dir_var}/_execution/execution.yaml"; fi\n')
+        script += f'cat >> "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     # Local executions have no cluster information attached
     script += 'cluster_info: {}\n'
 

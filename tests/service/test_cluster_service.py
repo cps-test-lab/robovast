@@ -1272,19 +1272,57 @@ def test_scene_geometry_is_keyed_on_the_simulators_image():
     assert identity["image"] == "reg/sim@sha256:" + "b" * 64
 
 
-def test_scene_geometry_falls_back_for_campaigns_without_per_role_digests():
-    """A campaign recorded before per-role digests still resolves -- and for a stepped
-    simulator the scenario container IS the simulator, so it is also the right answer."""
-    from unittest.mock import patch
+def _stepped_campaign(tmp_path, revision):
+    """A campaign whose simulator is stepped in-process: the ``simulation`` block names no
+    image or command, so it IS the scenario container."""
+    import yaml
+    (tmp_path / "_execution").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_execution" / "execution.yaml").write_text(
+        yaml.safe_dump({"image_revision": revision}))
+    (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
+        {"version": 2, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+                                                    "simulation": {}}}}))
+    return tmp_path
+
+
+def test_scene_geometry_uses_the_campaign_image_for_a_stepped_simulator(tmp_path):
+    """A campaign recorded before per-role digests still resolves **when the simulator is
+    folded onto the scenario container** -- there the campaign-level digest really is the
+    simulator's.
+
+    Deliberately narrower than the fallback this replaces: that one applied to *every*
+    campaign, which is how a separate simulation container ended up compiling its geometry
+    in the scenario image (see the test below).
+    """
+    from robovast.service import scene_cache
+
+    revision = "reg/combined@sha256:" + "c" * 64
+    identity = scene_cache.world_identity(_stepped_campaign(tmp_path, revision),
+                                          {"world": "w.yaml", "overrides": {}})
+    assert identity["image"] == revision
+
+
+def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
+    """The regression: a separate simulation container with no per-role digest must refuse.
+
+    Borrowing ``image_revision`` here ran ``rst-export-web`` in an image that does not
+    contain it, reported as a bare ``exit status 127``.
+    """
+    import yaml
 
     from robovast.service import scene_cache
 
-    meta = {"image_revision": "reg/combined@sha256:" + "c" * 64}
-    with patch("robovast.common.campaign_data.read_execution_metadata",
-               lambda _p: meta):
-        identity = scene_cache.world_identity("/campaign", {"world": "w.yaml",
-                                                            "overrides": {}})
-    assert identity["image"] == "reg/combined@sha256:" + "c" * 64
+    (tmp_path / "_execution").mkdir(parents=True)
+    (tmp_path / "_execution" / "execution.yaml").write_text(
+        yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
+    (tmp_path / "_config").mkdir(parents=True)
+    (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
+        {"version": 2, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+                                                    "simulation": {"image": "reg/sim:1"}}}}))
+    with pytest.raises(scene_cache.SceneUnavailable) as err:
+        scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
+    assert "reg/sim:1" in str(err.value)
 
 
 def _scene_identity_for(tmp_path, world, archive=True):

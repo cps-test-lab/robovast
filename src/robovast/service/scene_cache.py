@@ -108,13 +108,16 @@ def _lock_for(key: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
-def world_identity(campaign_dir, capture_manifest) -> dict:
+def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
     """What geometry this run needs, from its capture manifest plus the campaign's image.
 
     Args:
         campaign_dir: the campaign root (already local — on the cluster the caller materialises the two
             small objects it needs first).
         capture_manifest: the parsed ``capture/capture.json`` of the run being viewed.
+        resolve_digest: ``ref -> digest | None``, from the lane that can answer it (locally
+            ``docker inspect``). Lets a campaign that recorded only a declared *tag* still be
+            keyed on bytes; without it such a campaign is refused rather than guessed at.
 
     Returns:
         ``{producer, world, overrides, image, overrides_known}``.
@@ -123,8 +126,8 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
         SceneUnavailable: when the run does not say what world it used, or the campaign does not record
             an image identity precise enough to trust a cache entry against.
     """
-    from robovast.common.campaign_data import \
-        read_execution_metadata  # pylint: disable=import-outside-toplevel
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        RoleImageUnavailable, campaign_role_image)
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
 
@@ -134,37 +137,32 @@ def world_identity(campaign_dir, capture_manifest) -> dict:
             "this run's capture does not name the world it was recorded from, so its geometry cannot "
             "be rebuilt. Re-run with a producer that records `world` in capture.json.")
 
+    # Geometry is compiled from the world the capture names, and that world -- with the exporter that
+    # reads it -- lives in the SIMULATION image, so that is the role asked for. `campaign_role_image`
+    # owns the whole answer, identically on both lanes, and refuses rather than substituting another
+    # role's image: keying on the scenario container's digest sent the build into an image with
+    # neither the world nor the exporter, which surfaced locally as a bare `exit status 127` and on
+    # the cluster as "invalid literal for int()" (the Kubernetes client int()s an exec status that
+    # carries a message instead of an exit code).
+    #
     # Deliberately not ``postprocess_job.campaign_execution_image``: that resolves an image to *run*,
-    # and falling back to the tag is right there -- a run just needs something to launch. This needs an
-    # image to *key a cache on*, and a mutable tag cannot do that: the same tag names different bytes
-    # after a rebuild, so an entry keyed on it would serve geometry from an image that no longer exists.
-    # It also accepts only ``@sha256:``, while the local lane records a bare ``sha256:`` image id --
-    # immutable, just not a registry digest.
+    # where falling back to a tag is correct -- a run just needs something to launch. This keys a
+    # cache, and a mutable tag cannot: the same tag names different bytes after a rebuild, so an entry
+    # keyed on it would serve geometry from an image that no longer exists.
     try:
-        meta = read_execution_metadata(Path(campaign_dir)) or {}
-    except (OSError, ValueError) as err:
+        image = campaign_role_image(Path(campaign_dir), SIMULATION_CONTAINER,
+                                    resolve_digest=resolve_digest)
+    except FileNotFoundError as err:
         raise SceneUnavailable(
             f"this campaign's execution metadata could not be read ({err}), so geometry cannot be "
             "built from the same packages the run used.") from err
-    # The SIMULATION container's digest when the campaign had one, else the scenario's.
-    # Geometry is compiled from the world the capture names, and that world -- with the
-    # exporter that reads it -- lives in the simulator's image. Keying on the scenario
-    # container's digest sent the build into an image with neither: on the cluster the
-    # aux pod's exec failed to start, and because the Kubernetes client int()s an exec
-    # status that carries a message instead of an exit code, the run view reported
-    # "invalid literal for int()" rather than "executable not found".
-    #
-    # `image_revision` remains the fallback, so campaigns recorded before per-role
-    # digests existed still resolve -- and for a stepped simulator it is the right answer
-    # anyway, because there the simulator IS the scenario container.
-    revisions = meta.get("image_revisions") or {}
-    image = str(revisions.get(SIMULATION_CONTAINER) or meta.get("image_revision") or "")
+    except RoleImageUnavailable as err:
+        raise SceneUnavailable(str(err)) from err
     if not _is_immutable_image(image):
-        recorded = image or meta.get("image") or "nothing"
         raise SceneUnavailable(
-            f"this campaign records no immutable image identity ({recorded!r} is a mutable tag), which "
-            "cannot identify the geometry it produced. Re-run the campaign to record a digest, or "
-            "generate the descriptor with an execution.generate entry instead.")
+            f"the image resolved for this campaign's simulator ({image!r}) does not name immutable "
+            "bytes, so it cannot identify the geometry it produced. Re-run the campaign to record a "
+            "digest, or generate the descriptor with an execution.generate entry instead.")
 
     # `overrides` has three states and two of them must not be conflated: {} means "none applied",
     # absent means "this producer did not record them". Compiling the bare world for a run that

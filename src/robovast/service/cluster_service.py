@@ -1754,6 +1754,18 @@ class ClusterService(LocalTransport):
 
     # -- on-demand 3D geometry ---------------------------------------------
 
+    def _resolve_image_digest(self, ref: str):
+        """No tag→digest resolution on this lane. Refusing beats answering with the wrong bytes.
+
+        Inherited, this would be ``docker inspect`` **on the service host**, which is either absent
+        (in-pod) or -- worse, running off-cluster with ``-x`` -- present and answering with a bare
+        local image id. No cluster node can pull such an id (``pullable_digest`` rejects it), so the
+        aux pod would fail to start on an identity we had just declared trustworthy. A campaign here
+        that recorded no per-role digest is therefore refused with the resolver's message.
+        """
+        del ref
+        return None
+
     def _scene_source_dir(self, campaign_id: str) -> str:
         """Materialise only what resolving geometry reads, then answer from that.
 

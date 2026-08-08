@@ -2024,10 +2024,27 @@ class LocalTransport(RobovastInterface):
         del campaign_id, identity
         return None
 
+    def _resolve_image_digest(self, ref: str):
+        """An image reference resolved to the bytes it currently names, or None.
+
+        The lane-specific half of naming the simulator's image: a campaign that recorded only a
+        declared *tag* (one from before per-role digests were written on this lane) can still be
+        keyed on bytes, because Docker is right here to ask. The cluster lane deliberately does not
+        implement this -- there is no pull-less registry lookup in the tree, and an aux pod's
+        imageID arrives only after the pull, far too late to name the output directory -- so there a
+        tag-only campaign is refused with a message instead of being guessed at. It costs nothing:
+        that lane has recorded per-role digests since per-role digests existed.
+        """
+        from robovast.common.execution import \
+            _get_image_revision  # pylint: disable=import-outside-toplevel
+        revision = _get_image_revision(ref)
+        return None if revision == "unknown" else revision
+
     def _scene_identity(self, campaign_id, config_name, run_id):
         from robovast.service import scene_cache
         manifest = self._scene_capture(campaign_id, config_name, run_id)
-        identity = scene_cache.world_identity(self._scene_source_dir(campaign_id), manifest)
+        identity = scene_cache.world_identity(self._scene_source_dir(campaign_id), manifest,
+                                              resolve_digest=self._resolve_image_digest)
         return identity, scene_cache.cache_key(identity)
 
     def campaign_scene_status(self, campaign_id, config_name, run_id) -> "SceneStatus":

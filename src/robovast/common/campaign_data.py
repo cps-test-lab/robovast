@@ -51,6 +51,164 @@ def read_execution_metadata(campaign_dir: Path) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+class RoleImageUnavailable(ValueError):
+    """No trustworthy image could be named for one of a campaign's container roles."""
+
+
+def _is_digest(image: str) -> bool:
+    """True for an image reference that names bytes rather than a moving tag.
+
+    Two shapes count: a registry digest ``repo@sha256:…`` (what the cluster records) and a
+    bare local image id ``sha256:…`` (what ``docker inspect --format={{.Id}}`` prints).
+    """
+    if not image:
+        return False
+    if "@sha256:" in image:
+        return True
+    return image.startswith("sha256:") and len(image) >= 20
+
+
+def _campaign_container_plan(campaign_dir: Path):
+    """The container plan of a campaign's frozen ``.vast``, or ``None`` if unreadable.
+
+    The snapshot is a verbatim copy of what the author wrote, so a project that left the
+    simulator's image to its backend has no image in it -- hence ``apply_backend`` first,
+    the same order ``image_build.extract_build_specs`` uses. That needs the backend package
+    importable *here*, in the service; when it is not, the declared image simply stays
+    unresolved and the caller reports that rather than inventing a default.
+    """
+    from robovast.common.containers import \
+        plan_containers  # pylint: disable=import-outside-toplevel
+    from robovast.common.results_utils import \
+        campaign_vast  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import \
+        apply_backend  # pylint: disable=import-outside-toplevel
+
+    try:
+        vast_path = campaign_vast(campaign_dir)
+        with open(vast_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    execution = (raw or {}).get("execution") or {}
+    if not isinstance(execution, dict):
+        return None
+    try:
+        execution = apply_backend(dict(execution), str(Path(vast_path).parent))
+    except Exception:  # noqa: BLE001 - a missing/incompatible backend must not hide the plan
+        pass
+    try:
+        return plan_containers(execution)
+    except Exception:  # noqa: BLE001 - a malformed snapshot is "no plan", not a crash
+        return None
+
+
+def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
+    """The image that holds a campaign's *role*, as a reference naming immutable bytes.
+
+    Distinct from ``postprocess_job.campaign_execution_image``, which answers the same
+    question for the scenario container and is *right* to fall back to a mutable tag: it
+    resolves an image to **run**. This one's answer keys a cache, so a tag would let the
+    same key serve artifacts built from bytes that no longer exist -- and it is role-aware,
+    because "the campaign's image" stopped being a single fact once the simulator, the
+    system under test and the scenario got their own containers.
+
+    Sources, in order of how well they describe what actually happened:
+
+    1. ``image_revisions`` for the role, or for the container backing it -- recorded at run
+       time. The contract; the only path a campaign recorded by a current RoboVAST takes.
+    2. The campaign's own ``image_revision``, when *role* has **no container of its own** --
+       a stepped simulator IS the scenario container, and a campaign that declares no
+       containers at all has exactly one, so there the campaign-level image is this role's.
+    3. What the campaign *declared* -- ``images``, else the frozen ``.vast`` -- which is a
+       tag, so *resolve_digest* has to turn it into bytes. This is what rescues campaigns
+       recorded before (1) existed on their lane.
+
+    **The campaign-level image is never substituted for a role that owns a container.** That
+    substitution is the bug this function exists to prevent. It is refused only on *positive*
+    knowledge, though: when the snapshot cannot be read there is no evidence of a separate
+    container, and (2) still applies rather than withholding geometry from a shape we simply
+    could not inspect.
+
+    Args:
+        campaign_dir: the ``campaign-<id>`` directory.
+        role: a container role, e.g. ``simulation``.
+        resolve_digest: ``ref -> digest | None``, supplied by the lane that can answer it
+            (locally ``docker inspect``). Omitted when the lane cannot, which turns source
+            (3) into an explicit refusal instead of a wrong answer.
+
+    Raises:
+        RoleImageUnavailable: when no source names bytes. The message lists every source
+            tried and what was in it, because it is shown to whoever opened the view.
+    """
+    meta = read_execution_metadata(Path(campaign_dir))
+    revisions = meta.get("image_revisions") or {}
+    declared_images = meta.get("images") or {}
+    tried = []
+
+    plan = _campaign_container_plan(Path(campaign_dir))
+    backing = None
+    if plan is not None:
+        try:
+            backing = plan.by_name(role)
+        except KeyError:
+            tried.append(f"the campaign's .vast declares no {role!r} container or role")
+    # The container whose image is wanted: the role's own, or the one it folds onto.
+    target = backing.name if backing is not None else None
+    # `images` is keyed by declared role, `image_revisions` by container name on the cluster
+    # lane and by role on the local one -- so look under both rather than assuming they agree.
+    keys = [role] if target in (None, role) else [role, target]
+
+    # 1. what ran, per role.
+    for key in keys:
+        recorded = revisions.get(key)
+        if recorded and _is_digest(str(recorded)):
+            return str(recorded)
+        if recorded:
+            tried.append(f"execution.yaml image_revisions[{key!r}]={recorded!r}, "
+                         f"which does not name a digest")
+    if not any(revisions.get(k) for k in keys):
+        tried.append(f"execution.yaml records no image_revisions for {' or '.join(map(repr, keys))}")
+
+    # 2. the campaign's single image -- only when this role has no container of its own.
+    #    Checked before the declared tag below because a recorded digest describes what ran,
+    #    where a tag only describes what was asked for.
+    own_container = backing is not None and backing.name == role
+    if not own_container:
+        revision = meta.get("image_revision")
+        if revision and _is_digest(str(revision)):
+            return str(revision)
+        tried.append(f"the campaign's image_revision is {revision!r}")
+
+    # 3. what was declared, resolved to bytes.
+    resolved_from = None
+    for key in keys:
+        if declared_images.get(key):
+            resolved_from = (declared_images[key], f"execution.yaml images[{key!r}]")
+            break
+    if resolved_from is None and backing is not None and backing.image:
+        resolved_from = (backing.image,
+                         f"the campaign's .vast (execution.containers.{target}.image)")
+    if resolved_from is not None:
+        declared, source = resolved_from
+        if _is_digest(str(declared)):
+            return str(declared)
+        resolved = resolve_digest(str(declared)) if resolve_digest else None
+        if resolved and _is_digest(str(resolved)):
+            return str(resolved)
+        tried.append(
+            f"{source}={declared!r} is a mutable tag, and " + (
+                "it could not be resolved to a digest here"
+                if resolve_digest else
+                "this lane cannot resolve a tag to a digest"))
+
+    raise RoleImageUnavailable(
+        f"cannot tell which image holds this campaign's {role!r} container, so an "
+        f"artifact built from it could not be attributed to the bytes that produced it. "
+        f"Tried: " + "; ".join(tried) + ". Re-run the campaign to record a per-role "
+        f"digest, or build the artifact with an execution.generate entry instead.")
+
+
 #: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized
 #: beside ``controller.log`` in ``_execution/``. Written on terminal exit so a controller
 #: crash that never builds ``data.db`` still leaves a durable, queryable reason.

@@ -864,7 +864,14 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
 
-    script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
+    # The plan, not the declared `containers` mapping: it already resolved each image and
+    # already folded the roles a stepped simulator collapses, so what is recorded is what
+    # this script actually starts.
+    script += generate_execution_yaml_script(
+        runs, execution_params=campaign_data.get("execution", {}),
+        role_images={role: plan.by_name(role).image
+                     for role in plan.roles
+                     if plan.by_name(role).image})
 
     scenario_env_vars = scenario_env(campaign_data)
     _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
