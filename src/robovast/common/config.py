@@ -485,10 +485,15 @@ class PanelConfig(BaseModel):
     type: str
     title: Optional[str] = None
     position: Optional[PanelPosition] = None
+    #: Whether the panel's free edge/corner can be dragged to resize it in the run-view.
+    #: Defaults to on for every panel type that does not turn it off (the docked playback
+    #: bar, the full-view 3D background).
     resizable: Optional[bool] = None
     minimizable: Optional[bool] = None
     minimized: Optional[bool] = None
     hidden: Optional[bool] = None
+    #: Lock the panel's geometry: the run-view lets a panel be dragged by its title bar and
+    #: resized by its free edge, and ``fixed: true`` opts this one out of both.
     fixed: Optional[bool] = None
     #: For ``type: custom`` -- path (relative to the ``.vast``) to the built panel bundle.
     remote: Optional[str] = None

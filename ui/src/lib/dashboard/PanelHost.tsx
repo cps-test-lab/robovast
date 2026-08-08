@@ -2,8 +2,13 @@
 // host's relative container according to its `position.anchor` (edges/corners, `center`, or `fill` for
 // a full-view background). It also draws the optional panel chrome (title bar + minimize toggle) and
 // renders an explicit error for a panel whose `type` isn't registered -- never a silent drop.
+//
+// The declared anchor is the panel's starting place, not a cage: dragging a panel's header moves it
+// from there (and drops it where the mouse is released), the same way dragging its resize handle
+// overrides the declared size. Both overrides live in this component and last for the mounted view --
+// the .vast stays the authored layout.
 
-import { useRef, useState, type CSSProperties } from 'react'
+import { useRef, useState, type CSSProperties, type RefObject } from 'react'
 import Box from '@mui/material/Box'
 import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
@@ -22,13 +27,29 @@ const len = (v: number | string | undefined, fallback: string): string =>
 const MIN_W = 140
 const MIN_H = 90
 
+// How much of a dragged panel has to stay inside the host. The container clips (overflow: hidden), so
+// without this a panel could be dropped where nothing of it -- least of all the header you grab it by --
+// is left on screen, with no way to get it back short of reloading the view.
+const KEEP_X = 80
+const KEEP_Y = 28
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
+
 // Which dimensions a resize handle drives, and the sign mapping mouse delta -> size delta, per anchor.
-// The handle sits on the panel's inner edge/corner (the one facing the view centre): a left panel is
-// dragged by its right edge (wider as the mouse moves right, x:+1); a bottom-right panel by its
-// top-left corner (both dimensions grow as the mouse moves up-left, x/y:-1).
+// The handle sits on the panel's free edge/corner -- the one the anchor does NOT pin, so dragging it
+// only ever changes the size and never fights the layout: a left panel is dragged by its right edge
+// (wider as the mouse moves right, x:+1); a bottom-right panel by its top-left corner (both dimensions
+// grow as the mouse moves up-left, x/y:-1).
+//
+// A left/right column takes both axes even though the anchor pins only its side: with no declared
+// height it spans the band, and the first vertical drag is what gives it one (layoutStyle then
+// top-anchors it), so the top edge stays put and the bottom edge follows the mouse.
+//
+// top/bottom bars are horizontally stretched edge to edge -- their width is ignored by layoutStyle --
+// so they get the vertical axis alone rather than a handle that would do nothing.
 const RESIZE: Partial<Record<Anchor, { x?: 1 | -1; y?: 1 | -1 }>> = {
-  left: { x: 1 },
-  right: { x: -1 },
+  left: { x: 1, y: 1 },
+  right: { x: -1, y: 1 },
   top: { y: 1 },
   bottom: { y: -1 },
   'top-left': { x: 1, y: 1 },
@@ -46,13 +67,15 @@ function handleSx(rz: { x?: 1 | -1; y?: 1 | -1 }): CSSProperties {
       ...base,
       width: 16,
       height: 16,
+      // Above the two edge strips it overlaps, so the corner drives both axes where they meet.
+      zIndex: 3,
       [rz.x === 1 ? 'right' : 'left']: 0,
       [rz.y === 1 ? 'bottom' : 'top']: 0,
       cursor: rz.x * rz.y === 1 ? 'nwse-resize' : 'nesw-resize',
     }
   if (rz.x)
-    return { ...base, top: 0, bottom: 0, width: 6, [rz.x === 1 ? 'right' : 'left']: 0, cursor: 'ew-resize' }
-  return { ...base, left: 0, right: 0, height: 6, [rz.y === 1 ? 'bottom' : 'top']: 0, cursor: 'ns-resize' }
+    return { ...base, top: 0, bottom: 0, width: 8, [rz.x === 1 ? 'right' : 'left']: 0, cursor: 'ew-resize' }
+  return { ...base, left: 0, right: 0, height: 8, [rz.y === 1 ? 'bottom' : 'top']: 0, cursor: 'ns-resize' }
 }
 
 // Full-width top/bottom bars dock at the very edge and reserve their height (`insets`); every other
@@ -143,12 +166,16 @@ function PanelFrame({
   clock,
   data,
   insets,
+  hostRef,
+  onRaise,
 }: {
   spec: PanelSpec
   z: number
   clock: PlaybackClock
   data: DataProvider
   insets: { top: number; bottom: number }
+  hostRef: RefObject<HTMLDivElement | null>
+  onRaise: () => void
 }) {
   const [minimized, setMinimized] = useState(spec.minimized)
   const paperRef = useRef<HTMLDivElement | null>(null)
@@ -157,26 +184,41 @@ function PanelFrame({
     w: spec.position.width,
     h: spec.position.height,
   })
+  // Live move override, in pixels away from wherever the anchor put the panel. Kept as a translation
+  // rather than rewritten left/top so it composes with every anchor -- including the edge anchors,
+  // whose offsets are relative to the opposite side, and `center`, which is placed by a transform.
+  const [offset, setOffset] = useState({ dx: 0, dy: 0 })
   const plugin = getPanel(spec.type)
   const isFill = spec.position.anchor === 'fill'
   // A fill/frameless panel has no Paper chrome and never a header (e.g. a full-view background).
   const frameless = isFill || spec.frameless
   const showHeader = !frameless && (spec.minimizable || !!spec.title)
   const rz = RESIZE[spec.position.anchor ?? 'center']
-  const canResize = spec.resizable && !isFill && !minimized && !!rz
+  // `fixed: true` locks the whole layout of a panel whose declared geometry is part of the campaign's
+  // dashboard; `resizable: false` is the narrower opt-out, for one that may be moved but not resized.
+  const canResize = spec.resizable && !spec.fixed && !isFill && !minimized && !!rz
+  // The header is the drag handle, so a panel that shows none cannot be moved -- which is what keeps
+  // the docked playback bar and the `fill` 3D background in place.
+  const canMove = showHeader && !spec.fixed
 
-  const startResize = (e: React.MouseEvent) => {
+  // `use` is the subset of the anchor's axes this handle drives -- an edge strip drives one, the
+  // corner where they meet drives both.
+  const startResize = (e: React.MouseEvent, use: { x?: 1 | -1; y?: 1 | -1 }) => {
     e.preventDefault()
     e.stopPropagation()
     const rect = paperRef.current?.getBoundingClientRect()
-    if (!rect || !rz) return
+    if (!rect) return
+    onRaise()
     const { clientX: x0, clientY: y0 } = e
     const { width: w0, height: h0 } = rect
+    // A centred panel grows away from its centre, so each edge moves half of what the size does;
+    // without this the handle drifts out from under the cursor at half the drag speed.
+    const gain = (spec.position.anchor ?? 'center') === 'center' ? 2 : 1
     const onMove = (ev: MouseEvent) => {
       setSize((s) => ({
         ...s,
-        ...(rz.x ? { w: Math.max(MIN_W, w0 + rz.x * (ev.clientX - x0)) } : null),
-        ...(rz.y ? { h: Math.max(MIN_H, h0 + rz.y * (ev.clientY - y0)) } : null),
+        ...(use.x ? { w: Math.max(MIN_W, w0 + gain * use.x * (ev.clientX - x0)) } : null),
+        ...(use.y ? { h: Math.max(MIN_H, h0 + gain * use.y * (ev.clientY - y0)) } : null),
       }))
     }
     const onUp = () => {
@@ -187,7 +229,53 @@ function PanelFrame({
     window.addEventListener('mouseup', onUp)
   }
 
+  const startMove = (e: React.MouseEvent) => {
+    // The header also carries the minimize toggle: a press there is a click on the button, not a grab.
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
+    e.preventDefault() // suppresses the text selection a drag across the view would otherwise paint
+    onRaise()
+    const rect = paperRef.current?.getBoundingClientRect()
+    const bounds = hostRef.current?.getBoundingClientRect()
+    if (!rect || !bounds) return
+    const { clientX: x0, clientY: y0 } = e
+    const from = offset
+    const onMouseMove = (ev: MouseEvent) => {
+      // Clamp in viewport coordinates (where both rects live), then convert back to an offset.
+      const left = clamp(
+        rect.left + ev.clientX - x0,
+        bounds.left + KEEP_X - rect.width,
+        bounds.right - KEEP_X,
+      )
+      const top = clamp(rect.top + ev.clientY - y0, bounds.top, bounds.bottom - KEEP_Y)
+      setOffset({ dx: from.dx + left - rect.left, dy: from.dy + top - rect.top })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // One strip per axis the anchor leaves free, plus the corner where two of them meet -- so a panel
+  // is grabbed anywhere along its free edge, not only at the corner.
+  const handles: { x?: 1 | -1; y?: 1 | -1 }[] =
+    canResize && rz
+      ? [
+          ...(rz.x ? [{ x: rz.x }] : []),
+          ...(rz.y ? [{ y: rz.y }] : []),
+          ...(rz.x && rz.y ? [rz] : []),
+        ]
+      : []
+
   const pos: PanelPosition = { ...spec.position, width: size.w, height: size.h }
+  const layout = layoutStyle(pos, z, minimized, insets)
+  if (offset.dx || offset.dy) {
+    // After the anchor's own transform, so `center`'s translate(-50%, -50%) still centres the panel
+    // and the drag displaces it from there.
+    const move = `translate(${offset.dx}px, ${offset.dy}px)`
+    layout.transform = layout.transform ? `${layout.transform} ${move}` : move
+  }
 
   // A remote panel (package-provided or user-authored `custom`) is loaded at runtime via
   // Module Federation; a built-in panel comes from the static registry; anything else is an
@@ -208,7 +296,7 @@ function PanelFrame({
       elevation={frameless ? 0 : 3}
       square={frameless}
       sx={{
-        ...layoutStyle(pos, z, minimized, insets),
+        ...layout,
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -219,6 +307,7 @@ function PanelFrame({
     >
       {showHeader ? (
         <Box
+          onMouseDown={canMove ? startMove : undefined}
           sx={{
             display: 'flex',
             alignItems: 'center',
@@ -228,6 +317,7 @@ function PanelFrame({
             borderBottom: minimized ? 0 : 1,
             borderColor: 'divider',
             bgcolor: 'action.hover',
+            ...(canMove ? { cursor: 'move', userSelect: 'none' } : null),
           }}
         >
           <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
@@ -241,12 +331,13 @@ function PanelFrame({
         </Box>
       ) : null}
       {!minimized ? <Box sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>{body}</Box> : null}
-      {canResize && rz ? (
+      {handles.map((use, i) => (
         <Box
-          onMouseDown={startResize}
-          sx={{ ...handleSx(rz), '&:hover': { bgcolor: 'primary.main', opacity: 0.35 } }}
+          key={i}
+          onMouseDown={(e) => startResize(e, use)}
+          sx={{ ...handleSx(use), '&:hover': { bgcolor: 'primary.main', opacity: 0.35 } }}
         />
-      ) : null}
+      ))}
     </Paper>
   )
 }
@@ -260,6 +351,11 @@ export function PanelHost({
   clock: PlaybackClock
   data: DataProvider
 }) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  // The panel last grabbed by its header, raised above the rest. Panels otherwise stack in declaration
+  // order, which is a layout the author chose for panels that do not overlap -- once one is dragged
+  // over another, the one being moved is the one you mean to see.
+  const [front, setFront] = useState(-1)
   const visible = panels.filter((p) => !p.hidden)
   // Reserve the height of the full-width top/bottom bars so nothing else overlaps them.
   const px = (v: number | string | undefined) => (typeof v === 'number' ? v : 0)
@@ -269,17 +365,22 @@ export function PanelHost({
     else if (p.position.anchor === 'bottom') insets.bottom += px(p.position.height)
   }
   return (
-    <Box sx={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+    <Box
+      ref={hostRef}
+      sx={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}
+    >
       {visible.map((spec, i) => (
         // Key on the spec so only a panel whose declaration actually changed remounts (and re-fits);
         // editing one panel must not reset another's view (e.g. the costmap's pan/zoom).
         <PanelFrame
           key={`${i}:${JSON.stringify(spec)}`}
           spec={spec}
-          z={i + 1}
+          z={i + 1 + (i === front ? visible.length : 0)}
           clock={clock}
           data={data}
           insets={insets}
+          hostRef={hostRef}
+          onRaise={() => setFront(i)}
         />
       ))}
     </Box>

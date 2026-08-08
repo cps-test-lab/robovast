@@ -55,7 +55,11 @@ export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
         width: (pos.width as number | string | undefined) ?? manifest?.defaultPosition.width,
         height: (pos.height as number | string | undefined) ?? manifest?.defaultPosition.height,
       },
-      resizable: (r.resizable as boolean | undefined) ?? manifest?.resizable ?? false,
+      // Resizable unless the panel type or the author says otherwise. Opting in per panel made the
+      // one panel that ships no host manifest -- every package-provided remote, the costmap among
+      // them -- the only one in the view that could not be resized, for no reason its author could
+      // see from the .vast.
+      resizable: (r.resizable as boolean | undefined) ?? manifest?.resizable ?? true,
       minimizable: (r.minimizable as boolean | undefined) ?? manifest?.minimizable ?? false,
       minimized: (r.minimized as boolean | undefined) ?? false,
       frameless: (r.frameless as boolean | undefined) ?? manifest?.frameless ?? false,

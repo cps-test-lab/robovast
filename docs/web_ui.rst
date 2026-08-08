@@ -377,11 +377,30 @@ Each panel entry is a single-key mapping — the key is the panel **type** (sele
 panel plugin) and its value holds that panel's fields: an optional ``title``, a
 ``position`` (an ``anchor`` — ``bottom``/``top``/``left``/``right``, a corner, ``center``,
 or ``fill`` for a full-view background — plus ``width``/``height`` in pixels or a ``"40%"``
-string), the toggles ``minimizable``/``minimized``/``hidden``, and panel-specific **data
-bindings** (which ``data.db`` table or recorded topic each piece of data comes from). Any
-field you omit falls back to the panel type's built-in default, so a bare ``playback:`` on
-its own is a complete panel. In this first version the layout is exactly as the ``.vast``
-declares it (minimize/toggle work; drag-resize is not yet persisted).
+string), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
+**data bindings** (which ``data.db`` table or recorded topic each piece of data comes from).
+Any field you omit falls back to the panel type's built-in default, so a bare ``playback:``
+on its own is a complete panel.
+
+The declared layout is where the panels **start**, not where they are stuck:
+
+* **Move** — press the mouse on a panel's **title bar**, drag, and release to drop it there.
+  A moved panel is raised above the others, and always keeps an edge inside the view so it
+  can be grabbed back.
+* **Resize** — drag a panel's **free edge or corner**: the one the anchor does not pin, which
+  is the edge facing the middle of the view (a ``left`` column is dragged by its right edge,
+  a ``bottom-right`` panel by its top-left corner). The anchored side stays where it is, so
+  resizing never fights the layout. A ``left``/``right`` column with no declared ``height``
+  spans the view; dragging its bottom edge is what gives it one.
+
+Panels that show no title bar cannot be moved — the docked ``playback`` transport and a
+``fill`` background such as ``scene3d`` stay put. Everything else is movable and resizable
+unless the ``.vast`` says otherwise: ``fixed: true`` locks a panel's geometry outright, and
+``resizable: false`` is the narrower opt-out for one that may be moved but not resized.
+
+These are **view-local** adjustments: they last as long as the view is open, and reloading it
+(or switching runs) restores the layout the ``.vast`` declares. To change the layout for good,
+edit it under **Edit visualization**.
 
 The built-in panels:
 
