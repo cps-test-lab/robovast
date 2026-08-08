@@ -3,6 +3,7 @@ archiver
 auth
 basename
 boto
+boxplot
 callables
 classmethods
 codec
@@ -31,6 +32,7 @@ gui
 gz
 gzipped
 hardcoded
+hconcat
 JUnit
 jupyter
 kubeconfig
@@ -39,6 +41,8 @@ kubernetes
 Kubespray
 Kueue
 kwarg
+layerable
+Lite
 localhost
 lookups
 mcap
@@ -96,6 +100,8 @@ triggered
 ubuntu
 uniformly
 untracked
+vconcat
+Vega
 waypoints
 WebM
 xacro

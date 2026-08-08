@@ -442,7 +442,7 @@ class EvaluationConfig(BaseModel):
 #: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
 #: group and are accepted in addition to these (see ``PanelConfig._known_type``).
 BUILTIN_PANEL_TYPES = frozenset({
-    "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state",
+    "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state", "vega",
 })
 
 #: Entry-point group for package-provided run-view panels (loaded as Module-Federation
@@ -453,6 +453,10 @@ PANEL_TYPES_GROUP = "robovast.panel_types"
 #: ``.vast`` (referenced by its ``remote``/``module`` fields rather than by a registered
 #: type name).
 CUSTOM_PANEL_TYPE = "custom"
+
+#: The panel type that renders an author-supplied Vega-Lite spec over a ``data.db`` table. Its
+#: ``vega_lite``/``source`` bindings are validated by ``PanelConfig._vega_needs_bindings``.
+VEGA_PANEL_TYPE = "vega"
 
 
 class PanelPosition(BaseModel):
@@ -570,6 +574,30 @@ class PanelConfig(BaseModel):
         if self.type != CUSTOM_PANEL_TYPE and (self.remote or self.module):
             raise ValueError(
                 f"'remote'/'module' are only valid on a 'custom' panel, not {self.type!r}")
+        return self
+
+    @model_validator(mode='after')
+    def _vega_needs_bindings(self):
+        # A ``vega`` panel's bindings are passthrough extras like every other panel's, so they are
+        # checked here rather than declared as fields (which would put one panel type's schema on
+        # the model every panel shares). Checked at the *model* level and not only in
+        # ``config_validation._panel_problems`` because campaign generation goes through
+        # ``validate_config`` alone -- otherwise a malformed panel first surfaces in the browser at
+        # replay time, long after the compute was spent.
+        if self.type != VEGA_PANEL_TYPE:
+            return self
+        extra = self.__pydantic_extra__ or {}
+        spec = extra.get('vega_lite')
+        if not isinstance(spec, dict) or not spec:
+            raise ValueError(
+                "a 'vega' panel must set 'vega_lite' to a non-empty Vega-Lite spec "
+                "(mark/encoding, or layer/vconcat); the panel binds the rows as its data, so the "
+                "spec declares no 'data' block")
+        source = extra.get('source')
+        if not isinstance(source, dict) or not source.get('table'):
+            raise ValueError(
+                "a 'vega' panel must set 'source' to a data.db table, e.g. "
+                "source: {table: poses, filter: {frame: base_link}}")
         return self
 
 

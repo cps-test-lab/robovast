@@ -57,6 +57,56 @@ def test_validation_passes_when_bundle_present(tmp_path):
     assert _panel_problems(raw, str(tmp_path)) == []
 
 
+VEGA_SPEC = {"mark": "line", "encoding": {"x": {"field": "timestamp"}, "y": {"field": "v"}}}
+
+
+def _vega(**props):
+    return {"vega": {"source": {"table": "poses"}, "vega_lite": VEGA_SPEC, **props}}
+
+
+def test_vega_accepted_in_both_forms():
+    assert PanelConfig.model_validate(_vega()).type == "vega"
+    explicit = PanelConfig.model_validate(
+        {"type": "vega", "source": {"table": "poses"}, "vega_lite": VEGA_SPEC})
+    assert explicit.type == "vega"
+
+
+def test_vega_bindings_kept_as_passthrough():
+    # The bindings are interpreted by the panel plugin, like every other panel's, so they must
+    # survive validation in ``__pydantic_extra__`` rather than being dropped as unknown keys.
+    p = PanelConfig.model_validate(_vega(title="base_link"))
+    assert p.title == "base_link"
+    assert p.__pydantic_extra__["vega_lite"] == VEGA_SPEC
+    assert p.__pydantic_extra__["source"] == {"table": "poses"}
+
+
+@pytest.mark.parametrize("props", [
+    {"source": {"table": "poses"}},                          # no spec
+    {"source": {"table": "poses"}, "vega_lite": {}},          # empty spec
+    {"vega_lite": VEGA_SPEC},                                 # no source
+    {"source": {"filter": {"frame": "base_link"}}, "vega_lite": VEGA_SPEC},  # source without table
+])
+def test_vega_rejects_incomplete_bindings(props):
+    with pytest.raises(ValidationError):
+        PanelConfig.model_validate({"vega": props})
+
+
+def test_validation_reports_every_broken_vega_panel():
+    # Why this check exists at all: the schema raises on the first bad panel, so a .vast with two
+    # of them would only ever show one. ``validate_project`` is the collect-all report.
+    raw = {"visualization": {"panels": [
+        {"vega": {"source": {"table": "poses"}}},   # missing vega_lite
+        {"vega": {"vega_lite": VEGA_SPEC}},         # missing source
+    ]}}
+    fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
+    assert fields == ["visualization.panels[0].vega_lite", "visualization.panels[1].source"]
+
+
+def test_validation_passes_for_complete_vega_panel():
+    raw = {"visualization": {"panels": [_vega()]}}
+    assert _panel_problems(raw, "/nonexistent") == []
+
+
 def test_json_schema_accepts_shorthand():
     # The web config editor validates the .vast against ConfigV1's JSON Schema. The default
     # schema requires a literal ``type`` property and flagged the shorthand every example

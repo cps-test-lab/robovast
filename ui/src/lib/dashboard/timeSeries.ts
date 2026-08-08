@@ -96,10 +96,16 @@ export async function buildTimeSeriesSource(
   binding: TimeSeriesBinding,
   data: DataProvider,
   columns?: string[],
+  maxRows?: number,
 ): Promise<TimeSeriesSource> {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
   const cols = columns && columns.length ? Array.from(new Set([timeCol, ...columns])) : undefined
-  const rows = await data.series(binding.table, { timeCol, columns: cols, match: binding.filter })
+  const rows = await data.series(binding.table, {
+    timeCol,
+    columns: cols,
+    match: binding.filter,
+    maxRows,
+  })
   return timeSeriesFromRows(rows, timeCol)
 }
 
@@ -107,7 +113,12 @@ export async function buildTimeSeriesSource(
  *  (run, table, time_column, columns) -- the run scope first, because table names repeat across
  *  campaigns and a shared cache would otherwise hand one campaign's rows to another. Panels index into
  *  the returned source with the clock's `t`. */
-export function useTimeSeries(binding: TimeSeriesBinding, data: DataProvider, columns?: string[]) {
+export function useTimeSeries(
+  binding: TimeSeriesBinding,
+  data: DataProvider,
+  columns?: string[],
+  maxRows?: number,
+) {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
   return useQuery({
     queryKey: [
@@ -117,8 +128,9 @@ export function useTimeSeries(binding: TimeSeriesBinding, data: DataProvider, co
       timeCol,
       binding.filter ?? null,
       columns ?? null,
+      maxRows ?? null,
     ],
-    queryFn: () => buildTimeSeriesSource(binding, data, columns),
+    queryFn: () => buildTimeSeriesSource(binding, data, columns, maxRows),
     retry: false,
   })
 }

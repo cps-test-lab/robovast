@@ -407,13 +407,39 @@ def _run_capture_problems(raw):
         field=f"visualization.panels[{i}]") for i, _entry in panels]
 
 
+def _vega_panel_problems(i, props):
+    """The ``vega`` panel's bindings, as a collect-all check.
+
+    Mirrors ``PanelConfig._vega_needs_bindings``; the duplication is the point — the schema
+    raises on the first bad panel, this reports every one of them in a single report."""
+    problems = []
+    prefix = f"visualization.panels[{i}]"
+    spec = props.get("vega_lite")
+    if not isinstance(spec, dict) or not spec:
+        problems.append(_problem(
+            "panel",
+            "a 'vega' panel must set 'vega_lite' to a non-empty Vega-Lite spec (mark/encoding, "
+            "or layer/vconcat); the panel binds the rows as its data, so the spec declares no "
+            "'data' block",
+            field=f"{prefix}.vega_lite"))
+    source = props.get("source")
+    if not isinstance(source, dict) or not source.get("table"):
+        problems.append(_problem(
+            "panel",
+            "a 'vega' panel must set 'source' to a data.db table, e.g. "
+            "source: {table: poses, filter: {frame: base_link}}",
+            field=f"{prefix}.source"))
+    return problems
+
+
 def _panel_problems(raw, vast_dir):
     """Validate ``visualization.panels`` beyond the schema: a ``custom`` panel's built
-    bundle must exist next to the ``.vast``. Package panels (entry-point types) are only
-    name-checked by the schema — their built assets ship with the plugin and may be absent
-    in a source checkout, so they are not required here."""
-    from robovast.common.config import \
-        CUSTOM_PANEL_TYPE  # pylint: disable=import-outside-toplevel
+    bundle must exist next to the ``.vast``, and a ``vega`` panel carries the bindings it
+    needs. Package panels (entry-point types) are only name-checked by the schema — their
+    built assets ship with the plugin and may be absent in a source checkout, so they are
+    not required here."""
+    from robovast.common.config import (  # pylint: disable=import-outside-toplevel
+        CUSTOM_PANEL_TYPE, VEGA_PANEL_TYPE)
     from robovast.common.config_generation import \
         _validate_relative_path  # pylint: disable=import-outside-toplevel
 
@@ -423,6 +449,9 @@ def _panel_problems(raw, vast_dir):
         return problems
     for i, entry in enumerate(viz.get("panels") or []):
         ptype, props = _panel_entry(entry)
+        if ptype == VEGA_PANEL_TYPE:
+            problems.extend(_vega_panel_problems(i, props if isinstance(props, dict) else {}))
+            continue
         if ptype != CUSTOM_PANEL_TYPE:
             continue
         remote = props.get("remote") if isinstance(props, dict) else None

@@ -302,6 +302,8 @@ alongside the query itself.
    because rosbags only deserialize where the system-under-test's ROS2 message types
    are defined.
 
+.. _declared-plots:
+
 **Declared plots.** A campaign can carry its own saved plots, authored in the
 ``.vast`` under ``evaluation.plots`` (analogous to referencing analysis notebooks).
 Each plot is a SQL query plus a `Vega-Lite <https://vega.github.io/vega-lite/>`_
@@ -329,6 +331,10 @@ no ``data`` block is written:
 
 Declared plots render automatically in the Results tab for that campaign, and are
 schema-validated with the rest of the ``.vast`` in the Config editor.
+
+These are **campaign-scoped**: one query across every run, rendered in the Data browser. For the
+same Vega-Lite authoring against a **single run**, on the replay timeline and with a playback cursor,
+see the :ref:`vega run-view panel <vega-panel>`.
 
 The same SQL surface is available to an LLM through the MCP ``describe_campaign_data``
 / ``query_campaign_data_sql`` tools, which resolve locally or delegate to a configured
@@ -516,6 +522,84 @@ timeline with a cursor at the current time (``source`` + a ``series`` list of
 
 **State** (``state``) — the current numeric values of selected columns as labelled
 read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
+
+.. _vega-panel:
+
+**Vega chart** (``vega``) — any diagram, declared as a `Vega-Lite
+<https://vega.github.io/vega-lite/>`_ spec over one of the run's ``data.db`` tables. Where
+``timeseries`` plots columns that *already exist*, a spec's ``transform`` can **derive** what the
+run never recorded, and any Vega-Lite mark is available. It binds a ``source`` (the same
+``{ table, time_column, filter }`` as ``timeseries``, so the run scope and the frame filter happen
+in SQL) plus a ``vega_lite`` spec, and optionally ``max_rows`` (default 5000).
+
+*Which of the two to pick:* ``timeseries`` is a hand-rolled canvas chart — the cheap path for
+numeric columns at high sample rates. ``vega`` costs a full Vega render but expresses everything
+else.
+
+The spec is bound to two **named datasets** and so declares no ``data`` block of its own:
+
+* ``table`` — the run's rows for that table;
+* ``cursor`` — a single row ``{t}`` at the current playback time.
+
+The playback cursor is layered in **automatically**, into the top-level spec and into each child of a
+``vconcat``/``hconcat``/``concat`` — but only where it means something: the spec must be layerable
+(``mark`` or ``layer``) and must bind the time column to ``x`` or ``y``. A boxplot by frame therefore
+gets no cursor, and ``facet``/``repeat`` specs are left alone. Reference the ``cursor`` dataset
+yourself to place it anywhere else.
+
+Two things to know when charting a ``poses`` table, because every such spec hits them:
+
+* **Dotted column names.** ``rosbags_tf_to_csv`` writes ``position.x`` / ``orientation.yaw``, and a
+  Vega-Lite ``field`` reads a dot as a nested path. Either escape it (``position\.x``) or — usually
+  clearer — hoist it to a flat name in a ``calculate`` transform: ``datum['position.x']``.
+* **Every ``data.db`` column is TEXT.** The panel coerces each column whose values all parse as
+  finite numbers, so ``type: quantitative`` works without a ``format.parse`` block.
+
+A worked example over a ``poses`` table — derived speed above the raw pose, sharing one time axis, so
+both charts get a cursor:
+
+.. code-block:: yaml
+
+   - vega:
+       title: base_link
+       position: {anchor: bottom-right, width: 460, height: 380}
+       source: {table: poses, filter: {frame: base_link}}
+       vega_lite:
+         resolve: {scale: {x: shared}}
+         transform:
+         - {calculate: "datum['position.x']", as: px}
+         - {calculate: "datum['position.y']", as: py}
+         - window:                                  # previous sample, to difference against
+           - {op: lag, field: px, as: px0}
+           - {op: lag, field: py, as: py0}
+           - {op: lag, field: timestamp, as: t0}
+           sort: [{field: timestamp}]
+         - filter: "isValid(datum.t0)"              # the first sample has no predecessor
+         - calculate: >
+             sqrt(pow(datum.px - datum.px0, 2) + pow(datum.py - datum.py0, 2))
+             / max(datum.timestamp - datum.t0, 1e-6)
+           as: speed
+         - window: [{op: mean, field: speed, as: speed_avg}]   # differencing TF is noisy
+           frame: [-9, 0]
+           sort: [{field: timestamp}]
+         vconcat:
+         - height: 150
+           encoding:
+             x: {field: timestamp, type: quantitative, axis: null}
+             y: {field: speed_avg, type: quantitative, title: "speed [m/s]"}
+           mark: {type: line, strokeWidth: 1.5}
+         - height: 120
+           transform: [{fold: [px, py], as: [series, value]}]
+           mark: {type: line, strokeWidth: 1.5}
+           encoding:
+             x: {field: timestamp, type: quantitative, title: "t [s]"}
+             y: {field: value, type: quantitative, title: pose}
+             color: {field: series, type: nominal}
+
+This is the same authoring language as the campaign-scoped :ref:`declared plots
+<declared-plots>` above; the difference is scope and binding — ``evaluation.plots`` runs a SQL query
+across the whole campaign and renders in the Data browser, while a ``vega`` panel binds one table of
+one run and renders in the Run view.
 
 Custom and package-provided panels
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
