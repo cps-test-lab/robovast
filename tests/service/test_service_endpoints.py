@@ -102,23 +102,38 @@ def _local_transport(results_root) -> LocalTransport:
     return lt
 
 
-def _make_campaign(tmp_path, *, with_costmaps=True):
+def _make_campaign(tmp_path, *, with_costmaps=True, stamps=(1.0,), timestamp_type="REAL"):
+    """Build a campaign whose data.db holds one ``/map`` costmap row per entry in `stamps`.
+
+    ``timestamp_type`` is a parameter because the column really is either type in the field: REAL in a
+    data.db built by typed ingest, TEXT in an older one (see data_query's note). The neighbour lookup
+    has to agree with both, and TEXT is where it can silently disagree.
+    """
     exe = tmp_path / "camp-1" / "_execution"
     exe.mkdir(parents=True)
     conn = sqlite3.connect(exe / "data.db")
     if with_costmaps:
         conn.execute(
             "CREATE TABLE costmaps (config_name TEXT, run_id INTEGER, topic TEXT, "
-            "timestamp REAL, frame_id TEXT, resolution REAL, width INTEGER, height INTEGER, "
-            "origin_x REAL, origin_y REAL, origin_yaw REAL, data TEXT)")
-        conn.execute(
-            "INSERT INTO costmaps VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("nav", 3, "/map", 1.0, "map", 0.05, 10, 10, 0.0, 0.0, 0.0, "ZLIB_B64"))
+            f"timestamp {timestamp_type}, frame_id TEXT, resolution REAL, width INTEGER, "
+            "height INTEGER, origin_x REAL, origin_y REAL, origin_yaw REAL, data TEXT)")
+        for stamp in stamps:
+            conn.execute(
+                "INSERT INTO costmaps VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("nav", 3, "/map", str(stamp) if timestamp_type == "TEXT" else stamp,
+                 "map", 0.05, 10, 10, 0.0, 0.0, 0.0, "ZLIB_B64"))
     else:
         conn.execute("CREATE TABLE other (x)")  # a db exists, but no costmaps table
     conn.commit()
     conn.close()
     return TestClient(build_app(_local_transport(tmp_path)))
+
+
+def _get_frame(client, t, topic="/map"):
+    resp = client.get("/campaigns/camp-1/costmap",
+                      params={"config_name": "nav", "run_id": 3, "topic": topic, "t": t})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
 def test_costmap_endpoint_serves_frame(tmp_path):
@@ -145,3 +160,53 @@ def test_costmap_endpoint_missing_table_is_400(tmp_path):
                           params={"config_name": "nav", "run_id": 3, "topic": "/map", "t": 1.0})
         assert resp.status_code == 400
         assert "costmaps" in resp.json()["detail"]
+
+
+def test_costmap_endpoint_latched_topic_has_no_neighbours(tmp_path):
+    """A single recorded frame reports no neighbours either side.
+
+    This is what keeps the static map on screen: with no neighbours there is no publish period, so the
+    panel has nothing to call it stale against, and its validity interval is unbounded — it is fetched
+    once for the session. Note the rule never mentions the layer's name.
+    """
+    with _make_campaign(tmp_path, stamps=(1.0,)) as client:
+        frame = _get_frame(client, 500.0)  # far past the only row: still clamped to it
+        assert frame["t"] == 1.0
+        assert frame["t_prev"] is None
+        assert frame["t_next"] is None
+
+
+def test_costmap_endpoint_reports_neighbours_around_the_frame(tmp_path):
+    with _make_campaign(tmp_path, stamps=(9.5, 10.2, 11.0, 100.1)) as client:
+        frame = _get_frame(client, 10.3)
+        assert frame["t"] == 10.2
+        assert frame["t_prev"] == 9.5
+        assert frame["t_next"] == 11.0
+
+
+def test_costmap_endpoint_past_the_last_frame_has_no_next(tmp_path):
+    """Off the end of the span the nearest row is the last one, and it says so.
+
+    The endpoint still clamps — that is what `t_next: None` is for. On a finished recording the panel
+    reads it as "no later frame exists", and the distance from the cursor is what then decides whether
+    the frame is still an honest answer.
+    """
+    with _make_campaign(tmp_path, stamps=(9.5, 10.2, 11.0)) as client:
+        frame = _get_frame(client, 900.0)
+        assert frame["t"] == 11.0
+        assert frame["t_prev"] == 10.2
+        assert frame["t_next"] is None
+
+
+def test_costmap_endpoint_neighbours_are_numeric_on_a_text_timestamp_column(tmp_path):
+    """The neighbour lookup must not compare timestamps as strings.
+
+    Lexicographically '10.2' < '9.5' < '100.1', so without the CAST the frame nearest t=10.3 would be
+    reported with t_prev=None (nothing sorts below '10.2' as text) and t_next='100.1' — a wrong answer
+    that looks entirely plausible, on precisely the older databases this still has to serve.
+    """
+    with _make_campaign(tmp_path, stamps=(9.5, 10.2, 100.1), timestamp_type="TEXT") as client:
+        frame = _get_frame(client, 10.3)
+        assert frame["t"] == 10.2
+        assert frame["t_prev"] == 9.5
+        assert frame["t_next"] == 100.1

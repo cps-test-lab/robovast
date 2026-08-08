@@ -31,6 +31,23 @@ class CostmapEndpoint:
     step) directly and untruncated — the panel decodes ``data`` (zlib+base64 int8 cells).
     The bare name ``costmap`` matches the existing panel's ``fetchRun('costmap', …)`` call;
     new packages should namespace their endpoints (e.g. ``nav/foo``).
+
+    Alongside the frame it reports **``t_prev`` and ``t_next``** — the timestamps recorded
+    either side of it for the same topic, ``None`` at the ends of the topic's span. "Nearest"
+    on its own is not an interpretable answer: this query always returns *something*, however
+    far from ``t``, so a caller cannot tell a current frame from the first or last one clamped
+    to a cursor minutes away. The pair is the minimum that makes it interpretable, and the
+    panel derives two things from it (``@robovast/panel-kit``'s ``frameValidity``):
+
+    * the interval over which this frame stays the nearest one, so it re-requests only when
+      the answer could actually change (a latched topic such as ``/map`` has one row, hence
+      no neighbours, hence is fetched once for the whole session); and
+    * the local publish period, hence how far the cursor may drift before the frame should be
+      reported as absent rather than drawn as current.
+
+    Deliberately *not* a ``tolerance`` query param that returns nothing outside it: that would
+    make the caller invent the threshold anyway, and would collapse "this topic was never
+    recorded" and "nothing was recorded near this time" into the same empty answer.
     """
 
     name = "costmap"
@@ -61,11 +78,29 @@ class CostmapEndpoint:
                 'WHERE config_name = ? AND run_id = ? AND topic = ? '
                 'ORDER BY ABS(CAST(timestamp AS REAL) - ?) LIMIT 1',
                 (ctx.config_name, ctx.run_id, topic, t)).fetchone()
+            if row is None:
+                return None
+            # The frame's recorded neighbours (see the class docstring). CAST is load-bearing, not
+            # cosmetic: `timestamp` is REAL in a typed-ingest data.db but TEXT in an older one, and
+            # MIN/MAX/</> over TEXT compare lexicographically ('10.022' < '9.5'), so an uncast query
+            # would return a plausible wrong neighbour on exactly the databases still supported.
+            t_frame = float(row["timestamp"])
+            neighbours = conn.execute(
+                'SELECT MAX(CAST(timestamp AS REAL)) AS t_prev, '
+                '(SELECT MIN(CAST(timestamp AS REAL)) FROM costmaps '
+                ' WHERE config_name = ? AND run_id = ? AND topic = ? '
+                ' AND CAST(timestamp AS REAL) > ?) AS t_next '
+                'FROM costmaps WHERE config_name = ? AND run_id = ? AND topic = ? '
+                'AND CAST(timestamp AS REAL) < ?',
+                (ctx.config_name, ctx.run_id, topic, t_frame,
+                 ctx.config_name, ctx.run_id, topic, t_frame)).fetchone()
 
-        if row is None:
-            return None
+        t_prev = neighbours["t_prev"]
+        t_next = neighbours["t_next"]
         return {
-            "t": float(row["timestamp"]),
+            "t": t_frame,
+            "t_prev": None if t_prev is None else float(t_prev),
+            "t_next": None if t_next is None else float(t_next),
             "frame_id": row["frame_id"],
             "resolution": float(row["resolution"]),
             "width": int(row["width"]),
