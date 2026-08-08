@@ -100,6 +100,8 @@ first and captures the ``pip install`` output live, exactly like ``building``,
   same image the runs used even if the tag has since moved.
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
 
+.. _campaign-launch-record:
+
 ``launch.yaml`` records the **request**, where ``execution.yaml`` records what happened:
 ``config_filter``, ``campaign_name``, ``runs`` (as *requested*), ``postprocess``,
 ``upload_to_share``, ``show_gui`` and ``backend``. It exists because the request was otherwise

@@ -475,6 +475,12 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
+   * - ``_execution/launch.yaml``
+     - File — how the campaign was *asked for*; a whole document, read once by a
+       retrigger. Its ``config_filter`` / requested ``runs`` are comparable across
+       campaigns ("which of these were pilots?"), so by the rule above they are a
+       candidate for lifting onto the ``campaign`` row later, exactly as
+       ``execution.yaml``'s were. Nothing aggregates them yet, so nothing is lifted.
    * - ``_transient/configurations.yaml``
      - File — already duplicated into ``campaign.unit``; a second copy would drift
    * - ``rosout`` (from the rosbag)

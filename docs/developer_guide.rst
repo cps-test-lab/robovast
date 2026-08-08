@@ -1195,7 +1195,10 @@ Schema
   :ref:`database-or-address-space`. They are written by ``record_execution`` once
   the backend has produced ``execution.yaml``, so they are NULL for a campaign that
   died before execution began. Note ``execution.yaml``'s own ``execution_time`` is a
-  *start timestamp*, not a duration, hence the column name.
+  *start timestamp*, not a duration, hence the column name. What the campaign was
+  **asked for** is not here: it lives in ``_execution/launch.yaml``, because the
+  service can write that before the run starts while these columns can only be filled
+  after it (see :ref:`the launch record <campaign-launch-record>`).
 * **job** — one row per **execution job**, holding that job's ``sysinfo.yaml``
   verbatim in ``sysinfo_json``. It is a table rather than a column on ``run``
   because sysinfo is written once per *job*: a packed multi-config job runs several

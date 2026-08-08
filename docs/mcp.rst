@@ -324,8 +324,9 @@ is the **real on-disk path**, so what a listing shows is what you can read:
 .. code-block:: text
 
    /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
-                         _execution/  outcome.json, execution.yaml, controller.log,
-                                      postprocessing.log, data.db (query it with SQL)
+                         _execution/  launch.yaml, outcome.json, execution.yaml,
+                                      controller.log, postprocessing.log,
+                                      data.db (query it with SQL)
                          _transient/  configurations.yaml, entrypoint.sh
                          _jobs/job-N/ sysinfo.yaml, logs/system.log
                          <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
