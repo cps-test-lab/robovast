@@ -258,7 +258,18 @@ Results viewer
 The **Results** tab explores a finished campaign's data through three sub-views: an
 **Explorer** (a campaign → config → run tree with per-node notebook reports), a
 **Run view** (a time-driven, panel-based replay of one run — see below), and a
-**Data browser** (ad-hoc SQL + charts).
+**Data browser** (ad-hoc SQL + charts). Each carries a small icon, used in the sidebar
+and again on the campaign cards.
+
+**The campaign is part of the URL**: ``#/results/<view>/<campaign_id>``. So a Results
+view is linkable and survives a reload, switching sub-view keeps the campaign, and each
+campaign card in **Campaigns** carries shortcut buttons — left of its gear — that jump
+straight into the Explorer or the Run view *for that campaign*. A card only offers what
+it can deliver: the Explorer button once the campaign is finished **and** postprocessed
+(the same gate the Results tab itself applies), and the Run view button only if the
+campaign also recorded runs to replay. Changing the campaign inside a view updates the
+URL without adding a browser-history step, so **Back** always returns to where you came
+from in one press.
 
 **Explorer.** The tree shows each campaign's configs and runs with a pass/fail status
 dot; selecting a node opens its details on the right. When a campaign declares
@@ -268,8 +279,9 @@ the selected node's level (campaign / config / run) is executed server-side and 
 as a rendered HTML page — the web equivalent of ``vast eval gui``. The notebook's
 ``DATA_DIR`` is set to the selected node's directory (the same contract the desktop
 tool uses), so the *same* notebooks work in both. Output is cached, so re-selecting a
-node is instant. There is also an **Open in Data browser** button that jumps to the
-Data browser scoped to the selected node.
+node is instant. Selecting a campaign here also selects it for the other two sub-views
+(it is the shared, URL-carried selection); the config or run picked below it is the
+Explorer's own.
 
 **Data browser.** The left panel lists the tables in the campaign's
 ``_execution/data.db`` — one per metric CSV, plus the ``runs`` **dimension table**

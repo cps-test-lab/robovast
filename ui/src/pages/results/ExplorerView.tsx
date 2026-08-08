@@ -17,21 +17,45 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import { formatDataFetchLabel, progressPercent } from '@/lib/format'
-import type { ResultsTreeItem } from '@/lib/resultsTree'
+import { campaignItem, type ResultsTreeItem } from '@/lib/resultsTree'
 import { ResultsTree } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 
 // Results → Explorer: a campaign → config → run tree with green/red status, all from the DB. The
 // tree is the campaign selector; clicking a node renders its evaluation.visualization notebooks.
 export function ExplorerView({
+  campaignId,
   campaigns,
+  onCampaignChange,
   refresh,
 }: {
+  campaignId: string
   campaigns: CampaignSummary[]
+  onCampaignChange: (campaignId: string) => void
   refresh: ResultsRefresh
 }) {
   const [selected, setSelected] = useState<ResultsTreeItem | undefined>()
   const [filter, setFilter] = useState('')
+
+  // The tree's *campaign* is shared with the other Results views (it is in the URL); which config or
+  // run is open below it stays private to this view. So the selection follows the campaign in from
+  // outside — a card's shortcut, or the campaign picked in the Run view — and reports a campaign
+  // picked here back out. Only a change of campaign moves the selection: re-selecting the campaign
+  // node on every render would fight the user clicking a run underneath it.
+  useEffect(() => {
+    if (!campaignId || selected?.campaignId === campaignId) return
+    const c = campaigns.find((x) => x.campaign_id === campaignId)
+    if (!c) return
+    setSelected(campaignItem(c))
+    // A filter left over from an earlier search would hide the campaign that was just asked for,
+    // leaving "No campaign matches …" where the selected node should be.
+    setFilter((f) => (campaignId.toLowerCase().includes(f.trim().toLowerCase()) ? f : ''))
+  }, [campaignId, campaigns]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const select = (item: ResultsTreeItem) => {
+    setSelected(item)
+    if (item.campaignId !== campaignId) onCampaignChange(item.campaignId)
+  }
 
   // Campaign ids only: configs and runs are lazy-loaded per expanded campaign, so matching them
   // would hide branches whose children simply have not been fetched yet.
@@ -100,7 +124,7 @@ export function ExplorerView({
                 <ResultsTree
                   campaigns={shown}
                   selectedId={selected?.id ?? ''}
-                  onSelect={setSelected}
+                  onSelect={select}
                 />
               ) : (
                 <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>

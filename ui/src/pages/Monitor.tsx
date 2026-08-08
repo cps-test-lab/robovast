@@ -22,14 +22,19 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
+  hasRecordedRuns,
+  hasResults,
   isTerminalPhase,
   type CampaignSummary,
   type ListCampaignsResponse,
   type Status,
 } from '@/lib/robovastClient'
+import { ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
+import { openResultsView } from '@/lib/nav'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { ErrorText, StatusView } from '@/components/StatusView'
@@ -243,6 +248,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
   const canDownload = !running && version.data?.backend === 'kubernetes'
 
+  // Shortcuts into the Results views, offered only where they lead somewhere. Both read the
+  // *summary* — the very object the Results topic filters on — rather than the live status, so a
+  // button can never open a view that would greet the reader with an empty state. `hasResults`
+  // implies a terminal phase, so neither shows while the campaign runs; the summary arrives over
+  // the same stream as everything else here, so they appear by themselves once postprocessing ends.
+  const canExplore = hasResults(summary)
+  const canReplay = canExplore && hasRecordedRuns(summary)
+
   return (
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
@@ -281,20 +294,46 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         ) : null}
         <Box flexGrow={1} />
         {status.isFetching ? <CircularProgress size={14} /> : null}
-        {!running ? (
-          <>
+        {canExplore ? (
+          <Tooltip title="Open this campaign in the results Explorer">
             <IconButton
               size="small"
-              aria-label="campaign actions"
-              onClick={(e) => setMenuAnchor(e.currentTarget)}
-              disabled={del.isPending}
+              aria-label="open results explorer"
+              onClick={() => openResultsView('explorer', id)}
             >
-              {del.isPending ? (
-                <CircularProgress size={16} />
-              ) : (
-                <SettingsRoundedIcon fontSize="small" />
-              )}
+              <ExplorerIcon fontSize="small" />
             </IconButton>
+          </Tooltip>
+        ) : null}
+        {canReplay ? (
+          <Tooltip title="Replay this campaign's runs in the Run view">
+            <IconButton
+              size="small"
+              aria-label="open run view"
+              onClick={() => openResultsView('run', id)}
+            >
+              <RunViewIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
+        {!running ? (
+          <>
+            {/* Empty title while the delete is in flight: the button is disabled then, and a
+                disabled button fires no events for the tooltip to listen to (MUI warns about it). */}
+            <Tooltip title={del.isPending ? '' : 'Campaign actions'}>
+              <IconButton
+                size="small"
+                aria-label="campaign actions"
+                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                disabled={del.isPending}
+              >
+                {del.isPending ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <SettingsRoundedIcon fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
             <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
               <MenuItem onClick={onReprocess}>
                 <ListItemIcon>

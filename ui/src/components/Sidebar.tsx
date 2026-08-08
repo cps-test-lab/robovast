@@ -21,6 +21,10 @@ import { MeterBar } from './MeterBar'
 export interface NavView {
   id: string
   label: string
+  /** Optional, and rendered smaller than the topic icon above it — the indent alone is a weak
+   *  signal on a narrow rail, and these icons are the same ones the campaign cards use to link
+   *  into each view. */
+  icon?: ReactNode
 }
 
 export interface NavTopic {
@@ -110,18 +114,28 @@ export function Sidebar({
                 <ListItemText primaryTypographyProps={{ fontWeight: 600 }}>{topic.label}</ListItemText>
               </ListItemButton>
               <List disablePadding sx={{ mt: 0.5 }}>
-                {topic.views!.map((view) => (
-                  <ListItemButton
-                    key={view.id}
-                    selected={isActiveTopic && activeView === view.id}
-                    onClick={() => onSelect(topic.id, view.id)}
-                    sx={{ ...selectedSx, pl: 3, py: 0.5, mb: 0.25 }}
-                  >
-                    <ListItemText primaryTypographyProps={{ variant: 'body2' }}>
-                      {view.label}
-                    </ListItemText>
-                  </ListItemButton>
-                ))}
+                {topic.views!.map((view) => {
+                  const isActiveView = isActiveTopic && activeView === view.id
+                  return (
+                    <ListItemButton
+                      key={view.id}
+                      selected={isActiveView}
+                      onClick={() => onSelect(topic.id, view.id)}
+                      sx={{ ...selectedSx, pl: 3, py: 0.5, mb: 0.25 }}
+                    >
+                      {view.icon ? (
+                        <ListItemIcon
+                          sx={{ minWidth: 26, color: isActiveView ? 'primary.main' : 'text.secondary' }}
+                        >
+                          {view.icon}
+                        </ListItemIcon>
+                      ) : null}
+                      <ListItemText primaryTypographyProps={{ variant: 'body2' }}>
+                        {view.label}
+                      </ListItemText>
+                    </ListItemButton>
+                  )
+                })}
               </List>
             </Box>
           )

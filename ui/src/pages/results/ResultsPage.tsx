@@ -20,13 +20,25 @@ const RunView = lazyView('Run view', () => import('./RunView')
 const DataBrowser = lazyView('Data browser', () => import('./DataBrowser')
   .then((m) => ({ default: m.DataBrowser })))
 
-// Persist the Data-browser campaign across reloads (kept from the old Eval page).
+// Remember the campaign across *sessions* (kept from the old Eval page). Within a session the URL
+// carries it; this is only the seed used when the URL names none — a fresh tab, or a return to the
+// topic after browsing elsewhere.
 const LAST_CAMPAIGN_KEY = 'eval.campaignId'
 
-// The Results topic container: fetches the campaign list once and owns the campaign selection,
-// shared by both sub-views (mirrors ConfigPage). Explorer is the default view; both are kept alive
-// so each keeps its state across navigation.
-export function ResultsPage({ view }: { view: string }) {
+// The Results topic container: fetches the campaign list once and distributes the campaign selection
+// to all three sub-views (mirrors ConfigPage). The selection itself lives in the URL, one level up in
+// App — that is what lets a campaign card link into a view and a reload come back to it — so this
+// page reads it from props and reports changes back rather than holding it. Explorer is the default
+// view; all three are kept alive so each keeps its state across navigation.
+export function ResultsPage({
+  view,
+  campaignId,
+  onCampaignChange,
+}: {
+  view: string
+  campaignId: string
+  onCampaignChange: (campaignId: string) => void
+}) {
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => robovast.listCampaigns(200, 0),
@@ -76,10 +88,7 @@ export function ResultsPage({ view }: { view: string }) {
     busy: refreshing,
   }
 
-  const [campaignId, setCampaignId] = useState(() => localStorage.getItem(LAST_CAMPAIGN_KEY) ?? '')
-
-  // Default the Data browser to the newest campaign, and self-heal a selection that no longer
-  // exists. Keyed on the available set so a click-selected campaign is never overridden.
+  // Default the views to the newest campaign, and self-heal a selection that no longer exists.
   // [0] is the newest because the service lists newest-first and the filter preserves that order.
   // A campaign with no recorded runs is skipped when defaulting: it has no store, so it is the one
   // campaign neither the Run view nor the Data browser can show anything for — landing on it would
@@ -91,18 +100,26 @@ export function ResultsPage({ view }: { view: string }) {
   const loaded = !!campaigns.data
   useEffect(() => {
     if (!loaded) return
-    if (!evalCampaigns.length) {
-      // Nothing is eligible, so nothing may stay selected. Without this the id remembered below
-      // outlives the campaign it names and the Data browser keeps querying a campaign no view
-      // lists — while the Explorer, which renders the list directly, shows its empty state.
-      setCampaignId('')
+    if (evalCampaigns.some((c) => c.campaign_id === campaignId)) return
+    // Asked for a campaign the *snapshot* lacks but the service has: adopt the live list. This is
+    // the ordinary case for a campaign card's shortcut — the snapshot is deliberately frozen until
+    // Refresh (above), so a campaign that finished while this tab was open is missing from it, and
+    // that is exactly the campaign someone clicks through from the monitor. Nothing is being read
+    // at that moment that the update could yank away: the click *is* the request to move.
+    if (campaignId && live.some((c) => c.campaign_id === campaignId)) {
+      setShown(live)
       return
     }
-    if (!evalCampaigns.some((c) => c.campaign_id === campaignId)) {
-      const readable = evalCampaigns.find(hasRecordedRuns)
-      setCampaignId((readable ?? evalCampaigns[0]).campaign_id)
-    }
-  }, [loaded, evalCampaigns.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+    // No campaign named (fresh tab, or back from another topic), or one this service no longer has:
+    // fall back to what this browser last looked at, then to the newest readable campaign.
+    const remembered = localStorage.getItem(LAST_CAMPAIGN_KEY) ?? ''
+    const seed = evalCampaigns.find((c) => c.campaign_id === remembered)
+    const readable = evalCampaigns.find(hasRecordedRuns)
+    // With nothing eligible, nothing may stay selected: the id would outlive the campaign it names
+    // and the Data browser would keep querying a campaign no view lists — while the Explorer, which
+    // renders the list directly, shows its empty state.
+    onCampaignChange((seed ?? readable ?? evalCampaigns[0])?.campaign_id ?? '')
+  }, [loaded, campaignId, evalCampaigns.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (campaignId) localStorage.setItem(LAST_CAMPAIGN_KEY, campaignId)
@@ -116,13 +133,18 @@ export function ResultsPage({ view }: { view: string }) {
   return (
     <Box sx={{ position: 'relative' }}>
       <KeepAlive active={view !== 'data' && view !== 'run'}>
-        <ExplorerView campaigns={list} refresh={refresh} />
+        <ExplorerView
+          campaignId={campaignId}
+          campaigns={list}
+          onCampaignChange={onCampaignChange}
+          refresh={refresh}
+        />
       </KeepAlive>
       <KeepAlive active={view === 'run'}>
         <RunView
           campaignId={campaignId}
           campaigns={list}
-          onCampaignChange={setCampaignId}
+          onCampaignChange={onCampaignChange}
           refresh={refresh}
         />
       </KeepAlive>
@@ -130,7 +152,7 @@ export function ResultsPage({ view }: { view: string }) {
         <DataBrowser
           campaignId={campaignId}
           campaigns={list}
-          onCampaignChange={setCampaignId}
+          onCampaignChange={onCampaignChange}
           refresh={refresh}
         />
       </KeepAlive>
