@@ -70,6 +70,10 @@ export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
 // defines no postprocessing never gets the derived data.db the Results views query. The single gate
 // for what the Results topic (Explorer / Run / Data) shows.
 export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
+// Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
+// zero means there is no store to read — the campaign never started, or ended before writing one.
+// Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
+export const hasRecordedRuns = (c: CampaignSummary) => c.num_runs > 0
 
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 

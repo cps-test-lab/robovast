@@ -21,7 +21,7 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
-import { robovast, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
 import type { ResultsTreeItem } from '@/lib/resultsTree'
 import { PlaybackClock } from '@/lib/dashboard/clock'
 import { dbDataProvider } from '@/lib/dashboard/dataProvider'
@@ -75,10 +75,17 @@ export function RunView({
 }) {
   const queryClient = useQueryClient()
 
+  // Only campaigns that recorded runs can be replayed, so they are the only ones this view offers —
+  // the picker never lists a campaign whose store was never written, and a selection inherited from
+  // another Results view (the campaign is shared) is treated as no selection here rather than
+  // queried into a "no store to read" error.
+  const replayable = useMemo(() => campaigns.filter(hasRecordedRuns), [campaigns])
+  const available = !!campaignId && replayable.some((c) => c.campaign_id === campaignId)
+
   const panels = useQuery({
     queryKey: ['panels', campaignId],
     queryFn: () => robovast.listCampaignPanels(campaignId),
-    enabled: !!campaignId,
+    enabled: available,
     retry: false,
     // Pick up out-of-band edits to the .vast (edited on disk, or via the editor) when the tab
     // regains focus — no manual browser refresh needed.
@@ -96,7 +103,7 @@ export function RunView({
         campaignId,
         'SELECT config_name, run_id, status, passed FROM run_view ORDER BY config_name, run_id',
       ),
-    enabled: !!campaignId,
+    enabled: available,
     retry: false,
   })
 
@@ -181,8 +188,9 @@ export function RunView({
     }
   }, [provider, clock, tlTable, tlCol, capturePath, campaignId, run])
 
-  // `run_view` needs only campaign.db, so this now means the campaign has neither database -- it never
-  // started, or died before its store was written. Postprocessing is no longer the thing to suggest.
+  // `run_view` needs only campaign.db, so this means the campaign has neither database. A campaign
+  // that never wrote a store is filtered out above; what is left is a store that exists but cannot be
+  // read right now (an unreachable object store, a deleted result dir), so it is still worth saying.
   const noData = /campaign\.db/i.test((runs.error as Error | null)?.message ?? '')
 
   // The two dropdown dialogs are Popovers anchored to their trigger buttons.
@@ -245,7 +253,7 @@ export function RunView({
           startIcon={<EditRoundedIcon />}
           endIcon={<ArrowDropDownRoundedIcon />}
           onClick={(e) => setEditAnchor(e.currentTarget)}
-          disabled={!campaignId}
+          disabled={!available}
           sx={{ textTransform: 'none' }}
         >
           Edit visualization
@@ -271,7 +279,7 @@ export function RunView({
           }}
         >
           <ResultsTree
-            campaigns={campaigns}
+            campaigns={replayable}
             selectedId={selectedTreeId}
             onSelect={pickRun}
           />
@@ -284,7 +292,7 @@ export function RunView({
         onClose={() => setEditAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
-        {campaignId ? (
+        {available ? (
           <VisualizationEditor
             campaignId={campaignId}
             onClose={() => setEditAnchor(null)}
@@ -293,7 +301,12 @@ export function RunView({
         ) : null}
       </Popover>
 
-      {!campaignId ? (
+      {!replayable.length ? (
+        <Alert severity="info" variant="outlined">
+          No campaign has recorded runs yet — a campaign appears here once it finishes, is
+          postprocessed, and its store holds at least one run.
+        </Alert>
+      ) : !available ? (
         <Alert severity="info" variant="outlined">
           Pick a run to replay.
         </Alert>

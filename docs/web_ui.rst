@@ -346,6 +346,11 @@ the same instant. All panels read only the run's recorded results — its postpr
 ``data.db``, plus per-run artifact files such as the 3D scene descriptor (there is no
 live connection to the system-under-test).
 
+The run picker lists only campaigns that actually **recorded runs** (``num_runs > 0``,
+tallied from ``campaign.db``). A campaign that never started, or that ended before its
+store was written, has nothing to replay, so it is not offered here at all — rather
+than being selectable and then answering with an empty view.
+
 Which panels appear, where they sit, and where each gets its data are declared in the
 ``.vast`` under a top-level ``visualization.panels`` list — the campaign author defines
 the view once and every run of the campaign replays through it:

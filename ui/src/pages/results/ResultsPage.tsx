@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import { robovast, hasResults, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
 import type { ResultsRefresh } from './RefreshResultsButton'
@@ -81,11 +81,15 @@ export function ResultsPage({ view }: { view: string }) {
   // Default the Data browser to the newest campaign, and self-heal a selection that no longer
   // exists. Keyed on the available set so a click-selected campaign is never overridden.
   // [0] is the newest because the service lists newest-first and the filter preserves that order.
+  // A campaign with no recorded runs is skipped when defaulting: it has no store, so it is the one
+  // campaign neither the Run view nor the Data browser can show anything for — landing on it would
+  // greet both views with an empty state while a readable campaign sat one click away.
   const evalCampaigns = list
   useEffect(() => {
     if (!evalCampaigns.length) return
     if (!evalCampaigns.some((c) => c.campaign_id === campaignId)) {
-      setCampaignId(evalCampaigns[0].campaign_id)
+      const readable = evalCampaigns.find(hasRecordedRuns)
+      setCampaignId((readable ?? evalCampaigns[0]).campaign_id)
     }
   }, [evalCampaigns.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
