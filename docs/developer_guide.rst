@@ -1863,7 +1863,14 @@ descriptor (``scene.json``/``scene.bin``; exporter: ``rst/export_web.py``, per-r
 export: the ``MujocoSim`` adapter's ``ROBOSITO_SCENE_EXPORT_DIR`` hook). ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
 ``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
-controls + the Z-up wrapper). **Extractability rule: files in this directory import only
+controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's
+(``cursorDolly.ts``): scaling the orbit radius toward a fixed pivot makes the travel a geometric
+series converging on that pivot, so a notch moves millimetres once you are close and the pivot can
+never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
+with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
+sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
+from the pivot, which the wheel now carries along and which is therefore constant by design.
+**Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the consumer, ``ui/src/panels/Scene3DPanel.tsx``, which
 binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``

@@ -11,8 +11,12 @@ the format is owned by rst (`rst/export_web.py`), the reference loader is this o
 - `sceneTf.ts` — TF-chain composition (`map -> odom -> base_link`) for data sources that deliver
   raw `/tf` transforms; unused by the playback path (poses arrive already map-frame), kept for the
   future live view.
-- `viewport.ts` — a plain-three viewport (renderer, camera, lights, grid, orbit controls, Z-up
-  wrapper group, resize, dispose).
+- `viewport.ts` — a plain-three viewport (renderer, camera, lights, grid, orbit controls, its own
+  wheel handler, a frustum that tracks the camera, Z-up wrapper group, resize, dispose).
+- `cursorDolly.ts` — the wheel: fly along the ray under the cursor, moving eye and orbit pivot
+  together. Scaling the orbit radius instead — what an orbit controller's own dolly does — makes the
+  travel a geometric series converging on the pivot, which stalls the wheel close in and makes the
+  pivot impossible to pass through; the docstring has the full reasoning.
 
 ## Texture mapping
 

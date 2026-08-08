@@ -449,9 +449,22 @@ shown at once — the scenario's says what the trial did, nav2's says why the na
 recovered. See :repo_link:`configs/examples/basic_nav` for a complete campaign.
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
-(``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser
-(orbit/zoom with the mouse), with **everything that moved** replayed — including *articulation*, so an
-arm bends rather than swinging as one rigid piece.
+(``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser, with
+**everything that moved** replayed — including *articulation*, so an arm bends rather than swinging as
+one rigid piece.
+
+The mouse bindings:
+
+- **wheel** — fly toward or away from whatever is under the pointer. You steer by aiming: point at a
+  far shelf and scroll, and you arrive at that shelf. One notch covers the same fraction of the view
+  at any distance, and there is no distance at which it stops — you can fly *into* a building whose
+  camera was framed from outside it.
+- **left-drag** — turn the view about a pivot held a fixed distance ahead, so it reads as looking
+  around rather than circling a point that recedes as you approach it.
+- **right-drag** — pan sideways and vertically.
+
+The wheel deliberately does not shrink an orbit radius toward a fixed centre, which is the usual
+default and is what makes such a view freeze a short way from its centre.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **capture** names the world it used and the service builds the matching **geometry** on demand. Both
