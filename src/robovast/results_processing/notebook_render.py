@@ -197,6 +197,41 @@ class _ProgressExecutePreprocessor(ExecutePreprocessor):
         return super().preprocess_cell(cell, resources, index)
 
 
+#: Excluded from the data fingerprint: the cache directory is written *inside* the node
+#: it caches, so counting it would change the key on every render and the cache would
+#: never hit once -- the exact opposite of the bug being fixed.
+_FINGERPRINT_SKIP_DIRS = frozenset({".cache"})
+
+
+def _data_fingerprint(data_dir: str) -> str:
+    """A hash of what a notebook can read under *data_dir*: relative path + size.
+
+    Deliberately **not** mtime, and deliberately not file contents.
+
+    Not mtime, because the cluster service re-fetches a campaign on every request and
+    that bumps every file's mtime -- keying on it would make the cache miss every time
+    there, which is precisely why the data was left out of the key to begin with.
+
+    Not contents, because a node can hold gigabytes of rosbag and this runs before every
+    render. Path + size catches what actually happens to a results node: postprocessing
+    adds files (poses.csv, data.db) and rewrites others. It cannot see an edit that keeps
+    a file's size identical -- accepted, since results are written once by a pipeline
+    rather than edited in place, and the alternative costs a full read of the campaign.
+    """
+    parts = []
+    for root, dirs, files in os.walk(data_dir, topdown=True):
+        dirs[:] = sorted(d for d in dirs if d not in _FINGERPRINT_SKIP_DIRS)
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            try:
+                parts.append(f"{os.path.relpath(path, data_dir)}:{os.stat(path).st_size}")
+            except OSError:
+                # Vanished between listing and stat (a concurrent postprocess). Skipping
+                # it only risks an extra render, never a stale one.
+                continue
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
 def render_notebook_html(
     notebook_path: str,
     data_dir: str,
@@ -233,14 +268,19 @@ def render_notebook_html(
     nb_bytes = _read_bytes(notebook_path)
 
     # Cache lives next to the node's data (FileCache2 stores under ``<data_dir>/.cache``),
-    # so each node caches independently; the key is the notebook content + injected vars
-    # (a content hash survives the cluster's re-fetch, which bumps every file's mtime).
+    # so each node caches independently. The key is the notebook content + injected vars
+    # (a content hash survives the cluster's re-fetch, which bumps every file's mtime)
+    # **and a fingerprint of the data the notebook reads** -- without which the render is
+    # cached against the notebook alone, so viewing a campaign before postprocessing
+    # cached "no poses.csv" and kept serving it afterwards. Postprocessing is the normal
+    # way a node gains the data these notebooks plot, so that was the common case.
     cache = FileCache2(data_dir, "notebook_", suffix=".html")
     key = (
         CacheKey()
         .add("nb_sha", hashlib.sha256(nb_bytes).hexdigest())
         .add("inject", inject or {})
         .add("theme", theme)
+        .add("data", _data_fingerprint(data_dir))
     )
     cached = cache.get(key)
     if cached is not None:
