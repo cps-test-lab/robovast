@@ -18,7 +18,10 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
-import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded'
+// Postprocessing recomputes metrics from the preserved rosbags, so it gets the
+// derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
+// the campaign again.
+import QueryStatsRoundedIcon from '@mui/icons-material/QueryStatsRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
@@ -348,21 +351,17 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               </IconButton>
             </Tooltip>
             <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
-              {/* First, and the only entry here that does not act on THIS campaign — hence the
-                  secondary line: without it "Retrigger campaign" reads like a third variation
-                  of the two below, which re-run steps of the campaign you are looking at. */}
+              {/* First, and the only entry here that starts a separate campaign rather than
+                  re-running a step of this one. */}
               <MenuItem onClick={onRetrigger} disabled={retrigger.isPending}>
                 <ListItemIcon>
-                  <RestartAltRoundedIcon fontSize="small" />
+                  <ReplayRoundedIcon fontSize="small" />
                 </ListItemIcon>
-                <ListItemText
-                  primary="Retrigger campaign"
-                  secondary="New campaign from this one's recorded config and image"
-                />
+                <ListItemText>Retrigger campaign</ListItemText>
               </MenuItem>
               <MenuItem onClick={onReprocess}>
                 <ListItemIcon>
-                  <ReplayRoundedIcon fontSize="small" />
+                  <QueryStatsRoundedIcon fontSize="small" />
                 </ListItemIcon>
                 <ListItemText>Retrigger postprocessing</ListItemText>
               </MenuItem>
