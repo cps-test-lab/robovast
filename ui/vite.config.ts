@@ -67,7 +67,15 @@ function vendorChunk(id: string): string | undefined {
 
 export default defineConfig({
   plugins: [react()],
-  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // The shared panel contract + clock scaffolding (also used by package-provided panel remotes,
+      // which cannot import from here). In-tree source resolved by path rather than an installed
+      // dependency; must match the tsconfig `paths` entry.
+      '@robovast/panel-kit': fileURLToPath(new URL('../panel-kit/src/index.ts', import.meta.url)),
+    },
+  },
   build: {
     // The editor and charting vendors are legitimately large; warning about them on every
     // build trains people to ignore the warning. The real guard is the chunk table in CI.

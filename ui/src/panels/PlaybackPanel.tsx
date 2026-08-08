@@ -12,8 +12,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
 import FastForwardRoundedIcon from '@mui/icons-material/FastForwardRounded'
 import { registerPanel } from '@/lib/dashboard/registry'
-import { useClock } from '@/lib/dashboard/clock'
-import type { PanelProps } from '@/lib/dashboard/types'
+import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 // seconds -> m:ss.s
 function fmt(s: number): string {

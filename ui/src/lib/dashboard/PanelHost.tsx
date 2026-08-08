@@ -16,9 +16,8 @@ import Typography from '@mui/material/Typography'
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { getPanel } from './registry'
-import type { Anchor, PanelSpec, PanelPosition, PanelProps } from './types'
-import type { PlaybackClock } from './clock'
-import type { DataProvider } from './dataProvider'
+import type { Anchor, HostPanelProps, PanelSpec, PanelPosition } from './types'
+import type { DataProvider, PanelProps, PlaybackClock } from '@robovast/panel-kit'
 import { useRemoteComponent } from '@/lib/remote'
 
 const len = (v: number | string | undefined, fallback: string): string =>
@@ -141,7 +140,7 @@ function layoutStyle(
 // Loads a Module-Federation remote panel and mounts it with the full PanelProps contract
 // (spec + clock + data), exactly like a built-in panel — so a remote panel is time-synced and
 // queries the run's data.db the same way. Guarded loading/error states, never a silent drop.
-function RemotePanel({ spec, clock, data }: PanelProps) {
+function RemotePanel({ spec, clock, data }: HostPanelProps) {
   const { Comp, err } = useRemoteComponent<PanelProps>(spec.remote!)
   // Built-ins a remote can render rather than reimplement (see PanelBuiltins). Read from the
   // registry at mount rather than threaded down from PanelFrame: the registry is already the

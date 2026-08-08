@@ -10,9 +10,8 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { registerPanel } from '@/lib/dashboard/registry'
-import { useClock } from '@/lib/dashboard/clock'
 import { useTimeSeries, type TimeSeriesBinding } from '@/lib/dashboard/timeSeries'
-import type { PanelProps } from '@/lib/dashboard/types'
+import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 interface FieldCfg {
   column: string

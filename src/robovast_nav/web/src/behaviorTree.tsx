@@ -9,10 +9,11 @@
 // no work here. This file only supplies defaults.
 //
 // The component arrives through props: a Module-Federation remote shares only react/react-dom
-// with the host, so it cannot import the host's modules. `builtins` is optional in the contract,
-// so a host predating it degrades to a message instead of a blank panel.
+// with the host at runtime, so it cannot import the host's rendered components. `builtins` is
+// optional in the contract, so a host predating it degrades to a message instead of a blank panel.
+// (The contract *types* come from @robovast/panel-kit, compiled into this bundle at build time.)
 
-import type { PanelProps } from './contract'
+import type { PanelProps } from '@robovast/panel-kit'
 
 /** The table robovast_nav's Nav2BtTree postprocessing writes, in the shared behaviors schema. */
 const DEFAULT_TABLE = 'nav2_behaviors'

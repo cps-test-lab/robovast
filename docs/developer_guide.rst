@@ -1794,6 +1794,18 @@ untested) variation-preview loading path too. Its **data endpoint** is likewise 
 see *Package-provided service data endpoints* below — so both halves of the costmap panel live in
 ``robovast_nav``.
 
+**Write a remote against** :repo_link:`panel-kit` (``@robovast/panel-kit``), never against a copy
+of the host's types. Sharing only ``react``/``react-dom`` at runtime is a *runtime* constraint, not
+a source one: the contract (``PanelProps``, ``DataProvider``, ``PlaybackClock``) and the
+clock-driven scaffolding (``useCanvasClock``, the time-index binary search, ``keyframes`` for
+samples too large to preload) are in-tree source that both the host and each remote compile into
+their own bundle. Resolve it with a ``tsconfig`` ``paths`` entry plus a matching vite
+``resolve.alias`` — see ``src/robovast_nav/web`` for the two lines. Do **not** add it to the MF
+``shared`` map: bundling a private copy is what keeps a version skew between an installed package
+and a newer host UI an ordinary build rather than a remote-load failure. The earlier arrangement — a
+hand-maintained ``contract.ts`` mirror plus a re-implementation of the host's canvas/clock
+scaffolding — is what let a fetch-staleness bug exist in the costmap panel and nowhere else.
+
 A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federation *container*
 name, defaulting to the entry-point name (one container per type). Panels that share a single
 built bundle set the same ``REMOTE_NAME`` so ``_plugin_remotes`` emits that shared name while each

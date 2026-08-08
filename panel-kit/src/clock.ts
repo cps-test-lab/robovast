@@ -114,3 +114,12 @@ export class PlaybackClock {
 export function useClock(clock: PlaybackClock): ClockSnapshot {
   return useSyncExternalStore(clock.subscribe, clock.getSnapshot)
 }
+
+/** The read-only view of the clock a panel needs: the current time, and a change subscription.
+ *
+ *  Panels take this rather than the class so a source that is not a `PlaybackClock` (a live view driven
+ *  from `/clock`) satisfies the same contract. */
+export interface ClockSource {
+  readonly t: number
+  subscribe(fn: () => void): () => void
+}

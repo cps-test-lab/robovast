@@ -17,7 +17,15 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "types": ["node"],
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"],
+      // The shared panel contract + clock scaffolding, in-tree source rather than an installed
+      // dependency (also consumed by package-provided panel remotes). Must match the vite
+      // `resolve.alias`. `react` is mapped because the kit's sources sit outside this package, so
+      // node-style resolution would walk up from THEIR directory and never reach this node_modules.
+      "@robovast/panel-kit": ["../panel-kit/src/index.ts"],
+      "react": ["./node_modules/@types/react"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

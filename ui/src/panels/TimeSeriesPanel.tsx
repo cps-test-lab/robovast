@@ -12,10 +12,8 @@ import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { registerPanel } from '@/lib/dashboard/registry'
-import { useClock } from '@/lib/dashboard/clock'
-import { useCanvasClock } from '@/lib/dashboard/useCanvasClock'
 import { useTimeSeries, type TimeSeriesBinding, type TimeSeriesSource } from '@/lib/dashboard/timeSeries'
-import type { PanelProps } from '@/lib/dashboard/types'
+import { useCanvasClock, useClock, type PanelProps } from '@robovast/panel-kit'
 
 // Same categorical palette the eval charts use, so series colours read consistently across the app.
 const PALETTE = ['#2dd4bf', '#f0b429', '#4ade80', '#f48fb1', '#60a5fa', '#c084fc']

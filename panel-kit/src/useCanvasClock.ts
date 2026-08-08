@@ -4,9 +4,12 @@
 // its data finishes loading. Sizes are in device pixels (crisp on HiDPI); draw in those units.
 
 import { useCallback, useEffect, useRef } from 'react'
-import type { PlaybackClock } from './clock'
+import type { ClockSource } from './clock'
 
-export function useCanvasClock(clock: PlaybackClock, draw: (ctx: CanvasRenderingContext2D, w: number, h: number, t: number) => void) {
+export function useCanvasClock(
+  clock: ClockSource,
+  draw: (ctx: CanvasRenderingContext2D, w: number, h: number, t: number) => void,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ w: 0, h: 0 })

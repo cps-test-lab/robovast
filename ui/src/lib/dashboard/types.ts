@@ -1,11 +1,13 @@
-// The panel framework's contracts. A panel plugin declares a manifest (its type name + layout
-// defaults) and a component; the vast file declares an ordered list of panel specs (type + position +
-// data bindings) that the PanelHost renders. Panels receive only the clock and the data provider, so
-// they stay independent of both the layout engine and the data transport.
+// The panel framework's *host-side* contracts: what the layout engine and the plugin registry need.
+// A panel plugin declares a manifest (its type name + layout defaults) and a component; the vast file
+// declares an ordered list of panel specs (type + position + data bindings) that the PanelHost renders.
+//
+// What a panel itself receives -- PanelProps, PanelBuiltins, and the panel-facing PanelSpec -- lives in
+// @robovast/panel-kit, shared with package-provided panel remotes that cannot import from here. This
+// file extends that spec with the layout and remote-descriptor fields no panel reads.
 
 import type { ComponentType } from 'react'
-import type { PlaybackClock } from './clock'
-import type { DataProvider } from './dataProvider'
+import type { PanelProps, PanelSpec as PanelSpecBase } from '@robovast/panel-kit'
 import type { RemoteDescriptor } from '@/lib/remote'
 
 export type Anchor =
@@ -27,10 +29,10 @@ export interface PanelPosition {
 }
 
 /** A panel as declared in the vast, normalized: known fields lifted out, the rest (data bindings such
- *  as `layers`/`source`) kept verbatim in `config` for the panel plugin to interpret. */
-export interface PanelSpec {
-  type: string
-  title?: string
+ *  as `layers`/`source`) kept verbatim in `config` for the panel plugin to interpret.
+ *
+ *  Extends the kit's panel-facing spec (`type`/`title`/`config`) with everything only the host acts on. */
+export interface PanelSpec extends PanelSpecBase {
   position: PanelPosition
   resizable: boolean
   minimizable: boolean
@@ -43,7 +45,6 @@ export interface PanelSpec {
    *  panel like robovast_nav's `costmap`, or a user-authored `custom` panel) rather than from the
    *  built-in registry. The service attaches this descriptor in GET /campaigns/{id}/panels. */
   remote?: RemoteDescriptor
-  config: Record<string, unknown>
 }
 
 /** Per-type defaults a panel plugin ships; the vast spec overrides these. */
@@ -56,26 +57,11 @@ export interface PanelManifest {
   frameless?: boolean
 }
 
-/** Built-in panels a package-provided panel can render instead of reimplementing.
- *
- *  A package whose data is a table in an existing schema usually wants a built-in panel with
- *  different defaults, not a different renderer -- robovast_nav's nav2 behavior tree is the
- *  scenario tree pointed at `nav2_behaviors`, with its own title and empty-state guidance. A
- *  Module-Federation remote shares only react/react-dom with the host and so cannot import the
- *  component, which is why it arrives as a prop.
- *
- *  Optional throughout: built-in panels do not need it, and a remote built against an older
- *  host must degrade rather than crash.
- */
-export interface PanelBuiltins {
-  ScenarioTree?: ComponentType<PanelProps>
-}
-
-export interface PanelProps {
+/** PanelProps as the *host* constructs them: the same contract a panel sees, but carrying the fuller
+ *  spec above. Host-internal components (the remote loader, the frame chrome) need the layout and
+ *  remote-descriptor fields; a panel never does, which is why the shared contract omits them. */
+export interface HostPanelProps extends PanelProps {
   spec: PanelSpec
-  clock: PlaybackClock
-  data: DataProvider
-  builtins?: PanelBuiltins
 }
 
 export interface PanelPlugin {

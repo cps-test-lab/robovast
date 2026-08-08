@@ -102,6 +102,24 @@ export function costmapColor(v: number, alpha = 150): [number, number, number, n
   return [r, 0, 255 - r, alpha]
 }
 
+/** Every colour a scheme can produce, as a flat RGBA lookup indexed by the cell's raw int8 byte.
+ *
+ *  A cell value is one byte, so a scheme has at most 256 possible outputs however it is written —
+ *  calling it per cell instead means allocating a fresh 4-element array for every cell, which on a
+ *  full-map grid (600x300 is ordinary) is ~185k short-lived arrays per decode and dominates the cost
+ *  of showing a frame. Built once per decode; the scheme stays an ordinary function. */
+function palette(color: (v: number) => [number, number, number, number]): Uint8ClampedArray {
+  const lut = new Uint8ClampedArray(256 * 4)
+  for (let i = 0; i < 256; i++) {
+    const [r, g, b, a] = color(i < 128 ? i : i - 256) // int8: 0..127 then -128..-1
+    lut[i * 4] = r
+    lut[i * 4 + 1] = g
+    lut[i * 4 + 2] = b
+    lut[i * 4 + 3] = a
+  }
+  return lut
+}
+
 /** Decode a grid to an offscreen canvas sized width×height cells. Pixel row 0 is the grid's TOP row
  *  (grid y counts up from the bottom), so the caller places it with a matching y-flip. Returns null if
  *  a 2D context can't be obtained. */
@@ -117,16 +135,21 @@ export function decodeGrid(
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
   const img = ctx.createImageData(width, height)
+  const out = img.data
+  const lut = palette(color)
   const data = grid.data
   for (let row = 0; row < height; row++) {
     const srcRow = height - 1 - row // image row 0 == grid's top row
     for (let col = 0; col < width; col++) {
-      const [r, g, b, a] = color(data[srcRow * width + col] ?? -1)
+      const v = data[srcRow * width + col]
+      // `& 0xff` is the int8 -> LUT index the palette was built against. A short/absent payload keeps
+      // the old meaning: treat a missing cell as unknown (-1), i.e. index 255.
+      const li = (v === undefined ? 255 : v & 0xff) * 4
       const di = (row * width + col) * 4
-      img.data[di] = r
-      img.data[di + 1] = g
-      img.data[di + 2] = b
-      img.data[di + 3] = a
+      out[di] = lut[li]
+      out[di + 1] = lut[li + 1]
+      out[di + 2] = lut[li + 2]
+      out[di + 3] = lut[li + 3]
     }
   }
   ctx.putImageData(img, 0, 0)

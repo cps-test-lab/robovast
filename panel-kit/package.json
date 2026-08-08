@@ -1,0 +1,15 @@
+{
+  "name": "@robovast/panel-kit",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The run-view panel contract and clock-driven scaffolding, shared by the host UI (ui/) and by package-provided panels built as Module-Federation remotes (src/robovast_nav/web/).",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1"
+  }
+}

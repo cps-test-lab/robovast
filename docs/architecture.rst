@@ -575,16 +575,27 @@ three:
 * **Registry + host** — panel plugins self-register (``ui/src/lib/dashboard/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.
-* **Clock** — ``PlaybackClock`` (``ui/src/lib/dashboard/clock.ts``) is the single shared
+* **Shared panel kit** — ``@robovast/panel-kit`` (``panel-kit/``) holds the panel contract
+  (``PanelProps`` / ``PanelSpec`` / ``DataProvider`` / ``PlaybackClock``) and the clock-driven
+  scaffolding (``useCanvasClock``, the time-index binary search, ``keyframes``). It exists
+  because the host and the package-provided panel *remotes* are separately-built npm packages
+  that must agree: a remote shares only ``react``/``react-dom`` at runtime, so before this it
+  kept a hand-maintained copy of the host's types and its own copy of the scaffolding — and the
+  drift is what let a staleness bug live in one panel and nowhere else. Both consumers resolve
+  it **by path** (a ``tsconfig`` ``paths`` entry plus a matching vite ``resolve.alias``); it has
+  no build of its own and is deliberately *not* an MF ``shared`` module, so each side bundles
+  its own copy and a version skew is an ordinary build rather than a remote-load failure.
+* **Clock** — ``PlaybackClock`` (``panel-kit/src/clock.ts``) is the single shared
   time source (seconds on the rosbag timeline). The playback panel is the only writer; the
   rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
   don't re-render the tree.
-* **Data seam** — ``DataProvider`` (``ui/src/lib/dashboard/dataProvider.ts``) is how a panel
-  gets rows/frames by table + time, decoupled from transport. Today ``dbDataProvider``
-  reads one run's rows from ``data.db`` through the existing ``query``/``describe`` endpoints,
-  plus the dedicated ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` /
-  ``timeRange`` / ``has`` / ``costmapFrame``) is shaped so a future ``liveDataProvider`` over a
-  live topic buffer drops in without touching any panel.
+* **Data seam** — ``DataProvider`` (declared in ``panel-kit/src/dataProvider.ts``, implemented
+  by ``dbDataProvider`` in ``ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
+  rows/frames by table + time, decoupled from transport. Today it reads one run's rows from
+  ``data.db`` through the existing ``query``/``describe`` endpoints, plus the dedicated
+  ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
+  ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
+  drops in without touching any panel.
 
 **Costmap delivery.** Occupancy grids can't ride the generic CSV flatten (a grid becomes
 thousands of per-cell columns, past SQLite's column limit; and the read path caps a cell at
@@ -592,11 +603,31 @@ thousands of per-cell columns, past SQLite's column limit; and the read path cap
 (:class:`robovast.results_processing.data.rosbags_process.CostmapToCsvHandler`) instead
 decodes each grid once during postprocessing and re-encodes it compactly — int8 cells
 zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The
-``get_costmap_frame`` interface method + ``/campaigns/{id}/costmap`` endpoint
-(:func:`robovast.results_processing.data_query.read_costmap_frame`) deliver the frame nearest
-a time **untruncated**; the browser inflates it with the native ``DecompressionStream``. The
-``costmaps`` table description in ``describe_data_db`` gives an LLM the map's size in meters,
-resolution, and layers for spatial reasoning without decoding grids.
+``/campaigns/{id}/costmap`` endpoint (``robovast_nav``'s ``CostmapEndpoint``, a
+``robovast.service_endpoints`` plugin — it is *not* a core interface operation) delivers the
+frame nearest a time **untruncated**; the browser inflates it with the native
+``DecompressionStream``. The ``costmaps`` table description in ``describe_data_db`` gives an
+LLM the map's size in meters, resolution, and layers for spatial reasoning without decoding
+grids.
+
+Alongside the frame it returns ``t_prev`` / ``t_next``, the timestamps recorded either side of
+it for that topic. This is the one panel that fetches **per clock position** rather than
+preloading its series, so "nearest" alone is not an interpretable answer — the query always
+returns something, however far away, and the panel could not tell a current frame from the
+first or last one clamped to a cursor minutes off. From that pair
+(``panel-kit``'s ``frameValidity``) it derives the interval over which the frame stays the
+nearest one — so it re-requests only when the answer could change, and a latched topic such as
+``/map`` is fetched once per session — and the local publish period, hence how far the cursor
+may drift before the layer is reported as absent instead of drawn as current. A latched topic
+has no neighbours, so it is exempt from staleness *by construction* rather than by name.
+
+That staleness threshold is floored at the panel's own **fetch cadence**, which is not a detail:
+nav2 publishes costmaps far faster than any viewer fetches them (50 Hz local costmaps are
+ordinary, against a ~140 ms round trip plus throttle). Deriving the threshold from the publish
+rate alone inverts there — every frame is judged stale within 40 ms, long before it could be
+replaced, and the layer is blanked essentially permanently. A frame older than the publish
+period *because the viewer sampled coarsely* is not stale data; the threshold exists to catch
+real gaps and off-the-end clamps, which are seconds.
 
 The interface surface
 ---------------------

@@ -435,7 +435,20 @@ marker, all at the current time (scroll to zoom, drag to pan). Each ``layers`` e
 binds a name to a costmap **topic**; ``poses`` (the TF table) both places the layers into
 the map frame and provides the driven-path trail + robot pose. It requires the
 :ref:`costmap postprocessing step <costmap-delivery>` — if the ``costmaps`` data is
-missing the panel says so rather than drawing nothing. *This panel ships with the*
+missing the panel says so rather than drawing nothing.
+
+A layer is left out, and named in the top-left corner (*"local: nearest frame 4.3 s away"*),
+when the recording genuinely has no frame near the cursor — before nav2 starts publishing,
+after it stops, or across a gap mid-run — rather than showing the closest frame it could find
+as though it were current. Each layer is judged against **its own** publish rate, so a static
+map, published once and never again, is never affected.
+
+While scrubbing, layers keep showing their last frame instead of blanking: a replacement is
+already being fetched, and the layers differ enough in weight (a full-map global costmap is
+~15 KB against a local costmap's sub-KB) that blanking during the catch-up would make the
+heaviest one flicker. Note also that a costmap is placed at the time it was published, so at
+speed the robot marker can sit slightly ahead of its window — that offset is the recording's
+own resolution, not drift. *This panel ships with the*
 ``robovast_nav`` *package* (not the core UI) as a package-provided panel — see below — so
 it is available whenever ``robovast_nav`` is installed; the ``.vast`` still references it
 as plain ``- costmap:``.

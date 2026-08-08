@@ -7,11 +7,26 @@
 //
 // This is the first package-provided run-view panel: it ships with robovast_nav (not the core UI) as a
 // Module-Federation remote, because it is the only panel that needs nav2 costmap grids + the occupancy-
-// grid helpers. It implements the host's PanelProps contract, so it is time-synced and queries the run's
-// data.db exactly like a built-in panel. Relocated verbatim from ui/src/panels/CostmapPanel.tsx, with
-// `data.costmapFrame(...)` replaced by the generic `data.fetchRun('costmap', ...)` seam.
+// grid helpers. It implements the PanelProps contract from @robovast/panel-kit, so it is time-synced and
+// queries the run's data.db exactly like a built-in panel.
+//
+// It is also the only panel that fetches per clock position rather than preloading its whole series --
+// grids are far too large for that, which is why they are served one frame at a time. Everything about
+// *when* to fetch and *whether the frame in hand still answers for the cursor* therefore lives in the
+// kit's `keyframes` module, shared with the planned live view; what is left here is costmap-specific:
+// which topics are layers, how a grid is coloured, and how it is composed into the map frame.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  DEFAULT_MIN_INTERVAL_MS,
+  frameValidity,
+  nearestIndex,
+  useCanvasClock,
+  useKeyframePump,
+  type DataProvider,
+  type FrameValidity,
+  type PanelProps,
+} from '@robovast/panel-kit'
 import {
   costmapColor,
   decodeGrid,
@@ -22,12 +37,19 @@ import {
   type OccupancyGrid,
   type Planar,
 } from './occupancyGrid'
-import type { DataProvider, PanelProps } from './contract'
 
 // One nav2 OccupancyGrid frame (nearest a requested time), from the service's /costmap endpoint.
 // `data` is zlib-compressed, base64-encoded int8 cells (row-major, -1..100).
+//
+// `t_prev`/`t_next` are the timestamps recorded either side of this frame for the same topic, or null at
+// the ends of the topic's span. They are what make the answer interpretable: the panel turns them into
+// the interval over which this frame stays the nearest one (so it knows when re-asking could change
+// anything) and into a staleness threshold from the local publish period. Non-optional on purpose --
+// a read path that forgets them should fail to compile.
 interface CostmapFrame {
   t: number
+  t_prev: number | null
+  t_next: number | null
   frame_id: string
   resolution: number
   width: number
@@ -42,7 +64,6 @@ interface CostmapFrame {
 // through; the local costmap is a small window drawn on top and stays clearly visible/opaque.
 const GLOBAL_ALPHA = 110
 const LOCAL_ALPHA = 210
-const FETCH_INTERVAL_MS = 120 // min wall gap between costmap-frame fetch rounds
 
 interface View {
   cx: number
@@ -63,11 +84,32 @@ interface LayerCfg {
   topic: string
   color: (v: number) => [number, number, number, number]
 }
+/** One decoded costmap frame on screen. Deliberately one object rather than loose fields on the layer:
+ *  the timestamp, the pixels and the validity interval are only ever meaningful together, so there is
+ *  no representable state where a grid is drawn without knowing what time it is for. */
+interface DrawnFrame {
+  /** The frame's own timestamp. The grid is *composed* at this time (see drawGrid), and its distance
+   *  from the cursor is what decides whether it is still an honest answer. */
+  t: number
+  grid: OccupancyGrid
+  canvas: HTMLCanvasElement
+  /** The TF frame the grid's origin is expressed in, as declared by the message (`odom` for the local
+   *  costmap, `map` for the others). Nothing in the .vast states it. */
+  frameId: string
+  validity: FrameValidity
+}
+
 interface LayerRuntime {
   cfg: LayerCfg
-  grid?: OccupancyGrid
-  canvas?: HTMLCanvasElement
-  frameId: string
+  frame?: DrawnFrame
+  /** Why this layer can never produce a drawable frame, if so -- reported to the viewer, and it stops
+   *  the layer being requested again.
+   *
+   *  Latched, because a postprocessed run is a closed recording: a topic with no rows cannot acquire
+   *  them, and a zero-size grid will not decode on a retry either. Both cases previously left the layer
+   *  perpetually out of date, so it was re-requested ~8×/s for the whole session with nothing shown and
+   *  nothing said. A live provider must not latch this -- there, "no rows yet" is not "no rows". */
+  unavailable?: string
 }
 
 function yawQuat(yaw: number) {
@@ -137,7 +179,13 @@ const POSE_COLUMNS = ['timestamp', 'position.x', 'position.y', 'orientation.yaw'
 const POSE_HZ = 20
 const POSE_MAX_ROWS = 5000 // the service's hard cap; asking for more does not raise it
 
-async function loadFramePoses(data: DataProvider, table: string, frame: string): Promise<Pose[]> {
+/** A frame's poses plus their extracted times, so lookups can binary-search instead of rescanning. */
+interface PoseTrack {
+  poses: Pose[]
+  times: number[]
+}
+
+async function loadFramePoses(data: DataProvider, table: string, frame: string): Promise<PoseTrack> {
   const rows = await data.series(table, {
     match: { frame },
     columns: POSE_COLUMNS,
@@ -151,34 +199,39 @@ async function loadFramePoses(data: DataProvider, table: string, frame: string):
     yaw: Number(r['orientation.yaw']),
   }))
   poses.sort((a, b) => a.t - b.t)
-  return poses
+  return { poses, times: poses.map((p) => p.t) }
 }
 
-/** Nearest pose (by time) for a frame, or null. */
-function poseAt(poses: Pose[] | undefined, t: number): Pose | null {
-  if (!poses?.length) return null
-  let best = poses[0]
-  for (const p of poses) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p
-  return best
+/** Whether the recording holds a frame nearer the cursor than the one this layer is showing — i.e. a
+ *  fetch would return something different.
+ *
+ *  The single predicate behind both "refetch this layer" and "keep showing what we have": outside the
+ *  validity window a better frame exists and is being fetched, so the current one is merely *behind*;
+ *  inside it, this frame is the best the recording has, so if it is also far from the cursor that is a
+ *  real gap and must be reported rather than drawn. Deriving both from one function is what keeps a
+ *  layer from being blanked and refetched on contradictory criteria. */
+function hasNearerFrame(fr: DrawnFrame, t: number): boolean {
+  return t < fr.validity.validFrom || t > fr.validity.validTo
+}
+
+/** Nearest pose (by time) for a frame, or null. Called once per layer plus once for the marker on every
+ *  animation frame, and each layer now asks at a different time, so this is a binary search rather than
+ *  the scan it used to be. */
+function poseAt(track: PoseTrack | undefined, t: number): Pose | null {
+  if (!track?.poses.length) return null
+  const i = nearestIndex(track.times, t)
+  return i < 0 ? null : track.poses[i]
 }
 
 export default function CostmapPanel({ spec, clock, data }: PanelProps) {
   const { layers, posesTable } = useMemo(() => parseLayers(spec.config), [spec.config])
   const robotFrame = (spec.config.robot_frame as string) ?? 'base_link'
 
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const sizeRef = useRef({ w: 0, h: 0 })
   const viewRef = useRef<View | null>(null)
-  const extentRef = useRef<Extent | null>(null)
-  const layersRef = useRef<LayerRuntime[]>(layers.map((cfg) => ({ cfg, frameId: 'map' })))
-  const posesRef = useRef<Map<string, Pose[]>>(new Map())
+  const layersRef = useRef<LayerRuntime[]>(layers.map((cfg) => ({ cfg })))
+  const posesRef = useRef<Map<string, PoseTrack>>(new Map())
   const poseLoadsRef = useRef<Set<string>>(new Set())
   const posesTableOkRef = useRef<Promise<boolean> | null>(null)
-  const tRef = useRef(clock.t)
-  const rafRef = useRef<number | null>(null)
-  const fetchingRef = useRef(false)
-  const lastFetchWallRef = useRef(0)
 
   const [error, setError] = useState<string | null>(null)
 
@@ -187,28 +240,52 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
     return poseAt(posesRef.current.get(frameId), t)
   }, [])
 
-  const draw = useCallback(() => {
-    rafRef.current = null
-    const canvas = canvasRef.current
-    const ctx = canvas?.getContext('2d')
-    if (!canvas || !ctx) return
-    const { w, h } = sizeRef.current
+  const { containerRef, canvasRef, requestDraw } = useCanvasClock(clock, (ctx, w, h, t) => {
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.fillStyle = '#12171f'
     ctx.fillRect(0, 0, w, h)
     const view = viewRef.current
     if (!view) return
-    const t = tRef.current
     const w2s = (x: number, y: number): [number, number] => [
       w / 2 + (x - view.cx) * view.ppm,
       h / 2 - (y - view.cy) * view.ppm,
     ]
 
+    // Why a layer is not being drawn, collected while drawing and reported at the bottom of the canvas.
+    // Silently skipping a layer reads as "nav2 saw nothing here", which is a different claim.
+    const withheld: string[] = []
+
     const drawGrid = (rt: LayerRuntime) => {
-      if (!rt.canvas) return
-      const f = frameToMap(rt.frameId, t)
-      if (!f || !rt.grid) return
-      const o = gridOrigin(rt.grid)
+      if (rt.unavailable) {
+        withheld.push(`${rt.cfg.name}: ${rt.unavailable}`)
+        return
+      }
+      const fr = rt.frame
+      if (!fr) return // nothing fetched yet
+      // The nearest recorded frame can be arbitrarily far from the cursor -- before nav2 started
+      // publishing, after it stopped, or across a mid-run gap the endpoint still returns the closest
+      // row it has. Drawing that as though it were current is what put the local window somewhere the
+      // robot no longer was.
+      //
+      // But only when the recording has nothing nearer (see hasNearerFrame). While scrubbing, a frame
+      // leaves its validity window on essentially every cursor change and a replacement is already on
+      // its way; blanking during that catch-up strobes the layer instead of reporting anything, and
+      // strobes the heaviest layer worst, since the gap is its own round trip. A genuine gap or an
+      // off-the-end clamp lands *inside* the validity window -- there the frame never stops being the
+      // nearest one, so nothing better is coming and withholding is the honest answer.
+      const age = Math.abs(t - fr.t)
+      if (age > fr.validity.staleAfter && !hasNearerFrame(fr, t)) {
+        withheld.push(`${rt.cfg.name}: nearest frame ${age.toFixed(1)} s away`)
+        return
+      }
+      // Compose the grid at the frame's OWN time, not the cursor's: a local costmap's origin is
+      // expressed in `odom` as of when it was published, so resolving odom->map at the cursor would
+      // place every obstacle cell at a slightly wrong map coordinate. The cost is that the residual
+      // arrow-vs-window offset stays visible, bounded by half the topic's publish period -- that offset
+      // is the data's real resolution, and hiding it would be the more expensive lie.
+      const f = frameToMap(fr.frameId, fr.t)
+      if (!f) return
+      const o = gridOrigin(fr.grid)
       ctx.save()
       ctx.translate(w / 2, h / 2)
       ctx.scale(view.ppm, -view.ppm)
@@ -220,7 +297,7 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       ctx.translate(0, o.height * o.res)
       ctx.scale(o.res, -o.res)
       ctx.imageSmoothingEnabled = false
-      ctx.drawImage(rt.canvas, 0, 0)
+      ctx.drawImage(fr.canvas, 0, 0)
       ctx.restore()
     }
 
@@ -231,7 +308,8 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       if (rt.cfg.name !== 'map' && rt.cfg.name !== 'global') drawGrid(rt)
 
     // Driven path: the base_link trail up to the current time (already in the map frame).
-    const trail = posesRef.current.get(robotFrame)
+    const track = posesRef.current.get(robotFrame)
+    const trail = track?.poses
     if (trail?.length) {
       ctx.beginPath()
       let started = false
@@ -251,7 +329,7 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
     }
 
     // Robot marker at the current pose.
-    const robot = poseAt(trail, t)
+    const robot = poseAt(track, t)
     if (robot) {
       const [sx, sy] = w2s(robot.x, robot.y)
       const dx = Math.cos(robot.yaw)
@@ -271,20 +349,38 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
-  }, [frameToMap, robotFrame])
 
-  const requestDraw = useCallback(() => {
-    if (rafRef.current != null) return
-    rafRef.current = requestAnimationFrame(draw)
-  }, [draw])
+    // Say which layers were withheld and why. Drawn on the canvas rather than held in React state
+    // because this runs once per animation frame while playing, and a setState here would re-render the
+    // component at display rate. Top-left, because the error banner owns the bottom edge -- and it is
+    // deliberately not that banner: a layer with no frame near the cursor is a fact about the
+    // recording, not a failure, and conflating the two would train the reader to ignore the banner.
+    if (withheld.length) {
+      const dpr = window.devicePixelRatio || 1 // this canvas is sized in device pixels
+      ctx.font = `${12 * dpr}px system-ui, sans-serif`
+      ctx.fillStyle = '#9aa4b2'
+      ctx.textBaseline = 'top'
+      let y = 8 * dpr
+      for (const line of withheld) {
+        ctx.fillText(line, 8 * dpr, y)
+        y += 15 * dpr
+      }
+    }
+  })
 
-  const fitToExtent = useCallback((ext: Extent) => {
-    const { w, h } = sizeRef.current
-    const ew = Math.max(ext.maxX - ext.minX, 0.1)
-    const eh = Math.max(ext.maxY - ext.minY, 0.1)
-    const ppm = Math.max(2, Math.min((w || 600) / (ew * 1.1), (h || 400) / (eh * 1.1)))
-    viewRef.current = { cx: (ext.minX + ext.maxX) / 2, cy: (ext.minY + ext.maxY) / 2, ppm }
-  }, [])
+  const fitToExtent = useCallback(
+    (ext: Extent) => {
+      // Device-pixel canvas size, owned by useCanvasClock; fall back to a sane default before the first
+      // resize observation so an early fit still produces a usable view.
+      const w = canvasRef.current?.width || 600
+      const h = canvasRef.current?.height || 400
+      const ew = Math.max(ext.maxX - ext.minX, 0.1)
+      const eh = Math.max(ext.maxY - ext.minY, 0.1)
+      const ppm = Math.max(2, Math.min(w / (ew * 1.1), h / (eh * 1.1)))
+      viewRef.current = { cx: (ext.minX + ext.maxX) / 2, cy: (ext.minY + ext.maxY) / 2, ppm }
+    },
+    [canvasRef],
+  )
 
   // Load one frame's poses, once, on first use. Fire-and-forget: the next redraw picks the result up,
   // and until then the layer needing that frame simply isn't drawn.
@@ -295,9 +391,12 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       poseLoadsRef.current.add(frameId)
       posesTableOkRef.current ??= data.has(posesTable)
       void posesTableOkRef.current
-        .then((ok) => (ok ? loadFramePoses(data, posesTable, frameId) : []))
-        .then((poses) => {
-          posesRef.current.set(frameId, poses)
+        .then((ok) =>
+          ok ? loadFramePoses(data, posesTable, frameId) : { poses: [], times: [] as number[] },
+        )
+        .then((track) => {
+          posesRef.current.set(frameId, track)
+          const poses = track.poses
           // Hitting the cap even decimated means the run outgrew POSE_HZ: say so, because the symptom
           // is a path that just stops, which reads as the robot having stopped.
           if (poses.length >= POSE_MAX_ROWS)
@@ -324,7 +423,7 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
   )
 
   // The robot frame is needed unconditionally (driven path + marker); every other frame is pulled in
-  // by fetchFrames when a grid arrives declaring it. Rebinding to another run/table drops what the
+  // by a fetch round when a grid arrives declaring it. Rebinding to another run/table drops what the
   // previous one loaded -- these are refs, so nothing else clears them.
   useEffect(() => {
     posesRef.current = new Map()
@@ -333,79 +432,87 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
     ensureFrame(robotFrame)
   }, [ensureFrame, robotFrame])
 
-  // Fetch the nearest grid frame for every costmap layer at time `t` (throttled by the caller).
-  const fetchFrames = useCallback(
-    async (t: number) => {
-      fetchingRef.current = true
-      try {
-        for (const rt of layersRef.current) {
-          const frame = await data.fetchRun<CostmapFrame | null>('costmap', { topic: rt.cfg.topic, t })
-          if (!frame) continue
-          const grid = frameToGrid(frame)
-          const cells = await inflateCells(frame.data)
-          grid.data = cells as unknown as number[]
-          const canvas = decodeGrid(grid, rt.cfg.color)
-          if (!canvas) continue
-          rt.grid = grid
-          rt.canvas = canvas
-          rt.frameId = frame.frame_id
-          // The grid states which frame it is in (the local costmap is in `odom`), and that is the
-          // only place that frame is named -- nothing in the .vast declares it -- so this is where
-          // its poses get pulled in.
-          ensureFrame(frame.frame_id)
-          // Auto-fit the view to the first map-frame grid we see.
-          if (viewRef.current == null && (frame.frame_id === 'map' || !frame.frame_id)) {
-            const ext = gridExtentInMap(grid, IDENTITY_PLANAR)
-            extentRef.current = ext
-            fitToExtent(ext)
-          }
-        }
-        requestDraw()
-      } catch (e) {
-        setError((e as Error).message)
-      } finally {
-        fetchingRef.current = false
+  // Fetch one layer's nearest frame at `t` and decode it. Mutates `rt` on success.
+  const fetchLayer = useCallback(
+    async (rt: LayerRuntime, t: number) => {
+      const frame = await data.fetchRun<CostmapFrame | null>('costmap', { topic: rt.cfg.topic, t })
+      if (!frame) {
+        rt.unavailable = `no frames recorded for ${rt.cfg.topic}`
+        return
       }
+      // `spanOpen: false` -- a postprocessed run is a finished recording, so a frame with no later
+      // neighbour really is the last one there will ever be. A live provider over rosbridge would
+      // pass true here, and that single flag is the whole difference: with it, the newest frame is
+      // re-requested as the cursor advances past it instead of being trusted forever.
+      //
+      // The refresh floor is this panel's own fetch cadence: nav2 publishes a local costmap far
+      // faster than any viewer fetches one (50 Hz is ordinary), and without it every frame would be
+      // called stale within 40 ms -- long before it could be replaced.
+      const validity = frameValidity(
+        { t: frame.t, tPrev: frame.t_prev, tNext: frame.t_next },
+        { spanOpen: false, refreshFloorSec: DEFAULT_MIN_INTERVAL_MS / 1000 },
+      )
+      // Same frame as the one already decoded -- refresh the interval and skip the expensive part.
+      // decodeGrid is a per-cell loop over the whole grid, and the static map would otherwise be
+      // re-decoded on every round for a picture that cannot have changed.
+      if (rt.frame && frame.t === rt.frame.t) {
+        rt.frame = { ...rt.frame, validity }
+        return
+      }
+      const grid = frameToGrid(frame)
+      const cells = await inflateCells(frame.data)
+      grid.data = cells as unknown as number[]
+      const canvas = decodeGrid(grid, rt.cfg.color)
+      if (!canvas) {
+        rt.unavailable = `frame at t=${frame.t.toFixed(2)} s has no extent (${frame.width}x${frame.height})`
+        return
+      }
+      rt.frame = { t: frame.t, grid, canvas, frameId: frame.frame_id, validity }
+      // The grid states which frame it is in (the local costmap is in `odom`), and that is the
+      // only place that frame is named -- nothing in the .vast declares it -- so this is where
+      // its poses get pulled in.
+      ensureFrame(frame.frame_id)
+      // Auto-fit the view to the first map-frame grid we see.
+      if (viewRef.current == null && (frame.frame_id === 'map' || !frame.frame_id))
+        fitToExtent(gridExtentInMap(grid, IDENTITY_PLANAR))
     },
-    [data, ensureFrame, fitToExtent, requestDraw],
+    [data, ensureFrame, fitToExtent],
   )
 
-  // Follow the clock: redraw every change; re-fetch grid frames on a wall-clock throttle.
-  useEffect(() => {
-    const onClock = () => {
-      tRef.current = clock.t
-      requestDraw()
-      const now = performance.now()
-      if (!fetchingRef.current && now - lastFetchWallRef.current > FETCH_INTERVAL_MS) {
-        lastFetchWallRef.current = now
-        void fetchFrames(clock.t)
-      }
-    }
-    onClock()
-    return clock.subscribe(onClock)
-  }, [clock, fetchFrames, requestDraw])
+  // One fetch round: bring every layer whose frame no longer answers for `t` up to date.
+  //
+  // Layers run concurrently AND redraw independently, which matters more than it looks. They differ by
+  // more than an order of magnitude in cost -- a local costmap is ~100x100 cells in a sub-KB payload,
+  // a full-map global costmap ~600x300 in ~15 KB -- so making the round a barrier would hold the cheap
+  // layer the user is actually watching behind the expensive one's decode. The old serial loop did
+  // exactly that, and put `local` last. The kit's pump keeps at most one round in flight, so fanning
+  // out here cannot reintroduce out-of-order results.
+  const fetchAt = useCallback(
+    async (t: number) => {
+      const due = layersRef.current.filter(
+        (rt) => !rt.unavailable && (!rt.frame || hasNearerFrame(rt.frame, t)),
+      )
+      if (!due.length) return false
+      // allSettled, not all: one failing layer must not discard the layers that did arrive, and each
+      // draws as soon as it lands rather than at the end of the round.
+      const settled = await Promise.allSettled(
+        due.map((rt) => fetchLayer(rt, t).then(() => requestDraw())),
+      )
+      const failed = settled.find((r) => r.status === 'rejected')
+      if (failed) setError((failed.reason as Error).message)
+      // A failed layer keeps its previous validity, so it is still due and retries on the next clock
+      // movement; reporting the round as real work keeps the throttle honest rather than letting a
+      // broken endpoint be retried as fast as the clock ticks.
+      return true
+    },
+    [fetchLayer, requestDraw],
+  )
 
-  // Canvas sizing (device pixels for crisp HiDPI).
-  useEffect(() => {
-    const container = containerRef.current
-    const canvas = canvasRef.current
-    if (!container || !canvas) return
-    const ro = new ResizeObserver(() => {
-      const dpr = window.devicePixelRatio || 1
-      const cw = container.clientWidth
-      const ch = container.clientHeight
-      sizeRef.current = { w: Math.round(cw * dpr), h: Math.round(ch * dpr) }
-      canvas.width = sizeRef.current.w
-      canvas.height = sizeRef.current.h
-      canvas.style.width = `${cw}px`
-      canvas.style.height = `${ch}px`
-      requestDraw()
-    })
-    ro.observe(container)
-    return () => ro.disconnect()
-  }, [requestDraw])
+  useKeyframePump(clock, { fetchAt })
 
   // Pan (drag) + zoom (wheel about the cursor). Native listeners so wheel can preventDefault.
+  // Canvas sizing, rAF coalescing and the clock subscription are useCanvasClock's; only the
+  // costmap-specific interaction is here.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -417,7 +524,8 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       const rect = canvas.getBoundingClientRect()
       const mx = (e.clientX - rect.left) * dpr
       const my = (e.clientY - rect.top) * dpr
-      const { w, h } = sizeRef.current
+      const w = canvas.width
+      const h = canvas.height
       const wx = view.cx + (mx - w / 2) / view.ppm
       const wy = view.cy - (my - h / 2) / view.ppm
       const ppm = Math.min(5000, Math.max(2, view.ppm * Math.exp(-e.deltaY * 0.0015)))
@@ -457,7 +565,7 @@ export default function CostmapPanel({ spec, clock, data }: PanelProps) {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [requestDraw])
+  }, [canvasRef, requestDraw])
 
   if (layers.length === 0)
     return (

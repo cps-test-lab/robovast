@@ -9,7 +9,7 @@
 // same interface over a rosbridge buffer without any panel change.
 
 import { useQuery } from '@tanstack/react-query'
-import type { DataProvider, DataRow } from './dataProvider'
+import { lastAtOrBefore, type DataProvider, type DataRow } from '@robovast/panel-kit'
 
 /** How a .vast spec names a time series: a data.db table, its time column (default `timestamp`), and
  *  an optional equality filter to isolate one series from a multi-keyed table (e.g. `{ frame: base_link }`). */
@@ -50,23 +50,6 @@ export function timeSeriesFromRows(rows: DataRow[], timeColumn = DEFAULT_TIME_CO
   const times = sorted.map(timeOf)
   const columns = sorted.length ? Object.keys(sorted[0]) : []
 
-  // Index of the last sample with time <= t via binary search (rightmost). -1 if t precedes all.
-  const lastAtOrBefore = (t: number): number => {
-    let lo = 0
-    let hi = times.length - 1
-    let ans = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (times[mid] <= t) {
-        ans = mid
-        lo = mid + 1
-      } else {
-        hi = mid - 1
-      }
-    }
-    return ans
-  }
-
   return {
     range() {
       if (!sorted.length) return null
@@ -74,12 +57,12 @@ export function timeSeriesFromRows(rows: DataRow[], timeColumn = DEFAULT_TIME_CO
     },
     at(t) {
       if (!sorted.length) return null
-      const i = lastAtOrBefore(t)
+      const i = lastAtOrBefore(times, t)
       // Before the first sample, clamp to the earliest so a panel still shows a defined state.
       return sorted[i >= 0 ? i : 0]
     },
     upTo(t) {
-      const i = lastAtOrBefore(t)
+      const i = lastAtOrBefore(times, t)
       return i >= 0 ? sorted.slice(0, i + 1) : []
     },
     all() {

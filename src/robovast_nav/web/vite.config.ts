@@ -15,11 +15,21 @@
 //
 // `react`/`react-dom` are shared singletons pinned to the host's version (^18) so the remote reuses
 // the host's React rather than bundling its own -- a version mismatch here breaks loading.
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { federation } from '@module-federation/vite'
 
 export default defineConfig({
+  resolve: {
+    // The panel contract and the clock-driven scaffolding, shared with the host UI as in-tree source
+    // (../../../panel-kit) rather than a hand-copied `contract.ts`. Resolved by path, and deliberately
+    // NOT an MF `shared` module: bundling our own copy means a version skew against a newer host is an
+    // ordinary build rather than a remote-load failure. Must match the tsconfig `paths` entry.
+    alias: {
+      '@robovast/panel-kit': fileURLToPath(new URL('../../../panel-kit/src/index.ts', import.meta.url)),
+    },
+  },
   plugins: [
     react(),
     federation({
@@ -27,6 +37,12 @@ export default defineConfig({
       // (REMOTE_NAME in robovast_nav/panels.py); the runtime resolves shared deps by this name.
       name: 'robovast_nav',
       filename: 'remoteEntry.js',
+      // No `@mf-types` emission. Nothing consumes it: the host types a remote through its own
+      // `useRemoteComponent<PanelProps>` against @robovast/panel-kit, which both sides compile from
+      // the same source -- so the contract is already checked at both ends, twice over, and a second
+      // generated copy would only be another thing to drift. It also cannot work here, since the
+      // declaration emit insists every source sit under this package's `src`, and the kit does not.
+      dts: false,
       exposes: {
         // Each key is a panel's PANEL_MODULE in robovast_nav/panels.py:
         //   costmap      -> loadRemote('robovast_nav/costmap')
