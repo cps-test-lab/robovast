@@ -116,17 +116,26 @@ export function RunView({
     [runs.data],
   )
 
-  const [run, setRun] = useState<RunKey | null>(null)
+  const [picked, setRun] = useState<RunKey | null>(null)
   // Default to (and self-heal onto) the first run of the current campaign.
   useEffect(() => {
     if (!runList.length) {
       setRun(null)
       return
     }
-    if (!runList.some((r) => r.config_name === run?.config_name && r.run_id === run?.run_id)) {
+    if (!runList.some((r) => r.config_name === picked?.config_name && r.run_id === picked?.run_id)) {
       setRun(runList[0])
     }
   }, [runList]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Only a run the *current* campaign actually has counts as the run on screen. Switching campaign
+  // leaves the previous pick in state for a moment — the new campaign's run list is a request away,
+  // and the effect above can only correct it once that lands — and rendering it meanwhile would show
+  // the run someone had just been looking at as though it belonged to the campaign they clicked,
+  // with panels quietly querying ids the new campaign does not have.
+  const run = picked && runList.some(
+    (r) => r.config_name === picked.config_name && r.run_id === picked.run_id,
+  ) ? picked : null
 
   const runKey = run ? `${campaignId}:${run.config_name}:${run.run_id}` : ''
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -98,6 +98,9 @@ export function ResultsPage({
   // in place (react-query keeps the last value), so the remembered selection survives an outage
   // instead of being wiped by a momentarily empty list.
   const loaded = !!campaigns.data
+  // Campaign ids this page has already asked the service about and not found — so an id that is
+  // genuinely gone costs one refetch, not one per render (see below).
+  const probed = useRef(new Set<string>())
   useEffect(() => {
     if (!loaded) return
     if (evalCampaigns.some((c) => c.campaign_id === campaignId)) return
@@ -110,8 +113,19 @@ export function ResultsPage({
       setShown(live)
       return
     }
-    // No campaign named (fresh tab, or back from another topic), or one this service no longer has:
-    // fall back to what this browser last looked at, then to the newest readable campaign.
+    // Asked for a campaign this page has never heard of. That is not yet a reason to overrule the
+    // request: this list is a 15 s poll while the campaign cards are fed by the live stream, so a
+    // campaign that has just finished is linked to from there *before* it turns up here. Ask the
+    // service once, and decide on the answer — without this the shortcut lands on whatever campaign
+    // was open before, which looks exactly like the click having done nothing.
+    if (campaignId && !probed.current.has(campaignId)) {
+      probed.current.add(campaignId)
+      campaigns.refetch()
+      return
+    }
+    if (campaigns.isFetching) return
+    // No campaign named (fresh tab, or back from another topic), or one this service really does not
+    // have: fall back to what this browser last looked at, then to the newest readable campaign.
     const remembered = localStorage.getItem(LAST_CAMPAIGN_KEY) ?? ''
     const seed = evalCampaigns.find((c) => c.campaign_id === remembered)
     const readable = evalCampaigns.find(hasRecordedRuns)
@@ -119,7 +133,7 @@ export function ResultsPage({
     // and the Data browser would keep querying a campaign no view lists — while the Explorer, which
     // renders the list directly, shows its empty state.
     onCampaignChange((seed ?? readable ?? evalCampaigns[0])?.campaign_id ?? '')
-  }, [loaded, campaignId, evalCampaigns.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loaded, campaignId, campaigns.isFetching, evalCampaigns.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (campaignId) localStorage.setItem(LAST_CAMPAIGN_KEY, campaignId)
