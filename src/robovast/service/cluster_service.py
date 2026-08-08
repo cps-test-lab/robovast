@@ -1321,10 +1321,14 @@ class ClusterService(LocalTransport):
         from robovast.common.errors import CampaignConfigError
         from robovast.service.image_build import (extract_build_specs,
                                                   validate_build_spec)
-        specs = extract_build_specs(campaign_config)
+        project_dir = Path(project.config_path).resolve().parent
+        # Same ordering as _build_specs_for: the campaign's own plugins may carry the
+        # simulator backend that decides which container builds, so they have to be
+        # resolvable before the specs are read, and base_dir has to be passed for a
+        # file-ref backend to resolve at all.
+        specs = extract_build_specs(campaign_config, base_dir=str(project_dir))
         if not specs:
             return None
-        project_dir = Path(project.config_path).resolve().parent
         for name, spec in specs.items():
             problems = validate_build_spec(spec, project_dir)
             if problems:

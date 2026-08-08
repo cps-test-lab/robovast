@@ -334,3 +334,46 @@ def test_job_log_tails_are_lru_bounded(transport):
 
     assert len(transport._job_log_tails) == transport._JOB_LOG_CACHE_MAX
     assert (cid, "cfg0/0") not in transport._job_log_tails  # oldest evicted
+
+
+# -- a campaign's own plugins reach the build planner ------------------------
+#
+# Which containers build depends on the simulator backend (a stepped simulator folds
+# `simulation` into `scenario`), and the backend can live in the campaign's `plugins:` --
+# root-level glue is deliberately not in the service image. Nothing installed those
+# plugins before the specs were extracted, and no base_dir was passed, so a project that
+# `validate_project` accepted failed at `start_campaign` with "Unknown robovast.simulators
+# plugin". The compose path (config_generation) had always done both.
+
+
+def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path,
+                                                             monkeypatch):
+    import types
+
+    seen = {}
+
+    def _fake_ensure(vast_dir, specs, **_kw):
+        seen['dir'], seen['specs'] = vast_dir, specs
+
+    def _fake_extract(_config, base_dir=None):
+        seen['base_dir'] = base_dir
+        return {}
+
+    monkeypatch.setattr("robovast.common.config_plugins.ensure_workspace_plugins",
+                        _fake_ensure)
+    monkeypatch.setattr("robovast.service.image_build.extract_build_specs",
+                        _fake_extract)
+
+    vast = tmp_path / "proj" / "c.vast"
+    vast.parent.mkdir(parents=True)
+    vast.write_text("version: 2\n")
+    project = types.SimpleNamespace(config_path=str(vast))
+    config = types.SimpleNamespace(plugins=["./plugins/backend-1.0-py3-none-any.whl"])
+
+    transport._build_specs_for(project, config)
+
+    assert seen['specs'] == ["./plugins/backend-1.0-py3-none-any.whl"], \
+        "the campaign's plugins were not installed before its build specs were read"
+    assert seen['dir'] == str(vast.parent)
+    assert seen['base_dir'] == str(vast.parent), \
+        "no base_dir means a '<file>.py:<Class>' backend cannot resolve either"

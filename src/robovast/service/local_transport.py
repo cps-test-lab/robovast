@@ -921,11 +921,25 @@ class LocalTransport(RobovastInterface):
         """
         from pathlib import Path as _Path
 
+        from robovast.common.config_plugins import ensure_workspace_plugins
         from robovast.service.image_build import extract_build_specs
-        specs = extract_build_specs(campaign_config)
+        project_dir = _Path(project.config_path).resolve().parent
+        # Which containers build depends on the simulator backend (a stepped simulator
+        # folds `simulation` into `scenario`), and the backend can live in the campaign's
+        # own `plugins:` -- root-level glue is not in the service image by design. So the
+        # campaign's plugins have to be resolvable BEFORE the specs are extracted, which
+        # is what the compose path already does (config_generation). Without it a project
+        # validated fine and then failed at start_campaign with "Unknown
+        # robovast.simulators plugin", which reads as a broken .vast rather than a
+        # service that had not installed what the .vast asked for.
+        ensure_workspace_plugins(str(project_dir),
+                                 getattr(campaign_config, 'plugins', None))
+        # base_dir also lets a backend named as a `<file>.py:<Class>` ref next to the
+        # .vast resolve here -- the documented escape hatch, which silently did not work
+        # on this path because nothing passed the directory it resolves against.
+        specs = extract_build_specs(campaign_config, base_dir=str(project_dir))
         if not specs:
             return {}, None
-        project_dir = _Path(project.config_path).resolve().parent
         return specs, project_dir
 
     def _start_build_images(self, project, campaign_config) -> list:
