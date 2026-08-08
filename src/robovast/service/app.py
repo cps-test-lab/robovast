@@ -682,6 +682,13 @@ def build_app(impl: RobovastInterface):
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
+    @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
+              tags=["campaigns"],
+              description="Launch a new campaign from an existing one's frozen config and "
+                          "pinned image. The source campaign is not modified.")
+    def retrigger_campaign(campaign_id: str) -> CampaignRef:
+        return _guard(lambda: impl.retrigger_campaign(campaign_id))
+
     @app.post(Routes.CLEANUP_DATA, response_model=ActionResult, tags=["campaigns"])
     def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
         # Body optional: no body means "all finished campaigns" (live ones skipped).

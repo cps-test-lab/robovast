@@ -3819,6 +3819,49 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/retrigger": {
+      "post": {
+        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified.",
+        "operationId": "retrigger_campaign_campaigns__campaign_id__retrigger_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignRef"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrigger Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/scene": {
       "get": {
         "description": "Is this run's 3D geometry ready, and if not what is happening about it.\n\nPure by design: never starts a build (that is the POST below), because a GET that launched a\n2 GB image pull would fire on a browser prefetch or a strict-mode double render.",

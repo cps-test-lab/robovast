@@ -38,7 +38,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from robovast.common import file_address, file_view
 from robovast.common.safe_path import safe_join
@@ -243,9 +243,32 @@ class WorkspaceTarget:
     off this object where it could look per-workspace.
 
     ``ProjectConfig`` stays where it means something: the CLI.
+
+    The two optional fields say how this project differs from a workspace's, and they are here
+    rather than as ``_launch_campaign`` parameters because this object already *is* the launch
+    path's whole knowledge of the project — every hook it passes through reads
+    ``config_path`` and nothing else, so a second channel would be a second thing to thread.
+    A retrigger sets both; a workspace launch leaves both ``None`` and behaves exactly as
+    before.
     """
 
     config_path: str
+    #: Finish putting the project tree on disk. Called once, at the top of the campaign's
+    #: worker thread — not in the request handler — so that a slow or doomed materialization
+    #: becomes an inspectable ``failed`` campaign rather than a hung POST, which is the same
+    #: reason the image build is awaited there. ``None`` means the tree is already on disk.
+    materialize: Optional[Callable[[], None]] = None
+    #: Undo :attr:`materialize`. Called from the worker's ``finally``, so **every** way a
+    #: campaign can end reaches it — finished, failed, stopped, or a raise inside
+    #: ``materialize`` itself. Paired with it rather than left to the caller because a
+    #: materialized tree that nothing deletes is a disk leak per launch; the launch path knows
+    #: when the tree stops being needed, and the target knows what deleting it means.
+    discard: Optional[Callable[[], None]] = None
+    #: ``{container name: image ref}`` to run verbatim, skipping the image build entirely.
+    #: Data rather than a callback: it is resolved in the request handler, so a campaign whose
+    #: image cannot be named fails the *request* with the reason instead of becoming a failed
+    #: campaign someone has to go and inspect.
+    pinned_images: Optional[dict] = None
 
 
 class LocalTransport(RobovastInterface):
@@ -308,6 +331,20 @@ class LocalTransport(RobovastInterface):
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore(workspace_dir=workspace_dir)
         self.store = store
+        self._sweep_staged_projects()
+
+    def _sweep_staged_projects(self) -> None:
+        """Collect staged retrigger trees a killed service left behind.
+
+        Start-up is the only moment this is needed: a campaign's worker releases its own tree
+        on every exit, so what survives to here was orphaned by something that ran no
+        ``finally``. Best-effort — a service must start even if scratch space cannot be read.
+        """
+        from robovast.service import retrigger
+        try:
+            retrigger.sweep_orphans(self.store.registry.root, self._campaigns_root())
+        except OSError as e:
+            logger.warning("Could not sweep staged retrigger projects: %s", e)
 
     # -- project resolution -------------------------------------------------
 
@@ -747,17 +784,59 @@ class LocalTransport(RobovastInterface):
         self._record_outcome(campaign_id, results_dir, state)
 
     def create_campaign(self, request: CreateCampaignRequest) -> CampaignRef:
+        # Before anything is resolved or created: a lane that cannot show a window, or a
+        # serve host with no display, must refuse rather than launch a windowless run.
+        self._admit_show_gui(request)
+        target = self._resolve_project(request.workspace_id, request.config_path)
+        return self._launch_campaign(request, target)
+
+    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+        """Launch a new campaign from *campaign_id*'s own records (see the interface).
+
+        A thin orchestrator: :mod:`robovast.service.retrigger` decides everything about the
+        source, and :meth:`_launch_campaign` runs it. What belongs here is only the ordering
+        that needs the transport — which directory this lane reads the source from, the
+        single-flight guard, and making sure a refusal leaves nothing staged behind.
+        """
+        from robovast.service import retrigger
+        from robovast.service.interface import DESCRIPTION_MAX_LEN
+        source_dir = self._retrigger_source_dir(campaign_id)
+        plan = retrigger.prepare(
+            source_dir, campaign_id,
+            workspaces_root=self.store.registry.root,
+            description_limit=DESCRIPTION_MAX_LEN,
+            request_model=CreateCampaignRequest)
+        # From here the staged tree exists, so every exit has to release it. The worker's
+        # ``finally`` covers the campaign's whole life, but not this stretch: the most likely
+        # failure of all -- the single-flight guard refusing because a campaign is already
+        # running -- happens before there is a worker to have a ``finally``.
+        try:
+            self._guard_new_campaign()
+            return self._launch_campaign(plan.request, WorkspaceTarget(
+                config_path=plan.config_path,
+                materialize=plan.materialize,
+                discard=plan.discard,
+                pinned_images=plan.pinned_images))
+        except BaseException:
+            plan.discard()
+            raise
+
+    def _launch_campaign(self, request: CreateCampaignRequest,
+                         target: WorkspaceTarget) -> CampaignRef:
+        """Launch *request* against an already-resolved project; return as soon as it is named.
+
+        Split out of :meth:`create_campaign` so a campaign can be launched from a project the
+        service resolved some other way — currently a retrigger's staged copy of a previous
+        campaign's frozen config (see :meth:`retrigger_campaign`). Everything a non-workspace
+        project needs to say travels on *target*, so this signature stays the launch contract
+        rather than growing a mode flag per caller.
+        """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
         from robovast.execution.controller import (campaign_id_for,
                                                    run_batch_campaign,
                                                    run_search_campaign)
 
-        # Before anything is resolved or created: a lane that cannot show a window, or a
-        # serve host with no display, must refuse rather than launch a windowless run.
-        self._admit_show_gui(request)
-
-        target = self._resolve_project(request.workspace_id, request.config_path)
         # The raw mapping as well as the validated model: ``execution.local`` is read
         # from the mapping everywhere (``ExecutionConfig`` does not model it), so the
         # show_gui note has to look there too rather than at the model.
@@ -820,28 +899,73 @@ class LocalTransport(RobovastInterface):
         # for a campaign that went on to succeed, and left the caller with no id to poll.
         # The phase means the campaign is **waiting for** its image — builds are
         # content-addressed and shared, so it is not necessarily performing one.
-        specs, _ = self._build_specs_for(target, campaign_config)
-        if specs:
-            state.set_phase(Phase.BUILDING,
-                            stage="waiting for image(s) " + ", ".join(sorted(specs)))
+        # A campaign running pinned images builds nothing, so it never waits for one — and its
+        # specs cannot be extracted yet anyway, because the project tree it would read arrives
+        # with ``target.materialize()`` on the worker below.
+        if target.pinned_images is None:
+            specs, _ = self._build_specs_for(target, campaign_config)
+            if specs:
+                state.set_phase(Phase.BUILDING,
+                                stage="waiting for image(s) " + ", ".join(sorted(specs)))
 
         def _worker():
+            """Drive the campaign, then release whatever the launch materialized.
+
+            A wrapper rather than a ``finally`` inside :func:`_drive_campaign`, because that
+            function's postprocessing tail sits *outside* its own ``try`` — an inner ``finally``
+            would fire before postprocessing had run, deleting a project tree still in use.
+            Here every exit reaches the release: both ``return``s, any exception, and the
+            normal fall-through past the tail.
+            """
+            try:
+                _drive_campaign()
+            finally:
+                if target.discard is not None:
+                    try:
+                        target.discard()
+                    except OSError as e:
+                        # Never turn a finished campaign into a failed one over scratch space;
+                        # the init sweep collects whatever is left behind.
+                        logger.warning("Could not discard staged project for %s: %s",
+                                       campaign_id, e)
+
+        def _drive_campaign():
             from robovast.execution.backends import CampaignStopped
             backend = None
             try:
                 # Before anything that can fail, so every later outcome — a doomed build
                 # included — belongs to a campaign that can be found again.
                 self._on_campaign_started(campaign_id, entry.created_at)
-                # Build (or join a sibling's build of) the experiment image and pin the
-                # concrete ref, so the backend uses it (explicit wins in
-                # resolve_robovast_image). A failed build is no longer a failed *request*:
-                # it raises into the handler below and becomes an inspectable ``failed``
-                # campaign, with the reason in its status and the output in its own log.
-                builds = self._start_build_images(target, campaign_config)
-                for build in builds:
-                    self._await_build_image(build.build_id, state, campaign_root)
-                if builds:
-                    options.images = self._resolve_built_images(target, campaign_config)
+                # How the campaign was ASKED FOR, recorded next to it. Here rather than in the
+                # request handler for the same reason as the line above: a record written later
+                # would be missing from exactly the campaigns someone comes looking at.
+                self._record_launch(campaign_id, results_dir, request)
+                if target.materialize is not None:
+                    state.set_phase(Phase.STARTING, stage="staging the project")
+                    target.materialize()
+                    # Cleared explicitly: set_phase leaves the stage alone when passed None, so
+                    # without this "staging the project" is still the reported stage for the
+                    # whole run — and, on a campaign that fails later, names the wrong step.
+                    state.set_phase(Phase.STARTING, stage="")
+                if target.pinned_images is not None:
+                    # Not a build, but still ``_build_specs_for``: it is what installs the
+                    # campaign's ``plugins:`` into the project dir, which the cluster lane's
+                    # _campaign_context reads before anything else. (``_install_plugins`` in
+                    # run_batch_campaign runs later, too late for that.) Cheap and pure — it
+                    # never touches the build context, which is absent here by definition.
+                    self._build_specs_for(target, campaign_config)
+                    options.images = dict(target.pinned_images)
+                else:
+                    # Build (or join a sibling's build of) the experiment image and pin the
+                    # concrete ref, so the backend uses it (explicit wins in
+                    # resolve_robovast_image). A failed build is no longer a failed *request*:
+                    # it raises into the handler below and becomes an inspectable ``failed``
+                    # campaign, with the reason in its status and the output in its own log.
+                    builds = self._start_build_images(target, campaign_config)
+                    for build in builds:
+                        self._await_build_image(build.build_id, state, campaign_root)
+                    if builds:
+                        options.images = self._resolve_built_images(target, campaign_config)
                 state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
@@ -1284,6 +1408,25 @@ class LocalTransport(RobovastInterface):
             write_execution_outcome(Path(results_dir) / campaign_id, state.snapshot())
         except OSError as e:
             logger.warning("Could not write outcome.json for %s: %s", campaign_id, e)
+
+    def _record_launch(self, campaign_id, results_dir, request):
+        """Persist how this campaign was asked for, to ``_execution/launch.yaml``.
+
+        The counterpart of :meth:`_record_outcome` at the other end of the campaign: what was
+        requested, rather than how it ended. ``config_filter`` in particular is recorded
+        **nowhere else** — it is consumed inside ``build_campaign_data`` and then gone — so
+        without this "was this the full sweep or a one-config pilot?" cannot be answered about
+        any campaign in the results root, by a retrigger or by a human.
+
+        Called at the top of the worker so it lands before anything that can fail, for the
+        same reason :meth:`_on_campaign_started` is there. Never fatal: a campaign that runs
+        correctly must not be failed by an unwritable record.
+        """
+        from robovast.common.campaign_data import write_launch_record
+        try:
+            write_launch_record(Path(results_dir) / campaign_id, request)
+        except OSError as e:
+            logger.warning("Could not write launch.yaml for %s: %s", campaign_id, e)
 
     def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
         """Persist a cooperatively-stopped campaign's terminal ``Status``.
@@ -2011,6 +2154,16 @@ class LocalTransport(RobovastInterface):
 
         Its own seam so the cluster lane can materialise just the two small objects it needs instead of
         the whole campaign prefix (the same reason ``_query_dir`` exists beside ``_data_dir``).
+        """
+        return str(self._campaign_dir(campaign_id))
+
+    def _retrigger_source_dir(self, campaign_id: str) -> str:
+        """Where a retrigger reads this campaign's frozen config and records from.
+
+        The same seam as :meth:`_scene_source_dir` and for the same reason: locally the campaign
+        is already on disk, while the cluster lane holds only an ephemeral cache and must
+        materialise the handful of objects a retrigger reads. With that one override in place,
+        the whole feature is plain filesystem code over one directory on both lanes.
         """
         return str(self._campaign_dir(campaign_id))
 

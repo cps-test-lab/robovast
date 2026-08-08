@@ -37,13 +37,22 @@ Campaign-Level Directories
 ``_config/`` — Configuration Snapshot
 """"""""""""""""""""""""""""""""""""""
 
-A copy of all input files used during execution. This folder can also be used to trigger another
-execution with the same configuration by running:
+A copy of all input files used during execution — and the source a **retrigger** reconstructs the
+campaign from. To run a campaign again exactly as it ran, use **Retrigger campaign** in the web UI's
+campaign actions menu, ``start_campaign(from_campaign=<id>)`` over MCP, or
+``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image recorded in
+``_execution/`` and start a new campaign, leaving this one untouched.
+
+Doing it by hand instead re-points a project at the snapshot:
 
 .. code-block:: text
 
    vast init <campaign-dir>/_config/<config-name>.vast
    vast execution cluster run
+
+That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
+sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
+the recorded image is gone; otherwise prefer the retrigger, which reuses the exact bytes.
 
 The structure inside is domain-specific, but typically includes:
 
@@ -64,6 +73,7 @@ The structure inside is domain-specific, but typically includes:
 .. code-block:: text
 
    _execution/
+   ├── launch.yaml                           # How the campaign was ASKED FOR (see below)
    ├── execution.yaml
    ├── plugin_install.log                    # ``plugin install`` phase (pip output; only when plugins are declared)
    ├── variation.log                         # ``variation`` phase (config-variation expansion)
@@ -89,6 +99,21 @@ first and captures the ``pip install`` output live, exactly like ``building``,
   reuses this exact image, so a later re-run deserializes the recorded bags against the
   same image the runs used even if the tag has since moved.
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
+
+``launch.yaml`` records the **request**, where ``execution.yaml`` records what happened:
+``config_filter``, ``campaign_name``, ``runs`` (as *requested*), ``postprocess``,
+``upload_to_share``, ``show_gui`` and ``backend``. It exists because the request was otherwise
+unrecoverable — ``config_filter`` in particular was consumed during config expansion and kept
+nowhere — so "was this the full sweep or a one-config pilot?" could not be answered about a finished
+campaign, by a person or by a retrigger.
+
+Read the two together for ``runs``: ``launch.yaml``'s ``runs: 0`` means "take the ``.vast``'s
+``execution.runs``", so ``0`` beside ``execution.yaml``'s ``runs: 3`` says the ``.vast`` asked for 3,
+while ``1`` beside ``1`` on a ``.vast`` declaring 3 says someone piloted it. ``metadata.yaml`` nests
+this under ``execution.launch`` so a published campaign is one document. It is written by the service
+before the run starts (which is why it is a separate file: ``execution.yaml`` is written *by* the run,
+and a campaign that fails before its first batch would otherwise have no record of what it was asked
+to do). Campaigns from before this file existed simply have none.
 
 ``controller.log`` captures the campaign controller's own log for the whole run —
 batch/search progress, backend job dispatch, postprocessing and stopping

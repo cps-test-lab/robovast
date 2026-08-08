@@ -251,6 +251,25 @@ class MultiBackendService(LocalTransport):
         self._persist_marker(ref.campaign_id, lane)
         return ref
 
+    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+        """Relaunch on the lane that ran the source, and record the new campaign's lane.
+
+        Routed by the *source* id like every other per-campaign call, rather than by the
+        replayed request's ``backend``: the source's images are pinned refs, and a local built
+        ref means nothing to the cluster (nor a registry digest to a Docker host that never
+        pulled it). Then the new id is registered exactly as ``create_campaign`` does — the
+        retrigger creates a campaign this router now owns.
+        """
+        lane = self._lane_for(campaign_id)
+        if lane == _CLUSTER:
+            ref = self._cluster.retrigger_campaign(campaign_id)
+        else:
+            ref = LocalTransport.retrigger_campaign(self, campaign_id)
+        with self._lane_map_lock:
+            self._lane_map[ref.campaign_id] = lane
+        self._persist_marker(ref.campaign_id, lane)
+        return ref
+
     def get_status(self, campaign_id: str):
         return self._route(campaign_id, "get_status", campaign_id)
 

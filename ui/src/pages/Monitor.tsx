@@ -18,6 +18,7 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
+import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
@@ -173,6 +174,18 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const onReprocess = () => {
     closeMenu()
     setPpOpen(true)
+  }
+
+  // Unlike the two entries below it, this one produces a DIFFERENT campaign — so it
+  // invalidates the listing (where the new card appears) and nothing about this one.
+  const retrigger = useMutation({
+    mutationFn: () => robovast.retriggerCampaign(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+  })
+
+  const onRetrigger = () => {
+    closeMenu()
+    retrigger.mutate()
   }
 
   const share = useMutation({
@@ -335,6 +348,18 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
               </IconButton>
             </Tooltip>
             <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={closeMenu}>
+              {/* First, and the only entry here that does not act on THIS campaign — hence the
+                  secondary line: without it "Retrigger campaign" reads like a third variation
+                  of the two below, which re-run steps of the campaign you are looking at. */}
+              <MenuItem onClick={onRetrigger} disabled={retrigger.isPending}>
+                <ListItemIcon>
+                  <RestartAltRoundedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Retrigger campaign"
+                  secondary="New campaign from this one's recorded config and image"
+                />
+              </MenuItem>
               <MenuItem onClick={onReprocess}>
                 <ListItemIcon>
                   <ReplayRoundedIcon fontSize="small" />
@@ -405,6 +430,21 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         <Alert severity="error" sx={{ mb: 1 }}>
           Delete failed.
           <ErrorText>{(del.error as Error).message}</ErrorText>
+        </Alert>
+      ) : null}
+
+      {/* The new campaign's card appears at the top of this (newest-first) list, which is not
+          the same as knowing WHICH id is yours — so the id is named here. Its own description
+          also reads "retrigger of <this id>". */}
+      {retrigger.isError ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Retrigger failed — this campaign was not modified.
+          <ErrorText>{(retrigger.error as Error).message}</ErrorText>
+        </Alert>
+      ) : retrigger.data ? (
+        <Alert severity="success" sx={{ mb: 1 }}>
+          Retriggered as <code>{retrigger.data.campaign_id}</code>.
+          {retrigger.data.note ? <ErrorText>{retrigger.data.note}</ErrorText> : null}
         </Alert>
       ) : null}
 

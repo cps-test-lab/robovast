@@ -1777,6 +1777,38 @@ class ClusterService(LocalTransport):
                           interactive=True)
         return str(self._cache_dir(campaign_id))
 
+    def _retrigger_source_dir(self, campaign_id: str) -> str:
+        """Materialise what a retrigger reads, then answer from the cache like the base class.
+
+        A named-object fetch, not ``fetch_campaign``: a retrigger reads the frozen config and
+        three small records, where the campaign prefix is rosbags. Same discipline as
+        ``_scene_source_dir`` above.
+
+        ``_config/`` is listed rather than assumed, because its contents are whatever the
+        campaign's ``run_files`` matched. A missing prefix raises ``KeyError`` from
+        ``list_files``, which is exactly the "this campaign froze no config" refusal — so it is
+        left to propagate.
+        """
+        from robovast.common import file_address
+        address = file_address.format_address(
+            file_address.RESULTS, campaign_id, "_config/")
+        # limit=0 is "no window" (see file_view.paginate), so this is the whole listing in one
+        # call -- a partial page would stage a partial config, which the run_files coverage
+        # check would then report as a corrupt source rather than a truncated read.
+        listing = self.list_files(address, recursive=True, limit=0)
+        # Undetailed entries are strings relative to the address, directories keeping a
+        # trailing "/" (see FileListing).
+        rel_paths = [f"_config/{name}" for name in listing.entries
+                     if not name.endswith("/")]
+        # The records a retrigger replays from. Absent ones are skipped by _materialize, and
+        # each reader decides what its absence means (a campaign that failed before its first
+        # batch has no execution.yaml; one predating launch.yaml has no launch record).
+        rel_paths += ["_execution/execution.yaml", "_execution/launch.yaml",
+                      "_transient/configurations.yaml"]
+        self._materialize(campaign_id, tuple(rel_paths), "campaign config",
+                          interactive=True)
+        return str(self._cache_dir(campaign_id))
+
     def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
         """Fetch this run's capture manifest, then read it the way the base class does.
 

@@ -1,0 +1,160 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""``campaign_pinned_images`` — which images a campaign can be RE-RUN from.
+
+A third resolver beside ``campaign_role_image`` and ``campaign_execution_image``, and the
+distinction is the whole point: those two identify bytes for a cache key and pick an image to
+postprocess in, where this one has to name something a *new run* can actually start. Bytes that
+merely identify are not enough, so the local ``sha256:<id>`` the cache resolver happily accepts
+is refused here — compose reads it as ``name:tag`` and goes looking for ``docker.io/library/sha256``.
+
+Two traps these tests pin down:
+
+- **the lanes disagree under the same keys.** On the cluster ``images`` is what the ``.vast``
+  *declared* (for a ``build:`` project, the symbolic ref itself), while locally it is the
+  plan-resolved built ref. Getting that backwards runs the base image without the campaign's own
+  code — a campaign that finishes and measured nothing.
+- **which containers to pin comes from the record, not the declaration.** ``images`` is written
+  from the execution mapping *after* ``apply_backend``, so its keys are the containers that
+  actually ran. Re-deriving that would need the campaign's plugins installed just to learn that a
+  stepped simulator's ``simulation`` block is really the scenario container — and a real campaign
+  in this repo (``tiago-stepped-parity``) declares exactly that, and records ``scenario``.
+"""
+
+import pytest
+import yaml
+
+from robovast.common.campaign_data import (CampaignImageUnpinnable,
+                                           campaign_pinned_images)
+
+CLUSTER_DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
+SIM_DIGEST = "harbor.example/robovast/sim@sha256:" + "b" * 64
+#: What ``docker inspect --format={{.Id}}`` prints. Identifies bytes, cannot be started
+#: anywhere but the host that built them.
+LOCAL_ID = "sha256:" + "d" * 64
+#: What a ``build:<tag>`` project records as its declared image on the cluster lane.
+SYMBOLIC = "build:rst-basic-nav-robosito"
+
+
+def _campaign(tmp_path, **meta):
+    (tmp_path / "_execution").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "_execution" / "execution.yaml").write_text(yaml.safe_dump(meta))
+    return tmp_path
+
+
+# -- cluster lane ----------------------------------------------------------------
+
+
+def test_a_single_container_cluster_campaign_pins_from_the_campaign_level_digest(tmp_path):
+    """The real shape of most cluster campaigns: one container, recorded as ``scenario``."""
+    c = _campaign(tmp_path, execution_type="cluster", images={"scenario": SYMBOLIC},
+                  image_revision=CLUSTER_DIGEST)
+    assert campaign_pinned_images(c) == {"scenario": CLUSTER_DIGEST}
+
+
+def test_the_scenario_container_is_recorded_under_its_pod_name(tmp_path):
+    """The cluster keys ``image_revisions`` by *pod* container name, where main is ``robovast``.
+
+    Reading only ``image_revisions['scenario']`` would miss the pin entirely and refuse a
+    campaign that recorded exactly what was needed.
+    """
+    c = _campaign(tmp_path, execution_type="cluster",
+                  images={"scenario": SYMBOLIC, "simulation": "reg/sim:latest"},
+                  image_revisions={"robovast": CLUSTER_DIGEST, "simulation": SIM_DIGEST})
+    assert campaign_pinned_images(c) == {"scenario": CLUSTER_DIGEST,
+                                        "simulation": SIM_DIGEST}
+
+
+def test_an_infrastructure_sidecar_is_not_a_campaign_container(tmp_path):
+    """``s3-init`` shows up in ``image_revisions`` but never in ``images``, which is why the
+    container set is taken from the latter."""
+    c = _campaign(tmp_path, execution_type="cluster", images={"scenario": SYMBOLIC},
+                  image_revisions={"robovast": CLUSTER_DIGEST,
+                                   "s3-init": "ghcr.io/x/sidecar@sha256:" + "e" * 64})
+    assert campaign_pinned_images(c) == {"scenario": CLUSTER_DIGEST}
+
+
+def test_a_declared_symbolic_build_ref_is_refused_not_pinned(tmp_path):
+    """``images`` on the cluster is the declaration, not what ran.
+
+    For a ``build:`` project it is the symbolic ref, which no runtime can start; for any other it
+    is the *base* image, which would run without the campaign's code. Neither is a pin.
+    """
+    c = _campaign(tmp_path, execution_type="cluster", images={"scenario": SYMBOLIC})
+    with pytest.raises(CampaignImageUnpinnable) as e:
+        campaign_pinned_images(c)
+    assert SYMBOLIC in str(e.value)
+
+
+def test_a_container_that_owns_one_gets_no_campaign_level_substitute(tmp_path):
+    """The substitution this resolver exists to prevent.
+
+    The campaign recorded several containers, so a missing pin for one of them is a real gap —
+    handing it the campaign-level image would silently run the scenario's bytes in its place.
+    """
+    c = _campaign(tmp_path, execution_type="cluster",
+                  images={"scenario": SYMBOLIC, "simulation": "reg/sim:latest"},
+                  image_revisions={"robovast": CLUSTER_DIGEST})
+    with pytest.raises(CampaignImageUnpinnable) as e:
+        campaign_pinned_images(c)
+    assert "simulation" in str(e.value)
+
+
+# -- local lane ------------------------------------------------------------------
+
+
+def test_local_images_are_the_plan_resolved_built_refs_and_are_usable(tmp_path):
+    c = _campaign(tmp_path, execution_type="local", image="built/c:1",
+                  image_revision="unknown",
+                  images={"simulation": "built/a:1", "sut": "built/b:1"},
+                  image_revisions=None)
+    assert campaign_pinned_images(c) == {"simulation": "built/a:1", "sut": "built/b:1"}
+
+
+def test_a_bare_local_image_id_is_not_a_pin(tmp_path):
+    """It names bytes, which is why the cache resolver takes it — but it cannot be started.
+
+    Here it is the *only* thing recorded for the scenario container, and ``images`` has nothing,
+    so there is no usable ref at all.
+    """
+    c = _campaign(tmp_path, execution_type="local", images={"scenario": ""},
+                  image_revisions={"scenario": LOCAL_ID})
+    assert campaign_pinned_images(c) == {}      # no recorded container to pin
+
+
+def test_unknown_is_not_mistaken_for_a_pin(tmp_path):
+    """``docker inspect`` failing writes the literal string ``unknown``."""
+    c = _campaign(tmp_path, execution_type="cluster", images={"scenario": SYMBOLIC},
+                  image_revision="unknown")
+    with pytest.raises(CampaignImageUnpinnable):
+        campaign_pinned_images(c)
+
+
+# -- nothing recorded ------------------------------------------------------------
+
+
+def test_a_campaign_that_recorded_no_containers_pins_nothing(tmp_path):
+    """Not an error here: whether it matters depends on whether the ``.vast`` builds anything,
+    which only the caller can read (see ``retrigger.prepare``)."""
+    c = _campaign(tmp_path, execution_type="cluster")
+    assert campaign_pinned_images(c) == {}
+
+
+def test_a_campaign_with_no_execution_yaml_pins_nothing(tmp_path):
+    """The usual shape of a failed cluster campaign — ``_config/`` frozen, the batch never
+    finished. A bare ``FileNotFoundError`` from a reader would be the wrong answer."""
+    assert campaign_pinned_images(tmp_path) == {}
+
+
+def test_the_refusal_names_every_source_it_tried(tmp_path):
+    """Shown to whoever clicked retrigger, so it has to distinguish "recorded nothing" from
+    "recorded something unusable"."""
+    c = _campaign(tmp_path, execution_type="local", images={"sut": ""},
+                  image_revisions={"sut": LOCAL_ID})
+    # Nothing recorded for `sut` that can be started, and it is not the scenario container.
+    c = _campaign(tmp_path, execution_type="cluster", images={"sut": "reg/sut:latest"})
+    with pytest.raises(CampaignImageUnpinnable) as e:
+        campaign_pinned_images(c)
+    msg = str(e.value)
+    assert "image_revisions" in msg and "images" in msg and "execution_type" in msg
+    assert "build context" in msg          # says why no retry would help

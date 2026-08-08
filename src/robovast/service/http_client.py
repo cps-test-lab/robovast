@@ -238,6 +238,10 @@ class HTTPTransport(RobovastInterface):
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
 
+    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+        return CampaignRef.model_validate(
+            self._post(Routes.campaign_retrigger(campaign_id)))
+
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:

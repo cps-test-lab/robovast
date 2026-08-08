@@ -144,6 +144,11 @@ class _FakeClient:
         self.calls.append(("create_campaign", request))
         return CampaignRef(campaign_id="svc-campaign-1")
 
+    def retrigger_campaign(self, campaign_id):
+        from robovast.service.interface import CampaignRef
+        self.calls.append(("retrigger_campaign", campaign_id))
+        return CampaignRef(campaign_id="svc-campaign-2")
+
     def get_status(self, campaign_id):
         from robovast.service.interface import Status
         self.calls.append(("get_status", campaign_id))
@@ -191,6 +196,37 @@ def test_service_start_routes_to_client(service):
     assert name == "create_campaign"
     assert req.config_filter == "hospital*" and req.runs == 5
     assert req.backend is None  # unset -> service default (cluster when available)
+
+
+def test_from_campaign_retriggers_instead_of_creating(service):
+    out = execution.start_campaign(from_campaign="pilot-2026-08-08-120000")
+    assert out == {"campaign_id": "svc-campaign-2",
+                   "retriggered_from": "pilot-2026-08-08-120000"}
+    name, cid = service.calls[-1]
+    assert name == "retrigger_campaign" and cid == "pilot-2026-08-08-120000"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"workspace_id": "ws-1"},
+    {"config_path": "p.vast"},
+    {"config_filter": "config1*"},
+    {"runs": 5},
+    {"campaign_name": "again"},
+    {"upload_to_share": True},
+    {"show_gui": True},
+    {"description": "retrying the flake"},
+    {"backend": "local"},
+])
+def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs):
+    """A retrigger takes these from the record, so accepting them would answer a different
+    question than the caller asked while looking like it had worked. That is not hypothetical:
+    ``runs`` being silently substituted is how a 25-trial sweep once "succeeded" with 5.
+    """
+    out = execution.start_campaign(from_campaign="pilot-2026-08-08-120000", **kwargs)
+    assert "error" in out
+    assert next(iter(kwargs)) in out["error"]
+    # Refused before anything was launched.
+    assert not any(name == "retrigger_campaign" for name, _ in service.calls)
 
 
 def test_service_start_passes_backend(service):

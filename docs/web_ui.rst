@@ -45,7 +45,17 @@ It provides four views, one per desktop GUI:
   campaign also shows a **Download** button that streams its postprocessed
   ``tar.gz`` straight from the object store (offered only for a cluster service — a
   local service's results are already on its filesystem). A finished campaign's
-  actions menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
+  actions menu offers **Retrigger campaign**, which starts a **new** campaign from
+  what this one recorded — its frozen ``_config/`` and the image its runs actually
+  used — rather than from the workspace it was launched from, which may be gone or
+  may have moved on. The source campaign is untouched, so this works whatever state
+  it ended in, and the new campaign appears at the top of the list with a description
+  naming the one it came from. It replays the recorded launch
+  (``_execution/launch.yaml``), so re-running a one-config pilot stays a one-config
+  pilot. A campaign that never recorded a usable image is refused rather than rebuilt
+  from a guess: a campaign's build context is not archived in its results, so the
+  refusal names the container and points back at the workspace.
+  The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
   the* ``results_processing.postprocessing`` *block* (in a Monaco YAML editor) and
   re-run the analysis against the preserved raw rosbags — to compute different metrics
   after the fact without a new run. Because a campaign is self-contained (it carries

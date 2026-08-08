@@ -87,6 +87,27 @@ def test_create_explicit_local(tmp_path, monkeypatch):
     assert svc._lane_for("loc") == "local"
 
 
+def test_retrigger_runs_on_the_lane_that_ran_the_source(tmp_path, monkeypatch):
+    """Routed by the *source* id, not by the replayed request's ``backend``.
+
+    A retrigger reuses the source's pinned image, and a locally-built ref means nothing to the
+    cluster (nor a registry digest to a Docker host that never pulled it) — so the lane is not
+    a free choice here the way it is for a fresh campaign.
+    """
+    svc = _make(tmp_path)
+    svc._lane_map["clu"] = "cluster"
+    seen = []
+    monkeypatch.setattr(LocalTransport, "retrigger_campaign",
+                        lambda self, cid: seen.append("local") or CampaignRef(campaign_id="l2"))
+    monkeypatch.setattr(ClusterService, "retrigger_campaign",
+                        lambda self, cid: seen.append("cluster") or CampaignRef(campaign_id="c2"))
+
+    ref = svc.retrigger_campaign("clu")
+    assert seen == ["cluster"] and ref.campaign_id == "c2"
+    # The campaign it created is this router's now, and resolves without re-reading disk.
+    assert svc._lane_for("c2") == "cluster"
+
+
 def test_create_rejects_unknown_backend(tmp_path):
     with pytest.raises(ValueError, match="unknown backend"):
         _make(tmp_path).create_campaign(

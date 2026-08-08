@@ -209,6 +209,124 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
         f"digest, or build the artifact with an execution.generate entry instead.")
 
 
+class CampaignImageUnpinnable(ValueError):
+    """A campaign's built image cannot be named as something a new run could start."""
+
+
+def campaign_pinned_images(campaign_dir) -> dict[str, str]:
+    """``{container: image}`` a new run of this campaign can start from.
+
+    A third image resolver beside the two above, because it answers a third question and the
+    other two give the wrong answer to it:
+
+    * :func:`campaign_role_image` keys a **cache**, so it accepts a bare local ``sha256:<id>``
+      as a perfectly good identity. A re-run cannot: compose parses ``sha256:<hex>`` as
+      ``name:tag`` and tries to pull ``docker.io/library/sha256``.
+    * :func:`~robovast.execution.cluster_execution.postprocess_job.campaign_execution_image`
+      resolves an image to **run**, but only the scenario container's, and it is right to fall
+      back to a mutable tag — postprocessing wants *a* working image, where a re-run wants the
+      bytes the campaign was built from.
+
+    The two lanes record different things under the same keys, so this discriminates on
+    ``execution_type`` rather than trying one order everywhere:
+
+    * ``image_revisions`` is per-container and pullable **on the cluster** (pod container
+      statuses via ``pullable_digest``) but a bare local id **locally** (``docker inspect
+      .Id``). So a digest is taken only when it names bytes something can pull.
+    * ``images`` is the plan-resolved built ref **locally** (the plan was built *with*
+      ``built_images``), but on the cluster it is whatever the ``.vast`` *declared* — the base
+      image, or for a ``build:`` project the symbolic ``build:<tag>`` ref itself. Pinning that
+      would run the base image without the campaign's own code, so it is local-only.
+    * the cluster's per-container keys are **pod** container names, where the main one is
+      ``robovast`` rather than ``scenario`` — hence the remap.
+
+    **Which containers to pin comes from the record, not from the ``.vast``.** ``images`` is
+    written from the execution mapping *after* ``apply_backend``, so its keys are the containers
+    that actually ran — the fold already applied. Re-deriving that from the declaration would
+    need the campaign's ``plugins:`` installed only to learn that a stepped simulator's
+    ``simulation`` block is really the scenario container, and getting it wrong either refuses a
+    campaign that recorded everything (harmless but wrong) or pins a separate container to the
+    scenario's image (runs the wrong bytes). The campaign already computed the answer; this reads
+    it. Infrastructure sidecars are excluded for free: ``s3-init`` appears in
+    ``image_revisions`` but never in ``images``.
+
+    Args:
+        campaign_dir: the campaign directory (its ``_execution/execution.yaml`` is read).
+
+    Returns:
+        A pin per recorded container. Empty when the campaign recorded no containers at all,
+        which the caller has to interpret: harmless if nothing was built, fatal if something was
+        (see ``retrigger.prepare``), because only the caller can read the ``.vast``.
+
+    Raises:
+        CampaignImageUnpinnable: a recorded container has no ref a new run could start. The
+            message names it and every source tried, because a campaign's build context is not
+            archived in its results, so this is unrecoverable rather than a retry.
+    """
+    # Inline, like every other import in this module: it stays dependency-light so it loads
+    # cleanly in the pod, the driver and the service alike.
+    from robovast.common.config import \
+        SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+
+    try:
+        meta = read_execution_metadata(Path(campaign_dir))
+    except FileNotFoundError:
+        # No execution.yaml at all -- a campaign that failed before its first batch, which on
+        # the cluster lane is the *usual* shape of a failed one. "Recorded nothing" is one of
+        # the answers this function is for, so it belongs in the refusal below with every
+        # source named, not as a bare FileNotFoundError from a reader.
+        meta = {}
+    is_local = meta.get("execution_type") == "local"
+    revisions = meta.get("image_revisions") or {}
+    declared = meta.get("images") or {}
+    pins, unpinnable = {}, []
+    # The containers that ran, post-fold, as the campaign itself recorded them.
+    container_names = sorted(k for k, v in declared.items() if v)
+
+    for name in container_names:
+        # The cluster records the scenario container under its POD name, and a single-container
+        # campaign records only the campaign-level revision — so both are the scenario's here.
+        # Nothing else falls back to the campaign-level image: handing it to a container that
+        # owns its own is the substitution this function exists to prevent, and it would run the
+        # wrong bytes rather than fail. A container that merely FOLDS onto the scenario one is
+        # the caller's business to name as `scenario` (see retrigger._declared_build_containers).
+        keys = [name, "robovast"] if name == SCENARIO_CONTAINER else [name]
+        candidates = [revisions.get(k) for k in keys]
+        if name == SCENARIO_CONTAINER:
+            candidates.append(meta.get("image_revision"))
+        pin = next((str(c) for c in candidates if c and _is_pullable(str(c))), None)
+        # Local `images` only: on the cluster this field is what was declared, not what ran.
+        if pin is None and is_local and declared.get(name):
+            pin = str(declared[name])
+        if pin is not None:
+            pins[name] = pin
+            continue
+        # Name every source and what was in it: the reader has to be able to tell "recorded
+        # nothing" from "recorded a tag/local id that cannot be started elsewhere".
+        tried = ", ".join(f"image_revisions[{k!r}]={revisions.get(k)!r}" for k in keys)
+        unpinnable.append(
+            f"{name!r} (execution.yaml {tried}, image_revision="
+            f"{meta.get('image_revision')!r}, images[{name!r}]={declared.get(name)!r}, "
+            f"execution_type={meta.get('execution_type')!r})")
+
+    if unpinnable:
+        raise CampaignImageUnpinnable(
+            "this campaign never recorded a usable image for " + "; ".join(unpinnable) +
+            ". A campaign's build context (wheels, sources) is not archived in its results, "
+            "so the image cannot be rebuilt from them either.")
+    return pins
+
+
+def _is_pullable(image: str) -> bool:
+    """True for a reference a *new run* can start from — bytes something can obtain.
+
+    Stricter than :func:`_is_digest` on purpose: that one accepts a bare local ``sha256:<id>``
+    because it only has to *identify* bytes for a cache key. Starting a container from one
+    works on the host that built it and nowhere else, and compose reads it as ``name:tag``.
+    """
+    return bool(image) and "@sha256:" in image
+
+
 #: Campaign terminal-outcome record — the final ``Status`` (phase/error/…) serialized
 #: beside ``controller.log`` in ``_execution/``. Written on terminal exit so a controller
 #: crash that never builds ``data.db`` still leaves a durable, queryable reason.
@@ -238,6 +356,64 @@ def read_execution_outcome(campaign_dir: Path):
     if not path.exists():
         return None
     return Status.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+#: Campaign launch record — the request the campaign was *asked for*, beside the records
+#: describing what then happened. Its own file, and not fields on ``execution.yaml``, for a
+#: timing reason: ``execution.yaml`` is written **by the run** (locally by the generated run
+#: script at the start of the first batch, in-cluster after ``run_batch_in_pod`` returns) and
+#: both writers create it from scratch. The launch is known by the *service*, much earlier —
+#: so sharing one file would either have the run truncate what the service wrote, or leave a
+#: campaign that failed before its first batch with no launch record at all. That campaign is
+#: exactly the one someone wants to relaunch. Same argument, mirrored, is why the terminal
+#: outcome is its own file: it can only exist *after*.
+#:
+#: Readers wanting one document get it from ``metadata.yaml``, which nests this under
+#: ``execution.launch``.
+_LAUNCH_FILENAME = "launch.yaml"
+
+#: Request fields that describe the *launch* rather than the workspace it came from.
+#: ``workspace_id``/``config_path`` are deliberately absent: they are workspace-relative, and
+#: campaigns are workspace-independent (see ``service/workspaces.py``), so recording them
+#: would preserve a binding that means nothing once the campaign exists.
+_LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
+                  "upload_to_share", "show_gui", "backend")
+
+
+def write_launch_record(campaign_root: Path, request) -> None:
+    """Persist how the campaign was **asked for** to ``_execution/launch.yaml``.
+
+    ``request`` is a :class:`robovast.service.interface.CreateCampaignRequest`. ``runs`` is
+    stored **as requested**, so ``0`` keeps meaning "take the ``.vast``'s ``execution.runs``"
+    — the pair with ``execution.yaml``'s *effective* count is what makes an override legible
+    ("3 because the ``.vast`` says 3" vs "3 because someone overrode a ``.vast`` saying 25").
+    Neither number answers that alone.
+
+    Best-effort by the same reasoning as :func:`write_execution_outcome`'s caller: a campaign
+    must not fail because a record could not be written.
+    """
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    record = {field: getattr(request, field) for field in _LAUNCH_FIELDS}
+    with open(exec_dir / _LAUNCH_FILENAME, "w", encoding="utf-8") as f:
+        yaml.dump(record, f, default_flow_style=False, sort_keys=False)
+
+
+def read_launch_record(campaign_dir: Path) -> dict[str, Any] | None:
+    """Read ``_execution/launch.yaml``; ``None`` when the campaign has none.
+
+    ``None`` is not an error: campaigns recorded before this file existed have no launch
+    record, and a caller has to decide what to do about each field it wanted (the retrigger
+    falls back to ``execution.yaml``'s effective ``runs``, and reports the filter as unknown
+    rather than silently running a full sweep in place of a pilot).
+    """
+    path = Path(campaign_dir) / "_execution" / _LAUNCH_FILENAME
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        # A blank file parses to None; callers expect a mapping or None-meaning-absent, and
+        # an empty record is indistinguishable from absent for every field they read.
+        return yaml.safe_load(f) or None
 
 
 def read_scenario_config(config_dir: Path) -> dict[str, Any]:

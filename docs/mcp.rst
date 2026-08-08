@@ -26,8 +26,8 @@ recorded provenance and no repetitions, so its output cannot be compared with a
 campaign's; the instructions say so, and so does ``start_campaign``. Two MCP prompts
 cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 
-A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
-project binding the service accepts, and ``config_path`` selects among several
+A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
+binding the service accepts, and ``config_path`` selects among several
 ``.vast`` files in that workspace. There is no server-side "current project" —
 ``.robovast_project`` / ``vast init`` bind the *CLI's* project (for
 ``vast exec local run``, ``vast results``, ``vast eval``) and never select what
@@ -36,6 +36,16 @@ with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
 only for a service running on that host) or by uploading one with
 ``create_workspace`` + ``update_workspace`` (required for ``vast serve --attach``
 and in-pod services, where the directory does not exist locally).
+
+The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
+runs a *previous campaign's* frozen configuration and the image its runs actually used,
+with no workspace involved at all. Campaigns are workspace-independent, and the workspace
+one came from may be gone — its own ``_config/`` is the durable source of truth. It
+produces a new campaign and leaves the source untouched, so it works whatever state that
+campaign ended in, and it replays the recorded launch, so re-running a one-config pilot
+stays a one-config pilot. It takes no other argument (passing one is an error rather than
+being ignored), and it is refused when the campaign recorded no usable image: a campaign's
+build context is not archived in its results, so launch it from its workspace instead.
 
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 **config** is one scenario parameter set within a campaign.

@@ -332,6 +332,12 @@ export const robovast = {
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
 
+  // Launch a NEW campaign from this one's frozen config and pinned image — the source is
+  // untouched, and the returned id is the new campaign's, not this one's. Refuses (400) when
+  // the campaign never recorded an image its runs could start from.
+  retriggerCampaign: (campaignId: string) =>
+    request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`),
+
   // Permanently delete one campaign wholesale (local dir / cluster object-store data +
   // leftover Jobs + cache). Refused by the service while the campaign is still running.
   deleteCampaign: (campaignId: string) =>

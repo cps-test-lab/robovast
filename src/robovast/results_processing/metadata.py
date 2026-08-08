@@ -40,6 +40,7 @@ import yaml
 
 from robovast.common.campaign_data import (
     read_execution_metadata,
+    read_launch_record,
     read_sysinfo,
     read_test_result,
 )
@@ -164,6 +165,15 @@ class MetadataGenerator:
 
         # --- execution metadata ----------------------------------------
         metadata["execution"] = read_execution_metadata(self.campaign_dir)
+        # How the campaign was ASKED FOR, nested under what then happened. The two are
+        # separate files because they can only be written at different times (see
+        # campaign_data._LAUNCH_FILENAME), but nobody reading a published campaign should
+        # have to know that -- so the document re-joins them here. `runs` appears on both
+        # sides on purpose: `launch.runs` is the request (0 = "take the .vast's"),
+        # `execution.runs` the effective count, and only the pair shows an override.
+        launch = read_launch_record(self.campaign_dir)
+        if launch is not None:
+            metadata["execution"]["launch"] = launch
 
         # --- campaign-level postprocessing provenance ------------------
         pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"

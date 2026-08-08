@@ -382,7 +382,15 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: paid per turn, not a one-off. It stood at ~14.3k across 61 tools; the ceiling is set
 #: above the current figure with room for a tool or two, and is meant to force a
 #: deliberate decision — compress something, or merge something — rather than to drift.
-_SURFACE_TOKEN_BUDGET = 11_000
+#:
+#: Raised 11_000 → 11_300 when ``start_campaign`` gained ``from_campaign`` (relaunch a
+#: campaign from its own recorded config and pinned image). The alternative was a
+#: ``retrigger_campaign`` tool of its own, which would have cost more; the parameter's own
+#: text was compressed from ~164 to ~122 tokens first, and most of what is left is the
+#: JSON-schema entry rather than prose. If this needs to come down again, the fat is
+#: ``start_campaign.show_gui`` at ~199 tokens — the largest single parameter in the whole
+#: surface, for a local debugging affordance, and twice the length of ``description``.
+_SURFACE_TOKEN_BUDGET = 11_300
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

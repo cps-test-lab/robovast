@@ -118,7 +118,8 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
 def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   show_gui: bool = False, description: str = "") -> dict:
+                   show_gui: bool = False, description: str = "",
+                   from_campaign: str = "") -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     This is how a RoboVAST experiment is executed — not a local ``docker compose`` or a
@@ -129,9 +130,15 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
     Pilot one configuration before the full sweep (``config_filter`` + ``runs=1``).
 
     Args:
-        workspace_id: **Required** — the workspace holding the project to run. There is
-            no server-side "current project". From ``list_workspaces``, or
-            ``create_workspace`` + ``update_workspace``.
+        workspace_id: **Required unless ``from_campaign`` is given** — the workspace
+            holding the project to run. There is no server-side "current project". From
+            ``list_workspaces``, or ``create_workspace`` + ``update_workspace``.
+        from_campaign: Re-run a previous campaign from its own record (frozen config + the
+            image its runs used) rather than a workspace: a NEW campaign, source untouched,
+            whatever state it ended in. **Takes no other argument** — the record supplies
+            them, so a pilot stays a pilot; passing one errors. Refused if the campaign
+            recorded no usable image (build context is not archived — use its workspace).
+            Re-expands, so stochastic generators redraw.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -156,9 +163,11 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             inflation radius". Bad: "campaign run".
 
     Returns:
-        ``{campaign_id, backend}`` (plus ``note`` when the launch was accepted but will not
-        do what was asked — see ``show_gui``), or ``{error}`` — including when no service
-        is reachable, which means **stop and say so**, not run the experiment another way.
+        ``{campaign_id, backend}`` — or ``{campaign_id, retriggered_from}`` for a
+        ``from_campaign`` launch, whose ``campaign_id`` is the NEW campaign's. Plus ``note``
+        when the launch was accepted but will not do what was asked (see ``show_gui``), or
+        ``{error}`` — including when no service is reachable, which means **stop and say
+        so**, not run the experiment another way.
     """
     try:
         client = service_access.service_client()
@@ -179,6 +188,27 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         if len(description) > DESCRIPTION_MAX_LEN:
             return {"error": f"description is {len(description)} characters; the limit "
                              f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
+        if from_campaign:
+            # Named rather than dropped: a retrigger takes these from what the source
+            # campaign recorded, so accepting them here would answer a different question
+            # than the caller asked and look like it had worked.
+            supplied = [name for name, value in (
+                ("workspace_id", workspace_id), ("config_path", config_path),
+                ("config_filter", config_filter), ("runs", runs),
+                ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
+                ("show_gui", show_gui), ("description", description),
+                ("backend", backend)) if value]
+            if supplied:
+                return {"error":
+                        f"from_campaign={from_campaign!r} replays what that campaign "
+                        f"recorded, so {', '.join(supplied)} cannot be set at the same time "
+                        f"— drop them, or start from a workspace instead. The retriggered "
+                        f"campaign's description is derived from the source's."}
+            ref = client.retrigger_campaign(from_campaign)
+            out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign}
+            if ref.note:
+                out["note"] = ref.note
+            return out
         ref = client.create_campaign(CreateCampaignRequest(
             workspace_id=workspace_id, config_path=config_path,
             config_filter=config_filter, campaign_name=campaign_name,

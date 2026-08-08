@@ -1086,6 +1086,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/stop"
 
     @staticmethod
+    def campaign_retrigger(campaign_id: str) -> str:
+        # Under the SOURCE campaign, because that is what the request identifies; the campaign
+        # it creates is new and is named in the response.
+        return f"/campaigns/{campaign_id}/retrigger"
+
+    @staticmethod
     def campaign_archive(campaign_id: str) -> str:
         # The postprocessed tar.gz, streamed from the object store. Named here like every
         # other path so the MCP's download link and the route serving it are one string.
@@ -1322,6 +1328,31 @@ class RobovastInterface(ABC):
         """Validate the workspace's project and start a campaign; return its id.
 
         Returns immediately (fire-and-forget); poll :meth:`get_status`.
+        """
+
+    @abstractmethod
+    def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
+        """Launch a **new** campaign from what an existing one recorded; return its id.
+
+        Reads the source campaign's frozen ``_config/`` and its ``_execution/`` records
+        instead of a workspace — campaigns are workspace-independent, and the workspace a
+        campaign came from may be gone or may have moved on, while its ``_config/`` is
+        already the single source of truth for its configuration. The source is never
+        written to; this produces a separate campaign with its own timestamped id, so it
+        works whatever state the source ended in.
+
+        Reproduces the configuration and **pins the image the source recorded** — a
+        campaign's build context is not archived in its results, so the image cannot be
+        rebuilt from them and a campaign that never recorded one is refused rather than
+        rebuilt from a guess. The recorded ``_execution/launch.yaml`` replays the
+        ``config_filter`` and requested ``runs``, so re-running a one-config pilot stays a
+        one-config pilot.
+
+        Everything downstream of the configuration is **re-expanded**: ``execution.generate``
+        generators re-run (their cache is not archived), so a stochastic generator draws new
+        samples. This is a re-run, not a replay of the same trials.
+
+        Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
         """
 
     @abstractmethod
