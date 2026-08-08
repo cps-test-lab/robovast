@@ -617,7 +617,18 @@ mc alias set mystore "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --qu
 S3_DEST="mystore/${S3_BUCKET}/${S3_PREFIX}"
 S3_DEST="${S3_DEST%/}"
 echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
-mc mirror /out/ "${S3_DEST}/"
+# --overwrite, because every container in the job mirrors the SAME shared /out/ to the
+# SAME prefix, in finishing order. Without it mc refuses an object whose size already
+# differs ("Overwrite not allowed ... (size)") -- and it is always the LATER, more
+# complete copy that gets refused: the main container uploads logs/system*.log and
+# resource_usage_*.csv while they are still being appended, so every sidecar's upload of
+# the finished file is rejected and the store keeps the earliest truncated snapshot. That
+# is how an archived system.log came to end mid-sentence on its own "Mirroring /out/..."
+# line. Later is strictly more complete here (a container only uploads after its workload
+# and its resource monitor have stopped), so last-writer-wins is the correct resolution
+# and not a race. Payload each container uniquely owns was never affected -- mc skips
+# same-size objects, so this costs no extra transfer for the bag or the capture.
+mc mirror --overwrite /out/ "${S3_DEST}/"
 echo "[s3-upload] Mirror complete. Re-tagging executable files..."
 # Re-tag executable files with x-amz-meta-executable metadata
 _exec_count=0

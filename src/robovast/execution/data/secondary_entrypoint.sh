@@ -86,9 +86,17 @@ log "Started resource monitor (PID=${_monitor_pid}) -> ${OUTPUT_DIR}/resource_us
 # write just lands; on the cluster the artifact is silently absent.
 #
 # So a sidecar gets the same post-run treatment the main container has: run the workload
-# as a child rather than exec'ing over this shell, wait for it, and then upload. By then
-# the main container has exited, so the two uploaders never race. mc mirror is
-# incremental, so re-walking /out costs little and picks up exactly what is new.
+# as a child rather than exec'ing over this shell, wait for it, and then upload. mc mirror
+# is incremental, so re-walking /out costs little and picks up exactly what is new.
+#
+# The uploaders do not race for a given file's CONTENT -- each container writes its own
+# log and its own resource CSV, and uploads only after both have stopped -- but they do
+# all mirror the same shared /out to the same prefix, so they collide on objects the
+# earlier uploader already put there. That collision is resolved by --overwrite in
+# s3_upload.sh (see the comment there); without it the store keeps whichever truncated
+# copy landed first. Do not "fix" this by having sidecars exclude the shared paths: the
+# main container's own log is still growing when it uploads, so a later, complete
+# overwrite is exactly what makes the archived logs usable.
 _post_run() {
     # The monitor first, so its CSV is complete before anything copies it.
     if [ -n "${_monitor_pid}" ] && kill -0 "${_monitor_pid}" 2>/dev/null; then
