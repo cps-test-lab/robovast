@@ -219,7 +219,11 @@ export function RunView({
     : ''
 
   return (
-    <Stack spacing={2} sx={{ height: 'calc(100vh - 72px)' }}>
+    <Stack
+      spacing={2}
+      // 48px is App's `p: 3` on the main Box, top + bottom, so the view fills the window exactly.
+      sx={{ height: 'calc(100vh - 48px)' }}
+    >
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Run view</Typography>
         {/* The label names all three levels the picker selects — campaign · config · run — so the
@@ -327,7 +331,13 @@ export function RunView({
           This campaign has no runs to replay.
         </Alert>
       ) : (
-        <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+        <Box
+          // The panels are the point of this view, so they get the whole window rather than
+          // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main
+          // Box on the three sides that touch the window (the header row above keeps its
+          // padding), so keep them in step with that padding.
+          sx={{ flexGrow: 1, minHeight: 0, mx: -3, mb: -3 }}
+        >
           <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
         </Box>
       )}
