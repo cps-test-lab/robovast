@@ -1442,9 +1442,42 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is not None:
-            return entry.state.snapshot()
+            return self._derive_postprocessed(campaign_id, entry.state.snapshot())
         # Not tracked in this process — reconstruct from disk (past campaign).
         return self._status_from_disk(campaign_id)
+
+    def _derive_postprocessed(self, campaign_id: str, snap: Status) -> Status:
+        """Apply the recovery path's ``postprocessed`` rule to a **live** snapshot.
+
+        ``reconstruct_status_from_disk`` states it: *postprocessed is a fact about the
+        campaign, not about who last drove it*, and derives it from the built
+        ``_execution/data.db``. The live ``ControllerState`` answers a narrower question —
+        ``_postprocess`` records ``True`` only when the ``.vast`` declared postprocessing
+        **entries**, which is what decides whether the stored archive is the postprocessed
+        one. Both are wanted, but only the first is what a reader means by "is there data
+        here", so the two have to agree on that.
+
+        They did not, and it was visible: a campaign whose ``.vast`` declares no
+        ``results_processing.postprocessing`` still builds ``data.db``, yet reported
+        ``postprocessed=False`` for as long as this process still tracked it — hiding the
+        web UI's Results and Run views, which read exactly that file — and then started
+        reporting ``True`` once a restart dropped the entry and the disk path answered
+        instead. Same campaign, same bytes, two answers depending on service uptime.
+
+        Only ever promotes ``False`` → ``True``, and only on the evidence the recovery path
+        uses, so the two cannot disagree; what ``_postprocess`` records is untouched, and so
+        is the archive decision that reads it. Best-effort on the cluster lane in exactly the
+        way the recovery path already is: ``data.db`` is not among ``_RECORD_OBJECTS``, so a
+        campaign whose derived data was never fetched here answers the same as before.
+        """
+        if snap.postprocessed:
+            return snap
+        try:
+            if (Path(self._record_dir(campaign_id)) / "_execution" / "data.db").is_file():
+                snap.postprocessed = True
+        except OSError:
+            pass          # a status read must not fail over an unreachable record dir
+        return snap
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the campaign's unified infrastructure log from the campaigns root.
@@ -2439,7 +2472,7 @@ class LocalTransport(RobovastInterface):
         # list_campaigns orders by — so the time shown on a row and the time it was
         # sorted by cannot disagree.
         if entry is not None:
-            snap = entry.state.snapshot()
+            snap = self._derive_postprocessed(cid, entry.state.snapshot())
         else:
             snap = reconstruct_status_from_disk(campaign_dir)
         started_at = self._started_at_for(cid)
