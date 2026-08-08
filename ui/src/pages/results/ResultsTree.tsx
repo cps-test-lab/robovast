@@ -58,14 +58,20 @@ export function ResultsTree({
 
   // Why the query above may be slow, asked in parallel with it. On a cluster campaign the
   // first `RUNS_SQL` fetches the databases from the object store inside the request, so an
-  // unexplained "Loading…" can sit there for minutes. Cheap (two metadata lookups) and
-  // advisory: a failure just means the placeholder stays generic.
+  // unexplained "Loading…" can sit there for minutes. Cheap (two metadata lookups, and none
+  // at all while a transfer is running — the service then answers from memory) and advisory:
+  // a failure just means the placeholder stays generic.
+  //
+  // Re-asked while the runs query is outstanding, because the answer is a live count: fetched
+  // once, the placeholder would name the wait and then sit as still as the "Loading…" it
+  // replaced. Once loaded it stops, so an idle tree polls nothing.
   const statusQueries = useQueries({
-    queries: expandedCampaigns.map((id) => ({
+    queries: expandedCampaigns.map((id, i) => ({
       queryKey: ['data-status', id],
       queryFn: () => robovast.campaignDataStatus(id),
       retry: false,
       staleTime: 60_000,
+      refetchInterval: runQueries[i]?.isFetching ? 1000 : false,
     })),
   })
   const statusByCampaign = new Map(expandedCampaigns.map((id, i) => [id, statusQueries[i]]))

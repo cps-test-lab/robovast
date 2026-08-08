@@ -29,7 +29,7 @@ import {
 } from '@/lib/robovastClient'
 import { FailureBox } from '@/components/StatusView'
 import { formatDataFetchLabel } from '@/lib/format'
-import { VegaLiteChart } from '@/preview/VegaLiteChart'
+import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
 
@@ -121,6 +121,11 @@ export function DataBrowser({
     enabled: !!campaignId,
     retry: false,
     staleTime: 60_000,
+    // Poll only while a query is outstanding: the label carries live transfer counts, so a
+    // single fetch would freeze it at whatever the first sample said.
+    // `isFetching`, not `isPending`: a disabled query (no SQL entered yet) stays pending
+    // forever, which would poll an idle tab for the life of the session.
+    refetchInterval: describe.isFetching || result.isFetching ? 1000 : false,
   })
   const fetchLabel = formatDataFetchLabel(dataStatus.data)
   // A failed campaign never produces data.db — surface *why* it failed (the same

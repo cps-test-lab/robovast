@@ -793,6 +793,36 @@ class DataQueryResult(BaseModel):
     note: Optional[str] = None
 
 
+class WorkProgress(BaseModel):
+    """How far along the blocking work behind a campaign request currently is.
+
+    Exists because the two waits a caller actually sits through — pulling the campaign out of
+    the object store, then executing the notebook — are both minutes long and were both
+    reported as nothing at all. The counts live only in memory (see
+    :attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can
+    poll once a second without competing with the transfer it is describing.
+
+    One shape for both phases rather than one model each: a caller renders ``done``/``total``
+    the same way regardless, and ``unit`` is what makes the sentence read right.
+    """
+
+    #: Which blocking step is running. ``listing`` is the metadata pass that establishes
+    #: ``total`` — brief, but on a large campaign not instant, so it is named rather than
+    #: spent looking idle.
+    phase: Literal["listing", "downloading", "executing"]
+    #: What ``done`` and ``total`` count, so a client need not branch on ``phase`` to word it.
+    unit: Literal["files", "cells"]
+    done: int = 0
+    #: ``None`` while genuinely unknown (during ``listing``, or from a backend that cannot
+    #: count cheaply). A client shows an indeterminate bar rather than inventing a denominator.
+    total: Optional[int] = None
+    #: Bytes are tracked only for transfers; ``0``/``None`` for cell execution.
+    bytes_done: int = 0
+    bytes_total: Optional[int] = None
+    #: Free text naming the concrete thing in flight, e.g. the notebook being executed.
+    detail: str = ""
+
+
 class CampaignDataStatus(BaseModel):
     """Whether querying this campaign has to transfer anything first, and what it costs.
 
@@ -830,6 +860,10 @@ class CampaignDataStatus(BaseModel):
     #: before the first one — process-local, so a restart forgets it.
     last_fetch_seconds: Optional[float] = None
     last_fetch_bytes: Optional[int] = None
+    #: Live counts for the transfer or render running *right now*, or ``None`` when this
+    #: service is not busy with this campaign. Read from memory, so asking is free even while
+    #: the transfer it describes is saturating the link.
+    progress: Optional[WorkProgress] = None
     #: One human sentence naming the reason, for a client to show or an agent to repeat.
     note: str = ""
 

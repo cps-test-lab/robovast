@@ -53,6 +53,8 @@ def _service(monkeypatch, tmp_path, objects):
     svc._fetch_locks = {}
     svc._fetch_locks_guard = __import__("threading").Lock()
     svc._last_fetch = {}
+    svc._work_progress = {}
+    svc._work_progress_guard = __import__("threading").Lock()
     # ``interactive=`` only selects the timeout budget (fail-fast for polled request paths
     # vs patient for bulk transfers), which nothing here observes — accept and ignore it.
     monkeypatch.setattr(ClusterService, "_campaign_object_location",
@@ -168,3 +170,57 @@ def test_status_does_not_enumerate_the_campaign(svc):
     service.campaign_data_status("camp-1")
 
     assert [c[0] for c in storage.calls] == ["stat_object", "stat_object"]
+
+
+def test_status_reports_live_progress_from_memory(svc):
+    """While a transfer runs the status is polled about once a second, over the very link the
+    transfer is saturating. It must answer from memory and touch the store not at all."""
+    service, storage = svc
+    seen = []
+    storage.download_object = lambda bucket, key, dst: (
+        seen.append(service.campaign_data_status("camp-1")) or True)
+    storage.calls.clear()
+
+    service._query_dir("camp-1")
+
+    assert [s.progress.phase for s in seen] == ["downloading", "downloading"]
+    assert [s.progress.done for s in seen] == [0, 1]
+    assert [s.progress.total for s in seen] == [2, 2]
+    assert all(s.fetch_in_progress and not s.cached for s in seen)
+    # Every ``stat_object`` here belongs to the fetch itself; the status calls added none.
+    assert [c[0] for c in storage.calls] == ["stat_object", "stat_object"]
+
+
+def test_progress_is_dropped_when_the_work_ends(svc):
+    """A record left behind would advertise a transfer that is not running — and on the
+    failure path, park a bar at 37%% forever."""
+    service, storage = svc
+    service._query_dir("camp-1")
+    assert service.campaign_data_status("camp-1").progress is None
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("the port-forward died mid-transfer")
+
+    storage.objects["camp-1/_execution/data.db"] = b"REWRITTEN-SO-IT-REFETCHES"
+    storage.download_object = boom
+    with pytest.raises(RuntimeError):
+        service._query_dir("camp-1")
+
+    assert service.campaign_data_status("camp-1").progress is None
+
+
+def test_a_cached_fetch_publishes_no_progress(svc):
+    """Nothing is transferred on a re-view, so nothing should flash a progress bar.
+
+    Reads the record directly rather than through ``campaign_data_status``: that call is
+    itself made of ``stat_object``, which is the hook this test observes through.
+    """
+    service, storage = svc
+    service._query_dir("camp-1")
+    real_stat, seen = storage.stat_object, []
+    storage.stat_object = lambda bucket, key: (
+        seen.append(dict(service._work_progress)) or real_stat(bucket, key))
+
+    service._query_dir("camp-1")
+
+    assert seen and all(published == {} for published in seen)

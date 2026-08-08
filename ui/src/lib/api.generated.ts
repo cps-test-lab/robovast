@@ -1144,6 +1144,7 @@ export interface components {
              * @default
              */
             note: string;
+            progress: components["schemas"]["WorkProgress"] | null;
             /**
              * Source
              * @enum {string}
@@ -2461,6 +2462,50 @@ export interface components {
             sources_address: string;
             /** Sources Root */
             sources_root: string | null;
+        };
+        /**
+         * WorkProgress
+         * @description How far along the blocking work behind a campaign request currently is.
+         *
+         *     Exists because the two waits a caller actually sits through — pulling the campaign out of
+         *     the object store, then executing the notebook — are both minutes long and were both
+         *     reported as nothing at all. The counts live only in memory (see
+         *     :attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can
+         *     poll once a second without competing with the transfer it is describing.
+         *
+         *     One shape for both phases rather than one model each: a caller renders ``done``/``total``
+         *     the same way regardless, and ``unit`` is what makes the sentence read right.
+         */
+        WorkProgress: {
+            /**
+             * Bytes Done
+             * @default 0
+             */
+            bytes_done: number;
+            /** Bytes Total */
+            bytes_total: number | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "listing" | "downloading" | "executing";
+            /** Total */
+            total: number | null;
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "files" | "cells";
         };
         /** WorkspaceInfo */
         WorkspaceInfo: {

@@ -5,6 +5,7 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import IconButton from '@mui/material/IconButton'
 import InputAdornment from '@mui/material/InputAdornment'
+import LinearProgress from '@mui/material/LinearProgress'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tab from '@mui/material/Tab'
@@ -15,6 +16,7 @@ import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
+import { formatDataFetchLabel, progressPercent } from '@/lib/format'
 import type { ResultsTreeItem } from '@/lib/resultsTree'
 import { ResultsTree } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
@@ -190,6 +192,44 @@ function NotebookPanel({ item }: { item: ResultsTreeItem }) {
   )
 }
 
+// What a click on a cluster campaign is actually waiting for. The request that renders a notebook
+// first pulls the whole campaign out of the object store — GBs over a port-forward — and only then
+// executes the cells, so a bare spinner covered a wait that runs into minutes and reported nothing.
+// The service publishes live counts on its data-status, which is cheap to poll *because* it answers
+// from memory while busy; this asks once a second for exactly as long as the render is outstanding.
+function NotebookWait({ campaignId }: { campaignId: string }) {
+  const status = useQuery({
+    queryKey: ['data-status', campaignId],
+    queryFn: () => robovast.campaignDataStatus(campaignId),
+    refetchInterval: 1000,
+    // A campaign whose progress cannot be read (an older service has no such route) is not a
+    // reason to fail the view being waited on — the label just falls back to the generic one.
+    retry: false,
+  })
+  const progress = status.data?.progress ?? null
+  const label = formatDataFetchLabel(status.data) ?? 'Running notebook…'
+  const percent = progressPercent(progress)
+
+  return (
+    // The bar is pinned to the box's own edges rather than laid out inside the message, so its
+    // full length reads as the full transfer — an inset bar makes "done" land short of the box
+    // and understates itself at every value.
+    <Alert
+      severity="info"
+      icon={<CircularProgress size={16} />}
+      sx={{ maxWidth: 340, position: 'relative', pb: 1.5, overflow: 'hidden' }}
+    >
+      <Typography variant="body2">{label}</Typography>
+      <LinearProgress
+        {...(percent === null
+          ? { variant: 'indeterminate' as const }
+          : { variant: 'determinate' as const, value: percent })}
+        sx={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+      />
+    </Alert>
+  )
+}
+
 // Fetches the executed notebook HTML for (node, workload) and renders it in an iframe via a Blob
 // URL — a real navigation, so the nbconvert HTML's require.js / MathJax / inline plot scripts run
 // (feeding a huge string through `srcdoc` would re-parse it every render).
@@ -231,15 +271,7 @@ function NotebookFrame({
     return () => URL.revokeObjectURL(url)
   }, [html.data])
 
-  if (html.isPending)
-    return (
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
-        <CircularProgress size={18} />
-        <Typography variant="caption" color="text.secondary">
-          Running notebook…
-        </Typography>
-      </Stack>
-    )
+  if (html.isPending) return <NotebookWait campaignId={item.campaignId} />
   if (html.isError)
     return (
       <Alert severity="error" variant="outlined">

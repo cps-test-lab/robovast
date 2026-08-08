@@ -137,6 +137,11 @@ def _delete_key_prefix(bucket: str, prefix: str) -> str:
 # How often (seconds) the download progress logger emits a running count.
 _DOWNLOAD_PROGRESS_INTERVAL = 5.0
 
+# How often (seconds) the in-memory progress reporter publishes counts. Tighter than the log
+# cadence: this feeds a status a UI polls at about 1 Hz, and an update slower than the poll
+# would make a live transfer look stuck between samples.
+_PROGRESS_REPORT_INTERVAL = 0.5
+
 
 def download_progress_logger(subject, interval=_DOWNLOAD_PROGRESS_INTERVAL):
     """Return a no-argument callback that logs the running download count.
@@ -169,6 +174,29 @@ def download_progress_logger(subject, interval=_DOWNLOAD_PROGRESS_INTERVAL):
     return on_file
 
 
+def download_progress_reporter(on_change, interval=_PROGRESS_REPORT_INTERVAL):
+    """Return an ``on_progress`` callback that forwards throttled counts to *on_change*.
+
+    The throttle is the whole point: ``download_prefix`` calls back once per file, and a
+    campaign holds tens of thousands of them. *on_change* receives
+    ``(files_done, files_total, bytes_done, bytes_total)`` at most every *interval*, plus
+    always on the final file so the last update is never the one that got swallowed.
+
+    Faster than :func:`download_progress_logger`'s cadence because this one writes to memory
+    for a poller to read, not a line to a log a human is scrolling.
+    """
+    state = {"last": 0.0}
+
+    def on_progress(done, total, bytes_done, bytes_total):
+        now = time.monotonic()
+        if now - state["last"] < interval and done != total:
+            return
+        state["last"] = now
+        on_change(done, total, bytes_done, bytes_total)
+
+    return on_progress
+
+
 class StorageClient:
     """Common interface: upload a local dir to / download a prefix from storage."""
 
@@ -179,7 +207,7 @@ class StorageClient:
         raise NotImplementedError
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None) -> int:
         """Download every object under *prefix* into *local_dir*.
 
         Objects in the durable home are immutable, so by default a file that
@@ -193,6 +221,12 @@ class StorageClient:
         actually fetched (skipped same-size files don't count) — used by the
         controller to log download progress during an otherwise-silent fetch of
         a large batch.
+
+        *on_progress*, if given, is called the same way but with
+        ``(files_done, files_total, bytes_done, bytes_total)``, the totals coming from a
+        :meth:`count_pending` pre-pass. It is separate from *on_file* because that pre-pass
+        is an extra listing: a caller that only wants a running count in a log should not
+        pay for a denominator nobody displays.
         """
         raise NotImplementedError
 
@@ -242,6 +276,37 @@ class StorageClient:
         Must not raise on a not-yet-created bucket — implementations return empty.
         """
         raise NotImplementedError
+
+    def count_pending(self, bucket: str, prefix: str, local_dir: str,
+                      force: bool = False) -> "tuple[int, int]":
+        """Return ``(files, bytes)`` that :meth:`download_prefix` would actually fetch.
+
+        The denominator behind a determinate progress bar. Written once here, against
+        :meth:`list_entries`, rather than per backend: every implementation already has to
+        enumerate with sizes, and a second pagination loop per backend would be the same
+        listing spelled differently in each.
+
+        Applies the same ``force``/same-size skip as :meth:`download_prefix`, so the total
+        counts what is *missing* rather than what exists — a fully cached campaign reports
+        ``(0, 0)`` and its progress bar is complete the moment it appears, instead of showing
+        a denominator that never moves.
+
+        Costs one metadata-only listing, so it is the caller's choice: ``download_prefix``
+        runs it only when asked for progress. The listing is held just long enough to sum it.
+        """
+        objects, _ = self.list_entries(bucket, prefix)
+        clean = prefix.rstrip("/")
+        key_prefix = f"{clean}/" if clean else ""
+        files = total = 0
+        for key, size in objects:
+            rel = key[len(key_prefix):] if key_prefix else key
+            if not rel or key.endswith("/"):
+                continue
+            if not force and _same_size(os.path.join(local_dir, *rel.split("/")), size):
+                continue
+            files += 1
+            total += int(size or 0)
+        return files, total
 
     def list_keys(self, bucket: str, prefix: str = "") -> list[str]:
         """Return object keys under *prefix* (no trailing-slash pseudo-dirs).
@@ -469,13 +534,18 @@ class _S3StorageClient(StorageClient):
         self._resilient(op, f"uploading {local_path} to s3://{bucket}/{key}")
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None) -> int:
         clean = prefix.rstrip("/")
         key_prefix = f"{clean}/" if clean else ""
+        # Outside ``op``: the denominator describes the whole transfer, so a reconnect retry
+        # must not pay for a second listing.
+        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force)
+                            if on_progress is not None else (None, None))
 
         def op():
             paginator = self._s3.get_paginator("list_objects_v2")
             count = 0
+            fetched_bytes = 0
             for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
                 for obj in page.get("Contents", []) or []:
                     key = obj["Key"]
@@ -493,8 +563,11 @@ class _S3StorageClient(StorageClient):
                     if (head.get("Metadata") or {}).get("executable") == "yes":
                         os.chmod(dst, os.stat(dst).st_mode | 0o111)
                     count += 1
+                    fetched_bytes += int(obj.get("Size") or 0)
                     if on_file is not None:
                         on_file()
+                    if on_progress is not None:
+                        on_progress(count, n_total, fetched_bytes, b_total)
             logger.debug("Downloaded %d files from s3://%s/%s", count, bucket, clean)
             return count
         return self._resilient(op, f"downloading s3://{bucket}/{clean}")
@@ -626,11 +699,14 @@ class _GcsStorageClient(StorageClient):
         blob.upload_from_filename(local_path)
 
     def download_prefix(self, bucket: str, prefix: str, local_dir: str,
-                        force: bool = False, on_file=None) -> int:
+                        force: bool = False, on_file=None, on_progress=None) -> int:
         gbucket = self._client.bucket(bucket)
         prefix = prefix.rstrip("/")
         key_prefix = f"{prefix}/" if prefix else ""
+        n_total, b_total = (self.count_pending(bucket, prefix, local_dir, force)
+                            if on_progress is not None else (None, None))
         count = 0
+        fetched_bytes = 0
         for blob in self._client.list_blobs(gbucket, prefix=key_prefix):
             rel = blob.name[len(key_prefix):] if key_prefix else blob.name
             if not rel or blob.name.endswith("/"):
@@ -642,8 +718,11 @@ class _GcsStorageClient(StorageClient):
             if (blob.metadata or {}).get("executable") == "yes":
                 os.chmod(dst, os.stat(dst).st_mode | 0o111)
             count += 1
+            fetched_bytes += int(blob.size or 0)
             if on_file is not None:
                 on_file()
+            if on_progress is not None:
+                on_progress(count, n_total, fetched_bytes, b_total)
         logger.debug("Downloaded %d files from gs://%s/%s", count, bucket, prefix)
         return count
 

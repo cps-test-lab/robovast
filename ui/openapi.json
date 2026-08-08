@@ -253,6 +253,16 @@
             "title": "Note",
             "type": "string"
           },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "enum": [
               "local-disk",
@@ -280,6 +290,7 @@
           "last_fetch_bytes",
           "last_fetch_seconds",
           "note",
+          "progress",
           "source",
           "transfer"
         ],
@@ -2413,6 +2424,76 @@
           "sources_root"
         ],
         "title": "VersionInfo",
+        "type": "object"
+      },
+      "WorkProgress": {
+        "description": "How far along the blocking work behind a campaign request currently is.\n\nExists because the two waits a caller actually sits through \u2014 pulling the campaign out of\nthe object store, then executing the notebook \u2014 are both minutes long and were both\nreported as nothing at all. The counts live only in memory (see\n:attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can\npoll once a second without competing with the transfer it is describing.\n\nOne shape for both phases rather than one model each: a caller renders ``done``/``total``\nthe same way regardless, and ``unit`` is what makes the sentence read right.",
+        "properties": {
+          "bytes_done": {
+            "default": 0,
+            "title": "Bytes Done",
+            "type": "integer"
+          },
+          "bytes_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Total"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "done": {
+            "default": 0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "phase": {
+            "enum": [
+              "listing",
+              "downloading",
+              "executing"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "unit": {
+            "enum": [
+              "files",
+              "cells"
+            ],
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes_done",
+          "bytes_total",
+          "detail",
+          "done",
+          "phase",
+          "total",
+          "unit"
+        ],
+        "title": "WorkProgress",
         "type": "object"
       },
       "WorkspaceInfo": {

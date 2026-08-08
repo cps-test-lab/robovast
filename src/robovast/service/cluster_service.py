@@ -138,6 +138,13 @@ class ClusterService(LocalTransport):
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
         self._last_fetch: dict[str, tuple[int, float]] = {}
+        # How far along the blocking work for each campaign currently is — the counts behind
+        # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
+        # dropped when they finish, so a present entry means "busy right now". In memory on
+        # purpose: a client polls this once a second while a transfer is saturating the
+        # port-forward, and asking must not add a round-trip to the store it is describing.
+        self._work_progress: dict[str, "WorkProgress"] = {}
+        self._work_progress_guard = threading.Lock()
         # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
         # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
         # re-lists once a second; see _campaign_index.
@@ -1627,6 +1634,45 @@ class ClusterService(LocalTransport):
         through here; see :meth:`_query_dir`."""
         return self.fetch_campaign(campaign_id)
 
+    @contextlib.contextmanager
+    def _render_progress(self, campaign_id: str, workload: str):
+        """Publish notebook-execution progress, continuing the bar the transfer started.
+
+        The two halves of an Explorer click are a fetch and a render, and only reporting the
+        first would replace a silent wait with a bar that fills, vanishes, and leaves the
+        caller staring at nothing for the remaining minutes.
+        """
+        with self._reporting_progress(campaign_id) as publish:
+            def on_cell(done, total):
+                publish(phase="executing", unit="cells", done=done, total=total,
+                        detail=workload)
+            yield on_cell
+
+    @contextlib.contextmanager
+    def _reporting_progress(self, campaign_id: str):
+        """Publish this campaign's live progress for the duration of the block.
+
+        Yields a ``publish(**fields)`` that builds a :class:`WorkProgress`, and drops the
+        entry on the way out however the block ends — so a failed transfer stops advertising
+        itself as in flight rather than leaving a bar frozen at 37%% forever.
+
+        One record per campaign, not per request: the expensive phase is already serialised
+        by ``_fetch_locks``, so the only overlap this loses is two notebooks of the same
+        campaign executing at once, where last-writer-wins costs a caller nothing but a
+        slightly wrong cell number.
+        """
+        from robovast.service.interface import WorkProgress
+
+        def publish(**fields) -> None:
+            with self._work_progress_guard:
+                self._work_progress[campaign_id] = WorkProgress(**fields)
+
+        try:
+            yield publish
+        finally:
+            with self._work_progress_guard:
+                self._work_progress.pop(campaign_id, None)
+
     #: The only two objects a SQL query reads, relative to the campaign prefix (see
     #: ``data_query._open_db``). Neither is required to exist: ``campaign.db`` alone is
     #: queryable before postprocessing has built ``data.db``.
@@ -1663,8 +1709,9 @@ class ClusterService(LocalTransport):
         # explorer fires one query per sub-view; the campaign list re-summarizes every
         # second) must not race to write the same file, nor race a whole-campaign fetch
         # writing it too.
-        with lock:
-            fetched = total = 0
+        rel_paths = list(rel_paths)
+        with lock, self._reporting_progress(campaign_id) as publish:
+            fetched = total = done = 0
             started = time.perf_counter()
             try:
                 for rel in rel_paths:
@@ -1676,8 +1723,15 @@ class ClusterService(LocalTransport):
                     if dst.exists() and dst.stat().st_size == size:
                         continue
                     dst.parent.mkdir(parents=True, exist_ok=True)
+                    # Published before the transfer, not after: a ``data.db`` can be hundreds
+                    # of MB, so the interesting part of this wait is the one file in flight.
+                    # Nothing is published when every path is already cached — an instant
+                    # call should not flash a progress bar.
+                    publish(phase="downloading", unit="files", done=done,
+                            total=len(rel_paths), bytes_done=fetched, detail=rel)
                     storage.download_object(bucket, f"{prefix}{rel}", str(dst))
                     fetched += size
+                    done += 1
             # An unreachable store (dropped port-forward, connection reset) is translated
             # by ``_S3StorageClient._resilient`` into ObjectStoreUnreachableError — a
             # RuntimeError the service maps to 503, naming the endpoint and the object.
@@ -1843,6 +1897,19 @@ class ClusterService(LocalTransport):
         from robovast.service.interface import CampaignDataStatus
         in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
         dest = self._cache_dir(campaign_id)
+        transfer = "cluster-network" if in_pod else "port-forward"
+        with self._work_progress_guard:
+            progress = self._work_progress.get(campaign_id)
+        if progress is not None:
+            # Busy: answer from memory and skip the two ``stat_object`` calls entirely. A
+            # client polls this once a second precisely while a transfer is saturating the
+            # link, so the probe must not add round-trips to the store it is describing —
+            # and it has nothing to add, since a fetch in flight already means not cached.
+            return CampaignDataStatus(
+                campaign_id=campaign_id, source="object-store", fetch_required=True,
+                cached=False, transfer=transfer, fetch_in_progress=True, progress=progress,
+                note=("this service is fetching the campaign's data from the object store "
+                      "right now; the query runs when it lands"))
         # Interactive: two ``stat_object`` calls whose whole purpose is to be cheap enough
         # to ask before a query — a minutes-long block here defeats the seam.
         storage, bucket, prefix = self._campaign_object_location(
@@ -1869,7 +1936,7 @@ class ClusterService(LocalTransport):
                     f"fetched from {where} first")
         return CampaignDataStatus(
             campaign_id=campaign_id, source="object-store", fetch_required=True,
-            cached=cached, transfer="cluster-network" if in_pod else "port-forward",
+            cached=cached, transfer=transfer,
             db_bytes=db_bytes,
             fetch_in_progress=bool(lock is not None and lock.locked()),
             last_fetch_bytes=None if last is None else last[0],
@@ -2090,6 +2157,7 @@ class ClusterService(LocalTransport):
         """
         from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
 
+        from robovast.common.progress import fmt_size
         from robovast.execution.cluster_execution import in_pod_storage
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
@@ -2103,14 +2171,30 @@ class ClusterService(LocalTransport):
         # (immutable objects, matching size). Different campaigns still fetch in
         # parallel.
         started = time.perf_counter()
-        with lock:
+        fetched_bytes = 0
+        with lock, self._reporting_progress(campaign_id) as publish:
+            # ``listing`` is the pre-pass ``download_prefix`` runs to learn the denominator.
+            # Named rather than left blank: on a campaign with 100k objects it is itself a
+            # visible wait, and "listing" beats a bar that sits at 0/0.
+            publish(phase="listing", unit="files", detail=campaign_id)
+
+            def on_change(done, total, done_bytes, total_bytes):
+                nonlocal fetched_bytes
+                fetched_bytes = done_bytes
+                publish(phase="downloading", unit="files", done=done, total=total,
+                        bytes_done=done_bytes, bytes_total=total_bytes,
+                        detail=campaign_id)
+
             try:
                 # A whole campaign is GBs over a port-forward; without a running count the
-                # transfer is indistinguishable from a hang for as long as it takes.
+                # transfer is indistinguishable from a hang for as long as it takes. The log
+                # line serves whoever reads the pod log; ``on_progress`` serves the UI, which
+                # additionally needs the denominator to draw a bar.
                 n = storage.download_prefix(
                     bucket, prefix, str(dest), force=force,
                     on_file=in_pod_storage.download_progress_logger(
-                        f"Campaign {campaign_id}"))
+                        f"Campaign {campaign_id}"),
+                    on_progress=in_pod_storage.download_progress_reporter(on_change))
             # An unreachable store is translated by ``_resilient`` (see _materialize).
             except ClientError as exc:
                 # No bucket for this campaign in the object store: it was never
@@ -2124,10 +2208,15 @@ class ClusterService(LocalTransport):
                 raise
         # Elapsed as well as the count: "1832 files" alone does not distinguish a transfer
         # that took two seconds from one that took four minutes, which is the only question
-        # a caller staring at a slow first call actually has. Bytes are left out on
-        # purpose — ``download_prefix`` does not report them, and summing the cache dir
-        # would stat every file of a campaign that can hold 100k of them.
-        logger.info("Fetched campaign %s (%d file(s)) from %s/%s to %s in %.1fs",
-                    campaign_id, n, bucket, prefix, dest,
-                    time.perf_counter() - started)
+        # a caller staring at a slow first call actually has. The byte figure comes from the
+        # progress reporter's running sum — free now that it is tracked, where summing the
+        # cache dir would stat every file of a campaign that can hold 100k of them.
+        elapsed = time.perf_counter() - started
+        logger.info("Fetched campaign %s (%d file(s), %s) from %s/%s to %s in %.1fs",
+                    campaign_id, n, fmt_size(fetched_bytes), bucket, prefix, dest, elapsed)
+        if fetched_bytes:
+            # Same slot ``_materialize`` writes: both describe "what this service's last
+            # transfer of this campaign cost", and a caller asking why the first click was
+            # slow does not care which of the two paid for it.
+            self._last_fetch[campaign_id] = (fetched_bytes, elapsed)
         return dest

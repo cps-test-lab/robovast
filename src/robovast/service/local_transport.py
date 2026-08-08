@@ -28,6 +28,7 @@ Split out of the former single ``client`` module; ``client`` now re-exports
 ``LocalTransport`` so existing imports keep working.
 """
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -730,7 +731,6 @@ class LocalTransport(RobovastInterface):
         container-runner factory) is established where the composition that reads
         it runs, and torn down when the campaign ends. No-op locally.
         """
-        import contextlib
         return contextlib.nullcontext()
 
     def _postprocess_in_process(self) -> bool:
@@ -2200,7 +2200,21 @@ class LocalTransport(RobovastInterface):
         if not notebooks or level not in notebooks:
             raise KeyError(f"No '{level}' notebook for workload '{workload}'.")
         data_dir = self._node_data_dir(campaign_id, level, config_name, run_id)
-        return render_notebook_html(notebooks[level], data_dir, theme=theme)
+        with self._render_progress(campaign_id, workload) as on_cell:
+            return render_notebook_html(notebooks[level], data_dir, theme=theme,
+                                        on_cell=on_cell)
+
+    @contextlib.contextmanager
+    def _render_progress(self, campaign_id: str, workload: str):
+        """Yield an ``on_cell(done, total)`` to report execution progress with, or ``None``.
+
+        A seam, not a feature, at this level: locally the data is already on disk and the
+        only cost is the cells themselves, with nowhere to publish counts to. The cluster
+        service overrides it, because there this render is the tail of a wait that started
+        with a multi-minute transfer and the caller is still watching.
+        """
+        del campaign_id, workload
+        yield None
 
     def _node_data_dir(self, campaign_id: str, level: str, config_name: str, run_id):
         """The ``DATA_DIR`` for a selected node — the campaign/config/run directory."""

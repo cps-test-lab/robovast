@@ -171,14 +171,20 @@ def _apply_injections(notebook, data_dir: str, inject: dict | None) -> None:
 class _ProgressExecutePreprocessor(ExecutePreprocessor):
     """``ExecutePreprocessor`` that reports per-cell progress and honours a cancel check.
 
-    Both hooks are optional; without them this behaves like the plain preprocessor.
-    Used by the desktop tool (progress bar + campaign-switch cancellation); the web
-    endpoint passes neither.
+    All three hooks are optional; without them this behaves like the plain preprocessor.
+    Used by the desktop tool (progress bar + campaign-switch cancellation) and by the web
+    endpoint, which takes *on_cell* only.
+
+    *progress_cb* and *on_cell* report the same event in the two shapes its consumers
+    actually want — a percentage plus a ready-made sentence for the desktop's status line,
+    raw ``(done, total)`` counts for a caller that draws its own bar. One callback serving
+    both would mean the web service parsing cell numbers back out of an English string.
     """
 
-    def __init__(self, *args, progress_cb=None, is_cancelled=None, **kwargs):
+    def __init__(self, *args, progress_cb=None, on_cell=None, is_cancelled=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._progress_cb = progress_cb
+        self._on_cell = on_cell
         self._is_cancelled = is_cancelled
         self._total = 1
 
@@ -194,6 +200,8 @@ class _ProgressExecutePreprocessor(ExecutePreprocessor):
             # for load/export); the message mirrors the desktop's wording.
             pct = 20 + int((index + 1) / self._total * 60)
             self._progress_cb(pct, f"Executing cell {index + 1}/{self._total}...")
+        if self._on_cell:
+            self._on_cell(index + 1, self._total)
         return super().preprocess_cell(cell, resources, index)
 
 
@@ -240,6 +248,7 @@ def render_notebook_html(
     theme: str = 'light',
     timeout: int = DEFAULT_TIMEOUT,
     progress_cb=None,
+    on_cell=None,
     is_cancelled=None,
 ) -> str:
     """Execute *notebook_path* against *data_dir* and return the exported HTML.
@@ -251,8 +260,13 @@ def render_notebook_html(
         theme: ``'light'`` or ``'dark'`` — drives the export theme + scrollbar CSS.
         timeout: Per-cell execution timeout in seconds.
         progress_cb: Optional ``callback(percent, message)`` for per-cell progress.
+        on_cell: Optional ``callback(done, total)`` for per-cell progress as raw counts,
+            for a caller that renders its own bar rather than a status line.
         is_cancelled: Optional ``callback() -> bool``; when it returns True mid-run,
             execution aborts with a ``RuntimeError``.
+
+    Note that neither progress callback fires on a cache hit — there is nothing to execute,
+    so the call returns before the executor is built.
 
     Returns:
         The self-contained HTML string (inputs hidden, outputs/plots shown).
@@ -294,7 +308,7 @@ def render_notebook_html(
     # overrides that, so figures are silently dropped ("FigureCanvasAgg is non-interactive").
     executor = _ProgressExecutePreprocessor(
         timeout=timeout, kernel_name="python3",
-        progress_cb=progress_cb, is_cancelled=is_cancelled)
+        progress_cb=progress_cb, on_cell=on_cell, is_cancelled=is_cancelled)
     executor.preprocess(notebook, {"metadata": {"path": data_dir}})
 
     exporter = HTMLExporter()
