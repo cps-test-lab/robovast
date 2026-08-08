@@ -85,16 +85,28 @@ export function ResultsPage({ view }: { view: string }) {
   // campaign neither the Run view nor the Data browser can show anything for — landing on it would
   // greet both views with an empty state while a readable campaign sat one click away.
   const evalCampaigns = list
+  // Gated on the list having actually loaded: a transient service error leaves `campaigns.data`
+  // in place (react-query keeps the last value), so the remembered selection survives an outage
+  // instead of being wiped by a momentarily empty list.
+  const loaded = !!campaigns.data
   useEffect(() => {
-    if (!evalCampaigns.length) return
+    if (!loaded) return
+    if (!evalCampaigns.length) {
+      // Nothing is eligible, so nothing may stay selected. Without this the id remembered below
+      // outlives the campaign it names and the Data browser keeps querying a campaign no view
+      // lists — while the Explorer, which renders the list directly, shows its empty state.
+      setCampaignId('')
+      return
+    }
     if (!evalCampaigns.some((c) => c.campaign_id === campaignId)) {
       const readable = evalCampaigns.find(hasRecordedRuns)
       setCampaignId((readable ?? evalCampaigns[0]).campaign_id)
     }
-  }, [evalCampaigns.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loaded, evalCampaigns.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (campaignId) localStorage.setItem(LAST_CAMPAIGN_KEY, campaignId)
+    else localStorage.removeItem(LAST_CAMPAIGN_KEY)
   }, [campaignId])
 
   if (campaigns.isPending) return <CircularProgress size={24} />

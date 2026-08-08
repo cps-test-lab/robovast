@@ -188,10 +188,16 @@ export function DataBrowser({
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Data browser</Typography>
         <TextField
-          select={!!evalCampaigns.length}
+          select
           size="small"
           label="Campaign"
-          value={campaignId}
+          // Never show — or let someone type — an id that is not in the list: this is a picker over
+          // what the service has, not a free-text address bar.
+          value={evalCampaigns.some((c) => c.campaign_id === campaignId) ? campaignId : ''}
+          disabled={!evalCampaigns.length}
+          helperText={
+            evalCampaigns.length ? undefined : 'no finished, postprocessed campaign yet'
+          }
           onChange={(e) => {
             onCampaignChange(e.target.value)
             setSqlBuffer(DEFAULT_SQL)
@@ -199,6 +205,11 @@ export function DataBrowser({
           }}
           sx={{ minWidth: 340 }}
         >
+          {/* Gives the empty selection an option to match, so MUI does not warn about an
+              out-of-range value, and names the empty case instead of showing a blank box. */}
+          <MenuItem value="" disabled>
+            {evalCampaigns.length ? 'Select a campaign' : 'No campaigns with results'}
+          </MenuItem>
           {evalCampaigns.map((c) => (
             <MenuItem key={c.campaign_id} value={c.campaign_id}>
               {c.campaign_id}

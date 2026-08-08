@@ -98,13 +98,21 @@ export function ConfigPage() {
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Configuration</Typography>
         <TextField
-          select={!!list.length}
+          select
           size="small"
           label="Workspace"
-          value={workspaceId}
+          // A workspace has to exist to be edited, so this is a picker over what the service has —
+          // typing an id here would only produce a selection nothing can open.
+          value={list.some((w) => w.workspace_id === workspaceId) ? workspaceId : ''}
+          disabled={!list.length}
           onChange={(e) => setWorkspaceId(e.target.value)}
           sx={{ minWidth: 240 }}
         >
+          {/* Gives the empty selection an option to match, so MUI does not warn about an
+              out-of-range value. Creating the first one is the button beside this field. */}
+          <MenuItem value="" disabled>
+            {list.length ? 'Select a workspace' : 'No workspaces yet'}
+          </MenuItem>
           {list.map((w) => (
             <MenuItem key={w.workspace_id} value={w.workspace_id}>
               {w.name || w.workspace_id}
