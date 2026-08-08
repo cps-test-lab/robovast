@@ -53,6 +53,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import shutil
 import threading
 from pathlib import Path
@@ -322,13 +323,26 @@ def _command_for(identity: dict, max_tex_dim: int) -> str:
             f"no scene generator is registered for producer {producer!r}; this RoboVAST knows how to "
             "build geometry for 'rst' only.")
     # `--set k=v` per override leaf: the same dotlist form `rst sim --set` takes.
-    sets = " ".join(f"--set {k}={json.dumps(v)}" for k, v in _flatten(identity["overrides"]))
+    #
+    # QUOTED, and serialized without spaces, because this command is a STRING that the generator
+    # runs through `shlex.split`. A vector-valued override -- `plugins.parcel.pos: [11.8, 4.55,
+    # 0.762]`, i.e. exactly what a campaign that sweeps a position records -- renders as
+    # `[11.8, 4.55, 0.762]` and was torn into three argv words at those spaces, so `rst-export-web`
+    # got `--set plugins.parcel.pos=[11.8,` plus two stray arguments and exited 2. The failure
+    # surfaces only when somebody opens the run view, and only for a world whose overrides contain a
+    # list, so it reads as "this campaign has no 3D geometry" rather than as a quoting bug.
+    sets = " ".join(f"--set {_set_arg(k, v)}" for k, v in _flatten(identity["overrides"]))
     # `{inputs[0]}` when the world is a campaign file: the generator stages it into the
     # container and substitutes the path it landed at. A packaged world keeps its recorded
     # path, which is valid in the image by construction.
     world = "{inputs[0]}" if identity.get("world_file") else identity["world"]
     return (f"rst-export-web --world {world} {sets} --out {{out}} "
             f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
+
+
+def _set_arg(key: str, value) -> str:
+    """One ``--set key=value`` argument that survives ``shlex.split`` as a single word."""
+    return shlex.quote(f"{key}={json.dumps(value, separators=(',', ':'))}")
 
 
 def _flatten(value, prefix=""):

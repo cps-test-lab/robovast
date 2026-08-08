@@ -10,10 +10,17 @@ right picture, just slowly; a key that ignores the overrides renders the wrong p
 
 import json
 import os
+import shlex
 
 import pytest
 
 from robovast.service import scene_cache
+
+
+def _set_values(command: str) -> list:
+    """The value of every ``--set`` in *command*, as the generator's ``shlex.split`` sees them."""
+    parts = shlex.split(command)
+    return [parts[i + 1] for i, part in enumerate(parts) if part == "--set"]
 
 
 @pytest.fixture(autouse=True)
@@ -102,9 +109,23 @@ def test_overrides_become_dotlist_set_flags(tmp_path):
         _campaign(tmp_path),
         _manifest(overrides={"plugins": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
     cmd = scene_cache._command_for(ident, 1024)
-    assert "--set plugins.floorplan.size=4.0" in cmd
-    assert '--set sim.pacing="asap"' in cmd
+    # Asserted after shlex.split, because that is what the generator does with this string -- a
+    # substring match passes for a value that will be torn into several arguments.
+    assert _set_values(cmd) == ["plugins.floorplan.size=4.0", 'sim.pacing="asap"']
     assert "--manifest {out}/.generated.json" in cmd, "the tool reports its own inputs"
+
+
+def test_a_vector_override_stays_one_argument(tmp_path):
+    """A campaign that sweeps a position records a LIST, and a list has spaces in it.
+
+    Unquoted, `plugins.parcel.pos=[11.8, 4.55, 0.762]` reached the exporter as three arguments and it
+    exited 2 -- reported to whoever opened the run view as "no 3D geometry", which reads like the
+    campaign never recorded any rather than like a quoting bug here.
+    """
+    ident = scene_cache.world_identity(
+        _campaign(tmp_path),
+        _manifest(overrides={"plugins": {"parcel": {"pos": [11.8, 4.55, 0.762]}}}))
+    assert _set_values(scene_cache._command_for(ident, 1024)) == ["plugins.parcel.pos=[11.8,4.55,0.762]"]
 
 
 def test_an_unknown_producer_is_named_not_guessed(tmp_path):
