@@ -200,6 +200,24 @@ def _queue_object(custom_api, plural, name, namespace=None):
         raise
 
 
+def _crd_registered(custom_api, plural) -> bool:
+    """Whether *plural* exists as a Kueue resource type at all.
+
+    Distinguishes "the object is absent" from "the kind is not installed" -- the API
+    returns 404 for both, and only the second means Kueue's install is broken. Errs
+    towards ``True``: a check that cannot answer must not accuse the install.
+    """
+    try:
+        custom_api.list_cluster_custom_object(
+            group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+            plural=plural, limit=1)
+        return True
+    except client.rest.ApiException as e:
+        return e.status != 404
+    except Exception:  # noqa: BLE001 - a diagnostic detail must never mask the real error
+        return True
+
+
 def verify_kueue_admission_ready(namespace="default", kube_context=None,
                                  settle_timeout=0.0):
     """Check that a scenario Job labelled into the robovast queue can be admitted.
@@ -267,11 +285,19 @@ def _check_kueue_admission(namespace):
     cq_name = (local_queue.get("spec") or {}).get("clusterQueue") or CLUSTER_QUEUE_NAME
     cluster_queue = _queue_object(custom_api, "clusterqueues", cq_name)
     if cluster_queue is None:
+        # The API answers 404 both for "no such object" and for "no such resource type",
+        # so say which. They look identical and read the same, but a missing CRD means
+        # the ClusterQueue cannot even be created until the CRD is restored -- following
+        # the object-level remedy first is a dead end, and one that is hard to see from
+        # the message alone.
         raise CampaignConfigError(
             f"Kueue ClusterQueue '{cq_name}' does not exist, but LocalQueue "
             f"'{KUEUE_QUEUE_NAME}' in namespace '{namespace}' points at it. Every job "
             f"would stay suspended with 'ClusterQueue {cq_name} doesn't exist'.\n"
-            f"{remedy}")
+            + ("The 'clusterqueues' CRD itself is not registered, so Kueue's install is "
+               "incomplete -- the queue cannot be created until that is repaired. "
+               if not _crd_registered(custom_api, "clusterqueues") else "")
+            + remedy)
 
     spec = cluster_queue.get("spec") or {}
     stop_policy = spec.get("stopPolicy")
@@ -733,7 +759,8 @@ def _force_apply_kueue_crds(ctx_helm, ctx_kubectl):
     missing CRD without disturbing the running controller.
 
     Returns:
-        bool: True if the apply was attempted and succeeded.
+        tuple[bool, str]: ``(ok, detail)``; *detail* explains a failure so the
+        caller can put it in the error it raises.
     """
     manifest = subprocess.run(
         ["helm"] + ctx_helm + [
@@ -748,14 +775,14 @@ def _force_apply_kueue_crds(ctx_helm, ctx_kubectl):
             "Could not fetch Kueue chart manifest for CRD recovery: %s",
             manifest.stderr,
         )
-        return False
+        return False, f"could not read the chart manifest: {manifest.stderr.strip()}"
     crd_docs = [
         doc for doc in manifest.stdout.split("\n---\n")
         if "kind: CustomResourceDefinition" in doc
     ]
     if not crd_docs:
         logger.warning("No CRDs found in Kueue chart manifest; cannot recover.")
-        return False
+        return False, "the chart manifest contains no CustomResourceDefinition"
     applied = subprocess.run(
         ["kubectl"] + ctx_kubectl + [
             "apply", "--server-side", "--force-conflicts", "-f", "-",
@@ -769,9 +796,12 @@ def _force_apply_kueue_crds(ctx_helm, ctx_kubectl):
         logger.warning(
             "Force server-side apply of Kueue CRDs failed: %s", applied.stderr
         )
-        return False
+        # Returned, not just logged: the caller raises, and without this the operator is
+        # told the CRDs are missing "even after recovery" with no word on why the
+        # recovery failed -- which is the one fact that says what to do next.
+        return False, (applied.stderr or applied.stdout or "").strip()
     logger.info("Force-applied %d Kueue CRD(s) from chart manifest", len(crd_docs))
-    return True
+    return True, ""
 
 
 def _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120):
@@ -791,15 +821,16 @@ def _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120):
             "Force-applying CRDs from the chart manifest...",
             not_ready,
         )
-        _force_apply_kueue_crds(ctx_helm, ctx_kubectl)
+        _healed, detail = _force_apply_kueue_crds(ctx_helm, ctx_kubectl)
         not_ready = _wait_for_kueue_crds(ctx_kubectl, timeout=60)
-    if not_ready:
-        raise RuntimeError(
-            "Kueue installation incomplete: CRD(s) missing or not established "
-            f"even after recovery: {not_ready}. The ClusterQueue cannot be "
-            "created, so jobs would run unmanaged (no admission control). "
-            "Run `vast execution cluster cleanup` and then `setup` again."
-        )
+        if not_ready:
+            raise RuntimeError(
+                "Kueue installation incomplete: CRD(s) missing or not established "
+                f"even after recovery: {not_ready}. The ClusterQueue cannot be "
+                "created, so jobs would run unmanaged (no admission control)."
+                + (f"\nThe recovery itself failed: {detail}" if detail else "")
+                + "\nRun `vast execution cluster cleanup` and then `setup` again."
+            )
 
 
 def _run_helm(args, check=True):
@@ -982,10 +1013,19 @@ def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None,
         node_labels_spec=_format_node_labels_spec(node_labels),
     ).strip()
 
+    ctx_kubectl = ["--context", kube_context] if kube_context else []
+    ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
+    # Self-heal the CRDs before applying the queues, not only during the Helm install.
+    # A CRD can go missing *after* a successful setup -- Helm never re-creates a chart's
+    # ``crds/`` on upgrade, so a later ``setup`` cannot restore it either, and the only
+    # symptom is every future job sitting suspended behind a ClusterQueue that "does not
+    # exist". Healing here makes re-running setup the repair its own error message tells
+    # you to run, instead of a command that fails the same way on the missing CRD.
+    _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=60)
+
     # Retry to handle the race where a CRD from a previous uninstall is still
     # in Terminating state when we try to create resources.  Each attempt
     # re-waits for the CRDs to be fully established before applying.
-    ctx_kubectl = ["--context", kube_context] if kube_context else []
     max_attempts = 6
     retry_delay = 10  # seconds between retries
     for attempt in range(1, max_attempts + 1):
