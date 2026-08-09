@@ -40,6 +40,38 @@ def test_the_entry_point_resolves_to_a_backend_serving_both_shapes():
     assert set(backend.SUPPORTED_SHAPES) == {SHAPE_ROS, SHAPE_STEPPED}
 
 
+def test_the_backend_asks_rst_to_stamp_its_log_lines():
+    """rst's CLI prints `INFO rst.engine: msg` by default, on purpose: standalone it is a
+    command a person watches, and robosito is published on its own. In a campaign the reader
+    is the merged run log, where a line with no timestamp cannot be ordered against anything.
+
+    Measured on a three-container run before this: five rst lines (the drawn seed, the
+    recording summary) had no time of their own and folded into the entrypoint line above
+    them rather than standing as their own events. The opt-in existed; nothing set it.
+    """
+    from robovast.common.execution import sidecar_backend_env
+    from robovast.common.simulators import apply_backend
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "robosito",
+                                               "config": "pkg:world"}}}
+    applied = apply_backend(dict(execution))
+    assert applied["_backend_env"]["RST_LOG_FORMAT"] == "stamped"
+    # Through the plumbing too, since `rst sim` runs in the simulation *sidecar* and the
+    # main container's env cannot reach it.
+    assert sidecar_backend_env(applied, "simulation")["RST_LOG_FORMAT"] == "stamped"
+
+
+def test_a_campaign_can_still_ask_for_plain_rst_logs():
+    """The backend supplies a default, not a decision -- the same precedence every other key
+    here follows, so a project that wants rst's terminal format keeps saying so."""
+    from robovast.common.execution import sidecar_backend_env
+
+    execution = {"mode": "ros2", "_backend_env": {"RST_LOG_FORMAT": "stamped"},
+                 "env": [{"RST_LOG_FORMAT": "plain"}]}
+    assert "RST_LOG_FORMAT" not in sidecar_backend_env(execution, "simulation")
+
+
 def test_importing_the_backend_pulls_in_no_simulator():
     """The non-negotiable rule for a backend, checked rather than asserted in prose.
 

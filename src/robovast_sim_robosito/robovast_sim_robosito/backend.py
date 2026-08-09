@@ -134,6 +134,17 @@ class RobositoBackend(SimulatorBackend):
             # are written on a clean stop only; a run killed by a timeout leaves neither.
             "ROBOSITO_RECORD": "run.npz",
             "ROBOSITO_CAPTURE_EXPORT_DIR": "capture",
+            # Timestamp rst's own log lines, so they can be placed on the run's clock like
+            # every other producer's. rst defaults to `INFO rst.engine: msg` because that is
+            # what belongs in a terminal, where `rst sim` is one command a person is
+            # watching -- and robosito is published standalone, so a campaign is no reason
+            # to make that worse. Here the reader is the merged run log rather than a
+            # person, and a line with no timestamp cannot be ordered against anything.
+            #
+            # Measured on a three-container run before this: five rst lines (the drawn seed,
+            # the recording summary) carried no time and folded into the entrypoint line
+            # above them instead of standing as their own events.
+            "RST_LOG_FORMAT": "stamped",
         }
         # MUJOCO_GL is deliberately absent. Which backend works is a property of the
         # machine the simulator lands on, and this code runs on the *service host* -- a
