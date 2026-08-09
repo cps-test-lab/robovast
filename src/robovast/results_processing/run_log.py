@@ -36,7 +36,9 @@ than two piles of lines.
 
 The join also supplies something neither source has on its own: ``/rosout`` carries the
 node name but not the container the node ran in, and the container is what a reader filters
-by. It comes from the file the stdout twin was found in.
+by. It comes from the file the stdout twin was found in — and, for a row whose twin the exact
+join could not find, from the same node's other lines
+(:func:`attribute_containers_by_node`).
 
 Timestamps are wall throughout — sim time is added by the caller from a
 :class:`~robovast.results_processing.clock_map.ClockMap`, and stays ``None`` where the map
@@ -48,7 +50,7 @@ from __future__ import annotations
 import csv
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from robovast.common import log_summary
@@ -145,13 +147,37 @@ class MergeStats:
     stdout_records: int = 0
     rosout_records: int = 0
     matched: int = 0
+    node_attributed: int = 0
     rows: int = 0
     containers: List[str] = field(default_factory=list)
+
+    #: Counted per RUN by the caller, because a packed job's records are sliced into several
+    #: runs — so it is the one field :meth:`add_job` must not take from a job's stats.
+    _PER_RUN_FIELDS = ("rows",)
+
+    def add_job(self, other: "MergeStats") -> None:
+        """Fold one job's stats into these campaign totals.
+
+        Driven by the dataclass fields rather than a written-out list of additions, because
+        such a list drops a counter added to the class later without saying so — and the
+        summary then reports zero however much the merge did, which is the exact opposite of
+        what these counters exist for.
+        """
+        for spec in fields(self):
+            if spec.name in self._PER_RUN_FIELDS:
+                continue
+            if spec.name == "containers":
+                for name in other.containers:
+                    if name not in self.containers:
+                        self.containers.append(name)
+            else:
+                setattr(self, spec.name, getattr(self, spec.name) + getattr(other, spec.name))
 
     def summary(self) -> str:
         return (f"{self.rows} rows "
                 f"({self.rosout_records} rosout, {self.stdout_records} stdout from "
-                f"{self.stdout_lines} lines, {self.matched} matched) "
+                f"{self.stdout_lines} lines, {self.matched} matched, "
+                f"{self.node_attributed} by node) "
                 f"across {len(self.containers)} container(s)")
 
 
@@ -257,6 +283,41 @@ def read_rosout(path: str) -> List[LogRecord]:
     return records
 
 
+def attribute_containers_by_node(records: Sequence[LogRecord],
+                                 stats: Optional[MergeStats] = None) -> None:
+    """Fill a blank container from the same node's other lines, in place.
+
+    A rosout row learns its container from its stdout twin, but the join is exact, and a line
+    that arrived mangled has no twin and so no container. The common case is two writes landing
+    on one line because the first carried no newline, which leaves the second's stamp
+    unpeelable: ``[INFO] [t] [scenario_execution_ros]: stdin is not a terminal device.[INFO]
+    [t] [rosbag2_recorder]: Press SPACE for pausing/resuming``.
+
+    The node is still named, though, and the *same node's* other lines were placed. A node runs
+    in one container, so that is where this line ran too. This is why one line of a node can
+    lack a container while the next one has it — ``rosbag2_recorder`` was attributed 22 times
+    and blank 11 times in a single measured run. Across 21 campaigns the pass resolves 534 of
+    539 blanks.
+
+    Evidence rather than a guess, and the guard is what keeps it so: a node seen in two
+    containers is left blank. ``entrypoint`` really does run in every one of them, and a
+    filterable wrong container is worse than an honest blank — see
+    :func:`collect_job_records`.
+    """
+    seen: Dict[str, set] = {}
+    for rec in records:
+        if rec.node and rec.container:
+            seen.setdefault(rec.node, set()).add(rec.container)
+    for rec in records:
+        if rec.container or not rec.node:
+            continue
+        candidates = seen.get(rec.node)
+        if candidates and len(candidates) == 1:
+            rec.container = next(iter(candidates))
+            if stats is not None:
+                stats.node_attributed += 1
+
+
 def merge_records(stdout_records: Sequence[LogRecord],
                   rosout_records: Sequence[LogRecord],
                   stats: Optional[MergeStats] = None) -> List[LogRecord]:
@@ -265,7 +326,9 @@ def merge_records(stdout_records: Sequence[LogRecord],
     A rosout row that has a stdout twin keeps rosout's structured fields (level, and the
     source location) and takes the twin's container. A row with no twin is emitted as it
     is, saying which source it came from — stdout-only is the traceback and the gz warning,
-    rosout-only is a node whose container's stdout was not captured.
+    rosout-only is a node whose container's stdout was not captured. Such a row can still
+    learn its container from the same node's other lines, which is the last step here
+    (:func:`attribute_containers_by_node`).
 
     The match is exact on :attr:`LogRecord.join_key`; a tolerance was tried and matched no
     additional row, so there is none to reason about. Because the key carries the
@@ -301,6 +364,7 @@ def merge_records(stdout_records: Sequence[LogRecord],
     # Stable sort on the timestamp alone: equal stamps (a burst inside one tick) keep the
     # order they were read in, which is the order they were written.
     merged.sort(key=lambda r: (r.wall_ts if r.wall_ts is not None else float("-inf")))
+    attribute_containers_by_node(merged, stats)
     stats.rosout_records = len(rosout_records)
     stats.stdout_records = len(stdout_records)
     stats.rows = len(merged)
@@ -352,9 +416,10 @@ def collect_job_records(job_dir: str, stats: Optional[MergeStats] = None,
     rosout = read_rosout(os.path.join(logs_dir, "rosout.csv"))
     merged = merge_records(stdout_records, rosout, stats)
 
-    # Most rosout rows have no stdout twin, so no container, when nodes log to /rosout without
-    # their output being relayed to any captured stdout (614 of 1256 rows on a measured
-    # single-container campaign, which the panel showed as "?").
+    # The last resort, for what neither the join nor the node evidence could place. Rows with no
+    # stdout twin are common (614 of 1256 on a measured single-container campaign); most now
+    # learn their container from another line of the same node, and what reaches here is a node
+    # whose output was relayed to no captured stdout *at all*, so nothing places any of it.
     #
     # Filled in only when the *campaign* declares one container -- see the docstring for why the
     # number of log files is not the same question. The logs found must agree, so a campaign

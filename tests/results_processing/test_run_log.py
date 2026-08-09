@@ -7,6 +7,8 @@ The numbers in the docstrings come from a real three-container campaign,
 574 rows with 473 matched and **zero** events present twice.
 """
 
+import dataclasses
+
 import pytest
 
 from robovast.results_processing import run_log
@@ -134,13 +136,78 @@ def test_the_container_of_a_rosout_row_comes_from_its_twin(tmp_path):
     assert merged[0].file == "f.cpp"  # rosout's structured fields survive the join
 
 
-def test_a_rosout_row_with_no_twin_keeps_an_unknown_container(tmp_path):
-    """A node whose container's stdout was not captured is still part of the log; claiming a
-    container for it would be a guess."""
+def test_a_rosout_row_with_no_evidence_at_all_keeps_an_unknown_container(tmp_path):
+    """A node whose container's stdout was not captured *anywhere* is still part of the log;
+    claiming a container for it would be a guess. No twin and no other line from that node
+    means nothing places it."""
     path = _rosout_rows(tmp_path, [
         (100.0, 100.0, 20, "INFO", "rosbag2_recorder", "Press SPACE for pausing/resuming")])
     merged = run_log.merge_records([], run_log.read_rosout(path))
     assert merged[0].container == ""
+
+
+def test_a_rosout_row_with_no_twin_takes_the_container_its_own_node_was_seen_in(tmp_path):
+    """`ros2 bag record`'s output is relayed, so a write that carried no newline leaves the
+    next line's stamp unpeelable and that one row loses its twin -- while the node's other
+    rows join normally. The node ran in one container either way, which is the only reason
+    the blank can be filled without guessing.
+
+    Measured: `rosbag2_recorder` is attributed 22 times and blank 11 times *in one run*.
+    """
+    stamp = 1786259468.903038464
+    path = _rosout_rows(tmp_path, [
+        (stamp + 0.0002, stamp, 20, "INFO", "rosbag2_recorder",
+         "Press SPACE for pausing/resuming"),
+        (200.0002, 200.0, 20, "INFO", "rosbag2_recorder", "Recording...")])
+    # Only the second line kept a peelable stamp of its own, so only it finds a twin.
+    stdout = run_log.parse_container_log(
+        ["[INFO] [1786259468.904814817] [scenario_execution_ros]: stdin is not a terminal "
+         f"device.[INFO] [{stamp}] [rosbag2_recorder]: Press SPACE for pausing/resuming",
+         "[INFO] [200.0] [rosbag2_recorder]: Recording..."], "robovast")
+    stats = run_log.MergeStats()
+    merged = run_log.merge_records(stdout, run_log.read_rosout(path), stats)
+    assert stats.matched == 1, "the mangled line must not find a twin"
+    assert stats.node_attributed == 1
+    by_msg = {r.message: r for r in merged if r.source == run_log.SRC_ROSOUT}
+    assert by_msg["Press SPACE for pausing/resuming"].container == "robovast"
+
+
+def test_campaign_totals_carry_every_counter_a_job_reported():
+    """The summary is the regression signal, so a counter that does not reach the totals
+    reports zero however much the merge did. Written out field by field, the fold silently
+    omits any counter added to the class afterwards; asserted over the dataclass instead, so
+    a counter added later is covered without anyone remembering to come back here."""
+    job = run_log.MergeStats()
+    for spec in dataclasses.fields(job):
+        if spec.name == "containers":
+            job.containers.append("sut")
+        else:
+            setattr(job, spec.name, 7)
+
+    totals = run_log.MergeStats()
+    totals.add_job(job)
+    totals.add_job(job)
+
+    for spec in dataclasses.fields(totals):
+        if spec.name == "containers":
+            assert totals.containers == ["sut"], "a container must not be counted twice"
+        elif spec.name in run_log.MergeStats._PER_RUN_FIELDS:
+            assert getattr(totals, spec.name) == 0, f"{spec.name} is the caller's to count"
+        else:
+            assert getattr(totals, spec.name) == 14, f"{spec.name} never reached the totals"
+
+
+def test_a_node_seen_in_two_containers_stays_blank(tmp_path):
+    """`entrypoint` really does run in every container, so its blank rows have no one answer.
+    A filterable wrong container is worse than an honest blank."""
+    path = _rosout_rows(tmp_path, [(300.0002, 300.0, 20, "INFO", "entrypoint", "Uploading")])
+    stdout = (run_log.parse_container_log(["[INFO] [100.0] [entrypoint]: starting"], "sut")
+              + run_log.parse_container_log(["[INFO] [101.0] [entrypoint]: starting"],
+                                            "simulation"))
+    stats = run_log.MergeStats()
+    merged = run_log.merge_records(stdout, run_log.read_rosout(path), stats)
+    assert stats.node_attributed == 0
+    assert [r for r in merged if r.message == "Uploading"][0].container == ""
 
 
 def test_repeats_pair_in_time_order(tmp_path):

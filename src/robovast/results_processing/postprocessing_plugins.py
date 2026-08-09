@@ -463,13 +463,7 @@ class RunLog(BasePostprocessingPlugin):
                     clock = clock_map.load_clock_map(
                         os.path.join(job_dir, "logs", clock_map.FILENAME))
                     job_cache[job_dir] = (records, clock, stats)
-                    totals.stdout_lines += stats.stdout_lines
-                    totals.stdout_records += stats.stdout_records
-                    totals.rosout_records += stats.rosout_records
-                    totals.matched += stats.matched
-                    for name in stats.containers:
-                        if name not in totals.containers:
-                            totals.containers.append(name)
+                    totals.add_job(stats)
                 records, clock, _ = job_cache[job_dir]
                 if not clock:
                     # No /clock bag: a non-ROS run may still have left its own map beside its
@@ -675,7 +669,15 @@ def _read_behaviour_tree_log(records: list) -> list:
 #: JSONL ``format`` -> the function turning its records into table rows. Dispatching
 #: on the file's own declared format rather than its name keeps the ingest open to
 #: further producers without hardcoding filenames here.
-_JSONL_READERS = {"behaviour_tree_log": _read_behaviour_tree_log}
+#:
+#: BOTH SPELLINGS, and both are load-bearing. scenario-execution renamed the format it
+#: writes from ``behaviour_tree_log`` to ``behavior_tree_log`` (matching the spelling of
+#: its own records), so which one arrives depends on the image a run used -- and runs
+#: already archived carry the old one forever. Dropping either spelling does not fail: an
+#: unknown format makes ``_read_table_rows`` return no rows, so the ``behaviors`` table is
+#: simply empty and the run view's scenario tree is blank with nothing saying why.
+_JSONL_READERS = {"behaviour_tree_log": _read_behaviour_tree_log,
+                  "behavior_tree_log": _read_behaviour_tree_log}
 
 
 def _read_table_rows(path: Path) -> list:
