@@ -14,7 +14,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin: reading what a campaign did — read-only SQL.
+"""MCP plugin: reading what a campaign did — read-only SQL, plus the run artifacts a
+program has to be run over.
 
 Two flat views (``run_view``, ``config_view``) plus the metric tables answer the per-run,
 per-configuration and aggregate questions that used to need a tool each. The per-scope
@@ -24,16 +25,21 @@ already recorded in ``campaign.db``.
 
 What stays a dedicated tool is the campaign listing (it spans campaigns) and the one
 aggregate asked constantly, itself computed over the same SQL. Campaign **files** are read
-through the address space (``/results/<campaign_id>/<path>``).
+through the address space (``/results/<campaign_id>/<path>``) — with one exception, which is
+why this module is no longer only SQL: **looking at** a run means decoding a recording, and a
+decoder takes a path rather than an address. Those tools return an image, so they *raise*
+where the SQL ones return ``{"error": ...}`` — an image response has no dict to carry one.
 """
 
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 from urllib.parse import quote
 
 from fastmcp import Context, FastMCP
+from fastmcp.utilities.types import Image
 
-from robovast.mcp_server import data_access, service_access
+from robovast.mcp_server import data_access, run_artifacts, service_access
 
 logger = logging.getLogger(__name__)
 
@@ -346,17 +352,13 @@ def list_campaign_plots(campaign_id: str) -> dict:
 
 
 def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) -> dict:
-    """Whether a run's 3D geometry is ready, being built, or **failed and why**.
+    """Whether a run view's 3D geometry is ready, being built, or **failed and why**.
 
-    The web run view needs two artifacts: the run's own ``capture/`` (motion, written by the run) and a
-    scene descriptor (geometry, built on demand from the world the capture names, cached per world). This
-    reports the second one, and exists for one reason — a build runs in a container on a background
-    thread, so when it fails the reason reaches the browser but nothing else. An agent asked to check why
-    a run will not display otherwise sees only that geometry is absent, which is what a run nobody has
-    opened yet looks like too.
+    Read this when a run view shows no world. The build runs on a background thread, so its
+    failure reason reaches the browser and nothing else — without this it is indistinguishable
+    from a run nobody has opened yet.
 
-    Read-only: it never starts a build. Ask a human to open the run view, or use the scene-builder MCP's
-    ``render_scene`` to look at a world directly.
+    Read-only: it never starts a build.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -364,11 +366,9 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
         run_id: Which run of that configuration.
 
     Returns:
-        ``{cached, in_progress, stage, error, note, world, overrides_known, bytes}``, or ``{error}``.
-
-        ``error`` is the build's own reason when one failed — that is the field to read when a run view
-        shows no world. ``overrides_known: false`` means the capture predates override recording, so the
-        geometry is compiled from the bare world and may not reflect per-config world overrides.
+        ``{cached, in_progress, stage, error, note, world, overrides_known, bytes}``, or
+        ``{error}``. ``error`` carries the build's own reason. ``overrides_known: false`` means
+        the capture predates override recording, so geometry may miss per-config overrides.
     """
     try:
         client = service_access.service_client()
@@ -378,6 +378,175 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
         return st.model_dump() if hasattr(st, "model_dump") else dict(st)
     except Exception as e:  # noqa: BLE001 - surface resolution/transport errors to the client
         return {"error": str(e)}
+
+
+# -- Looking at a run --------------------------------------------------------
+
+#: The manifest every video producer writes a row to, one per recording (see
+#: ``rosbags_process.VIDEOS_CSV``). The run view's ``camera`` panel reads the same row, which
+#: is what keeps the two surfaces from disagreeing about where a video sits in time.
+_VIDEOS_TABLE = "videos"
+
+
+def _video_row(campaign_id: str, config_name: str, run_id: int, topic: Optional[str]) -> dict:
+    """The ``videos`` row to read, or a :class:`RunArtifactError` explaining what is missing."""
+    scope = f"config_name = {_lit(config_name)} AND run_id = {_lit(run_id)}"
+    sql = (f"SELECT topic, file, t_start, t_end, fps, frames FROM {_VIDEOS_TABLE} "
+           f"WHERE {scope}" + (f" AND topic = {_lit(topic)}" if topic else "")
+           + " ORDER BY topic")
+    rows = data_access.rows(campaign_id, sql, max_rows=50)
+    if not rows:
+        known = data_access.rows(
+            campaign_id,
+            f"SELECT DISTINCT topic FROM {_VIDEOS_TABLE} "
+            f"WHERE config_name = {_lit(config_name)} AND run_id = {_lit(run_id)}",
+            max_rows=50)
+        if topic and known:
+            raise run_artifacts.RunArtifactError(
+                f"run {run_id} of {config_name!r} registered no video for {topic!r}. "
+                f"It has: {', '.join(sorted(str(r['topic']) for r in known))}.")
+        raise run_artifacts.RunArtifactError(
+            f"run {run_id} of {config_name!r} registered no video. A video reaches this tool "
+            f"through the `{_VIDEOS_TABLE}` table, which `rosbags_to_webm` writes — add it to "
+            f"results_processing.postprocessing, naming the image topic the scenario records, "
+            f"and re-run postprocessing.")
+    if len(rows) > 1:
+        topics = ", ".join(sorted(str(r["topic"]) for r in rows))
+        raise run_artifacts.RunArtifactError(
+            f"run {run_id} of {config_name!r} recorded several cameras ({topics}); "
+            f"pass topic= to choose one.")
+    return rows[0]
+
+
+def _lit(value) -> str:
+    """A SQL literal for a value this module controls the type of."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
+                     time: Optional[float] = None,
+                     topic: Optional[str] = None) -> Image:
+    """One frame of a camera recorded during the run, as a PNG.
+
+    Reads the video the run produced; the perspective is fixed by where that camera was
+    mounted. Cheap, and works on any backend that registered a video. To pick your own
+    viewpoint, use ``get_simulation_screenshot`` instead.
+
+    For a **human** to watch the run, prefer the file:
+    ``read_file('/results/<campaign>/<config>/<run>/<name>.webm')`` returns a URL.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        config_name: Which configuration the run belongs to.
+        run_id: Which run of that configuration.
+        time: Seconds on the run's timeline — the clock every ``data.db`` table uses, so a
+            moment found in SQL can be looked at directly. Default: the first frame.
+        topic: Which camera, if the run recorded several. Omitted lists them.
+
+    Raises:
+        RunArtifactError: no video, ambiguous ``topic``, or the recording could not be read.
+    """
+    row = _video_row(campaign_id, config_name, run_id, topic)
+    name = str(row["file"])
+    t_start = float(row["t_start"])
+    offset = 0.0 if time is None else max(0.0, float(time) - t_start)
+
+    t_end = row.get("t_end")
+    if time is not None and t_end not in (None, "") and float(time) > float(t_end):
+        # Clamped rather than wrapped: ffmpeg seeking past the end returns the *first* frame,
+        # which is a picture of a different moment presented as this one.
+        logger.warning("time %.3f is past the last frame of %s (%.3f); clamping",
+                       float(time), name, float(t_end))
+        offset = max(0.0, float(t_end) - t_start)
+
+    address = run_artifacts.run_address(campaign_id, config_name, run_id, name)
+    with run_artifacts.materialized(address, name.rsplit("/", 1)[-1]) as path:
+        return Image(data=_decode_frame(path, offset), format="png")
+
+
+def _decode_frame(path, offset_s: float) -> bytes:
+    """One PNG frame *offset_s* into the recording at *path*, decoded with FFmpeg.
+
+    FFmpeg rather than OpenCV: it is the tool that *wrote* this file (``rosbags_to_webm``
+    pipes frames into it), so no second video dependency is added to read it back. ``-ss``
+    before ``-i`` is the fast seek, which is accurate here because the encoder pins a
+    keyframe interval.
+    """
+    import subprocess  # pylint: disable=import-outside-toplevel
+    cmd = ["ffmpeg", "-loglevel", "error", "-ss", f"{offset_s:.6f}", "-i", str(path),
+           "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+    except FileNotFoundError as e:
+        raise run_artifacts.RunArtifactError(
+            "ffmpeg is not on this host, and it is what decodes a recording. Install it "
+            "(it is also what produced the file) or read the .webm with read_file instead."
+        ) from e
+    if proc.returncode != 0 or not proc.stdout:
+        raise run_artifacts.RunArtifactError(
+            f"could not decode a frame at {offset_s:.3f}s of {path.name}: "
+            f"{proc.stderr.decode(errors='replace').strip() or 'ffmpeg wrote no frame'}")
+    return proc.stdout
+
+
+def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 0,
+                              at: Optional[float] = None,
+                              view: Optional[list] = None,
+                              focus: Optional[list] = None,
+                              camera: Optional[str] = None,
+                              size: str = "960x720") -> Image:
+    """Re-render one moment of a run from a viewpoint you choose, as a PNG.
+
+    Renders the world again, so the camera is yours. Needs a simulator that can re-render
+    (robosito can; Gazebo cannot) and a run that recorded its state — written on a clean stop
+    only, so a run killed by its deadline has none.
+
+    For a camera *mounted in the world during the run*, use ``get_camera_frame``: a cheap read
+    of a recorded video, on any backend. This one runs a container in the campaign's
+    simulation image — seconds if that image is on the node, minutes if it must be pulled.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        config_name: Which configuration the run belongs to.
+        run_id: Which run of that configuration.
+        at: Simulated seconds; snaps to the nearest sample. Default: the last one.
+        view: ``key=value`` strings — ``lookat=x,y,z``, ``distance=``, ``azimuth=`` (degrees
+            around the vertical), ``elevation=`` (degrees above the horizontal).
+        focus: Entity or body names to frame on; the simulator picks a clear angle.
+        camera: A camera the world defines. It owns its pose — not with ``view``/``focus``.
+        size: ``WxH``, default ``960x720``.
+
+    Raises:
+        RunArtifactError: no such capability, no recorded state, or the render failed.
+    """
+    from robovast.common.simulators import \
+        parse_view  # pylint: disable=import-outside-toplevel
+    from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+
+    client = service_access.service_client()
+    if client is None:
+        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
+    try:
+        parsed = parse_view(view)
+    except ValueError as e:
+        raise run_artifacts.RunArtifactError(str(e)) from e
+
+    try:
+        frame = client.campaign_screenshot(
+            campaign_id, config_name, str(run_id), at=at, view=parsed,
+            focus=list(focus or []), camera=camera, size=size)
+    except Exception as e:  # noqa: BLE001 - the reason is the whole value of this failing
+        raise run_artifacts.RunArtifactError(str(e)) from e
+
+    path = Path(frame)
+    try:
+        return Image(data=path.read_bytes(), format="png")
+    finally:
+        # Ours to remove whichever lane produced it: the local service rendered into a temp
+        # dir and the HTTP client wrote the bytes into the same shape for exactly this.
+        screenshot.discard(path)
 
 
 # -- Plugin class ------------------------------------------------------------
@@ -401,6 +570,8 @@ _TOOLS = [
     query_campaign_data_sql,
     list_campaign_plots,
     get_run_scene_status,
+    get_camera_frame,
+    get_simulation_screenshot,
 ]
 
 

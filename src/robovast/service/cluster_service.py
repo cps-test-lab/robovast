@@ -1819,6 +1819,18 @@ class ClusterService(LocalTransport):
         self._materialize(campaign_id, (rel,), "run capture manifest", interactive=True)
         return super()._scene_capture(campaign_id, config_name, run_id)
 
+    def _run_state_path(self, campaign_id: str, config_name: str, run_id: str,
+                        filename: str):
+        """Fetch this run's recording, then point at it where the base class expects.
+
+        Same shape as :meth:`_scene_capture` above and for the same reason: the render runs a
+        container over a *path*, and on this lane nothing is on local disk until asked for.
+        A single object — the recording is the one input the frame is drawn from.
+        """
+        rel = f"{config_name}/{run_id}/{filename}"
+        self._materialize(campaign_id, (rel,), "run state recording", interactive=True)
+        return super()._run_state_path(campaign_id, config_name, run_id, filename)
+
     def _scene_identity(self, campaign_id, config_name, run_id):
         """Materialise a campaign-owned world's whole ``_config/`` before resolving identity.
 
@@ -2065,6 +2077,34 @@ class ClusterService(LocalTransport):
         if data is None:
             raise KeyError(f"no file at {address!r}")
         return data
+
+    def local_file(self, address: str) -> Path:
+        """The one object behind *address*, fetched into the campaign's cache dir.
+
+        Overridden for the same reason as its three neighbours, and it is the override whose
+        absence was *invisible*: this class inherits ``LocalTransport.local_file``, so the
+        HTTP layer's "does this lane have a path?" test could never be False, and the
+        inherited implementation resolved a ``/results`` address through ``_data_dir`` --
+        which on this lane is :meth:`fetch_campaign`, i.e. it pulled the **whole campaign**,
+        every rosbag included, to serve one file. A ``<video>`` tag on a 5 MB recording paid
+        for gigabytes on first play, and nothing about the request said so.
+
+        :meth:`_materialize` is the fix and already the discipline of the reads below: one
+        object, validated by size, written into the same cache dir a later full fetch reuses.
+        The caller gets a real path, so the response still streams with ``Range``.
+        """
+        parts = self._results_parts(address)
+        if parts is None:
+            return super().local_file(address)
+        owner, rel = parts
+        if not rel:
+            raise ValueError(f"{address!r} is a campaign, not a file — list it instead")
+        # interactive: this is a browser waiting on a media request, not a batch transfer.
+        cache = self._materialize(owner, (rel,), f"file {rel}", interactive=True)
+        target = cache / rel
+        if not target.is_file():
+            raise KeyError(f"no file at {address!r}")
+        return target
 
     def read_file(self, address: str, lines: int = 200, offset: int = 0):
         parts = self._results_parts(address)

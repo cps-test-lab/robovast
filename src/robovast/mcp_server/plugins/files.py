@@ -52,7 +52,8 @@ Under ``/results/<campaign_id>/``:
   _transient/           configurations.yaml, entrypoint.sh
   _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log
   <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
-  <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, scene/scene.json
+  <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, capture/, *.webm (a
+                        recorded camera; videos.csv lists them with their timing)
 
 Under ``/sources/<workspace_id>/``: whatever the project author wrote.
 """

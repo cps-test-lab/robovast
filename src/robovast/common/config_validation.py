@@ -407,6 +407,51 @@ def _run_capture_problems(raw):
         field=f"visualization.panels[{i}]") for i, _entry in panels]
 
 
+def _camera_panel_problems(raw):
+    """A ``camera`` panel plays a video some step has to *produce*.
+
+    Same failure mode as the ``scene3d`` check above, one layer down: nothing else in the
+    campaign says the panel needs a video, so without this the campaign runs, passes, and
+    shows "this run registered no video" to whoever finally opens it — after the compute is
+    spent.
+
+    Only the ``videos``-table path is checked. A panel naming ``source.path`` points at a
+    file it takes responsibility for (the escape hatch for a video no producer registered),
+    and second-guessing that would reject the one case the hatch exists for.
+
+    Deliberately shallow: this asks whether *a* video producer is declared, not whether it
+    names the right topic. Which topics a scenario records is in the ``.osc``, which is not
+    parsed here — and a wrong topic already fails loudly at postprocessing time with
+    "topic not in bag".
+    """
+    from robovast.results_processing.postprocessing import \
+        VIDEO_PRODUCER_COMMANDS  # pylint: disable=import-outside-toplevel
+
+    problems = []
+    viz = raw.get("visualization") or {}
+    if not isinstance(viz, dict):
+        return problems
+    panels = [(i, props) for i, entry in enumerate(viz.get("panels") or [])
+              for ptype, props in [_panel_entry(entry)] if ptype == "camera"]
+    if not panels:
+        return problems
+
+    entries = ((raw.get("results_processing") or {}).get("postprocessing") or [])
+    declared = {c if isinstance(c, str) else next(iter(c), None)
+                for c in entries if isinstance(c, (str, dict))}
+    if VIDEO_PRODUCER_COMMANDS & declared:
+        return problems
+
+    return [_problem(
+        "panel",
+        "a camera panel plays a video listed in the `videos` table, but this campaign "
+        "declares no step that produces one. Add `rosbags_to_webm` (naming the image topic "
+        "the scenario records) to results_processing.postprocessing, or point the panel at a "
+        "file directly with `source: {path: ..., t0: ...}`.",
+        field=f"visualization.panels[{i}]")
+        for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
+
+
 def _vega_panel_problems(i, props):
     """The ``vega`` panel's bindings, as a collect-all check.
 
@@ -744,6 +789,8 @@ def validate_project_file(config_path):
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
     problems.extend(_run_capture_problems(raw))
+    # ...and a camera panel needs a step that produces the video it plays.
+    problems.extend(_camera_panel_problems(raw))
 
     # A build: section's workspace-path python_packages must exist (fail-fast at
     # submit, before any image build runs). Schema-level checks (tag shape, the

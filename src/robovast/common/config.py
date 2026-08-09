@@ -452,6 +452,7 @@ class EvaluationConfig(BaseModel):
 #: group and are accepted in addition to these (see ``PanelConfig._known_type``).
 BUILTIN_PANEL_TYPES = frozenset({
     "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state", "vega", "log",
+    "camera",
 })
 
 #: Entry-point group for package-provided run-view panels (loaded as Module-Federation

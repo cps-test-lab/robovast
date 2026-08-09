@@ -35,6 +35,11 @@ ADAPTER = "rst.scenario_adapter:MujocoSim"
 #: Where RoboVAST mounts a campaign's ``run_files``, in every container of the job.
 _CONFIG_MOUNT = "/config"
 
+#: The MuJoCo state recording each run writes, relative to its output directory. Named once
+#: and read twice — :meth:`RobositoBackend.env` asks for it, :meth:`run_state_file` tells the
+#: service where to find it — so the request and the lookup cannot drift apart.
+_RECORD_FILE = "run.npz"
+
 
 def _is_package_ref(config: str) -> bool:
     """``rst_scenes:depot`` names a packaged world; anything else is a file."""
@@ -129,7 +134,7 @@ class RobositoBackend(SimulatorBackend):
             "ENABLE_X11": "false",
             # The run's ground truth, and the capture the scene3d panel replays. Both
             # are written on a clean stop only; a run killed by a timeout leaves neither.
-            "ROBOSITO_RECORD": "run.npz",
+            "ROBOSITO_RECORD": _RECORD_FILE,
             "ROBOSITO_CAPTURE_EXPORT_DIR": "capture",
             # Timestamp rst's own log lines, so they can be placed on the run's clock like
             # every other producer's. rst defaults to `INFO rst.engine: msg` because that is
@@ -198,6 +203,49 @@ class RobositoBackend(SimulatorBackend):
         sets = " ".join(f"--set {_set_arg(k, v)}" for k, v in _flatten(overrides))
         return (f"rst-export-web --world {world} {sets} --out {{out}} "
                 f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
+
+    def run_state_file(self, cfg, execution: dict) -> str:
+        """The recording :meth:`env` asks every run to write.
+
+        Both sides read :data:`_RECORD_FILE`, so the name that is *requested* and the name that
+        is later *looked for* cannot drift apart.
+        """
+        del cfg, execution
+        return _RECORD_FILE
+
+    def simulation_screenshot(self, cfg, execution: dict, *, state: str,
+                              at=None, view=None, focus=None, camera=None,
+                              size: str = "960x720") -> str:
+        """``rst render``, replaying the run's own recording from a chosen viewpoint.
+
+        No world argument: ``rst render``'s target is optional with ``--state``, because a
+        recording *names the world it was made from*. That is what makes this work for a
+        campaign whose world is a package ref and one whose world is a campaign file alike --
+        the recording answers, rather than RoboVAST having to reconstruct the reference.
+
+        RoboVAST's four view keys map one-to-one onto rst's ``sim.view`` names, which is why
+        those four were the ones chosen. So the whole robosito-specific surface here is which
+        binary and how it spells its flags; a second simulator implements the same hook and
+        the same tool starts answering for it.
+
+        Every value is quoted: the return is a *string* put through ``shlex.split``, and
+        ``lookat=1,2,0`` has to survive as one word -- the same trap :func:`_set_arg`'s
+        docstring records for vector-valued overrides.
+        """
+        parts = ["rst", "render", "--state", state,
+                 "--out", "{out}/frame.png", "--size", shlex.quote(str(size))]
+        if at is not None:
+            parts += ["--at", repr(float(at))]
+        if camera:
+            # Owns its own pose, so rst refuses it together with --view/--focus; the caller
+            # is refused earlier, with a message about the camera rather than about argv.
+            parts += ["--camera", shlex.quote(str(camera))]
+        else:
+            if view:
+                parts += ["--view"] + [shlex.quote(f"{k}={v}") for k, v in sorted(view.items())]
+            if focus:
+                parts += ["--focus"] + [shlex.quote(str(f)) for f in focus]
+        return " ".join(parts)
 
 
 def _set_arg(key: str, value) -> str:

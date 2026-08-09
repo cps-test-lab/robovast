@@ -50,6 +50,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import yaml
 from abc import ABC, abstractmethod
@@ -64,7 +65,8 @@ import numpy as np
 
 from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME,
                             DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator,
-                            find_rosbags, gen_msg_values, write_provenance_entry)
+                            find_rosbags, gen_msg_values, register_video,
+                            write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 
 
@@ -760,44 +762,97 @@ def _sanitize_topic(topic: str) -> str:
 
 
 class ToWebmHandler(RosbagHandler):
-    """Convert a CompressedImage topic to a WebM video file via FFmpeg."""
+    """Convert a CompressedImage topic to a WebM video file via FFmpeg, and register it.
+
+    Two things here exist because a camera may run at 25 fps, not only at the 1 Hz a monitor
+    camera does:
+
+    * **Frames are spooled to disk, not held in a list.** The fps cannot be chosen until the
+      last stamp is known, so the frames have to outlive the read loop; keeping them in memory
+      cost ~45,000 JPEGs (gigabytes) for half an hour at 25 fps, in the postprocessing
+      container. Only ``(offset, length, stamp)`` stays resident.
+    * **The keyframe interval is pinned.** Without ``-g`` the encoder's default decides how far
+      a seek has to decode from, which is invisible at 1800 frames and painful at 45,000 -- and
+      seeking is the whole point of the run-view panel that plays this.
+
+    The encode stays CONSTANT-rate. ``fps = (n-1)/duration`` puts the first and last frames at
+    exactly their recorded moments, so only mid-run jitter drifts; making it variable would
+    change the shape of an artifact the analysis notebooks and the published videos zip already
+    read, to fix a sub-second error at the rate this actually runs at.
+    """
 
     _DEFAULT_TOPIC = "/camera/image_raw/compressed"
     _DEFAULT_FPS = 30.0
+    #: Seconds of video between keyframes; ``-g`` is this many frames at the chosen rate.
+    _KEYFRAME_SECONDS = 2.0
 
     def __init__(self, topic: str = _DEFAULT_TOPIC, default_fps: float = _DEFAULT_FPS) -> None:
         self._topic = topic
         self._default_fps = default_fps
-        self._frames: List[bytes] = []
+        self._spool = None            # open temp file holding the JPEG bytes back to back
+        self._sizes: List[int] = []   # byte length of each frame, in arrival order
         self._timestamps: List[int] = []
         self._output_file: str = ""
+        self._out_folder: str = ""
+        self._run_dir: str = ""
 
     def topics(self) -> List[str]:
         return [self._topic]
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
-        self._frames = []
+        self._close_spool()
+        self._sizes = []
         self._timestamps = []
         topic_suffix = _sanitize_topic(self._topic)
         bag_name = os.path.basename(bag_path)
-        parent_folder = self._out_dir(bag_path)
-        self._output_file = os.path.join(parent_folder, f"{bag_name}_{topic_suffix}.webm")
+        # The bag sits IN the run directory, so its parent is what a ``file`` in the manifest
+        # is relative to -- that is the directory the run view addresses files under. Normally
+        # identical to the output folder; a ``--output-dir`` elsewhere makes the path escape
+        # with ``../``, which is the honest answer since nothing could serve it either way.
+        self._run_dir = os.path.dirname(os.path.abspath(bag_path))
+        self._out_folder = self._out_dir(bag_path)
+        self._output_file = os.path.join(self._out_folder, f"{bag_name}_{topic_suffix}.webm")
+        # Beside the output rather than in /tmp: the spool is as large as the frames, and a
+        # container's /tmp is routinely the smallest filesystem it has.
+        self._spool = tempfile.NamedTemporaryFile(  # pylint: disable=consider-using-with
+            prefix=".webm-frames-", dir=self._out_folder, delete=False)
         if self._topic not in topic_type_map:
             print(f"  ✗ {bag_path}: topic '{self._topic}' not in bag")
 
+    def _close_spool(self) -> None:
+        """Close and delete the frame spool, if one is open."""
+        if self._spool is None:
+            return
+        name = self._spool.name
+        try:
+            self._spool.close()
+        finally:
+            self._spool = None
+            with contextlib.suppress(OSError):
+                os.unlink(name)
+
     def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
-        if topic == self._topic:
-            self._frames.append(bytes(msg.data))
+        if topic == self._topic and self._spool is not None:
+            data = bytes(msg.data)
+            self._spool.write(data)
+            self._sizes.append(len(data))
             self._timestamps.append(timestamp)
 
     def on_end(self) -> Tuple[int, List[str]]:
-        if not self._frames:
+        try:
+            return self._encode()
+        finally:
+            self._close_spool()
+
+    def _encode(self) -> Tuple[int, List[str]]:
+        if not self._sizes or self._spool is None:
             print(f"  ✗ {self._output_file}: no frames")
             return 0, []
 
-        if len(self._frames) > 1:
+        n = len(self._sizes)
+        if n > 1:
             duration_s = (self._timestamps[-1] - self._timestamps[0]) / 1e9
-            fps = (len(self._frames) - 1) / duration_s if duration_s > 0 else self._default_fps
+            fps = (n - 1) / duration_s if duration_s > 0 else self._default_fps
         else:
             fps = self._default_fps
 
@@ -807,6 +862,7 @@ class ToWebmHandler(RosbagHandler):
             "-r", f"{fps:.6f}",
             "-i", "pipe:0",
             "-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0",
+            "-g", str(max(1, round(fps * self._KEYFRAME_SECONDS))),
             "-deadline", "realtime", "-cpu-used", "8",
             self._output_file,
         ]
@@ -815,8 +871,10 @@ class ToWebmHandler(RosbagHandler):
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
         try:
-            for jpeg_bytes in self._frames:
-                proc.stdin.write(jpeg_bytes)
+            self._spool.flush()
+            self._spool.seek(0)
+            for size in self._sizes:
+                proc.stdin.write(self._spool.read(size))
         except BrokenPipeError:
             pass
         finally:
@@ -832,9 +890,18 @@ class ToWebmHandler(RosbagHandler):
             print(f"  ✗ {self._output_file}: FFmpeg failed: {stderr.decode(errors='replace')}")
             return -2, []
 
-        n = len(self._frames)
+        # Stamps in SECONDS, like every other table's, so a moment found in one is directly
+        # comparable here and with the run view's playback clock.
+        manifest = register_video(self._out_folder, {
+            "topic": self._topic,
+            "file": os.path.relpath(self._output_file, self._run_dir),
+            "t_start": self._timestamps[0] / 1_000_000_000.0,
+            "t_end": self._timestamps[-1] / 1_000_000_000.0,
+            "fps": round(fps, 6),
+            "frames": n,
+        })
         print(f"  ✓ {self._output_file}: {n} frames @ {fps:.2f} fps")
-        return n, [self._output_file]
+        return n, [self._output_file, manifest]
 
     @classmethod
     def from_config(cls, config: dict) -> "ToWebmHandler":

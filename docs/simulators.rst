@@ -151,6 +151,39 @@ Hooks, all optional except as noted:
    needs the simulator itself.
 ``produces_run_capture(cfg, execution)``
    Whether runs write the capture a ``scene3d`` panel replays.
+``scene_export(cfg, execution, *, world, max_tex_dim, overrides)``
+   Command that compiles a world into a web scene descriptor, or ``None``.
+``run_state_file(cfg, execution)``
+   The run-relative recording a screenshot is rendered from, or ``None``. Whatever the
+   backend arranged in ``env`` to be written — one name, so the request and the later
+   lookup cannot drift apart.
+``simulation_screenshot(cfg, execution, *, state, at, view, focus, camera, size)``
+   Command that re-renders **one moment of one run** from a chosen viewpoint, or ``None``.
+
+Showing a run: two questions, two hooks
+```````````````````````````````````````
+
+``scene_export`` rebuilds the *geometry* once per world, cached and shared by every run that
+used it. ``simulation_screenshot`` renders *one moment of one run* from a viewpoint the caller
+picks, which needs the simulator itself — nothing else can put the world back into the state a
+recording captured. Both run in the campaign's own pinned image, both return a **command
+string** put through ``shlex.split`` with ``{out}`` for the output directory.
+
+``None`` is a normal answer to either, and Gazebo gives it to both: RoboVAST launches it, and a
+simulator RoboVAST merely launches cannot be asked to re-render anything. Callers report that
+as a capability this campaign's simulator lacks, not as a missing tool.
+
+One asymmetry is deliberate. ``scene_export``'s ``overrides`` are passed through opaquely,
+because their serialization really is the simulator's own convention — but the **camera
+vocabulary is RoboVAST's**: ``lookat``, ``distance``, ``azimuth``, ``elevation``, plus ``focus``
+(frame on a named entity) and ``camera`` (a camera the world defines, which owns its pose and so
+excludes the other three). Those four describe an orbit camera in any simulator, and owning them
+is what lets one tool description enumerate what is valid instead of sending a caller to read a
+simulator's own docs. Unknown keys are rejected, naming the valid ones. A backend may accept
+more; it documents that itself.
+
+Quote every value: the return is a *string*, and a vector like ``lookat=1,2,0`` has to survive
+``shlex.split`` as one word.
 
 Two rules that are not negotiable
 `````````````````````````````````

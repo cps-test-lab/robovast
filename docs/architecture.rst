@@ -609,6 +609,33 @@ three:
   ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
   drops in without touching any panel.
 
+**Camera delivery.** A recorded video is the one panel input that never passes through the data
+seam: the panel resolves a ``videos`` row to a URL (``DataProvider.runFileUrl``) and puts it in a
+``<video src>``, and the **browser** does the fetching, ranged requests and all. Nothing streams
+media through the service's Python. The ``videos`` row exists because the encode re-times frames
+onto a constant rate and drops the bag stamps, so ``t_start`` is the only thing that can place
+the file on the clock; the ``get_camera_frame`` MCP tool reads the same row, so the two surfaces
+cannot hold different opinions about when a recording began. The panel is a **reader** of the
+clock like every other, which is why it shows no controls of its own — two things in charge of
+"now" is a run view disagreeing with itself.
+
+That path is also why ``local_file`` has to dispatch per lane. ``FileResponse`` is what carries
+``Range``, and the route asks the transport for a path outright rather than probing for the
+method: every transport has it (they all subclass ``LocalTransport``), so a presence check can
+only ever succeed. While one was believed to be meaningful, a cluster campaign fell through to
+the *local* resolver, whose ``_data_dir`` is ``fetch_campaign`` — pulling an entire campaign to
+serve one file. Each lane now answers with its own cost: local hands back the path, the cluster
+fetches the single object behind the address.
+
+**Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
+descriptor per *world*, so one build serves every run that used it — worth a background thread,
+a cache and a status to poll. ``robovast.service.screenshot`` renders one moment of one run from
+a caller's viewpoint, so its key would be a camera pose and a time and would never be hit twice:
+no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second
+part matters as much as the first — an asynchronous render would have to stash its failure
+somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
+failed scene build visible to nothing but ``get_run_scene_status``.
+
 **Costmap delivery.** Occupancy grids can't ride the generic CSV flatten (a grid becomes
 thousands of per-cell columns, past SQLite's column limit; and the read path caps a cell at
 2 KB). The ``rosbags_costmap_to_csv`` handler

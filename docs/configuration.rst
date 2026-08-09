@@ -963,7 +963,7 @@ To list all available plugins and their descriptions:
 - ``nav2_bt_tree`` (requires the ``robovast_nav`` package): Reconstruct nav2's behavior tree by parsing the BT XML nav2 ran and joining it with the ``nav2_behavior_tree`` transitions, writing a ``nav2_behaviors`` CSV in the same schema as the ``behaviors`` table (so the Run view's tree panel renders it). Required ``bt_xml`` parameter (path, relative to the config dir, to the BT XML — must match ``bt_navigator``'s ``default_nav_to_pose_bt_xml``). List it **after** ``rosbags_nav2bt_to_csv``.
 - ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``. (Not for occupancy grids — use ``rosbags_costmap_to_csv``, which stores grids compactly instead of one column per cell.)
 - ``rosbags_costmap_to_csv``: Store ``nav_msgs/msg/OccupancyGrid`` frames (nav2 costmaps, the static map) compactly and losslessly for the web :ref:`Run view <run-view>`. Required ``topics`` parameter (list of grid topics, e.g. ``[/map, /global_costmap/costmap, /local_costmap/costmap]``). Writes one ``costmaps`` table row per message: the pose/geometry metadata (resolution, width, height, origin) plus the int8 cells zlib-compressed and base64-encoded. The map's extent in meters is ``width×resolution`` by ``height×resolution``.
-- ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec). Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``).
+- ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec), and register each in the run's :ref:`videos table <videos-table>` so the :ref:`camera panel <camera-panel>` and ``get_camera_frame`` can place it on the run's timeline. Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``). The rate is otherwise derived from the frames' own stamps as ``(n-1)/duration``, so the first and last frames land exactly on their recorded moments and only mid-run jitter drifts.
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``rosbags_rosout_to_csv``: Extract ROS log messages from the ``/rosout`` topic in ROS bags to a CSV file. Optional ``skip_levels`` parameter (list of log levels to skip, e.g. ``[ERROR, FATAL]``).
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
@@ -990,6 +990,66 @@ To list all available plugins and their descriptions:
                 topics: [/cmd_vel, /odom]
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
+
+.. _videos-table:
+
+Recording a camera, and watching it back
+""""""""""""""""""""""""""""""""""""""""
+
+Putting a camera in a run view takes three things, and they live in three different parts of a
+campaign — so here they are together. A reader who finds only one of them gets an empty panel:
+
+.. code-block:: yaml
+
+   # 1. the scenario records the image topic          (in the .osc, not the .vast)
+   #    bag_record(['/static_camera/image/compressed', ...])
+
+   # 2. postprocessing turns the recorded frames into a video, and registers it
+   results_processing:
+     postprocessing:
+     - rosbags_to_webm:
+         topic: /static_camera/image/compressed
+
+   # 3. the run view plays it. A bare `- camera:` is enough when the run has one video.
+   visualization:
+     panels:
+     - camera:
+         title: Monitor camera
+         position: {anchor: center, width: 560, height: 560}
+
+Validation catches the common half-step: a ``camera`` panel with no step that produces a video
+is refused before the campaign runs, rather than showing an empty panel after the compute is
+spent.
+
+**The** ``videos`` **table** is what joins steps 2 and 3. One row per recording, in the run's
+``videos.csv``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Column
+     - Meaning
+   * - ``topic``
+     - The recorded topic, and how a panel or tool picks between several cameras.
+   * - ``file``
+     - The video, relative to the run directory.
+   * - ``t_start``, ``t_end``
+     - First and last frame, in **seconds on the run's timeline** — the same clock every other
+       table's timestamps use (see :ref:`one clock per run <run-clock>`).
+   * - ``fps``, ``frames``
+     - The rate written into the container, and how many frames it holds.
+
+``t_start`` is the load-bearing one. The encode re-times frames onto a constant rate and drops
+the bag stamps, so the file alone cannot say when its first frame was — and a camera that came
+up ten seconds into a trial would otherwise replay as though it had run from the start.
+
+This is a **contract, not** ``rosbags_to_webm``'s **private file**. That step is the first
+producer, not the owner: anything that puts a video in a run directory may write the same row —
+another postprocessing step, a simulator that renders its own, a script of your own — and the
+camera panel and ``get_camera_frame`` then work for it unchanged. Without that, the only way to
+reach the panel would be "record a ``CompressedImage`` through a rosbag", which is a
+ROS-shaped assumption in a feature that has no reason to carry one.
 
 publication
 ^^^^^^^^^^^

@@ -251,6 +251,23 @@ is what makes them work on the cluster too. Where a fact genuinely is not in the
 — a nav variation's planned path is written to ``_transient/configurations.yaml`` and to
 nothing else — the tool's docstring says so and names what was checked.
 
+**Looking at a run: two tools, and the difference between them is the point.**
+
+``get_camera_frame`` reads a camera that was *recorded during the run* — the perspective is
+fixed by wherever it was mounted, it re-renders nothing, and it works on any backend that
+registered a video (see :ref:`the videos table <videos-table>`). Cheap.
+
+``get_simulation_screenshot`` renders the world **again**, from a viewpoint the caller picks
+(``lookat`` / ``distance`` / ``azimuth`` / ``elevation``, or ``focus`` on a named entity, or a
+camera the world defines). That needs a simulator that can re-render — robosito can, Gazebo
+cannot — and a run that recorded its state, and it runs a container in the campaign's own
+simulation image: seconds if that image is on the node, minutes if it must be pulled.
+
+Both return an image, so both **raise** rather than returning ``{"error": …}``: an image
+response has no dict to carry one. And for a *human* who wants to watch a run, neither is the
+answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
+through this interface one frame at a time.
+
 An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
 compile-time option, so a query could work on the MCP host and fail in the service.
 ``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
@@ -700,7 +717,8 @@ or pod. A campaign in flight is provenance-recorded, reproducible compute, and a
 to it would perturb the thing it exists to produce. To inspect a live stack, start that
 stack here instead — and to ask why a *campaign* is wedged, use
 ``get_campaign_status`` (``stalled`` / ``stall_reason``), ``get_campaign_log``,
-``get_job_log`` and ``get_simulation_screenshot``.
+``get_job_log`` and — to *see* what a finished run did — ``get_camera_frame`` or
+``get_simulation_screenshot``.
 
 **At most one container exists at a time.** That is what keeps this from growing session
 ids, a listing tool, and a leak class. ``keep_alive=True`` holds it open; every result

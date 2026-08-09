@@ -345,6 +345,12 @@ class HTTPTransport(RobovastInterface):
     #: because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
 
+    #: A screenshot renders inside the request, and on a node that has never run this
+    #: campaign's simulator the first thing it does is pull the image. Same reasoning as
+    #: ``DATA_TIMEOUT``, same budget: a client that gives up at 30 s reports a timeout where
+    #: the honest answer is that the pull is still going.
+    SCREENSHOT_TIMEOUT = 900.0
+
     def describe_campaign_data(self, campaign_id: str) -> "DataDescribe":
         from robovast.service.interface import DataDescribe
         return DataDescribe.model_validate(self._get(
@@ -392,6 +398,43 @@ class HTTPTransport(RobovastInterface):
         query = urlencode({"config_name": config_name, "run_id": str(run_id)})
         return ActionResult.model_validate(self._post(
             f"{Routes.campaign_scene_run(campaign_id)}?{query}"))
+
+    def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
+                            at=None, view=None, focus=None, camera=None,
+                            size: str = "960x720") -> str:
+        """POST the render and land the PNG in a temp dir, keeping the local contract.
+
+        The interface returns a *path* because the service builds one, and a path means
+        nothing across HTTP — so the bytes are written into the same directory shape
+        ``screenshot.render`` produces, and ``screenshot.discard`` removes it either way. One
+        cleanup rule for both, rather than a caller that has to know which lane answered.
+
+        **A long timeout, deliberately.** This is the one call that may pull a 2 GB image
+        before it can start, inside the request; the default would give up on a cold node and
+        report a timeout where the honest answer is "still pulling".
+        """
+        import tempfile
+        from pathlib import Path
+        from urllib.parse import urlencode
+
+        import requests
+
+        params = [("config_name", config_name), ("run_id", str(run_id)), ("size", size)]
+        if at is not None:
+            params.append(("at", str(at)))
+        if camera:
+            params.append(("camera", camera))
+        params += [("view", f"{k}={v}") for k, v in sorted((view or {}).items())]
+        params += [("focus", str(f)) for f in (focus or [])]
+        resp = requests.post(
+            f"{self.base_url}{Routes.campaign_screenshot(campaign_id)}?{urlencode(params)}",
+            timeout=self.SCREENSHOT_TIMEOUT)
+        self.raise_for_status(resp)
+        out = Path(tempfile.mkdtemp(prefix="robovast-screenshot-")) / "render"
+        out.mkdir()
+        frame = out / "frame.png"
+        frame.write_bytes(resp.content)
+        return str(frame)
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes

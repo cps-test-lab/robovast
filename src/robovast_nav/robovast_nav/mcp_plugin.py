@@ -117,10 +117,10 @@ def _list_dir(campaign_id: str, *parts) -> list[str]:
 def _materialized(campaign_id: str, prefix: tuple, names):
     """Copy campaign files into a temp dir and yield it, so path-based readers can run.
 
-    OpenCV and the map visualizer take a filesystem path, and a cluster campaign has
-    none — its files are objects. Fetching the bytes by address and writing them side by
-    side (keeping their names, so a map YAML still finds its image) is what lets those
-    two readers work on either backend instead of only the local one.
+    The map visualizer takes a filesystem path, and a cluster campaign has none — its files
+    are objects. Fetching the bytes by address and writing them side by side (keeping their
+    names, so a map YAML still finds its image) is what lets it work on either backend
+    instead of only the local one.
     """
     client = _client()
     with tempfile.TemporaryDirectory(prefix="robovast-nav-") as tmp:
@@ -842,123 +842,6 @@ def draw_map(
     return Image(data=buf.getvalue(), format="png")
 
 
-def get_simulation_screenshot(
-    campaign_id: str,
-    config_name: str,
-    run_id: int,
-    simulation_time: float,
-) -> Image:
-    """Return a simulation camera screenshot at the given simulation time.
-
-    Seeks the run's WebM camera recording to *simulation_time* (ROS seconds). The offset
-    is taken from the rosbag ``metadata.yaml`` starting_time, so the right frame is picked
-    even for a bag recorded mid-session.
-
-    Args:
-        campaign_id: Campaign identifier.
-        config_name: Configuration directory name.
-        run_id: Run index within that configuration.
-        simulation_time: Simulation time in seconds.
-
-    Returns:
-        PNG screenshot as an MCP ``Image``.
-
-    Raises:
-        NavDataError: No ``.webm`` in the run directory, or more than one (an image tool
-            has no result dict to carry an ``{"error": …}`` in, so it raises instead).
-
-    Note:
-        The whole recording is also a file in the address space, so
-        ``read_file('/results/<campaign_id>/<config_name>/<run_id>/<name>.webm')`` returns
-        a URL for it. Prefer that when a human wants to watch the run rather than have
-        one frame described — a video is not something to move through this interface.
-    """
-    import cv2  # pylint: disable=import-outside-toplevel
-
-    run_prefix = (config_name, str(run_id))
-    entries = _list_dir(campaign_id, *run_prefix)
-    webm_files = sorted(e for e in entries if e.endswith(".webm"))
-    if not webm_files:
-        raise NavDataError(
-            f"no .webm recording in run {run_id} of {config_name!r} — the campaign's "
-            "postprocessing has to include rosbags_to_webm for there to be one.")
-    if len(webm_files) > 1:
-        raise NavDataError(
-            f"run {run_id} of {config_name!r} holds several .webm files "
-            f"({', '.join(webm_files)}); cannot auto-select.")
-
-    # A rosbag directory is the one entry with a metadata.yaml inside it.
-    seek_s = 0.0
-    bag_meta = None
-    for entry in sorted(e for e in entries if e.endswith("/")):
-        name = entry.rstrip("/")
-        try:
-            bag_meta = _read_yaml(campaign_id, *run_prefix, name, "metadata.yaml")
-            break
-        except NavDataError:
-            continue
-    if bag_meta:
-        try:
-            ns = bag_meta["rosbag2_bagfile_information"]["starting_time"][
-                "nanoseconds_since_epoch"]
-            seek_s = max(0.0, simulation_time - ns / 1e9)
-        except (KeyError, TypeError) as exc:
-            logger.warning("Could not read rosbag metadata for time offset: %s", exc)
-    else:
-        logger.warning("No rosbag metadata.yaml under run %s of %s; seeking to t=0",
-                       run_id, config_name)
-
-    # --- Extract frame with OpenCV ---
-    with _materialized(campaign_id, run_prefix, [webm_files[0]]) as root:
-        return _frame_at(cv2, root / webm_files[0], seek_s, simulation_time)
-
-
-def _frame_at(cv2, webm_path: Path, seek_s: float, simulation_time: float) -> Image:
-    """Decode the frame at *seek_s* of *webm_path* and return it as a PNG ``Image``."""
-    cap = cv2.VideoCapture(str(webm_path))
-    try:
-        # Determine video duration so we can clamp the seek position rather than
-        # silently wrapping to the first frame when the timestamp overshoots the end.
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        vid_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
-        video_duration_s = (total_frames / vid_fps) if total_frames > 0 else None
-
-        if video_duration_s is not None and seek_s >= video_duration_s:
-            clamped = max(0.0, video_duration_s - 1.0 / vid_fps)
-            logger.warning(
-                "simulation_time %.3f s maps to seek offset %.3f s which exceeds "
-                "video duration %.3f s for %s; clamping to last frame (%.3f s)",
-                simulation_time,
-                seek_s,
-                video_duration_s,
-                webm_path.name,
-                clamped,
-            )
-            seek_s = clamped
-
-        cap.set(cv2.CAP_PROP_POS_MSEC, seek_s * 1000.0)
-        ret, frame = cap.read()
-        if not ret:
-            # Decoder-level seek failure (e.g. keyframe alignment) — last-resort fallback
-            logger.warning(
-                "Seek to %.3f s failed for %s; falling back to first frame",
-                seek_s,
-                webm_path.name,
-            )
-            cap.set(cv2.CAP_PROP_POS_MSEC, 0.0)
-            ret, frame = cap.read()
-        if not ret:
-            raise RuntimeError(f"Could not read any frame from {webm_path}")
-    finally:
-        cap.release()
-
-    # --- Encode frame as PNG and return ---
-    success, png_buf = cv2.imencode(".png", frame)
-    if not success:
-        raise RuntimeError("cv2.imencode failed to produce PNG data")
-    return Image(data=png_buf.tobytes(), format="png")
-
-
 # ---------------------------------------------------------------------------
 # Plugin class
 # ---------------------------------------------------------------------------
@@ -970,7 +853,6 @@ _TOOLS = [
     nav_get_path_deviation,
     nav_get_map_info,
     draw_map,
-    get_simulation_screenshot,
 ]
 
 

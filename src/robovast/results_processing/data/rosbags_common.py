@@ -15,6 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import csv
 import json
 import os
 import re
@@ -279,3 +280,38 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
                 pending.extend(subdirs)
 
     return sorted(found)
+#: The manifest every video producer writes beside its file, one row per video. Read by the
+#: web run-view's ``camera`` panel and by the ``get_camera_frame`` MCP tool, which is why
+#: ``t_start`` is here at all: the encode below re-times the frames onto a constant rate and
+#: drops the bag stamps, so the file alone cannot be placed on the run's timeline.
+#:
+#: A CONTRACT, not this handler's private file. Anything that puts a video in a run directory
+#: may write the same row -- another postprocessing step, a simulator that renders its own, a
+#: user's script -- and the panel then works for it with no change. Tying the panel to "a
+#: CompressedImage topic recorded through a rosbag" would bake a ROS-shaped assumption into a
+#: feature that has no reason to carry one.
+VIDEOS_CSV = "videos.csv"
+VIDEO_FIELDNAMES = ["topic", "file", "t_start", "t_end", "fps", "frames"]
+
+
+def register_video(out_dir: str, row: dict) -> str:
+    """Record one video in *out_dir*'s :data:`VIDEOS_CSV`, replacing any row for the same file.
+
+    Rewrite rather than append: ``on_end`` runs once per bag and postprocessing may be re-run
+    over a directory that already has results, so appending would duplicate rows -- and two
+    bags in one run have to share this file, because the database builder refuses two CSVs
+    that map to the same table name.
+    """
+    path = os.path.join(out_dir, VIDEOS_CSV)
+    rows = []
+    if os.path.isfile(path):
+        with open(path, "r", newline="", encoding="utf-8") as fh:
+            rows = [r for r in csv.DictReader(fh) if r.get("file") != row["file"]]
+    rows.append({k: row.get(k, "") for k in VIDEO_FIELDNAMES})
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=VIDEO_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+

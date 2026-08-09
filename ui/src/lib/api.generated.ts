@@ -531,6 +531,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/screenshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Campaign Screenshot
+         * @description Re-render one moment of a run from a viewpoint you choose, as a PNG.
+         *
+         *     A POST because it *runs* the simulator, in the campaign's own pinned image — the same
+         *     reason ``scene/run`` is one. Unlike that build it is synchronous and has no status
+         *     sibling: a screenshot is keyed on a camera pose and a moment, so nothing is cacheable
+         *     and there is nothing to poll. Seconds when the image is on the node, minutes when it
+         *     has to be pulled first.
+         *
+         *     ``view`` is repeated ``key=value`` (``?view=azimuth=90&view=distance=12``).
+         */
+        post: operations["campaign_screenshot_campaigns__campaign_id__screenshot_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/share/run": {
         parameters: {
             query?: never;
@@ -1225,6 +1253,8 @@ export interface components {
          *     Campaigns are workspace-independent, so this carries no ``workspace_id``.
          */
         CampaignSummary: {
+            /** Backend */
+            backend: string | null;
             /** Campaign Id */
             campaign_id: string;
             /**
@@ -3527,6 +3557,45 @@ export interface operations {
             path: {
                 campaign_id: string;
                 path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_screenshot_campaigns__campaign_id__screenshot_post: {
+        parameters: {
+            query?: {
+                config_name?: string;
+                run_id?: string;
+                at?: number | null;
+                view?: string[];
+                focus?: string[];
+                camera?: string;
+                size?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
             };
             cookie?: never;
         };

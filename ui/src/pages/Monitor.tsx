@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
 import IconButton from '@mui/material/IconButton'
@@ -303,6 +304,20 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
           {id}
         </Typography>
+        {/* Only the local lane is marked. A multi-backend service defaults to cluster and a
+            single-backend one reports no lane at all, so a `cluster` chip would sit on nearly
+            every card saying "as usual" — what is worth a glance is the pilot that did NOT
+            go to the cluster. */}
+        {summary.backend === 'local' ? (
+          <Tooltip title="Ran on the local Docker lane, not the cluster">
+            <Chip
+              label="local"
+              size="small"
+              variant="outlined"
+              sx={{ height: 18, fontSize: '0.65rem' }}
+            />
+          </Tooltip>
+        ) : null}
         {summary.started_at ? (
           <Typography variant="caption" color="text.secondary">
             {formatLocalTime(summary.started_at)}

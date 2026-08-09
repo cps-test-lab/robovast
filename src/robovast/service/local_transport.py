@@ -535,17 +535,20 @@ class LocalTransport(RobovastInterface):
         return target.read_bytes()
 
     def local_file(self, address: str) -> Path:
-        """The file's real path on this host, for a lane that has one.
+        """The file's real path on this host, for the HTTP layer to stream.
 
-        Lets the HTTP layer serve it with ``FileResponse`` — streamed, with ``Range`` and
-        conditional-request handling — instead of reading it whole into memory. A
-        campaign's rosbag is tens of megabytes and up, and ``read_file_bytes`` buffers all
-        of it per request just to hand it back.
+        Lets a response be a ``FileResponse`` — streamed, with ``Range`` and
+        conditional-request handling — instead of read whole into memory. A campaign's
+        rosbag is tens of megabytes and up, and ``read_file_bytes`` buffers all of it per
+        request just to hand it back; ``Range`` is also what lets a browser *seek* a
+        ``.webm`` rather than download it before playing.
 
-        The cluster service does **not** override this (its results are object-store
-        entries, with no path to hand out), so the HTTP layer treats its absence as "this
-        lane cannot stream" rather than as an error. That is a real difference between the
-        substrates, not a fallback for one behaviour.
+        **Every transport implements this**, which is why callers must not test for its
+        presence: ``ClusterService`` and ``MultiBackendService`` both subclass this one, so
+        the attribute is never absent and a ``getattr(impl, "local_file", None) is None``
+        check can only ever be False. What differs between the lanes is the *cost* of
+        answering, and each says so: here the file is already on disk, and the cluster
+        fetches the one object behind the address.
         """
         _, _, _, target = self._address_target(address)
         self._require_file(address, target)
@@ -2346,6 +2349,37 @@ class LocalTransport(RobovastInterface):
         # step -- the same footing as an image build.
         threading.Thread(target=work, name=f"robovast-scene-{key[:8]}", daemon=True).start()
         return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
+
+    def _run_state_path(self, campaign_id: str, config_name: str, run_id: str,
+                        filename: str) -> Path:
+        """Where this run's recording sits, for a lane that can hand out a path.
+
+        Its own seam for the reason :meth:`_scene_source_dir` is: the cluster lane holds no run
+        files locally and has to materialise this one object first.
+        """
+        return (Path(self._scene_source_dir(campaign_id)) / config_name / str(run_id)
+                / filename)
+
+    def campaign_screenshot(self, campaign_id, config_name, run_id, *, at=None, view=None,
+                            focus=None, camera=None, size="960x720") -> str:
+        """Render one moment of a run. Synchronous — see :mod:`robovast.service.screenshot`."""
+        from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+        from robovast.service.scene_cache import \
+            SceneUnavailable  # pylint: disable=import-outside-toplevel
+        try:
+            # The same identity geometry is built from: it resolves the campaign's simulator
+            # image, refuses a mutable tag, and carries the `_config/` mount a campaign-file
+            # world needs. Reused rather than re-derived so the two cannot disagree about which
+            # image a campaign's simulator is.
+            identity, _key = self._scene_identity(campaign_id, config_name, run_id)
+        except SceneUnavailable as err:
+            raise screenshot.ScreenshotUnavailable(str(err)) from err
+        return str(screenshot.render(
+            identity,
+            state_path=self._run_state_path(campaign_id, config_name, run_id,
+                                            screenshot.state_filename(identity)),
+            at=at, view=view or {}, focus=focus or [], camera=camera, size=size,
+            runner_context=self._scene_runner_context(campaign_id, identity)))
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         """Resolve ``<key>/<file>`` within the shared descriptor cache.

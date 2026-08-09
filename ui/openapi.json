@@ -376,6 +376,17 @@
       "CampaignSummary": {
         "description": "One row of :meth:`RobovastInterface.list_campaigns`.\n\nCampaigns are workspace-independent, so this carries no ``workspace_id``.",
         "properties": {
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend"
+          },
           "campaign_id": {
             "title": "Campaign Id",
             "type": "string"
@@ -444,6 +455,7 @@
           }
         },
         "required": [
+          "backend",
           "campaign_id",
           "description",
           "finished_at",
@@ -4033,6 +4045,129 @@
           }
         },
         "summary": "Campaign Scene Asset",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/screenshot": {
+      "post": {
+        "description": "Re-render one moment of a run from a viewpoint you choose, as a PNG.\n\nA POST because it *runs* the simulator, in the campaign's own pinned image \u2014 the same\nreason ``scene/run`` is one. Unlike that build it is synchronous and has no status\nsibling: a screenshot is keyed on a camera pose and a moment, so nothing is cacheable\nand there is nothing to poll. Seconds when the image is on the node, minutes when it\nhas to be pulled first.\n\n``view`` is repeated ``key=value`` (``?view=azimuth=90&view=distance=12``).",
+        "operationId": "campaign_screenshot_campaigns__campaign_id__screenshot_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_name",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Config Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "default": "0",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "At"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "View",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "focus",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Focus",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "camera",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Camera",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": "960x720",
+              "title": "Size",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Screenshot",
         "tags": [
           "results"
         ]

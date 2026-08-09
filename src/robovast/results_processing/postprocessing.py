@@ -241,6 +241,15 @@ _AUTO_INFRA_HANDLERS: Tuple[str, ...] = ("rosbags_rosout_to_csv", "rosbags_clock
 #: otherwise it rejects configs the runtime would happily execute.
 ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
 
+#: Commands that register a video in a run's ``videos`` table (``rosbags_process.VIDEOS_CSV``),
+#: which is what the run view's ``camera`` panel and ``get_camera_frame`` read.
+#:
+#: A set rather than one name because that manifest is a **contract**, not this step's private
+#: file: a producer that renders its own video joins by writing the same row and adding itself
+#: here. Validation reads this to tell a campaign that declares a camera panel and nothing to
+#: fill it, which is otherwise only discovered once the compute is spent.
+VIDEO_PRODUCER_COMMANDS: frozenset = frozenset({"rosbags_to_webm"})
+
 
 #: Plugins that run for every campaign without being declared, appended after the
 #: (batched) rosbag conversions because they read what those produce. Skippable by name,

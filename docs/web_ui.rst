@@ -520,6 +520,37 @@ own resolution, not drift. *This panel ships with the*
 it is available whenever ``robovast_nav`` is installed; the ``.vast`` still references it
 as plain ``- costmap:``.
 
+.. _camera-panel:
+
+**Camera** (``camera``) — a camera that was **recorded during the run**, played on the
+playback clock. This is what a simulator with no 3D scene has instead of one: Gazebo writes
+no run capture and has no scene exporter, so a :ref:`scene3d <scene3d-panel>` panel has
+nothing to replay there, while a monitor camera spawned into the world gives that run view a
+picture of the trial.
+
+It needs no bindings — a bare ``- camera:`` is a complete panel whenever the run registered
+exactly one video, the same promise ``scene3d`` makes. ``source: { topic: … }`` picks one when
+a run recorded several; ``source: { path: …, t0: … }`` is the escape hatch for a video no
+producer registered, and needs ``t0`` because a file with no entry in the ``videos`` table
+carries nothing that says where it sits on the timeline.
+
+The panel is a **reader** of the clock and never a writer, so it shows no controls of its own:
+the :ref:`playback <run-view>` bar owns time and this follows it, including at 2×. Seeking
+happens only when the element drifts more than about one frame from the cursor, so ordinary
+playback is not a seek storm. Outside the recording — a camera that came up late, a trial that
+ran past the last frame — it dims and says *"No frames at this time"* rather than showing
+frame 0 as though it were the current moment.
+
+Where the video comes from: a producer writes it into the run directory and registers it in
+the ``videos`` table. ``rosbags_to_webm`` is the first such producer (see the
+:ref:`worked example <videos-table>`), but the table is a contract any of them may write.
+
+Two properties worth knowing. The encode is **constant-rate** — ``fps`` is derived so the
+first and last frames land exactly on their recorded moments, so only mid-run jitter drifts,
+which is sub-second at a monitor camera's 1 Hz. And **seeking is efficient on the local lane**:
+the file is served with ``FileResponse``, so the browser ranges into it. A cluster campaign
+fetches the one object behind the address first, then serves it the same way.
+
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colours each node by its status (running / success / failure) at the current time.
 It reads the ``behaviors`` table, written by ``scenario_execution`` on every run (no ROS
@@ -588,6 +619,8 @@ package is installed, but it is not a second implementation: it renders the buil
 above with different defaults, and so gains its behaviour automatically. Both trees can be
 shown at once — the scenario's says what the trial did, nav2's says why the navigator
 recovered. See :repo_link:`configs/examples/basic_nav` for a complete campaign.
+
+.. _scene3d-panel:
 
 **3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
 (``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser, with

@@ -248,6 +248,32 @@ def test_pre_flight_cluster_campaign_is_listed_first(tmp_path):
     assert [c.campaign_id for c in svc.list_campaigns().campaigns] == [cid, older]
 
 
+def test_each_listed_campaign_names_its_lane(tmp_path):
+    """Every row carries the lane that ran it — the fact its results cannot state.
+
+    Both lanes write into one results dir, so a Docker-on-the-serve-host campaign and a
+    Kubernetes-Job one are indistinguishable on disk. The router resolves the lane for the
+    listing anyway (to re-summarize the cluster rows); stamping it is what lets the web UI
+    mark a local pilot.
+    """
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    svc = _make(tmp_path)
+    local_id = "aaa-2026-02-01-000000"
+    cluster_id = "bbb-2026-02-02-000000"
+    for cid in (local_id, cluster_id):
+        cdir = svc._campaigns_root() / cid
+        cdir.mkdir(parents=True)
+        with CampaignStore(cdir / STORE_FILENAME) as store:
+            store.create_campaign(cid, {}, mode="batch", created_at=1_000.0)
+    # The on-disk lane marker, as a restarted service would find it.
+    (svc._campaigns_root() / cluster_id / "_execution").mkdir()
+    svc._persist_marker(cluster_id, "cluster")
+
+    lanes = {c.campaign_id: c.backend for c in svc.list_campaigns().campaigns}
+    assert lanes == {local_id: "local", cluster_id: "cluster"}
+
+
 def test_an_indexed_campaign_routes_to_the_cluster_lane(tmp_path):
     """A cluster campaign whose local scratch is gone has neither an in-memory entry nor
     an ``_execution/backend`` marker on disk, so lane resolution used to fall through to

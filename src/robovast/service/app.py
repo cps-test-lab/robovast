@@ -32,7 +32,8 @@ lazily so importing this module stays cheap.
 """
 
 import logging
-from typing import Literal
+from pathlib import Path
+from typing import List, Literal, Optional
 
 from robovast.common import file_address
 from robovast.service.interface import (ActionResult, BuildImageRequest,
@@ -422,6 +423,38 @@ def build_app(impl: RobovastInterface):
         campaign that used that world. Poll the GET above."""
         return _guard(lambda: impl.run_campaign_scene(campaign_id, config_name, run_id))
 
+    @app.post(Routes.campaign_screenshot("{campaign_id}"), tags=["results"])
+    def campaign_screenshot(campaign_id: str, config_name: str = "", run_id: str = "0",
+                            at: Optional[float] = None,
+                            view: List[str] = Query(default=[]),
+                            focus: List[str] = Query(default=[]),
+                            camera: str = "", size: str = "960x720"):
+        """Re-render one moment of a run from a viewpoint you choose, as a PNG.
+
+        A POST because it *runs* the simulator, in the campaign's own pinned image — the same
+        reason ``scene/run`` is one. Unlike that build it is synchronous and has no status
+        sibling: a screenshot is keyed on a camera pose and a moment, so nothing is cacheable
+        and there is nothing to poll. Seconds when the image is on the node, minutes when it
+        has to be pulled first.
+
+        ``view`` is repeated ``key=value`` (``?view=azimuth=90&view=distance=12``)."""
+        from fastapi.responses import \
+            FileResponse  # pylint: disable=import-outside-toplevel
+        from starlette.background import \
+            BackgroundTask  # pylint: disable=import-outside-toplevel
+
+        from robovast.common.simulators import \
+            parse_view  # pylint: disable=import-outside-toplevel
+        from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+
+        frame = _guard(lambda: impl.campaign_screenshot(
+            campaign_id, config_name, run_id, at=at, view=parse_view(view),
+            focus=list(focus), camera=camera or None, size=size))
+        # Deleted after the bytes are on the wire, by the function that knows what render()
+        # built — a path reassembled by hand here is how a cleanup deletes the wrong tree.
+        return FileResponse(frame, media_type="image/png",
+                            background=BackgroundTask(screenshot.discard, Path(frame)))
+
     @app.get(Routes.campaign_scene_asset("{campaign_id}", "{path:path}"), tags=["results"])
     def campaign_scene_asset(campaign_id: str, path: str):
         """Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
@@ -539,22 +572,22 @@ def build_app(impl: RobovastInterface):
             return _guard(lambda: impl.read_file(address, lines, offset))
         import mimetypes  # pylint: disable=import-outside-toplevel
 
-        from fastapi.responses import (  # pylint: disable=import-outside-toplevel
-            FileResponse, Response)
+        from fastapi.responses import \
+            FileResponse  # pylint: disable=import-outside-toplevel
         media_type = mimetypes.guess_type(address)[0] or "application/octet-stream"
 
-        # Stream from disk where the lane has a disk. A campaign's rosbag runs to tens of
-        # megabytes and beyond, and buffering it whole per request costs that much service
-        # memory to hand back bytes it never looks at. FileResponse also brings Range and
-        # conditional requests, which is what lets a browser seek a .webm rather than
-        # download it before playing.
-        local = getattr(impl, "local_file", None)
-        if local is not None:
-            return _guard(lambda: FileResponse(local(address), media_type=media_type))
-        # A cluster campaign's results are object-store entries with no path to stream
-        # from; ranged object reads are a separate change.
-        return Response(content=_guard(lambda: impl.read_file_bytes(address)),
-                        media_type=media_type)
+        # Always a path, never a buffer. A campaign's rosbag runs to tens of megabytes and
+        # beyond, and reading it whole per request costs that much service memory to hand
+        # back bytes it never looks at. FileResponse also brings Range and conditional
+        # requests, which is what lets a browser seek a .webm rather than download it
+        # before playing.
+        #
+        # `impl.local_file` is asked for outright rather than probed with getattr: every
+        # transport implements it (they all subclass LocalTransport), so a presence check
+        # could only ever succeed -- and the branch it used to guard, buffering the bytes
+        # for "a lane with no path", was therefore unreachable while the *cluster* lane
+        # fell into the local resolver and fetched an entire campaign to serve one file.
+        return _guard(lambda: FileResponse(impl.local_file(address), media_type=media_type))
 
     @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}", tags=["files"])
     def get_results_file(campaign_id: str, path: str,
@@ -960,7 +993,7 @@ def _resolve_variation_asset(name: str, rel_path: str):
     return _resolve_plugin_asset("robovast.variation_types", name, rel_path, "WEB_PREVIEW")
 
 
-def _ui_dist() -> "Optional[Path]":
+def _ui_dist() -> Optional[Path]:
     """Locate the built web UI (``ui/dist``), or ``None`` if it isn't built.
 
     Order: ``ROBOVAST_UI_DIST`` env override, then the repo-root ``ui/dist`` relative

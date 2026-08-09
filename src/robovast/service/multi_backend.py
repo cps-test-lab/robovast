@@ -331,14 +331,20 @@ class MultiBackendService(LocalTransport):
     ) -> ListCampaignsResponse:
         """Both lanes scan the same results dir, so local's list gives the correct
         order + pagination; re-summarize the cluster-owned rows through the cluster
-        lane (its ``postprocessed``/live status reads the object store)."""
+        lane (its ``postprocessed``/live status reads the object store).
+
+        The lane is stamped onto each row: it is resolved here anyway, and it is the one
+        fact about a campaign in *this* service that its own results cannot state — two
+        campaigns sitting in the same results dir, one run by Docker on the serve host and
+        one by a Kubernetes Job, are otherwise indistinguishable to every reader.
+        """
         base = LocalTransport.list_campaigns(self, request)
         rows = []
         for c in base.campaigns:
-            if self._lane_for(c.campaign_id) == _CLUSTER:
-                rows.append(self._cluster._summary_for(c.campaign_id))  # noqa: SLF001
-            else:
-                rows.append(c)
+            lane = self._lane_for(c.campaign_id)
+            row = self._cluster._summary_for(c.campaign_id) if lane == _CLUSTER else c  # noqa: SLF001
+            row.backend = lane
+            rows.append(row)
         return ListCampaignsResponse(campaigns=rows, total=base.total)
 
     def cleanup_campaign_data(self, request: CleanupDataRequest) -> ActionResult:
@@ -414,6 +420,10 @@ class MultiBackendService(LocalTransport):
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str):
         return self._route(campaign_id, "resolve_campaign_scene_asset", campaign_id, path)
 
+    def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, **kwargs):
+        return self._route(campaign_id, "campaign_screenshot", campaign_id, config_name,
+                           run_id, **kwargs)
+
     def campaign_data_status(self, campaign_id: str):
         # Routed, not answered here: whether a query transfers anything is exactly the
         # per-lane difference — a local-lane campaign in this service fetches nothing.
@@ -452,6 +462,14 @@ class MultiBackendService(LocalTransport):
 
     def read_file_bytes(self, address: str):
         return self._route_address(address, "read_file_bytes", address)
+
+    def local_file(self, address: str):
+        # Routed like its neighbours, and for a sharper reason: unrouted, a *cluster*
+        # campaign's binary read was answered by the local transport, which resolves the
+        # address against the local results tree — a different campaign's file if the id
+        # existed on both lanes, and a 404 otherwise. The HTTP layer cannot catch that for
+        # us: every transport here has this method, so it has nothing to test for.
+        return self._route_address(address, "local_file", address)
 
     def list_campaign_visualizations(self, campaign_id: str):
         return self._route(campaign_id, "list_campaign_visualizations", campaign_id)

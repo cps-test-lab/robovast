@@ -272,3 +272,69 @@ def test_a_missing_file_still_refuses_by_address(env):
     res = client.get("/results/camp-1/nav/3/scene/nope.bin")
     assert res.status_code == 404
     assert "nope.bin" in res.json()["detail"]
+
+
+# -- the streaming path is per-lane -------------------------------------------
+
+
+def test_a_cluster_binary_read_fetches_only_that_object(tmp_path):
+    """A ``/results`` read on the cluster lane materializes ONE object, and still seeks.
+
+    The route cannot pick a lane by asking whether the transport has ``local_file``:
+    ``ClusterService`` subclasses ``LocalTransport``, so it always does. When that check
+    was believed to be meaningful, a cluster campaign fell through to the *local*
+    resolver, whose ``_data_dir`` is ``fetch_campaign`` — pulling the whole campaign,
+    every rosbag included, to hand back one file. A ``<video>`` tag paid for gigabytes on
+    first play and nothing in the request said so.
+    """
+    from robovast.service.cluster_service import ClusterService
+
+    cache = tmp_path / "cache"
+    fetched: list[tuple] = []
+
+    class _Cluster(ClusterService):
+        def __init__(self):  # pylint: disable=super-init-not-called
+            self._campaigns = {}
+            self._lock = threading.Lock()
+
+        def _materialize(self, campaign_id, rel_paths, subject, *, interactive=False):
+            rel_paths = list(rel_paths)
+            fetched.append((campaign_id, tuple(rel_paths), interactive))
+            for rel in rel_paths:
+                dst = cache / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(b"\x00\x01\x02")
+            return cache
+
+        def fetch_campaign(self, campaign_id, **_):
+            raise AssertionError(
+                "serving one file must not pull the whole campaign")
+
+    with TestClient(build_app(_Cluster())) as client:
+        url = "/results/camp-1/nav/3/rosbag2_cam.webm"
+        whole = client.get(url)
+        assert whole.status_code == 200
+        assert whole.content == b"\x00\x01\x02"
+        assert whole.headers["accept-ranges"] == "bytes"
+
+        part = client.get(url, headers={"Range": "bytes=1-2"})
+        assert part.status_code == 206, "the cluster lane must seek, not buffer"
+        assert part.content == b"\x01\x02"
+
+    assert fetched, "the object was never fetched"
+    assert all(paths == ("nav/3/rosbag2_cam.webm",) for _, paths, _ in fetched), fetched
+    assert all(interactive for *_, interactive in fetched), \
+        "a browser waiting on media is not a batch transfer"
+
+
+def test_a_transport_that_serves_no_files_says_so(tmp_path):
+    """``local_file`` refuses by name rather than vanishing as a missing attribute.
+
+    The default on the interface exists for implementations that only *call* a service
+    and have no local file to offer; the route asks for it outright, so the refusal has
+    to be a sentence rather than an ``AttributeError``.
+    """
+    from robovast.service.interface import RobovastInterface
+
+    with pytest.raises(NotImplementedError, match="serves no local files"):
+        RobovastInterface.local_file(object(), "/results/camp-1/x.bin")

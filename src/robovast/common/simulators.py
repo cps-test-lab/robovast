@@ -179,6 +179,104 @@ class SimulatorBackend:
         """
         return None
 
+    def run_state_file(self, cfg, execution: dict) -> Optional[str]:
+        """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
+
+        A backend that sets up a recording (robosito asks for one in :meth:`env`) is the only
+        thing that knows what the file is called, so it says so here rather than the service
+        keeping a second copy of that name. ``None`` -- the default -- goes with a backend that
+        records nothing, which is also one that cannot re-render.
+        """
+        return None
+
+    def simulation_screenshot(self, cfg, execution: dict, *, state: str,
+                              at: Optional[float], view: dict, focus: list,
+                              camera: Optional[str], size: str) -> Optional[str]:
+        """Command that renders one frame of a recorded run, or ``None``.
+
+        The other half of what a simulator can be asked to show. :meth:`scene_export` rebuilds
+        the *geometry* once per world; this renders **one moment of one run, from a viewpoint
+        the caller picks** -- which needs the simulator itself, because nothing else can put
+        the world back into the state the recording captured.
+
+        ``None``, the default, is a normal answer and the same one Gazebo gives to
+        :meth:`scene_export`: a simulator RoboVAST merely launches cannot be asked to re-render
+        anything. The caller reports that as a capability this campaign's simulator lacks.
+
+        Returned as a **string** run through ``shlex.split``, with ``{out}`` for the output
+        directory (write the image as ``{out}/frame.png``) and *state* already spelled as the
+        generator's input placeholder -- so it can be dropped into the command verbatim.
+
+        Args:
+            state: The run's recording, as a placeholder the input generator substitutes.
+            at: Simulated seconds to render, or ``None`` for the recording's last sample.
+            view: Camera pose. **RoboVAST's vocabulary, not the backend's** --
+                :data:`VIEW_KEYS`, already validated. Unlike :meth:`scene_export`'s
+                ``overrides``, whose serialization really is the simulator's own convention, a
+                viewpoint is the same idea everywhere and a caller should not have to learn one
+                spelling per simulator. Map these onto whatever the tool calls them.
+            focus: Entity or body names to frame on, letting the simulator choose the angle.
+            camera: A camera the world itself defines. It owns its pose, so callers are
+                refused if they combine it with *view*/*focus* before reaching here.
+            size: ``WxH``.
+        """
+        return None
+
+
+#: The camera pose a screenshot may ask for, in RoboVAST's terms. Deliberately small and
+#: deliberately generic: these four describe an orbit camera in any simulator, which is what
+#: lets one tool description enumerate what is valid instead of sending a caller to a
+#: simulator's own docs. A backend may accept more and documents that itself.
+VIEW_KEYS: frozenset = frozenset({"lookat", "distance", "azimuth", "elevation"})
+
+
+def parse_view(pairs) -> dict:
+    """``["azimuth=90", "lookat=1,2,0"]`` -> ``{"azimuth": "90", "lookat": "1,2,0"}``.
+
+    Rejects an unknown key by **naming the valid ones**, because the caller here is usually a
+    model reading an error message, and "unknown key" without the vocabulary is a guess-again.
+    Values stay strings: what a backend does with ``1,2,0`` is its own business.
+    """
+    out: dict = {}
+    for pair in pairs or []:
+        key, sep, value = str(pair).partition("=")
+        key = key.strip()
+        if not sep:
+            raise ValueError(
+                f"view entry {pair!r} is not key=value; the keys are "
+                f"{', '.join(sorted(VIEW_KEYS))}")
+        if key not in VIEW_KEYS:
+            raise ValueError(
+                f"unknown view key {key!r}; the keys are {', '.join(sorted(VIEW_KEYS))}")
+        out[key] = value.strip()
+    return out
+
+
+def run_state_filename(execution: dict, base_dir: str = "") -> Optional[str]:
+    """The configured backend's :meth:`SimulatorBackend.run_state_file`, or ``None``."""
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    return backend.run_state_file(_validated_cfg(backend, block, name), execution)
+
+
+def simulation_screenshot_command(execution: dict, *, state: str, at: Optional[float],
+                                  view: dict, focus: list, camera: Optional[str],
+                                  size: str, base_dir: str = "") -> Optional[str]:
+    """The configured backend's :meth:`SimulatorBackend.simulation_screenshot`, or ``None``.
+
+    Same seam as :func:`scene_export_command`, and ``None`` means the same kind of thing:
+    this campaign's simulator does not render views, rather than a tool being missing.
+    """
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    cfg = _validated_cfg(backend, block, name)
+    return backend.simulation_screenshot(cfg, execution, state=state, at=at, view=view,
+                                         focus=focus, camera=camera, size=size)
+
 
 def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
                          overrides: dict, base_dir: str = "") -> Optional[str]:

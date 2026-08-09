@@ -40,6 +40,7 @@ operations extend :class:`RobovastInterface` in later phases.
 """
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -282,6 +283,10 @@ class CampaignSummary(BaseModel):
     # The web UI already tries to read these off a summary and falls back to nothing.
     postprocessing_error: str = ""
     share_error: str = ""
+    #: Which lane ran it ("local" | "cluster"), set only by a **multi-backend** service.
+    #: A single-lane service leaves it unset: there is no second lane to tell it apart
+    #: from, so naming one would be noise a client then has to suppress.
+    backend: Optional[str] = None
 
 
 class ListCampaignsRequest(BaseModel):
@@ -1154,6 +1159,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/scene/run"
 
     @staticmethod
+    def campaign_screenshot(campaign_id: str) -> str:
+        # A POST: it *runs* the simulator, in the campaign's own image. No status sibling —
+        # the render is synchronous, so its result and its reason arrive in the response.
+        return f"/campaigns/{campaign_id}/screenshot"
+
+    @staticmethod
     def campaign_scene_asset(campaign_id: str, path: str) -> str:
         # The descriptor's bytes, served from the shared cache like a panel bundle. A separate first
         # segment from ``scene`` on purpose: ``scene/run`` would otherwise collide with a cached file
@@ -1297,6 +1308,27 @@ class RobovastInterface(ABC):
         """Return one file's raw bytes — the representation a browser or ``vast files
         get`` wants (e.g. the run view's ``scene/scene.json`` and its sibling
         ``scene.bin``). Same errors as :meth:`read_file`, minus the binary refusal."""
+
+    def local_file(self, address: str) -> Path:
+        """A real filesystem path for *address*, so the HTTP layer can stream the file.
+
+        Part of the **serving** contract rather than the client one: a response built from a
+        path streams, and carries ``Range`` and conditional requests with it — which is what
+        keeps a rosbag out of the service's memory and lets a browser seek a ``.webm``
+        instead of downloading it before playing.
+
+        Concrete-with-a-refusal rather than ``@abstractmethod`` because an implementation
+        that only *calls* a service (:class:`HTTPTransport`) has no local file to offer and
+        should not be forced to write a stub claiming otherwise. It says so here instead of
+        failing as a missing attribute in a route.
+
+        Every implementation that is actually served from — ``LocalTransport`` and its
+        subclasses — overrides this. Callers must therefore **not** probe for it with
+        ``getattr``: such a check can only succeed, and the code that believed otherwise sent
+        cluster campaigns down the local resolver for years.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} serves no local files; it cannot stream {address!r}")
 
     @abstractmethod
     def write_file(self, request: WriteFileRequest) -> FileMeta:
@@ -1629,6 +1661,25 @@ class RobovastInterface(ABC):
         Joins an in-flight build of the same world rather than starting a second one; a build serves
         every campaign that used that world, so the work is shared even across campaigns. Poll
         :meth:`campaign_scene_status` for progress.
+        """
+
+    @abstractmethod
+    def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
+                            at: Optional[float] = None, view: Optional[dict] = None,
+                            focus: Optional[list] = None, camera: Optional[str] = None,
+                            size: str = "960x720") -> str:
+        """Re-render one moment of a run from a chosen viewpoint; return the image's path.
+
+        The counterpart of :meth:`campaign_scene_status` for *pixels* rather than geometry, and
+        unlike it this one **does** work: it runs the simulator in the campaign's own pinned
+        image. Synchronous, because the result is the point and nothing about it is cacheable —
+        the key would be a camera pose and a moment.
+
+        Needs a simulator that can re-render (``SimulatorBackend.simulation_screenshot``) and a
+        run that recorded its state. Raises with the reason when either is missing.
+
+        The caller owns the returned path and removes it with
+        ``robovast.service.screenshot.discard``; the route does that once the response is sent.
         """
 
     @abstractmethod
