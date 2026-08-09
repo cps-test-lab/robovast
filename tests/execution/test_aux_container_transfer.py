@@ -253,9 +253,11 @@ def test_mc_is_injected_from_the_sidecar_not_required_of_the_aux_image():
     init, = m["initContainers"]
     assert init["image"] == SIDECAR_IMAGE
     assert "command -v mc" in init["command"][-1]
-    assert m["volumes"] == [{"name": "aux-tools", "emptyDir": {}}]
-    assert m["containers"][0]["volumeMounts"] == [
-        {"name": "aux-tools", "mountPath": "/tools"}]
+    # The tools volume comes first; the mountable-path volumes follow it (see
+    # AUX_MOUNTABLE_PATHS), so this asserts what the tooling contributes, not the whole pod.
+    assert m["volumes"][0] == {"name": "aux-tools", "emptyDir": {}}
+    assert m["containers"][0]["volumeMounts"][0] == {"name": "aux-tools",
+                                                     "mountPath": "/tools"}
 
 
 def test_the_mc_config_dir_is_world_writable():
@@ -422,3 +424,51 @@ def test_the_cluster_service_passes_its_own_context(method):
     from robovast.service.cluster_service import ClusterService
     source = inspect.getsource(getattr(ClusterService, method))
     assert "kube_context=self.kube_context" in source
+
+
+def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at():
+    """A Pod's mounts are fixed when it is created, long before a runner stages anything.
+
+    So the mountable paths are declared up front and world-writable: an emptyDir belongs to
+    root, and the aux container may be running as nobody in particular.
+    """
+    from robovast.execution.cluster_execution.container_runner import \
+        AUX_MOUNTABLE_PATHS
+    spec = ContainerSpec(image="example/img:1")
+    m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
+    mounted = {v["mountPath"] for v in m["containers"][0]["volumeMounts"]}
+    assert set(AUX_MOUNTABLE_PATHS) <= mounted
+    declared = {v["name"] for v in m["volumes"]}
+    assert {v["name"] for v in m["containers"][0]["volumeMounts"]} <= declared
+    for path in AUX_MOUNTABLE_PATHS:
+        assert f"chmod 0777 {path}" in m["initContainers"][0]["command"][-1]
+
+
+def test_a_runner_refuses_a_path_the_pod_never_mounted():
+    """Discovering it inside the tool would look like the tool's own failure."""
+    from robovast.execution.cluster_execution.container_runner import \
+        ClusterContainerRunner
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
+        runner.expose("/tmp/staged", "/somewhere-else")
+
+
+def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch):
+    """``cp -a`` sets attributes on the destination too, and that inode is the mount point.
+
+    It belongs to root while the aux container may be anyone, so the copy died with
+    ``cp: preserving times for '/config/.': Operation not permitted`` -- taking the whole
+    scene build with it. Only the content is wanted; the tree is read, never re-published.
+    """
+    runner = _runner()
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    runner.expose(f"{runner.workspace}/in/0/_config", "/config")
+
+    runner._place_exposed()
+
+    (cmd, _payload), = rec.calls
+    script = cmd[2]
+    assert "cp -a" not in script, "-a preserves attributes on the mount point and fails"
+    assert f"cp -R '{runner.workspace}/in/0/_config/.' '/config/'" in script

@@ -8,6 +8,7 @@ The properties here are the ones that would fail *invisibly* — a cache that ne
 right picture, just slowly; a key that ignores the overrides renders the wrong picture confidently.
 """
 
+import contextlib
 import json
 import os
 import shlex
@@ -30,12 +31,31 @@ def _isolated_cache(tmp_path, monkeypatch):
     yield
 
 
-def _campaign(tmp_path, image="harbor/x@sha256:" + "a" * 64):
+def _campaign(tmp_path, image="harbor/x@sha256:" + "a" * 64, backend="robosito"):
     root = tmp_path / "campaign-2026-08-06-000000"
     (root / "_execution").mkdir(parents=True)
     (root / "_execution" / "execution.yaml").write_text(
         f"image: build:x\nimage_revision: {image}\n", encoding="utf-8")
+    # The frozen `.vast`: which simulator ran, and so which backend is asked how to rebuild
+    # this campaign's geometry. A campaign with none is a case of its own, below.
+    (root / "_config").mkdir(parents=True, exist_ok=True)
+    block = (f"    simulation:\n      backend: {backend}\n      config: pkg:depot\n"
+             f"      image: {image}\n") if backend else "    sut: {}\n"
+    (root / "_config" / "p.vast").write_text(
+        "version: 2\nexecution:\n  mode: ros2\n  containers:\n" + block, encoding="utf-8")
     return str(root)
+
+
+@contextlib.contextmanager
+def _backend_named(name, backend):
+    """Resolve *name* to *backend*, for a simulator that is not installed in this env."""
+    from robovast.common import simulators
+    real = simulators.resolve_backend
+    simulators.resolve_backend = lambda n, base_dir="": backend if n == name else real(n, base_dir)
+    try:
+        yield
+    finally:
+        simulators.resolve_backend = real
 
 
 def _manifest(**over):
@@ -128,9 +148,35 @@ def test_a_vector_override_stays_one_argument(tmp_path):
     assert _set_values(scene_cache._command_for(ident, 1024)) == ["plugins.parcel.pos=[11.8,4.55,0.762]"]
 
 
-def test_an_unknown_producer_is_named_not_guessed(tmp_path):
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest(producer="gazebo"))
-    with pytest.raises(scene_cache.SceneUnavailable, match="no scene generator is registered"):
+def test_the_command_is_the_backends_to_give(tmp_path):
+    """Which exporter builds geometry is the simulator's business, not the service's.
+
+    Asked of the backend the campaign already names, so a second simulator needs no table
+    here -- only the descriptor format stays RoboVAST's.
+    """
+    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+    assert ident["backend"] == "robosito"
+    assert "rst-export-web" in scene_cache._command_for(ident, 1024)
+
+
+def test_a_simulator_that_exports_no_geometry_says_so(tmp_path):
+    """A backend with no exporter (Gazebo has none) is a normal answer, not a missing tool."""
+    class _Mute:
+        SUPPORTED_SHAPES = ("ros", "stepped")
+        CONFIG_CLASS = None
+
+        def scene_export(self, cfg, execution, **kw):
+            return None
+
+    ident = scene_cache.world_identity(_campaign(tmp_path, backend="mute"), _manifest())
+    with pytest.raises(scene_cache.SceneUnavailable, match="exports no scene descriptor"):
+        with _backend_named("mute", _Mute()):
+            scene_cache._command_for(ident, 1024)
+
+
+def test_a_campaign_naming_no_simulator_is_named_not_guessed(tmp_path):
+    ident = scene_cache.world_identity(_campaign(tmp_path, backend=None), _manifest())
+    with pytest.raises(scene_cache.SceneUnavailable, match="none declared"):
         scene_cache._command_for(ident, 1024)
 
 

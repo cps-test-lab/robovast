@@ -53,10 +53,13 @@ import hashlib
 import json
 import logging
 import os
-import shlex
 import shutil
 import threading
 from pathlib import Path
+
+import yaml
+
+from robovast.common.simulators import backend_name
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TEX_DIM = 1024
 
 #: Bumped when this module changes what it *asks for*, so old entries are not served for new requests.
-CACHE_FORMAT_VERSION = 1
+#: 2: the whole ``_config/`` tree is staged and the key covers it, where 1 hashed the world file alone.
+CACHE_FORMAT_VERSION = 2
 
 #: Files a descriptor must have to count as complete. A half-written directory must never be a hit; the
 #: generator's atomic swap makes that nearly impossible, but "nearly" is not a cache invariant.
@@ -169,12 +173,17 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
     # absent means "this producer did not record them". Compiling the bare world for a run that
     # *varied* it renders confidently wrong geometry, so absence is carried through and reported.
     overrides_known = "overrides" in (capture_manifest or {})
+    execution = _campaign_execution(campaign_dir)
     identity = {
         "producer": str((capture_manifest or {}).get("producer") or "rst"),
         "world": str(world),
         "overrides": (capture_manifest or {}).get("overrides") or {},
         "overrides_known": overrides_known,
         "image": image,
+        # Which simulator this campaign ran, so the command that rebuilds its geometry can be
+        # asked of that backend rather than assumed here.
+        "execution": execution,
+        "backend": backend_name(execution),
     }
     identity.update(_campaign_world(campaign_dir, str(world)))
     return identity
@@ -184,6 +193,9 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
 #: path in the ``.vast`` is recorded by the capture under this prefix, because that is
 #: where the simulator read it from.
 _RUN_FILE_MOUNT = "/config/"
+
+#: Where a campaign archives those same files on the results store.
+_CONFIG_DIR = "_config"
 
 
 def campaign_world_rel(world: str) -> str | None:
@@ -195,36 +207,72 @@ def campaign_world_rel(world: str) -> str | None:
     """
     if not world.startswith(_RUN_FILE_MOUNT):
         return None
-    return f"_config/{world[len(_RUN_FILE_MOUNT):]}"
+    return f"{_CONFIG_DIR}/{world[len(_RUN_FILE_MOUNT):]}"
 
 
 def _campaign_world(campaign_dir, world: str) -> dict:
-    """``{world_file, world_sha}`` when the world is a campaign file, else ``{}``.
+    """``{world_file, config_root, config_sha}`` when the world is a campaign file, else ``{}``.
 
     The scene cache was built for a world that lives *in the image*, installed from a
     package -- then the recorded path is valid wherever that image runs, including the aux
     container. A world declared as a path in the ``.vast`` is not that: it is a
     ``run_file``, mounted at ``/config/...`` for the duration of the job only, so passing
     the recorded path to a fresh container asks it to read something that was never there.
-    The build got far enough to start the exporter and then failed on a missing file.
 
-    The campaign archives its run files under ``_config/``, so the world still exists on
-    this side and can be staged into the container as a generator input.
+    **A world is not one file.** It names meshes, colliders and maps, and it names them by
+    the path they had in the job -- ``/config/...``, because that is where the campaign's
+    run files were mounted. Staging the YAML alone therefore fails on the first thing it
+    references, which is what it did. So the whole of ``_config/`` is staged and mounted
+    back at ``/config``, and the world compiles from exactly the paths the run compiled it
+    from. Nothing here has to know which keys of which plugin hold a path.
 
-    Its content hash joins the cache key. For a packaged world the image digest already
-    covers the bytes; for a campaign file it covers nothing, so without this two campaigns
-    whose worlds share a path would serve each other's geometry.
+    The tree's digest joins the cache key. For a packaged world the image digest already
+    covers the bytes; for campaign files it covers nothing, so without this two campaigns
+    whose worlds share a path would serve each other's geometry -- and a campaign whose
+    mesh changed would serve the old shape.
     """
     rel = campaign_world_rel(world)
     if rel is None:
         return {}
+    root = Path(campaign_dir) / _CONFIG_DIR
     local = Path(campaign_dir) / rel
     if not local.is_file():
         raise SceneUnavailable(
             f"this run's world {world!r} is a campaign file, but it is not archived with "
             f"the campaign (looked in {local}), so its geometry cannot be rebuilt.")
-    digest = hashlib.sha256(local.read_bytes()).hexdigest()
-    return {"world_file": str(local), "world_sha": digest}
+    return {"world_file": str(local), "config_root": str(root),
+            "config_sha": _tree_sha(root)}
+
+
+def _campaign_execution(campaign_dir) -> dict:
+    """The frozen ``.vast``'s ``execution`` block -- which simulator this campaign ran.
+
+    From the ``.vast`` rather than ``_execution/execution.yaml``, which records what the run
+    *did* (images, timing) and not what it was configured with. Absent or unreadable is not
+    an error here: the caller turns "no backend" into a reason a user can act on, and a
+    campaign is worth looking at even when its config cannot be parsed.
+    """
+    try:
+        from robovast.common.results_utils import \
+            campaign_vast  # pylint: disable=import-outside-toplevel
+        raw = yaml.safe_load(campaign_vast(campaign_dir).read_text(encoding="utf-8")) or {}
+        return (raw.get("execution") or {}) if isinstance(raw, dict) else {}
+    except Exception as err:  # noqa: BLE001 - a missing/broken .vast is reported downstream
+        logger.debug("no execution block for %s: %s", campaign_dir, err)
+        return {}
+
+
+def _tree_sha(root: Path) -> str:
+    """Content fingerprint of a directory: every file's relative path and bytes, sorted.
+
+    Sorted so it does not depend on directory order, and over paths as well as bytes so a
+    renamed file is a different tree.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def _is_immutable_image(image: str) -> bool:
@@ -250,8 +298,9 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
         CacheKey  # pylint: disable=import-outside-toplevel
 
     key = CacheKey()
-    # For a campaign-file world the image digest says nothing about the world's bytes.
-    key.add("world_sha", identity.get("world_sha") or "")
+    # For a campaign-file world the image digest says nothing about the bytes -- of the
+    # world or of anything it references, which is why this covers the whole tree.
+    key.add("config_sha", identity.get("config_sha") or "")
     key.add("scene_cache_version", CACHE_FORMAT_VERSION)
     key.add("image", identity["image"])
     key.add("world", identity["world"])
@@ -310,49 +359,37 @@ def clear_failure(key: str) -> None:
 
 
 def _command_for(identity: dict, max_tex_dim: int) -> str:
-    """The generator command for a producer.
+    """The command that compiles this world, asked of the campaign's simulator backend.
 
-    One entry today, and deliberately a table rather than an entry-point group: a plugin group with a
-    single member is speculative generality, and the extension point that matters already exists — a
-    campaign that wants different geometry can still declare its own ``execution.generate``. When a
-    *second* producer appears, this becomes a group and the mapping moves to the producers.
+    Which exporter builds geometry, and how it spells its arguments, is the *simulator's*
+    business -- so it is answered by the backend the campaign already names rather than by a
+    table here. What stays RoboVAST's is the descriptor format the command has to produce
+    (``scene.json`` + ``scene.bin``, and the ``.generated.json`` manifest).
+
+    The world is passed as RECORDED, in both cases. A packaged world's path is valid in the
+    image by construction; a campaign file's is valid because the campaign's ``_config/`` is
+    mounted back at ``/config``, where the run had it -- so the world resolves its own
+    references (meshes, colliders) exactly as it did then. See :func:`_campaign_world`.
     """
-    producer = identity["producer"]
-    if producer != "rst":
+    from robovast.common.simulators import \
+        scene_export_command  # pylint: disable=import-outside-toplevel
+
+    execution = identity.get("execution") or {}
+    name = identity.get("backend")
+    try:
+        command = scene_export_command(execution, world=identity["world"],
+                                       max_tex_dim=int(max_tex_dim),
+                                       overrides=identity["overrides"])
+    except Exception as err:  # noqa: BLE001 - reported as a reason, not a traceback
         raise SceneUnavailable(
-            f"no scene generator is registered for producer {producer!r}; this RoboVAST knows how to "
-            "build geometry for 'rst' only.")
-    # `--set k=v` per override leaf: the same dotlist form `rst sim --set` takes.
-    #
-    # QUOTED, and serialized without spaces, because this command is a STRING that the generator
-    # runs through `shlex.split`. A vector-valued override -- `plugins.parcel.pos: [11.8, 4.55,
-    # 0.762]`, i.e. exactly what a campaign that sweeps a position records -- renders as
-    # `[11.8, 4.55, 0.762]` and was torn into three argv words at those spaces, so `rst-export-web`
-    # got `--set plugins.parcel.pos=[11.8,` plus two stray arguments and exited 2. The failure
-    # surfaces only when somebody opens the run view, and only for a world whose overrides contain a
-    # list, so it reads as "this campaign has no 3D geometry" rather than as a quoting bug.
-    sets = " ".join(f"--set {_set_arg(k, v)}" for k, v in _flatten(identity["overrides"]))
-    # `{inputs[0]}` when the world is a campaign file: the generator stages it into the
-    # container and substitutes the path it landed at. A packaged world keeps its recorded
-    # path, which is valid in the image by construction.
-    world = "{inputs[0]}" if identity.get("world_file") else identity["world"]
-    return (f"rst-export-web --world {world} {sets} --out {{out}} "
-            f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
-
-
-def _set_arg(key: str, value) -> str:
-    """One ``--set key=value`` argument that survives ``shlex.split`` as a single word."""
-    return shlex.quote(f"{key}={json.dumps(value, separators=(',', ':'))}")
-
-
-def _flatten(value, prefix=""):
-    """Nested override dict -> ``[(dotted.key, leaf), ...]``, the form ``--set`` accepts."""
-    for name, item in sorted((value or {}).items()):
-        path = f"{prefix}{name}"
-        if isinstance(item, dict):
-            yield from _flatten(item, f"{path}.")
-        else:
-            yield path, item
+            f"the simulator backend {name!r} could not say how to build this campaign's "
+            f"geometry: {err}") from err
+    if not command:
+        raise SceneUnavailable(
+            f"this campaign's simulator ({name or 'none declared'}) exports no scene "
+            "descriptor, so there is no geometry to build. A campaign can still declare its "
+            "own execution.generate entry to produce one.")
+    return command
 
 
 def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
@@ -364,8 +401,11 @@ def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
     entry = {"shell": {"out": key,
                        "image": identity["image"],
                        "command": _command_for(identity, max_tex_dim)}}
-    if identity.get("world_file"):
-        entry["shell"]["inputs"] = [identity["world_file"]]
+    if identity.get("config_root"):
+        # The tree, at the path the run had it. Not the world file alone: it names the rest
+        # by absolute `/config/...` path, so the mount is what makes those resolve.
+        entry["shell"]["inputs"] = [identity["config_root"]]
+        entry["shell"]["mount_at"] = {identity["config_root"]: _RUN_FILE_MOUNT.rstrip("/")}
     return entry
 
 

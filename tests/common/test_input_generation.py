@@ -329,3 +329,93 @@ def test_inputs_the_host_cannot_see_are_never_cached(tmp_path):
     entries = [{"./gen.py:G": {"out": "files/scene"}}]
     run_input_generators(str(tmp_path), entries)
     assert run_input_generators(str(tmp_path), entries)[0]["cached"] is False
+
+
+# -- a staged tree at a fixed container path ------------------------------------------
+
+
+class _FakeRunner:
+    """A container runner that records what it was asked to expose instead of running it."""
+
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self.exposed = {}
+
+    def expose(self, host_path, container_path):
+        self.exposed[container_path] = host_path
+
+
+class _NoExposeRunner:
+    def __init__(self, workspace):
+        self.workspace = workspace
+
+
+def test_a_staged_tree_can_be_asked_for_at_a_fixed_container_path(tmp_path):
+    """Some inputs cannot be read from wherever they happen to land.
+
+    A world names its meshes by the absolute path the job mounted them at, so it only
+    compiles where that path resolves. ``mount_at`` is what lets the caller say so, and the
+    in-container path handed back is the mount -- not the staging slot.
+    """
+    from robovast.common.input_generation import stage_for_container
+
+    tree = tmp_path / "_config"
+    (tree / "environments" / "hex").mkdir(parents=True)
+    (tree / "environments" / "hex" / "hex.stl").write_bytes(b"solid\n")
+    (tree / "world.yaml").write_text("mesh: /config/environments/hex/hex.stl\n")
+    runner = _FakeRunner(str(tmp_path / "ws"))
+    os.makedirs(runner.workspace, exist_ok=True)
+
+    _out, staged = stage_for_container(runner, str(tmp_path / "out"), [str(tree)],
+                                       mount_at={str(tree): "/config"})
+
+    assert staged == ["/config"]
+    host_copy = runner.exposed["/config"]
+    # The tree's internal layout is what makes a sibling lookup (a mesh's json-ld) resolve.
+    assert os.path.isfile(os.path.join(host_copy, "environments", "hex", "hex.stl"))
+    assert os.path.isfile(os.path.join(host_copy, "world.yaml"))
+
+
+def test_a_backend_that_cannot_mount_refuses_rather_than_running(tmp_path):
+    """Running anyway would fail deep inside the tool on a missing file, which reads as the
+    tool's own problem rather than as an execution backend that cannot do what was asked."""
+    from robovast.common.input_generation import stage_for_container
+
+    tree = tmp_path / "_config"
+    tree.mkdir()
+    (tree / "world.yaml").write_text("x: 1\n")
+    runner = _NoExposeRunner(str(tmp_path / "ws"))
+    os.makedirs(runner.workspace, exist_ok=True)
+
+    with pytest.raises(CampaignConfigError, match="cannot expose a staged input"):
+        stage_for_container(runner, str(tmp_path / "out"), [str(tree)],
+                            mount_at={str(tree): "/config"})
+
+
+def test_mount_at_naming_no_declared_input_is_a_loud_typo(tmp_path):
+    (tmp_path / "world.yaml").write_text("x: 1\n")
+    entries = [{"shell": {"out": "files/scene", "inputs": ["world.yaml"],
+                          "mount_at": {"worlds.yaml": "/config"},
+                          "command": "true", "image": "example/img:1"}}]
+    with pytest.raises(CampaignConfigError, match="not one of its 'inputs'"):
+        run_input_generators(str(tmp_path), entries)
+
+
+def test_a_failed_command_carries_its_output_into_the_error(tmp_path):
+    """`CalledProcessError` renders as "returned non-zero exit status 1" and nothing else.
+
+    Without the tool's own message the failure reaches a user as a command line and no
+    cause -- which is how a missing mesh presented itself as "no 3D geometry".
+    """
+    script = tmp_path / "boom.py"
+    script.write_text(textwrap.dedent("""\
+        import sys
+        print("about to fail")
+        sys.stderr.write("PluginError: 'mesh' file does not exist: /config/x.stl\\n")
+        sys.exit(1)
+    """))
+    entries = [{"shell": {"out": "files/scene",
+                          "command": f"{sys.executable} {script}"}}]
+    with pytest.raises(CampaignConfigError) as err:
+        run_input_generators(str(tmp_path), entries)
+    assert "'mesh' file does not exist" in str(err.value)

@@ -1820,20 +1820,38 @@ class ClusterService(LocalTransport):
         return super()._scene_capture(campaign_id, config_name, run_id)
 
     def _scene_identity(self, campaign_id, config_name, run_id):
-        """Materialise a campaign-owned world before resolving identity against it.
+        """Materialise a campaign-owned world's whole ``_config/`` before resolving identity.
 
         A world declared as a path in the ``.vast`` is archived under ``_config/``, and on
-        this lane nothing is on local disk until it is asked for. Its path is only known
-        once the capture has been read, so it cannot join ``_scene_source_dir``'s fetch --
-        it is one more small object, fetched here for the same reason the capture is.
+        this lane nothing is on local disk until it is asked for. Which world it is, is only
+        known once the capture has been read, so this cannot join ``_scene_source_dir``'s
+        fetch.
+
+        The **whole** prefix, not the world object: the world names its meshes and colliders
+        by the ``/config/...`` path the job mounted them at, and the rebuild reproduces that
+        mount from this tree (see ``scene_cache._campaign_world``). It is also what the cache
+        key is computed over, so a partial fetch would key geometry on a partial tree.
+        Listed rather than assumed, for the reason ``_retrigger_source_dir`` gives.
         """
+        from robovast.common import file_address
         from robovast.service import \
             scene_cache  # pylint: disable=import-outside-toplevel
 
         manifest = self._scene_capture(campaign_id, config_name, run_id)
         rel = scene_cache.campaign_world_rel(str((manifest or {}).get("world") or ""))
-        if rel:
-            self._materialize(campaign_id, (rel,), "campaign world", interactive=True)
+        address = file_address.format_address(
+            file_address.RESULTS, campaign_id, "_config/")
+        # limit=0 is "no window" (see file_view.paginate): a partial page would stage a partial
+        # tree, which hashes to a key that is neither this campaign's nor anyone else's.
+        listing = self.list_files(address, recursive=True, limit=0)
+        names = [name for name in listing.entries if not name.endswith("/")]
+        # The `.vast` always, because identity needs it to know WHICH simulator ran and so who
+        # to ask how to rebuild the geometry. The rest only for a campaign-owned world -- a
+        # packaged one is in the image, and staging a campaign's meshes to compile it would be
+        # transfer for nothing.
+        wanted = names if rel else [n for n in names if n.endswith(".vast")]
+        self._materialize(campaign_id, tuple(f"_config/{n}" for n in wanted),
+                          "campaign config", interactive=True)
         return super()._scene_identity(campaign_id, config_name, run_id)
 
     def _scene_runner_context(self, campaign_id: str, identity: dict):

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -67,12 +69,6 @@ class RobositoConfig(BaseModel):
     #: is robosito's whole configuration -- physics, plugins, robot, sensors, and its
     #: ``extends`` chain -- and "world" understates what a campaign is selecting.
     config: str
-    #: Publish ``/tf`` and ``/tf_static`` under this namespace (topics only, frames
-    #: unchanged). What Nav2's standard ``/tf -> tf`` remap expects.
-    tf_namespace: Optional[str] = None
-    #: Also serve the ``simulation_interfaces`` control plane, which a scenario's
-    #: ``osc.sim`` actions are clients of. Off unless a scenario touches entities.
-    sim_control: bool = False
     #: The ``SimulationInterface`` scenario-execution steps, as ``module:Class``.
     #: Defaults to robosito's generic adapter, which is what an ordinary campaign wants.
     #:
@@ -103,12 +99,13 @@ class RobositoBackend(SimulatorBackend):
             # Its own container, running robosito's ordinary CLI. Not a RoboVAST-specific
             # entry point: the same command debugs the world by hand, so there is no
             # second way the simulator can be started.
-            command = ["rst", "sim", _config_in_container(cfg.config), "--ros",
+            #
+            # No transport flags: which topics a world speaks, under which namespace, and
+            # whether it serves a control plane are the WORLD's to declare. A campaign
+            # runner configuring a simulator's middleware would be reaching a layer down,
+            # and headless/pacing are the only two the deployment owns.
+            command = ["rst", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
-            if cfg.tf_namespace:
-                command += ["--tf-namespace", cfg.tf_namespace]
-            if cfg.sim_control:
-                command.append("--sim-control")
             return {SIMULATION_CONTAINER: {"image": DEFAULT_SIM_IMAGE,
                                            "command": command}}
         # Stepped: scenario-execution calls step(), so the simulator is in its process
@@ -189,3 +186,40 @@ class RobositoBackend(SimulatorBackend):
         if _is_package_ref(cfg.config):
             return []
         return [cfg.config]
+
+    def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
+                     overrides: dict) -> str:
+        """``rst-export-web``, robosito's own exporter, run in robosito's own image.
+
+        *world* is passed through as the capture recorded it -- a package ref, or the
+        ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
+        the build so the world resolves what it references.
+        """
+        sets = " ".join(f"--set {_set_arg(k, v)}" for k, v in _flatten(overrides))
+        return (f"rst-export-web --world {world} {sets} --out {{out}} "
+                f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
+
+
+def _set_arg(key: str, value) -> str:
+    """One ``--set key=value`` argument that survives ``shlex.split`` as a single word.
+
+    QUOTED, and serialized without spaces, because the command is a STRING the generator
+    runs through ``shlex.split``. A vector-valued override -- ``plugins.parcel.pos: [11.8,
+    4.55, 0.762]``, i.e. exactly what a campaign that sweeps a position records -- renders as
+    ``[11.8, 4.55, 0.762]`` and was torn into three argv words at those spaces, so
+    ``rst-export-web`` got ``--set plugins.parcel.pos=[11.8,`` plus two stray arguments and
+    exited 2. The failure surfaces only when somebody opens the run view, and only for a
+    world whose overrides contain a list, so it reads as "this campaign has no 3D geometry"
+    rather than as a quoting bug.
+    """
+    return shlex.quote(f"{key}={json.dumps(value, separators=(',', ':'))}")
+
+
+def _flatten(value, prefix=""):
+    """Nested override dict -> ``[(dotted.key, leaf), ...]``, the dotlist ``--set`` accepts."""
+    for name, item in sorted((value or {}).items()):
+        path = f"{prefix}{name}"
+        if isinstance(item, dict):
+            yield from _flatten(item, f"{path}.")
+        else:
+            yield path, item

@@ -115,8 +115,8 @@ class SimulatorBackend:
     def input_files(self, cfg, execution: dict) -> list:
         """Files the simulator needs that the campaign owns, relative to the ``.vast``.
 
-        For robosito: a world declared as a path rather than a package ref. A packaged
-        world travels inside the image and needs nothing here, which is the default.
+        Typically a world declared as a path rather than a package ref. A packaged world
+        travels inside the image and needs nothing here, which is the default.
 
         RoboVAST adds these to the campaign's ``run_files``, so each is mounted at
         ``/config/<path>`` where the simulator opens it, archived into
@@ -157,6 +157,49 @@ class SimulatorBackend:
         it knows, not decisions it takes away.
         """
         return []
+
+    def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
+                     overrides: dict) -> Optional[str]:
+        """Command that compiles *world* into a web scene descriptor, or ``None``.
+
+        Returned as a **string**, run through ``shlex.split`` by the ``shell`` input
+        generator, with ``{out}`` for the output directory. It runs in the campaign's own
+        simulator image, so it may name that image's tools.
+
+        Companion to :meth:`produces_run_capture`: one says a run records the motion a
+        ``scene3d`` panel replays, this one says the geometry it is replayed against can be
+        rebuilt. ``None`` -- the default -- means this backend has no exporter, which is a
+        normal answer: Gazebo has none.
+
+        The descriptor *format* is RoboVAST's (``scene.json`` + ``scene.bin``, and a
+        ``.generated.json`` manifest; see ``docs/run_capture.rst``), so a second backend
+        implements against it rather than inventing one. What belongs here is only the
+        command: which tool, and how it spells its arguments -- ``overrides`` in particular,
+        whose serialization is the simulator's own convention.
+        """
+        return None
+
+
+def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
+                         overrides: dict, base_dir: str = "") -> Optional[str]:
+    """The configured backend's :meth:`SimulatorBackend.scene_export`, or ``None``.
+
+    The seam that keeps one simulator's exporter out of the service: what a campaign's
+    geometry is built with is the backend's answer, and the backend is one the campaign
+    already names. Unresolvable or silent backend -> ``None``, which the caller reports as
+    "this campaign's simulator builds no geometry" rather than as a missing tool.
+
+    The frozen config is validated like any other -- a campaign whose ``.vast`` names a key
+    the backend has since retired does not render, and says which key. Geometry is rebuilt
+    with today's code, so a config today's code cannot read is not one to guess at.
+    """
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    cfg = _validated_cfg(backend, block, name)
+    return backend.scene_export(cfg, execution, world=world, max_tex_dim=max_tex_dim,
+                                overrides=overrides)
 
 
 def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:

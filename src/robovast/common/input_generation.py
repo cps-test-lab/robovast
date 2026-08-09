@@ -454,6 +454,7 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
         raise CampaignConfigError(
             f"Input generator '{name}' ({field}) failed while writing {out!r}:\n"
             f"  {type(exc).__name__}: {exc}\n"
+            f"{_failure_excerpt(exc)}"
             f"The previous contents of {out!r} were left untouched.") from exc
     finally:
         if container_runner is not None:
@@ -515,7 +516,33 @@ def _make_runner(generator_cls, params, container_runner_factory, name):
     return container_runner_factory(spec)
 
 
-def stage_for_container(runner, out_dir, inputs):
+#: Lines of a failed command's output carried into the error message. Enough for a Python
+#: traceback's last frames and its exception line, which is where the cause usually is;
+#: bounded because this string reaches a user interface, not a log file.
+_FAILURE_EXCERPT_LINES = 20
+
+
+def _failure_excerpt(exc) -> str:
+    """The tail of a failed subprocess's output, when the exception carries any.
+
+    ``CalledProcessError`` renders as "returned non-zero exit status 1" and nothing else, so
+    without this a generator failure reaches the user with the command line and no reason --
+    the tool's own message existing only in the service log.
+    """
+    output = getattr(exc, "output", None)
+    if not output:
+        return ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    lines = [line for line in str(output).splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = lines[-_FAILURE_EXCERPT_LINES:]
+    elided = "" if len(tail) == len(lines) else f"  ... {len(lines) - len(tail)} earlier line(s)\n"
+    return "Its output ended with:\n" + elided + "".join(f"  {line}\n" for line in tail)
+
+
+def stage_for_container(runner, out_dir, inputs, mount_at=None):
     """Mirror *inputs* and an output dir into the container's shared workspace.
 
     An auxiliary container sees only ``runner.workspace`` (bind-mounted at the same
@@ -523,6 +550,12 @@ def stage_for_container(runner, out_dir, inputs):
     elsewhere in the project nor write straight into the staging directory. Copy the
     inputs in, hand back the in-container paths, and let :func:`collect_from_container`
     bring the result back.
+
+    *mount_at* maps a resolved input path to a FIXED absolute path it must appear at
+    inside the container, for the case where the staged tree's own location is not free
+    to choose: a file that records absolute paths into its siblings can only be read back
+    where those paths resolve. The returned in-container path for such an input is that
+    fixed path, so ``{inputs[i]}`` still formats to somewhere the command can read.
 
     Returns ``(container_out, container_inputs)``. Everything is made world-writable
     because the container may run as a different uid than we do — the same reason
@@ -544,6 +577,19 @@ def stage_for_container(runner, out_dir, inputs):
             shutil.copytree(source, target, dirs_exist_ok=True)
         else:
             shutil.copy2(source, target)
+        mount = (mount_at or {}).get(source)
+        if mount:
+            # Refuse rather than run without it: the command was written for a tree at
+            # *mount*, so a runner that cannot provide one would fail deep inside the
+            # tool on a missing file, which is exactly the failure this argument exists
+            # to prevent.
+            expose = getattr(runner, "expose", None)
+            if expose is None:
+                raise CampaignConfigError(
+                    f"this execution backend cannot expose a staged input at {mount!r}, "
+                    f"which the generator requires ({type(runner).__name__}).")
+            expose(target, mount)
+            target = mount
         staged.append(target)
     for root, dirs, names in os.walk(os.path.join(workspace, "in")):
         for entry in [root] + [os.path.join(root, d) for d in dirs] + \
@@ -607,14 +653,14 @@ class Shell(BaseInputGenerator):
           - shell:
               out: files/scene
               inputs: ["../worlds/depot.yaml"]
-              command: rst-export-web --world {inputs[0]} --out {out}
+              command: scene-export --world {inputs[0]} --out {out}
 
     ``inputs`` is the *fallback* staleness set, used only when the command does not report
     its own. A hand-written list is the weak option — it cannot know that a world inherits
     from another world whose meshes also matter — so prefer a tool that writes the
     :data:`MANIFEST_NAME` manifest itself, and point it there::
 
-        command: rst-export-web --world {inputs[0]} --out {out}
+        command: scene-export --world {inputs[0]} --out {out}
                  --manifest {out}/.generated.json
 
     Then ``inputs`` only has to name the entry point; the tool declares the rest.
@@ -642,9 +688,8 @@ class Shell(BaseInputGenerator):
                              command_prefix=[str(part) for part in entrypoint])
 
     def __call__(self, vast_dir, out_dir, command=None, inputs=None, image=None,
-                 entrypoint=None, **_ignored):
+                 entrypoint=None, mount_at=None, **_ignored):
         import shlex  # pylint: disable=import-outside-toplevel
-        import subprocess  # nosec B404 - the .vast is trusted input, as for postprocessing
 
         if not command:
             raise CampaignConfigError(
@@ -661,21 +706,38 @@ class Shell(BaseInputGenerator):
                  if resolved_path in missing])
 
         if self.container_runner is not None:
+            # `mount_at` is declared against the *input* as written; map it onto the
+            # resolved path the stager keys on. An entry naming no declared input is a
+            # typo that would otherwise leave the tree unmounted and fail inside the tool.
+            declared_inputs = list(inputs or [])
+            mounts = {}
+            for declared, target in (mount_at or {}).items():
+                if declared not in declared_inputs:
+                    raise CampaignConfigError(
+                        f"shell generator 'mount_at' names {declared!r}, which is not one "
+                        f"of its 'inputs' ({declared_inputs}).")
+                mounts[resolved[declared_inputs.index(declared)]] = target
             container_out, container_inputs = stage_for_container(
-                self.container_runner, out_dir, resolved)
+                self.container_runner, out_dir, resolved, mount_at=mounts)
             argv = [part.format(out=container_out, inputs=container_inputs)
                     for part in shlex.split(str(command))]
             self.container_runner.run(argv, self.progress_update)
             collect_from_container(container_out, out_dir)
         else:
+            from robovast.common.variation.container_runner import \
+                run_with_live_output  # pylint: disable=import-outside-toplevel
             argv = [part.format(out=out_dir, inputs=resolved)
                     for part in shlex.split(str(command))]
             argv[0] = _resolve_command(argv[0])
-            subprocess.run(argv, check=True)  # nosec B603 - argv from the trusted .vast
+            # Streamed and captured rather than `subprocess.run(check=True)`: that let the
+            # tool's output go to the service's own stderr and attached none of it to the
+            # failure, so the caller who turns this into a message for a user had only an
+            # exit status to report. Same helper as the container path, so both fail alike.
+            run_with_live_output(argv, self.progress_update or logger.debug)
 
         # Only fall back to the declared inputs when the command reported nothing itself.
-        # A tool that knows its real dependency set (rst-export-web --manifest lists the
-        # world YAML, everything it inherits from, the MJCF and its meshes) says far more
+        # A tool that knows its real dependency set (an exporter's --manifest lists the
+        # world file, everything it inherits from, and the assets they name) says far more
         # than the .vast's hand-written list, and overwriting it here would silently
         # downgrade the staleness check to that one line.
         if read_manifest(out_dir) is None:

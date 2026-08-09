@@ -1332,6 +1332,11 @@ def _scene_identity_for(tmp_path, world, archive=True):
         f = tmp_path / "_config" / "files" / "depot_nav2.yaml"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("extends: rst_scenes:depot\n")
+    # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
+    vast = tmp_path / "_config" / "p.vast"
+    vast.parent.mkdir(parents=True, exist_ok=True)
+    vast.write_text("version: 2\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+                    "      backend: robosito\n      config: rst_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
         return scene_cache.world_identity(str(tmp_path), {"world": world, "overrides": {}})
@@ -1340,14 +1345,52 @@ def _scene_identity_for(tmp_path, world, archive=True):
 def test_a_campaign_owned_world_is_staged_into_the_build_container(tmp_path):
     """A world declared as a path in the .vast is a run_file, mounted at /config only for
     the job. Passing that recorded path to a fresh container asks it to read something
-    that was never there -- the exporter started and failed on a missing file."""
+    that was never there -- the exporter started and failed on a missing file.
+
+    The whole ``_config/`` tree travels and is mounted back at ``/config``, because a world
+    is not one file: it names its meshes and colliders by the path the job had them at. So
+    the command keeps the RECORDED path and the world resolves its own references."""
     from robovast.service import scene_cache
 
     ident = _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml")
     assert ident["world_file"].endswith("_config/files/depot_nav2.yaml")
     entry = scene_cache._generate_entry(ident, "k", 1024)
-    assert entry["shell"]["inputs"] == [ident["world_file"]]
-    assert "{inputs[0]}" in entry["shell"]["command"]
+    assert entry["shell"]["inputs"] == [ident["config_root"]]
+    assert entry["shell"]["mount_at"] == {ident["config_root"]: "/config"}
+    assert "--world /config/files/depot_nav2.yaml" in entry["shell"]["command"]
+
+
+def test_a_campaign_worlds_neighbours_travel_with_it(tmp_path):
+    """The mesh a world names is not the world file, and staging the YAML alone failed on it.
+
+    Mounting the tree rather than enumerating the world's dependencies is deliberate: an
+    enumeration that under-reports (rst's own walks `extends` and MJCF assets, never a
+    plugin's config values) reproduces exactly the failure this replaced."""
+    from pathlib import Path
+
+    mesh = tmp_path / "_config" / "environments" / "hex" / "3d-mesh" / "hex.stl"
+    mesh.parent.mkdir(parents=True)
+    mesh.write_bytes(b"solid\n")
+    ident = _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml")
+    staged = Path(ident["config_root"])
+    assert (staged / "environments" / "hex" / "3d-mesh" / "hex.stl").is_file()
+    assert (staged / "files" / "depot_nav2.yaml").is_file()
+
+
+def test_the_cache_key_covers_a_referenced_file_not_just_the_world(tmp_path):
+    """A changed mesh is different geometry, and the world YAML naming it does not change."""
+    from robovast.service import scene_cache
+
+    def _with_mesh(root, payload):
+        mesh = root / "_config" / "environments" / "hex" / "3d-mesh" / "hex.stl"
+        mesh.parent.mkdir(parents=True)
+        mesh.write_bytes(payload)
+        return _scene_identity_for(root, "/config/files/depot_nav2.yaml")
+
+    a = _with_mesh(tmp_path / "a", b"solid one\n")
+    b = _with_mesh(tmp_path / "b", b"solid two\n")
+    assert a["world"] == b["world"]
+    assert scene_cache.cache_key(a) != scene_cache.cache_key(b)
 
 
 def test_a_packaged_world_keeps_its_recorded_path(tmp_path):
@@ -1358,6 +1401,7 @@ def test_a_packaged_world_keeps_its_recorded_path(tmp_path):
     assert "world_file" not in ident
     entry = scene_cache._generate_entry(ident, "k", 1024)
     assert "inputs" not in entry["shell"]
+    assert "mount_at" not in entry["shell"]
     assert "rst_scenes:depot" in entry["shell"]["command"]
 
 
@@ -1392,28 +1436,45 @@ def test_the_cluster_lane_fetches_a_campaign_owned_world_before_resolving_identi
     fetch and has to be materialised separately, exactly as the capture is. Without it the
     build failed with "not archived with the campaign" for a world that was archived, just
     not yet local.
+
+    The whole prefix, not the world object: what the world references travels with it, and
+    the cache key is computed over the tree.
     """
-    from unittest.mock import MagicMock, patch
+    from types import SimpleNamespace
+    from unittest.mock import patch
 
     svc = ClusterService.__new__(ClusterService)
     fetched = []
     svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
     svc._scene_capture = lambda cid, cn, rid: {"world": "/config/files/depot_nav2.yaml"}
+    svc.list_files = lambda address, recursive=False, limit=100: SimpleNamespace(
+        entries=["files/", "files/depot_nav2.yaml", "environments/hex/3d-mesh/hex.stl"])
     with patch.object(type(svc).__mro__[1], "_scene_identity",
                       lambda *a, **k: ("identity", "key")):
         svc._scene_identity("camp", "goal-1", "0")
     assert "_config/files/depot_nav2.yaml" in fetched
+    assert "_config/environments/hex/3d-mesh/hex.stl" in fetched
+    # Directory entries keep a trailing "/" and are not objects to fetch.
+    assert "_config/files/" not in fetched
 
 
-def test_a_packaged_world_needs_no_extra_fetch():
-    """It lives in the image; there is nothing on this side to materialise."""
+def test_a_packaged_world_fetches_the_vast_and_nothing_else():
+    """The world lives in the image, so its meshes are not this side's to stage.
+
+    The ``.vast`` still is: it names the simulator, and without it the build cannot ask which
+    backend knows how to compile the geometry -- a campaign whose world needs no staging at all
+    would otherwise be refused with "no simulator declared".
+    """
+    from types import SimpleNamespace
     from unittest.mock import patch
 
     svc = ClusterService.__new__(ClusterService)
     fetched = []
     svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
     svc._scene_capture = lambda cid, cn, rid: {"world": "rst_scenes:depot"}
+    svc.list_files = lambda address, recursive=False, limit=100: SimpleNamespace(
+        entries=["p.vast", "environments/hex/3d-mesh/hex.stl"])
     with patch.object(type(svc).__mro__[1], "_scene_identity",
                       lambda *a, **k: ("identity", "key")):
         svc._scene_identity("camp", "goal-1", "0")
-    assert fetched == []
+    assert fetched == ["_config/p.vast"]

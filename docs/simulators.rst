@@ -202,13 +202,21 @@ It serves **both** shapes:
   shares the scenario's process. Built by ``container/robovast/build.sh --image robosito``.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``rst_scenes:depot``), ``tf_namespace`` and ``sim_control``. It is ``config`` rather than
-``world`` because the file is robosito's whole configuration — physics, plugins, robot,
-sensors and its ``extends`` chain — and "world" understates what a campaign selects.
+``rst_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
+file is robosito's whole configuration — physics, plugins, robot, sensors and its
+``extends`` chain — and "world" understates what a campaign selects.
 
-Transport is **not** in that file. A checked-in world stays ROS-free so ``rst sim`` can run
-it where the bridge is not installed; the backend asks robosito to append it at load time
-instead.
+**Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
+all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
+carries ``tf_namespace``), and whether it serves the ``simulation_interfaces`` control
+plane a scenario's ``osc.sim`` actions are clients of, are plugins declared in the world
+YAML. A campaign runner configuring a simulator's middleware would be reaching a layer
+down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
+
+So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge``, plus
+``sim_interfaces`` if the scenario touches entities. Opening such a world by hand where no
+bridge is installed is ``rst sim <world> --no-communication``, which strips the transport
+plugins, so declaring them costs the world nothing.
 
 Developing against a working tree
 `````````````````````````````````

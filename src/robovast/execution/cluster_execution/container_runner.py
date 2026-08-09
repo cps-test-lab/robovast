@@ -69,6 +69,7 @@ Kubernetes garbage-collects it if the service is replaced), carries an
 import contextlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -99,6 +100,19 @@ _MC_ALIAS = "mystore"
 _TOOLS_MOUNT = "/tools"
 _MC = f"{_TOOLS_MOUNT}/mc"
 _MC_CONFIG = f"{_TOOLS_MOUNT}/mc-config"
+
+#: Absolute paths an aux container can be asked to expose a staged tree at, via
+#: :meth:`ClusterContainerRunner.expose`. A fixed list rather than anything a caller picks,
+#: because the mount has to be declared when the *pod* is built, long before a runner knows
+#: what it will stage -- and a path nobody mounted is not writable in an arbitrary image.
+#: ``/config`` is where a job mounts a campaign's ``run_files``, so a world's own
+#: ``/config/...`` references resolve there for a rebuild exactly as they did for the run.
+AUX_MOUNTABLE_PATHS = ("/config",)
+
+
+def _mount_volume_name(path: str) -> str:
+    """A DNS-label volume name for a mountable absolute path (``/config`` -> ``aux-config``)."""
+    return "aux-" + re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
 
 
 def aux_workspace_prefix(owner_id: str, workspace_name: str) -> str:
@@ -330,6 +344,13 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
 
     tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
+    # One emptyDir per mountable path, on every aux container. Empty unless a runner stages
+    # into it, so a generator that never asks pays a volume and nothing else; and it has to
+    # be here rather than at ``expose`` time because a Pod's mounts are fixed when it is
+    # created. Tied to *s3* like the rest of the mirroring: without a store nothing can be
+    # staged into one, so an unusable mount would only be noise in the manifest.
+    config_mounts = [{"name": _mount_volume_name(path), "mountPath": path}
+                     for path in AUX_MOUNTABLE_PATHS] if s3 else []
     host_env = mc_host_env(*s3) if s3 else {}
 
     containers = []
@@ -345,7 +366,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         if env:
             container["env"] = [{"name": k, "value": str(v)} for k, v in env.items()]
         if s3:
-            container["volumeMounts"] = [tools_mount]
+            container["volumeMounts"] = [tools_mount] + list(config_mounts)
         if spec.run_as_user:
             uid = spec.run_as_user.split(":", 1)[0]
             try:
@@ -369,17 +390,20 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         "containers": containers,
     }
     if s3:
-        spec["volumes"] = [{"name": "aux-tools", "emptyDir": {}}]
+        spec["volumes"] = [{"name": "aux-tools", "emptyDir": {}}] + [
+            {"name": mount["name"], "emptyDir": {}} for mount in config_mounts]
+        # Every emptyDir gets the same treatment and for the same reason: it belongs to
+        # root, and a spec's ``run_as_user`` means the container that has to write into it
+        # may be nobody in particular.
+        chmods = " && ".join(f'chmod 0777 {mount["mountPath"]}' for mount in config_mounts)
         spec["initContainers"] = [{
             "name": "mc-tools", "image": SIDECAR_IMAGE,
             "imagePullPolicy": "IfNotPresent",
-            # The config dir is created here, world-writable: an emptyDir belongs to
-            # root, and a spec's ``run_as_user`` means the container that has to run
-            # ``mc`` may be nobody in particular.
             "command": ["sh", "-c",
                         f'cp "$(command -v mc)" {_MC} && chmod 0755 {_MC} && '
-                        f'mkdir -p {_MC_CONFIG} && chmod 0777 {_MC_CONFIG}'],
-            "volumeMounts": [tools_mount],
+                        f'mkdir -p {_MC_CONFIG} && chmod 0777 {_MC_CONFIG}'
+                        + (f' && {chmods}' if chmods else '')],
+            "volumeMounts": [tools_mount] + list(config_mounts),
         }]
     if pull_secret:
         spec["imagePullSecrets"] = [{"name": pull_secret}]
@@ -572,6 +596,24 @@ class ClusterContainerRunner:
         self.workspace = tempfile.mkdtemp(prefix="robovast_aux_")
         self._prefix = aux_workspace_prefix(owner_id or namespace,
                                             os.path.basename(self.workspace))
+        self._exposed: dict = {}
+
+    def expose(self, host_path: str, container_path: str) -> None:
+        """Also make *host_path* visible at the fixed *container_path* in the aux container.
+
+        The tree still travels as part of the workspace -- there is one transport and this
+        does not add a second. It is copied across inside the container, into the emptyDir
+        the Pod already mounts at *container_path*, which is why only
+        :data:`AUX_MOUNTABLE_PATHS` can be asked for: a path the Pod does not mount is not
+        writable in an arbitrary image, and discovering that inside the tool would look
+        like the tool's own failure.
+        """
+        if container_path not in AUX_MOUNTABLE_PATHS:
+            raise ValueError(
+                f"an aux container can only expose a staged tree at one of "
+                f"{list(AUX_MOUNTABLE_PATHS)}, not {container_path!r}; a new path has to be "
+                f"added to AUX_MOUNTABLE_PATHS so the Pod declares a volume for it.")
+        self._exposed[str(container_path)] = str(host_path)
 
     def _client(self):
         if self._core_v1 is None:
@@ -597,7 +639,7 @@ class ClusterContainerRunner:
 
         stderr_sink = progress_update_callback or (
             lambda line: logger.debug("aux stderr: %s", line))
-        code, out, _err, timed_out = exec_stream(
+        code, out, err, timed_out = exec_stream(
             self._client(), self._pod, self._namespace, self._container, command,
             limit_s=self._exec_limit_s, stdin_data=stdin_data,
             on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink)
@@ -606,7 +648,10 @@ class ClusterContainerRunner:
                 code, command,
                 output=f"aux container command exceeded {self._exec_limit_s}s")
         if code != 0:
-            raise subprocess.CalledProcessError(code, command)
+            # Both streams, and stderr last: a Python tool's traceback goes there, and it is
+            # the whole reason a caller wants this attached rather than only logged.
+            raise subprocess.CalledProcessError(
+                code, command, output="\n".join(part for part in (out, err) if part))
         return out
 
     def _retrying_exec(self, command, **kwargs):
@@ -696,10 +741,29 @@ class ClusterContainerRunner:
         self._require_store().download_prefix(self._bucket, self._prefix,
                                               self.workspace, force=True)
 
+    def _place_exposed(self) -> None:
+        """Copy each exposed tree from the mirrored workspace into its declared mount.
+
+        After ``_copy_in``, so the source is already in the container. The trailing ``/.``
+        fills the mount rather than nesting a directory inside it, and the mount is an
+        emptyDir the init container made world-writable.
+
+        ``-R``, deliberately not ``-a``: preserving attributes means setting them on the
+        destination *mount point* too, and that inode belongs to root while the aux container
+        may be anyone -- ``cp: preserving times for '/config/.': Operation not permitted``,
+        which fails the whole copy. Only the content is wanted here; the tree is read, not
+        re-published, so its timestamps and ownership carry nothing.
+        """
+        for container_path, staged in sorted(self._exposed.items()):
+            self._retrying_exec(["sh", "-c",
+                                 f"mkdir -p '{container_path}' && "
+                                 f"cp -R '{staged}/.' '{container_path}/'"])
+
     def run(self, command, progress_update_callback=None) -> None:
         progress_update_callback = progress_update_callback or logger.debug
         full_cmd = list(self._spec.command_prefix) + list(command)
         self._copy_in()
+        self._place_exposed()
         try:
             self._exec(full_cmd, progress_update_callback=progress_update_callback)
         finally:
