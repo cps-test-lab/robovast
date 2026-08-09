@@ -310,10 +310,10 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
       ) : null}
       {captureError ? (
         <Alert severity="warning" sx={{ position: 'absolute', bottom: 8, left: 8, maxWidth: 620 }}>
-          No motion to replay: <code>{capturePath}</code> could not be read ({captureError}). An rst
-          run writes one when <code>ROBOSITO_RECORD</code> and{' '}
-          <code>ROBOSITO_CAPTURE_EXPORT_DIR</code> are set. Both the recording and the capture are
-          written when the run stops cleanly, so a run killed by a per-run timeout has neither.
+          No motion to replay: <code>{capturePath}</code> could not be read ({captureError}).
+          Recording a capture is the simulator backend&apos;s to enable — see its documentation.
+          Both the recording and the capture are written when the run stops cleanly, so a run
+          killed by a per-run timeout has neither.
         </Alert>
       ) : mismatch ? (
         <Alert severity="warning" sx={{ position: 'absolute', bottom: 8, left: 8, maxWidth: 620 }}>

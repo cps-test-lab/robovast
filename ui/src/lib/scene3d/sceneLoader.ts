@@ -1,8 +1,8 @@
 // Shared-candidate code: this file imports only 'three' -- keep it free of robovast imports so it
 // can be extracted into a package other projects consume too (see README.md in this directory).
 //
-// Loads a scene descriptor (scene.json + scene.bin, produced by rst's `rst-export-web`
-// or the MujocoSim adapter's ROBOSITO_SCENE_EXPORT_DIR hook) into a three.js Group, and returns a
+// Loads a scene descriptor (scene.json + scene.bin, produced by a simulator backend's scene
+// exporter -- see docs/run_capture.rst) into a three.js Group, and returns a
 // jointMap that animates hinge/slide joints -- covering the whole scene (robot + environment), not
 // just the articulated robot.
 //
@@ -246,7 +246,7 @@ function buildTexture(
 /** Resolve a descriptor texture at a given repeat, sharing one Texture per distinct repeat.
  *
  *  `texture.repeat` lives on the Texture, but the repeat a geom needs is a property of the *geom*,
- *  so a material shared across geoms of different size (rst_assets de-duplicates materials across
+ *  so a material shared across geoms of different size (an asset library de-duplicates materials across
  *  prop copies, and a shelf puts one material on its boards and its legs) cannot share one Texture:
  *  each geom would overwrite the last one's repeat. Clones share the underlying Source, so the image
  *  is uploaded once regardless of how many variants exist.

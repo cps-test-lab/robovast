@@ -386,7 +386,7 @@ def collect_job_records(job_dir: str, stats: Optional[MergeStats] = None,
 
     It must come from the campaign's **declared** containers, not from counting the log files
     found here. A sidecar is explicitly allowed to be a vanilla image
-    (``robosito/docs`` / the ROS shape's "point it at any nav2 image" promise), and such an image
+    (the ROS shape's "point it at any nav2 image" promise), and such an image
     never runs ``secondary_entrypoint.sh``, so it writes no ``system_<name>.log``. Inferring from
     the file count would then label that sidecar's ``/rosout`` lines with whichever container did
     write a log — a confident wrong container, which is worse than an honest blank because it is

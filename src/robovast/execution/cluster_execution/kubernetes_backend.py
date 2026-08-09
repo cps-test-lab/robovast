@@ -573,7 +573,7 @@ class BatchJobRunner:
                 # A NATIVE SIDECAR: an init container with restartPolicy Always. That is
                 # what ties the pod's lifetime to the scenario rather than to whichever
                 # container happens to run longest. As an ordinary container, a sidecar
-                # running a simulator never exits -- `rst sim` has no reason to -- so the
+                # running a simulator never exits -- a simulator has no reason to -- so the
                 # Job stayed at 0/1 forever after the scenario had finished and uploaded
                 # its results, and the controller polled "1/1 job(s) still running" until
                 # something killed it. The command-less sidecars hid this: their

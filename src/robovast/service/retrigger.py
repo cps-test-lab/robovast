@@ -185,8 +185,9 @@ def _builds_an_image(campaign_config) -> bool:
     A boolean rather than the container names on purpose. Naming them would mean resolving
     *which* container each declaration ends up on, and that fold is only known after
     ``apply_backend``, which loads the simulator plugin — not installed in this process, so for
-    any plugin-backed project (every ``robosito`` campaign) it raises "Unknown robovast.simulators
-    plugin". The build path gets away with calling it because ``_build_specs_for`` installs the
+    any plugin-backed project (every campaign naming a ``backend``) it raises "Unknown
+    robovast.simulators plugin". The build path gets away with it because ``_build_specs_for``
+    installs the
     plugins first; this runs in the request handler, where a pip install does not belong.
 
     The fold is not needed here anyway: the campaign already recorded which containers it ran

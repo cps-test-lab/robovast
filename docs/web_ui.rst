@@ -455,10 +455,10 @@ panel would cover it. ``bottom-center`` *floats* above that reserved band, centr
 declared ``width`` (a full-width one is just ``bottom``). Because its bottom edge is the pinned
 one, ``minimized`` collapses it down to its header at the edge and expands it back upward.
 
-**Some panels are contributed by the simulator backend and need no entry at all.** A campaign
-run by ``robosito`` always records the capture the ``scene3d`` panel replays, so the backend
-supplies that panel the same way it supplies ``ROBOSITO_RECORD`` — there is nothing to decide,
-so there is nothing to declare. Declaring it yourself still wins, which is how you place it
+**Some panels are contributed by the simulator backend and need no entry at all.** A backend
+whose runs always record the capture the ``scene3d`` panel replays supplies that panel the same
+way it supplies the environment that produces the capture — there is nothing to decide, so
+there is nothing to declare. Declaring it yourself still wins, which is how you place it
 somewhere other than the full-bleed base layer.
 
 The declared layout is where the panels **start**, not where they are stuck:

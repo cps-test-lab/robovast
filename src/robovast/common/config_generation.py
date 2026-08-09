@@ -807,7 +807,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # and they outlive the call: they are cached under a key that is already abspath-normalized, and
     # written into the campaign's configurations.yaml. Left relative, a cache entry written by a
     # caller in one directory is replayed by a caller in another -- which is how a `vast` CLI run from
-    # the repo root handed the service `rst_basic_nav/scenario.osc` to resolve again.
+    # the repo root handed the service a project-relative `scenario.osc` to resolve again.
     variation_file = os.path.abspath(variation_file)
 
     parameters = load_config(variation_file)
@@ -858,8 +858,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         if rel not in run_files:
             run_files.append(rel)
 
-    # And what the simulator backend says has to travel -- for robosito, a world declared
-    # as a path rather than a package ref. Also run_files, for the same reason generated
+    # And what the simulator backend says has to travel -- typically a world declared as a
+    # path rather than a package ref. Also run_files, for the same reason generated
     # outputs are: the file has to be MOUNTED at /config/<path> for the simulator to open
     # it, archived into <campaign>/_config/ for the run view to rebuild geometry from, and
     # hashed into the config identity because a changed world is a changed experiment.

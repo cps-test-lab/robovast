@@ -1,8 +1,8 @@
 """Undo an MCP client's HTML escaping of free text.
 
 Some clients HTML-escape prompt text on the way to the model, so a description dictated
-as ``SIM_SUITE_->ROBOSITO_`` reaches a tool -- and is then stored -- as
-``SIM_SUITE_-&gt;ROBOSITO_``, which shows up verbatim in ``list_campaigns``, the web UI
+as ``BASELINE_->VARIANT_`` reaches a tool -- and is then stored -- as
+``BASELINE_-&gt;VARIANT_``, which shows up verbatim in ``list_campaigns``, the web UI
 and every export. Nothing downstream can repair that: by then the entity is simply part
 of the string.
 

@@ -104,7 +104,8 @@ _VENV_SETUP = (
 #:
 #: The pip download cache lives in a BuildKit cache mount rather than being suppressed with
 #: ``--no-cache-dir``: a mount is never committed to a layer, so the image stays the same size while a
-#: rebuilt layer stops re-downloading its wheels (mujoco alone is tens of MB). ``sharing=locked``
+#: rebuilt layer stops re-downloading its wheels (a simulator runtime alone is tens of MB).
+#: ``sharing=locked``
 #: serialises concurrent builds sharing the mount instead of letting them corrupt the cache.
 _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
                 f"pip --python {_VENV}/bin/python3 install")

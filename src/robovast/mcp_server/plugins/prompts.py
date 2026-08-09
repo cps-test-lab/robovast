@@ -156,7 +156,7 @@ built on top — so a campaign states what a container *adds*, never what it add
 
 A simulator is named rather than assembled: `simulation: {backend: <name>, ...}` lets the
 backend supply the image, the packages, the environment and how it is started. Its own
-keys (e.g. robosito's `config`) ride alongside `backend`; `get_config_schema` shows them.
+keys (a world reference, say) ride alongside `backend`; `get_config_schema` shows them.
 
 The same three names address a container everywhere else: `exec_in_container(container=)`,
 and a scenario's `remote("ipc:///ipc/sut")`.

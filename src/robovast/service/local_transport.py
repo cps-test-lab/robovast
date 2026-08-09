@@ -2208,8 +2208,8 @@ class LocalTransport(RobovastInterface):
         except FileNotFoundError as err:
             raise SceneUnavailable(
                 "this run has no capture, so there is nothing to replay and no world to build geometry "
-                "from. A run records one when ROBOSITO_RECORD and ROBOSITO_CAPTURE_EXPORT_DIR are "
-                "set, and only on a clean stop.") from err
+                "from. A capture is the simulator backend's to record -- see its documentation for "
+                "what enables one -- and is written only on a clean stop.") from err
         except (OSError, ValueError) as err:
             raise SceneUnavailable(f"this run's capture manifest could not be read: {err}") from err
 

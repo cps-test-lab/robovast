@@ -274,7 +274,7 @@ class ExecutionConfig(BaseModel):
     #     setup dominates the execution time, one job == one scenario (e.g. Gazebo).
     #   >1: up to N runs are packed into one job and run sequentially inside a
     #     single simulator setup (the simulator is reset between them), amortising
-    #     setup for simulators with cheap per-run cost (e.g. MuJoCo). Runs are
+    #     setup for simulators with cheap per-run cost. Runs are
     #     packed config-major, so a config's repeated runs stay together in a job.
     # Results stay keyed by configuration name / run number regardless, so packing
     # is invisible to downstream processing.
@@ -333,8 +333,8 @@ class ExecutionConfig(BaseModel):
         for name, container in v.items():
             extras = set(container.model_extra or {})
             if name == SIMULATION_CONTAINER:
-                # A backend's own keys (e.g. robosito's `config`) ride alongside
-                # `backend` and are validated against its CONFIG_CLASS once resolved.
+                # A backend's own keys (a world reference, say) ride alongside `backend`
+                # and are validated against its CONFIG_CLASS once resolved.
                 if extras and not container.backend:
                     raise ValueError(
                         f"execution.containers.{name} has unknown keys "

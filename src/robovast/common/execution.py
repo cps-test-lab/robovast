@@ -907,7 +907,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     run_files_hash = hash_run_files(vast_file_path, campaign_data.get("_run_files", []))
     # Config generation already resolved this against the .vast's location, so it is usable as-is
     # (see the same note in execute_local). Re-prepending the .vast's directory doubled it -- e.g.
-    # `rst_basic_nav/rst_basic_nav/scenario.osc` -- for every project whose config path has a
+    # `<project>/<project>/scenario.osc` -- for every project whose config path has a
     # directory part, and was a silent no-op only for the usual case of `vast init` run in the
     # project's own directory.
     scenario_file_path_for_hash = campaign_data["scenario_file"]

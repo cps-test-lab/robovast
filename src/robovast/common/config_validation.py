@@ -342,7 +342,7 @@ def _scene_descriptor_problems(raw, vast_dir):
 def _env_names(raw):
     """Names declared in ``execution.env``, accepting both shapes it is written in.
 
-    The documented form is a list of single-key mappings (``- ROBOSITO_WORLD: "..."``); a plain
+    The documented form is a list of single-key mappings (``- MY_VAR: "..."``); a plain
     mapping is accepted too.
     """
     env = (raw.get("execution") or {}).get("env")
