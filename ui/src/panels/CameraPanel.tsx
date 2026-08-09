@@ -124,6 +124,13 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
         muted
         playsInline
         preload="auto"
+        // No controls of its own, and no browser affordances that would act as some.
+        // Chrome floats a Picture-in-Picture button over a video this size even with
+        // `controls` unset, and popping the panel out into a always-on-top window
+        // detaches it from the clock driving it -- the frame would keep changing with
+        // nothing on screen explaining what time it is showing.
+        disablePictureInPicture
+        controlsList="nodownload noplaybackrate noremoteplayback"
         onLoadedMetadata={sync}
         sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
       />
