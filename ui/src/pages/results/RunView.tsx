@@ -14,16 +14,21 @@ import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import Checkbox from '@mui/material/Checkbox'
 import CircularProgress from '@mui/material/CircularProgress'
 import Paper from '@mui/material/Paper'
 import Popover from '@mui/material/Popover'
 import IconButton from '@mui/material/IconButton'
+import ListItemIcon from '@mui/material/ListItemIcon'
+import ListItemText from '@mui/material/ListItemText'
+import Menu from '@mui/material/Menu'
+import MenuItem from '@mui/material/MenuItem'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
-import PowerSettingsNewRoundedIcon from '@mui/icons-material/PowerSettingsNewRounded'
+import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
 import type { ResultsTreeItem } from '@/lib/resultsTree'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
@@ -39,42 +44,74 @@ import '@/panels' // registers the built-in panels
 // The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
 const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 
-/** The run view's one shutdown control: does the run end at its scenario's verdict, or run on
- *  through the teardown?
+/** The run view's settings menu. One entry so far: does the run end at its scenario's verdict,
+ *  or run on through the teardown?
  *
- *  It lives here rather than in the playback bar or the log panel because it is not either
- *  panel's setting -- it says what "this run" means, and both of them follow. The state rides on
+ *  That setting lives here rather than in the playback bar or the log panel because it is not
+ *  either panel's -- it says what "this run" means, and both of them follow. The state rides on
  *  the clock because that is the only object every panel already receives, and because the
  *  question is a time one: the timeline ends at the verdict unless the shutdown phase is shown.
  *
- *  Icon only, unlike its labelled neighbours: wanting the shutdown phase is a narrow case, and a
- *  word for it here would give it more weight beside the run picker than it earns. The tooltip
- *  is therefore the only explanation there is, so it names the state *and* what a click does. */
-function ShutdownToggle({ clock }: { clock: PlaybackClock }) {
+ *  A gear rather than the setting's own icon, matching the campaign row's menu: the header is a
+ *  row of labelled controls, and each further view-wide setting would otherwise add another bare
+ *  icon to decode. The menu names them in words instead, and grows without widening the header.
+ *
+ *  The entry names the span it adds -- the shutdown phase, the word the playback bar and the docs
+ *  already use for it -- and is ticked while that span is included, so the label says what a click
+ *  does and the tick says where it stands, rather than a title that flips between two sentences
+ *  and can only be found by hovering. */
+function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   const { verdict, hideShutdown } = useClock(clock)
-  const title = verdict == null
-    ? 'This run recorded no scenario verdict, so there is no shutdown to hide.'
-    : hideShutdown
-      ? 'Shutdown hidden — the timeline ends at the scenario\'s verdict, and the log stops '
-        + 'there too. Click to include the shutdown phase.'
-      : 'Shutdown shown — the timeline runs to the end of the recording. Click to end it at '
-        + 'the verdict.'
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null)
+  const noVerdict = verdict == null
+  const reason = noVerdict
+    ? 'This run recorded no scenario verdict, so there is no shutdown to separate.'
+    : 'The timeline and the log run to the end of the recording rather than stopping at the '
+      + 'scenario\'s verdict.'
   return (
-    <Tooltip title={title}>
-      {/* A disabled button fires no events, so the tooltip needs a wrapper that does --
-          which is exactly the case where the reason matters most. */}
-      <span>
+    <>
+      <Tooltip title="Run view settings">
         <IconButton
           size="small"
-          aria-label={title}
-          disabled={verdict == null}
-          onClick={() => clock.setHideShutdown(!hideShutdown)}
-          sx={{ color: hideShutdown ? 'primary.main' : 'text.disabled' }}
+          aria-label="run view settings"
+          onClick={(e) => setAnchor(e.currentTarget)}
         >
-          <PowerSettingsNewRoundedIcon fontSize="small" />
+          <SettingsRoundedIcon fontSize="small" />
         </IconButton>
-      </span>
-    </Tooltip>
+      </Tooltip>
+      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+        <Tooltip title={reason} placement="left">
+          {/* A disabled item fires no events, so the tooltip needs a wrapper that does --
+              which is exactly the case where the reason matters most. */}
+          <span>
+            <MenuItem
+              disabled={noVerdict}
+              onClick={() => {
+                clock.setHideShutdown(!hideShutdown)
+                setAnchor(null)
+              }}
+            >
+              {/* A checkbox rather than MUI's `selected` tint. This is a setting, not an
+                  action like the campaign menu's entries, and the tint is a background shade
+                  a reader has to already know the meaning of -- with one entry there is not
+                  even a second row to compare it against. An empty box says both that the
+                  entry toggles and that it is currently off, before anything is clicked. */}
+              <ListItemIcon>
+                <Checkbox
+                  size="small"
+                  checked={!noVerdict && !hideShutdown}
+                  disabled={noVerdict}
+                  disableRipple
+                  tabIndex={-1}      /* the MenuItem itself takes the focus and the click */
+                  sx={{ p: 0 }}      /* no edge offset: ListItemIcon already sets the gutter */
+                />
+              </ListItemIcon>
+              <ListItemText>Include shutdown phase</ListItemText>
+            </MenuItem>
+          </span>
+        </Tooltip>
+      </Menu>
+    </>
   )
 }
 
@@ -333,10 +370,10 @@ export function RunView({
         >
           Edit visualization
         </Button>
-        {/* Pushed to the far right: it governs the whole view rather than the run picker it
+        {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
         <Box sx={{ flexGrow: 1 }} />
-        <ShutdownToggle clock={clock} />
+        <RunSettingsMenu clock={clock} />
       </Stack>
 
       <Popover

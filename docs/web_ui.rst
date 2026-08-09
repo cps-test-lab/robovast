@@ -395,18 +395,22 @@ than being selectable and then answering with an empty view.
 
 .. _shutdown-toggle:
 
-**The run ends at its scenario's verdict.** One control on the right of the header — the
-power icon — decides whether "this run" means the trial or the whole recording, and it is
-**on by default**. Everything after the verdict is teardown: nodes being killed, lifecycle
-transitions failing because their peer is already gone, TF errors from a publisher that has
-stopped. It is minutes of wall time, it colours the log red, and it describes nothing that
-happened during the run.
+**The run ends at its scenario's verdict.** The gear at the right of the header opens the run
+view's settings, and its **Include shutdown phase** entry decides whether "this run" means the
+trial or the whole recording. It is **off by default** — everything after the verdict is teardown:
+nodes being killed, lifecycle transitions failing because their peer is already gone, TF errors
+from a publisher that has stopped. It is minutes of wall time, it colours the log red, and it
+describes nothing that happened during the run.
 
 It governs the view rather than a panel, which is why it sits in the header and neither the
-playback bar nor the log panel carries a toggle of its own: with it on, the timeline stops
-at the verdict (so the duration readout is the trial's) and the log stops there too. Click
-it off and the full recording returns, with a divider on the playback bar marking where the
-trial ended.
+playback bar nor the log panel carries a toggle of its own: with the shutdown hidden, the
+timeline stops at the verdict (so the duration readout is the trial's) and the log stops there
+too. Tick the entry and the full recording returns, with a divider on the playback bar marking
+where the trial ended.
+
+A menu rather than a bare icon because it is a *view-wide* setting, the same shape the campaign
+row's gear uses: the header is otherwise a row of labelled controls, and each further such
+setting would add another icon to decode. One entry today, named in words, with room to grow.
 
 The moment itself is read from ``scenario_timestamps``, written once by postprocessing —
 the same row ``search_run_logs`` cuts on, so the web UI and the MCP tools cannot disagree
@@ -541,13 +545,28 @@ the ▲▼ buttons jump to the previous/next warning or error — which is what 
 navigation. Scrolling away stops the follow and raises a button showing the cursor's time; click
 it (or press ``Escape``) to jump back and resume following.
 
-The log also stops at the scenario's verdict. In the run view that is the header's
-:ref:`shutdown toggle <shutdown-toggle>` and this panel shows no control of its own — one
-question, one place to answer it. The Explorer's **Log** tab has no run view around it, so it
-carries the same power icon in its own filter bar. Either way the cut is on the verdict's
-**wall** time and not its sim time: the clock map does not extrapolate, so lines logged after
-``/clock`` stopped have no sim time at all and sort to the *top* of the log — which is exactly
-where the shutdown of a run whose simulator quit first ends up.
+The log also stops at the scenario's verdict. In the run view that is the header gear's
+:ref:`Include shutdown phase <shutdown-toggle>` entry and this panel shows no control of its own
+— one question, one place to answer it. The Explorer's **Log** tab has no run view around it, so it
+carries a power icon for the same setting in its own filter bar. Either way the cut is on the
+verdict's **wall** time and not its sim time: the clock map does not extrapolate, so lines after
+``/clock`` stopped have no sim time at all, and a sim-time cut is blind to exactly the lines
+the toggle exists to remove.
+
+Wall time is also what the log is **ordered** by, which is why those lines sit at the end where
+they were logged — and not sim time with the rows lacking one placed first, which would read a
+missing sim time as "logged before the simulator's clock started". It does not mean that: the
+clock map is silent at *both* ends of its range, so such an order lands a run's shutdown at the
+very top of the log, next to the boot lines.
+
+A line with no sim time is **dimmed** in the time column, and that is the only marking it gets:
+the figure is the seconds since the run's first log line, measured on the wall clock, and hovering
+it says so. Nothing is prefixed to it, so a column of monospace figures keeps its alignment.
+
+A log covering more than one run (a config's, or the Explorer's whole campaign) is ordered by run
+first, so it reads as one run after another instead of interleaving runs that each start at zero.
+There is no cursor in that view: every run has its own moment ``12.5 s``, so a single position
+cannot point into all of them, and the log is shown plain rather than divided at an arbitrary row.
 
 The footer never stays silent about what is missing: no ``run_log`` table (postprocessing predates
 it), a run with no clock map (``wall time only``), how many shutdown lines were hidden and how the

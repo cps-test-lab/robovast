@@ -59,6 +59,9 @@ export interface RunLogData {
   /** Index in `rows` of each entry in `simTimes`. */
   simIndex: number[]
   clock: ClockProvenance | null
+  /** One run's rows, so sim time rises across the whole load and the cursor can binary-search
+   *  it. False for a config's or a campaign's log, where every run restarts at zero. */
+  singleRun: boolean
   /** Where the trial ended, or null when this run reached no verdict (and for a campaign
    *  postprocessed before the verdict was recorded). Absent for a multi-run scope, where one
    *  answer would not be true of every run. */
@@ -98,11 +101,21 @@ function pageSql(
     where.push(`severity IN (${severityFloor.map(quote).join(', ')})`)
   const scope = where.length ? ` WHERE ${where.join(' AND ')}` : ''
   // ORDER BY on the server: the merge already wrote the rows in wall order, but a table is a
-  // set and the panel's cursor search needs them sorted. NULL sim_time (pre-roll: logged
-  // before the simulator's clock existed) sorts first, which is where it happened.
+  // set and the panel's cursor search needs them sorted. Wall time is the key to sort on,
+  // because it is the one every row carries in the same sense.
+  //
+  // Not `sim_time IS NOT NULL` first, which reads a NULL sim time as "pre-roll, logged before
+  // the simulator's clock existed". It does not mean that: the clock map refuses to extrapolate,
+  // so sim_time is NULL at *both* ends of its range, and one bucket for the NULLs lands a run's
+  // shutdown ("Server stopped.") at the top of the log beside boot lines it has nothing to do
+  // with.
+  //
+  // The run leads the key so that a multi-run scope reads as one run after another. Sorting a
+  // whole campaign by time alone interleaves runs that each start at zero, which is how the
+  // old sim-time key left it.
   return (
     `SELECT config_name, run_id, ${COLUMNS} FROM run_log${scope} ` +
-    `ORDER BY sim_time IS NOT NULL, sim_time, wall_ts, rowid ` +
+    `ORDER BY config_name, run_id, wall_ts, rowid ` +
     `LIMIT ${PAGE} OFFSET ${offset}`
   )
 }
@@ -150,6 +163,9 @@ export function useRunLog(opts: UseRunLogOptions) {
     staleTime: 5 * 60_000,
     retry: false,
     queryFn: async (): Promise<RunLogData> => {
+      // The scope that makes a per-run answer true of everything loaded -- the clock
+      // provenance, the verdict, and whether the cursor can index the rows at all.
+      const singleRun = !!configName && runId != null
       const rows: LogRow[] = []
       let truncated = false
       let missingTable = false
@@ -182,7 +198,7 @@ export function useRunLog(opts: UseRunLogOptions) {
       // "nothing logged before the clock started". Missing for a multi-run scope, where one
       // answer would not be true of every run.
       let clock: ClockProvenance | null = null
-      if (!missingTable && configName && runId != null) {
+      if (!missingTable && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
@@ -207,7 +223,7 @@ export function useRunLog(opts: UseRunLogOptions) {
       // verdict once (`common/scenario_markers`) and wrote it here, so this view, the
       // playback clock and `search_run_logs` cut at the same moment.
       let verdict: Verdict | null = null
-      if (!missingTable && configName && runId != null) {
+      if (!missingTable && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
@@ -239,7 +255,7 @@ export function useRunLog(opts: UseRunLogOptions) {
           simIndex.push(i)
         }
       })
-      return { rows, simTimes, simIndex, clock, verdict, truncated, missingTable,
+      return { rows, simTimes, simIndex, clock, singleRun, verdict, truncated, missingTable,
                total: rows.length }
     },
   })

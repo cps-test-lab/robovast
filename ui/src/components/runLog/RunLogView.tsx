@@ -34,6 +34,19 @@ import type { LogRow, RunLogData } from './useRunLog'
 
 /** One row's height in px. Fixed, so a row's position is arithmetic rather than a measurement. */
 const ROW_H = 18
+
+/** Characters of the node column. Exact in this monospace face, so it is also the length at
+ *  which a name is truncated and earns a tooltip. */
+const NODE_CHARS = 12
+
+/** How long the pointer must rest on a truncated node before its full name appears.
+ *
+ *  Deliberately slower than MUI's default. This panel is read by dragging across it -- selecting
+ *  a line to paste into an issue is the common gesture, and `hasSelection` exists because even
+ *  auto-scroll had to be stopped from fighting it. On the usual hover delay the tooltip flashes
+ *  up mid-drag over every column it crosses; a second is past a drag's pace while still being
+ *  the pause of someone who stopped to look. */
+const NODE_TIP_MS = 1000
 /** Rows rendered beyond the viewport, so a fast scroll does not show blank strips. */
 const OVERSCAN = 12
 
@@ -69,19 +82,65 @@ export function flatten(message: string): string {
 /** The time column for one row.
  *
  *  Sim time where it exists. Where it does not, the **wall** offset from the run's first log
- *  line, marked with a leading `~` and dimmed — never as if it were sim time.
+ *  line — returned with `wall` set, which the column renders dimmed so it is never read as sim
+ *  time.
  *
  *  Half a real run has no sim time and legitimately so: on a measured campaign the first log line
  *  came 16 s before the first line the clock map can place, because container boot, the recorder
  *  starting and `Executing scenario` all happen before the simulator publishes /clock. Rendering
- *  all of that as `--:--` read as a broken column; showing the wall offset says when it happened
- *  while the `~` says which clock answered. `--:--` is left for a line with no timestamp at all.
- */
+ *  all of that as `--:--` read as a broken column; the wall offset says when it happened instead.
+ *  `--:--` is left for a line with no timestamp at all.
+ *
+ *  The figure is plain: no marker, no second face. The column is a stack of monospace figures
+ *  52 px wide, and anything prefixed to half of them costs the rest their alignment for what the
+ *  dimming already says. The tooltip carries the explanation for a reader who wants it. */
 export function rowTime(row: LogRow, wallBase: number | null): { text: string; wall: boolean } {
   if (row.sim_time != null) return { text: fmtTime(row.sim_time), wall: false }
   if (row.wall_ts != null && wallBase != null)
-    return { text: `~${fmtTime(row.wall_ts - wallBase)}`, wall: true }
+    return { text: fmtTime(row.wall_ts - wallBase), wall: true }
   return { text: '--:--', wall: false }
+}
+
+
+/** The node column: a fixed `NODE_CHARS` wide, with the full name behind a slow hover.
+ *
+ *  The tooltip is attached only to a name that is actually cut short. Wrapping every cell would
+ *  put a popper over `amcl` to tell the reader it is called `amcl`, and would pay MUI's hover
+ *  bookkeeping on every visible row for it.
+ *
+ *  `disableInteractive` is what keeps a drag-selection safe: the popper is then
+ *  `pointer-events: none`, so it cannot swallow the mouseup that ends a selection even if it
+ *  opens right under the cursor. */
+function NodeCell({ node }: { node: string }) {
+  const cell = (
+    <Box
+      component="span"
+      sx={{
+        color: 'text.secondary',
+        width: `${NODE_CHARS}ch`,
+        flexShrink: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {node}
+    </Box>
+  )
+  if (node.length <= NODE_CHARS) return cell
+  return (
+    <Tooltip
+      title={node}
+      placement="bottom-start"
+      enterDelay={NODE_TIP_MS}
+      // Also on the way in from another cell: crossing the column during a drag must not
+      // inherit a delay already served somewhere else.
+      enterNextDelay={NODE_TIP_MS}
+      disableInteractive
+    >
+      {cell}
+    </Tooltip>
+  )
 }
 
 
@@ -166,14 +225,14 @@ export function RunLogView({
   // filter" keeps meaning the filter. Not part of `compileFilter`: that returns a row-wise
   // predicate, and this needs the run's verdict -- a property of the whole load, not of a row.
   //
-  // Cut on `wall_ts`, never on the array index or on sim time. The rows are ordered
-  // `sim_time IS NOT NULL, sim_time, wall_ts` (see `pageSql`) and the clock map does not
-  // extrapolate, so lines logged after /clock stopped have NO sim time and sort to the
-  // *front*. Slicing at an index, or comparing sim times, would leave exactly the lines this
-  // is here to remove -- sitting at the top of the log with `~` wall offsets.
+  // Cut on `wall_ts`, never on sim time. The clock map does not extrapolate, so the lines this
+  // is here to remove -- logged after /clock stopped -- have NO sim time to compare against;
+  // they are exactly the rows a sim-time cut cannot see.
   //
-  // A row with no `wall_ts` at all (`time_source: 'none'`) is kept: it cannot be placed, and
-  // dropping it would be a guess dressed as a filter.
+  // The rows arrive in wall order (see `pageSql`), so this cut is a prefix. It stays a
+  // predicate rather than a slice because a row with no `wall_ts` at all
+  // (`time_source: 'none'`) is kept wherever it sits: it cannot be placed, and dropping it
+  // would be a guess dressed as a filter.
   const verdictWall = data?.verdict?.wallTs ?? null
   const scoped = useMemo(
     () => (hideShutdown && verdictWall != null
@@ -196,14 +255,29 @@ export function RunLogView({
 
   // The cursor's row, in the *filtered* index space -- which is the space the list is drawn
   // in, so filtering can never desync the divider from the rows around it.
-  const shownTimes = useMemo(
-    () => shown.map((r) => (r.sim_time == null ? Number.NEGATIVE_INFINITY : r.sim_time)),
-    [shown],
-  )
+  //
+  // A row the clock map could not place carries the sim time of the last row it could, which
+  // makes the array non-decreasing -- what `lastAtOrBefore`'s binary search requires. A fixed
+  // -Inf for those rows would not: the rows are in wall order, so a shutdown line sits at the
+  // end, and a -Inf there breaks the search for every row before it. Carrying forward also
+  // places the cursor correctly -- boot lines keep -Inf (the cursor is never before them) and
+  // the shutdown sits at the run's final sim time, which is when it happened.
+  const shownTimes = useMemo(() => {
+    let last = Number.NEGATIVE_INFINITY
+    return shown.map((r) => {
+      if (r.sim_time != null) last = r.sim_time
+      return last
+    })
+  }, [shown])
+  // Only a single run's rows rise all the way through: a wider scope holds run after run, each
+  // restarting at zero, so the array is not sorted and one sim time names a moment in every one
+  // of them. No cursor there rather than a binary search over unsorted input -- the Explorer's
+  // tab already passes none, and a run view that could not resolve its run id gets the same
+  // plain log instead of a divider pointing at an arbitrary row.
   const cursorIndex = useMemo(() => {
-    if (cursor == null || !shownTimes.length) return -1
+    if (cursor == null || !shownTimes.length || !data?.singleRun) return -1
     return lastAtOrBefore(shownTimes, cursor)
-  }, [shownTimes, cursor])
+  }, [shownTimes, cursor, data?.singleRun])
 
   // A *callback* ref, not an effect. The component returns early while the log is loading (and
   // for "no table" / error), so on first render there is no scroll container at all: an effect
@@ -492,15 +566,21 @@ export function RunLogView({
                         return (
                           <Box
                             component="span"
+                            // The only wording there is, so it says what the figure is and why
+                            // it is not a sim time. Deliberately not "the clock had not started
+                            // yet": the clock map does not extrapolate at *either* end, so the
+                            // whole shutdown phase lands here for the opposite reason.
                             title={
                               t.wall
                                 ? 'wall time since the first log line — the simulator\'s clock '
-                                  + 'had not started yet, so this line has no sim time'
+                                  + 'was not running when this line was logged, so it has no '
+                                  + 'sim time'
                                 : undefined
                             }
                             sx={{
+                              // Colour alone marks a wall time, so the figures stay one face
+                              // and one width down the column.
                               color: t.wall ? 'text.disabled' : 'text.secondary',
-                              fontStyle: t.wall ? 'italic' : 'normal',
                               width: 52,
                               flexShrink: 0,
                             }}
@@ -523,9 +603,16 @@ export function RunLogView({
                       >
                         {row.container || '?'}
                       </Box>
-                      <Box component="span" sx={{ color: 'text.secondary', width: 150, flexShrink: 0 }}>
-                        {row.node}
-                      </Box>
+                      {/* Clamped, not sized to the longest name there might be: a node is
+                          `scenario_execution_server.action_runner` often enough that fitting one
+                          would spend a quarter of the row on a column the message has to be read
+                          past.
+                          A deliberate cost, not an oversight: a namespaced name carries its
+                          discriminator at the *end*, so the four `scenario_execution_*` nodes and
+                          the two `lifecycle_manager_*` ones all render alike (6 of 34 names on a
+                          measured run). Resting on one names it -- the column is for scanning,
+                          and the width is the point. */}
+                      <NodeCell node={row.node} />
                       <Box
                         component="span"
                         sx={{
