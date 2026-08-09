@@ -224,9 +224,16 @@ _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
     "rosbags_nav2bt_to_csv": ("nav2_bt_to_csv",  "rosbag2"),
     "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
     "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
+    "rosbags_clock_to_csv":  ("clock_to_csv",    "logs/rosout_bag"),
     "rosbags_costmap_to_csv": ("costmap_to_csv", "rosbag2"),
     "rosbags_to_webm":       ("to_webm",         "rosbag2"),
 }
+
+#: Handlers on the *infrastructure* bag (``logs/rosout_bag``, recorded by the entrypoint in
+#: wall time for the whole container's life), auto-injected for every campaign because both
+#: answer questions no campaign should have to ask for: what the run said, and how its wall
+#: clock relates to sim time. Each is still skippable by name (``skip=[…]``).
+_AUTO_INFRA_HANDLERS: Tuple[str, ...] = ("rosbags_rosout_to_csv", "rosbags_clock_to_csv")
 
 #: Postprocessing command names that are not entry points but are transparently
 #: rewritten into a batched ``rosbags_process`` call at runtime (see
@@ -235,7 +242,26 @@ _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
 ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
 
 
-def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
+#: Plugins that run for every campaign without being declared, appended after the
+#: (batched) rosbag conversions because they read what those produce. Skippable by name,
+#: like any other command.
+AUTO_PLUGINS: Tuple[str, ...] = ("run_log",)
+
+
+def _append_auto_plugins(commands: List, skip: "set | None" = None) -> List:
+    """Append :data:`AUTO_PLUGINS` not already present and not skipped.
+
+    A campaign that declares one itself keeps its own parameters and its own position in
+    the order, rather than getting a second, default-configured copy.
+    """
+    skip_names = set(skip or ())
+    declared = {c if isinstance(c, str) else list(c.keys())[0] for c in commands}
+    return list(commands) + [name for name in AUTO_PLUGINS
+                             if name not in declared and name not in skip_names]
+
+
+def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
+                            skip: "set | None" = None) -> List:
     """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
 
     Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
@@ -245,31 +271,34 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
     ``bag_dir``; all other batchable commands are removed.  Non-batchable
     commands keep their original order.
 
-    ``rosout_to_csv`` is always added unless *skip_rosout* is ``True``.
+    The infrastructure-bag handlers (:data:`_AUTO_INFRA_HANDLERS`) are always added unless
+    named in *skip* (or, for rosout, *skip_rosout*).
 
     Args:
         commands: Raw list of postprocessing commands from the .vast config.
         skip_rosout: When ``True``, omit rosout processing entirely (neither
             auto-injected nor taken from explicit ``rosbags_rosout_to_csv``
             commands in the config).
+        skip: Batch plugin names to leave out, so an auto-injected handler can be
+            declined by name without a dedicated flag per handler.
 
     Returns:
         New command list with batchable commands replaced by rosbags_process calls.
     """
+    skip_names = set(skip or ())
+    if skip_rosout:
+        skip_names.add("rosbags_rosout_to_csv")
     # bag_dir → list of handler dicts for that bag dir
     bag_dir_plugins: Dict[str, List[dict]] = {}
     # bag_dir → index in result where the placeholder lives
     bag_dir_slot: Dict[str, int] = {}
     result: List = []
 
-    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
-
     for cmd in commands:
         plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
         if plugin_name in _ROSBAG_BATCH_MAP:
             handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
-            # Skip rosout if requested
-            if skip_rosout and handler_type == "rosout_to_csv":
+            if plugin_name in skip_names:
                 continue
             params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
             # Allow per-command bag_dir override; pop it so it's not passed to handler
@@ -282,23 +311,27 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
         else:
             result.append(cmd)
 
-    # Always include rosout unless explicitly skipped
-    if not skip_rosout and not any(
-        p.get("type") == "rosout_to_csv"
-        for plugins in bag_dir_plugins.values()
-        for p in plugins
-    ):
-        bag_dir_plugins.setdefault(rosout_bag_dir, []).append({"type": "rosout_to_csv"})
-        if rosout_bag_dir not in bag_dir_slot:
-            bag_dir_slot[rosout_bag_dir] = len(result)
+    # Always include the infrastructure-bag handlers unless declined by name. A config that
+    # declares one itself (with parameters) keeps its own version rather than getting a
+    # second, default-configured copy.
+    present = {p.get("type") for plugins in bag_dir_plugins.values() for p in plugins}
+    for name in _AUTO_INFRA_HANDLERS:
+        handler_type, bag_dir = _ROSBAG_BATCH_MAP[name]
+        if name in skip_names or handler_type in present:
+            continue
+        bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type})
+        if bag_dir not in bag_dir_slot:
+            bag_dir_slot[bag_dir] = len(result)
             result.append(None)
 
-    # Fill placeholder slots with the batch commands; rosout_to_csv always last
+    # Fill placeholder slots with the batch commands; the auto-injected infrastructure
+    # handlers run last, so an explicitly configured handler's output is in place first.
+    auto_types = {_ROSBAG_BATCH_MAP[n][0] for n in _AUTO_INFRA_HANDLERS}
     for bag_dir, slot_idx in bag_dir_slot.items():
         plugins = bag_dir_plugins[bag_dir]
-        rosout = [p for p in plugins if p.get("type") == "rosout_to_csv"]
-        others = [p for p in plugins if p.get("type") != "rosout_to_csv"]
-        result[slot_idx] = {"rosbags_process": {"plugins": others + rosout, "bag_dir": bag_dir}}
+        auto = [p for p in plugins if p.get("type") in auto_types]
+        others = [p for p in plugins if p.get("type") not in auto_types]
+        result[slot_idx] = {"rosbags_process": {"plugins": others + auto, "bag_dir": bag_dir}}
 
     return result
 
@@ -611,7 +644,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Batch all batchable rosbags_* commands into a single rosbags_process call
     # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
     # included unless skipped.
-    commands = _batch_rosbags_commands(commands, skip_rosout="rosbags_rosout_to_csv" in skip_set)
+    commands = _batch_rosbags_commands(commands, skip=skip_set)
+
+    # The log merge, appended so it runs after the bag conversions it reads (rosout.csv and
+    # clock_map.csv). Auto-injected for the same reason those are: a run whose output cannot
+    # be read afterwards cannot be explained, and nobody should have to ask for that.
+    commands = _append_auto_plugins(commands, skip_set)
 
     # Validate all commands first
     for command in commands:
@@ -624,6 +662,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
         # Execute each postprocessing command
         success = True
+        # What failed, and why -- carried into the returned message rather than only printed.
+        # "Postprocessing failed!" on its own sends every reader to the log to find out which of
+        # five steps broke; the reason is known right here, and the status is where it is looked
+        # for first (``postprocessing_error``, the campaign view's failure box).
+        failures: List[str] = []
 
         for i, command in enumerate(commands, 1):
             # Parse command to get plugin name and parameters
@@ -639,10 +682,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 params = command[plugin_name] or {}
                 if not isinstance(params, dict):
                     output(f"[{i}/{len(commands)}] ✗ Invalid command format: parameters must be a dict")
+                    failures.append(f"{plugin_name}: parameters must be a dict")
                     success = False
                     continue
             else:
                 output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be string or dict, got {type(command)}")
+                failures.append(f"command {i}: must be a string or a dict, got {type(command)}")
                 success = False
                 continue
 
@@ -652,6 +697,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 plugin_func = resolve_postprocessing_plugin(plugin_name, config_dir, plugins)
             except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError) as e:
                 output(f"[{i}/{len(commands)}] ✗ {e}")
+                failures.append(f"{plugin_name}: {e}")
                 success = False
                 continue
 
@@ -675,6 +721,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
             if not plugin_success:
                 output(f"✗ {message}")
+                # First line only: a plugin may report a whole traceback, and the status field is
+                # read in a list and a tooltip. The log still has all of it.
+                failures.append(f"{plugin_name}: {str(message).strip().splitlines()[0]}")
                 success = False
                 continue
             display_message = message if debug else message.splitlines()[0]
@@ -706,4 +755,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
     if success:
         return True, "Postprocessing completed successfully!"
-    return False, "Postprocessing failed!"
+    if not failures:
+        # Belt and braces: a future early-exit that sets success=False without recording why
+        # would otherwise regress to the message this replaced.
+        return False, "Postprocessing failed (no step reported a reason; see the log)"
+    detail = "; ".join(failures[:3])
+    more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+    return False, (f"Postprocessing failed: {len(failures)} of {len(commands)} step(s) — "
+                   f"{detail}{more}")

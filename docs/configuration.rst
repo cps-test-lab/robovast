@@ -344,6 +344,38 @@ reads this table. See the scenario-execution documentation for the file format.
    rather than failing, so the run still succeeds — it simply produces no ``behaviors.jsonl``
    and no ``behaviors`` table.
 
+log_topics
+^^^^^^^^^^
+
+**Type:** List of strings
+
+**Required:** No (default: ``["/rosout", "/clock"]``)
+
+Topics the entrypoint's own recorder captures, for the whole container's life, in **wall**
+time. ROS images only; ignored where ``ros2`` is not on PATH.
+
+This is the *infrastructure* recording, deliberately separate from the scenario's
+``bag_record``: it starts with the container, so it sees the stack coming up before any
+scenario does, and it runs on the wall clock. That is what makes ``/clock`` here the
+sim↔wall mapping — each message's receive time is wall and its content is sim (see
+:ref:`clock-map`). The scenario's own bag is recorded with ``use_sim_time``, so both of its
+axes are sim and it cannot carry that relation at any price.
+
+**An escape hatch, not a switch.** The default already covers what the merged
+:ref:`run_log <merged-run-log>` needs; name this only to add a topic. An empty list records
+nothing — and then a run's log has no sim time at all.
+
+.. code-block:: yaml
+
+   execution:
+     log_topics: [/rosout, /clock, /diagnostics]   # only to add; the default is the first two
+
+.. note::
+
+   The output directory keeps its historical name ``logs/rosout_bag`` even though it now
+   holds more than ``/rosout``: it is an address the postprocessing map, the docs and every
+   existing campaign already use.
+
 runs_per_job
 ^^^^^^^^^^^^
 

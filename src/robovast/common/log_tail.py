@@ -28,6 +28,15 @@ The lanes differ only in how they get that delta, which is why the fetching is N
 from __future__ import annotations
 
 
+#: What the main container is called. The runtime container is ``robovast`` on both lanes (the
+#: compose service, and the pod's container in ``manifests.py``) -- NOT ``scenario``, which is the
+#: container plan's *role* name. Defined here, beside :func:`tag_line`, because two readers depend
+#: on it agreeing: the live job log tags its lines with it, and the merged ``run_log`` table files
+#: its rows under it. They differed once (``robovast`` vs ``main``), which made one campaign read
+#: as two different sets of containers depending on which surface you opened.
+MAIN_CONTAINER = "robovast"
+
+
 def tag_width(names) -> int:
     """Column width for :func:`tag_line`'s prefixes, so the log body stays aligned."""
     return max((len(n) for n in names), default=0)

@@ -18,6 +18,7 @@ import { useTheme } from '@mui/material/styles'
 import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import { formatDataFetchLabel, progressPercent } from '@/lib/format'
 import { campaignItem, type ResultsTreeItem } from '@/lib/resultsTree'
+import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 
@@ -160,9 +161,19 @@ function SelectionDetail({ item }: { item?: ResultsTreeItem }) {
   )
 }
 
-// The notebook-visualization tabs for the selected node: one tab per workload that declares a
-// notebook for this node's level (campaign/config/run). The active tab's notebook is executed
-// server-side and rendered as HTML.
+//: The built-in tab, appended after whatever the campaign declared. Not a workload and not
+//: declarable: a run always has a log, so there is nothing for a `.vast` to decide.
+//:
+//: **Run level only.** A config or campaign node has no single log -- what it has is a *search*
+//: across its runs, which is a different view with different controls, and offering the same tab
+//: for both made the tab mean two things. The cross-run question is answered by
+//: `search_run_logs` (MCP) and by SQL over `run_log` in the Data browser, where a query that
+//: spans runs belongs.
+const LOG_TAB = '\u0000log'
+
+// The selected node's tabs: one per evaluation.visualization workload that declares a notebook
+// for this node's level (campaign/config/run), then the built-in Log. The active notebook is
+// executed server-side and rendered as HTML.
 function NotebookPanel({ item }: { item: ResultsTreeItem }) {
   const campaignId = item.campaignId
   const level = item.kind // 'campaign' | 'config' | 'run' — matches the backend level names
@@ -177,29 +188,36 @@ function NotebookPanel({ item }: { item: ResultsTreeItem }) {
   const workloads = (vis.data?.workloads ?? []).filter((w) => w.levels.includes(level))
   const names = workloads.map((w) => w.name).join(',')
 
+  // Only a run has one log to show; see LOG_TAB.
+  const showLog = level === 'run' && item.runId != null
+
   const [active, setActive] = useState('')
-  // Keep the active tab valid as the selection (and thus the applicable workloads) changes.
+  // Keep the active tab valid as the selection (and thus the applicable workloads) changes. The
+  // Log tab is always valid, so it is also the fallback when a node declares no notebook -- a
+  // node with nothing to show is a worse answer than its log.
   useEffect(() => {
-    if (!workloads.length) setActive('')
-    else if (!workloads.some((w) => w.name === active)) setActive(workloads[0].name)
-  }, [names, active]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (active === LOG_TAB && showLog) return
+    if (!workloads.some((w) => w.name === active))
+      setActive(workloads[0]?.name ?? (showLog ? LOG_TAB : ''))
+  }, [names, active, showLog]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (vis.isPending) return <CircularProgress size={18} />
-  if (vis.isError)
-    return (
-      <Alert severity="warning" variant="outlined" sx={{ py: 0 }}>
-        {(vis.error as Error).message}
-      </Alert>
-    )
-  if (!workloads.length)
-    return (
-      <Typography variant="caption" color="text.secondary">
-        No notebook visualizations declared for this {level}.
-      </Typography>
-    )
+  const logScope: LogTabScope = {
+    campaignId,
+    level,
+    configName: item.configName,
+    runId: item.runId,
+  }
 
+  // A failed workload list is reported *beside* the tabs rather than instead of them: the log
+  // does not depend on it, and hiding a working view because an unrelated request failed is
+  // worse than saying both.
   return (
     <Stack spacing={1} sx={{ flex: 1, minHeight: 0 }}>
+      {vis.isError ? (
+        <Alert severity="warning" variant="outlined" sx={{ py: 0 }}>
+          {(vis.error as Error).message}
+        </Alert>
+      ) : null}
       <Tabs
         value={active}
         onChange={(_e, v) => setActive(v)}
@@ -210,8 +228,19 @@ function NotebookPanel({ item }: { item: ResultsTreeItem }) {
         {workloads.map((w) => (
           <Tab key={w.name} value={w.name} label={w.name} sx={{ minHeight: 36, py: 0 }} />
         ))}
+        {showLog ? <Tab value={LOG_TAB} label="Log" sx={{ minHeight: 36, py: 0 }} /> : null}
       </Tabs>
-      {active ? <NotebookFrame item={item} workload={active} level={level} /> : null}
+      {vis.isPending && active !== LOG_TAB ? <CircularProgress size={18} /> : null}
+      {!workloads.length && !showLog && !vis.isPending ? (
+        <Typography variant="caption" color="text.secondary">
+          No notebook visualizations declared for this {level}. Select a run to read its log.
+        </Typography>
+      ) : null}
+      {active === LOG_TAB && showLog ? (
+        <RunLogTab scope={logScope} />
+      ) : active ? (
+        <NotebookFrame item={item} workload={active} level={level} />
+      ) : null}
     </Stack>
   )
 }

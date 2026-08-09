@@ -483,13 +483,19 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        ``execution.yaml``'s were. Nothing aggregates them yet, so nothing is lifted.
    * - ``_transient/configurations.yaml``
      - File — already duplicated into ``campaign.unit``; a second copy would drift
-   * - ``rosout`` (from the rosbag)
-     - DB — structured messages with severity/node/stamp
+   * - ``run_log`` (the merged per-run log)
+     - DB — one row per log *event*, with ``sim_time``, container, node, severity. Built by
+       postprocessing from the container streams **joined with** ``/rosout``: the two carry
+       the same events (473 of 521 on a measured campaign), so concatenating them would
+       report most of a run twice. ``rosout`` itself is *not* a second table -- it is a
+       source of this one, selected with ``WHERE source = 'rosout'``. See
+       :ref:`merged-run-log`.
    * - ``system.log``, ``controller.log``
-     - File + the log tools — unstructured, and the live case is the point of reading
-       them. The tools reduce them on read (``min_severity``, ``summarize`` — see
-       :ref:`mcp-liveness`); nothing derived from them is stored, so no aggregate here
-       competes with the tables above
+     - File + the log tools — the raw bytes, and the **live** case is the point of reading
+       them: ``data.db`` does not exist while a campaign runs. The tools reduce them on read
+       (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What *is* stored is the
+       derived, time-aligned ``run_log`` above; the files stay the record of what was
+       actually printed
 
 Two consequences worth stating. A **file** is never *also* a table: putting
 ``configurations.yaml`` in the DB would create a second source of truth for the resolved

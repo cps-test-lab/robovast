@@ -140,8 +140,18 @@ already writes and could count as lines pass through it; on the cluster that out
 exists only in pod logs, which no in-campaign writer sees. A single ingest point that
 works on both lanes is the thing to design, and until it exists an aggregate written on
 only one lane would be worse than none — it would silently mean different things per
-backend. ``rosout`` (already a DB table, from the rosbag) is the post-hoc half of this
-and may be the model to extend rather than a second mechanism to add.
+backend.
+
+The post-hoc half of this **shipped** as ``run_log`` (see :ref:`merged-run-log`): every
+container's output joined with ``/rosout``, on the run's own playback clock, as a table
+joinable to ``runs``. So "which failed runs share a warning pattern?" is now one query, and
+``search_run_logs`` asks it across runs and campaigns. What remains open is exactly the
+*live* ingest above — ``run_log`` is written by postprocessing, so a running campaign still
+has only its streams.
+
+(The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
+written to the **job** directory, which ``generate_data_db`` does not glob. That gap is what
+``run_log`` closes.)
 
 **5b. The file address space's remaining substrate costs.** The address space landed
 (see :ref:`file-address-space`); these are the object-store paths it did **not**

@@ -143,6 +143,57 @@ class SimulatorBackend:
         """
         return False
 
+    def default_panels(self, cfg, execution: dict) -> list:
+        """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
+
+        The same reasoning as :meth:`env`: a campaign whose runs record a capture always wants
+        the panel that replays it, so there is nothing for the ``.vast`` to decide and nothing
+        it should have to write. A backend that produces no such artifact returns ``[]`` --
+        Gazebo has no scene-descriptor export, so it has no 3D panel to offer and must not
+        claim one.
+
+        Contributed *defaults*: a campaign that declares the same panel type itself keeps its
+        own entry, exactly as ``execution.env`` wins over :meth:`env`. A backend supplies what
+        it knows, not decisions it takes away.
+        """
+        return []
+
+
+def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:
+    """*raw_panels* with the configured backend's contributed panels prepended.
+
+    One seam for every reader of a campaign's panel list -- the service that serves it, the
+    validation that checks it, the preview -- so a contributed panel cannot be visible in one
+    and absent in another. Doing it in the web UI instead would mean validation rejecting a
+    panel the run view then shows anyway.
+
+    Precedence follows ``execution.env``'s documented rule: a campaign that declares the type
+    itself keeps its own entry. Contributed panels go *first* because the one there is to
+    contribute (``scene3d``) is the full-bleed base layer the others float over, which is also
+    the order a ``.vast`` wrote it in by hand.
+
+    A backend that cannot be resolved contributes nothing rather than failing: the panel list
+    is read to *show* a campaign, including one whose backend package is not installed here.
+    """
+    if not (name := backend_name(execution or {})):
+        return list(raw_panels)
+    try:
+        backend = resolve_backend(name, base_dir)
+        cfg = ((execution.get("containers") or {}).get("simulation") or {})
+        contributed = backend.default_panels(cfg, execution) or []
+    except Exception:  # pylint: disable=broad-except
+        return list(raw_panels)
+
+    declared = set()
+    for entry in raw_panels:
+        if isinstance(entry, str):
+            declared.add(entry)
+        elif isinstance(entry, dict) and len(entry) == 1:
+            declared.add(next(iter(entry)))
+    extra = [p for p in contributed
+             if not (isinstance(p, dict) and len(p) == 1 and next(iter(p)) in declared)]
+    return extra + list(raw_panels)
+
 
 def resolve_backend(name: str, base_dir: str = "") -> SimulatorBackend:
     """Load a backend by entry-point name, or by ``.vast``-relative ``<file>.py:<Class>``.

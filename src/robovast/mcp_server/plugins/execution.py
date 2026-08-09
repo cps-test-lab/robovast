@@ -146,16 +146,12 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             a service offering both. Empty uses its default lane.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
-        show_gui: Show the simulator's window, to watch one run. **Only a local ``vast
-            serve`` on its local Docker backend can do this** — a cluster backend, or a
-            service without a display, refuses the request instead of running windowless.
-            The window opens on the machine running ``vast serve``, which is not yours if
-            you reached it over a tunnel. Needs the project to declare
-            ``execution.local.gui.parameter_overrides`` (that is what un-headlesses its
-            scenario); without it the reply carries a ``note`` saying so. **Do not close
-            the window** — the simulator exits 0 while the rest of the stack keeps planning
-            against a dead sim, and the run never returns; end it with ``stop_campaign``.
-            Not for a sweep: every configuration would open one.
+        show_gui: Show the simulator's window, to watch **one** run (never a sweep — every
+            configuration would open one). Local ``vast serve`` on local Docker only; anything
+            else refuses rather than running windowless, and the window opens on that machine,
+            not yours. Needs ``execution.local.gui.parameter_overrides``; without it the reply
+            says so in ``note``. **Do not close the window** — the run then never returns
+            (``stop_campaign`` ends it).
         description: **Set this every time.** One line (≤200 chars) saying what the run
             is *for* — it is what tells two same-day ``campaign-<timestamp>`` ids apart in
             ``list_campaigns`` and the web UI. Not the id, filter or run count, which are

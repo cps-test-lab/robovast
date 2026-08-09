@@ -19,6 +19,10 @@ export type Anchor =
   | 'top-right'
   | 'bottom-left'
   | 'bottom-right'
+  /** Centred along the bottom, floating *above* the reserved bottom band rather than docking
+   *  into it -- which is what lets a panel sit over the playback bar's own `bottom` anchor.
+   *  Needs a declared `width`; without one it would span the band and be a `bottom` dock. */
+  | 'bottom-center'
   | 'center'
   | 'fill'
 

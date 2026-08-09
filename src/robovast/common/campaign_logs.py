@@ -46,6 +46,7 @@ INFRA_PHASES: list[tuple[str, str]] = [
     ("VARIATION", "variation.log"),
     ("RUN", "controller.log"),
     ("POSTPROCESSING", "postprocessing.log"),
+    ("SHARE", "share.log"),
 ]
 
 #: Subdirectory under the campaign root holding the phase log files.

@@ -74,7 +74,7 @@ def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) ->
             if (c if isinstance(c, str) else list(c.keys())[0]) not in skip_set
         ]
     out = []
-    for cmd in _batch_rosbags_commands(commands, skip_rosout=skip_rosout):
+    for cmd in _batch_rosbags_commands(commands, skip_rosout=skip_rosout, skip=skip_set):
         if isinstance(cmd, dict) and "rosbags_process" in cmd:
             out.append(cmd["rosbags_process"] or {})
     return out

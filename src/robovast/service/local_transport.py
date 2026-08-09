@@ -1917,9 +1917,16 @@ class LocalTransport(RobovastInterface):
             try:
                 # `campaign` scopes the work to this campaign; with no `vast_file` the run
                 # reads the campaign's own `_config/<name>.vast` (edited in place).
+                # `output_callback` is what puts the step-by-step narrative ("[2/4]
+                # Executing: …", "✓ …") into the handler opened above. Without it those lines
+                # default to `print` and land on the service's stdout, so a *retriggered*
+                # postprocessing wrote a phase file holding only what modules logged
+                # themselves -- the campaign log looked empty for the run you just asked for.
+                # Same callback the in-campaign path passes (`_postprocess`).
                 ok, message = run_postprocessing(
                     results_dir=str(campaign_dir.parent), campaign=request.campaign_id,
-                    force=request.force, skip=list(request.skip or []))
+                    force=request.force, skip=list(request.skip or []),
+                    output_callback=logger.info)
             finally:
                 remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
@@ -1940,16 +1947,36 @@ class LocalTransport(RobovastInterface):
         campaign_dir = self._campaign_dir(request.campaign_id)
 
         def work(state):
+            from robovast.common.logging_config import (add_campaign_log_handler,
+                                                        remove_campaign_log_handler)
             from robovast.execution.backends import RunOptions
             from robovast.execution.status_recovery import record_step_outcome
+            # Its own phase file, so the campaign log shows what an upload did under a SHARE
+            # divider. Previously this wrote nowhere the campaign log reads: a share that failed
+            # left a one-line `share_error` and no account of how it got there, which is the
+            # least inspectable moment of a campaign -- it moves gigabytes to somebody else's
+            # storage. Folding it into postprocessing.log instead would make that divider name
+            # a step it did not come from.
+            handler = None
+            try:
+                handler = add_campaign_log_handler(
+                    str(campaign_dir / "_execution" / "share.log"))
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not open share.log for %s", request.campaign_id,
+                               exc_info=True)
             backend = self._build_backend(ControllerState())
             options = RunOptions(gui=False, upload_to_share=True)
             try:
+                logger.info("upload-to-share: %s", campaign_dir.name)
                 backend.preflight_upload_to_share()
                 backend.share_campaign(str(campaign_dir), options)
                 ok, message = True, "upload-to-share complete"
+                logger.info("✓ %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
                 ok, message = False, failure_detail(e)
+                logger.error("✗ upload-to-share failed: %s", message)
+            finally:
+                remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, share=(ok, message))
             state.update(share_error=status.share_error)
             state.set_phase(Phase.FINISHED)
@@ -2113,9 +2140,13 @@ class LocalTransport(RobovastInterface):
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import campaign_vast
         from robovast.common.config import CUSTOM_PANEL_TYPE
+        from robovast.common.simulators import merge_default_panels
         cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
         viz = (cfg or {}).get("visualization") or {}
-        raw = viz.get("panels") or []
+        # The simulator backend contributes the panels that replay what it always records
+        # (robosito's `scene3d`), so a campaign never declares one it could not do without.
+        # Merged here rather than in the UI, so validation and the view agree.
+        raw = merge_default_panels(viz.get("panels") or [], (cfg or {}).get("execution") or {})
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
         # for a bare panel); flatten to the ``{type, ...fields}`` the web UI consumes.
         # A bare ``- playback`` (no colon) parses to the plain string ``"playback"``.

@@ -29,14 +29,13 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from robovast.common.log_tail import MergedLogBuffer, tag_width
+from robovast.common.log_tail import (MAIN_CONTAINER, MergedLogBuffer,  # noqa: F401
+                                      tag_width)
 
-#: The main container's log, and the name to tag its lines with. The runtime container is
-#: called ``robovast`` on both lanes (the compose service, and the pod's container in
-#: ``manifests.py``) -- NOT ``scenario``, which is the container plan's role name. The two
-#: lanes must agree here or the same campaign reads differently depending where it ran.
+#: The main container's log. The name its lines are tagged with is
+#: :data:`~robovast.common.log_tail.MAIN_CONTAINER`, shared with the merged ``run_log`` so the
+#: same campaign does not read as two different sets of containers.
 MAIN_LOG = "system.log"
-MAIN_CONTAINER = "robovast"
 
 #: Sidecar logs, written by ``secondary_entrypoint.sh`` as ``system_${CONTAINER_NAME}.log``.
 _SIDECAR_PREFIX = "system_"

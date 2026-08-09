@@ -78,13 +78,21 @@ The structure inside is domain-specific, but typically includes:
    ├── plugin_install.log                    # ``plugin install`` phase (pip output; only when plugins are declared)
    ├── variation.log                         # ``variation`` phase (config-variation expansion)
    ├── controller.log                        # ``run`` phase — campaign controller log
-   └── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + data.db)
+   ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + data.db)
+   └── share.log                             # ``share`` phase (upload-to-share, when retriggered)
 
 Each pre-/post-run **phase** writes its own log file here; the service concatenates
 them in phase order into the single live campaign log the web UI streams. The
 ``plugin install`` phase (present only when the ``.vast`` declares ``plugins:``) runs
 first and captures the ``pip install`` output live, exactly like ``building``,
 ``variation`` and ``postprocessing``.
+
+**A re-triggered step appends to its own phase file**, so the campaign log shows what the
+step you just asked for actually did rather than only what the original run did.
+``postprocessing.log`` grows on each ``run_postprocessing``; a re-triggered upload-to-share
+writes ``share.log``, which is a phase of its own because an upload is not postprocessing and
+a divider naming the wrong step is worse than no divider. (The share that runs *inside* a
+campaign is part of the controller's own narrative and stays under ``run``.)
 
 ``execution.yaml`` contains:
 
@@ -186,9 +194,15 @@ number, plus a ``job`` symlink to that run's job-level artifacts:
 Anything the *scenario* itself produces (``test.xml``, scenario-recorded
 ``rosbag2/``, domain output) stays in the run directory. Infrastructure and
 monitoring artifacts (``sysinfo.yaml``, ``resource_usage_*.csv``, the system
-log, and the entrypoint's ``/rosout`` recording) belong to the **job** and live
-under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
+log, and the entrypoint's ``/rosout`` + ``/clock`` recording) belong to the **job**
+and live under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
 ``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`).
+
+Postprocessing adds one derived file to the run directory: ``run_log.csv``, the job's
+container logs joined with ``/rosout`` and sliced to this run (see
+:ref:`merged-run-log`). It lives here, rather than beside the logs it was built from,
+because a run is what it describes — and because the ingest that turns data files into
+tables globs run directories.
 
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
@@ -220,6 +234,108 @@ panel had nothing to show at any playback time; it is now the receive time, with
 Recording ``/clock`` in the scenario's ``bag_record(...)`` is worth the negligible space: it makes
 the sim↔wall mapping recoverable, so a foreign-clock topic can be *related* to sim time afterwards
 instead of guessed at.
+
+.. _clock-map:
+
+Wall → sim: the clock map
+"""""""""""""""""""""""""
+
+Everything a run *logs* is stamped in wall time — rosout's receive time, and whatever each
+container printed. Everything it is *analysed* on is sim seconds. Relating the two is a per-run
+**clock map**: a list of ``(wall_ts, sim_ts)`` samples, interpolated piecewise-linearly.
+
+**A single offset is wrong**, which is why this is a sampled map and not a number. Measured on a
+recorded run, ``dt/dw = 1.369`` — the simulator ran 1.37× faster than the wall clock, so an offset
+taken at the start is ~8 s out by the end of a 29 s run. Sim time can also pause.
+
+Two producers, one format:
+
+* **ROS** — the *entrypoint's own* recorder (``execution.log_topics``, default
+  ``[/rosout, /clock]``) writes a bag in **wall** time for the whole container's life, so each
+  ``/clock`` message is an exact (wall receive, sim content) pair. Deliberately not the scenario's
+  ``bag_record``: that one is sim-time on both axes, so it cannot carry the mapping, and it starts
+  mid-run where the interesting failures are already over.
+* **rst (non-ROS)** — ``rst.capture`` streams ``<recording>.clock_map.csv`` beside the ``.npz``,
+  flushed per sample so a run killed by a timeout still has one.
+
+The samples are **decimated**: one is dropped only when linear interpolation reproduces it within
+5 ms, so a steady stretch costs two rows while a pause or a change of real-time factor keeps
+exactly the samples that describe it (12000 ``/clock`` messages → 26 rows, measured).
+
+**Outside the sampled range there is no answer, and none is invented.** The samples begin when the
+simulator started publishing its clock, typically well after the container did, so a line logged
+during image boot has no sim time — a different statement from "we could not compute it".
+``runs.clock_map_source`` (``ros_clock_bag`` / ``rst_run_npz`` / ``none``) says which producer
+answered, so a reader can tell a *missing* map from a *quiet* one.
+
+.. _merged-run-log:
+
+``run_log`` — everything the run said
+""""""""""""""""""""""""""""""""""""""
+
+One row per log **event**, across every container, on the run's own playback clock. Written by
+the auto-injected ``run_log`` postprocessing plugin as ``<run>/run_log.csv``, which the usual
+one-file-one-table ingest turns into the ``run_log`` table.
+
+It is a **join**, not a concatenation, because a run's output arrives twice: a launch container
+forwards its nodes' output to stdout *and* those nodes publish ``/rosout``. On a measured
+three-container campaign 473 of 521 rosout rows are the same event as a ``system*.log`` line, so
+appending both would report most of the run twice. Matching is exact on ``(node, wall_ns, first
+line of message)``, keyed on the **producer's** stamp — keying rosout on the bag's *receive* time
+instead matched 0 of 521, because the transport delay puts every pair on a different nanosecond.
+
+The join also supplies what neither source has alone: ``/rosout`` names the node but never the
+*container* it ran in, and that is what a reader filters by. It comes from the file the stdout
+twin was found in.
+
+Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container``, ``node``,
+``source``, ``level``, ``severity``, ``message``, ``file``, ``function``, ``line``.
+
+* ``source`` — ``rosout`` or ``stdout``. ``WHERE source = 'rosout'`` is the rosout slice; there is
+  no separate ``rosout`` table, which would be a strict subset of this one.
+* ``time_source`` — how the row got its wall time: ``stamp`` (the producer's own, ns precision),
+  ``inherited`` (a continuation line, e.g. a traceback frame, taking the time of the event it
+  belongs to), or ``none`` (nothing stamped anywhere before it).
+
+  **Producers stamp their own lines**, which is why ``stamp`` is the normal case rather than a
+  ROS-only luxury: rclpy writes the stamp, and so do the entrypoints' ``log`` helper and
+  scenario-execution's logger. There is no capture step anywhere — a helper mounted in every
+  container used to timestamp each line as it was read, which meant a second copy of every log
+  line on disk (119 KB against a 108 KB ``system.log``, measured) to describe output that was
+  RoboVAST's own and could simply say when it spoke.
+
+  Third-party output that stamps nothing (a gz warning, a vanilla sidecar) is **never dropped**:
+  it gets a row per line, inheriting from a neighbouring event where one exists and reporting
+  ``none`` where it does not. An untimed row is honest about being untimed; it is deliberately
+  not backfilled from the next stamp, which would render exactly like a real time and claim the
+  container booted at whatever second the first node came up.
+* ``in_window`` — 0 for a line outside this run's own wall window. In a packed multi-run job those
+  are the simulator being reset between runs: real output, attributed to the nearest run rather
+  than dropped, and flagged so a query can tell "during the trial" from "getting ready for it".
+* ``severity`` — from ``common.log_summary.severity_of``, the same definition the status verdict
+  and the MCP log tools use.
+
+Read it from the web :ref:`Run view <run-view>`'s ``log`` panel and the Explorer's **Log** tab, or
+from an agent with ``search_run_logs``. What it makes possible that a log *stream* cannot:
+
+.. code-block:: sql
+
+   -- which runs logged this, and did they fail?
+   SELECT r.config_name, r.run_id, r.passed, count(*) AS hits, min(l.sim_time) AS first_at
+   FROM run_log l JOIN runs r USING (config_name, run_id)
+   WHERE l.message LIKE '%CRITICAL FAILURE%'
+   GROUP BY 1, 2 ORDER BY hits DESC;
+
+The raw streams stay files and stay the record of what was printed, and ``get_campaign_log`` /
+``get_job_log`` remain the way to read a campaign that is still running, since ``data.db`` does not
+exist yet.
+
+Those files now carry a prefix on every line, including the infrastructure ones: ``Running as UID:
+1000`` reads ``[INFO] [1786264427.117714] [entrypoint]: Running as UID: 1000``. That is the cost of
+each line being placeable in time and attributable, and it is the shape most of the file already
+had — 563 of 570 lines in a measured ROS run were stamped by their producer. Anything matching
+``^Running as UID`` needs updating; the live log panel is unaffected mechanically (it pages bytes)
+but shows the prefixes too.
 
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""

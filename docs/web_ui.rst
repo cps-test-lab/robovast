@@ -293,6 +293,20 @@ node is instant. Selecting a campaign here also selects it for the other two sub
 (it is the shared, URL-carried selection); the config or run picked below it is the
 Explorer's own.
 
+After the declared workloads comes a built-in **Log** tab, which needs nothing in the ``.vast``.
+It shows the same merged log as the run-view panel — same filters, same colours — over whatever
+the selected node scopes to, and it is where the *cross-run* question lives, because a run view
+can only ever show one run:
+
+* a **run** node — that run's lines;
+* a **config** node — every run of it, with a ``run_id`` column;
+* the **campaign** — a search across every run at once, reporting hits per run joined to each
+  run's verdict, so "which runs logged this, and did they fail?" is one query. Click a row to
+  read that run's log, and the trail back to the search stays.
+
+There is no playback clock here, so the view drops the greying and the jump button rather than
+implying a position it does not have.
+
 **Data browser.** The left panel lists the tables in the campaign's
 ``_execution/data.db`` — one per metric CSV, plus the ``runs`` **dimension table**
 (per-run ``status``/``duration_s`` and each scenario parameter as a ``param_*``
@@ -403,12 +417,24 @@ the view once and every run of the campaign replays through it:
 
 Each panel entry is a single-key mapping — the key is the panel **type** (selecting the
 panel plugin) and its value holds that panel's fields: an optional ``title``, a
-``position`` (an ``anchor`` — ``bottom``/``top``/``left``/``right``, a corner, ``center``,
-or ``fill`` for a full-view background — plus ``width``/``height`` in pixels or a ``"40%"``
-string), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
+``position`` (an ``anchor`` — ``bottom``/``top``/``left``/``right``, a corner,
+``bottom-center``, ``center``, or ``fill`` for a full-view background — plus
+``width``/``height`` in pixels or a ``"40%"`` string), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
 **data bindings** (which ``data.db`` table or recorded topic each piece of data comes from).
 Any field you omit falls back to the panel type's built-in default, so a bare ``playback:``
 on its own is a complete panel.
+
+``bottom-center`` differs from ``bottom`` in one way that matters: ``bottom`` **docks** at the
+very edge and reserves its height, which is what the playback bar does, so a second ``bottom``
+panel would cover it. ``bottom-center`` *floats* above that reserved band, centred, and needs a
+declared ``width`` (a full-width one is just ``bottom``). Because its bottom edge is the pinned
+one, ``minimized`` collapses it down to its header at the edge and expands it back upward.
+
+**Some panels are contributed by the simulator backend and need no entry at all.** A campaign
+run by ``robosito`` always records the capture the ``scene3d`` panel replays, so the backend
+supplies that panel the same way it supplies ``ROBOSITO_RECORD`` — there is nothing to decide,
+so there is nothing to declare. Declaring it yourself still wins, which is how you place it
+somewhere other than the full-bleed base layer.
 
 The declared layout is where the panels **start**, not where they are stuck:
 
@@ -474,6 +500,26 @@ when a tree ends in failure the panel names the action responsible, via ``tip_id
 The panel renders *any* table in the ``behaviors`` schema — point it at another with
 ``source: { table: <name> }``. Columns a table does not have are simply not shown, so an
 older or differently-produced table still renders.
+
+**Run log** (``log``) — everything the run said, following the playback cursor. One row per log
+event from every container, joined with ``/rosout`` and placed on the run's clock (see
+:ref:`merged-run-log`). Lines not yet logged at the cursor are greyed out with a divider marking
+"now", so the log's whole shape stays visible while the position in it is unambiguous.
+
+Filtering is instant and client-side, over the whole loaded log: a text box (substring, or a
+regular expression with the ``.*`` toggle), two severity chips that cycle
+*off → highlight → only these*, and one dropdown listing every ``container``, ROS ``node`` and
+``source`` **this run actually produced**, with counts. Clicking a line seeks playback to it, and
+the ▲▼ buttons jump to the previous/next warning or error — which is what turns a filter into
+navigation. Scrolling away stops the follow and raises a button showing the cursor's time; click
+it (or press ``Escape``) to jump back and resume following.
+
+The footer never stays silent about what is missing: no ``run_log`` table (postprocessing predates
+it), a run with no clock map (``wall time only``), how many lines the filter hid, and whether the
+load hit its ceiling.
+
+The playback bar itself gains tick marks for every warning and error — full height for errors,
+half for warnings — so the log's shape is visible *before* you scrub into it.
 
 **Nav2 behavior tree** (``nav2_behavior_tree``) — the same tree view for **nav2's own**
 behavior tree, reading the ``nav2_behaviors`` table produced by the :ref:`nav2 BT

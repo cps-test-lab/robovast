@@ -15,20 +15,35 @@ mkdir -p "${LOG_DIR}"
 
 LOG_FILE="${LOG_DIR}/system_${CONTAINER_NAME}.log"
 
-log() {
-    echo "$@" | tee -a "${LOG_FILE}"
-}
+# `_now` and `log`, shared verbatim with entrypoint.sh (see _LOG_BLOCK in
+# robovast/common/execution.py). The node is plain `entrypoint` in both, not
+# `entrypoint:${CONTAINER_NAME}`: which container spoke is already carried by this line's
+# source file (`system_<name>.log` is what sets the run log's `container`) and by the live
+# view's `name  | ` relay prefix, and a third copy inside the node field would list
+# `entrypoint`, `entrypoint:sim`, `entrypoint:sut` in the filter as if they were different
+# producers.
+# @@LOG_BLOCK@@
 
-log "Secondary container starting ($(hostname))..."
-log "Running as UID: $(id -u), GID: $(id -g)..."
-
-# Fail fast if a required tool is missing instead of dying mid-startup.
+# Fail fast if a required tool is missing instead of dying mid-startup. Before the redirect
+# below, because that redirect is built out of `tee` and `stdbuf`: a missing one there would
+# discard the very line that reports it. Written with a bare echo for the same reason.
 for _tool in python3 stdbuf tee; do
     command -v "${_tool}" > /dev/null 2>&1 || {
-        log "ERROR: Required tool '${_tool}' not found in container image. Rebuild the image."
+        echo "ERROR: Required tool '${_tool}' not found in container image. Rebuild the image." >&2
         exit 1
     }
 done
+
+# Everything this script prints -- `log` lines and bare `echo`s alike -- lands in the durable
+# artifact from here on. Previously only `log` lines were teed and the redirect sat further
+# down, so anything echoed before it reached the live log and never the file.
+#
+# `stdbuf -oL` unbuffers tee so the log panel sees lines as they are printed.
+exec > >(stdbuf -oL tee -a "${LOG_FILE}")
+exec 2>&1
+
+log "Secondary container starting ($(hostname))..."
+log "Running as UID: $(id -u), GID: $(id -g)..."
 # Set up the ROS overlay first (when present) so the ROS server runner
 # (scenario_execution_server_ros / ros2) is on PATH for the check below: it only
 # lands there once the ROS overlay and the /ws workspace are sourced, so checking
@@ -52,10 +67,7 @@ if [ -z "${ROBOVAST_CONTAINER_COMMAND}" ] \
     exit 1
 fi
 
-exec > >(stdbuf -oL tee -a "${LOG_FILE}")
-exec 2>&1
-
-# `stdbuf -oL` above unbuffers TEE, which is not where the buffering is: the workload's
+# `stdbuf -oL` on the redirect above unbuffers TEE, which is not where the buffering is: the workload's
 # stdout is now a pipe, so libc block-buffers it at the source in 4-8 KB chunks and tee
 # cannot flush what it was never given. The simulator's log panel then goes quiet for a
 # minute and dumps a wall of text -- which is the difference between watching a run and

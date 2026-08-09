@@ -43,14 +43,23 @@ keeping a second copy of the grammar.
 
 import re
 from collections import Counter
+from typing import NamedTuple
 
 # -- 1. the line prefix -----------------------------------------------------
+
+#: Every level name a stamp may carry. One definition because it is needed in three
+#: patterns below and in :data:`_LEVEL_SEVERITY`, and adding a level to some of them is
+#: worse than not adding it at all: a level the stamp cannot match loses its timestamp
+#: *and* falls through to the keyword scan, so it is silently misclassified rather than
+#: merely unrecognised. ``CRITICAL`` is here for Python's stdlib logging, whose
+#: ``logger.critical`` is the only common producer of a level rclpy never emits.
+_LEVELS = "INFO|WARN|WARNING|ERROR|DEBUG|FATAL|CRITICAL"
 
 #: The level+timestamp+node stamp a ROS node writes ahead of its own message, e.g.
 #: ``[INFO] [1785092240.111622055] [scenario_execution_ros]: ``. One definition,
 #: used both to recognise a *relay's* stamp and to strip a line's *own*.
-_STAMP = (r"\[(?P<level>INFO|WARN|WARNING|ERROR|DEBUG|FATAL)\]\s+"
-          r"\[\d+\.\d+\]\s+\[(?P<node>[^\]]+)\]:\s+")
+_STAMP = (rf"\[(?P<level>{_LEVELS})\]\s+"
+          r"\[(?P<t>\d+\.\d+)\]\s+\[(?P<node>[^\]]+)\]:\s+")
 
 #: A relay prefix: one process forwarding another's output stamps its own container
 #: tag and stamp onto every line — e.g. ``robovast  | [INFO] [1785092240.111] [x]: ``.
@@ -62,12 +71,20 @@ _STAMP_RE = re.compile(rf"^{_STAMP}")
 #: A launch-style ``[node-3] `` tag — the other way a line names its producer.
 _LAUNCH_TAG_RE = re.compile(r"^\[(?P<node>[\w.-]+?)-\d+\]\s+")
 
+#: An ANSI colour escape at the very start of a line. Producers do this: gz writes
+#: ``ESC[1;33mWarning [Utils.cc:132]ESC[0m``. The ESC byte is written as an escape rather
+#: than a literal so it stays visible to the next reader of this file.
+_SGR_RE = re.compile("^(?:\\x1b\\[[0-9;]*m)+")
+
+#: A stamp or a launch tag — used to tell "this escape hides a marker" from "this escape
+#: opens the message", which decides whether :func:`peel_prefixes` may drop it.
+_MARKER_RE = re.compile(rf"(?:{_STAMP})|(?:\[[\w.-]+?-\d+\]\s+)")
+
 #: What the payload must itself start with for the relay prefix to be redundant: its
 #: own stamp, or a launch tag. Collapsing only then keeps the operation lossless — a
 #: line whose payload carries no marker of its own keeps the stamp, since that is the
 #: only timestamp it has.
-_HAS_OWN_MARKER_RE = re.compile(
-    r"^(\[(?:INFO|WARN|WARNING|ERROR|DEBUG|FATAL)\]\s+\[|\[[\w.-]+-\d+\]\s)")
+_HAS_OWN_MARKER_RE = re.compile(rf"^(\[(?:{_LEVELS})\]\s+\[|\[[\w.-]+-\d+\]\s)")
 
 
 def collapse_relay(line: str) -> str:
@@ -82,17 +99,74 @@ def collapse_relay(line: str) -> str:
     return line[m.end("container"):] if m.group("container") else line
 
 
+class LogLine(NamedTuple):
+    """One log line with its prefixes parsed off — the innermost marker winning.
+
+    ``node``/``level`` are ``""`` and ``wall_ts`` ``None`` for whatever the line did
+    not carry, which is the common case for a bash ``echo`` or a gz warning.
+    """
+    node: str
+    level: str
+    wall_ts: "float | None"
+    message: str
+
+
+def peel_prefixes(line: str) -> LogLine:
+    """Parse *line* into a :class:`LogLine`, stripping every prefix it wears.
+
+    A line reaches a log through up to three layers, each adding its own: the relay's
+    stamp, a launch-style process tag, and the producer's own stamp. Nesting is real —
+    ``[INFO] [t] [scenario_execution_ros]: [component_container_isolated-8] [ERROR] [t]
+    [amcl]: transform failure`` wears all three. So peeling **repeats** until nothing
+    matches, and the last marker found wins: it is the producer's own verdict, and the
+    outer layers only say who forwarded it.
+
+    Stopping at the first prefix (which this did until it was fixed) reads such a line
+    as unmarked, and an ``[ERROR]`` behind a launch tag then classifies as a keyword
+    match rather than the error it announces itself to be.
+    """
+    rest = collapse_relay(line).lstrip()
+    node = level = ""
+    wall_ts = None
+    while True:
+        m = _SGR_RE.match(rest)
+        if m and _MARKER_RE.match(rest, m.end()):
+            # A colour escape *hiding a marker*: every pattern here is anchored, so two
+            # invisible bytes in front would cost the line its timestamp while it still
+            # looked right on a terminal.
+            #
+            # Only when a marker actually follows. An escape introducing the message text
+            # (gz's `ESC[1;33mWarning [Utils.cc:132]`) is the producer's own colour and stays
+            # in the message, because the log panel renders it -- dropping it here would trade
+            # one silent loss for another.
+            rest = rest[m.end():]
+            continue
+        m = _STAMP_RE.match(rest)
+        if m:
+            node, level = m.group("node"), m.group("level")
+            wall_ts = float(m.group("t"))
+            rest = rest[m.end():]
+            continue
+        m = _LAUNCH_TAG_RE.match(rest)
+        if m:
+            # A process tag names a producer but carries no level of its own; a stamp
+            # behind it still gets to overwrite this.
+            node = m.group("node")
+            rest = rest[m.end():]
+            continue
+        return LogLine(node, level, wall_ts, rest)
+
+
 def strip_stamp(line: str) -> tuple[str, str]:
-    """Split *line* into ``(node, message)``, dropping its own stamp or launch tag.
+    """Split *line* into ``(node, message)``, dropping its stamp and any launch tag.
 
     ``node`` is ``""`` when the line names no producer. It is kept rather than
-    discarded because the same text from two nodes is two findings.
+    discarded because the same text from two nodes is two findings — and it is the
+    *innermost* producer, so a message forwarded through a launch container groups
+    with the same message read straight from its node.
     """
-    for pattern in (_STAMP_RE, _LAUNCH_TAG_RE):
-        m = pattern.match(line)
-        if m:
-            return m.group("node"), line[m.end():]
-    return "", line
+    parsed = peel_prefixes(line)
+    return parsed.node, parsed.message
 
 
 # -- 2. severity ------------------------------------------------------------
@@ -112,7 +186,7 @@ DEFAULT_SEVERITY_PATTERN = (
 
 _SEVERITY_RE = re.compile(DEFAULT_SEVERITY_PATTERN, re.IGNORECASE)
 
-_LEVEL_SEVERITY = {"ERROR": "error", "FATAL": "error",
+_LEVEL_SEVERITY = {"ERROR": "error", "FATAL": "error", "CRITICAL": "error",
                    "WARN": "warn", "WARNING": "warn",
                    "INFO": "other", "DEBUG": "other"}
 
@@ -127,12 +201,14 @@ def severity_of(line: str) -> str:
     is nothing to separate warn from error, and inventing that distinction would
     report errors a log never claimed.
     """
-    # After collapsing, the leading stamp is the *authoritative* one: a relayed line
-    # whose payload has its own stamp keeps the inner one (the producer's), and one
-    # without keeps the relay's (its only level). Either way it is now at the front.
-    m = _STAMP_RE.match(collapse_relay(line).lstrip())
-    if m:
-        return _LEVEL_SEVERITY.get(m.group("level"), "other")
+    # The innermost level is the authoritative one: a relayed line whose payload has its
+    # own stamp keeps the inner one (the producer's), and one without keeps the relay's
+    # (its only level). :func:`peel_prefixes` is what looks past a launch tag to find it
+    # — without that, a nav2 [ERROR] behind ``[component_container_isolated-8]`` reads as
+    # unmarked and lands in the keyword branch below as a mere ``warn``.
+    level = peel_prefixes(line).level
+    if level:
+        return _LEVEL_SEVERITY.get(level, "other")
     return "warn" if _SEVERITY_RE.search(line) else "other"
 
 

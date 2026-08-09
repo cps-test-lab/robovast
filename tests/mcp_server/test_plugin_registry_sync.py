@@ -387,10 +387,19 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: campaign from its own recorded config and pinned image). The alternative was a
 #: ``retrigger_campaign`` tool of its own, which would have cost more; the parameter's own
 #: text was compressed from ~164 to ~122 tokens first, and most of what is left is the
-#: JSON-schema entry rather than prose. If this needs to come down again, the fat is
-#: ``start_campaign.show_gui`` at ~199 tokens — the largest single parameter in the whole
-#: surface, for a local debugging affordance, and twice the length of ``description``.
-_SURFACE_TOKEN_BUDGET = 11_300
+#: JSON-schema entry rather than prose.
+#:
+#: Raised 11_300 → 11_600 for ``search_run_logs``, which answers the one log question no
+#: stream can — "which of these runs logged this, and did they fail?" — by searching the
+#: merged ``run_log`` table across runs and campaigns. Paid for first, in this order: the
+#: tool's own text went from ~885 to ~475 tokens (four parameters dropped outright, since
+#: ``query_campaign_data_sql`` reaches the same columns for the rare question that needs
+#: them), and the fat this note used to point at, ``start_campaign.show_gui``, was
+#: compressed from ~199 tokens to ~90. Net cost of the new capability: ~230.
+#:
+#: Where the fat is now: ``exec_in_container`` (~700) and ``get_campaign_log`` (~601) are the
+#: two largest tools, and both document behaviour that has since become more uniform.
+_SURFACE_TOKEN_BUDGET = 11_600
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

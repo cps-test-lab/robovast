@@ -472,14 +472,20 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
     testcase = root.find("testcase")
     duration = float(testcase.get("time", "0")) if testcase is not None else 0.0
 
-    # Extract start_time from properties
+    # Extract start_time from properties. Kept in both forms: the ISO string every reader
+    # already uses, and the raw epoch seconds, because the wall window (start .. start +
+    # duration) is how a job's container log is attributed to the run that produced it, and
+    # re-parsing the ISO string to get back a number it was made from is a needless round
+    # trip that also loses nothing gracefully when the format changes.
     start_time_iso = None
+    start_epoch = None
     if testcase is not None:
         properties = testcase.find("properties")
         if properties is not None:
             for prop in properties.findall("property"):
                 if prop.get("name") == "start_time":
                     ts = float(prop.get("value", "0"))
+                    start_epoch = ts
                     start_time_iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
                     break
 
@@ -494,6 +500,7 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
         "success": errors == 0 and failures == 0,
         "duration_sec": duration,
         "start_time": start_time_iso,
+        "start_epoch": start_epoch,
         "errors": errors,
         "failures": failures,
         "tests": tests,

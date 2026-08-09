@@ -446,6 +446,13 @@ def scenario_env(campaign_data):
     # produces no behaviors.jsonl.
     env['BT_LOG'] = 'true' if execution.get("bt_log", True) else 'false'
 
+    # What the entrypoint's own (wall-time) recorder captures. Stated for the same reason
+    # BT_LOG is: the compose file / pod spec then says what the run recorded rather than
+    # deferring to a default that may differ between image versions. An explicit empty
+    # list records nothing, which the entrypoint reads as "skip the daemon".
+    log_topics = execution.get("log_topics", ["/rosout", "/clock"])
+    env['LOG_TOPICS'] = ' '.join(str(t) for t in (log_topics or []))
+
     # A simulator backend's environment, resolved *here* rather than by each emitter.
     # The three emitters disagreed about precedence -- compose let the later block win,
     # the cluster emitted duplicate keys and left it to the runtime, and container-exec
@@ -505,6 +512,51 @@ _CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
 # sysinfo collection is explicitly non-fatal — so each implementation keeps its own
 # failure tolerance (a metadata-server curl that 404s yields an empty string).
 _NO_INSTANCE_TYPE = 'INSTANCE_TYPE=""'
+
+# The log helper both entrypoints share, substituted into ``# @@LOG_BLOCK@@``.
+#
+# One definition because the two scripts must emit the *same* line format: the merged run log
+# parses one grammar (``robovast.common.log_summary._STAMP``), and a sidecar whose format drifted
+# from the main container's would not error -- it would silently lose its timestamps and fall back
+# to inheriting a neighbour's. Duplicated shell is how that drift happens.
+#
+# The format is deliberately the one every ROS node in these containers already writes, so the
+# entrypoint's own lines need no second parser to be placed in time and attributed.
+_LOG_BLOCK = """\
+# The wall clock for a log stamp, formatted as ROS writes it: `1786264427.117714`.
+#
+# `EPOCHREALTIME` (bash 5) is preferred because it costs no subprocess, and this runs once per
+# logged line. It is *locale-formatted*, though: under a comma-decimal locale it yields
+# `1786264427,117714`, which the log grammar does not match and whose loss nothing would report
+# -- the lines would simply have no time. Substituting the separator here is safer than forcing
+# LC_NUMERIC on the whole container, whose workload we do not want to relocalise.
+_now() {
+    local t="${EPOCHREALTIME:-}"
+    if [ -n "${t}" ]; then
+        echo "${t/,/.}"
+    else
+        date -u +%s.%6N
+    fi
+}
+
+# Log one line in the `[LEVEL] [epoch] [node]:` form described above.
+#
+# Writes to stdout ONLY. The redirect below tees stdout into ${LOG_FILE}, so teeing here as
+# well -- which this did -- put every line of a non-ROS run's log in that file twice, and made
+# every count derived from it wrong by up to 2x.
+#
+# The level comes from the message when the message declares one. Several call sites say
+# "ERROR: ..." in their text, and a stamped level *wins* over the keyword scan that used to
+# classify them, so hard-coding INFO here would quietly downgrade every one of those to
+# routine output in the log panel's counts and in search_run_logs.
+log() {
+    local msg="$*" level=INFO
+    case "${msg}" in
+        ERROR:*|FATAL:*)  level=ERROR ;;
+        WARNING:*|WARN:*) level=WARN ;;
+    esac
+    echo "[${level}] [$(_now)] [entrypoint]: ${msg}"
+}"""
 
 _LOCAL_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
@@ -769,6 +821,7 @@ def render_entrypoint(*, cluster=False, instance_type_command=None):
     init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
     post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
     content = content.replace('# @@INIT_BLOCK@@', init_block)
+    content = content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
     content = content.replace('# @@INSTANCE_TYPE_BLOCK@@',
                               instance_type_command or _NO_INSTANCE_TYPE)
     content = content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
@@ -814,6 +867,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     with open(secondary_entrypoint_src, 'r', encoding='utf-8') as f:
         secondary_entrypoint_content = f.read()
     secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
+    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
     secondary_entrypoint_dst = os.path.join(campaign_transient_dir, "secondary_entrypoint.sh")
     with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(secondary_entrypoint_content)
@@ -823,10 +877,10 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     collect_sysinfo_dst = os.path.join(campaign_transient_dir, "collect_sysinfo.py")
     shutil.copy2(collect_sysinfo_src, collect_sysinfo_dst)
 
-    # Copy monitor_resources.py into _transient/
-    monitor_resources_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
-    monitor_resources_dst = os.path.join(campaign_transient_dir, "monitor_resources.py")
-    shutil.copy2(monitor_resources_src, monitor_resources_dst)
+    # Copy the resource monitor into _transient/, from where it is mounted at /config in
+    # every container.
+    monitor_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
+    shutil.copy2(monitor_src, os.path.join(campaign_transient_dir, 'monitor_resources.py'))
 
     # Copy rosbag processing scripts into _transient/ for host-side post-run processing
     for script_name in ('rosbags_process.py', 'rosbags_common.py', 'ros2_exec.sh'):

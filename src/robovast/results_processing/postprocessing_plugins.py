@@ -49,10 +49,11 @@ import subprocess
 import tarfile
 from importlib.resources import files
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
+from robovast.common import log_summary
 from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
                                                   cast_expr, column_def,
@@ -367,6 +368,151 @@ class RosbagsProcess(BasePostprocessingPlugin):
             return False, f"Error executing rosbags_process: {e}"
 
 
+class RunLog(BasePostprocessingPlugin):
+    """Merge every container's log with ``/rosout`` into one ``run_log.csv`` per run.
+
+    Auto-injected for every campaign (see
+    :data:`~robovast.results_processing.postprocessing.AUTO_PLUGINS`), because a run whose
+    output cannot be read afterwards cannot be explained — the same argument ``bt_log``
+    makes for itself. Declare it explicitly only to change a parameter, or list it under
+    ``skip`` to opt out.
+
+    What it does, and why each part is not optional, is documented in
+    :mod:`robovast.results_processing.run_log`. In outline: the logs are written **per
+    job** (``_jobs/<batch>/job-N/logs/``), so each run resolves its job through the
+    campaign's ``job_links.yaml`` manifest — not the ``job`` symlink, which only appears
+    once a job has finished and cannot exist in an object store at all. The output lands in
+    the **run** directory, where ``generate_data_db``'s glob already looks, so the
+    ``run_log`` table needs no ingest code of its own.
+
+    Example usage in .vast config (only needed to override a default):
+
+    .. code-block:: yaml
+
+       postprocessing:
+         - run_log:
+             min_severity: warn
+    """
+
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str = "",  # pylint: disable=unused-argument
+        min_severity: str = "",
+        **kwargs,  # pylint: disable=unused-argument
+    ) -> Tuple[bool, str]:
+        """Write ``<config>/<run>/run_log.csv`` for every run of the campaign.
+
+        Args:
+            results_dir: The campaign directory to process.
+            config_dir: Unused; the plugin reads only campaign output.
+            min_severity: Keep only rows this severe (``warn``/``error``). Empty keeps
+                everything, which is the default: a filter applied at *write* time cannot
+                be undone without re-running postprocessing, and the reading surfaces all
+                have their own severity control.
+            **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
+                ``execution_image``, ``debug``, ``force`` — and only those it has
+                (``execution_image`` is set on the cluster and not locally). Naming a subset
+                therefore passes on one lane and raises ``unexpected keyword argument`` on
+                the other, which is exactly how this plugin first failed on the cluster after
+                passing locally. This plugin needs none of them: it reads the campaign's own
+                output and runs in-process.
+
+        Returns:
+            Tuple of (success, message).
+        """
+        from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+            list_config_dirs, list_run_dirs, read_test_result)
+        from robovast.common.execution import job_artifact_dir  # pylint: disable=import-outside-toplevel
+        from . import clock_map, run_log  # pylint: disable=import-outside-toplevel
+
+        campaign_path = Path(results_dir)
+        if not campaign_path.is_dir():
+            return False, f"Campaign directory does not exist: {results_dir}"
+
+        sole_container = _sole_container(campaign_path)
+
+        floor = None
+        if min_severity:
+            try:
+                floor = log_summary.severity_rank(min_severity)
+            except ValueError as e:
+                return False, str(e)
+
+        # One job serves many runs in a packed campaign, and reading its logs is the
+        # expensive part, so parse each job once and slice it per run.
+        job_cache: Dict[str, tuple] = {}
+        totals = run_log.MergeStats()
+        runs_written = 0
+        without_map: List[str] = []
+
+        for config_dir_path in list_config_dirs(campaign_path):
+            for run_dir in list_run_dirs(config_dir_path):
+                job_name = f"{config_dir_path.name}/{run_dir.name}"
+                try:
+                    job_dir = job_artifact_dir(str(campaign_path), job_name)
+                except FileNotFoundError:
+                    # No manifest entry: the job's artifacts are unlocatable. Reported as a
+                    # run without a log rather than silently as a run that logged nothing.
+                    without_map.append(f"{job_name} (no job_links entry)")
+                    continue
+                if job_dir not in job_cache:
+                    stats = run_log.MergeStats()
+                    records = run_log.collect_job_records(
+                        job_dir, stats, sole_container=sole_container)
+                    clock = clock_map.load_clock_map(
+                        os.path.join(job_dir, "logs", clock_map.FILENAME))
+                    job_cache[job_dir] = (records, clock, stats)
+                    totals.stdout_lines += stats.stdout_lines
+                    totals.stdout_records += stats.stdout_records
+                    totals.rosout_records += stats.rosout_records
+                    totals.matched += stats.matched
+                    for name in stats.containers:
+                        if name not in totals.containers:
+                            totals.containers.append(name)
+                records, clock, _ = job_cache[job_dir]
+                if not clock:
+                    # No /clock bag: a non-ROS run may still have left its own map beside its
+                    # recording. Looked up per RUN, not per job, because that is where rst writes
+                    # it -- and in a packed job each run has its own.
+                    clock = clock_map.find_run_clock_map(str(run_dir))
+                if not clock:
+                    without_map.append(job_name)
+
+                start_epoch = end_epoch = None
+                try:
+                    result = read_test_result(run_dir)
+                    start_epoch = result.get("start_epoch")
+                    if start_epoch is not None:
+                        end_epoch = start_epoch + (result.get("duration_sec") or 0.0)
+                except (FileNotFoundError, ValueError, OSError):
+                    # A run that never wrote test.xml (killed mid-flight) has no window; its
+                    # rows keep in_window=1 rather than being dropped, because that run's
+                    # log is the one most worth reading.
+                    pass
+
+                rows = run_log.rows_for_window(records, clock, start_epoch=start_epoch,
+                                               end_epoch=end_epoch)
+                if floor is not None:
+                    rows = [r for r in rows
+                            if log_summary.severity_rank(r["severity"]) >= floor]
+                run_log.write_run_log(str(run_dir / run_log.FILENAME), rows)
+                totals.rows += len(rows)
+                runs_written += 1
+
+        if not runs_written:
+            return True, "run_log: no runs found"
+        message = f"run_log: {runs_written} run(s), {totals.summary()}"
+        if without_map:
+            # Loud, because every row of these runs has an empty sim_time and the reading
+            # surfaces will say "not aligned" without explaining why.
+            shown = ", ".join(without_map[:5])
+            more = f" (+{len(without_map) - 5} more)" if len(without_map) > 5 else ""
+            message += (f"; no clock map for {len(without_map)} run(s): {shown}{more}"
+                        f" -- wall time only")
+        return True, message
+
+
 class Compress(BasePostprocessingPlugin):
     """Create a gzipped tarball for each campaign-* directory (runs on host).
 
@@ -551,6 +697,57 @@ def _read_table_rows(path: Path) -> list:
         return []
 
 
+def _sole_container(campaign_path) -> Optional[str]:
+    """The one container this campaign runs, or ``None`` when it runs more than one.
+
+    Read from the campaign's own ``.vast`` snapshot rather than from the log files a job happens
+    to have produced: a sidecar may be a vanilla image that never runs RoboVAST's entrypoint and
+    so writes no log, and inferring "one container" from that would mislabel its rows. Returns
+    the *runtime* container name (:data:`~robovast.common.log_tail.MAIN_CONTAINER`), not the
+    ``scenario`` role name the ``.vast`` uses.
+    """
+    from robovast.common.log_tail import MAIN_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.results_utils import \
+        find_campaign_vast_file  # pylint: disable=import-outside-toplevel
+    try:
+        vast_path, _ = find_campaign_vast_file(str(campaign_path))
+        if not vast_path:
+            return None
+        with open(vast_path, encoding="utf-8") as handle:
+            cfg = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    containers = ((cfg.get("execution") or {}).get("containers") or {})
+    return MAIN_CONTAINER if len(containers) == 1 else None
+
+
+def _clock_map_info(campaign_path, config_name: str, run_id: int):
+    """What relates this run's wall-stamped log to sim time, and how well.
+
+    Read here rather than passed in because ``runs`` is the one table a reader joins to when
+    asking "can I trust this run's ``sim_time``?" — the answer belongs beside the run's other
+    facts, not in a second place to look. A run whose map is missing reports
+    :data:`~robovast.results_processing.clock_map.SOURCE_NONE`, which is a finding: its log
+    is wall-time only.
+    """
+    from robovast.common.execution import \
+        job_artifact_dir  # pylint: disable=import-outside-toplevel
+
+    from . import clock_map  # pylint: disable=import-outside-toplevel
+    run_dir = Path(campaign_path) / config_name / str(run_id)
+    try:
+        job_dir = job_artifact_dir(str(campaign_path), f"{config_name}/{run_id}")
+    except (FileNotFoundError, OSError):
+        job_dir = None
+    if job_dir:
+        found = clock_map.load_clock_map(
+            os.path.join(job_dir, "logs", clock_map.FILENAME))
+        if found:
+            return found.info
+    # Non-ROS: rst streams its own map beside the run's recording.
+    return clock_map.find_run_clock_map(str(run_dir)).info
+
+
 def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     """Create a ``runs`` dimension table: per-run status/duration + scenario params.
 
@@ -649,7 +846,12 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
                  "start_time", "end_time",
-                 "instance_type", "cpu_name", "available_cpus", "available_mem_bytes"]
+                 "instance_type", "cpu_name", "available_cpus", "available_mem_bytes",
+                 # What this run's log timestamps are worth. A reader that finds sim_time
+                 # NULL in run_log needs to know whether the run was not aligned or simply
+                 # logged nothing before the clock started, and "which source said so" is
+                 # the difference. See results_processing.clock_map.
+                 "clock_map_source", "clock_map_samples", "clock_map_wall_span_s"]
     param_keys = sorted({k for p in params_by_config.values() for k in p
                          if f"param_{k}" not in base_cols})
     param_cols = [f"param_{k}" for k in param_keys]
@@ -659,8 +861,9 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     # a numeric factor stays numeric: `ORDER BY param_wind_strength` and
     # `WHERE param_speed > 0.5` mean what they say instead of comparing text.
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
-                                  "available_cpus", "available_mem_bytes")
-                 else REAL if c in ("duration_s", "objective")
+                                  "available_cpus", "available_mem_bytes",
+                                  "clock_map_samples")
+                 else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s")
                  else TEXT)
              for c in base_cols}
     for key, col in zip(param_keys, param_cols):
@@ -701,10 +904,12 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             start_time = o["start_time"]
             end_time = _end_time(start_time, duration)
             instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo_fields(o)
+            clock_info = _clock_map_info(campaign_path, config_name, run_id)
             base_vals = [config_name, run_id, status, passed, duration,
                          errors, failures, objective,
                          start_time, end_time,
-                         instance_type, cpu_name, avail_cpus, avail_mem]
+                         instance_type, cpu_name, avail_cpus, avail_mem,
+                         clock_info.source, clock_info.samples, clock_info.wall_span_s]
             param_vals = [params.get(k) for k in param_keys]
             conn.execute(insert_sql, [sql_value(v, types[c])
                                       for c, v in zip(all_cols, base_vals + param_vals)])
@@ -937,30 +1142,36 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     csv_cols = list(dict.fromkeys(
                         c for row in rows for c in row if isinstance(c, str)))
 
-                    # Extract scenario timestamp from rosout rows
-                    if csv_path.stem == "rosout" and scenario_ts is None:
+                    # When the scenario ended, and how -- on the *sim* clock, because that is
+                    # what the column means to every reader: the run view unions this table
+                    # into the playback range (``RunView.tsx``'s TIME_TABLES), so a wall-epoch
+                    # value here stretches the timeline to 1.8e9 seconds and the progress bar
+                    # becomes unusable. It was NULL in every campaign until now, which is the
+                    # only reason that never showed.
+                    #
+                    # So it is read from ``run_log``'s ``sim_time`` (the merged log, already
+                    # converted through the run's clock map) and from nothing else: rosout's
+                    # own ``timestamp`` is wall, and converting it here would duplicate the
+                    # conversion the merge already did.
+                    if csv_path.stem == "run_log" and scenario_ts is None:
                         for row in rows:
-                            name_val = str(row.get("name", ""))
-                            msg_val = str(row.get("msg", ""))
-                            if name_val == "scenario_execution_ros":
-                                if msg_val.startswith("Scenario '") and msg_val.endswith("' succeeded."):
-                                    try:
-                                        ts_str = row.get("timestamp", "")
-                                        scenario_ts = float(ts_str) if ts_str else None
-                                    except (ValueError, TypeError):
-                                        scenario_ts = None
-                                    scenario_status = "succeeded"
-                                    scenario_msg = msg_val
-                                    break
-                                if ": execution failed." in msg_val:
-                                    try:
-                                        ts_str = row.get("timestamp", "")
-                                        scenario_ts = float(ts_str) if ts_str else None
-                                    except (ValueError, TypeError):
-                                        scenario_ts = None
-                                    scenario_status = "failed"
-                                    scenario_msg = msg_val
-                                    break
+                            if str(row.get("node", "")) != "scenario_execution_ros":
+                                continue
+                            msg_val = str(row.get("message", ""))
+                            if msg_val.startswith("Scenario '") and msg_val.endswith("' succeeded."):
+                                status = "succeeded"
+                            elif ": execution failed." in msg_val:
+                                status = "failed"
+                            else:
+                                continue
+                            sim_str = row.get("sim_time", "")
+                            try:
+                                scenario_ts = float(sim_str) if sim_str else None
+                            except (ValueError, TypeError):
+                                scenario_ts = None
+                            scenario_status = status
+                            scenario_msg = msg_val
+                            break
 
                     context_cols = ["config_name", "run_id"]
                     all_data_cols = context_cols + csv_cols

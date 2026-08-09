@@ -471,7 +471,8 @@ are deliberately separate (``per_run_deadline_seconds`` versus
 alive to be inspected — end it with ``stop_campaign``.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
-(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same four
+(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) — and
+``search_run_logs`` below — take the same four
 controls, applied in this order — a claim this page made while ``get_campaign_log`` was
 in fact the one tool without ``tail``, so it now has one:
 
@@ -496,6 +497,37 @@ in fact the one tool without ``tail``, so it now has one:
      - Keep the last N of whatever survived the filters.
    * - ``summarize``
      - Return **distinct patterns with counts** instead of lines.
+
+.. _search-run-logs:
+
+**Which runs said it?** That is a different question, and no stream can answer it: it is a join
+between a log and a run's verdict, and a stream has nothing to join to. ``search_run_logs``
+searches the merged :ref:`run_log <merged-run-log>` table — every container's output joined with
+``/rosout``, on each run's own playback clock — across runs and across campaigns.
+
+Same reading vocabulary as the tools above (``grep``, ``min_severity``, ``summarize``, ``tail``),
+because it is the same implementation. What it adds is *scope*: ``config_filter``, ``run_id``,
+``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
+separate "during the trial" from "while the simulator was being reset around it". Set
+``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids, or name further campaigns
+in ``extra_campaign_ids``.
+
+Three shapes, one per question:
+
+* ``group_by_run=True`` (the default) — hits per run, joined to ``passed``/``status`` and the
+  first sim time it appeared at. This is the "which runs, and did they fail?" answer.
+* ``group_by_run=False`` — the matching lines themselves, paged with ``limit``/``offset``.
+* ``summarize=True`` — patterns and counts, so "what flooded this sweep" costs one call. The
+  summary scans far more rows than it returns, because it returns counts.
+
+Two costs it reports rather than hides. Every response carries ``campaigns`` (with what each
+transfer cost) and ``campaigns_skipped``: on the cluster the first query of a campaign
+materializes its ``data.db`` from the object store, so a cross-campaign search pays one transfer
+per *cold* campaign — hence ``max_campaigns`` defaults to 5. And SQLite attaches at most 10 extra
+databases, so a wider search is batched, never silently trimmed.
+
+Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
+``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
 
 ``get_campaign_log`` takes one more, because its stream is several phases concatenated
 under ``===== PHASE =====`` dividers (variation → run → postprocessing): ``phase`` reads

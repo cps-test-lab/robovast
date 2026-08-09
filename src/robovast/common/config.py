@@ -259,6 +259,15 @@ class ExecutionConfig(BaseModel):
     # On by default -- set it false only to opt a campaign *out*. A run whose tree state was
     # not recorded cannot be explained afterwards, and the file is small next to the rosbag.
     bt_log: bool = True
+    # Topics the entrypoint's own recorder captures for the whole container's life, in WALL
+    # time (threaded as LOG_TOPICS; ROS images only). Separate from the scenario's
+    # ``bag_record``, which is sim-time and starts mid-run: this one sees the stack come up,
+    # and ``/clock`` here is what lets postprocessing put a wall-stamped log line on the
+    # playback clock.
+    #
+    # An escape hatch, not a switch: the default already covers what the ``run_log`` table
+    # needs, and a campaign only names this to add a topic (or ``[]`` to record nothing).
+    log_topics: list[str] = Field(default_factory=lambda: ["/rosout", "/clock"])
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where
@@ -442,7 +451,7 @@ class EvaluationConfig(BaseModel):
 #: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
 #: group and are accepted in addition to these (see ``PanelConfig._known_type``).
 BUILTIN_PANEL_TYPES = frozenset({
-    "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state", "vega",
+    "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state", "vega", "log",
 })
 
 #: Entry-point group for package-provided run-view panels (loaded as Module-Federation
@@ -468,6 +477,10 @@ class PanelPosition(BaseModel):
     anchor: Optional[Literal[
         'bottom', 'top', 'left', 'right',
         'top-left', 'top-right', 'bottom-left', 'bottom-right',
+        # Centred along the bottom and *floating above* the reserved bottom band, so it can
+        # share the bottom edge with the playback bar (which owns the ``bottom`` dock).
+        # Give it a ``width``; a full-width one is just ``bottom``.
+        'bottom-center',
         'center', 'fill',
     ]] = None
     width: Optional[int | str] = None

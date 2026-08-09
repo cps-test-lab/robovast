@@ -4,7 +4,8 @@
 classified from the producer's own marker rather than a keyword guess."""
 
 from robovast.common.log_summary import (DEFAULT_TOP, SEVERITIES, normalize,
-                                         severity_of, severity_rank, summarize)
+                                         peel_prefixes, severity_of, severity_rank,
+                                         summarize)
 
 #: The incident this module exists for: a bridge rejecting TF wholesale, one warning
 #: per tick, each carrying a different timestamp and stamp.
@@ -102,6 +103,68 @@ def test_a_relayed_lines_inner_level_is_the_authoritative_one():
 def test_a_relayed_line_without_its_own_level_keeps_the_relays():
     line = "robovast  | [WARN] [1785092240.111622055] [tf_bridge]: TF_OLD_DATA"
     assert severity_of(line) == "warn"
+
+
+#: A real line from ``basic-nav-gazebo-2026-08-08-23475581``'s ``system.log``: nav2's
+#: nodes run inside a launch container, so their output reaches the log wearing the
+#: scenario's relay stamp *and* the container's process tag before their own stamp.
+_NAV2_ERROR = (
+    "[INFO] [1786225808.065243406] [scenario_execution_ros]: "
+    "[component_container_isolated-8] [ERROR] [1786225807.288617653] "
+    "[lifecycle_manager_localization]: CRITICAL FAILURE: SERVER map_server IS DOWN")
+
+
+def test_an_error_behind_a_launch_tag_is_an_error():
+    """The regression this guards: nine such lines in one campaign — including a
+    CRITICAL FAILURE — all classified as ``warn``, and ``severity_counts`` reported
+    ``error: 0``. So ``min_severity='error'`` answered "no errors" for a run whose
+    localization stack had died. Anything nav2 logs is shaped like this, because its
+    nodes live in a component container."""
+    assert severity_of(_NAV2_ERROR) == "error"
+
+
+def test_the_innermost_producer_is_the_one_attributed():
+    """Both prefixes name a producer; the inner one is the node that actually spoke.
+    Attributing to the launch container instead would group every node in it as one."""
+    parsed = peel_prefixes(_NAV2_ERROR)
+    assert parsed.node == "lifecycle_manager_localization"
+    assert parsed.level == "ERROR"
+    assert parsed.wall_ts == 1786225807.288617653
+    assert parsed.message == "CRITICAL FAILURE: SERVER map_server IS DOWN"
+
+
+def test_a_critical_line_is_an_error():
+    """Python's stdlib emits CRITICAL, which rclpy never does -- so it was missing from the
+    grammar, and a `logger.critical` line would have lost its timestamp *and* fallen through
+    to the keyword scan. The same failure as the launch-tag bug above, by a different route."""
+    line = "[CRITICAL] [1786266112.412529] [rst.engine]: physics diverged"
+    assert severity_of(line) == "error"
+    assert peel_prefixes(line).wall_ts == 1786266112.412529
+
+
+def test_a_colour_escape_cannot_hide_a_stamp():
+    """Every pattern here is anchored, so two invisible bytes in front of a marker would cost
+    the line its timestamp while it still looked correct on a terminal. Producers really do
+    this -- scenario-execution coloured its whole warning line, escape first."""
+    line = "\x1b[33m[WARN] [100.5] [scenario_execution]: goal not reached\x1b[0m"
+    parsed = peel_prefixes(line)
+    assert (parsed.node, parsed.level, parsed.wall_ts) == ("scenario_execution", "WARN", 100.5)
+    assert severity_of(line) == "warn"
+
+
+def test_a_colour_escape_that_opens_the_message_is_left_alone():
+    """The other half of the rule. gz writes `ESC[1;33mWarning [Utils.cc:132]`, where the
+    escape is the producer's own colour and the log panel renders it. Skipping escapes
+    unconditionally would trade a hidden stamp for a stripped colour."""
+    line = "\x1b[1;33mWarning [Utils.cc:132]\x1b[0m no such entity"
+    assert peel_prefixes(line).message == line, "the message keeps its colours"
+    assert severity_of(line) == "warn"
+
+
+def test_a_line_wearing_no_marker_reports_none_rather_than_guessing():
+    parsed = peel_prefixes("Entrypoint script initialized")
+    assert (parsed.node, parsed.level, parsed.wall_ts) == ("", "", None)
+    assert parsed.message == "Entrypoint script initialized"
 
 
 def test_an_unmarked_line_is_classified_by_the_published_pattern_as_warn():

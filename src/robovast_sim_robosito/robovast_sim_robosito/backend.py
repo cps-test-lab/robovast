@@ -150,6 +150,22 @@ class RobositoBackend(SimulatorBackend):
     def produces_run_capture(self, cfg, execution: dict) -> bool:
         return True
 
+    def default_panels(self, cfg, execution: dict) -> list:
+        """The 3D scene, always -- for the same reason :meth:`env` supplies the capture.
+
+        Two artifacts drive the panel and both resolve themselves: the *scene* (geometry) is
+        compiled by the service on first open, inside the simulator's own pinned image, and
+        cached by world identity; the *run capture* (motion) records the world reference and
+        its overrides and addresses that geometry by name, so a world that later gains an arm
+        or a walker replays without anyone editing a ``.vast``. The capture path defaults to
+        ``capture/capture.json``.
+
+        Since a robosito campaign always records that capture (:meth:`produces_run_capture`),
+        every such campaign can replay its runs in 3D -- so the panel is contributed rather
+        than declared, and a campaign that wants it elsewhere on screen still says so itself.
+        """
+        return [{"scene3d": {}}]
+
     def input_files(self, cfg, execution: dict) -> list:
         """The world, when the campaign owns it -- nothing when it is packaged.
 

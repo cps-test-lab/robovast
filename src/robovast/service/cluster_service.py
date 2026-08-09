@@ -2155,15 +2155,32 @@ class ClusterService(LocalTransport):
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
+            from robovast.common.logging_config import (add_campaign_log_handler,
+                                                        remove_campaign_log_handler)
             campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+            # A SHARE phase file, same as the local lane, and written *before*
+            # `_publish_execution` below so the account of the upload rides up to the object
+            # store with the rest of `_execution` rather than staying in this service's scratch.
+            handler = None
+            try:
+                handler = add_campaign_log_handler(
+                    str(Path(campaign_root) / "_execution" / "share.log"))
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not open share.log for %s", request.campaign_id,
+                               exc_info=True)
             backend = self._build_backend(ControllerState())
             options = RunOptions(gui=False, upload_to_share=True, namespace=self.namespace)
             try:
+                logger.info("upload-to-share: %s", request.campaign_id)
                 backend.preflight_upload_to_share()
                 backend.share_campaign(str(campaign_root), options)
                 ok, message = True, "upload-to-share complete"
+                logger.info("✓ %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
                 ok, message = False, failure_detail(e)
+                logger.error("✗ upload-to-share failed: %s", message)
+            finally:
+                remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_root, share=(ok, message))
             self._publish_execution(request.campaign_id, campaign_root)
             state.update(share_error=status.share_error)

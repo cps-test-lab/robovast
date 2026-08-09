@@ -12,6 +12,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
 import FastForwardRoundedIcon from '@mui/icons-material/FastForwardRounded'
 import { registerPanel } from '@/lib/dashboard/registry'
+import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 // seconds -> m:ss.s
@@ -22,9 +23,23 @@ function fmt(s: number): string {
   return `${m}:${rem.toFixed(1).padStart(4, '0')}`
 }
 
-function PlaybackPanel({ clock }: PanelProps) {
+function PlaybackPanel({ clock, data }: PanelProps) {
   const { t, playing, speed, lo, hi } = useClock(clock)
   const barRef = useRef<HTMLDivElement | null>(null)
+
+  // Warnings and errors as tick marks on the bar, so the log's shape is visible *before* you
+  // scrub into it -- otherwise finding the moment something went wrong means dragging blind.
+  // Only the severe rows are fetched: the marks are the point, not the text, and one query for
+  // a handful of rows costs less than the whole log. Reuses the same load the log panel and the
+  // Explorer tab use, so react-query serves it from cache when the log panel is open too.
+  const runId = Number(data.runId)
+  const severe = useRunLog({
+    campaignId: data.campaignId,
+    configName: data.configName,
+    runId: Number.isFinite(runId) ? runId : undefined,
+    severities: ['warn', 'error'],
+    maxRows: 5000,
+  })
 
   const span = hi - lo
   const frac = span > 0 ? (t - lo) / span : 0
@@ -89,6 +104,29 @@ function PlaybackPanel({ clock }: PanelProps) {
             bgcolor: 'primary.main',
           }}
         />
+        {/* Drawn over the fill so a mark stays visible on the played-through side too. An
+            error is drawn full height and a warning half, so the two read apart at a glance
+            without relying on colour alone. */}
+        {span > 0
+          ? (severe.data?.rows ?? []).map((row, i) =>
+              row.sim_time == null || row.sim_time < lo || row.sim_time > hi ? null : (
+                <Box
+                  key={i}
+                  sx={{
+                    position: 'absolute',
+                    left: `${((row.sim_time - lo) / span) * 100}%`,
+                    top: row.severity === 'error' ? 0 : '50%',
+                    bottom: 0,
+                    width: 2,
+                    // Not pointer-events:none by accident -- clicks must reach the bar
+                    // underneath, so a mark is a target for scrubbing rather than a dead spot.
+                    pointerEvents: 'none',
+                    bgcolor: row.severity === 'error' ? '#d32f2f' : '#b58900',
+                  }}
+                />
+              ),
+            )
+          : null}
       </Box>
 
       <Typography variant="caption" sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>

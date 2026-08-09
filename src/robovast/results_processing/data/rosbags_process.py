@@ -27,6 +27,7 @@ Handler types (specified via --config JSON):
   nav2_bt_to_csv  Extract nav2 /behavior_tree_log status transitions to CSV
   action_to_csv   Extract ROS2 action feedback/status to CSV
   rosout_to_csv   Extract /rosout log messages to CSV
+  clock_to_csv    Extract the wall<->sim mapping from /clock (wall-time bags only)
 
 Usage::
 
@@ -61,7 +62,9 @@ from rclpy.serialization import deserialize_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 import numpy as np
 
-from rosbags_common import find_rosbags, gen_msg_values, write_provenance_entry
+from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME,
+                            DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator,
+                            find_rosbags, gen_msg_values, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 
 
@@ -662,6 +665,92 @@ class RosoutToCsvHandler(RosbagHandler):
 
 
 # ---------------------------------------------------------------------------
+# ClockToCsvHandler
+# ---------------------------------------------------------------------------
+
+_CLOCK_TOPIC = "/clock"
+
+
+class ClockToCsvHandler(RosbagHandler):
+    """Extract the wall↔sim mapping from ``/clock`` (one ``clock_map.csv`` per bag).
+
+    Only meaningful for a bag recorded **without** ``use_sim_time`` — the entrypoint's own
+    infrastructure recording. There each message's receive time is wall and its content is
+    sim, so the pair is an exact sample of the mapping, taken at clock rate for the whole
+    container's life. (In the scenario's sim-time bag both would be sim, which is why that
+    bag cannot carry this.)
+
+    Thin I/O over :class:`~rosbags_common.ClockDecimator`: the accuracy
+    promise and the reading side share one definition in ``rosbags_common`` (which travels
+    with this script into the container) and ``clock_map`` (the host-side reader).
+    """
+
+    def __init__(self, tolerance_s: float = DEFAULT_CLOCK_TOLERANCE_S,
+                 csv_filename: str = CLOCK_MAP_FILENAME) -> None:
+        self._tolerance = tolerance_s
+        self._csv_filename = csv_filename
+        self._csvfile = None
+        self._writer = None
+        self._output_file: str = ""
+        self._kept: int = 0
+        self._decimator = ClockDecimator(tolerance_s)
+
+    def topics(self) -> List[str]:
+        return [_CLOCK_TOPIC]
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._kept = 0
+        self._decimator = ClockDecimator(self._tolerance)
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
+        if _CLOCK_TOPIC not in topic_type_map:
+            # Not an error: a campaign may record only /rosout, and a non-ROS run has no
+            # /clock at all. The absence is reported by the missing file, and every
+            # consumer of the map treats "no map" as "no sim time", never as zero offset.
+            print(f"  ✗ {bag_path}: topic {_CLOCK_TOPIC} not found in bag")
+            self._csvfile = None
+            self._writer = None
+            return
+        self._csvfile = open(self._output_file, "w", newline="")
+        self._writer = csv.DictWriter(self._csvfile, fieldnames=CLOCK_MAP_FIELDNAMES)
+        self._writer.writeheader()
+
+    def _write(self, sample: Tuple[float, float]) -> None:
+        self._writer.writerow({"wall_ts": sample[0], "sim_ts": sample[1]})
+        self._kept += 1
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if self._writer is None or topic != _CLOCK_TOPIC:
+            return
+        clock = getattr(msg, "clock", None)
+        if clock is None:
+            return
+        keep = self._decimator.offer(timestamp / 1_000_000_000.0,
+                                     clock.sec + clock.nanosec / 1_000_000_000.0)
+        if keep is not None:
+            self._write(keep)
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._writer is not None:
+            final = self._decimator.close()
+            if final is not None:
+                self._write(final)
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._kept > 0:
+            print(f"  ✓ {self._output_file}: {self._kept} clock samples "
+                  f"(from {self._decimator.seen}, tolerance {self._tolerance}s)")
+        else:
+            print(f"  ✗ {self._output_file}: no clock samples")
+        return self._kept, [self._output_file] if self._csvfile is not None else []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ClockToCsvHandler":
+        return cls(
+            tolerance_s=float(config.get("tolerance_s", DEFAULT_CLOCK_TOLERANCE_S)),
+            csv_filename=config.get("csv_filename", CLOCK_MAP_FILENAME))
+
+
+# ---------------------------------------------------------------------------
 # ToWebmHandler
 # ---------------------------------------------------------------------------
 
@@ -847,6 +936,7 @@ HANDLER_REGISTRY: Dict[str, type] = {
     "nav2_bt_to_csv": Nav2BtLogToCsvHandler,
     "action_to_csv":  ActionToCsvHandler,
     "rosout_to_csv":  RosoutToCsvHandler,
+    "clock_to_csv":   ClockToCsvHandler,
     "costmap_to_csv": CostmapToCsvHandler,
     "to_webm":        ToWebmHandler,
 }

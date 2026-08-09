@@ -55,6 +55,9 @@ const RESIZE: Partial<Record<Anchor, { x?: 1 | -1; y?: 1 | -1 }>> = {
   'top-right': { x: -1, y: 1 },
   'bottom-left': { x: 1, y: -1 },
   'bottom-right': { x: -1, y: -1 },
+  // Centred horizontally with its bottom pinned: the free edges are the right (which grows it
+  // both ways, see `gain`) and the top.
+  'bottom-center': { x: -1, y: -1 },
   center: { x: 1, y: 1 },
 }
 
@@ -123,6 +126,24 @@ function layoutStyle(
       return { ...base, bottom: B + CORNER_INSET, left: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
     case 'bottom-right':
       return { ...base, bottom: B + CORNER_INSET, right: CORNER_INSET, width: w, height: h, maxHeight: cornerBandH }
+    case 'bottom-center':
+      // Floats above the reserved bottom band (`bottom: B + inset`) rather than docking into
+      // it at `bottom: 0` the way `bottom` does -- which is what lets it share the bottom
+      // edge with the playback bar instead of covering it. It reserves no inset of its own,
+      // so it overlays whatever fills the band behind it.
+      //
+      // `bottom` is the pinned edge, so the shared `h` above (`auto` when minimized)
+      // collapses it *downward* to its header and expands it back *upward*, exactly as the
+      // bottom corners already behave. No minimize handling of its own.
+      return {
+        ...base,
+        bottom: B + CORNER_INSET,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: w,
+        height: h,
+        maxHeight: cornerBandH,
+      }
     case 'center':
     default:
       return {
@@ -210,14 +231,18 @@ function PanelFrame({
     onRaise()
     const { clientX: x0, clientY: y0 } = e
     const { width: w0, height: h0 } = rect
-    // A centred panel grows away from its centre, so each edge moves half of what the size does;
-    // without this the handle drifts out from under the cursor at half the drag speed.
-    const gain = (spec.position.anchor ?? 'center') === 'center' ? 2 : 1
+    // A panel centred on an axis grows away from its centre, so that edge moves half of what
+    // the size does; without this the handle drifts out from under the cursor at half the drag
+    // speed. `bottom-center` is centred horizontally only -- its bottom is pinned, so its
+    // vertical gain is 1 while `center`'s is 2 on both axes.
+    const anchor = spec.position.anchor ?? 'center'
+    const gainX = anchor === 'center' || anchor === 'bottom-center' ? 2 : 1
+    const gainY = anchor === 'center' ? 2 : 1
     const onMove = (ev: MouseEvent) => {
       setSize((s) => ({
         ...s,
-        ...(use.x ? { w: Math.max(MIN_W, w0 + gain * use.x * (ev.clientX - x0)) } : null),
-        ...(use.y ? { h: Math.max(MIN_H, h0 + gain * use.y * (ev.clientY - y0)) } : null),
+        ...(use.x ? { w: Math.max(MIN_W, w0 + gainX * use.x * (ev.clientX - x0)) } : null),
+        ...(use.y ? { h: Math.max(MIN_H, h0 + gainY * use.y * (ev.clientY - y0)) } : null),
       }))
     }
     const onUp = () => {

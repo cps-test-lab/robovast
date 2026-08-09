@@ -19,7 +19,116 @@ import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
+
+# -- the wall<->sim clock map -------------------------------------------------
+#
+# Lives here, in the one module that both sides can reach: rosbags_process.py is copied
+# into the container as a *standalone script* (see common/execution.py's _transient copy)
+# and can import nothing from the robovast package, while the host-side reader
+# (results_processing/clock_map.py) needs the identical accuracy promise. One definition,
+# two importers.
+
+#: Column names of ``clock_map.csv``.
+CLOCK_MAP_FIELDNAMES = ["wall_ts", "sim_ts"]
+
+#: Filename, written beside the bag it was extracted from.
+CLOCK_MAP_FILENAME = "clock_map.csv"
+
+#: How far the decimated map may mispredict sim time, in seconds. Every kept sample is
+#: exact; this bounds the error of what was *dropped*. 5 ms is two orders of magnitude
+#: below anything a log line is read at, and it turns a constant-rate run's tens of
+#: thousands of ``/clock`` messages into a handful of rows.
+DEFAULT_CLOCK_TOLERANCE_S = 0.005
+
+#: How many consecutive samples may be dropped before one is kept regardless. Two reasons,
+#: both practical: it bounds the per-sample work of re-checking the dropped ones (without
+#: it, a perfectly straight run re-scans an ever-growing buffer and the pass becomes
+#: quadratic), and it puts a floor under how much of a long segment a single corrupt sample
+#: could misrepresent. The extra rows are negligible — one per 512 messages.
+_MAX_DROPPED_RUN = 512
+
+
+class ClockDecimator:
+    """Streaming line simplification for ``(wall, sim)`` clock samples.
+
+    ``/clock`` arrives at 100-1000 Hz, and most of what it says is "still the same rate".
+    Keeping every message would make the map larger than the log it exists to place. So a
+    sample is kept only when dropping it would mispredict sim time by more than
+    *tolerance* under the linear interpolation the reader performs — a promise about
+    accuracy, where a fixed-Hz thinning would only be a promise about size.
+
+    Rate-independent by construction: a steady stretch costs two samples however long it
+    is, while a pause or a change of real-time factor keeps the samples that describe it.
+
+    Every dropped sample is re-checked against the candidate chord, not just the most
+    recent one. Checking only the newest lets error accumulate across a curve — a smoothly
+    changing real-time factor then drifts past the tolerance one imperceptible step at a
+    time, which is exactly the case a caller trusting the stated bound would not think to
+    look for.
+
+    Usage: :meth:`offer` each sample in wall order, then :meth:`close` — which emits the
+    final sample, because the map's right edge is where the run stopped and the reader
+    refuses to extrapolate past it.
+    """
+
+    def __init__(self, tolerance_s: float = DEFAULT_CLOCK_TOLERANCE_S,
+                 max_dropped_run: int = _MAX_DROPPED_RUN) -> None:
+        self._tolerance = tolerance_s
+        self._max_dropped_run = max(1, max_dropped_run)
+        self._last_kept: Optional[Tuple[float, float]] = None
+        #: Samples after :attr:`_last_kept`, provisionally dropped, oldest first.
+        self._buffer: List[Tuple[float, float]] = []
+        self.seen: int = 0
+
+    def _chord_fits(self, target: Tuple[float, float]) -> bool:
+        """Would the chord from the last kept sample to *target* reproduce the buffer?"""
+        w0, s0 = self._last_kept
+        w1, s1 = target
+        span = w1 - w0
+        if span <= 0:
+            return False
+        rate = (s1 - s0) / span
+        return all(abs(sp - (s0 + rate * (wp - w0))) <= self._tolerance
+                   for wp, sp in self._buffer[:-1])
+
+    def offer(self, wall: float, sim: float) -> Optional[Tuple[float, float]]:
+        """Take one sample; return a sample to write, if this one decided its fate."""
+        self.seen += 1
+        sample = (wall, sim)
+        if self._last_kept is None:
+            self._last_kept = sample
+            return sample
+        self._buffer.append(sample)
+        if len(self._buffer) < 2:
+            return None
+        if self._chord_fits(sample) and len(self._buffer) <= self._max_dropped_run:
+            return None
+        # This sample cannot represent everything since the last kept one, so the sample
+        # before it becomes the segment's end — the newest point that still could.
+        keep = self._buffer[-2]
+        self._last_kept = keep
+        self._buffer = [sample]
+        return keep
+
+    def close(self) -> Optional[Tuple[float, float]]:
+        """The final sample, or ``None`` when it was already written."""
+        if not self._buffer:
+            return None
+        final = self._buffer[-1]
+        self._buffer = []
+        if final == self._last_kept:
+            return None
+        self._last_kept = final
+        return final
+
+    def run(self, samples: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Decimate a whole sequence — the non-streaming convenience form."""
+        kept = [s for s in (self.offer(w, t) for w, t in samples) if s is not None]
+        final = self.close()
+        if final is not None:
+            kept.append(final)
+        return kept
 
 
 def write_provenance_entry(
