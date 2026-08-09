@@ -16,10 +16,17 @@
 
 """One log view for every MCP log tool.
 
-Logs are read by an LLM, where every line costs context. The same four controls
+Logs are read by an LLM, where every line costs context. The same five controls
 therefore apply to all of them, so an agent learns them once and can reach a
 diagnosis without paying for the whole stream:
 
+* ``hide_shutdown`` — stop at the scenario's verdict. **On by default in the tools
+  that read a run's log**, because what a run says after its trial has ended is
+  teardown: lifecycle transitions failing because their peer is already gone, TF
+  errors from a publisher that has stopped, nodes being killed. Those lines are
+  warnings and errors by the classifier below, so they dominate a severity read
+  while saying nothing about the trial. Turn it off when the shutdown itself is the
+  question.
 * ``grep`` — keep lines matching a regex.
 * ``min_severity`` — keep lines the shared classifier rates at least that severe.
   Distinct from ``grep`` on purpose: ``grep`` is free text, this is
@@ -45,34 +52,47 @@ import re
 
 # Imported as a module, not by name, so the parameters below can carry the names a
 # caller would choose (``summarize``, ``collapse_relay``) without shadowing them.
-from robovast.common import log_summary
+from robovast.common import log_summary, scenario_markers
 
 
 def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0,
              summarize: bool = False, top: int = log_summary.DEFAULT_TOP,
-             collapse_relay: bool = True) -> dict:
+             collapse_relay: bool = True, hide_shutdown: bool = False) -> dict:
     """Filter *text* for reading, reporting what was left out.
 
     Applied in this order, so ``tail`` means "the last N lines *of what matched*" —
     what a caller chasing an error wants:
 
-    1. ``grep`` keeps only lines matching that regex (case-insensitive).
-    2. ``min_severity`` (``"warn"`` / ``"error"``) keeps only lines that severe.
-    3. ``summarize`` groups and counts what survived — **or**, when it is false,
+    1. ``hide_shutdown`` drops what each run said after its scenario reached a
+       verdict (:mod:`robovast.common.scenario_markers`).
+    2. ``grep`` keeps only lines matching that regex (case-insensitive).
+    3. ``min_severity`` (``"warn"`` / ``"error"``) keeps only lines that severe.
+    4. ``summarize`` groups and counts what survived — **or**, when it is false,
        ``tail`` keeps the last N lines.
-    4. ``collapse_relay`` strips a redundant per-line relay prefix.
+    5. ``collapse_relay`` strips a redundant per-line relay prefix.
+
+    ``hide_shutdown`` comes first so the rest describe the *trial*: a ``tail`` applied
+    after it returns the end of the run rather than the end of the teardown, which is
+    what a caller chasing a failure asked for. It defaults to **false here and true at
+    the tools that read a run's log** — this function is also the trimmer for
+    ``exec_in_container`` and ``get_image_build_log``, which have no scenario and must
+    not acquire a content-dependent cut.
 
     Returns:
         Two shapes, one key apart, because a summary is not a shorter log:
 
-        * lines — ``{content, lines, lines_total, dropped, truncated}``
+        * lines — ``{content, lines, lines_total, dropped, shutdown_dropped,
+          truncated}``
         * summary — ``{patterns, patterns_total, severity_counts, lines,
-          lines_total, dropped}``
+          lines_total, dropped, shutdown_dropped}``
 
         ``content`` is **absent** from a summary rather than empty, which would read
         as "nothing matched". ``dropped`` is how many lines ``grep`` and
-        ``min_severity`` together excluded; ``truncated`` marks that ``tail`` cut
-        earlier lines, so the caller can page back with the tool's own ``offset``.
+        ``min_severity`` together excluded; ``shutdown_dropped`` is counted separately
+        and is **always present, ``0`` included** — a key that appeared only when it
+        fired would teach a caller nothing on the call where it did not. ``truncated``
+        marks that ``tail`` cut earlier lines, so the caller can page back with the
+        tool's own ``offset``.
 
     Raises:
         ValueError: if *grep* is not a valid regex, or *min_severity* is not a known
@@ -81,6 +101,10 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     """
     lines = text.splitlines()
     total = len(lines)
+
+    shutdown_dropped = 0
+    if hide_shutdown:
+        lines, shutdown_dropped = scenario_markers.split_shutdown(lines)
 
     kept = lines
     if grep:
@@ -93,14 +117,19 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
         floor = log_summary.severity_rank(min_severity)
         kept = [ln for ln in kept
                 if log_summary.severity_rank(log_summary.severity_of(ln)) >= floor]
-    dropped = total - len(kept)
+    # Counted against what the filters were *given*, not against the whole log, so the
+    # two exclusions stay separable: `lines + dropped + shutdown_dropped == lines_total`.
+    # Folding them together would report a grep that matched everything it was shown as
+    # having dropped the teardown.
+    dropped = len(lines) - len(kept)
 
     if summarize:
         # Counting happens on the *raw* lines: the summarizer normalizes them itself
         # (it needs the prefix to attribute a pattern to its node), so collapsing
         # first would throw that away.
         return {**log_summary.summarize(kept, top=top), "lines": len(kept),
-                "lines_total": total, "dropped": dropped}
+                "lines_total": total, "dropped": dropped,
+                "shutdown_dropped": shutdown_dropped}
 
     truncated = False
     if tail and len(kept) > tail:
@@ -122,5 +151,6 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
         "lines": len(kept),
         "lines_total": total,
         "dropped": dropped,
+        "shutdown_dropped": shutdown_dropped,
         "truncated": truncated,
     }

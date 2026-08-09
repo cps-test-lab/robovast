@@ -38,6 +38,20 @@ export interface ClockProvenance {
   wallSpanS: number
 }
 
+/** Where this run's trial ended, read from `scenario_timestamps` — the one place
+ *  postprocessing records it, so the log, the playback clock and `search_run_logs` cut at
+ *  the same moment instead of each matching the log text again. */
+export interface Verdict {
+  /** On the run's clock. Null when the clock map could not place the verdict. */
+  simTime: number | null
+  /** On the wall clock. **This is what the log is cut by** — the clock map does not
+   *  extrapolate, so a run whose `/clock` stopped at shutdown has no sim time for any line
+   *  after the verdict, which is exactly the log with the most shutdown in it. */
+  wallTs: number | null
+  /** `succeeded` or `failed`. */
+  status: string
+}
+
 export interface RunLogData {
   rows: LogRow[]
   /** Ascending `sim_time` of the rows that have one — the search array for the cursor. */
@@ -45,6 +59,10 @@ export interface RunLogData {
   /** Index in `rows` of each entry in `simTimes`. */
   simIndex: number[]
   clock: ClockProvenance | null
+  /** Where the trial ended, or null when this run reached no verdict (and for a campaign
+   *  postprocessed before the verdict was recorded). Absent for a multi-run scope, where one
+   *  answer would not be true of every run. */
+  verdict: Verdict | null
   /** True when the load stopped at `maxRows`, so the view can say so rather than imply completeness. */
   truncated: boolean
   /** Absent `run_log` table (postprocessing predates it) vs. present but empty. */
@@ -185,6 +203,34 @@ export function useRunLog(opts: UseRunLogOptions) {
         }
       }
 
+      // Where the trial ended. Read, not re-derived: postprocessing already matched the
+      // verdict once (`common/scenario_markers`) and wrote it here, so this view, the
+      // playback clock and `search_run_logs` cut at the same moment.
+      let verdict: Verdict | null = null
+      if (!missingTable && configName && runId != null) {
+        try {
+          const res = await robovast.queryCampaignDataSql(
+            campaignId,
+            `SELECT timestamp, wall_ts, status FROM scenario_timestamps ` +
+              `WHERE config_name = ${quote(configName)} AND run_id = ${runId}`,
+            1,
+          )
+          const row = (res.rows ?? [])[0] as Record<string, unknown> | undefined
+          // A row with no `status` is a run that reached no verdict -- killed by its
+          // deadline, say. Recorded as null rather than as a zero timestamp, so the
+          // controls can say there is nothing to trim instead of trimming to the start.
+          if (row?.status)
+            verdict = {
+              simTime: num(row.timestamp),
+              wallTs: num(row.wall_ts),
+              status: String(row.status),
+            }
+        } catch {
+          // A campaign postprocessed before `wall_ts` existed. Nothing is trimmed and the
+          // toggle says why -- re-run postprocessing to get it.
+        }
+      }
+
       const simTimes: number[] = []
       const simIndex: number[] = []
       rows.forEach((row, i) => {
@@ -193,7 +239,8 @@ export function useRunLog(opts: UseRunLogOptions) {
           simIndex.push(i)
         }
       })
-      return { rows, simTimes, simIndex, clock, truncated, missingTable, total: rows.length }
+      return { rows, simTimes, simIndex, clock, verdict, truncated, missingTable,
+               total: rows.length }
     },
   })
 

@@ -21,7 +21,11 @@ import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 function RunLogPanel({ spec, clock, data }: PanelProps) {
-  const { t } = useClock(clock)
+  // `hideShutdown` too, not just the cursor: the run view has one shutdown state, reached from
+  // its header, and the log is one of the two things it governs. Reading it here rather than
+  // owning a copy is what keeps the log and the timeline agreeing about where the run ended --
+  // and is why this panel's filter bar shows no shutdown button of its own.
+  const { t, hideShutdown } = useClock(clock)
   const maxRows = spec.config.max_rows as number | undefined
   const severities = spec.config.severities as string[] | undefined
 
@@ -44,6 +48,7 @@ function RunLogPanel({ spec, clock, data }: PanelProps) {
       isPending={log.isPending}
       error={log.error}
       cursor={t}
+      hideShutdown={hideShutdown}
       onSeek={(simTime) => clock.seek(simTime)}
     />
   )

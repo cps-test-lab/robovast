@@ -272,13 +272,11 @@ def get_campaign_status(campaign_id: str) -> dict:
 def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                      grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
-                     phase: str = "") -> dict:
+                     phase: str = "", hide_shutdown: bool = True) -> dict:
     """What is the campaign doing? Its infrastructure log, in phases.
 
     **On a stalled or failed run, start with ``summarize=True``** — filtering cannot
-    diagnose a flood, because the flood *is* the finding. One wedged run matched a
-    severity filter 18226 times and the returned lines read as ordinary noise; summarized
-    it is one pattern with its count.
+    diagnose a flood, because the flood *is* the finding.
 
     Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
     default**: ``build`` (the image this campaign waited for — where a campaign that failed
@@ -291,15 +289,19 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         campaign_id: The id from ``start_campaign``.
         limit: Maximum lines to return. Ignored with ``summarize``.
         offset: First line to return (line offset, for paging the matches).
+        hide_shutdown: Stop at each run's scenario verdict — default true, and normally
+            what you want: past the verdict a run is only tearing down, and the
+            lifecycle/TF errors that produces are noise, not findings. Applied first, so
+            the other filters describe the trial; ``shutdown_dropped`` says what it cut.
+            False when the shutdown itself is the question.
         grep: Keep lines matching this regex (case-insensitive), before offset/limit.
         tail: Keep only the last N of what survived the filters. Ignored with
             ``summarize``.
         min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier. Use this
-            instead of a hand-written severity ``grep``: it is the definition the
-            campaign status uses, and two patterns mean two answers to "is this healthy?".
-        summarize: Return distinct **patterns with counts** instead of lines — timestamps,
-            coordinates and ids are normalized so equal shapes group. Reads a 20k-line log
-            for a few dozen tokens.
+            instead of a hand-written severity ``grep`` — it is the definition the
+            campaign status uses.
+        summarize: Return distinct **patterns with counts** instead of lines —
+            timestamps, coordinates and ids are normalized so equal shapes group.
         top: With ``summarize``, maximum patterns (``0`` = all).
         phase: One of ``build``/``variation``/``run``/``postprocessing``/``plugin
             install`` to read only that one. Empty (the default) and ``"all"`` both read
@@ -307,9 +309,10 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
 
     Returns:
         Lines: ``{file_name, phases, total_lines, returned_lines, offset, content,
-        dropped}``. With ``summarize``: ``{file_name, phases, patterns, patterns_total,
-        severity_counts, matched_lines, total_lines, dropped}`` — no ``content``, each
-        pattern ``{pattern, count, severity, example}``. Or ``{error}``.
+        dropped, shutdown_dropped}``. With ``summarize``: ``{file_name, phases,
+        patterns, patterns_total, severity_counts, matched_lines, total_lines, dropped,
+        shutdown_dropped}`` — no ``content``, each pattern ``{pattern, count, severity,
+        example}``. Or ``{error}``.
 
         ``phases`` always lists every section as ``{name, lines, included}``, so what a
         read left out is stated rather than absent.
@@ -344,7 +347,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         return {"error": str(e)}
     try:
         view = view_log(text, grep=grep, tail=tail, min_severity=min_severity,
-                        summarize=summarize, top=top)
+                        summarize=summarize, top=top, hide_shutdown=hide_shutdown)
     except ValueError as e:
         return {"error": str(e)}
     name = f"{campaign_id} (infrastructure log)"
@@ -355,7 +358,8 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 "patterns_total": view["patterns_total"],
                 "severity_counts": view["severity_counts"],
                 "matched_lines": view["lines"],
-                "total_lines": view["lines_total"], "dropped": view["dropped"]}
+                "total_lines": view["lines_total"], "dropped": view["dropped"],
+                **_shutdown_report(view)}
     all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + limit]
     result = {
@@ -366,6 +370,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         "offset": offset,
         "content": "\n".join(selected),
         "dropped": view["dropped"],
+        **_shutdown_report(view),
     }
     # Point at the whole thing only when this page is a sample of it. Paging a 20k-line
     # log through here costs a fortune in context and reads worse than the summary; the
@@ -454,15 +459,40 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def _log_response(base: dict, view: dict) -> dict:
+def _shutdown_report(view: dict) -> dict:
+    """What ``hide_shutdown`` cut, as something a caller can act on.
+
+    ``shutdown_dropped`` is always reported, ``0`` included: a key that appeared only
+    when it fired would teach nothing on the call where it did not. But a count is a
+    number — an agent that has never seen the parameter cannot tell from it that there
+    is one — so when the cut actually fires the response also names the way back.
+    """
+    dropped = view.get("shutdown_dropped", 0)
+    if not dropped:
+        return {"shutdown_dropped": 0}
+    return {
+        "shutdown_dropped": dropped,
+        "note": f"{dropped} lines after the scenario's verdict were skipped (the run's "
+                "shutdown phase — lifecycle and TF errors from nodes being killed, "
+                "almost never what you are looking for). Pass hide_shutdown=false to "
+                "include them.",
+    }
+
+
+def _log_response(base: dict, view: dict, *, report_shutdown: bool = False) -> dict:
     """Merge a :func:`view_log` result onto a transport chunk, in whichever shape it is.
 
     The two shapes differ by one key, and ``text`` must be *dropped* from a summary
     rather than left over from ``base`` — a response carrying both would read as "here
     are the patterns, and here are the lines", when the lines were never selected.
+
+    ``report_shutdown`` is set by the tools that expose ``hide_shutdown``. A build log
+    has no scenario, so reporting ``shutdown_dropped: 0`` there would spend a key
+    advertising a control that tool does not have.
     """
     merged = {**base, "lines": view["lines"], "lines_total": view["lines_total"],
-              "dropped": view["dropped"]}
+              "dropped": view["dropped"],
+              **(_shutdown_report(view) if report_shutdown else {})}
     if "patterns" in view:
         merged.pop("text", None)
         return {**merged, "patterns": view["patterns"],
@@ -473,12 +503,12 @@ def _log_response(base: dict, view: dict) -> dict:
 
 def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
-                summarize: bool = False, top: int = DEFAULT_TOP) -> dict:
+                summarize: bool = False, top: int = DEFAULT_TOP,
+                hide_shutdown: bool = True) -> dict:
     """What is one **running** job doing? Its containers' live stdout/stderr.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
-    a run that cannot reach its goal usually says so by repeating one message thousands
-    of times, which is a single line here.
+    a wedged run repeats one message thousands of times, which summarizes to one line.
 
     Live source only — a finished job whose pod was garbage-collected has none; read the
     campaign log instead. Every container the job runs is merged into one stream, each
@@ -490,13 +520,13 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
         offset: **Byte** offset to resume from — pass back the previous call's
             ``next_offset`` to poll incrementally. It indexes the *unfiltered* stream, so
             filtering never breaks a poll loop.
-        grep, tail, min_severity, summarize, top: The filters ``get_campaign_log``
-            documents, applied in that order.
+        hide_shutdown, grep, tail, min_severity, summarize, top: The filters
+            ``get_campaign_log`` documents, applied in that order.
 
     Returns:
-        Lines: ``{text, next_offset, eof, lines, lines_total, dropped, truncated}``.
-        With ``summarize``: the same minus ``text``, plus ``{patterns, patterns_total,
-        severity_counts}``. Or ``{error}``.
+        Lines: ``{text, next_offset, eof, lines, lines_total, dropped,
+        shutdown_dropped, truncated}``. With ``summarize``: the same minus ``text``,
+        plus ``{patterns, patterns_total, severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
@@ -510,10 +540,11 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
         return {"error": str(e)}
     try:
         view = view_log(chunk.get("text", ""), grep=grep, tail=tail,
-                        min_severity=min_severity, summarize=summarize, top=top)
+                        min_severity=min_severity, summarize=summarize, top=top,
+                        hide_shutdown=hide_shutdown)
     except ValueError as e:
         return {"error": str(e)}
-    return _log_response(chunk, view)
+    return _log_response(chunk, view, report_shutdown=True)
 
 
 def stop_campaign(campaign_id: str) -> dict:

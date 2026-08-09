@@ -129,7 +129,10 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    (`null` means no verdict is possible, not "healthy") and `postprocessed` (`finished`
    does not imply results). On anything wrong, `get_campaign_log(summarize=True)` first:
    a wedged run repeats one message thousands of times, and the summary is one line.
-   `list_campaign_jobs` + `get_job_log(summarize=True)` for a single job.
+   `list_campaign_jobs` + `get_job_log(summarize=True)` for a single job. Every log tool
+   stops at the scenario's verdict by default — what a run says while shutting down is
+   lifecycle and TF errors that describe nothing, and they would otherwise be most of
+   what a severity read returns. `hide_shutdown=false` when the shutdown *is* the fault.
 7. **Verify the output, not the exit code.** `get_campaign_summary`, then
    `list_files("/results/<campaign_id>/")` to see the runs actually wrote something.
 

@@ -95,6 +95,30 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | Non
     return matched[:max_campaigns], note
 
 
+def _shutdown_term(index: int) -> str:
+    """"This line came before its run's scenario reached a verdict", as SQL.
+
+    Its own term rather than one of :func:`_predicates`' because it names a *table* and
+    so has to carry the attached schema's prefix, while every other predicate needs only
+    the ``l`` alias and is therefore the same string for every campaign in a batch.
+
+    The verdict is read from where postprocessing recorded it rather than matched again
+    here: ``scenario_timestamps`` is keyed on ``(config_name, run_id)``, so this is a
+    primary-key lookup per row, and "when did the trial end" keeps one answer across the
+    SQL, the web UI and the stream tools.
+
+    On ``wall_ts`` and not ``sim_time``, because the clock map does not extrapolate: a
+    run whose ``/clock`` stopped at shutdown has NULL ``sim_time`` on every line after
+    the verdict, so a sim-time comparison would keep exactly the lines this drops. A run
+    with no recorded verdict trims nothing — trimming to an invented moment is worse.
+    """
+    prefix = _schema_prefix(index)
+    return (f"NOT EXISTS (SELECT 1 FROM {prefix}scenario_timestamps s "
+            f"WHERE s.config_name = l.config_name AND s.run_id = l.run_id "
+            f"AND s.wall_ts IS NOT NULL AND l.wall_ts IS NOT NULL "
+            f"AND l.wall_ts > s.wall_ts)")
+
+
 def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, container: str,
                 node: str, source: str, t0, t1, in_window) -> list:
     """The WHERE terms, as SQL. ``grep`` uses ``REGEXP``, which every data query registers."""
@@ -237,14 +261,15 @@ async def search_run_logs(
     group_by_run: bool = True,
     summarize: bool = False,
     limit: int = 200,
+    hide_shutdown: bool = True,
 ) -> dict:
     """Which runs logged this? Searches the merged per-run log, across runs and campaigns.
 
     The log is every container's output joined with ``/rosout``, on the run's playback clock, so
     ``t0``/``t1`` are sim-time seconds of the *trial*. For one live or just-finished run use
     ``get_job_log`` (this needs postprocessing); for build/controller phases,
-    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` / ``tail`` mean the
-    same in all of them.
+    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` / ``tail`` /
+    ``hide_shutdown`` mean the same in all of them, defaults included.
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.
@@ -298,8 +323,11 @@ async def search_run_logs(
         for index, cid in enumerate(batch):
             # A summary reads far more rows than it returns, because it returns counts.
             scan = _SUMMARY_SCAN if summarize else limit + offset
-            sql = (_rollup_sql(index, terms, limit) if group_by_run and not summarize
-                   else _lines_sql(index, terms, scan, 0))
+            # Per campaign, because this term names a table and so carries the attached
+            # schema's prefix; every other predicate is the same string for the batch.
+            scoped = terms + ([_shutdown_term(index)] if hide_shutdown else [])
+            sql = (_rollup_sql(index, scoped, limit) if group_by_run and not summarize
+                   else _lines_sql(index, scoped, scan, 0))
             result = data_access.query(primary, sql, max(1, scan), attached or None)
             if "error" in result:
                 # A campaign with no run_log (postprocessed before the merge existed, or still
@@ -315,14 +343,22 @@ async def search_run_logs(
                 rollup.extend(rows)
             else:
                 lines.extend(rows)
-                counted = data_access.query(primary, _count_sql(index, terms), 1,
+                counted = data_access.query(primary, _count_sql(index, scoped), 1,
                                             attached or None)
                 total_rows = (counted.get("rows") or [{}])[0].get("n")
                 lines_total += int(total_rows) if total_rows is not None else len(rows)
 
     out: dict = {"campaigns": searched, "campaigns_skipped": skipped}
-    if skip_note:
-        out["note"] = skip_note.lstrip("; ")
+    notes = [skip_note.lstrip("; ")] if skip_note else []
+    if hide_shutdown:
+        # Said on every call, not only when it excluded something: unlike the stream
+        # tools this cannot count what it dropped (the rows never left SQLite), so a
+        # silent term would make a trimmed search read as a complete one.
+        notes.append("only lines before each run's scenario verdict were searched "
+                     "(the shutdown phase is excluded); pass hide_shutdown=false to "
+                     "include it")
+    if notes:
+        out["note"] = "; ".join(notes)
 
     if summarize or not group_by_run:
         # Rendered back to text so `view_log` applies the *same* tail/summarize/severity rules

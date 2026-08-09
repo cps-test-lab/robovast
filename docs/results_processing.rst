@@ -337,6 +337,35 @@ had — 563 of 570 lines in a measured ROS run were stamped by their producer. A
 ``^Running as UID`` needs updating; the live log panel is unaffected mechanically (it pages bytes)
 but shows the prefixes too.
 
+.. _scenario-verdict:
+
+``scenario_timestamps`` — where the trial ended
+""""""""""""""""""""""""""""""""""""""""""""""""
+
+One row per run: ``config_name``, ``run_id``, ``timestamp`` (sim seconds), ``wall_ts``,
+``status`` (``succeeded`` / ``failed``) and the ``message`` itself. Built while ingesting
+``run_log``, from the first line scenario-execution's own logger wrote announcing a verdict —
+``Scenario '<name>' succeeded.``, or the failure line ``add_result`` logs. The recognition lives
+in one module, :mod:`robovast.common.scenario_markers`, and runs **here and nowhere else**: every
+later reader queries this table instead of matching the log text again, which is what keeps the
+web UI, ``search_run_logs`` and the playback clock from disagreeing about where a run ended.
+
+**Both clocks, because they answer different questions.** ``timestamp`` is what the playback
+timeline is measured in. ``wall_ts`` is what ``run_log`` is *ordered* by, and it is the one the
+log is cut on — the clock map does not extrapolate, so a run whose ``/clock`` stopped during
+shutdown has NULL ``sim_time`` on every line after the verdict, sometimes including the verdict
+itself. A sim-time comparison would keep exactly the lines a reader wanted rid of.
+
+Everything after ``wall_ts`` is **shutdown**, not the trial: nodes being killed, lifecycle
+transitions failing because their peer is already gone, TF errors from a publisher that has
+stopped. That is what the run view's :ref:`shutdown toggle <shutdown-toggle>` and the log tools'
+``hide_shutdown`` cut, both on by default.
+
+``status`` is the **scenario's** verdict and can legitimately disagree with the run's
+``test.xml`` verdict in ``run_view.status``; comparing the two finds a scenario that reported
+success while the harness failed, or the reverse. A NULL row is a run that reached no verdict —
+killed by its deadline, say — and is left untrimmed rather than trimmed to a guess.
+
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
 

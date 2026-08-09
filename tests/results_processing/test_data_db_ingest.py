@@ -330,3 +330,74 @@ def test_unknown_jsonl_format_is_skipped(campaign):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "mystery" not in tables
     assert "poses" in tables
+
+
+# -- the scenario verdict ----------------------------------------------------
+#
+# Recorded here and read everywhere else (the playback clock, the log views,
+# `search_run_logs`), so these guard the one place the verdict is found in text.
+
+_RUN_LOG_HEADER = "sim_time,wall_ts,time_source,container,node,source,level,severity,message"
+
+
+def _write_run_log(campaign: Path, run: int, rows: list[str]) -> None:
+    _write_csv(campaign / "cfg-a" / str(run) / "run_log.csv", _RUN_LOG_HEADER, rows)
+
+
+def _verdict(campaign: Path, run: int = 0) -> sqlite3.Row:
+    return _connect(campaign).execute(
+        "SELECT * FROM scenario_timestamps WHERE config_name='cfg-a' AND run_id=?",
+        (run,)).fetchone()
+
+
+def test_the_verdict_is_recorded_on_both_clocks(campaign):
+    """`wall_ts` is not redundant with `timestamp`: the log is ordered by wall, and
+    every surface that stops at the end of the trial cuts on it."""
+    _write_run_log(campaign, 0, [
+        "11.75,1785092243.5,stamp,sut,nav2,rosout,INFO,other,goal reached",
+        "12.00,1785092244.0,stamp,sut,scenario_execution_ros,rosout,INFO,other,"
+        "Scenario 'test_scenario' succeeded.",
+    ])
+    _build(campaign)
+    row = _verdict(campaign)
+    assert row["status"] == "succeeded"
+    assert row["timestamp"] == pytest.approx(12.0)
+    assert row["wall_ts"] == pytest.approx(1785092244.0)
+
+
+def test_a_run_aborted_at_shutdown_is_still_a_verdict(campaign):
+    """The matcher this replaced knew only `succeeded.` and `: execution failed.`, so a
+    run that ended `Aborted` / `Setup failed` / `Run failed` recorded no end at all --
+    and is exactly the run with the most shutdown noise to hide."""
+    _write_run_log(campaign, 0, [
+        "12.00,1785092244.0,stamp,sut,scenario_execution_ros,rosout,ERROR,error,"
+        "test_scenario: Aborted",
+    ])
+    _build(campaign)
+    assert _verdict(campaign)["status"] == "failed"
+
+
+def test_a_verdict_the_clock_map_cannot_place_still_records_its_wall_time(campaign):
+    """The clock map does not extrapolate, so a run whose /clock stopped first has no
+    sim time for its own verdict. Recording NULL there and a real `wall_ts` is what
+    keeps the log cut working on precisely that run."""
+    _write_run_log(campaign, 0, [
+        ",1785092244.0,stamp,sut,scenario_execution_ros,rosout,INFO,other,"
+        "Scenario 'test_scenario' succeeded.",
+    ])
+    _build(campaign)
+    row = _verdict(campaign)
+    assert row["timestamp"] is None
+    assert row["wall_ts"] == pytest.approx(1785092244.0)
+    assert row["status"] == "succeeded"
+
+
+def test_a_run_that_logged_no_verdict_records_none(campaign):
+    """Not an error: a run killed by its deadline never reached one. The UI reads this
+    as 'nothing to trim' rather than trimming to an invented moment."""
+    _write_run_log(campaign, 0, [
+        "11.75,1785092243.5,stamp,sut,nav2,rosout,INFO,other,goal reached",
+    ])
+    _build(campaign)
+    row = _verdict(campaign)
+    assert row["status"] is None and row["wall_ts"] is None

@@ -387,7 +387,10 @@ _TABLE_DESCRIPTIONS = {
         "run_view, which already has. NULL sysinfo_json means the job recorded none."),
     ("main", "scenario_timestamps"): (
         "One row per run: when its scenario reached a terminal state, from the first "
-        "scenario-end rosout entry. timestamp is rosbag time in seconds; status and "
+        "scenario-end entry in run_log. timestamp is rosbag time in seconds; wall_ts is "
+        "the same moment on the wall clock, which is what run_log is ordered by and is "
+        "often the only one present (the clock map does not extrapolate past the end of "
+        "/clock). Everything after wall_ts is shutdown, not the trial. status and "
         "message are that entry's verdict. This is the SCENARIO's verdict, which can "
         "disagree with the run's test.xml verdict in run_view.status — comparing the two "
         "finds a scenario that reported success while the harness failed, or the reverse. "

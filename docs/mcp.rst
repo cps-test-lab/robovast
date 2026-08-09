@@ -472,7 +472,7 @@ alive to be inspected — end it with ``stop_campaign``.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
 (``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) — and
-``search_run_logs`` below — take the same four
+``search_run_logs`` below — take the same
 controls, applied in this order — a claim this page made while ``get_campaign_log`` was
 in fact the one tool without ``tail``, so it now has one:
 
@@ -482,6 +482,24 @@ in fact the one tool without ``tail``, so it now has one:
 
    * - Control
      - Effect
+   * - ``hide_shutdown``
+     - Stop at each run's scenario verdict — **on by default**, and normally what you
+       want. Past the verdict a run is only tearing down: lifecycle transitions failing
+       because their peer is already gone, TF errors from a publisher that has stopped,
+       nodes being killed. Every one of those is a warning or an error by the classifier
+       below, so they are the bulk of what a severity read returns and none of them
+       describe the run. Applied first, so ``tail`` and the rest describe the *trial*.
+       Turn it off (``hide_shutdown=False``) when the shutdown itself is the fault you
+       are chasing. Never silent: the response carries ``shutdown_dropped`` on every
+       call, ``0`` included, and names the way back when it cut something.
+
+       ``get_campaign_log`` and ``get_job_log`` read a live stream, so they find the
+       verdict in the text (:mod:`robovast.common.scenario_markers`); a stream that
+       concatenates runs resumes at the next ``Executing scenario``. ``search_run_logs``
+       reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, where
+       postprocessing recorded it — one answer to "when did the trial end", shared with
+       the web UI. Not offered by ``get_image_build_log`` or ``exec_in_container``:
+       neither has a scenario.
    * - ``grep``
      - Keep lines matching a case-insensitive regex. Free text — your pattern.
    * - ``min_severity``
@@ -505,8 +523,12 @@ between a log and a run's verdict, and a stream has nothing to join to. ``search
 searches the merged :ref:`run_log <merged-run-log>` table — every container's output joined with
 ``/rosout``, on each run's own playback clock — across runs and across campaigns.
 
-Same reading vocabulary as the tools above (``grep``, ``min_severity``, ``summarize``, ``tail``),
-because it is the same implementation. What it adds is *scope*: ``config_filter``, ``run_id``,
+Same reading vocabulary as the tools above (``hide_shutdown``, ``grep``, ``min_severity``,
+``summarize``, ``tail``), defaults included — though ``hide_shutdown`` is the one it implements
+differently, as a SQL term over ``scenario_timestamps`` rather than a scan of the text, because
+its default shape (``group_by_run``) never renders lines at all. Since nothing is dropped in
+Python there is no ``shutdown_dropped`` to report, so every response instead *says* in its
+``note`` that only the trial was searched. What it adds is *scope*: ``config_filter``, ``run_id``,
 ``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
 separate "during the trial" from "while the simulator was being reset around it". Set
 ``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids, or name further campaigns

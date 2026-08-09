@@ -17,13 +17,16 @@ import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
 import Paper from '@mui/material/Paper'
 import Popover from '@mui/material/Popover'
+import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import PowerSettingsNewRoundedIcon from '@mui/icons-material/PowerSettingsNewRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
 import type { ResultsTreeItem } from '@/lib/resultsTree'
-import { PlaybackClock } from '@robovast/panel-kit'
+import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider } from '@/lib/dashboard/dataProvider'
 import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
 import { PanelHost } from '@/lib/dashboard/PanelHost'
@@ -35,6 +38,45 @@ import '@/panels' // registers the built-in panels
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
 // The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
 const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
+
+/** The run view's one shutdown control: does the run end at its scenario's verdict, or run on
+ *  through the teardown?
+ *
+ *  It lives here rather than in the playback bar or the log panel because it is not either
+ *  panel's setting -- it says what "this run" means, and both of them follow. The state rides on
+ *  the clock because that is the only object every panel already receives, and because the
+ *  question is a time one: the timeline ends at the verdict unless the shutdown phase is shown.
+ *
+ *  Icon only, unlike its labelled neighbours: wanting the shutdown phase is a narrow case, and a
+ *  word for it here would give it more weight beside the run picker than it earns. The tooltip
+ *  is therefore the only explanation there is, so it names the state *and* what a click does. */
+function ShutdownToggle({ clock }: { clock: PlaybackClock }) {
+  const { verdict, hideShutdown } = useClock(clock)
+  const title = verdict == null
+    ? 'This run recorded no scenario verdict, so there is no shutdown to hide.'
+    : hideShutdown
+      ? 'Shutdown hidden — the timeline ends at the scenario\'s verdict, and the log stops '
+        + 'there too. Click to include the shutdown phase.'
+      : 'Shutdown shown — the timeline runs to the end of the recording. Click to end it at '
+        + 'the verdict.'
+  return (
+    <Tooltip title={title}>
+      {/* A disabled button fires no events, so the tooltip needs a wrapper that does --
+          which is exactly the case where the reason matters most. */}
+      <span>
+        <IconButton
+          size="small"
+          aria-label={title}
+          disabled={verdict == null}
+          onClick={() => clock.setHideShutdown(!hideShutdown)}
+          sx={{ color: hideShutdown ? 'primary.main' : 'text.disabled' }}
+        >
+          <PowerSettingsNewRoundedIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  )
+}
 
 /** The run capture a panel replays, if any -- the run's own time base, needing no `data.db`.
  *
@@ -192,6 +234,22 @@ export function RunView({
         const hi = Math.max(...valid.map((r) => r[1]))
         clock.setRange(lo, hi)
       })
+
+    // Where the *trial* ended, which the range above deliberately does not encode: `setRange`
+    // is the whole recording, so showing the shutdown phase restores it without re-querying.
+    //
+    // Asked for separately rather than picked out of the lookups above, because those are
+    // skipped entirely when a run capture supplies the range -- and a run replayed from a
+    // capture should still stop at its verdict. One extra query, only on a run change.
+    provider
+      .timeRange('scenario_timestamps')
+      .catch(() => null)
+      .then((range) => {
+        // `[t, t]`: one row per run. Null for a run that reached no verdict, and for a
+        // campaign postprocessed before the verdict was recorded -- the toggle then says
+        // there is nothing to trim rather than trimming to an invented moment.
+        if (alive) clock.setVerdict(range ? range[1] : null)
+      })
     return () => {
       alive = false
     }
@@ -275,6 +333,10 @@ export function RunView({
         >
           Edit visualization
         </Button>
+        {/* Pushed to the far right: it governs the whole view rather than the run picker it
+            would otherwise look attached to. */}
+        <Box sx={{ flexGrow: 1 }} />
+        <ShutdownToggle clock={clock} />
       </Stack>
 
       <Popover

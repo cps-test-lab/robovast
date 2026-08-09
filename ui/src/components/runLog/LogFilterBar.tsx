@@ -26,6 +26,7 @@ import FilterListOffRoundedIcon from '@mui/icons-material/FilterListOffRounded'
 import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
+import PowerSettingsNewRoundedIcon from '@mui/icons-material/PowerSettingsNewRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import WrapTextRoundedIcon from '@mui/icons-material/WrapTextRounded'
 import type { Facets, HighlightMode, LogFilter } from './logFilter'
@@ -56,6 +57,9 @@ export function LogFilterBar({
   facets,
   invalidRegex,
   onStepSeverity,
+  hideShutdown,
+  onHideShutdownChange,
+  shutdownDisabledReason,
   wrap,
   onWrapChange,
   wrapDisabledReason,
@@ -67,6 +71,13 @@ export function LogFilterBar({
   invalidRegex?: boolean
   /** Provided only where there is a clock to seek; absent in the Explorer. */
   onStepSeverity?: (dir: 1 | -1) => void
+  hideShutdown?: boolean
+  /** Provided only where this bar owns the state. In the run view the header's one control
+   *  governs the whole view, so no handler comes down and no button is drawn — two toggles
+   *  for one question is two places to look for the answer. */
+  onHideShutdownChange?: (hide: boolean) => void
+  /** Non-empty when there is no verdict to stop at, and why. */
+  shutdownDisabledReason?: string
   wrap?: boolean
   onWrapChange?: (wrap: boolean) => void
   /** Non-empty when wrapping is refused, and why — shown instead of the normal tooltip. */
@@ -180,6 +191,36 @@ export function LogFilterBar({
             </IconButton>
           </Tooltip>
         </>
+      ) : null}
+
+      {/* Same icon and the same wording as the run view's header control, so one idea has
+          one symbol wherever it is reached from. */}
+      {onHideShutdownChange ? (
+        <Tooltip
+          title={
+            shutdownDisabledReason ||
+            (hideShutdown
+              ? 'Shutdown hidden — the log stops at the scenario\'s verdict. Click to show '
+                + 'what the run said afterwards.'
+              : 'Shutdown shown — click to stop the log at the scenario\'s verdict.')
+          }
+        >
+          <span>
+            <IconButton
+              size="small"
+              aria-label="hide the shutdown phase"
+              disabled={!!shutdownDisabledReason}
+              onClick={() => onHideShutdownChange(!hideShutdown)}
+              sx={{
+                flexShrink: 0,
+                p: 0.25,
+                color: hideShutdown ? 'primary.main' : 'text.disabled',
+              }}
+            >
+              <PowerSettingsNewRoundedIcon sx={{ fontSize: 16 }} />
+            </IconButton>
+          </span>
+        </Tooltip>
       ) : null}
 
       {onWrapChange ? (

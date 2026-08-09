@@ -24,7 +24,7 @@ function fmt(s: number): string {
 }
 
 function PlaybackPanel({ clock, data }: PanelProps) {
-  const { t, playing, speed, lo, hi } = useClock(clock)
+  const { t, playing, speed, lo, hi, verdict, hideShutdown } = useClock(clock)
   const barRef = useRef<HTMLDivElement | null>(null)
 
   // Warnings and errors as tick marks on the bar, so the log's shape is visible *before* you
@@ -104,6 +104,26 @@ function PlaybackPanel({ clock, data }: PanelProps) {
             bgcolor: 'primary.main',
           }}
         />
+        {/* Where the trial ended, drawn only while the shutdown phase is *shown*: with it
+            hidden the verdict is the end of the bar and a line there marks nothing. Shown, the
+            bar is longer than the run and the reason is invisible without it -- so this is what
+            says which part is the trial and which part is teardown.
+
+            `text.primary`, not the fill's own colour: it is drawn over the played-through side
+            as well, where a primary-on-primary line is no line at all. */}
+        {!hideShutdown && verdict != null && span > 0 && verdict > lo && verdict < hi ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              left: `${((verdict - lo) / span) * 100}%`,
+              top: 0,
+              bottom: 0,
+              width: 2,
+              pointerEvents: 'none',
+              bgcolor: 'text.primary',
+            }}
+          />
+        ) : null}
         {/* Drawn over the fill so a mark stays visible on the played-through side too. An
             error is drawn full height and a warning half, so the two read apart at a glance
             without relying on colour alone. */}

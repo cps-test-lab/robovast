@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The shared log view every MCP log tool reads through: four controls, and nothing
+"""The shared log view every MCP log tool reads through: five controls, and nothing
 left out silently."""
 
 import pytest
@@ -118,3 +118,54 @@ def test_summarize_ignores_tail_because_a_summary_is_not_a_page():
 def test_summarize_honours_top():
     view = view_log(_TEXT, summarize=True, top=1)
     assert len(view["patterns"]) == 1 and view["patterns_total"] == 3
+
+
+# -- hide_shutdown -----------------------------------------------------------
+
+_SHUTDOWN_TEXT = "\n".join([
+    "[INFO] [1785092240.0] [scenario_execution_ros]: Executing scenario 'trial'",
+    "[INFO] [1785092241.0] [nav2]: goal reached",
+    "[INFO] [1785092242.0] [scenario_execution_ros]: Scenario 'trial' succeeded.",
+    "[ERROR] [1785092243.0] [amcl]: transform failure",
+    "[ERROR] [1785092244.0] [controller_server]: Unable to start transition",
+]) + "\n"
+
+
+def test_shutdown_is_kept_by_default_because_the_primitive_stays_neutral():
+    """`view_log` also trims `exec_in_container` and a build log, neither of which has
+    a scenario. The tools that read a run's log opt in; this does not decide for them."""
+    view = view_log(_SHUTDOWN_TEXT)
+    assert view["lines"] == 5 and view["shutdown_dropped"] == 0
+
+
+def test_hide_shutdown_stops_at_the_verdict_and_counts_what_it_dropped():
+    view = view_log(_SHUTDOWN_TEXT, hide_shutdown=True)
+    assert view["lines"] == 3 and view["shutdown_dropped"] == 2
+    assert "succeeded." in view["content"] and "transform failure" not in view["content"]
+
+
+def test_shutdown_dropped_is_reported_even_when_nothing_was_dropped():
+    """Always present, `0` included: a key that appears only when it fired teaches a
+    caller nothing on the call where it did not."""
+    view = view_log("[INFO] [1785092240.0] [nav2]: goal reached", hide_shutdown=True)
+    assert view["shutdown_dropped"] == 0
+
+
+def test_the_two_exclusions_stay_separable_in_the_accounting():
+    """`lines + dropped + shutdown_dropped == lines_total`. Folding the teardown into
+    `dropped` would report a grep that matched everything it was shown as having cut it."""
+    view = view_log(_SHUTDOWN_TEXT, hide_shutdown=True, grep="goal reached")
+    assert view["lines_total"] == 5
+    assert view["lines"] == 1 and view["dropped"] == 2 and view["shutdown_dropped"] == 2
+
+
+def test_hide_shutdown_runs_before_tail_so_a_tail_ends_at_the_trial():
+    """Applied after, a `tail` chasing a failure returns the end of the teardown --
+    which is the noise the caller asked to be rid of."""
+    view = view_log(_SHUTDOWN_TEXT, hide_shutdown=True, tail=1)
+    assert "succeeded." in view["content"]
+
+
+def test_hide_shutdown_also_reports_its_count_in_a_summary():
+    view = view_log(_SHUTDOWN_TEXT, hide_shutdown=True, summarize=True)
+    assert view["shutdown_dropped"] == 2 and view["lines"] == 3

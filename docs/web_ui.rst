@@ -393,6 +393,27 @@ tallied from ``campaign.db``). A campaign that never started, or that ended befo
 store was written, has nothing to replay, so it is not offered here at all — rather
 than being selectable and then answering with an empty view.
 
+.. _shutdown-toggle:
+
+**The run ends at its scenario's verdict.** One control on the right of the header — the
+power icon — decides whether "this run" means the trial or the whole recording, and it is
+**on by default**. Everything after the verdict is teardown: nodes being killed, lifecycle
+transitions failing because their peer is already gone, TF errors from a publisher that has
+stopped. It is minutes of wall time, it colours the log red, and it describes nothing that
+happened during the run.
+
+It governs the view rather than a panel, which is why it sits in the header and neither the
+playback bar nor the log panel carries a toggle of its own: with it on, the timeline stops
+at the verdict (so the duration readout is the trial's) and the log stops there too. Click
+it off and the full recording returns, with a divider on the playback bar marking where the
+trial ended.
+
+The moment itself is read from ``scenario_timestamps``, written once by postprocessing —
+the same row ``search_run_logs`` cuts on, so the web UI and the MCP tools cannot disagree
+about where a run ended. A run that reached no verdict, and a campaign postprocessed before
+the verdict was recorded, leave the control disabled with that reason on hover: nothing is
+trimmed, rather than trimmed to a guess.
+
 Which panels appear, where they sit, and where each gets its data are declared in the
 ``.vast`` under a top-level ``visualization.panels`` list — the campaign author defines
 the view once and every run of the campaign replays through it:
@@ -465,6 +486,12 @@ capture's own time base when a ``scene3d`` panel declares one (the run's ground 
 before any postprocessing), else from an explicit ``visualization.timeline``, else from the union of the
 postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.
 
+That range is the whole **recording**; where the trial ended is a separate figure, so the
+:ref:`shutdown toggle <shutdown-toggle>` can shorten the timeline and restore it without
+re-querying anything. While the shutdown phase is shown, the bar draws a full-height divider at
+the verdict — with it hidden the verdict *is* the end of the bar, and a line there would mark
+nothing.
+
 **Costmaps** (``costmap``) — an rviz-style top-down view of what nav2 saw: the static
 map, the global and local costmaps, the **actual path the robot drove**, and the robot
 marker, all at the current time (scroll to zoom, drag to pan). Each ``layers`` entry
@@ -514,9 +541,17 @@ the ▲▼ buttons jump to the previous/next warning or error — which is what 
 navigation. Scrolling away stops the follow and raises a button showing the cursor's time; click
 it (or press ``Escape``) to jump back and resume following.
 
+The log also stops at the scenario's verdict. In the run view that is the header's
+:ref:`shutdown toggle <shutdown-toggle>` and this panel shows no control of its own — one
+question, one place to answer it. The Explorer's **Log** tab has no run view around it, so it
+carries the same power icon in its own filter bar. Either way the cut is on the verdict's
+**wall** time and not its sim time: the clock map does not extrapolate, so lines logged after
+``/clock`` stopped have no sim time at all and sort to the *top* of the log — which is exactly
+where the shutdown of a run whose simulator quit first ends up.
+
 The footer never stays silent about what is missing: no ``run_log`` table (postprocessing predates
-it), a run with no clock map (``wall time only``), how many lines the filter hid, and whether the
-load hit its ceiling.
+it), a run with no clock map (``wall time only``), how many shutdown lines were hidden and how the
+scenario ended, how many lines the filter hid, and whether the load hit its ceiling.
 
 The playback bar itself gains tick marks for every warning and error — full height for errors,
 half for warnings — so the log's shape is visible *before* you scrub into it.

@@ -108,6 +108,12 @@ export interface RunLogViewProps {
   showRun?: boolean
   filter?: LogFilter
   onFilterChange?: (filter: LogFilter) => void
+  /** Stop the log at the run's scenario verdict. **Whoever owns this state shows the
+   *  button**: omit it and the view owns it (on by default) and puts a toggle in the filter
+   *  bar; pass it and the host owns it and the bar shows none. In the run view the header's
+   *  one control governs the whole view, so a second toggle here would be a second answer to
+   *  the same question. */
+  hideShutdown?: boolean
   /** Extra note in the footer, e.g. the Explorer's scope. */
   note?: string
 }
@@ -122,11 +128,18 @@ export function RunLogView({
   showRun,
   filter: filterProp,
   onFilterChange,
+  hideShutdown: hideShutdownProp,
   note,
 }: RunLogViewProps) {
   const [ownFilter, setOwnFilter] = useState<LogFilter>(EMPTY_FILTER)
   const filter = filterProp ?? ownFilter
   const setFilter = onFilterChange ?? setOwnFilter
+
+  // Same idiom as the filter above: the prop wins where a host passes one, and the view keeps
+  // its own otherwise. On by default -- the reason to open a run's log is what the run did,
+  // and its teardown is a page of lifecycle and TF errors that describe none of it.
+  const [ownHideShutdown, setOwnHideShutdown] = useState(true)
+  const hideShutdown = hideShutdownProp ?? ownHideShutdown
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [viewportH, setViewportH] = useState(240)
@@ -148,9 +161,29 @@ export function RunLogView({
     [facets],
   )
   const compiled = useMemo(() => compileFilter(filter), [filter])
+
+  // The shutdown cut, applied *before* the filter so the footer's "N of M lines hidden by the
+  // filter" keeps meaning the filter. Not part of `compileFilter`: that returns a row-wise
+  // predicate, and this needs the run's verdict -- a property of the whole load, not of a row.
+  //
+  // Cut on `wall_ts`, never on the array index or on sim time. The rows are ordered
+  // `sim_time IS NOT NULL, sim_time, wall_ts` (see `pageSql`) and the clock map does not
+  // extrapolate, so lines logged after /clock stopped have NO sim time and sort to the
+  // *front*. Slicing at an index, or comparing sim times, would leave exactly the lines this
+  // is here to remove -- sitting at the top of the log with `~` wall offsets.
+  //
+  // A row with no `wall_ts` at all (`time_source: 'none'`) is kept: it cannot be placed, and
+  // dropping it would be a guess dressed as a filter.
+  const verdictWall = data?.verdict?.wallTs ?? null
+  const scoped = useMemo(
+    () => (hideShutdown && verdictWall != null
+      ? rows.filter((r) => r.wall_ts == null || r.wall_ts <= verdictWall)
+      : rows),
+    [rows, hideShutdown, verdictWall],
+  )
   const shown = useMemo(
-    () => (compiled.passthrough ? rows : rows.filter(compiled.test)),
-    [rows, compiled],
+    () => (compiled.passthrough ? scoped : scoped.filter(compiled.test)),
+    [scoped, compiled],
   )
 
   // The run's earliest wall stamp, so a row the clock map cannot place still says *when*. Over
@@ -314,7 +347,10 @@ export function RunLogView({
     ? Math.min(shown.length, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN)
     : shown.length
   const visibleRows = shown.slice(first, last)
-  const hidden = rows.length - shown.length
+  // Counted against what the filter was *given*, so the two exclusions stay separable: a
+  // filter matching everything it saw must not be reported as having hidden the shutdown.
+  const hidden = scoped.length - shown.length
+  const shutdownHidden = rows.length - scoped.length
 
   // What the footer used to say, now only when there is something to say: the log gets the whole
   // panel, and a line count that is simply the number of lines was noise on every single view.
@@ -322,7 +358,13 @@ export function RunLogView({
   const notes: string[] = []
   if (data?.clock && data.clock.source === 'none')
     notes.push('No clock map for this run: the lines are wall-time only, so none has a sim time.')
-  if (hidden > 0) notes.push(`${hidden} of ${rows.length} lines hidden by the filter.`)
+  // Never silent: a log that stops early has to say that it was cut and where.
+  if (shutdownHidden > 0)
+    notes.push(
+      `${shutdownHidden} shutdown lines hidden — what the run said after the scenario `
+      + `${data?.verdict?.status ?? 'ended'}.`,
+    )
+  if (hidden > 0) notes.push(`${hidden} of ${scoped.length} lines hidden by the filter.`)
   if (data?.truncated)
     notes.push(`Load capped at ${rows.length} lines; earlier lines were not fetched.`)
   if (note) notes.push(note)
@@ -335,6 +377,15 @@ export function RunLogView({
         facets={facets}
         invalidRegex={compiled.invalidRegex}
         onStepSeverity={cursor != null ? stepSeverity : undefined}
+        hideShutdown={hideShutdown}
+        // Whoever owns the state shows the button; a host that passes `hideShutdown` owns it
+        // and gets no handler, so the bar renders none.
+        onHideShutdownChange={hideShutdownProp == null ? setOwnHideShutdown : undefined}
+        shutdownDisabledReason={
+          verdictWall == null
+            ? 'This run recorded no scenario verdict, so there is no shutdown to hide.'
+            : ''
+        }
         wrap={wrap}
         onWrapChange={setWrap}
         wrapDisabledReason={

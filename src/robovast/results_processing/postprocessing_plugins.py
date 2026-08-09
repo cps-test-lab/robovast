@@ -53,7 +53,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from robovast.common import log_summary
+from robovast.common import log_summary, scenario_markers
 from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
                                                   cast_expr, column_def,
@@ -697,6 +697,21 @@ def _read_table_rows(path: Path) -> list:
         return []
 
 
+def _as_float(value) -> Optional[float]:
+    """A CSV cell as a float, or ``None`` when it is empty or not a number.
+
+    A ``run_log`` timestamp is legitimately empty -- the clock map does not extrapolate,
+    so a line it cannot place has no ``sim_time`` -- and that is a fact to record, not an
+    error to raise.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _sole_container(campaign_path) -> Optional[str]:
     """The one container this campaign runs, or ``None`` when it runs more than one.
 
@@ -993,9 +1008,11 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
     wrong answer rather than an error. A column that is numeric in one run and text
     in another is logged as a warning; both values are kept.
 
-    A ``scenario_timestamps`` table is also created containing the timestamp of
-    the first scenario-end rosout entry per run (from ``scenario_execution_ros``
-    log messages).
+    A ``scenario_timestamps`` table is also created, holding one row per run: when its
+    scenario reached a verdict and how, from the first such entry in the merged log
+    (see :mod:`robovast.common.scenario_markers`). It carries the moment on both clocks
+    — ``timestamp`` in sim seconds and ``wall_ts`` — because every surface that stops at
+    the end of the trial reads it from here rather than matching the log text again.
 
     A ``_table_name_map`` table records the mapping from display names (CSV stems)
     to actual SQL table names.
@@ -1037,12 +1054,17 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
             "CREATE TABLE _table_name_map "
             "(display_name TEXT PRIMARY KEY, sql_name TEXT NOT NULL)"
         )
-        # Scenario timestamps
+        # Scenario timestamps. Two clocks, because they answer different questions:
+        # ``timestamp`` is sim time and is what the playback timeline is measured in;
+        # ``wall_ts`` is what the merged log is *ordered* by, and is the only one that
+        # exists at all for a run whose /clock stopped before shutdown -- which is
+        # exactly the run whose shutdown noise there is most of.
         conn.execute(
             "CREATE TABLE scenario_timestamps ("
             "config_name TEXT NOT NULL, "
             "run_id INTEGER NOT NULL, "
             "timestamp REAL, "
+            "wall_ts REAL, "
             "status TEXT, "
             "message TEXT, "
             "PRIMARY KEY (config_name, run_id)"
@@ -1102,6 +1124,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
             for run_dir in run_dirs:
                 run_id = int(run_dir.name)
                 scenario_ts: float | None = None
+                scenario_wall_ts: float | None = None
                 scenario_status: str | None = None
                 scenario_msg: str | None = None
                 # Track stems seen within this run to detect duplicate table names
@@ -1142,33 +1165,37 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                     csv_cols = list(dict.fromkeys(
                         c for row in rows for c in row if isinstance(c, str)))
 
-                    # When the scenario ended, and how -- on the *sim* clock, because that is
-                    # what the column means to every reader: the run view unions this table
-                    # into the playback range (``RunView.tsx``'s TIME_TABLES), so a wall-epoch
-                    # value here stretches the timeline to 1.8e9 seconds and the progress bar
-                    # becomes unusable. It was NULL in every campaign until now, which is the
-                    # only reason that never showed.
+                    # When the scenario ended, and how. Recorded here and read everywhere
+                    # else -- the playback clock, the log views, ``search_run_logs`` -- so
+                    # that "when did the trial end" has one answer rather than a text match
+                    # repeated per surface. The recognition itself lives in
+                    # :mod:`robovast.common.scenario_markers`.
                     #
-                    # So it is read from ``run_log``'s ``sim_time`` (the merged log, already
-                    # converted through the run's clock map) and from nothing else: rosout's
-                    # own ``timestamp`` is wall, and converting it here would duplicate the
-                    # conversion the merge already did.
-                    if csv_path.stem == "run_log" and scenario_ts is None:
+                    # ``timestamp`` is *sim* time, because that is what the column means to
+                    # every reader: the run view unions this table into the playback range
+                    # (``RunView.tsx``'s TIME_TABLES), so a wall-epoch value here stretches
+                    # the timeline to 1.8e9 seconds and the progress bar becomes unusable.
+                    # It is read from ``run_log``'s ``sim_time`` (already converted through
+                    # the run's clock map) and from nothing else: rosout's own ``timestamp``
+                    # is wall, and converting it here would duplicate the merge's work.
+                    #
+                    # ``wall_ts`` is the same event on the other clock, and is not redundant:
+                    # the clock map does not extrapolate, so a run whose /clock stopped at
+                    # shutdown has NULL ``sim_time`` on every line after it -- including,
+                    # sometimes, the verdict itself. Ordering the log is a wall question.
+                    #
+                    # Gated on ``scenario_status`` rather than on ``scenario_ts``: a verdict
+                    # the clock map cannot place has a status but no sim time, and gating on
+                    # the timestamp would look for it again on the next file.
+                    if csv_path.stem == "run_log" and scenario_status is None:
                         for row in rows:
-                            if str(row.get("node", "")) != "scenario_execution_ros":
-                                continue
                             msg_val = str(row.get("message", ""))
-                            if msg_val.startswith("Scenario '") and msg_val.endswith("' succeeded."):
-                                status = "succeeded"
-                            elif ": execution failed." in msg_val:
-                                status = "failed"
-                            else:
+                            status = scenario_markers.verdict_of(
+                                msg_val, str(row.get("node", "")))
+                            if not status:
                                 continue
-                            sim_str = row.get("sim_time", "")
-                            try:
-                                scenario_ts = float(sim_str) if sim_str else None
-                            except (ValueError, TypeError):
-                                scenario_ts = None
+                            scenario_ts = _as_float(row.get("sim_time"))
+                            scenario_wall_ts = _as_float(row.get("wall_ts"))
                             scenario_status = status
                             scenario_msg = msg_val
                             break
@@ -1232,8 +1259,10 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                 # Record scenario timestamp (even if None)
                 conn.execute(
                     "INSERT OR REPLACE INTO scenario_timestamps "
-                    "(config_name, run_id, timestamp, status, message) VALUES (?, ?, ?, ?, ?)",
-                    (config_name, run_id, scenario_ts, scenario_status, scenario_msg),
+                    "(config_name, run_id, timestamp, wall_ts, status, message) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (config_name, run_id, scenario_ts, scenario_wall_ts,
+                     scenario_status, scenario_msg),
                 )
 
                 completed_runs += 1
