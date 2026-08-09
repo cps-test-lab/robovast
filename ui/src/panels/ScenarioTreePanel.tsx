@@ -148,12 +148,29 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 // Composite kind -> glyph, so the shape of the tree is readable without reading class names.
-// A plain behaviour gets none: the status dot already marks it.
+// A plain behaviour gets none and falls back to the dot below.
 const TYPE_ICON: Record<string, typeof AltRouteRounded> = {
   SEQUENCE: ArrowRightAltRounded,
   SELECTOR: AltRouteRounded,
   PARALLEL: SplitscreenRounded,
   DECORATOR: ChangeCircleRounded,
+}
+
+/** One mark per node, carrying both facts: which glyph a composite is, and its status colour.
+ *
+ *  A plain behaviour has no glyph and falls back to a dot. Fixed-width slot so the name column
+ *  stays aligned between a composite and its leaf siblings.
+ */
+function StatusMark({ glyph: Glyph, color }: { glyph?: typeof AltRouteRounded; color: string }) {
+  return (
+    <Box sx={{ width: 16, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+      {Glyph ? (
+        <Glyph sx={{ fontSize: 16, color }} />
+      ) : (
+        <Box sx={{ width: 9, height: 9, borderRadius: '50%', bgcolor: color }} />
+      )}
+    </Box>
+  )
 }
 
 /** The node's recorded row at *t*, or null before it was first recorded.
@@ -236,6 +253,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
     const row = rowAt(node, t)
     const status = String(row?.status_name ?? 'INVALID')
     const feedback = String(row?.feedback_message ?? '')
+    const color = STATUS_COLOR[status] ?? STATUS_COLOR.INVALID
     const Glyph = TYPE_ICON[node.type]
     const where = node.oscLine
       ? `${node.oscFile.split('/').pop() ?? node.oscFile}:${node.oscLine}`
@@ -247,18 +265,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
     const label = (
       <Box sx={{ py: 0.25, whiteSpace: 'nowrap' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-          <Box
-            sx={{
-              width: 9,
-              height: 9,
-              borderRadius: '50%',
-              bgcolor: STATUS_COLOR[status] ?? STATUS_COLOR.INVALID,
-              flexShrink: 0,
-            }}
-          />
-          {Glyph ? (
-            <Glyph sx={{ fontSize: 14, color: 'text.disabled', flexShrink: 0 }} />
-          ) : null}
+          <StatusMark glyph={Glyph} color={color} />
           <Box component="span" sx={{ fontSize: 13 }}>
             {node.name}
           </Box>
@@ -275,7 +282,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
             component="span"
             sx={{
               display: 'block',
-              pl: 2.25,
+              pl: 2.75,
               fontSize: 11,
               color: 'text.secondary',
               maxWidth: 280,
