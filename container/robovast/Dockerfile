@@ -80,10 +80,31 @@ RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/
 
 RUN mkdir -p /ws/src
 
+# Staged by build.sh, and empty unless it was asked for: a release build leaves this
+# directory empty and the pinned clone below is what lands in the image. ``build.sh
+# --scenario-execution-src <path>`` fills it with a working tree instead.
+#
+# The same shape as Dockerfile.robosito's staged context, and for the same reason: a
+# Dockerfile cannot branch on a build arg, so build.sh decides what is *in* the context and
+# there is one COPY rather than two code paths for "where does the source come from".
+#
+# Why the hatch is needed at all: the pin is a release control, and iterating on
+# scenario-execution means building an image from a commit that is not pushed yet -- which
+# the clone cannot do. Without it the only way to test a change here is to push it to the
+# shared repo first, which is a release decision made for the wrong reason.
+COPY scenario-execution-src /tmp/scenario-execution-src
+
 # hadolint ignore=DL3003
-RUN  git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
-     cd /ws/src/scenario-execution && \
-     git checkout 902e116eab1813927ca8d07e97961feebe625500 && \
+RUN  if [ -n "$(ls -A /tmp/scenario-execution-src 2>/dev/null)" ]; then \
+       echo "scenario-execution: staged working tree (--scenario-execution-src)" && \
+       cp -a /tmp/scenario-execution-src /ws/src/scenario-execution; \
+     else \
+       echo "scenario-execution: clone @ 902e116eab1813927ca8d07e97961feebe625500" && \
+       git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
+       cd /ws/src/scenario-execution && \
+       git checkout 902e116eab1813927ca8d07e97961feebe625500; \
+     fi && \
+     rm -rf /tmp/scenario-execution-src && \
      cd /ws && \
      git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \

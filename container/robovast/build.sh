@@ -16,13 +16,20 @@
 #
 # Usage:
 #   ./container/robovast/build.sh [--image robovast|robosito|all] [--project <prefix>] \
-#                                 [--ros-distro <distro>] [--push] [-- <extra docker build args>]
+#                                 [--ros-distro <distro>] [--push] \
+#                                 [--robosito-src <path>] [--scenario-execution-src <path>] \
+#                                 [-- <extra docker build args>]
+#
+# The two --*-src flags are the development hatch: each repo is otherwise cloned at a pin,
+# which cannot build a commit that is not pushed yet. A build that used one says so in its
+# log, because the resulting image no longer corresponds to the pin.
 
 BASEDIR=$(cd "$(dirname "$0")" && pwd)
 ROS_DISTRO="jazzy"
 PROJECT=""
 IMAGE="robovast"
 ROBOSITO_SRC=""
+SCENARIO_EXECUTION_SRC=""
 ROBOSITO_REPO="${ROBOSITO_REPO:-https://github.com/cps-test-lab/robosito.git}"
 
 # Parse command line arguments
@@ -38,6 +45,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --robosito-src)
       ROBOSITO_SRC="$2"
+      shift 2
+      ;;
+    --scenario-execution-src)
+      SCENARIO_EXECUTION_SRC="$2"
       shift 2
       ;;
     --ros-distro)
@@ -77,12 +88,31 @@ if [[ -n "${PROJECT}" ]]; then
 fi
 
 build_base() {
+  # A context of its own, holding only what the Dockerfile stages. The repo root was passed
+  # before and never read -- no COPY in that Dockerfile touched it -- so this only stops the
+  # whole working tree (ui/node_modules included) being sent to the daemon on every build.
+  local ctx
+  ctx=$(mktemp -d) || return 1
+  trap 'rm -rf "$ctx"' RETURN
+  mkdir -p "$ctx/scenario-execution-src"
+
+  if [[ -n "$SCENARIO_EXECUTION_SRC" ]]; then
+    echo "scenario-execution source: $SCENARIO_EXECUTION_SRC (local checkout)"
+    # The colcon artifacts must not travel: build/ and install/ from the host are wrong for
+    # the image and would be picked up ahead of what colcon builds inside it.
+    rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+          --exclude='*.egg-info' --exclude='build/' --exclude='install/' --exclude='log/' \
+          "${SCENARIO_EXECUTION_SRC%/}/" "$ctx/scenario-execution-src/" || return 1
+  else
+    echo "scenario-execution source: pinned clone (see Dockerfile)"
+  fi
+
   DOCKER_BUILDKIT=1 docker build \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
     -t robovast_${ROS_DISTRO}:latest \
     -f $BASEDIR/Dockerfile \
-    $PWD
+    "$ctx"
 
   docker tag robovast_${ROS_DISTRO} ${PROJECT}robovast_${ROS_DISTRO}
 
