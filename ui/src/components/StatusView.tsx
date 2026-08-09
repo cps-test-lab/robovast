@@ -13,6 +13,7 @@ import {
 } from '@/lib/robovastClient'
 import { formatDuration } from '@/lib/format'
 import { formatLocalClock } from '@/lib/time'
+import { containerColorer } from './containerColor'
 import { MeterBar } from './MeterBar'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
@@ -348,31 +349,18 @@ function JobRow({
   )
 }
 
-// A stable, legible color per container name, hashed into a fixed palette. The
-// palette avoids very light/very dark hues so lines stay readable on the log
-// panel's `background.paper` in both light and dark themes.
-const CONTAINER_COLORS = [
-  '#2e9599', // teal
-  '#c9611e', // orange
-  '#8250df', // purple
-  '#2f7d31', // green
-  '#1f6feb', // blue
-  '#c2185b', // pink
-  '#8a6d1a', // olive
-  '#5a6b7a', // slate
-]
-function colorForContainer(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0
-  return CONTAINER_COLORS[Math.abs(h) % CONTAINER_COLORS.length]
-}
-
 // Multi-container job logs arrive with each line tagged `[container] …` (merged
 // server-side). Color only the `[container]` prefix per container; the rest of the
 // line keeps the default text color. Lines without a tag render unchanged.
+//
+// The colours come from the container names this text actually holds, so two of them never
+// share one (see containerColorer) -- which the bare hash did not guarantee.
 function renderLogLines(text: string) {
-  return text.split('\n').map((line, i) => {
-    const m = /^(\[[^\]]+\]) ?/.exec(line)
+  const lines = text.split('\n')
+  const tags = lines.map((line) => /^(\[[^\]]+\]) ?/.exec(line))
+  const color = containerColorer(tags.flatMap((m) => (m ? [m[1].slice(1, -1)] : [])))
+  return lines.map((line, i) => {
+    const m = tags[i]
     const nl = i > 0 ? '\n' : ''
     if (!m) return <span key={i}>{nl + line}</span>
     const prefix = m[0]
@@ -380,7 +368,7 @@ function renderLogLines(text: string) {
     return (
       <span key={i}>
         {nl}
-        <span style={{ color: colorForContainer(m[1].slice(1, -1)) }}>{prefix}</span>
+        <span style={{ color: color(m[1].slice(1, -1)) }}>{prefix}</span>
         {rest}
       </span>
     )

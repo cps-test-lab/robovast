@@ -20,6 +20,7 @@ import Typography from '@mui/material/Typography'
 import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded'
 import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded'
 import { lastAtOrBefore } from '@robovast/panel-kit'
+import { containerColorer } from '../containerColor'
 import { parseAnsi, stripAnsi } from './ansi'
 import { LogFilterBar } from './LogFilterBar'
 import {
@@ -42,19 +43,6 @@ const OVERSCAN = 12
 const WRAP_MAX_ROWS = 5000
 
 const SEVERITY_COLOR = { warn: '#b58900', error: '#d32f2f' } as const
-
-const CONTAINER_COLORS = [
-  '#2e9599', '#c9611e', '#8250df', '#2f7d31',
-  '#1f6feb', '#c2185b', '#8a6d1a', '#5a6b7a',
-]
-
-/** Same hash-to-palette rule the live log panel uses for its `[container]` prefixes, so one
- *  container is the same colour wherever it is read. */
-export function colorForContainer(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0
-  return CONTAINER_COLORS[Math.abs(h) % CONTAINER_COLORS.length]
-}
 
 /** One line for an unwrapped row, saying what it left out.
  *
@@ -153,6 +141,12 @@ export function RunLogView({
 
   const rows = data?.rows ?? []
   const facets = useMemo(() => facetsOf(rows), [rows])
+  // Over the facets, not the filtered rows: the colours are assigned from every container the log
+  // holds, so filtering one out does not repaint the ones that stay.
+  const containerColor = useMemo(
+    () => containerColorer(facets.containers.map((f) => f.value)),
+    [facets],
+  )
   const compiled = useMemo(() => compileFilter(filter), [filter])
   const shown = useMemo(
     () => (compiled.passthrough ? rows : rows.filter(compiled.test)),
@@ -474,7 +468,7 @@ export function RunLogView({
                       ) : null}
                       <Box
                         component="span"
-                        sx={{ color: colorForContainer(row.container), width: 74, flexShrink: 0 }}
+                        sx={{ color: containerColor(row.container), width: 74, flexShrink: 0 }}
                       >
                         {row.container || '?'}
                       </Box>
