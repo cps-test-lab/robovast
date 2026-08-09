@@ -5,8 +5,9 @@ import Tooltip from '@mui/material/Tooltip'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 
 // What the Results container hands each sub-view so it can offer the reload. The campaign list is
-// frozen while a view is open (see ResultsPage), so this is the only way a newly finished campaign
-// reaches the tree/selector — and `stale` is what says one is waiting.
+// frozen while a view is open (see ResultsPage) — arriving at the Explorer catches it up on its own,
+// so what is left for this button is a campaign that finishes while the view is *already* open, and
+// `stale` is what says one is waiting.
 export interface ResultsRefresh {
   /** Adopt the latest campaign list into all three views. */
   refresh: () => void

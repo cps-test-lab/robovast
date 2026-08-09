@@ -31,10 +31,15 @@ const LAST_CAMPAIGN_KEY = 'eval.campaignId'
 // page reads it from props and reports changes back rather than holding it. Explorer is the default
 // view; all three are kept alive so each keeps its state across navigation.
 export function ResultsPage({
+  active,
   view,
   campaignId,
   onCampaignChange,
 }: {
+  /** The Results topic is the one on screen. Kept-alive pages stay mounted while hidden, so `view`
+   *  alone cannot tell "the Explorer is showing" from "the Explorer is the Results topic's current
+   *  view, but the user is in the monitor". */
+  active: boolean
   view: string
   campaignId: string
   onCampaignChange: (campaignId: string) => void
@@ -54,15 +59,21 @@ export function ResultsPage({
     [campaigns.data],
   )
 
-  // The displayed list is a snapshot of `live`, adopted on first load and thereafter only when the
-  // user clicks Refresh. Letting the poll write straight through would reshuffle the Explorer tree
-  // and the run/campaign pickers under someone who is reading a result — the campaign on screen is
-  // finished and immutable, so there is nothing to gain from moving it.
+  // The displayed list is a snapshot of `live`, adopted on first load, on arriving at the Explorer
+  // (below), and thereafter only when the user clicks Refresh. Letting the poll write straight
+  // through would reshuffle the Explorer tree and the run/campaign pickers under someone who is
+  // reading a result — the campaign on screen is finished and immutable, so there is nothing to gain
+  // from moving it.
   const [shown, setShown] = useState<CampaignSummary[] | null>(null)
   useEffect(() => {
     if (shown === null && campaigns.data) setShown(live)
   }, [shown, campaigns.data, live])
   const list = shown ?? live
+  // Take the service's answer as the new snapshot. A failed refetch carries no data; keep the list
+  // that is on screen rather than blanking every view.
+  const adopt = (res: { data?: { campaigns: CampaignSummary[] } }) => {
+    if (res.data) setShown(res.data.campaigns.filter(hasResults))
+  }
 
   const shownIds = new Set(list.map((c) => c.campaign_id))
   const liveIds = new Set(live.map((c) => c.campaign_id))
@@ -75,18 +86,34 @@ export function ResultsPage({
   const refresh: ResultsRefresh = {
     refresh: () => {
       setRefreshing(true)
-      campaigns
-        .refetch()
-        .then((res) => {
-          // Keep the current list on a failed refetch rather than blanking every view.
-          if (res.data) setShown(res.data.campaigns.filter(hasResults))
-        })
-        .finally(() => setRefreshing(false))
+      campaigns.refetch().then(adopt).finally(() => setRefreshing(false))
     },
     newCount,
     stale: newCount > 0 || gone,
     busy: refreshing,
   }
+
+  // Arriving at the Explorer catches the list up by itself. The freeze above protects a list that is
+  // being *read*; a view that is only now being drawn has nobody reading it, so a campaign that
+  // finished while the user was elsewhere should simply be in the tree when they get there — asking
+  // them to press Refresh for it makes the button the price of admission. That leaves Refresh with
+  // the one case it is actually for: a campaign finishing while the Explorer is already open.
+  const explorerActive = active && view !== 'data' && view !== 'run'
+  const wasActive = useRef(explorerActive)
+  useEffect(() => {
+    const entering = explorerActive && !wasActive.current
+    wasActive.current = explorerActive
+    if (!entering || !campaigns.data) return
+    // Show what the poll already knows straight away, then ask once more: the poll runs at 15 s and
+    // pauses while the window is unfocused, so the campaign someone just watched finish in the
+    // monitor — the very one they are switching over here to look at — may not be in it yet.
+    setShown(live)
+    campaigns.refetch().then((res) => {
+      // Not while the user has already moved on: past the arrival, this is an unrequested update
+      // again, and the frozen snapshot is what the other two views are reading.
+      if (wasActive.current) adopt(res)
+    })
+  }, [explorerActive]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Default the views to the newest campaign, and self-heal a selection that no longer exists.
   // [0] is the newest because the service lists newest-first and the filter preserves that order.
