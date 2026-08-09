@@ -67,8 +67,17 @@ export function ExplorerView({
   )
 
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" spacing={1} alignItems="center">
+    <Stack
+      spacing={2}
+      // `gap`, not Stack's margin spacing, for the same reason as the Run view: the margin rule's
+      // specificity beats a child's own sx.
+      useFlexGap
+      // 48px is App's `p: 3` on the main Box, top + bottom, so the view fills the window exactly —
+      // same measure as the Run view. The heading keeps its natural height and the grid below takes
+      // the rest, rather than the whole block guessing at a fixed offset.
+      sx={{ height: 'calc(100vh - 48px)' }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
         <Typography variant="h6">Explorer</Typography>
         <RefreshResultsButton state={refresh} />
       </Stack>
@@ -84,9 +93,9 @@ export function ExplorerView({
             display: 'grid',
             gridTemplateColumns: '380px 1fr',
             gap: 2,
-            // Fill the viewport below the sidebar padding + page heading so both columns run full
-            // height; each column scrolls internally rather than growing the page.
-            height: 'calc(100vh - 140px)',
+            // Take whatever the heading leaves so both columns run to the bottom of the window;
+            // each column scrolls internally rather than growing the page.
+            flex: 1,
             minHeight: 0,
           }}
         >
