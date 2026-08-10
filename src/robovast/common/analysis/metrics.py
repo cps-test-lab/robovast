@@ -111,22 +111,49 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame) -> p
     return pd.DataFrame(results)
 
 
+def pose_time_base(df: pd.DataFrame) -> str:
+    """Which column to DIFFERENTIATE a pose frame against: ``stamp`` when it has one.
+
+    ``timestamp`` is arrival time. It is the right join key -- every bag-derived table shares it --
+    but it is quantised to the simulator's ``/clock`` grid and jittered by delivery, and neither of
+    those is the interval the robot moved over. Differencing it therefore reports the transport:
+    measured on one campaign, a ground-truth pose published every 18 ms onto a 10 ms grid arrived
+    20/20/20/20/10, and the constant 0.24 m/s it was driving at read as an alternating 0.21/0.43.
+
+    ``stamp`` is the publisher's own header stamp -- when the pose was true -- so it is what a
+    derivative must use. Absent (an older campaign, a producer that cannot state one) the arrival
+    time is all there is, and saying so in ``time_base`` is better than pretending otherwise.
+    """
+    if 'stamp' in df.columns and df['stamp'].notna().any():
+        return 'stamp'
+    return 'timestamp'
+
+
 def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
     """Linear and angular speed per pose sample, differentiated within each run.
 
     Args:
         df_groundtruth: ``position.x``, ``position.y``, ``orientation.yaw``, ``timestamp``,
             plus whichever run-key pair the source uses. Differentiating across a run boundary
-            would produce a spike, so the frame is grouped by that key first.
+            would produce a spike, so the frame is grouped by that key first. When a ``stamp``
+            column is present it is differentiated against instead -- see :func:`pose_time_base`.
 
     Returns:
-        The input columns plus ``linear_speed``, ``angular_speed`` and ``dt``, minus the last
-        sample of each run (no successor to difference against) and any sample whose ``dt`` is
-        too small to divide by.
+        The input columns plus ``linear_speed``, ``angular_speed``, ``dt`` and ``time_base``, minus
+        the last sample of each run (no successor to difference against) and any sample whose
+        ``dt`` is too small to divide by.
+
+        ``timestamp`` is returned unchanged whichever base was used, because it is the column every
+        caller plots and joins against. ``time_base`` names what ``dt`` was actually computed from,
+        so a cross-simulator comparison can *assert* both sides used the same one rather than
+        silently comparing an exact base against a quantised one.
     """
     key_cols = run_key_columns(df_groundtruth)
+    time_col = pose_time_base(df_groundtruth)
     value_cols = ['position.x', 'position.y', 'orientation.yaw', 'timestamp']
-    out_cols = [*key_cols, *value_cols, 'linear_speed', 'angular_speed', 'dt']
+    if time_col not in value_cols:
+        value_cols.append(time_col)
+    out_cols = [*key_cols, *value_cols, 'linear_speed', 'angular_speed', 'dt', 'time_base']
     min_dt = 1e-6
 
     # Without a run key the whole frame is one run. Differencing it as such is right for a
@@ -141,8 +168,12 @@ def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
             continue
 
         df_speeds = group[out_cols[:len(key_cols) + len(value_cols)]].copy()
+        # Sort by the base being differenced. Ordering by `timestamp` leaves rows within one
+        # arrival tick in arbitrary order, and with two samples per tick that is enough to hand
+        # np.diff a negative interval.
+        df_speeds = df_speeds.sort_values(time_col)
 
-        dt = np.diff(df_speeds['timestamp'].values)
+        dt = np.diff(df_speeds[time_col].values)
         dx = np.diff(df_speeds['position.x'].values)
         dy = np.diff(df_speeds['position.y'].values)
         dyaw = np.diff(df_speeds['orientation.yaw'].values)
@@ -160,6 +191,7 @@ def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
         df_speeds['linear_speed'] = np.append(linear_speed, np.nan)
         df_speeds['angular_speed'] = np.append(angular_speed, np.nan)
         df_speeds['dt'] = np.append(dt, np.nan)
+        df_speeds['time_base'] = time_col
 
         df_speeds = df_speeds[:-1].copy()
         df_speeds = df_speeds[df_speeds['dt'] > min_dt].copy()

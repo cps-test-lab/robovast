@@ -346,6 +346,47 @@ def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connec
 # error. Deliberately no history and no design rationale — a caller cannot act on either,
 # and every word here is spent on every request. Metric tables (one per CSV stem) are
 # self-describing by their columns and are not listed.
+#: For a pose table fed by a TRANSPORT, where arrival and measurement are different moments.
+#: Choosing the wrong one is the commonest mistake against these tables -- it does not error, it
+#: just answers a different question -- so it is spelled out where an agent reads the schema rather
+#: than left to a column note it may skip.
+#:
+#: Not shared with a simulator-written table: there is only one clock there, and telling a reader
+#: to use a `stamp` column that does not exist would be worse than saying nothing.
+_POSE_CLOCKS_TRANSPORT = (
+    "TWO CLOCKS. `timestamp` is ARRIVAL time and the join key shared with costmaps, behaviors "
+    "and run_log -- join and scrub on it, and never difference it: it is quantised to the "
+    "simulator's /clock grid and jittered by delivery, so a rate derived from it measures the "
+    "transport (a constant 0.24 m/s has read as an alternating 0.21/0.43 this way). `stamp` is "
+    "MEASUREMENT time -- when the pose was true -- and is the only correct base for a derivative; "
+    "ORDER BY it too, since `timestamp` has ties within one arrival tick. Speed for one run: "
+    "SELECT stamp, SQRT(POWER(x-px,2)+POWER(y-py,2))/(stamp-ps) AS speed FROM (SELECT stamp, "
+    "\"position.x\" x, \"position.y\" y, LAG(stamp) OVER w ps, LAG(\"position.x\") OVER w px, "
+    "LAG(\"position.y\") OVER w py FROM <table> WHERE config_name=? AND run_id=? AND frame=? "
+    "WINDOW w AS (ORDER BY stamp)) WHERE ps IS NOT NULL AND stamp > ps. "
+)
+
+#: For a pose table the SIMULATOR wrote itself. One clock, and it is the true one -- so the warning
+#: above does not apply here and would be actively wrong: there is no `stamp` column to point at,
+#: and this `timestamp` is exactly the quantity the other table's `stamp` is.
+_POSE_CLOCKS_NATIVE = (
+    "ONE CLOCK, and it is the honest one: `timestamp` is exact simulated seconds, taken inside the "
+    "simulator when the pose was true, so unlike the `poses` table there is no arrival/measurement "
+    "split and no `stamp` column -- difference this one freely. Better still, do not difference at "
+    "all: twist.linear.* / twist.angular.* are the TRUE world-frame velocities read straight from "
+    "the physics solver, so a speed is SQRT(POWER(\"twist.linear.x\",2)+POWER(\"twist.linear.y\",2)) "
+    "with no window function and no interval to get wrong. "
+)
+
+#: Also shared: what the orientation columns are, and which one is a projection.
+_POSE_ORIENTATION = (
+    "Orientation is a QUATERNION (orientation.x/y/z/w) -- that is what the producer emitted. "
+    "`orientation.yaw` is derived from it at ingest and is a PLANAR projection: fine for a robot "
+    "on a floor, wrong for anything that pitches or rolls. "
+    "`frame` is the entity's name in the producer's own vocabulary (a TF child frame, a MuJoCo "
+    "body). Every row is in the run's single world frame."
+)
+
 _TABLE_DESCRIPTIONS = {
     ("temp", "run_view"): (
         "START HERE for per-run and per-configuration questions. One row per run, joined: "
@@ -372,6 +413,17 @@ _TABLE_DESCRIPTIONS = {
         "This is the config AS RUN, with defaults filled in — a defaulted key is "
         "indistinguishable from one the author wrote, and comments and anchors are gone. "
         "For what the author actually wrote, read /results/<campaign>/_config/*.vast."),
+    ("main", "poses"): (
+        "One row per entity per sample: where a thing was, and when. Follows the POSE CONTRACT, "
+        "so this and 'sim_poses' share these columns and UNION ALL cleanly. This one is derived "
+        "from /tf in the rosbag, so its twist.* columns are EMPTY (TF carries no velocity) -- "
+        "read sim_poses when you want a true velocity. " + _POSE_CLOCKS_TRANSPORT + _POSE_ORIENTATION),
+    ("main", "sim_poses"): (
+        "One row per entity per sample, written by the SIMULATOR itself during the run rather "
+        "than derived from a bag -- so it exists even for a non-ROS run, which has no rosbag and "
+        "therefore no 'poses' table at all. Same POSE CONTRACT columns as 'poses', and it holds "
+        "every free-standing body in the world, not only what TF happened to publish. " +
+        _POSE_CLOCKS_NATIVE + _POSE_ORIENTATION),
     ("main", "postprocessing_steps"): (
         "How each table in this data.db was produced. One row per step: plugin, output, "
         "table_name (the data.db table it became; NULL when the output was not a CSV that "

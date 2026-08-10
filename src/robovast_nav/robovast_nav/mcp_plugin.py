@@ -239,9 +239,15 @@ def _pose_source(campaign_id: str, config_name: str, run_id: int, frame: str) ->
     ``CAST`` is not optional: a ``data.db`` built before typed ingest stores every column
     as TEXT, where ``MAX`` and ``ORDER BY`` compare lexicographically ('10.02' < '9.5')
     and would report a wrong maximum without failing.
+
+    ``t`` is the MEASUREMENT time (``stamp``) when the producer supplied one, falling back to the
+    arrival time. It matters here for one figure in particular: ``max_speed_m_s`` is a
+    ``MAX(distance/dt)``, which structurally selects whichever sample got the smallest ``dt`` --
+    so on an arrival clock it reports the worst quantisation artefact in the run rather than the
+    robot's fastest moment. The distances and the deviation geometry are time-free and unaffected.
     """
     return f"""
-        SELECT CAST("timestamp" AS REAL) AS t,
+        SELECT CAST(COALESCE(NULLIF("stamp", ''), "timestamp") AS REAL) AS t,
                CAST("position.x" AS REAL) AS x,
                CAST("position.y" AS REAL) AS y,
                CAST("orientation.yaw" AS REAL) AS yaw
@@ -259,7 +265,10 @@ def _require_poses(campaign_id: str, config_name: str, run_id: int, frame: str) 
     second is by far the more likely — so the frames present are part of the refusal.
     """
     columns = _require_table(campaign_id, "poses", "rosbags_tf_to_csv")
-    missing = [c for c in ("timestamp", "position.x", "position.y", "orientation.yaw")
+    # `stamp` is required, not optional: it is the measurement time the speed figures are computed
+    # from, and a table without it is a recording from before the pose contract. Refusing here
+    # turns a raw "no such column" out of _pose_source into a message that says what to re-run.
+    missing = [c for c in ("timestamp", "stamp", "position.x", "position.y", "orientation.yaw")
                if c not in columns]
     if missing:
         raise NavDataError(

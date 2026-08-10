@@ -12,6 +12,7 @@ Three defect classes are pinned here, all found in the CSV-reading version these
   error rather than as ``{"error": …}``.
 """
 
+import itertools
 import math
 import sqlite3
 
@@ -24,7 +25,17 @@ _CAMPAIGN = "nav-2026-07-16-120000"
 
 #: A quarter-circle drive: distance and heading are both non-trivial, so a helper that
 #: drops the yaw or mis-sums the segments cannot pass by accident.
-_POSES = [(t, math.cos(t / 10.0), math.sin(t / 10.0), t / 10.0) for t in range(60)]
+_POSES = [(float(t), math.cos(t / 10.0), math.sin(t / 10.0), t / 10.0) for t in range(60)]
+
+#: Arrival grid: 1.5 s, against a 1.0 s measurement period. 1.5 does not divide 1.0, so arrival
+#: times alternate 1/2/1/2 exactly as a real /clock grid makes them -- the artefact this contract
+#: exists to keep out of a derivative.
+_ARRIVAL_GRID = 1.5
+
+
+def _arrival(stamp: float) -> float:
+    """The arrival time a sample published at *stamp* would be recorded with."""
+    return math.floor(stamp / _ARRIVAL_GRID) * _ARRIVAL_GRID
 
 
 @pytest.fixture
@@ -39,12 +50,16 @@ def campaign(tmp_path, monkeypatch):
     cdir = tmp_path / "results" / _CAMPAIGN
     (cdir / "_execution").mkdir(parents=True)
     db = sqlite3.connect(cdir / "_execution" / "data.db")
+    # The pose contract's two clocks. `timestamp` is arrival: deliberately quantised onto a coarse
+    # grid here, the way a real /clock grid quantises it, so a tool that differentiates the wrong
+    # column reports a different number and the test can tell. `stamp` is the true measurement
+    # time, evenly spaced -- which is what the speeds below are the truth for.
     db.execute('CREATE TABLE poses (config_name TEXT, run_id INTEGER, frame TEXT, '
-               '"timestamp" REAL, "position.x" REAL, "position.y" REAL, '
+               '"timestamp" REAL, "stamp" REAL, "position.x" REAL, "position.y" REAL, '
                '"orientation.yaw" REAL)')
-    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'base_link', ?, ?, ?, ?)",
-                   _POSES)
-    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'odom', ?, ?, ?, ?)", _POSES)
+    rows = [(_arrival(t), t, x, y, yaw) for (t, x, y, yaw) in _POSES]
+    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'base_link', ?, ?, ?, ?, ?)", rows)
+    db.executemany("INSERT INTO poses VALUES ('cfg-a', 0, 'odom', ?, ?, ?, ?, ?)", rows)
     db.commit()
     db.close()
     monkeypatch.setattr(service_access, "service_client", lambda: None)
@@ -120,3 +135,27 @@ def test_obstacles_refuse_cleanly_when_the_config_has_no_scenario_config(campaig
 def test_map_info_says_this_is_not_a_navigation_config(campaign):
     result = nav.nav_get_map_info(_CAMPAIGN, "cfg-a")
     assert "not a navigation configuration" in result["error"]
+
+
+def test_max_speed_is_computed_from_the_measurement_clock_not_the_arrival_clock(campaign):
+    """The regression this contract exists for.
+
+    ``max_speed_m_s`` is a ``MAX(distance/dt)``, so it structurally picks whichever pair of samples
+    got the smallest ``dt``. On an arrival clock that is the worst quantisation artefact in the run
+    rather than the robot's fastest moment: here the poses are evenly spaced 1 s apart in true time,
+    but arrive on a 1.5 s grid, so a third of the pairs report an arrival ``dt`` of 0 and the rest
+    alternate 1 s / 2 s.
+
+    Truth: a unit circle sampled every 0.1 rad, so every step is the same 2*sin(0.05) ~ 0.09992 m
+    over 1 s. The maximum speed is that, and nothing in the run is faster.
+    """
+    result = nav.nav_get_trajectory(_CAMPAIGN, "cfg-a", 0, stats_only=True)
+    true_step = 2 * math.sin(0.05)
+    assert result["max_speed_m_s"] == pytest.approx(true_step, rel=1e-6)
+
+    # What the arrival clock would have said, computed the same way, for contrast: the 1 s pairs
+    # are reported over an arrival gap of 0 or 1 s, so the figure is at best unchanged and at worst
+    # unbounded. Anything that differentiates `timestamp` cannot land on the truth above.
+    arrivals = [_arrival(t) for (t, *_rest) in _POSES]
+    gaps = {round(b - a, 6) for a, b in itertools.pairwise(arrivals)}
+    assert gaps == {0.0, 1.5}, "the fixture must actually exhibit the aliasing it is testing for"

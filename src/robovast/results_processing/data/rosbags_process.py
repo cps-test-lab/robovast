@@ -221,6 +221,59 @@ def quat_to_rpy(x: float, y: float, z: float, w: float) -> Tuple[float, float, f
     return roll, pitch, yaw
 
 
+#: RoboVAST's pose-table contract (see ``docs/results_processing.rst``). ``tf_to_csv`` is one
+#: producer of it; ``sim_poses``, written by the simulator itself, is another; a stack on some other
+#: middleware becomes one by emitting these columns into the run directory.
+#:
+#: **Two clocks, on purpose.** ``timestamp`` is the bag receive time, like every other table here,
+#: and is the join key the whole run view scrubs on -- never re-key it. But a receive time is only
+#: as fine as the ``/clock`` grid the recorder's own clock advances on, and is jittered by delivery
+#: on top, so DIFFERENCING it does not measure the robot: it measures the transport. ``stamp`` is
+#: the publisher's own header stamp -- when the pose was true. Derive speeds from ``stamp``, join on
+#: ``timestamp``. The same shape ``rosout_to_csv`` and ``nav2_bt_to_csv`` already use.
+#:
+#: **Quaternion, never Euler.** roll/pitch/yaw is lossy the moment a body leaves the plane -- a
+#: drone, a tilting arm, a robot on a ramp -- and this was the one place the quaternion the bag
+#: already carries got thrown away. ``orientation.yaw`` still exists downstream for the 2D
+#: consumers: it is derived at ingest and labelled as the projection it is.
+#:
+#: Twist columns are declared and left empty here, because TF carries no velocity. A column present
+#: for one producer and absent for another would make every query producer-specific.
+POSE_FIELDNAMES = [
+    "frame", "timestamp", "stamp",
+    "position.x", "position.y", "position.z",
+    "orientation.x", "orientation.y", "orientation.z", "orientation.w",
+    "twist.linear.x", "twist.linear.y", "twist.linear.z",
+    "twist.angular.x", "twist.angular.y", "twist.angular.z",
+]
+
+
+def _pose_row(frame: str, timestamp: int, transform, *, static: bool) -> dict:
+    """One contract row from a resolved ``map -> frame`` transform.
+
+    Free of every ROS import so it is unit-testable on a host with no ROS: it reads attributes off
+    whatever it is handed. That matters because this is where the two clocks and the quaternion
+    ordering are decided, and the enclosing handler cannot be imported without ``rosbag2_py`` and
+    ``tf2_ros``.
+
+    ``stamp`` is NULL for a transform that came from ``/tf_static``: a latched transform's header
+    stamp is the single moment it was published, usually bag start and sometimes zero, so carrying
+    it as a measurement time would be worse than admitting there is none.
+    """
+    t = transform.transform.translation
+    r = transform.transform.rotation
+    header = transform.header.stamp
+    row = dict.fromkeys(POSE_FIELDNAMES, "")
+    row.update({
+        "frame": frame,
+        "timestamp": timestamp / 1_000_000_000.0,
+        "stamp": "" if static else header.sec + header.nanosec / 1_000_000_000.0,
+        "position.x": t.x, "position.y": t.y, "position.z": t.z,
+        "orientation.x": r.x, "orientation.y": r.y, "orientation.z": r.z, "orientation.w": r.w,
+    })
+    return row
+
+
 class TfToCsvHandler(RosbagHandler):
     """Extract TF transforms to CSV (one file per bag).
 
@@ -243,11 +296,7 @@ class TfToCsvHandler(RosbagHandler):
     already baked at that pose), but asking for such a frame by name is a hard error, correctly.
     """
 
-    _FIELDNAMES = [
-        "frame", "timestamp",
-        "position.x", "position.y", "position.z",
-        "orientation.roll", "orientation.pitch", "orientation.yaw",
-    ]
+    _FIELDNAMES = POSE_FIELDNAMES
 
     #: ``frames`` value selecting every child frame in the bag instead of a fixed list.
     ALL = "all"
@@ -317,25 +366,14 @@ class TfToCsvHandler(RosbagHandler):
                     map_to_frame = self._tf_buffer.lookup_transform(
                         "map", frame, transform.header.stamp
                     )
-                    t = map_to_frame.transform.translation
-                    r = map_to_frame.transform.rotation
-                    roll, pitch, yaw = quat_to_rpy(r.x, r.y, r.z, r.w)
                     if self._csvfile is None:
                         self._csvfile = open(self._output_file, "w", newline="")
                         self._writer = csv.DictWriter(
                             self._csvfile, fieldnames=self._FIELDNAMES
                         )
                         self._writer.writeheader()
-                    self._writer.writerow({
-                        "frame": frame,
-                        "timestamp": timestamp / 1_000_000_000.0,
-                        "position.x": t.x,
-                        "position.y": t.y,
-                        "position.z": t.z,
-                        "orientation.roll": roll,
-                        "orientation.pitch": pitch,
-                        "orientation.yaw": yaw,
-                    })
+                    self._writer.writerow(
+                        _pose_row(frame, timestamp, map_to_frame, static=is_static))
                     self._record_counts[frame] += 1
                 except (LookupException, ConnectivityException, ExtrapolationException):
                     pass

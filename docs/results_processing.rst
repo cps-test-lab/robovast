@@ -236,6 +236,70 @@ Recording ``/clock`` in the scenario's ``bag_record(...)`` is worth the negligib
 the sim↔wall mapping recoverable, so a foreign-clock topic can be *related* to sim time afterwards
 instead of guessed at.
 
+.. _pose-contract:
+
+The pose contract
+"""""""""""""""""
+
+A pose table answers one question — *where was this thing, and when* — and more than one producer
+can answer it. ``poses`` comes from ``/tf`` in a rosbag; ``sim_poses`` is written by the simulator
+itself, during the run, and is the only pose data a **stepped** (non-ROS) run has, since there is
+no bag to derive anything from. A stack on some other middleware, a motion-capture ingest, or a
+real-robot log joins them by emitting the same columns; nothing has to be registered, because the
+ingest globs ``*.csv`` in each run directory and names the table after the file.
+
+One table per producer, sharing the schema. That keeps ``postprocessing_steps`` provenance 1:1 and
+stops a panel filtering ``frame: base_link`` from silently plotting two interleaved series; a query
+that wants both writes one ``UNION ALL``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Column
+     - Meaning
+   * - ``frame``
+     - The named entity, in the producer's own vocabulary: a TF child frame, a MuJoCo body, a
+       motion-capture rigid body.
+   * - ``timestamp``
+     - **Arrival** time, and the join key described above. Never re-key it.
+   * - ``stamp``
+     - **Measurement** time: when the pose was true, from the producer itself. NULL when it cannot
+       state one (a latched ``/tf_static`` transform).
+   * - ``position.x/y/z``
+     - Metres.
+   * - ``orientation.x/y/z/w``
+     - Quaternion, and the only attitude a producer emits.
+   * - ``orientation.yaw``
+     - Derived at ingest; see below.
+   * - ``twist.linear.*``, ``twist.angular.*``
+     - World-frame velocity, empty when the producer cannot know it (TF carries none).
+
+**World coordinates, as an invariant rather than a column.** Every row is in the run's single
+global frame, so there is no ``reference_frame`` to read or to get wrong. This holds today rather
+than being aspirational: the TF handler resolves every frame against ``map`` and fails loudly when
+a required frame yields no map-relative pose, the ROS launches make ``map`` identical to the
+simulator's world by an identity edge, and MuJoCo's ``xpos``/``xquat`` are world-frame by
+construction. A producer that cannot express world coordinates does not satisfy the contract.
+
+**Difference ``stamp``, join ``timestamp``.** Arrival time is only as fine as the ``/clock`` grid
+the recorder's own clock advances on, and is jittered by delivery on top — neither of which is the
+interval the robot moved over. The failure is not subtle and does not look like noise. Measured on
+one campaign: a ground-truth pose published every 18 ms onto a 10 ms grid arrived
+20/20/20/20/10 ms, so a robot driving at a constant 0.238 m/s read as an alternating
+0.214 / 0.428 m/s — the displacement between samples was identical in every bucket, and only the
+denominator was wrong. Making the grid divide the period removes that systematic alias but not the
+delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks the base for
+you and reports which it used in ``time_base``, so a cross-simulator comparison can assert both
+sides used the same one instead of quietly comparing an exact base against a quantised one.
+
+**Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
+the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
+The ingest then derives ``orientation.yaw`` for any table that has the quaternion columns and no
+yaw, because the 2D consumers — the costmap panel's heading marker, the nav MCP tools, the
+notebooks — all want a heading and none of them should reimplement quaternion maths in SQL,
+JavaScript and pandas separately. It is a projection, and a ``_column_notes`` entry says so.
+
 .. _clock-map:
 
 Wall → sim: the clock map

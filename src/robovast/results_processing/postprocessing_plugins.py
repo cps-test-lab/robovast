@@ -42,6 +42,7 @@ Configuration format:
 import csv
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -719,6 +720,31 @@ class Compress(BasePostprocessingPlugin):
 #:
 #: Written only for columns that actually exist in this campaign's data.db, so a note never
 #: describes a table that was never produced.
+#: Notes for a table that follows the POSE CONTRACT (see ``docs/results_processing.rst``). Keyed on
+#: the column, and attached to any table carrying a ``stamp`` column rather than to a list of table
+#: names -- the contract is what a table *has*, not what it is called, so a new producer's table is
+#: annotated without registering it here.
+#:
+#: These three are exactly where an agent writing SQL against a pose table goes wrong.
+_POSE_CONTRACT_NOTES = {
+    "timestamp": (
+        "ARRIVAL time, and the join key every other table in this campaign shares -- use it to "
+        "read poses against costmaps, behaviors and run_log, and to place a row on the run "
+        "view's timeline. Do NOT difference it: it is quantised to the simulator's /clock grid "
+        "and jittered by delivery, so a speed derived from it measures the transport rather than "
+        "the robot. Use `stamp` for that."),
+    "stamp": (
+        "MEASUREMENT time -- when the pose was actually true, from the publisher's own header. "
+        "This is the correct base for any derivative (speed, rate, dt); sort by it too, since "
+        "ordering by `timestamp` leaves rows within one arrival tick in arbitrary order. NULL "
+        "where the producer could not state one (a latched /tf_static transform)."),
+    "orientation.yaw": (
+        "DERIVED at ingest from orientation.x/y/z/w, and a planar projection: correct for a body "
+        "in the plane, insufficient for one that pitches or rolls (a drone, a tilting arm, a "
+        "robot on a ramp). The quaternion is what the producer emitted -- read that when the "
+        "body is not flat."),
+}
+
 _STATIC_COLUMN_NOTES: dict[tuple[str, str], str] = {
     ("resource_usage", "cpu_percent"): (
         "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
@@ -795,6 +821,35 @@ _JSONL_READERS = {"behaviour_tree_log": _read_behaviour_tree_log,
                   "behavior_tree_log": _read_behaviour_tree_log}
 
 
+_QUAT_COLUMNS = ("orientation.x", "orientation.y", "orientation.z", "orientation.w")
+_YAW_COLUMN = "orientation.yaw"
+
+
+def _derive_yaw(rows: list) -> None:
+    """Add ``orientation.yaw`` to pose rows that carry a quaternion and no yaw, in place.
+
+    Producers emit a quaternion and only a quaternion: Euler angles are lossy the moment a body
+    pitches or rolls, so a drone or a tilting arm cannot be described by them, and nothing should
+    have to convert before it can report a pose. But the 2D consumers here -- the costmap panel's
+    heading marker, the nav MCP tools, the notebooks -- all want a heading, and none of them should
+    each reimplement quaternion maths in SQL, JavaScript and pandas.
+
+    So it is derived once, here, and marked in ``_column_notes`` as the projection it is: correct
+    for a body in the plane, insufficient for one that has left it.
+
+    Sniffed rather than configured -- any table with the quaternion columns and no yaw gets one --
+    so a new producer satisfying the pose contract is served without registering anything.
+    """
+    if not rows or _YAW_COLUMN in rows[0] or any(c not in rows[0] for c in _QUAT_COLUMNS):
+        return
+    for row in rows:
+        x, y, z, w = (_as_float(row.get(c)) for c in _QUAT_COLUMNS)
+        if None in (x, y, z, w):
+            row[_YAW_COLUMN] = ""
+            continue
+        row[_YAW_COLUMN] = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
 def _read_table_rows(path: Path) -> list:
     """Rows for one data file, or ``[]`` if it is unreadable or not a known format."""
     if path.suffix.lower() == ".jsonl":
@@ -809,9 +864,11 @@ def _read_table_rows(path: Path) -> list:
         return reader(records) if reader else []
     try:
         with open(path, encoding="utf-8", newline="") as handle:
-            return list(csv.DictReader(handle))
+            rows = list(csv.DictReader(handle))
     except Exception:  # pylint: disable=broad-except
         return []
+    _derive_yaw(rows)
+    return rows
 
 
 def _as_float(value) -> Optional[float]:
@@ -1420,6 +1477,18 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                 conn.execute(
                     "INSERT OR REPLACE INTO _column_notes (table_name, column_name, note) "
                     "VALUES (?, ?, ?)", (table, col, note))
+        # What marks a table as following the pose contract: a measurement clock AND a position.
+        # `stamp` alone is not enough -- rosout carries one too, and would collect notes that talk
+        # about poses. Without `stamp`, the `timestamp` note would point at a column that is not
+        # there.
+        for table, columns in created_tables.items():
+            if not {"stamp", "position.x"} <= set(columns):
+                continue
+            for col, note in _POSE_CONTRACT_NOTES.items():
+                if col in columns:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO _column_notes (table_name, column_name, note) "
+                        "VALUES (?, ?, ?)", (table, col, note))
         conn.commit()
 
         # Dimension table joining per-run status/duration to scenario parameters,

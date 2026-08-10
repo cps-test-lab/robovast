@@ -136,6 +136,17 @@ class RobositoBackend(SimulatorBackend):
             # are written on a clean stop only; a run killed by a timeout leaves neither.
             "ROBOSITO_RECORD": _RECORD_FILE,
             "ROBOSITO_CAPTURE_EXPORT_DIR": "capture",
+            # The pose series, streamed per sample beside the recording as
+            # `run.sim_poses.csv` -> the `sim_poses` table. Unlike the two above it
+            # survives a kill, because every row is flushed as it is taken.
+            #
+            # Always on, for two reasons a campaign never has to weigh. It is the only
+            # pose data a STEPPED run produces at all: with no ROS there is no rosbag, so
+            # nothing derives a `poses` table afterwards. And where there IS a rosbag it
+            # is the honest one — world-frame poses on exact sim time, with velocities
+            # read from the solver instead of differenced over rosbag arrival times,
+            # which are quantised by the /clock grid and jittered by delivery.
+            "ROBOSITO_SIM_POSES": "1",
             # Timestamp rst's own log lines, so they can be placed on the run's clock like
             # every other producer's. rst defaults to `INFO rst.engine: msg` because that is
             # what belongs in a terminal, where `rst sim` is one command a person is
