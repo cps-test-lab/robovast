@@ -1,0 +1,74 @@
+<?xml version="1.0"?>
+<!--
+  nav2_minimal_tb4_sim's depot.sdf, with ONE change: the SceneBroadcaster plugin is
+  unconditional instead of `<xacro:unless value="$(arg headless)">`.
+
+  Upstream, `headless` gates the SceneBroadcaster, and tb4_simulation_launch.py
+  separately gates the Gazebo GUI on the same flag. One flag, two effects — so a run
+  that needs gz's pose feed (which SceneBroadcaster publishes, and which
+  gazebo_tf_publisher turns into the ground-truth TF this campaign measures) was forced
+  to also start the GUI. In a headless cluster pod that GUI is pure overhead: it drove
+  the Gazebo trials to ~480 s wall clock against robosito's ~107 s, and made the two
+  backends unequal in a way that has nothing to do with either simulator's physics
+  (robosito's campaign runs with no viewer at all).
+
+  Decoupling them here lets the Gazebo half run `headless:=True` (no GUI, no rviz) and
+  still publish ground truth.
+
+  Everything else is upstream verbatim, including the Fuel model URI and the
+  `experimental:params` visual removals; keep it that way, and re-sync if the upstream
+  world changes. The `headless` arg is still declared (unused) because
+  tb4_simulation_launch.py passes `headless:=<value>` to xacro for this file.
+-->
+<sdf version="1.6" xmlns:xacro="http://www.ros.org/wiki/xacro" xmlns:experimental="http://sdformat.org/schemas/experimental">
+  <xacro:arg name="headless" default="true"/>
+  <world name="depot">
+    <scene>
+      <grid>false</grid>
+    </scene>
+    <physics name="1ms" type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <!-- Unconditional: this is the pose feed the ground-truth TF is derived from. -->
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin
+      filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu">
+    </plugin>
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot
+      </uri>
+
+      <!-- Remove annoying things that get in the way of visualizing the robot -->
+      <experimental:params>
+        <visual element_id="Fan1::visual" action="remove"/>
+        <visual element_id="Fan2::visual" action="remove"/>
+        <visual element_id="main::ROOF_visual" action="remove"/>
+        <visual element_id="main::FANS_visual" action="remove"/>
+      </experimental:params>
+
+    </include>
+
+  </world>
+</sdf>

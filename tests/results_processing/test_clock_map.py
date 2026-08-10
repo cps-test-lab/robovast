@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Wall→sim mapping: drift is what a single offset gets wrong, so drift is what is tested.
 
-The numbers come from a real recording,
-``rst_basic_nav/results/tiago-stepped-parity-2026-08-08-23330809/run.npz``, where sim time
-advanced 1.369× wall time.
+The numbers come from a real recording, campaign
+``tiago-stepped-parity-2026-08-08-23330809``'s ``run.npz``, where sim time advanced
+1.369× wall time.
 """
 
 import pytest

@@ -1,0 +1,114 @@
+version: 2
+metadata:
+  name: basic_nav_gazebo
+  title: Basic nav2 navigation on the Gazebo TurtleBot 4 (Depot)
+  description: |
+    A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
+    Gazebo. The Gazebo half of the basic_nav pair: same nav2 params, same map and the same
+    measurement half as basic_nav_rst.vast -- only the simulator differs.
+
+    One container. The scenario's ros_launch starts files/gazebo_tb4_launch.py, which includes
+    nav2's tb4_simulation_launch.py unmodified and adds a ground-truth TF publisher. Runs headless:
+    upstream ties the ground-truth frame to non-headless mode (one flag gates both the world's
+    SceneBroadcaster and the GUI), and files/depot_gt.sdf decouples them -- worth ~480 s vs ~107 s
+    per trial in a headless pod.
+  keywords: [robotics, navigation, ROS2, gazebo, nav2, depot]
+configuration:
+- name: goal
+  variations:
+  # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_rst.vast.
+  - ParameterVariationList:
+      name: goal_pose
+      values:
+      - position: {x: 21.0, y: 6.0}
+      - position: {x: 21.0, y: 4.0}
+      - position: {x: 21.0, y: -2.0}
+      - position: {x: 21.0, y: -4.0}
+      - position: {x: 21.0, y: -6.0}
+  # One single-entry level fixes the backend binding without multiplying the config count. The
+  # multi-parameter form is required, not stylistic: ParameterVariationList does not accept `str`
+  # in `values`, so a bare list would be rejected -- or worse, "False" would coerce to a bool.
+  # An empty package name makes ros_launch read the second value as a workspace-relative path.
+  - ParameterVariationList:
+      name: [sim_launch_package, sim_launch_file, headless]
+      values:
+      - ["", "files/gazebo_tb4_launch.py", "True"]
+# Results-explorer notebook views, one per tree level. The same three the rst half declares, so
+# both backends are read through identical views.
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      config: analysis/analysis_config.ipynb
+      campaign: analysis/analysis_campaign.ipynb
+execution:
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 8
+  mode: ros2
+  runs: 5
+  scenario_file: scenario_gazebo.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also swept
+  # files/__pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbed it.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.sdf"
+  - "files/*.py"
+results_processing:
+  postprocessing:
+  # Identical to basic_nav_rst.vast, so both halves' `poses` tables hold the same frames. `require`
+  # names what the analysis is measured from -- base_link, odom (places the local costmap in the map
+  # frame) and turtlebot4_base_link_gt (ground truth, shifted +8 m in x in analysis) -- and a run
+  # missing any of them fails loudly.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - rosbags_costmap_to_csv:
+      topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
+# Web Run view: replay one run over its rosbag timeline.
+visualization:
+  panels:
+  - playback:
+  # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
+  # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
+  # half the column each; both claiming `left` would stack them on top of each other.
+  - nav2_behavior_tree:
+      position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
+      minimizable: true
+  - scenario_tree:
+      title: Scenario
+      position: {anchor: bottom-left, width: 320, height: "calc(50% - 44px)"}
+      minimizable: true
+      source: {table: behaviors}
+  - costmap:
+      title: Nav2 costmaps
+      position: {anchor: top-right, width: 320, height: 550}
+      minimizable: true
+      layers:
+        map: {topic: /map}
+        global: {topic: /global_costmap/costmap}
+        local: {topic: /local_costmap/costmap}
+        poses: {table: poses}
+  # Every container's output merged with /rosout on the playback clock. The declared width is what
+  # makes `bottom-center` float above the playback bar instead of docking into it.
+  - log:
+      title: Run log
+      position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 220}
+      minimizable: true
+      minimized: true
+  - timeseries:
+      title: base_link pose
+      position: {anchor: bottom-right, width: 320, height: 220}
+      minimizable: true
+      source: {table: poses, filter: {frame: base_link}}
+      series:
+      - {column: position.x, label: x}
+      - {column: position.y, label: y}
+      - {column: orientation.yaw, label: yaw}

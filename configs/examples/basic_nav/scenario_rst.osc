@@ -1,0 +1,69 @@
+import osc.helpers
+import osc.ros
+import osc.nav2
+import osc.remote
+
+# rst/robosito half, three containers. The simulator is already running in `containers.simulation`,
+# so only nav2 is launched here -- into the `sut` container, over remote(). The measurement half
+# (init_nav2, bag_record, nav_to_pose) is identical to scenario_gazebo.osc; if it drifts, a
+# difference in results stops being attributable to the simulator.
+
+scenario test_scenario:
+    robot: differential_drive_robot
+    goal_pose: pose_3d
+
+    do serial:
+        # Gate the LAUNCH, not the activation -- the one robosito-specific difference. The Gazebo
+        # half's two lifecycle service_calls cannot work across a container boundary: service_call
+        # fires call_async once, with no wait_for_service, so the request is sent before its client
+        # has finished endpoint matching and is silently dropped. Gating the launch keeps the
+        # property that gate existed for (nav2 must not come up against a silent simulator, or
+        # collision_monitor fails closed at zero velocity) and lets nav2 autostart itself.
+        # Bounded, so a simulator that never comes up fails the trial instead of hanging it.
+        serial:
+            timeout(60s)
+            wait_for_topics(topics: ['/clock'])
+            # range_max because check_data resolves member_name with a plain getattr, so a nested
+            # field like 'clock.sec' is rejected. sensor_data QoS: a reliable subscriber never
+            # matches a best-effort publisher.
+            check_data(topic_name: '/scan',
+                       topic_type: 'sensor_msgs.msg.LaserScan',
+                       member_name: 'range_max',
+                       comparison_operator: comparison_operator!gt,
+                       expected_value: '0.0',
+                       qos_profile: qos_preset_profiles!sensor_data)
+        parallel:
+            # remote() runs this action in the `sut` container. It is a modifier from
+            # scenario-execution-server: only actions that need no ROS node can carry it, which is
+            # ros_launch and nothing else in this file. /ipc is the one address identical on both
+            # lanes (tmpfs under compose, emptyDir in Kubernetes). Absolute path, because server-side
+            # a relative one resolves against the client's scenario dir on the server's filesystem.
+            ros_launch('', '/config/files/nav2_sut.launch.py',
+                [key_value('params_file', '/config/files/nav2_params.yaml'),
+                 key_value('map', '/config/files/depot.yaml'),
+                 key_value('autostart', 'true')],
+                wait_for_shutdown: false) with:
+                    remote('ipc:///ipc/sut')
+            serial:
+                # Waits for amcl and bt_navigator to report active, retrying every tick -- which is
+                # what absorbs however long the twelve composed nodes take to come up.
+                robot.init_nav2(pose_3d())
+                # use_sim_time stamps every derived table with the simulator's clock, so both halves
+                # are comparable in sim seconds; /clock is recorded so wall-stamped topics
+                # (/behavior_tree_log) can be mapped back to it.
+                bag_record([
+                        '/clock',
+                        '/tf',
+                        '/tf_static',
+                        '/amcl_pose',
+                        '/behavior_tree_log',
+                        '/map',
+                        '/global_costmap/costmap',
+                        '/local_costmap/costmap',
+                        '/scan',
+                        '/odom'
+                    ],
+                    use_sim_time: true,
+                    timestamp_suffix: false)
+                robot.nav_to_pose(goal_pose)
+                emit end

@@ -111,7 +111,8 @@ failure this whole design exists to avoid.
 ``frame`` is the frame pose tracks are expressed in. It must match the scene's geometry — for rst that is
 the simulator's **world** frame. This is not bookkeeping: a nav stack's ``base_link`` lives in a *map*
 frame that can be metres from the world origin, and no reader can tell the two apart from the numbers.
-In ``rst_basic_nav`` the offset is 8 m, so getting it wrong draws the robot in the wrong room.
+In ``configs/examples/basic_nav`` the offset is 8 m, so getting it wrong draws the robot in the wrong
+room.
 
 ``time.base`` is ``sim`` (simulated seconds from the run's start) or ``wall``. Declaring it is what lets a
 capture-driven panel and a rosbag-driven panel be told whether they share a clock.

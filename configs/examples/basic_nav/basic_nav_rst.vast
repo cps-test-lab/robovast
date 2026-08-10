@@ -1,0 +1,179 @@
+version: 2
+metadata:
+  name: basic_nav_rst
+  title: Basic nav2 navigation on the rst/robosito (MuJoCo) TurtleBot 4 (Depot)
+  description: |
+    A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
+    robosito (MuJoCo). The rst half of the basic_nav pair: same nav2 params, same map and the same
+    measurement half as basic_nav_gazebo.vast -- only the simulator differs. The bridge publishes
+    the same ROS graph Gazebo does (incl. a ground-truth turtlebot4_base_link_gt frame), so
+    robosito is a drop-in replacement.
+
+    Three containers, which is what this file is really about. `simulation` is robosito, started by
+    the backend from its own image -- nothing here installs a simulator. `sut` is a nav2 image kept
+    vanilla: RoboVAST layers scenario_execution_server onto it and the scenario drives its launch
+    over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
+    no image of its own.
+  keywords: [robotics, navigation, ROS2, mujoco, robosito, nav2, depot]
+configuration:
+- name: goal
+  variations:
+  # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_gazebo.vast.
+  - ParameterVariationList:
+      name: goal_pose
+      values:
+      - position: {x: 21.0, y: 6.0}
+      - position: {x: 21.0, y: 4.0}
+      - position: {x: 21.0, y: -2.0}
+      - position: {x: 21.0, y: -4.0}
+      - position: {x: 21.0, y: -6.0}
+# Results-explorer notebook views, one per tree level. The same three the Gazebo half declares, so
+# both backends are read through identical views.
+evaluation:
+  visualization:
+  - Analysis:
+      run: analysis/analysis_run.ipynb
+      config: analysis/analysis_config.ipynb
+      campaign: analysis/analysis_campaign.ipynb
+execution:
+  containers:
+  # robosito in a container of its own. `robosito` is an entry point in the `robovast.simulators`
+  # group shipped by RoboVAST's `robosito` extra, so it resolves wherever the campaign is composed
+  # -- including the in-cluster service. Nothing about the simulator travels with the campaign.
+    simulation:
+      backend: robosito
+  # A path, because rst_nav2_example registers no `rst.worlds` provider. The backend enumerates what
+  # has to travel by running `rst scenes inputs` inside the simulator image; the world `extends:
+  # rst_scenes:depot`, which is packaged and travels with the image, so only this YAML moves.
+      config: world/depot_nav2.yaml
+  # By digest, not `:latest`: this is the image the simulator runs, so a moving tag would mean the
+  # code under test is not a recorded fact. It is also the image the run view's geometry is compiled
+  # in, cached by image identity. Rebuild with
+  # `robovast/container/robovast/build.sh --image robosito --robosito-src ...` and re-pin here.
+      image: harbor.example.org/robovast/robovast_robosito_jazzy@sha256:ce5952ade11ca1ee0127b960ba6a554129111ab9f218e62813fb45e9c1895918
+      resources:
+        cpu: 4
+  # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
+  # That is the claim this shape makes -- point it at any nav2 image and it works.
+    sut:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      system_packages:
+  # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish an
+  # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
+      - ros-jazzy-nav2-minimal-tb4-description
+      resources:
+        cpu: 4
+  # Stock, but it still has to name its image: RoboVAST refuses a mutable default tag for the image
+  # a campaign runs.
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 4
+  mode: ros2
+  runs: 5
+  scenario_file: scenario_rst.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also swept
+  # files/__pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbed it. These reach the SUT too, which is how a vanilla image can be handed
+  # nav2_sut.launch.py to run.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.sdf"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+results_processing:
+  postprocessing:
+  # `all` extracts every TF child frame that resolves against map, so a world that later gains a
+  # walker shows it without editing this file. `require` names what the analysis is measured from
+  # -- base_link, odom (places the local costmap in the map frame) and turtlebot4_base_link_gt
+  # (ground truth, shifted +8 m in x in analysis) -- and a run missing any of them fails loudly.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - rosbags_costmap_to_csv:
+      topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
+# Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the robosito backend
+# contributes it, because a campaign it runs always records the capture that panel replays.
+visualization:
+  panels:
+  - playback:
+  # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
+  # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
+  # half the column each; both claiming `left` would stack them on top of each other.
+  - nav2_behavior_tree:
+      position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
+      minimizable: true
+  - scenario_tree:
+      title: Scenario
+      position: {anchor: bottom-left, width: 320, height: "calc(50% - 44px)"}
+      minimizable: true
+      source: {table: behaviors}
+  - costmap:
+      title: Nav2 costmaps
+      position: {anchor: top-right, width: 320, height: 550}
+      minimizable: true
+      layers:
+        map: {topic: /map}
+        global: {topic: /global_costmap/costmap}
+        local: {topic: /local_costmap/costmap}
+        poses: {table: poses}
+  # Every container's output merged with /rosout on the playback clock. The declared width is what
+  # makes `bottom-center` float above the playback bar instead of docking into it.
+  - log:
+      title: Run log
+      position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
+      minimizable: true
+      minimized: true
+  # A `vega` panel and not `timeseries` because speed is derived: the run records poses, not
+  # velocities, so it is a finite difference computed in the spec. `datum['position.x']` rather than
+  # a `field`, because the CSV column names contain dots.
+  - vega:
+      title: base_link
+      position: {anchor: bottom-right, width: 320, height: 380}
+      minimizable: true
+      source: {table: poses, filter: {frame: base_link}}
+      vega_lite:
+        resolve: {scale: {x: shared}}
+        spacing: 8
+        transform:
+        - {calculate: "datum['position.x']", as: px}
+        - {calculate: "datum['position.y']", as: py}
+        - {calculate: "datum['orientation.yaw']", as: yaw}
+        - window:
+          - {op: lag, field: px, as: px0}
+          - {op: lag, field: py, as: py0}
+          - {op: lag, field: timestamp, as: t0}
+          sort: [{field: timestamp}]
+        - filter: "isValid(datum.t0)"
+        # Drop zero-length intervals rather than clamping them: two TF samples can share a receive
+        # time, and max(dt, 1e-6) would turn such a pair into a 4000 m/s spike.
+        - filter: "datum.timestamp - datum.t0 > 0"
+        - calculate: >
+            sqrt(pow(datum.px - datum.px0, 2) + pow(datum.py - datum.py0, 2))
+            / (datum.timestamp - datum.t0)
+          as: speed
+        - window: [{op: mean, field: speed, as: speed_avg}]
+          frame: [-9, 0]
+          sort: [{field: timestamp}]
+        vconcat:
+        - height: 150
+          encoding:
+            x: {field: timestamp, type: quantitative, axis: null}
+            y: {field: speed_avg, type: quantitative, title: "speed [m/s]"}
+          layer:
+          # The faint raw line keeps visible what the rolling mean smoothed away.
+          - mark: {type: line, opacity: 0.25, strokeWidth: 1}
+            encoding: {y: {field: speed, type: quantitative}}
+          - mark: {type: line, strokeWidth: 1.5}
+        - height: 120
+          transform: [{fold: [px, py, yaw], as: [series, value]}]
+          mark: {type: line, strokeWidth: 1.5}
+          encoding:
+            x: {field: timestamp, type: quantitative, title: "t [s]"}
+            y: {field: value, type: quantitative, title: pose}
+            color: {field: series, type: nominal, legend: {title: null, orient: top}}
