@@ -30,6 +30,11 @@
       },
       "Body_describe_world_workspaces__workspace_id__world_post": {
         "properties": {
+          "backend": {
+            "default": "",
+            "title": "Backend",
+            "type": "string"
+          },
           "entities": {
             "default": false,
             "title": "Entities",
@@ -47,6 +52,7 @@
           }
         },
         "required": [
+          "backend",
           "entities",
           "path",
           "targets"

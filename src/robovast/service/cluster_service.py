@@ -523,6 +523,28 @@ class ClusterService(LocalTransport):
                 set_container_runner_factory(session.runner_factory())
             yield
 
+    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
+                       entities: bool = False, backend: str = ""):
+        """Refused on this lane, with the reason — the query needs a container.
+
+        Only the simulator can describe a world, so this runs one; and in-cluster a container
+        runner exists only *inside* a campaign's composition, where a per-campaign aux pod
+        installs one (see :meth:`_composition_container_runner`). Outside that there is none, and
+        the inherited local implementation would quietly ``docker run`` on whatever host this
+        service process sits on — a different image cache, or no Docker at all in a controller
+        pod, with nothing in the reply to say the answer did not come from the cluster.
+
+        Ask the local lane, which is where an authoring question belongs anyway. Answering it
+        in-cluster needs a standalone aux pod for a one-shot query, which is the same follow-up
+        the isolated-composition path is waiting on.
+        """
+        del workspace_id, path, targets, entities, backend
+        raise ValueError(
+            "the cluster lane cannot describe a world: the query runs a container, and "
+            "in-cluster a container runner exists only inside a campaign's composition. Ask "
+            "the local lane (vast workspace world --backend local), or inspect the image with "
+            "exec_in_container.")
+
     def _aux_store_kwargs(self) -> dict:
         """Storage wiring for an aux pod's workspace mirror.
 

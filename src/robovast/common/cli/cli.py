@@ -705,7 +705,8 @@ def workspace_world(workspace, path, targets, entities, as_json, cluster, namesp
     with service_client(cluster, namespace, context) as (client, target):
         _echo_target(target)
         wid = _resolve_workspace_id(client, workspace)
-        described = client.describe_world(wid, path, targets, entities)
+        described = client.describe_world(wid, path, targets, entities,
+                                          "cluster" if cluster else "")
         if as_json:
             click.echo(json_mod.dumps(described.model_dump(), indent=2))
             return

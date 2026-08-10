@@ -1080,6 +1080,11 @@ export interface components {
         /** Body_describe_world_workspaces__workspace_id__world_post */
         Body_describe_world_workspaces__workspace_id__world_post: {
             /**
+             * Backend
+             * @default
+             */
+            backend: string;
+            /**
              * Entities
              * @default false
              */

@@ -217,6 +217,22 @@ class MultiBackendService(LocalTransport):
             return self._cluster.exec_in_container(request)
         return LocalTransport.exec_in_container(self, request)
 
+    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
+                       entities: bool = False, backend: str = ""):
+        """Ask the simulator on the lane the caller named, or the default one.
+
+        Same reason ``exec_in_container`` overrides: the query runs a container, so without this
+        a caller asking the cluster would be answered by Docker on the serve host — a different
+        image cache, and on a cluster-only deployment no Docker at all — with nothing in the
+        reply to say so.
+        """
+        lane = backend or self._default_backend()
+        if lane not in (_LOCAL, _CLUSTER):
+            raise ValueError(f"unknown backend {lane!r}; use 'local' or 'cluster'")
+        if lane == _CLUSTER:
+            return self._cluster.describe_world(workspace_id, path, targets, entities)
+        return LocalTransport.describe_world(self, workspace_id, path, targets, entities)
+
     def stop_exec_container(self, backend: Optional[str] = None):
         """Stop the held container on the named lane, or on **both** when none is named.
 

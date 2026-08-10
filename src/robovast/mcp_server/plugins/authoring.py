@@ -264,7 +264,8 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         return {"error": str(e)}
 
 
-def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
+def describe_world(address: str, targets: str = "", entities: bool = False,
+                   backend: str = "") -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
     ``preview_configurations`` says what the campaign expands to; this says what the *world*
@@ -278,6 +279,8 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
             overridable *fields* only and needs no model built; a glob costs one, as does
             *entities*, which adds the entity list.
+        backend: ``"local"`` or ``"cluster"`` on a service offering both. The cluster lane
+            refuses this query today and says why.
 
     Returns:
         ``{backend, image, duration_s, world, packaged, inputs, plugins, entities,
@@ -295,7 +298,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
         client = service_access.client_or_local()
         workspace_id, rel_path = target
         described = client.describe_world(
-            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
+            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities, backend)
         return described.model_dump()
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"error": str(e)}

@@ -1637,7 +1637,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False) -> WorldDescription:
+                       entities: bool = False, backend: str = "") -> WorldDescription:
         """Describe the world this campaign's simulator will load.
 
         The other half of authoring the ``sim`` channel. ``preview_configurations`` says what
@@ -1652,9 +1652,11 @@ class RobovastInterface(ABC):
         campaign runs**, and carries which image that was.
 
         *targets* is a glob over object names and *entities* asks for the compiled entity list;
-        both cost a model build, which is why neither is implied. Raises ``ValueError`` when no
-        answer is possible — no backend, an image that must be built first, no container runner
-        here — because "unverifiable" is not an empty result.
+        both cost a model build, which is why neither is implied. *backend* names the lane the
+        query runs on (``"local"``/``"cluster"``) — a service offering both must not accept a lane
+        and then answer from the other one. Raises ``ValueError`` when no answer is possible — no
+        backend, an image that must be built first, no container runner here — because
+        "unverifiable" is not an empty result.
         """
 
     @abstractmethod

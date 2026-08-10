@@ -515,8 +515,10 @@ def build_app(impl: RobovastInterface):
     def describe_world(
         workspace_id: str, path: str = Body("", embed=True),
         targets: str = Body("", embed=True), entities: bool = Body(False, embed=True),
+        backend: str = Body("", embed=True),
     ) -> WorldDescription:
-        return _guard(lambda: impl.describe_world(workspace_id, path, targets, entities))
+        return _guard(
+            lambda: impl.describe_world(workspace_id, path, targets, entities, backend))
 
     # -- file side channel: grant + raw PUT ---------------------------------
 

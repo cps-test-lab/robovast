@@ -421,3 +421,33 @@ def test_a_workspace_in_use_on_either_lane_is_reported(tmp_path):
 
     in_use = svc._workspaces_in_use()
     assert in_use == {"ws-local": ["on-local"], "ws-cluster": ["on-cluster"]}
+
+
+@pytest.mark.parametrize("backend,expected", [("local", "local"),
+                                              ("", "cluster")])
+def test_describing_a_world_goes_to_the_lane_the_caller_named(tmp_path, monkeypatch,
+                                                              backend, expected):
+    """Same trap as ``exec_in_container``: the query runs a container, so a lane accepted and
+    then answered from the other one is the wrong image cache with nothing saying so."""
+    svc = _make(tmp_path)
+    seen = []
+    monkeypatch.setattr(LocalTransport, "describe_world",
+                        lambda self, *a, **kw: seen.append("local"))
+    monkeypatch.setattr(ClusterService, "describe_world",
+                        lambda self, *a, **kw: seen.append("cluster"))
+    svc.describe_world("ws-1", backend=backend)
+    assert seen == [expected]
+
+
+def test_an_unknown_world_backend_is_refused(tmp_path):
+    svc = _make(tmp_path)
+    with pytest.raises(ValueError, match="unknown backend"):
+        svc.describe_world("ws-1", backend="kubernetes")
+
+
+def test_the_cluster_lane_refuses_to_describe_rather_than_using_local_docker(tmp_path):
+    """It inherits a local implementation that would ``docker run`` on the serve host --
+    a different image cache, or no Docker at all in a controller pod."""
+    svc = _make(tmp_path)
+    with pytest.raises(ValueError, match="cluster lane cannot describe a world"):
+        svc.describe_world("ws-1", backend="cluster")

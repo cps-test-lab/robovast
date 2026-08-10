@@ -550,6 +550,31 @@ def sim_override_keys(backend: SimulatorBackend, block: dict) -> set:
     plugins = ((block or {}).get(root) or {}).get("plugins")
     return set(plugins) if isinstance(plugins, dict) else set()
 
+def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
+    """The image this execution's simulator runs in: the campaign's, else the backend's own.
+
+    One place, and it has to be, because :func:`apply_backend` applies the same precedence to the
+    *run* -- the author's ``image:`` on the block outranks a backend default -- and a second copy
+    would be free to disagree with it. A backend asking the simulator a question
+    (:meth:`SimulatorBackend.describe_query`, :meth:`~SimulatorBackend.input_files`) passes its own
+    ``containers()`` as *declared* and gets the answer for free, rather than re-deriving which
+    container the simulator runs in for this shape.
+
+    Getting it wrong is the silent kind of wrong: a world ref that resolves only in the campaign's
+    built image does not resolve in a default one, so the simulator answers nothing and whatever
+    the answer was for quietly does not happen.
+    """
+    order = ([SIMULATION_CONTAINER, SCENARIO_CONTAINER]
+             if shape_for((execution or {}).get("mode", "auto")) == SHAPE_ROS
+             else [SCENARIO_CONTAINER, SIMULATION_CONTAINER])
+    for source in ((execution or {}).get("containers") or {}, declared or {}):
+        for name in order:
+            image = ((source.get(name) or {}).get("image") or "").strip()
+            if image:
+                return image
+    return ""
+
+
 def campaign_sim_block(execution: dict) -> dict:
     """The backend's own keys as the ``.vast`` declared them -- the campaign default.
 

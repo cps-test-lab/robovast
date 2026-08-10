@@ -102,3 +102,31 @@ def test_the_pre_check_warns_when_it_could_not_check(caplog, monkeypatch):
             [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
     assert "were not pre-checked" in caplog.text
     assert "could not be described" in caplog.text
+
+
+def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
+    """A CalledProcessError used to escape, so the service answered a bare 500.
+
+    The message is the command's own last words, which for an image whose simulator predates a
+    flag reads "unrecognized arguments: --overridable" -- i.e. it names its own remedy.
+    """
+    import subprocess
+
+    from robovast.common import config_generation
+
+    class _Runner:
+        def run(self, command, sink):
+            del command
+            sink("docker run --rm image rst scenes describe w --overridable '*'")
+            sink("rst scenes describe: error: unrecognized arguments: --overridable *")
+            raise subprocess.CalledProcessError(2, "docker")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
+    with pytest.raises(WorldQueryUnavailable, match="unrecognized arguments"):
+        describe_world_payload(
+            {"mode": "ros2", "containers": {"simulation": {"backend": "robosito",
+                                                           "image": "img:1"}}},
+            {"config": "rst_scenes:depot"}, ".", targets="*")

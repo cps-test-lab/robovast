@@ -141,6 +141,40 @@ That is also why the packer groups work items by their resolved block: container
 per job and are not restarted between packed items, so a job that mixed two worlds would run
 the second configuration against the first one's compiled model.
 
+Asking the simulator a question
+-------------------------------
+
+Some facts only the simulator has. Which plugins a world defines, what it is built from, and
+which model values a run may change are all settled by resolving the world -- which needs the
+simulator installed, and RoboVAST deliberately does not have it (the backend package is strings
+and container specs, so the long-lived service carries no MuJoCo). A backend therefore answers
+by returning a **question**, :class:`~robovast.common.simulators.ContainerQuery`: a command and
+the image to run it in, whose one line of JSON RoboVAST reads.
+
+Three rules make those answers trustworthy, and each of them was a bug first:
+
+* **In the image the campaign runs.** Which world a ref even names depends on what is
+  *installed*, so a query answered in a fixed base image describes a different world -- or none,
+  for an experiment whose world ships in its own built image.
+  :func:`~robovast.common.simulators.simulator_image` is the one place that decides, because
+  :func:`~robovast.common.simulators.apply_backend` applies the same precedence to the *run* and
+  a second copy would be free to disagree with it.
+* **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
+  backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
+  pre-check that logged this at debug and carried on was indistinguishable from a check that
+  passed, which is how a misspelt plugin key reached the container after the image pull.
+* **The lane is not implied.** The query runs a container, so a service offering both lanes
+  routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
+  a campaign's composition (a per-campaign aux pod), so the cluster lane refuses this query with
+  that reason rather than quietly ``docker run``-ning on the serve host. A standalone aux pod for
+  one-shot queries is the follow-up that would lift it.
+
+One function runs every such query --
+:func:`robovast.common.config_generation.describe_world_payload` -- because the two callers
+(the ``sim``-override pre-check, and
+:meth:`~robovast.service.interface.RobovastInterface.describe_world` for a caller *writing* an
+override) share all three traps.
+
 Workspaces vs. campaigns
 ------------------------
 

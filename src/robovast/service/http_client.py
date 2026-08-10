@@ -333,14 +333,15 @@ class HTTPTransport(RobovastInterface):
             json={"max_configs": max_configs, "path": path}))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False) -> WorldDescription:
+                       entities: bool = False, backend: str = "") -> WorldDescription:
         # The simulator answers inside a container, and on a node that has never pulled this
         # campaign's image the first thing that happens is the pull -- the same reasoning (and
         # the same budget) as DATA_TIMEOUT below, or a caller sees a ReadTimeout it cannot
         # distinguish from a broken service.
         return WorldDescription.model_validate(self._post(
             Routes.workspace_world(workspace_id),
-            json={"path": path, "targets": targets, "entities": entities},
+            json={"path": path, "targets": targets, "entities": entities,
+                  "backend": backend},
             timeout=self.SCREENSHOT_TIMEOUT))
 
     def get_config_schema(self) -> dict:

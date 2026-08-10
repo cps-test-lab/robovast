@@ -2051,7 +2051,8 @@ class LocalTransport(RobovastInterface):
                                configurations=items, truncated=truncated)
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False) -> WorldDescription:
+                       entities: bool = False, backend: str = "") -> WorldDescription:
+        del backend  # one lane here; a multi-backend service overrides this to select
         import yaml
         from robovast.common.config_generation import (WorldQueryUnavailable,
                                                        describe_world_payload)

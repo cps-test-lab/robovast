@@ -394,14 +394,35 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
     lines = []
     try:
         runner.run(query.command, lines.append)
+    except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
+        # The command's own last words, not the runner's: an old image whose simulator does not
+        # know a flag says so itself ("unrecognized arguments: --overridable"), and that names
+        # the remedy. Without this the CalledProcessError left the service returning a bare 500.
+        raise WorldQueryUnavailable(
+            f"{name} could not describe this world in {image}: "
+            f"{_command_failure(lines) or str(exc)}") from None
     finally:
         runner.close()
     payload = _last_json_line(lines)
     if payload is None:
         raise WorldQueryUnavailable(
             f"{name} could not describe this world in {image}: "
-            f"{lines[-1].strip() if lines else '(no output)'}")
+            f"{_command_failure(lines) or '(no output)'}")
     return payload, image
+
+
+def _command_failure(lines) -> str:
+    """The most explanatory line a failed container printed, or ``""``.
+
+    Scanned from the end for the command's own diagnostic, skipping the runner's framing (the
+    ``docker run`` echo, an ``Output:`` header) -- what a caller needs is the simulator's
+    complaint, not how it was invoked.
+    """
+    for line in reversed([str(item).strip() for item in lines]):
+        if not line or line.startswith(("docker ", "Command failed", "Output:", "usage:")):
+            continue
+        return line[:400]
+    return ""
 
 
 def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=None):

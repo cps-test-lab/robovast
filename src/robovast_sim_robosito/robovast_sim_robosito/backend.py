@@ -18,7 +18,8 @@ from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER,
                                         SHAPE_ROS, SHAPE_STEPPED,
                                         SIM_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery,
-                                        SimulatorBackend, shape_for)
+                                        SimulatorBackend, shape_for,
+                                        simulator_image)
 
 #: The image robosito runs in when it has a container of its own -- robosito's **own**
 #: published image, not something a campaign builds. It carries the GL libraries,
@@ -289,7 +290,7 @@ class RobositoBackend(SimulatorBackend):
         return ContainerQuery(
             # The campaign's own image, for the same reason describe_query uses it: what a
             # world extends is resolved by what is installed.
-            ContainerSpec(image=self._describe_image(execution)),
+            ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
             ["rst", "scenes", "inputs", cfg.config])
 
     def describe_query(self, cfg, execution: dict, *, entities: bool = False,
@@ -312,30 +313,10 @@ class RobositoBackend(SimulatorBackend):
             # compiling the model. The glob is the caller's, and it is what keeps the answer
             # small -- a mobile-manipulator world has hundreds of geoms.
             command += ["--overridable", targets]
-        return ContainerQuery(ContainerSpec(image=self._describe_image(execution)), command)
+        return ContainerQuery(
+            ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
+            command)
 
-    def _describe_image(self, execution: dict) -> str:
-        """The image that will actually run this campaign's simulator, else our default.
-
-        A world ref resolves to whatever is *installed*, so this cannot be a fixed image: an
-        experiment shipping its own world package has worlds that exist only in its built
-        image. Described against the default one, ``rst_x:world`` is "not a world ref" -- no
-        JSON, no check, and a campaign that overrides a plugin it misspelled sails through.
-
-        Takes the image from the container the simulator runs in, honouring the same
-        precedence the run does (the author's ``image:`` on the block outranks a backend
-        default, see ``apply_backend``). A symbolic ``build:<tag>`` is left as it is: it is not
-        an image name, and the caller reports it as "build this first" rather than passing
-        something unusable to a runner.
-        """
-        containers = (execution or {}).get("containers") or {}
-        shape = shape_for((execution or {}).get("mode", "auto"))
-        target = SIMULATION_CONTAINER if shape == SHAPE_ROS else SCENARIO_CONTAINER
-        for name in (target, SIMULATION_CONTAINER, SCENARIO_CONTAINER):
-            image = ((containers.get(name) or {}).get("image") or "").strip()
-            if image:
-                return image
-        return DEFAULT_SIM_IMAGE if shape == SHAPE_ROS else DEFAULT_COMBINED_IMAGE
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> str:
