@@ -157,12 +157,52 @@ Recommended first-cell pattern
    # The RoboVAST GUI replaces this line automatically.
    DATA_DIR = '/path/to/results/<campaign-name>-<timestamp>/<config-name>/'
 
-   try:
-       from robovast.common.analysis import read_output_files, read_output_csv
-       df = read_output_files(DATA_DIR, lambda d: read_output_csv(d, "poses.csv"))
-   except Exception as e:
-       print(f"Error reading data: {e}")
-       raise SystemExit("No data found -- check DATA_DIR.")
+   from robovast.common.analysis import read_table, read_runs
+   df = read_table(DATA_DIR, "poses")
+
+.. _evaluation-reading-results:
+
+Reading results
+^^^^^^^^^^^^^^^
+
+``read_table`` reads one of the campaign's ``data.db`` tables and **restricts it to what
+``DATA_DIR`` selects** — a run directory gives that run's rows, a configuration directory that
+configuration's, the campaign root everything. The same cell therefore serves all three
+notebook scopes, and no notebook names a file.
+
+.. code-block:: python
+
+   read_table(DATA_DIR, "behaviors")            # the scenario's behaviour tree
+   read_table(DATA_DIR, "poses", columns=["timestamp", "position.x", "position.y"])
+   read_table(DATA_DIR, "poses", where="frame = ?", params=("base_link",))
+   read_runs(DATA_DIR)                          # per-run outcome + each param_* column
+   list_tables(DATA_DIR)                        # what this campaign actually has
+
+Tables are keyed ``(config_name, run_id)``; ``runs`` carries the same key, so joining it to a
+metric table relates what varied to what happened. ``read_sql(DATA_DIR, ...)`` is the escape
+hatch for joins and for the ``run_view`` / ``config_view`` views — it is deliberately *not*
+scoped.
+
+**Which tables exist depends on the campaign.** ``runs``, ``behaviors``, ``run_log``,
+``resource_usage`` and ``scenario_timestamps`` are produced whatever the simulator and whether
+or not the run used ROS. ``poses``, ``costmaps``, ``action_*`` and the ``nav2_*`` tables come
+from a rosbag, so a ``mode: base`` campaign has none of them. Ask ``list_tables`` or
+``table_info`` rather than assuming, and name the columns an analysis cannot do without:
+
+.. code-block:: python
+
+   # Raises, naming the missing column and what the table does have, rather than
+   # returning a frame that is quietly missing it.
+   read_table(DATA_DIR, "behaviors", require=["status_name", "tip_id"])
+
+Reading requires postprocessing to have run — ``data.db`` does not exist before it, and a
+campaign whose postprocessing failed still reports ``finished``. That case raises with the
+remedy in the message rather than falling back to the per-run files, which would answer a
+different question with less data. :func:`~robovast.common.analysis.files.read_run_statuses`
+reads ``test.xml`` directly and so still works when there is no database at all.
+
+The per-run file readers (:mod:`robovast.common.analysis.files`) remain available for what is
+genuinely not in the database.
 
 Handling missing columns defensively
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -190,25 +230,24 @@ Use paths appropriate to the *scope* of the notebook:
 
    * - Scope
      - Example ``DATA_DIR``
-     - Available columns
+     - What ``read_table`` returns
    * - ``run``
      - ``/<campaign-name>-<timestamp>/<config>/<run-number>/``
-     - ``frame``, ``timestamp``, ...
+     - that run's rows
    * - ``config``
      - ``/<campaign-name>-<timestamp>/<config>/``
-     - ``run``, ``frame``, ``timestamp``, ...
+     - every run of that configuration
    * - ``campaign``
      - ``/<campaign-name>-<timestamp>/``
-     - ``run``, ``config``, ``test``, ``frame``, ...
+     - every run of every configuration
 
 .. note::
 
-   The ``test`` and ``config`` columns are only present when ``DATA_DIR``
-   points to a *campaign* or *config* directory that contains **multiple**
-   runs.  When ``DATA_DIR`` points to a single run directory those columns
-   are absent.  Grouping by ``['test', 'config']`` on a run-level notebook
-   will raise a ``KeyError``; always match the notebook scope to its
-   ``DATA_DIR`` level.
+   The scope changes which **rows** come back, not which columns: every metric table
+   carries ``config_name`` and ``run_id`` at all three levels, so a cell written for one
+   scope runs unchanged at another. At run scope both columns hold a single value —
+   grouping by them is redundant there but not an error, which is what lets the same
+   cell serve every scope.
 
 Benefits of the self-contained pattern
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

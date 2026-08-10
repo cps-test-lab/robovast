@@ -527,8 +527,25 @@ each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
 attached as schema ``campaign`` — so ``campaign.run`` is queryable for raw
 pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
 metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
-*<metric>*" in one query. The ``vast eval gui`` notebook path reads the same ``data.db`` directly and
-is unaffected.
+*<metric>*" in one query. Analysis notebooks read the same ``data.db`` through
+:mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
+:ref:`evaluation-reading-results`); the ``vast eval gui`` path is the same one.
+
+**Versioned, never migrated.** The layout is stamped into ``PRAGMA user_version``
+(``DATA_DB_SCHEMA_VERSION``), and no migration table goes with it — the deliberate difference
+from ``campaign.db``, whose :data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The
+store is *authored*: written as the campaign runs, and the only record of what happened, so an
+old one must be upgraded in place. ``data.db`` is *derived*: postprocessing deletes and rebuilds
+it from the run directories, which keep their CSV/JSONL, so the upgrade path for an old one is
+to run postprocessing again — which re-executes no trial, and needs neither ROS nor the
+campaign's execution image, since only the ``rosbags_*`` → CSV step does and everything after
+it is plain Python. A migration here would be code maintained to reproduce what the builder
+already does.
+
+The stamp does not gate reads, because a version is too coarse to answer the question a reader
+actually has: most campaigns on disk predate it, and many carry everything a given notebook
+needs. What gates a query is whether the columns are there, which the reader checks directly;
+the version only sharpens the error when they are not.
 
 **Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
 run: config, status, duration, params, host record) and ``config_view`` (the ``.vast`` as

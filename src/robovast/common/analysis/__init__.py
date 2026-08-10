@@ -1,20 +1,49 @@
 #!/usr/bin/env python3
 
-from .common import (for_each_run, get_run_status, get_scenario_parameter,
-                     read_output_csv, read_output_files, read_output_yaml_list,
-                     read_run_statuses)
-from .ros2 import (calculate_speeds_from_poses, get_behavior_info,
-                   print_bag_topics)
+"""Helpers for analysis notebooks.
+
+Split by where a frame comes from, plus one module for what you compute from one:
+
+* :mod:`db` — a campaign's ``data.db``, scoped to the notebook's ``DATA_DIR``. Start here.
+* :mod:`files` — per-run files (``test.xml`` and friends), including what predates the
+  postprocessed database or exists outside it.
+* :mod:`metrics` — derivations over a frame, whichever of the two produced it.
+* :mod:`ros2` — readers for rosbag artifacts on disk.
+"""
+
+from .db import (CampaignDataError, DATA_DB_SCHEMA_VERSION, campaign_root, list_tables,
+                 open_campaign_db, read_runs, read_sql, read_table, run_scope, table_info)
+from .files import (for_each_run, get_run_status, get_scenario_parameter,
+                    read_output_csv, read_output_files, read_output_yaml_list,
+                    read_run_statuses)
+from .metrics import calculate_speeds_from_poses, get_behavior_info, run_key_columns
+from .ros2 import get_bag_info, print_bag_topics
 
 __all__ = [
+    # db
+    'read_table',
+    'read_runs',
+    'read_sql',
+    'list_tables',
+    'table_info',
+    'run_scope',
+    'campaign_root',
+    'open_campaign_db',
+    'CampaignDataError',
+    'DATA_DB_SCHEMA_VERSION',
+    # files
     'read_output_files',
     'read_output_csv',
     'read_output_yaml_list',
     'read_run_statuses',
     'get_run_status',
     'for_each_run',
-    'print_bag_topics',
+    'get_scenario_parameter',
+    # metrics
     'get_behavior_info',
     'calculate_speeds_from_poses',
-    'get_scenario_parameter',
+    'run_key_columns',
+    # ros2
+    'get_bag_info',
+    'print_bag_topics',
 ]

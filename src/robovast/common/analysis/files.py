@@ -125,8 +125,20 @@ def read_output_files(data_dir: str, reader_func: Callable[[Path], pd.DataFrame]
         print(f"Warning: Could not read data from {len(skipped_warnings)} run(s): " +
               "; ".join(skipped_warnings))
 
-    if debug and not all_dataframes:
-        raise ValueError(f"No valid run data could be read from {data_dir}")
+    if not all_dataframes:
+        # Every run failed, and the reason for each was collected above. Raising it here
+        # rather than only under `debug` is the whole point: pandas' next line is
+        # `pd.concat([])`, which dies with "No objects to concatenate" -- an error about
+        # an empty list, naming neither the file that was missing nor the runs it was
+        # missing from. A notebook author then has a stack trace ending in pandas and no
+        # way to tell "this campaign predates the step that writes that file" from "the
+        # reader is broken".
+        detail = "; ".join(skipped_warnings[:5])
+        more = f" (+{len(skipped_warnings) - 5} more)" if len(skipped_warnings) > 5 else ""
+        raise ValueError(
+            f"No valid run data could be read from {data_dir}"
+            + (f" -- {len(skipped_warnings)} run(s) failed: {detail}{more}"
+               if skipped_warnings else " (no run directories under it)"))
 
     # Combine all dataframes
     combined_df = pd.concat(all_dataframes, ignore_index=True)

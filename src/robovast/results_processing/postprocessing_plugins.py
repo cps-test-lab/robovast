@@ -1149,6 +1149,10 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         else:
             print(msg)
 
+    # The layout constant lives with the reader that has to interpret it, and is imported here
+    # rather than at module scope to keep pandas off the postprocessing import path.
+    from robovast.common.analysis.db import DATA_DB_SCHEMA_VERSION
+
     campaign_path = Path(campaign_dir)
     if not campaign_path.is_dir():
         return False, f"Campaign directory does not exist: {campaign_dir}"
@@ -1165,6 +1169,12 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=OFF")
+        # Stamp the layout so a reader can say "this database predates the column you asked
+        # for" instead of "no such column". No migrations go with it -- see
+        # DATA_DB_SCHEMA_VERSION: this file is rebuilt from the run directories, so the
+        # upgrade path for an old one is to run postprocessing again, which re-executes no
+        # trial. PRAGMA cannot be parameterised; the version is a constant we control.
+        conn.execute(f"PRAGMA user_version = {DATA_DB_SCHEMA_VERSION}")
 
         # Metadata table: display_name -> sql_table_name
         conn.execute(

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from robovast.common.analysis import DATA_DB_SCHEMA_VERSION
 from robovast.results_processing.data_query import describe_data_db
 from robovast.results_processing.postprocessing_plugins import generate_data_db
 
@@ -401,3 +402,18 @@ def test_a_run_that_logged_no_verdict_records_none(campaign):
     _build(campaign)
     row = _verdict(campaign)
     assert row["status"] is None and row["wall_ts"] is None
+
+
+def test_the_layout_is_stamped_so_a_reader_can_recognise_an_old_database(campaign):
+    """``PRAGMA user_version`` records which layout built this file.
+
+    No migrations go with it, deliberately: data.db is derived, so the upgrade path for an
+    old one is to run postprocessing again. The stamp exists so a reader can say "this
+    database predates the column you asked for" instead of "no such column".
+    """
+    _build(campaign)
+    conn = sqlite3.connect(campaign / "_execution" / "data.db")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == DATA_DB_SCHEMA_VERSION
+    finally:
+        conn.close()
