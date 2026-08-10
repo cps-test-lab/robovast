@@ -54,8 +54,8 @@ def test_get_plugin_details_includes_parameter_schema():
     # key that is always an error is what sends an agent round the validate loop twice.
     assert {"scenario", "sim", "values"} <= set(params)
     assert "name" not in params
-    assert params["scenario"]["type"] == "str | list[str] | None"
-    assert params["sim"]["type"] == "str | list[str] | None"
+    assert params["scenario"]["type"] == "str | list[str] | dict[str, str] | None"
+    assert params["sim"]["type"] == "str | list[str] | dict[str, str] | None"
     assert params["values"]["type"] == "list[float | int | bool | dict | list | str]"
     assert params["values"]["required"] is True
 

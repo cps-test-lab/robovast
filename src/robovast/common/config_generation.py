@@ -203,6 +203,63 @@ def _backend_run_files(vast_dir, parameters):
         return []
 
 
+def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
+                            parameters, vast_dir):
+    """Check what each variation says it will write, before any of them runs.
+
+    A variation's outputs were never checked at all: the scenario-file check covers only the
+    hand-written ``parameters:`` block, so a plugin writing a parameter the ``.osc`` does not
+    declare was discovered by the *run* -- after the image pull and the pod schedule. Any
+    plugin implementing :meth:`~robovast.common.variation.base_variation.Variation.declared_outputs`
+    is checked here instead, on both channels.
+
+    A plugin that declares nothing is skipped rather than guessed at: ``{}`` means
+    "undeclared", which is every third-party plugin and was the state of every plugin before
+    this existed.
+
+    The ``sim`` half checks the destination is addressable in the backend's schema. Whether
+    the *path inside* an override actually exists in a particular world is a question only
+    the simulator can answer, so a typo there is still refused in the container.
+    """
+    valid_names = [p.get('name') for p in (scenario_parameters or [])
+                   if isinstance(p, dict) and 'name' in p]
+    execution = parameters.get('execution', {}) or {}
+
+    backend = backend_key_checker = None
+    for variation_class, variation_parameters in classes_and_parameters:
+        try:
+            declared = variation_class.declared_outputs(variation_parameters) or {}
+        except Exception as exc:  # noqa: BLE001 - a plugin that cannot answer is not checked
+            logger.debug("%s did not declare its outputs: %s",
+                         variation_class.__name__, exc)
+            continue
+
+        unknown = [n for n in declared.get('scenario', []) if n not in valid_names]
+        if unknown and valid_names:
+            raise ValueError(
+                f"Scenario '{config['name']}': {variation_class.__name__} writes "
+                f"{unknown}, which the scenario file does not declare. "
+                f"Valid parameters are: {valid_names}")
+
+        sim_outputs = declared.get('sim', [])
+        if not sim_outputs:
+            continue
+        if backend_key_checker is None:
+            from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+                backend_name, resolve_backend, resolve_sim_path)
+            name = backend_name(execution)
+            if not name:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} writes to the "
+                    f"'sim' channel ({sim_outputs}), but this campaign declares no simulator "
+                    "backend under execution.containers.simulation")
+            backend = resolve_backend(name, vast_dir)
+            backend_key_checker = (name, resolve_sim_path)
+        name, resolve = backend_key_checker
+        for path in sim_outputs:
+            resolve(backend, path, name)
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
@@ -1092,6 +1149,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         f"Invalid parameters in scenario '{config['name']}': {invalid_params}. "
                         f"Valid parameters are: {valid_param_names}"
                     )
+
+        _check_declared_outputs(
+            config, variation_classes_and_parameters,
+            existing_scenario_parameters, parameters, vast_dir)
 
         current_configs = [{
             'name': config['name'],

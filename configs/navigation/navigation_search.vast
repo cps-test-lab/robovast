@@ -34,14 +34,13 @@ search:
   # config (num_paths: 1, count: 1, one obstacle_configs entry, num_variations: 1).
   variations:
   - FloorplanVariation:
-      name: [map_file, mesh_file]
+      scenario: {map: map_file, mesh: mesh_file}
       variation_files: [floorplans/rooms/rooms.variation]
       num_variations: 1
       seed: 1
   - PathVariationRandom:
-      start_pose: "@start_pose"     # @name = scenario-param reference (in-plugin)
-      goal_poses: "@goal_poses"
-      num_goal_poses: 3
+      scenario: {start: start_pose, goal: goal_pose}
+      num_goal_poses: 1
       path_length: $path_length     # $name = searched variable (substituted)
       num_paths: 1
       path_length_tolerance: 0.5
@@ -49,7 +48,7 @@ search:
       seed: $path_seed
       robot_diameter: 0.35
   - ObstacleVariation:
-      name: static_objects
+      scenario: {objects: static_objects}
       count: 1
       obstacle_configs:
       - amount: $obstacle_amt

@@ -22,9 +22,9 @@ def test_describe_model_renders_types_and_required():
     fields = {f["name"]: f for f in describe_pydantic_model(ParameterVariationListConfig)}
     # The two destination keys are optional individually -- exactly one is required, which
     # a per-field flag cannot express and a model validator enforces instead.
-    assert fields["scenario"]["type"] == "str | list[str] | None"
+    assert fields["scenario"]["type"] == "str | list[str] | dict[str, str] | None"
     assert fields["scenario"]["required"] is False
-    assert fields["sim"]["type"] == "str | list[str] | None"
+    assert fields["sim"]["type"] == "str | list[str] | dict[str, str] | None"
     assert fields["values"]["type"] == "list[float | int | bool | dict | list | str]"
     assert fields["values"]["required"] is True
 
@@ -55,7 +55,7 @@ def test_cli_plugin_info_prints_schema():
         configuration, ["plugin-info", "ParameterVariationList"])
     assert result.exit_code == 0
     assert "list[float | int | bool | dict | list | str]" in result.output
-    assert "str | list[str] | None" in result.output
+    assert "str | list[str] | dict[str, str] | None" in result.output
 
 
 def test_cli_plugin_info_unknown_exits_nonzero():

@@ -26,7 +26,8 @@ from rdflib import Namespace
 
 from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation import VariationGuiRenderer
-from robovast.common.variation.base_variation import ProvContribution
+from robovast.common.variation.base_variation import (DestinationConfig,
+                                                      ProvContribution)
 
 from ..gui.navigation_gui import NavigationGui
 from ..object_shapes import (get_object_type_from_model_path,
@@ -101,9 +102,26 @@ def _expand_obstacle_configs(obstacle_configs: list) -> list:
     return [list(combo) for combo in itertools.product(*per_entry_options)]
 
 
-class ObstacleVariationConfig(BaseModel):
+class ObstacleVariationConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
-    name: str
+
+    #: Where the placed obstacles go. ``objects`` is the trial's view of them -- the list a
+    #: scenario spawns or drives, on the ``scenario`` channel.
+    SLOTS = ("objects",)
+
+    #: ``instances`` is the *simulator's* view of the same placement: ``pos`` / ``size`` /
+    #: ``yaw`` per obstacle, shaped for a list-valued placement plugin::
+    #:
+    #:     scenario: {objects: static_objects}
+    #:     sim:      {instances: plugins.obstacles.instances}
+    #:
+    #: Both, from one call, because they are one fact: MuJoCo does not recompile mid-run and
+    #: ``sim_interfaces`` serves no ``SpawnEntity``, so an obstacle the trial drives must be
+    #: one the world compiled. Optional because a simulator that spawns at run time (Gazebo)
+    #: needs only the first, and requiring it would make every such campaign bind a
+    #: destination it has none for.
+    OPTIONAL_SLOTS = ("instances",)
+
     obstacle_configs: list[ObstacleConfig]
     seed: int
     robot_diameter: float
@@ -123,6 +141,47 @@ class ObstacleVariationConfig(BaseModel):
         if v <= 0.:
             raise ValueError('robot_diameter is required and cannot be None')
         return v
+
+
+def _instances_for_sim(obstacle_objects) -> list:
+    """The placement as *geometry*: what a list-valued placement plugin compiles.
+
+    Deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
+    model reference and xacro arguments -- a simulator's spawning vocabulary -- while what has
+    to exist in a compiled model is a shape at a pose. Size comes from the obstacle's own
+    xacro arguments when it has them, since that is where a campaign states it today.
+    """
+    instances = []
+    for obj in obstacle_objects or []:
+        entry = convert_dataclasses_to_dict([obj])[0]
+        position = entry.get('spawn_pose', {}).get('position', {})
+        instance = {'pos': [position.get('x', 0.0), position.get('y', 0.0)]}
+        yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
+        if yaw:
+            instance['yaw'] = yaw
+        size = _size_from_xacro(entry.get('xacro_arguments') or "")
+        if size:
+            instance['size'] = size
+        instances.append(instance)
+    return instances
+
+
+def _size_from_xacro(arguments: str):
+    """``width:=0.5, length:=0.5, height:=1.0`` -> ``[0.5, 0.5, 1.0]``, or ``None``.
+
+    A campaign already states an obstacle's extents this way; reading them here means the two
+    channels describe the same box rather than the simulator's copy defaulting to another size.
+    """
+    values = {}
+    for token in arguments.replace(',', ' ').split():
+        key, sep, value = token.partition(':=')
+        if sep:
+            try:
+                values[key.strip()] = float(value)
+            except ValueError:
+                return None
+    dims = [values.get(k) for k in ('width', 'length', 'height')]
+    return dims if all(d is not None for d in dims) else None
 
 
 class ObstacleVariationGuiRenderer(VariationGuiRenderer):
@@ -389,12 +448,21 @@ class ObstacleVariation(NavVariation):
 
         # Always create variation with parameter, even if obstacle_objects is empty
         # This ensures consistent naming and parameters in scenario.config
-        objects_parameter_name = self.parameters.name
-        extra_params = self._post_process(obstacle_objects, obstacle_anchors, path)
-        result_config = self.update_config(config, {
-            objects_parameter_name: convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else [],
-            **extra_params,
-        }, other_values={'_map_file': map_file_path, '_path': path, '_objects_parameter_name': objects_parameter_name})
+        objects_parameter_name = self.parameters.binding("objects")[1]
+        values = {
+            'objects': convert_dataclasses_to_dict(obstacle_objects) if obstacle_objects else [],
+            **self._post_process(obstacle_objects, obstacle_anchors, path),
+        }
+        # The same placement, described for the simulator: what must be COMPILED IN so the
+        # trial has something to drive. Written in the same call as the trial's view, because
+        # a world carrying fewer obstacles than the scenario names is a run that fails on a
+        # service call, not a configuration anyone can fix afterwards.
+        if self.parameters.is_bound('instances'):
+            values['instances'] = _instances_for_sim(obstacle_objects)
+        result_config = self.update_slots(
+            config, values,
+            other_values={'_map_file': map_file_path, '_path': path,
+                          '_objects_parameter_name': objects_parameter_name})
 
         resulting_configs.append(result_config)
 

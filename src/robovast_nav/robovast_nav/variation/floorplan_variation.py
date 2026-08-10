@@ -23,7 +23,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from rdflib import Namespace, PROV, FOAF
 
-from robovast.common.variation.base_variation import ProvContribution
+from robovast.common.variation.base_variation import (DestinationConfig,
+                                                      ProvContribution)
 
 from robovast.common.variation.container_runner import ContainerSpec
 
@@ -95,9 +96,24 @@ def _collect_floorplan_transient_files(output_dir, floorplan_name):
 _SUPPORTED_MESH_FORMATS = ('stl', 'obj')
 
 
-class FloorplanVariationConfig(BaseModel):
+class FloorplanVariationConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
-    name: list[str]
+
+    #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
+    #: **opposite sides of the compile boundary** whenever the simulator is robosito: nav2
+    #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
+    #: model. So this is the plugin that needs both channels at once:
+    #:
+    #: .. code-block:: yaml
+    #:
+    #:     scenario: {map: map_file}
+    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:
+    #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
+    #: parameter. What is no longer possible is the retired positional ``name:
+    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    SLOTS = ("map", "mesh")
+
     variation_files: list[str]
     num_variations: int
     seed: int
@@ -108,13 +124,6 @@ class FloorplanVariationConfig(BaseModel):
     def validate_mesh_format(cls, v):
         if v not in _SUPPORTED_MESH_FORMATS:
             raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
-        return v
-
-    @field_validator('name')
-    @classmethod
-    def validate_name_list(cls, v):
-        if not v or len(v) != 2:
-            raise ValueError('name must contain exactly two elements, 1. for map file, 2. for mesh file')
         return v
 
     @field_validator('variation_files')
@@ -132,18 +141,31 @@ class FloorplanVariationConfig(BaseModel):
         return v
 
 
-class FloorplanGenerationConfig(BaseModel):
+class FloorplanGenerationConfig(DestinationConfig):
     """Configuration for FloorplanGeneration.
 
     Attributes:
-        name: List with exactly two elements: [map_file_param, mesh_file_param].
-              These names will be used as parameter keys in the generated configs.
         floorplans: List of paths to .fpm floorplan files to generate artifacts for.
                     Paths are relative to the base configuration directory.
         mesh_format: 3D mesh format to produce, ``stl`` (default) or ``obj``.
     """
     model_config = ConfigDict(extra='forbid')
-    name: list[str]
+
+    #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
+    #: **opposite sides of the compile boundary** whenever the simulator is robosito: nav2
+    #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
+    #: model. So this is the plugin that needs both channels at once:
+    #:
+    #: .. code-block:: yaml
+    #:
+    #:     scenario: {map: map_file}
+    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:
+    #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
+    #: parameter. What is no longer possible is the retired positional ``name:
+    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    SLOTS = ("map", "mesh")
+
     floorplans: list[str]
     mesh_format: str = 'stl'
 
@@ -152,13 +174,6 @@ class FloorplanGenerationConfig(BaseModel):
     def validate_mesh_format(cls, v):
         if v not in _SUPPORTED_MESH_FORMATS:
             raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
-        return v
-
-    @field_validator('name')
-    @classmethod
-    def validate_name_list(cls, v):
-        if not v or len(v) != 2:
-            raise ValueError('name must contain exactly two elements, 1. for map file, 2. for mesh file')
         return v
 
     @field_validator('floorplans')
@@ -475,9 +490,6 @@ class FloorplanGeneration(NavVariation):
                 f"Expected {len(self.parameters.floorplans)}"
             )
 
-        map_file_parameter_name = self.parameters.name[0]
-        mesh_file_parameter_name = self.parameters.name[1]
-
         results = []
         for floorplan_idx, floorplan_name in enumerate(floorplan_names):
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
@@ -489,9 +501,7 @@ class FloorplanGeneration(NavVariation):
                     floorplan_name,
                     self.output_dir,
                     config,
-                    map_file_parameter_name,
-                    mesh_file_parameter_name,
-                    self.update_config,
+                    self.update_slots,
                     mesh_format=self.parameters.mesh_format,
                 )
                 if not transient:
@@ -662,9 +672,6 @@ class FloorplanVariation(NavVariation):
             raise ValueError(f"Floorplan variation returned unexpected number ({len(floorplan_names)}) of configs. Expected {
                              self.parameters.num_variations * len(self.parameters.variation_files)}")
 
-        map_file_parameter_name = self.parameters.name[0]
-        mesh_file_parameter_name = self.parameters.name[1]
-
         results = []
         floorplan_idx = 0
         for _, variation_file in enumerate(self.parameters.variation_files):
@@ -678,9 +685,7 @@ class FloorplanVariation(NavVariation):
                         floorplan_name,
                         self.output_dir,
                         config,
-                        map_file_parameter_name,
-                        mesh_file_parameter_name,
-                        self.update_config,
+                        self.update_slots,
                         mesh_format=self.parameters.mesh_format,
                     )
                     if transient:

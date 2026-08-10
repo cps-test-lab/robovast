@@ -219,6 +219,45 @@ on the second one.
    used to mean ``scenario:``; one spelling per destination is what keeps the commonest
    line in a ``.vast`` from having two.
 
+.. _config-variation-slots:
+
+Variations that produce several values
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A generator does not produce *a* value — ``PathVariationRandom`` produces a start pose and
+goal poses, ``FloorplanGeneration`` a map and a 3D mesh. Those plugins declare **output
+slots**, and the same two keys take a *slot to destination* mapping:
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_poses}
+       path_length: 15.0
+       num_paths: 1
+
+   - FloorplanGeneration:
+       floorplans: [environments/secorolab/secorolab.fpm]
+       scenario: {map: map_file}
+       sim:      {mesh: plugins.floorplan.mesh}
+
+The floorplan case is why a plugin may use **both** keys at once: nav2 reads the occupancy
+map at run time, while the simulator has to compile the mesh into its model — the two
+artifacts sit on opposite sides of :ref:`the compile boundary <sim-channel>`, and no single
+key could say so.
+
+Every declared slot must be bound, each to exactly one channel; an unknown slot is refused
+naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
+for a simulator to compile is one — which are simply not produced when left unbound.
+
+Each plugin's slots, and whether they are required, are listed with it under
+:ref:`variation-points`.
+
+.. note::
+
+   The retired positional form (``name: [map_file, mesh_file]``) is refused. Which output a
+   list entry meant depended on remembering its position, and the plugins whose destination
+   names are chosen per campaign could not be described by it at all.
+
 .. note::
 
    You cannot specify both ``parameters`` and ``variations`` for the same scenario. Use ``parameters`` for fixed values or ``variations`` for parameter sweeps.

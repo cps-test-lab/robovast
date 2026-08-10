@@ -3,18 +3,15 @@ configuration:
 - name: navigation
   variations:
   - FloorplanVariation:
-      name:
-      - map_file
-      - mesh_file
+      scenario: {map: map_file, mesh: mesh_file}
       variation_files:
       - floorplans/rooms/rooms.variation
       #- floorplans/hallways/hallways.variation
       num_variations: 1
       seed: 1
   - PathVariationRandom:
-      start_pose: start_pose
-      goal_poses: goal_poses
-      num_goal_poses: 3
+      scenario: {start: start_pose, goal: goal_pose}
+      num_goal_poses: 1
       path_length: 10.0
       num_paths: 2
       path_length_tolerance: 0.5
@@ -22,7 +19,7 @@ configuration:
       seed: 42
       robot_diameter: 0.35
   - ObstacleVariation:
-      name: static_objects
+      scenario: {objects: static_objects}
       obstacle_configs:
       - amount: 1
         max_distance: 0.1

@@ -21,8 +21,8 @@ ahead of the robot's start.
 
 Two scenario parameters are written:
 
-* *spawn_trigger_point*  — the spawn pose position of the single placed obstacle.
-* *spawn_trigger_threshold* — the trigger distance (arc-length in meters) that was used.
+* *trigger_point*     — the spawn pose position of the single placed obstacle.
+* *trigger_threshold* — the trigger distance (arc-length in meters) that was used.
 
 trigger_distance can be a single float or a list of floats.  When a list is provided, one
 output configuration is produced per value (multiplied with the normal count/in_configs fan-out).
@@ -48,8 +48,7 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     """Configuration for ObstacleVariationWithDistanceTrigger.
 
     Inherits all fields from ObstacleVariationConfig and adds:
-    - spawn_trigger_point:     scenario parameter name to store the obstacle position.
-    - spawn_trigger_threshold: scenario parameter name to store the trigger distance.
+    - the ``trigger_point`` / ``trigger_threshold`` output slots, bound by the campaign.
     - trigger_distance:        arc-length (m) before the obstacle; a single float or a list
                                of floats (one output config per value).
     - start_pose:              optional explicit start pose (dict).
@@ -61,8 +60,11 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
 
     model_config = ConfigDict(extra='forbid')
 
-    spawn_trigger_point: str
-    spawn_trigger_threshold: str
+    #: Two further outputs, so the same binding form covers them: where the obstacle sits and
+    #: how far along the path the trial should act on it. They used to be config keys whose
+    #: *values* were parameter names, which is a slot binding without saying so.
+    SLOTS = ("objects", "trigger_point", "trigger_threshold")
+
     trigger_distance: Union[float, List[float]]
     start_pose: Optional[dict] = None
     goal_pose: Optional[dict] = None
@@ -108,7 +110,7 @@ class ObstacleVariationWithDistanceTriggerGuiRenderer(ObstacleVariationGuiRender
         super().update_gui(config, path)
 
         # Draw spawn trigger point
-        tp = config.get('_spawn_trigger_point')
+        tp = config.get('_trigger_point')
         if tp:
             x, y = tp['x'], tp['y']
             self.gui_object.draw_circle(x, y, radius=0.25,
@@ -133,9 +135,9 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     Expected parameters:
 
     - ``name``: Name of the parameter to store the placed obstacle.
-    - ``spawn_trigger_point``: Scenario parameter name to receive the obstacle's spawn
+    - ``trigger_point`` (slot): receives the obstacle's spawn
       pose position.
-    - ``spawn_trigger_threshold``: Scenario parameter name to receive the trigger
+    - ``trigger_threshold`` (slot): receives the trigger
       distance value that was used.
     - ``trigger_distance``: Arc-length in metres from the start to the obstacle.
       Accepts a single float or a list of floats — one output configuration is produced
@@ -155,17 +157,18 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     Generated outputs:
 
     - ``<name>``: Placed obstacle with spawn pose and model information.
-    - ``<spawn_trigger_point>``: Position of the placed obstacle.
-    - ``<spawn_trigger_threshold>``: The trigger distance value that was applied.
+    - ``trigger_point``: Position of the placed obstacle.
+    - ``trigger_threshold``: The trigger distance value that was applied.
 
     Example:
 
     .. code-block:: yaml
 
         - ObstacleVariationWithDistanceTrigger:
-            name: dynamic_objects
-            spawn_trigger_point: spawn_trigger_point
-            spawn_trigger_threshold: spawn_trigger_threshold
+            scenario:
+              objects: dynamic_objects
+              trigger_point: spawn_trigger_point
+              trigger_threshold: spawn_trigger_threshold
             trigger_distance: [1.0, 2.0]
             obstacle_configs:
             - amount: 1
@@ -266,10 +269,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         return self._current_trigger_distance
 
     def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
-        """Return spawn_trigger_point (obstacle position) and spawn_trigger_threshold.
+        """The two extra outputs, by SLOT -- the campaign names their destinations.
 
-        * spawn_trigger_point     — the spawn pose position of the single placed obstacle.
-        * spawn_trigger_threshold — the current trigger distance value.
+        * ``trigger_point``     — the spawn pose position of the single placed obstacle.
+        * ``trigger_threshold`` — the current trigger distance value.
         """
         if not obstacle_objects:
             return {}
@@ -277,10 +280,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         obj_dict = convert_dataclasses_to_dict([obstacle_objects[0]])[0]
         pos = obj_dict['spawn_pose']['position']
         return {
-            self.parameters.spawn_trigger_point: {
+            'trigger_point': {
                 'x': pos['x'],
                 'y': pos['y'],
                 'z': 0.0,
             },
-            self.parameters.spawn_trigger_threshold: self._current_trigger_distance,
+            'trigger_threshold': self._current_trigger_distance,
         }

@@ -40,9 +40,7 @@ configuration:
         yaw: 1
   variations:
   - FloorplanVariation:
-      name:
-      - map_file
-      - mesh_file
+      scenario: {map: map_file, mesh: mesh_file}
       variation_files:
       - floorplans/rooms/rooms.variation
       #- floorplans/hallways/hallways.variation

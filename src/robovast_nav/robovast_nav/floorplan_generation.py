@@ -94,9 +94,7 @@ def _create_config_for_floorplan(
     floorplan_name,
     output_dir,
     in_config,
-    map_file_parameter_name,
-    mesh_file_parameter_name,
-    update_config_fn,
+    update_slots_fn,
     mesh_format="stl"
 ):
     """Create a configuration entry for a generated floorplan with its artifacts.
@@ -105,9 +103,8 @@ def _create_config_for_floorplan(
         floorplan_name: Name of the floorplan (used as subdirectory name)
         output_dir: Base output directory containing floorplan artifacts
         in_config: Input configuration to update
-        map_file_parameter_name: Config key for map file parameter
-        mesh_file_parameter_name: Config key for mesh file parameter
-        update_config_fn: Function to update config with new values
+        update_slots_fn: The variation's ``update_slots``; it resolves each slot to the
+            channel and destination the campaign bound it to
         mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``)
 
     Returns:
@@ -167,9 +164,12 @@ def _create_config_for_floorplan(
         if os.path.isfile(os.path.join(jsonld_dir, f))
     ] if os.path.isdir(jsonld_dir) else []
 
-    new_config = update_config_fn(in_config, {
-        map_file_parameter_name: rel_map_yaml_path,
-        mesh_file_parameter_name: rel_mesh_path,
+    # By SLOT, not by parameter name: the campaign decides which channel each artifact
+    # lands on, and the map and the mesh routinely land on different ones -- nav2 reads the
+    # map at run time while the simulator has to compile the mesh in.
+    new_config = update_slots_fn(in_config, {
+        'map': rel_map_yaml_path,
+        'mesh': rel_mesh_path,
     },
         config_files=[
         (rel_map_yaml_path, map_file_path),

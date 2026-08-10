@@ -17,7 +17,7 @@
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pydantic import model_validator
 
@@ -32,10 +32,16 @@ SIM_CHANNEL = "sim"
 
 
 class DestinationConfig(VariationConfig):
-    """Config base for a variation that writes **one** value to a channel the author names.
+    """Config base for a variation whose outputs the author binds to channels.
 
-    ``scenario:`` and ``sim:`` sit at the same level and exactly one must be given, so the
-    destination of a factor is readable from the line it is written on:
+    ``scenario:`` and ``sim:`` sit at the same level and the key *is* the destination, so a
+    factor's channel is readable from the line it is written on. A ``scenario:`` name is
+    checked against the scenario file; a ``sim:`` path against the simulator backend's
+    schema. There is no default side and no mode flag: with one, the commonest line in a
+    ``.vast`` would have two spellings and a reader would have to look upwards to know
+    where a value lands.
+
+    **One output** -- :attr:`SLOTS` empty -- takes a bare name, and exactly one channel:
 
     .. code-block:: yaml
 
@@ -46,14 +52,40 @@ class DestinationConfig(VariationConfig):
             scenario: goal_pose                # a parameter the .osc declares
             values: [...]
 
-    A ``scenario:`` name is checked against the scenario file; a ``sim:`` path against the
-    simulator backend's schema. There is no default side and no mode flag: with one, the
-    commonest line in a ``.vast`` would have two spellings and a reader would have to look
-    upwards to know which channel a value lands in.
+    **Several outputs** -- :attr:`SLOTS` naming them -- take a *slot to destination*
+    mapping, and may use both channels at once. A plugin producing artifacts that live on
+    opposite sides of the compile boundary needs exactly that:
+
+    .. code-block:: yaml
+
+        - FloorplanGeneration:
+            floorplans: [environments/secorolab/secorolab.fpm]
+            scenario:
+              map: map_file                    # nav2 reads it at run time
+            sim:
+              mesh: plugins.floorplan.mesh     # MuJoCo compiles it in
+
+    Slots exist because a multi-output plugin's destinations cannot be spelled by one key,
+    and because their *names* are often dynamic -- a mode flag picking ``goal_pose`` versus
+    ``goal_poses``, or a campaign naming the parameter it wants written. Binding them by
+    slot puts the name in the ``.vast``, where a reader and a validator can both see it,
+    instead of leaving it implied by a positional list whose order has to be remembered.
     """
 
-    scenario: str | list[str] | None = None
-    sim: str | list[str] | None = None
+    #: The output names this variation produces, or ``()`` for a single unnamed output.
+    #: Declared by the plugin, so an unknown slot in a ``.vast`` is refused naming the ones
+    #: that exist rather than being silently ignored. Every one of these must be bound.
+    SLOTS: ClassVar[tuple] = ()
+
+    #: Outputs a campaign may bind but need not. For an output that only *makes sense* in some
+    #: deployments -- obstacle geometry for the simulator to compile, which a campaign running a
+    #: simulator that spawns at run time does not need -- requiring it would force every campaign
+    #: to bind something it has no destination for. Unbound simply means the plugin does not
+    #: produce it; an unknown slot is still refused.
+    OPTIONAL_SLOTS: ClassVar[tuple] = ()
+
+    scenario: str | list[str] | dict[str, str] | None = None
+    sim: str | list[str] | dict[str, str] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -73,23 +105,91 @@ class DestinationConfig(VariationConfig):
         return data
 
     @model_validator(mode="after")
-    def _exactly_one_destination(self):
+    def _destinations_are_bound(self):
         given = [k for k in (SCENARIO_CHANNEL, SIM_CHANNEL) if getattr(self, k) is not None]
-        if len(given) != 1:
+        if not self.SLOTS:
+            if len(given) != 1:
+                raise ValueError(
+                    "exactly one of 'scenario' or 'sim' must name this variation's "
+                    f"destination, got {given or 'neither'}")
+            if isinstance(getattr(self, given[0]), dict):
+                raise ValueError(
+                    f"'{given[0]}' takes a parameter name, not a mapping: this variation "
+                    "produces a single output, so there are no slots to bind")
+            return self
+
+        bound: dict = {}
+        for channel in given:
+            value = getattr(self, channel)
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"'{channel}' takes a mapping of slot to destination for this "
+                    f"variation, whose outputs are: {', '.join(self.SLOTS)}")
+            for slot in value:
+                if slot not in self.SLOTS and slot not in self.OPTIONAL_SLOTS:
+                    raise ValueError(
+                        f"'{slot}' is not an output of this variation; its outputs are: "
+                        + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+                if slot in bound:
+                    raise ValueError(
+                        f"output '{slot}' is bound to both 'scenario' and 'sim'; an output "
+                        "goes to one channel")
+                bound[slot] = channel
+        missing = [s for s in self.SLOTS if s not in bound]
+        if missing:
             raise ValueError(
-                "exactly one of 'scenario' or 'sim' must name this variation's destination, "
-                f"got {given or 'neither'}")
+                "every output must be bound to a channel; unbound: "
+                + ", ".join(missing))
         return self
 
     @property
     def channel(self) -> str:
-        """Which channel this variation writes to."""
+        """Which channel a single-output variation writes to."""
         return SCENARIO_CHANNEL if self.scenario is not None else SIM_CHANNEL
 
     @property
     def destination(self) -> str | list[str]:
-        """The parameter name(s) or dotted ``sim`` path(s) it writes."""
+        """The parameter name(s) or dotted ``sim`` path(s) a single-output variation writes."""
         return self.scenario if self.scenario is not None else self.sim
+
+    def is_bound(self, slot: str) -> bool:
+        """Whether the campaign bound *slot* to a channel.
+
+        Only meaningful for :attr:`OPTIONAL_SLOTS`: a required slot is always bound, because
+        validation refuses the config otherwise.
+        """
+        return any(isinstance(getattr(self, c), dict) and slot in getattr(self, c)
+                   for c in (SCENARIO_CHANNEL, SIM_CHANNEL))
+
+    def binding(self, slot: str) -> tuple:
+        """``(channel, destination)`` for one output slot."""
+        for channel in (SCENARIO_CHANNEL, SIM_CHANNEL):
+            mapping = getattr(self, channel)
+            if isinstance(mapping, dict) and slot in mapping:
+                return channel, mapping[slot]
+        raise KeyError(
+            f"'{slot}' is not an output of this variation; its outputs are: "
+            + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
+
+    def outputs(self) -> dict:
+        """``{channel: [destination, ...]}`` -- what this variation writes and where.
+
+        The answer :meth:`Variation.declared_outputs` gives for every config built on this
+        class, so validation, ``preview_configurations`` and the rendered plugin docs all
+        read one description instead of each inferring one.
+        """
+        result: dict = {SCENARIO_CHANNEL: [], SIM_CHANNEL: []}
+        for channel in (SCENARIO_CHANNEL, SIM_CHANNEL):
+            value = getattr(self, channel)
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                result[channel].extend(str(v) for v in value.values())
+            elif isinstance(value, list):
+                result[channel].extend(str(v) for v in value)
+            else:
+                result[channel].append(str(value))
+        return {k: v for k, v in result.items() if v}
 
 # Module-level counter for generating short, unique config indexes.
 # All variation classes can call `get_config_index()` to obtain a new
@@ -201,6 +301,44 @@ class Variation():
         if getattr(self.parameters, "channel", SCENARIO_CHANNEL) == SIM_CHANNEL:
             return self.update_config(config, {}, sim_values=values, **kwargs)
         return self.update_config(config, values, **kwargs)
+
+    def update_slots(self, config, values_by_slot: dict, **kwargs):
+        """:meth:`update_config`, routing each output slot to the channel it is bound to.
+
+        The multi-output counterpart of :meth:`update_destination`. A plugin says *what* it
+        produced, by slot; where each one lands is the author's binding, resolved here. That
+        is what lets one plugin write to both channels in a single call -- which a plugin
+        whose artifacts straddle the compile boundary has to do, and has to do atomically:
+        the world compiling six obstacles and the trial driving six of them are one fact.
+        """
+        scenario_values: dict = {}
+        sim_values: dict = {}
+        for slot, value in values_by_slot.items():
+            channel, destination = self.parameters.binding(slot)
+            target = sim_values if channel == SIM_CHANNEL else scenario_values
+            target[destination] = value
+        return self.update_config(config, scenario_values, sim_values=sim_values, **kwargs)
+
+    @classmethod
+    def declared_outputs(cls, parameters) -> dict:
+        """``{channel: [destination, ...]}`` this variation will write, for *parameters*.
+
+        Takes the plugin's own config because the names are frequently **dynamic**: a mode
+        flag picks ``goal_pose`` versus ``goal_poses``, and several plugins let the campaign
+        name the parameter they write. A static class attribute could not answer for those,
+        and answering wrongly is worse than not answering.
+
+        Three things read this, and none of them can work it out for itself: validation
+        checks scenario outputs against the scenario file and ``sim`` outputs against the
+        backend, ``preview_configurations`` shows which factor produced which value on which
+        channel, and the rendered plugin docs list the destinations.
+
+        ``{}`` -- the default -- means *undeclared*, not *nothing*. A third-party plugin that
+        does not implement it keeps working; its outputs are simply not pre-checked, which is
+        exactly today's behaviour for every plugin.
+        """
+        outputs = getattr(parameters, "outputs", None)
+        return outputs() if callable(outputs) else {}
 
     @classmethod
     def get_required_container(cls, parameters):
@@ -380,3 +518,27 @@ class Variation():
             if param.get('name') == reference_name:
                 return
         raise ValueError(f"Scenario parameter reference '{reference_name}' not found in scenario parameters.")
+
+    def scenario_parameter_is_list(self, name: str) -> bool:
+        """Whether the scenario declares *name* as a list -- the shape a value must have.
+
+        The scenario file is the only place that fact is actually defined
+        (``goal_poses: list of pose_3d`` versus ``goal_pose: pose_3d``), so a plugin
+        producing one-or-many asks here rather than inferring it. Inferring it is what the
+        two path variations used to do -- one compared the destination *name* to the literal
+        string ``"goal_pose"``, the other keyed on ``num_goal_poses == 1`` -- and both could
+        disagree with the scenario, which surfaced as a type error at run time rather than
+        as a wrong ``.vast``.
+
+        An undeclared parameter raises, naming it: the alternative is guessing a shape for a
+        destination that does not exist.
+        """
+        parameters = get_scenario_parameters(self.scenario_file)
+        if not isinstance(parameters, dict) or len(parameters) != 1:
+            raise ValueError("Unexpected scenario parameters format.")
+        for param in next(iter(parameters.values())):
+            if param.get('name') == name:
+                return bool(param.get('is_list'))
+        raise ValueError(
+            f"Scenario parameter '{name}' is not declared in {self.scenario_file}, so the "
+            "shape of the value written to it cannot be determined.")
