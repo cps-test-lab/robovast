@@ -39,13 +39,73 @@ from .nav_base_variation import NavVariation
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
+#: Shapes a placement plugin can compile. ``box`` is what ``rst_assets``' ``boxes`` takes;
+#: a world gaining another population plugin adds its shape here.
+_SUPPORTED_SHAPES = ('box',)
+
+
 class ObstacleConfig(BaseModel):
+    """One obstacle *kind*: how many, how far off the path, and what it is.
+
+    Two vocabularies, and the split is deliberate. ``shape``/``size`` say what the obstacle
+    IS -- the neutral fact, in metres, which a simulator that compiles its world needs.
+    ``model``/``xacro_arguments`` say how a run-time *spawner* makes one, which is a
+    property of that simulator's spawning interface and of the model file being spawned.
+
+    Both are optional because a campaign needs only what its bound slots consume, and
+    :meth:`ObstacleVariationConfig.validate_slots_have_inputs` requires the right one:
+    ``objects`` (a scenario spawning at run time) needs ``model``; ``instances`` (a
+    simulator compiling the placement in) needs ``size``.
+    """
+
     model_config = ConfigDict(extra='forbid')
     amount: Optional[int] = None
     amount_per_m: Optional[float | list[float]] = None
     max_distance: float | list[float]
-    model: str
-    xacro_arguments: str
+    model: Optional[str] = None
+    #: Passed to the spawner verbatim, EXCEPT for ``{size[i]}`` placeholders, which are
+    #: substituted from ``size`` -- so a campaign states the extents once and this renders
+    #: them in whatever argument names its own model file happens to use. Substitution is
+    #: positional on purpose: naming ``width``/``length``/``height`` here would put one
+    #: model file's parameter names into a generic variation, which is what this replaced.
+    xacro_arguments: Optional[str] = None
+    #: What the obstacle is, for a simulator that compiles rather than spawns. ``box`` is
+    #: the only shape a placement plugin takes today; the field exists so a world gaining
+    #: cylinders is a new value here rather than a second parallel field.
+    shape: str = 'box'
+    #: Extents in metres. For ``box``: ``[x, y, z]``.
+    size: Optional[list[float]] = None
+
+    @field_validator('size')
+    @classmethod
+    def validate_size(cls, v):
+        if v is not None and len(v) != 3:
+            raise ValueError(f"size must have three elements [x, y, z], got {len(v)}")
+        return v
+
+    @field_validator('shape')
+    @classmethod
+    def validate_shape(cls, v):
+        if v not in _SUPPORTED_SHAPES:
+            raise ValueError(f"shape must be one of {_SUPPORTED_SHAPES}, got '{v}'")
+        return v
+
+    def rendered_xacro_arguments(self) -> Optional[str]:
+        """``xacro_arguments`` with ``{size[i]}`` filled in from :attr:`size`."""
+        if self.xacro_arguments is None:
+            return None
+        if '{size[' not in self.xacro_arguments:
+            return self.xacro_arguments
+        if self.size is None:
+            raise ValueError(
+                "xacro_arguments references {size[...]} but no 'size' is declared: "
+                f"{self.xacro_arguments!r}")
+        try:
+            return self.xacro_arguments.format(size=self.size)
+        except (IndexError, KeyError) as exc:
+            raise ValueError(
+                f"xacro_arguments {self.xacro_arguments!r} does not resolve against "
+                f"size={self.size}: {exc}") from exc
 
     @model_validator(mode='after')
     def validate_amount_exclusive(self):
@@ -127,6 +187,36 @@ class ObstacleVariationConfig(DestinationConfig):
     robot_diameter: float
     map_file: Optional[str] = None
     count: int = 1
+    #: Stem of the generated entity names (``<prefix>_<i>``), which the trial drives them by
+    #: and -- when the ``instances`` slot is bound -- a simulator compiles them under. A
+    #: campaign placing two populations must give them distinct stems: two ``obstacle_0``s in
+    #: one compiled model is a duplicate-name failure, and a scenario naming one addresses
+    #: whichever the simulator resolved first.
+    entity_prefix: str = 'obstacle'
+
+    @model_validator(mode='after')
+    def validate_obstacle_inputs_for_bound_slots(self):
+        """Each bound slot needs the vocabulary it is written from.
+
+        Checked here rather than at placement time because the answer is knowable from the
+        campaign alone: a bound ``instances`` with no ``size`` used to yield an obstacle
+        whose extents the placement plugin invented, which is a wrong number in a result
+        set rather than an error.
+        """
+        for i, oc in enumerate(self.obstacle_configs):
+            if self.is_bound('objects') and not oc.model:
+                raise ValueError(
+                    f"obstacle_configs[{i}]: 'model' is required when the 'objects' slot is "
+                    "bound -- a scenario spawning at run time has nothing to spawn without it")
+            if self.is_bound('instances') and not oc.size:
+                raise ValueError(
+                    f"obstacle_configs[{i}]: 'size' is required when the 'instances' slot is "
+                    "bound -- a simulator compiling this placement needs the extents, and "
+                    "they are no longer inferred from 'xacro_arguments'")
+            # Raises if the template does not resolve, so a bad placeholder is refused at
+            # composition rather than reaching a spawner as a literal '{size[0]}'.
+            oc.rendered_xacro_arguments()
+        return self
 
     @field_validator('seed')
     @classmethod
@@ -143,16 +233,23 @@ class ObstacleVariationConfig(DestinationConfig):
         return v
 
 
-def _instances_for_sim(obstacle_objects) -> list:
+def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
     """The placement as *geometry*: what a list-valued placement plugin compiles.
 
     Deliberately pos/size/yaw and nothing else. The scenario's view of an obstacle carries a
-    model reference and xacro arguments -- a simulator's spawning vocabulary -- while what has
-    to exist in a compiled model is a shape at a pose. Size comes from the obstacle's own
-    xacro arguments when it has them, since that is where a campaign states it today.
+    model reference and spawner arguments -- one simulator's spawning vocabulary -- while what
+    has to exist in a compiled model is a shape at a pose.
+
+    The extents come from what the campaign DECLARED (``ObstacleConfig.size``), never from
+    reading them back out of a spawner's argument string. Inferring them meant this generic
+    variation knew one model file's parameter names (``width``/``length``/``height``), and --
+    worse than the naming -- anything it could not parse yielded no size at all, so the
+    placement plugin fell back to its own default: a cylinder, or a xacro spelling its
+    parameters differently, compiled a differently-sized box against the real thing on the
+    other simulator, silently, with every other cross-check passing.
     """
     instances = []
-    for obj in obstacle_objects or []:
+    for obj, (shape, size) in zip(obstacle_objects or [], obstacle_geometry or []):
         entry = convert_dataclasses_to_dict([obj])[0]
         position = entry.get('spawn_pose', {}).get('position', {})
         instance = {'pos': [position.get('x', 0.0), position.get('y', 0.0)]}
@@ -165,29 +262,12 @@ def _instances_for_sim(obstacle_objects) -> list:
         yaw = entry.get('spawn_pose', {}).get('orientation', {}).get('yaw')
         if yaw:
             instance['yaw'] = yaw
-        size = _size_from_xacro(entry.get('xacro_arguments') or "")
         if size:
-            instance['size'] = size
+            instance['size'] = list(size)
+        if shape and shape != 'box':
+            instance['shape'] = shape
         instances.append(instance)
     return instances
-
-
-def _size_from_xacro(arguments: str):
-    """``width:=0.5, length:=0.5, height:=1.0`` -> ``[0.5, 0.5, 1.0]``, or ``None``.
-
-    A campaign already states an obstacle's extents this way; reading them here means the two
-    channels describe the same box rather than the simulator's copy defaulting to another size.
-    """
-    values = {}
-    for token in arguments.replace(',', ' ').split():
-        key, sep, value = token.partition(':=')
-        if sep:
-            try:
-                values[key.strip()] = float(value)
-            except ValueError:
-                return None
-    dims = [values.get(k) for k in ('width', 'length', 'height')]
-    return dims if all(d is not None for d in dims) else None
 
 
 class ObstacleVariationGuiRenderer(VariationGuiRenderer):
@@ -258,7 +338,14 @@ class ObstacleVariation(NavVariation):
         Accepts a single float or a list of floats — each value produces a separate
         variation.
       - ``model``: Model name/path for the obstacle.
-      - ``xacro_arguments``: Arguments to pass to xacro for model generation.
+      - ``xacro_arguments``: Arguments to pass to xacro for model generation. ``{size[i]}``
+        placeholders are substituted from ``size``, so the extents are stated once and the
+        argument names stay with the model file that defines them.
+      - ``size``: Extents in metres (``[x, y, z]`` for a box). Required when the ``instances``
+        slot is bound, i.e. when a simulator has to compile the placement rather than spawn it.
+      - ``shape``: What the obstacle is, for that simulator. ``box`` (default).
+    - ``entity_prefix`` (optional): stem of the generated entity names, ``obstacle`` by
+      default. Give two populations in one campaign distinct stems.
 
     - ``seed``: Seed for random number generation to ensure reproducibility.
     - ``robot_diameter``: Diameter of the robot for collision checking.
@@ -368,6 +455,11 @@ class ObstacleVariation(NavVariation):
 
         obstacle_objects = []  # List[StaticObject]
         obstacle_anchors = []  # List[Position] — path anchors for placed obstacles
+        # The geometry of each placed object, in the order it was placed, so the `instances`
+        # slot can say what a simulator must COMPILE. Carried beside the spawn objects rather
+        # than read back off them: a spawn object holds a model reference and spawner
+        # arguments, which is a different question from what shape exists at that pose.
+        obstacle_geometry = []  # List[(shape, size)]
         for i, obstacle_config in enumerate(obstacle_configs):
             effective_amount = obstacle_config.resolve_amount(path_length)
             if effective_amount > 0:
@@ -387,7 +479,8 @@ class ObstacleVariation(NavVariation):
                             obstacle_config.max_distance,
                             effective_amount,
                             obstacle_config.model,
-                            obstacle_config.xacro_arguments,
+                            obstacle_config.rendered_xacro_arguments(),
+                            entity_prefix=self.parameters.entity_prefix,
                             robot_diameter=self.parameters.robot_diameter,
                             waypoints=waypoints,
                             min_arc_length=self._min_arc_length_for_config(i),
@@ -422,6 +515,9 @@ class ObstacleVariation(NavVariation):
                                     # Success! Add these obstacles to our collection
                                     obstacle_objects.extend(placed_obstacles)
                                     obstacle_anchors.extend(placed_anchor_pts)
+                                    obstacle_geometry.extend(
+                                        [(obstacle_config.shape, obstacle_config.size)]
+                                        * len(placed_obstacles))
                                     navigable_config_found = True
                                     self.progress_update(
                                         f"Successfully placed {obstacle_config.amount} obstacles for config"
@@ -464,7 +560,7 @@ class ObstacleVariation(NavVariation):
         # a world carrying fewer obstacles than the scenario names is a run that fails on a
         # service call, not a configuration anyone can fix afterwards.
         if self.parameters.is_bound('instances'):
-            values['instances'] = _instances_for_sim(obstacle_objects)
+            values['instances'] = _instances_for_sim(obstacle_objects, obstacle_geometry)
         result_config = self.update_slots(
             config, values,
             other_values={'_map_file': map_file_path, '_path': path,

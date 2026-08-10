@@ -198,21 +198,62 @@ def test_goal_cannot_be_bound_to_the_sim_channel(tmp_path):
 
 # -- one placement, two channels -------------------------------------------------------------
 
-def test_obstacle_geometry_is_derived_from_the_campaigns_own_extents():
-    """The two channels must describe the same box, not the simulator's copy of a default."""
-    from robovast_nav.variation.obstacle_variation import _size_from_xacro
+def test_obstacle_extents_are_stated_once_and_rendered_per_spawner():
+    """One statement of the geometry; the spawner's argument names stay in the campaign.
 
-    assert _size_from_xacro("width:=0.5, length:=0.8, height:=1.0") == [0.5, 0.8, 1.0]
-    assert _size_from_xacro("width:=0.5 length:=0.8 height:=1.0") == [0.5, 0.8, 1.0]
+    ``xacro_arguments`` is a template over ``size``, substituted positionally, so this
+    generic variation never learns that some model file calls its parameters
+    width/length/height.
+    """
+    from robovast_nav.variation.obstacle_variation import ObstacleConfig
+
+    oc = ObstacleConfig(amount=1, max_distance=0.1, model="box.sdf.xacro", size=[0.5, 0.8, 1.0],
+                        xacro_arguments="width:={size[0]}, length:={size[1]}, height:={size[2]}")
+    assert oc.rendered_xacro_arguments() == "width:=0.5, length:=0.8, height:=1.0"
+
+    # A model whose parameters are spelled differently is served by the same mechanism.
+    radial = ObstacleConfig(amount=1, max_distance=0.1, model="cylinder.sdf.xacro",
+                            size=[0.3, 0.3, 1.0], xacro_arguments="radius:={size[0]}")
+    assert radial.rendered_xacro_arguments() == "radius:=0.3"
+
+    # A literal string with no placeholders is passed through untouched.
+    literal = ObstacleConfig(amount=1, max_distance=0.1, model="m", xacro_arguments="width:=0.5")
+    assert literal.rendered_xacro_arguments() == "width:=0.5"
 
 
-def test_obstacle_size_is_absent_rather_than_guessed():
-    """No extents stated means the placement plugin's own default, not a number invented here."""
-    from robovast_nav.variation.obstacle_variation import _size_from_xacro
+def test_obstacle_size_must_be_declared_rather_than_guessed():
+    """A simulator that COMPILES the placement is refused an obstacle with no extents.
 
-    assert _size_from_xacro("") is None
-    assert _size_from_xacro("radius:=0.3") is None
-    assert _size_from_xacro("width:=wide, length:=0.8, height:=1.0") is None
+    This used to be inferred by parsing ``xacro_arguments`` for width/length/height, and
+    anything unparseable yielded no size at all -- so the placement plugin fell back to its
+    own default and compiled a differently-sized obstacle than the other simulator spawned,
+    silently. Refusing at composition is what makes that a fixable error instead of a wrong
+    number in a result set.
+    """
+    from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
+
+    def _cfg(**oc):
+        return ObstacleVariationConfig(
+            scenario={"objects": "static_objects"},
+            sim={"instances": "plugins.obstacles.instances"},
+            obstacle_configs=[dict(amount=1, max_distance=0.1, model="m", **oc)],
+            seed=1, robot_diameter=0.35)
+
+    with pytest.raises(ValueError, match="'size' is required when the 'instances' slot is bound"):
+        _cfg(xacro_arguments="radius:=0.3")
+
+    # Bound only to a run-time spawner, no size is needed -- that campaign compiles nothing.
+    ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                            obstacle_configs=[dict(amount=1, max_distance=0.1, model="m",
+                                                   xacro_arguments="radius:=0.3")],
+                            seed=1, robot_diameter=0.35)
+
+    # A template that cannot resolve is refused rather than reaching a spawner as a literal.
+    with pytest.raises(ValueError, match=r"references \{size\[\.\.\.\]\} but no 'size'"):
+        ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                obstacle_configs=[dict(amount=1, max_distance=0.1, model="m",
+                                                       xacro_arguments="width:={size[0]}")],
+                                seed=1, robot_diameter=0.35)
 
 
 def test_an_optional_slot_may_be_left_unbound():
@@ -430,6 +471,11 @@ def test_both_channels_call_an_obstacle_the_same_thing():
         spawn_pose: Pose = field(default_factory=lambda: Pose(
             position=Position(x=1.0, y=2.0), orientation=Orientation(yaw=0.0)))
 
-    instances = _instances_for_sim([_Obj()])
+    # The geometry travels beside the spawn objects, in placement order, because what a
+    # spawner is handed and what a compiler needs are different questions about one placement.
+    instances = _instances_for_sim([_Obj()], [("box", [0.5, 0.5, 1.0])])
     assert instances[0]["name"] == "obstacle_7"
     assert instances[0]["size"] == [0.5, 0.5, 1.0]
+    assert instances[0]["pos"] == [1.0, 2.0]
+    # 'box' is the placement plugin's own default, so it is not restated per instance.
+    assert "shape" not in instances[0]
