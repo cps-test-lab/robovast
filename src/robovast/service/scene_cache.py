@@ -190,6 +190,11 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
         "backend": backend_name(execution),
     }
     identity.update(_campaign_world(campaign_dir, str(world), config_name))
+    # A second tier, when the world is the campaign's but an override names a file this
+    # configuration owns. Asked after the world's own tier, because whether it is needed
+    # depends on that answer.
+    identity.update(_per_config_tree(campaign_dir, identity["overrides"], config_name,
+                                     per_config_world=bool(identity.get("config_mount"))))
     return identity
 
 
@@ -275,6 +280,55 @@ def _campaign_world(campaign_dir, world: str, config_name: str = "") -> dict:
     return result
 
 
+def _per_config_tree(campaign_dir, overrides, config_name: str, per_config_world: bool) -> dict:
+    """The configuration's own ``_config/`` tree, when an OVERRIDE reaches into it.
+
+    The world and the files it names need not belong to the same tier. A campaign may ship
+    ONE world and give each configuration its environment through the ``sim`` channel --
+    which is what that channel is for -- and then the world is a campaign-level run file
+    while ``plugins.floorplan.mesh`` points at ``/config/<config-name>/...``, a file a
+    variation generated for this cell alone. Deciding the mount from the world's own tier
+    (:func:`_campaign_world`) stages only ``<campaign>/_config``, and the export fails on
+    the first path the world resolves -- not with a bad path but with no 3D scene at all,
+    for exactly the campaigns the ``sim`` channel makes possible.
+
+    Nothing here knows which keys hold a path: an override VALUE that starts with this
+    configuration's mount prefix is the whole test, so a plugin key nobody has thought of
+    is served identically.
+
+    Returns ``{}`` when no override reaches into the tree, or when the world is itself
+    per-configuration (its tree is already mounted at that prefix, so the paths resolve).
+    """
+    if not config_name or per_config_world:
+        return {}
+    prefix = f"{_RUN_FILE_MOUNT}{config_name}/"
+    if not any(isinstance(v, str) and v.startswith(prefix) for v in _leaf_values(overrides)):
+        return {}
+    root = Path(campaign_dir) / config_name / _CONFIG_DIR
+    if not root.is_dir():
+        raise SceneUnavailable(
+            f"this run's world is overridden with a file under {prefix!r}, but the "
+            f"configuration's archived inputs are missing (looked in {root}), so its "
+            "geometry cannot be rebuilt.")
+    # Its digest joins the cache key for the same reason the campaign tree's does: the image
+    # digest covers none of these bytes, so without it a configuration whose generated mesh
+    # changed would be served the old shape.
+    return {"extra_root": str(root), "extra_mount": f"{_RUN_FILE_MOUNT}{config_name}",
+            "extra_sha": _tree_sha(root)}
+
+
+def _leaf_values(value):
+    """Every scalar in a nested mapping/sequence, so an override value is found wherever it sits."""
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _leaf_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _leaf_values(item)
+    else:
+        yield value
+
+
 def _campaign_execution(campaign_dir) -> dict:
     """The frozen ``.vast``'s ``execution`` block -- which simulator this campaign ran.
 
@@ -332,6 +386,11 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
     # For a campaign-file world the image digest says nothing about the bytes -- of the
     # world or of anything it references, which is why this covers the whole tree.
     key.add("config_sha", identity.get("config_sha") or "")
+    # The configuration's own tree, when an override reaches into it. Same reasoning as
+    # `config_sha`: these bytes are covered by nothing else, so two configurations of one
+    # campaign -- same world, same image, different generated mesh -- would otherwise share
+    # a key and be served each other's geometry.
+    key.add("extra_sha", identity.get("extra_sha") or "")
     key.add("scene_cache_version", CACHE_FORMAT_VERSION)
     key.add("image", identity["image"])
     key.add("world", identity["world"])
@@ -389,7 +448,7 @@ def clear_failure(key: str) -> None:
         _failures.pop(key, None)
 
 
-def _command_for(identity: dict, max_tex_dim: int) -> str:
+def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = None) -> str:
     """The command that compiles this world, asked of the campaign's simulator backend.
 
     Which exporter builds geometry, and how it spells its arguments, is the *simulator's*
@@ -410,7 +469,8 @@ def _command_for(identity: dict, max_tex_dim: int) -> str:
     try:
         command = scene_export_command(execution, world=identity["world"],
                                        max_tex_dim=int(max_tex_dim),
-                                       overrides=identity["overrides"])
+                                       overrides=identity["overrides"],
+                                       overrides_file=overrides_file)
     except Exception as err:  # noqa: BLE001 - reported as a reason, not a traceback
         raise SceneUnavailable(
             f"the simulator backend {name!r} could not say how to build this campaign's "
@@ -423,22 +483,64 @@ def _command_for(identity: dict, max_tex_dim: int) -> str:
     return command
 
 
+#: Where a staged overrides document appears inside the build container. Outside ``/config``
+#: on purpose: the campaign trees mount there, and an input nested in another input's mount
+#: has to be copied into it rather than bound (see ``stage_for_container``) -- a neutral path
+#: keeps this one an ordinary mount whatever the world's tier turns out to be.
+_OVERRIDES_MOUNT = "/tmp/rst_scene_overrides.yaml"
+
+
+def _overrides_file(identity: dict, key: str) -> str | None:
+    """The run's overrides as a YAML file, or ``None`` when there are none.
+
+    A campaign's overrides are a nested tree and argv cannot carry one: a list of obstacle
+    instances flattened onto ``--set`` reached the exporter as ``KeyError: '"pos"'``, and
+    only when somebody opened the run view. The run itself already solved this by passing a
+    file, so the export uses the same spelling.
+
+    Written beside the cache rather than into the entry, which is the generator's output.
+    Keyed like the entry, so two configurations of one campaign cannot share one.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+    overrides = identity.get("overrides") or {}
+    if not overrides:
+        return None
+    path = os.path.join(cache_root(), "_overrides", f"{key}.yaml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(overrides, handle, default_flow_style=False)
+    return path
+
+
 def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
     """The ``execution.generate`` entry that builds this descriptor.
 
     A plain ``shell`` entry with ``image`` set -- which is the documented aux-container path, so the
     container run, the input staging and the copy-back are the generator framework's, not ours.
     """
+    overrides_file = _overrides_file(identity, key)
     entry = {"shell": {"out": key,
                        "image": identity["image"],
-                       "command": _command_for(identity, max_tex_dim)}}
+                       "command": _command_for(identity, max_tex_dim,
+                                               overrides_file and _OVERRIDES_MOUNT)}}
     if identity.get("config_root"):
         # The tree, at the path the run had it. Not the world file alone: it names the rest
         # by absolute `/config/...` path, so the mount is what makes those resolve.
-        entry["shell"]["inputs"] = [identity["config_root"]]
-        entry["shell"]["mount_at"] = {
-            identity["config_root"]:
-                identity.get("config_mount") or _RUN_FILE_MOUNT.rstrip("/")}
+        inputs = [identity["config_root"]]
+        mount_at = {identity["config_root"]:
+                    identity.get("config_mount") or _RUN_FILE_MOUNT.rstrip("/")}
+        # Both tiers when they differ: the campaign's tree at `/config`, and this
+        # configuration's at `/config/<config-name>`, which is where an override that
+        # varies the world per cell points. `inputs` is a list and `mount_at` a mapping
+        # precisely so a build can need more than one.
+        if identity.get("extra_root"):
+            inputs.append(identity["extra_root"])
+            mount_at[identity["extra_root"]] = identity["extra_mount"]
+        entry["shell"]["inputs"] = inputs
+        entry["shell"]["mount_at"] = mount_at
+    if overrides_file:
+        entry["shell"].setdefault("inputs", []).append(overrides_file)
+        entry["shell"].setdefault("mount_at", {})[overrides_file] = _OVERRIDES_MOUNT
     return entry
 
 

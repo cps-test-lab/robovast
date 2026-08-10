@@ -225,7 +225,7 @@ class SimulatorBackend:
         return []
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
-                     overrides: dict) -> Optional[str]:
+                     overrides: dict, overrides_file: Optional[str] = None) -> Optional[str]:
         """Command that compiles *world* into a web scene descriptor, or ``None``.
 
         Returned as a **string**, run through ``shlex.split`` by the ``shell`` input
@@ -242,6 +242,12 @@ class SimulatorBackend:
         implements against it rather than inventing one. What belongs here is only the
         command: which tool, and how it spells its arguments -- ``overrides`` in particular,
         whose serialization is the simulator's own convention.
+
+        ``overrides_file`` is the same mapping already written as YAML and staged where the
+        command can read it, at that absolute in-container path. Prefer it: argv is the wrong
+        channel for a nested tree, and flattening one loses it to quoting -- a list of
+        obstacle instances reached an exporter as ``KeyError: '"pos"'``, which surfaces only
+        when somebody opens the run view. ``None`` when there are no overrides.
         """
         return None
 
@@ -345,7 +351,8 @@ def simulation_screenshot_command(execution: dict, *, state: str, at: Optional[f
 
 
 def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
-                         overrides: dict, base_dir: str = "") -> Optional[str]:
+                         overrides: dict, base_dir: str = "",
+                         overrides_file: Optional[str] = None) -> Optional[str]:
     """The configured backend's :meth:`SimulatorBackend.scene_export`, or ``None``.
 
     The seam that keeps one simulator's exporter out of the service: what a campaign's
@@ -363,7 +370,7 @@ def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
     block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
     cfg = _validated_cfg(backend, block, name)
     return backend.scene_export(cfg, execution, world=world, max_tex_dim=max_tex_dim,
-                                overrides=overrides)
+                                overrides=overrides, overrides_file=overrides_file)
 
 
 def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:

@@ -13,6 +13,8 @@ import json
 import os
 import shlex
 
+import yaml
+
 import pytest
 
 from robovast.service import scene_cache
@@ -124,28 +126,44 @@ def test_the_key_separates_exporter_options(tmp_path):
     assert scene_cache.cache_key(ident, 1024) != scene_cache.cache_key(ident, 2048)
 
 
-def test_overrides_become_dotlist_set_flags(tmp_path):
-    ident = scene_cache.world_identity(
-        _campaign(tmp_path),
-        _manifest(overrides={"plugins": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
-    cmd = scene_cache._command_for(ident, 1024)
-    # Asserted after shlex.split, because that is what the generator does with this string -- a
-    # substring match passes for a value that will be torn into several arguments.
-    assert _set_values(cmd) == ["plugins.floorplan.size=4.0", 'sim.pacing="asap"']
-    assert "--manifest {out}/.generated.json" in cmd, "the tool reports its own inputs"
+def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
+    """A campaign's overrides go in through --override, the spelling the RUN already uses.
 
-
-def test_a_vector_override_stays_one_argument(tmp_path):
-    """A campaign that sweeps a position records a LIST, and a list has spaces in it.
-
-    Unquoted, `plugins.parcel.pos=[11.8, 4.55, 0.762]` reached the exporter as three arguments and it
-    exited 2 -- reported to whoever opened the run view as "no 3D geometry", which reads like the
-    campaign never recorded any rather than like a quoting bug here.
+    They were flattened onto repeated ``--set`` until a campaign varied something structured.
     """
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
-        _manifest(overrides={"plugins": {"parcel": {"pos": [11.8, 4.55, 0.762]}}}))
-    assert _set_values(scene_cache._command_for(ident, 1024)) == ["plugins.parcel.pos=[11.8,4.55,0.762]"]
+        _manifest(overrides={"plugins": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
+    cmd = scene_cache._command_for(ident, 1024, "/tmp/rst_scene_overrides.yaml")
+    args = shlex.split(cmd)
+    assert "--override" in args and args[args.index("--override") + 1] == "/tmp/rst_scene_overrides.yaml"
+    assert "--set" not in args, "argv is not the channel for a recorded override tree"
+    assert "--manifest {out}/.generated.json" in cmd, "the tool reports its own inputs"
+
+
+def test_a_structured_override_survives(tmp_path):
+    """The case argv cannot carry: a LIST OF MAPPINGS, i.e. an obstacle population.
+
+    Flattened onto ``--set`` it rendered as ``plugins.boxes.instances=[{"name":...,"pos":...}]``,
+    which is not a dotlist value -- the exporter read ``"pos"`` as a key with its quotes still
+    attached and died with ``KeyError: '"pos"'``. It fails only when somebody opens the run view,
+    so it reads as "this campaign has no 3D geometry" rather than as a quoting bug.
+    """
+    instances = [{"name": "dynamic_0", "pos": [1.03, 0.55], "size": [0.5, 0.5, 1.0]}]
+    ident = scene_cache.world_identity(
+        _campaign(tmp_path),
+        _manifest(overrides={"plugins": {"dynamic_obstacles": {"instances": instances}}}))
+    path = scene_cache._overrides_file(ident, "somekey")
+    assert path, "overrides present means a document to hand the exporter"
+    with open(path, encoding="utf-8") as handle:
+        assert yaml.safe_load(handle)["plugins"]["dynamic_obstacles"]["instances"] == instances
+
+
+def test_no_overrides_means_no_file_and_no_flag(tmp_path):
+    """A world compiled as declared needs neither, and must not be handed an empty document."""
+    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest(overrides={}))
+    assert scene_cache._overrides_file(ident, "somekey") is None
+    assert "--override" not in shlex.split(scene_cache._command_for(ident, 1024, None))
 
 
 def test_the_command_is_the_backends_to_give(tmp_path):

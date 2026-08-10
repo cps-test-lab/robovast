@@ -566,8 +566,35 @@ def stage_for_container(runner, out_dir, inputs, mount_at=None):
     os.makedirs(container_out, exist_ok=True)
     _make_writable(container_out)
 
-    staged = []
-    for index, source in enumerate(inputs):
+    mount_at = mount_at or {}
+    staged_by_index = {}
+    #: mount target -> the staged host directory serving it, for nesting (below).
+    served = {}
+    # Shallowest mount first, so a tree that must land *inside* another one is staged after
+    # the tree it lands in.
+    order = sorted(range(len(inputs)),
+                   key=lambda i: (mount_at.get(inputs[i]) or "").count("/"))
+    for index in order:
+        source = inputs[index]
+        mount = mount_at.get(source)
+        # A mount NESTED in another input's mount cannot be its own bind: the parent is
+        # mounted read-only, so the runtime cannot create the child's mountpoint inside it
+        # (`mkdirat ...: read-only file system`, before the container starts). Copy it into
+        # the parent's staged tree instead, where the path it must appear at is an ordinary
+        # directory. Two tiers of one campaign's inputs are exactly this shape.
+        parent = next(((m, host) for m, host in served.items()
+                       if mount and mount.startswith(m.rstrip("/") + "/")), None)
+        if parent:
+            parent_mount, parent_host = parent
+            target = os.path.join(parent_host, mount[len(parent_mount.rstrip("/")) + 1:])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.isdir(source):
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(source, target)
+            # It resolves at the path the command was written for, inside the parent's mount.
+            staged_by_index[index] = mount
+            continue
         # Namespaced by index so two inputs sharing a basename cannot collide, and so a
         # world YAML keeps its own name (tools often derive output names from it).
         holder = os.path.join(workspace, "in", str(index))
@@ -577,7 +604,6 @@ def stage_for_container(runner, out_dir, inputs, mount_at=None):
             shutil.copytree(source, target, dirs_exist_ok=True)
         else:
             shutil.copy2(source, target)
-        mount = (mount_at or {}).get(source)
         if mount:
             # Refuse rather than run without it: the command was written for a tree at
             # *mount*, so a runner that cannot provide one would fail deep inside the
@@ -589,8 +615,10 @@ def stage_for_container(runner, out_dir, inputs, mount_at=None):
                     f"this execution backend cannot expose a staged input at {mount!r}, "
                     f"which the generator requires ({type(runner).__name__}).")
             expose(target, mount)
+            served[mount] = target
             target = mount
-        staged.append(target)
+        staged_by_index[index] = target
+    staged = [staged_by_index[i] for i in range(len(inputs))]
     for root, dirs, names in os.walk(os.path.join(workspace, "in")):
         for entry in [root] + [os.path.join(root, d) for d in dirs] + \
                      [os.path.join(root, n) for n in names]:

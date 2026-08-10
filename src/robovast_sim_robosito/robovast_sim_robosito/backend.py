@@ -309,15 +309,26 @@ class RobositoBackend(SimulatorBackend):
         return ContainerQuery(ContainerSpec(image=DEFAULT_SIM_IMAGE), command)
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
-                     overrides: dict) -> str:
+                     overrides: dict, overrides_file: Optional[str] = None) -> str:
         """``rst-export-web``, robosito's own exporter, run in robosito's own image.
 
         *world* is passed through as the capture recorded it -- a package ref, or the
         ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
         the build so the world resolves what it references.
+
+        Overrides go in through ``--override``, THE SAME FILE SPELLING THE RUN USES, and for
+        the same reason (see :meth:`containers`): a campaign's overrides are a nested tree,
+        and argv cannot carry one. Flattening them onto ``--set`` worked until a campaign
+        varied something structured -- a list of obstacle instances -- which reached the
+        exporter as ``KeyError: '"pos"'``, because a list of mappings is not a dotlist
+        value. It fails only when the run view is opened, so it reads as "this campaign has
+        no 3D geometry" rather than as a quoting bug.
+
+        ``--set`` is still what a person types by hand; it is simply not how a campaign's
+        recorded overrides travel.
         """
-        sets = " ".join(f"--set {_set_arg(k, v)}" for k, v in _flatten(overrides))
-        return (f"rst-export-web --world {world} {sets} --out {{out}} "
+        override_arg = f" --override {overrides_file}" if overrides_file else ""
+        return (f"rst-export-web --world {world}{override_arg} --out {{out}} "
                 f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
 
     def run_state_file(self, cfg, execution: dict) -> str:
