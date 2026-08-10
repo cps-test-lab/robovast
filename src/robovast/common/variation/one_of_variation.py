@@ -65,7 +65,7 @@ class OneOfVariation(Variation):
         - OneOfVariation:
             variations:
             - ObstacleVariation:
-                name: static_objects
+                scenario: {objects: static_objects}
                 obstacle_configs:
                 - amount: 3
                   max_distance: 0.3
@@ -74,9 +74,9 @@ class OneOfVariation(Variation):
                 robot_diameter: 0.35
                 count: 2
             - ObstacleVariationWithDistanceTrigger:
-                name: dynamic_objects
-                spawn_trigger_point: spawn_trigger_point
-                spawn_trigger_threshold: spawn_trigger_threshold
+                scenario: {objects: dynamic_objects,
+                           trigger_point: spawn_trigger_point,
+                           trigger_threshold: spawn_trigger_threshold}
                 trigger_distance: [1.0, 2.0]
                 obstacle_configs:
                 - amount: 1

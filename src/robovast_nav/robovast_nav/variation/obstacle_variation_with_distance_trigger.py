@@ -200,9 +200,16 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
                         result = self._generate_obstacles_for_config(
                             self.base_path, effective_config, list(expanded_configs)
                         )
-                        # Propagate spawn trigger point to a private key for GUI access
+                        # Propagate spawn trigger point to a private key for GUI access.
+                        # Read back from the destination the campaign BOUND the slot to, the
+                        # same way ObstacleVariation resolves `objects`. It used to be
+                        # `self.parameters.spawn_trigger_point` -- a config key whose value was
+                        # a parameter name, which is what output slots replaced, so the
+                        # attribute no longer exists and every campaign using this variation
+                        # failed at generation.
+                        trigger_point_name = self.parameters.binding('trigger_point')[1]
                         for r in result:
-                            tp = r['config'].get(self.parameters.spawn_trigger_point)
+                            tp = r['config'].get(trigger_point_name)
                             if tp:
                                 r['_spawn_trigger_point'] = tp
                         results.extend(result)
