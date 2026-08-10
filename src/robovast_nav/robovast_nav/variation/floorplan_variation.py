@@ -17,6 +17,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -118,6 +119,10 @@ class FloorplanVariationConfig(DestinationConfig):
     num_variations: int
     seed: int
     mesh_format: str = 'stl'
+    #: Height (m) the occupancy grid is sliced at -- a property of the robot that localizes in
+    #: it, not of the floorplan. Unset leaves scenery_builder's 0.7 m; a TurtleBot 4's scanner
+    #: is at 0.2 m, and the difference is a materially different map (see ``_occ_grid_command``).
+    laser_height: Optional[float] = None
 
     @field_validator('mesh_format')
     @classmethod
@@ -148,6 +153,8 @@ class FloorplanGenerationConfig(DestinationConfig):
         floorplans: List of paths to .fpm floorplan files to generate artifacts for.
                     Paths are relative to the base configuration directory.
         mesh_format: 3D mesh format to produce, ``stl`` (default) or ``obj``.
+        laser_height: Height (m) the occupancy grid is sliced at, or unset for
+                      scenery_builder's 0.7 m.
     """
     model_config = ConfigDict(extra='forbid')
 
@@ -168,6 +175,10 @@ class FloorplanGenerationConfig(DestinationConfig):
 
     floorplans: list[str]
     mesh_format: str = 'stl'
+    #: Height (m) the occupancy grid is sliced at -- a property of the robot that localizes in
+    #: it, not of the floorplan. Unset leaves scenery_builder's 0.7 m; a TurtleBot 4's scanner
+    #: is at 0.2 m, and the difference is a materially different map (see ``_occ_grid_command``).
+    laser_height: Optional[float] = None
 
     @field_validator('mesh_format')
     @classmethod
@@ -193,7 +204,9 @@ class FloorplanGeneration(NavVariation):
 
     Expected parameters:
 
-    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
+      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      positional ``name: [map_param, mesh_param]`` is refused.
     - ``floorplans``: List of paths to ``.fpm`` floorplan files to generate artifacts
       for (must contain at least one file).
 
@@ -480,6 +493,7 @@ class FloorplanGeneration(NavVariation):
             self.container_runner,
             scenery_builder_version=scenery_builder_image,
             mesh_format=self.parameters.mesh_format,
+            laser_height=self.parameters.laser_height,
         )
 
         if not floorplan_names:
@@ -529,12 +543,17 @@ class FloorplanVariation(NavVariation):
 
     Expected parameters:
 
-    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
+      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      positional ``name: [map_param, mesh_param]`` is refused.
     - ``variation_files``: List of variation files to use for floorplan generation
       (must contain at least one file).
     - ``num_variations``: Number of floorplan variations to generate (minimum 1).
     - ``seed``: Seed for random number generation to ensure reproducibility.
     - ``mesh_format`` (optional): 3D mesh format to produce, ``stl`` (default) or ``obj``.
+    - ``laser_height`` (optional): height (m) the occupancy grid is sliced at. Unset leaves
+      scenery_builder's 0.7 m; a TurtleBot 4's scanner sits at 0.2 m, and the two produce
+      materially different maps.
 
     Generated outputs:
 
@@ -664,7 +683,8 @@ class FloorplanVariation(NavVariation):
                                                         self.progress_update,
                                                         self.container_runner,
                                                         scenery_builder_version=scenery_builder_image,
-                                                        mesh_format=self.parameters.mesh_format)
+                                                        mesh_format=self.parameters.mesh_format,
+                                                        laser_height=self.parameters.laser_height)
 
         if not floorplan_names:
             raise ValueError("Floorplan variation failed, no result returned")

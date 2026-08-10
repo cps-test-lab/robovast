@@ -194,7 +194,27 @@ def _mesh_command(mesh_format):
     return ["mesh"]
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl"):
+def _occ_grid_command(laser_height):
+    """Build the scenery_builder ``occ-grid`` sub-command.
+
+    ``laser_height`` is the height the floorplan is SLICED at to make the grid, and it is a
+    property of the robot that will localize in it -- a TurtleBot 4's RPLIDAR sits at 0.2 m,
+    scenery_builder's default is 0.7 m. Not a detail: regenerating the metamorphic dataset's
+    hexagon at the default reproduced its ``.pgm`` in every respect except 441 of 25232 cells
+    (1.75%), because a floorplan's geometry is height-dependent. A campaign whose map came out
+    of this pipeline and whose robot's scanner is not at 0.7 m therefore has to be able to say
+    so; without it the map nav2 localizes in silently stops being the map the environment was
+    measured with.
+
+    Omitted when unset, so an image predating the flag still works and the default is
+    scenery_builder's rather than a second one maintained here.
+    """
+    if laser_height is None:
+        return ["occ-grid"]
+    return ["occ-grid", "--laser-height", str(laser_height)]
+
+
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -218,9 +238,10 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         variation = os.path.splitext(os.path.basename(variation_file))[0]
         progress_update_callback(f"\nProcessing: {variation}")
 
-        file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value, mesh_format])
+        file_cache = FileCache(base_path, "floorplan_variation",
+                               [variation_file, num_variations, seed_value, mesh_format, laser_height])
         files_for_hash = [variation_file_path]  # TODO: add fpm
-        strings_for_hash = [str(num_variations), str(seed_value), mesh_format]
+        strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -298,8 +319,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                     "generate",
                     "-i", temp_transform_path,
                     "-o", temp_generate_output_path,
-                    "occ-grid",
-                ] + _mesh_command(mesh_format)
+                ] + _occ_grid_command(laser_height) + _mesh_command(mesh_format)
                 try:
                     container_runner.run(cmd3, progress_update_callback)
                 except subprocess.CalledProcessError as e:
@@ -366,7 +386,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
     return floorplan_names, floorplan_versions
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl"):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -379,6 +399,8 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         scenery_builder_version: Optional version string for the scenery_builder image.
             Written into the cache tar so it survives cache hits.
         mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``).
+        laser_height: Height (m) the occupancy grid is sliced at, or None for
+            scenery_builder's default. See :func:`_occ_grid_command`.
 
     Returns:
         Tuple of (floorplan_names, versions) where floorplan_names is a list of
@@ -409,9 +431,13 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_basename = os.path.splitext(os.path.basename(floorplan_file))[0]
         progress_update_callback(f"\nProcessing: {floorplan_basename}")
 
-        file_cache = FileCache(base_path, "floorplan_generation", [floorplan_file, mesh_format])
+        # laser_height is in the key for the same reason mesh_format is: it changes the bytes
+        # produced from an unchanged .fpm, so a cache hit across two values would serve one
+        # campaign's map to another.
+        file_cache = FileCache(base_path, "floorplan_generation",
+                               [floorplan_file, mesh_format, laser_height])
         files_for_hash = [floorplan_file_path]
-        strings_for_hash = [mesh_format]
+        strings_for_hash = [mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -450,8 +476,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 "generate",
                 "-i", temp_transform_path,
                 "-o", temp_generate_output_path,
-                "occ-grid",
-            ] + _mesh_command(mesh_format)
+            ] + _occ_grid_command(laser_height) + _mesh_command(mesh_format)
             progress_update_callback("Generating floorplan. This may take a while...")
             try:
                 container_runner.run(cmd_generate, progress_update_callback)
