@@ -1850,7 +1850,8 @@ class ClusterService(LocalTransport):
             scene_cache  # pylint: disable=import-outside-toplevel
 
         manifest = self._scene_capture(campaign_id, config_name, run_id)
-        rel = scene_cache.campaign_world_rel(str((manifest or {}).get("world") or ""))
+        rel = scene_cache.campaign_world_rel(
+            str((manifest or {}).get("world") or ""), config_name)
         address = file_address.format_address(
             file_address.RESULTS, campaign_id, "_config/")
         # limit=0 is "no window" (see file_view.paginate): a partial page would stage a partial
@@ -1864,6 +1865,17 @@ class ClusterService(LocalTransport):
         wanted = names if rel else [n for n in names if n.endswith(".vast")]
         self._materialize(campaign_id, tuple(f"_config/{n}" for n in wanted),
                           "campaign config", interactive=True)
+        # A world a variation GENERATED lives under the configuration, not the campaign, and
+        # names its meshes by that prefix -- so its own tree has to come down too, or the
+        # build compiles a world whose every reference is missing.
+        if rel and rel.startswith(f"{config_name}/"):
+            per_config = file_address.format_address(
+                file_address.RESULTS, campaign_id, f"{config_name}/_config/")
+            entries = self.list_files(per_config, recursive=True, limit=0).entries
+            self._materialize(
+                campaign_id,
+                tuple(f"{config_name}/_config/{n}" for n in entries if not n.endswith("/")),
+                "configuration config", interactive=True)
         return super()._scene_identity(campaign_id, config_name, run_id)
 
     def _scene_runner_context(self, campaign_id: str, identity: dict):

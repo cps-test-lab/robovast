@@ -28,7 +28,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -56,7 +56,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -84,7 +84,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -112,7 +112,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -140,7 +140,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -168,7 +168,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -196,7 +196,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -224,7 +224,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -252,7 +252,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -280,7 +280,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -308,7 +308,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -336,7 +336,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -364,7 +364,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -392,7 +392,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -420,7 +420,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -445,7 +445,7 @@ configuration:
       seed: 111
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -470,7 +470,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -495,7 +495,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -520,7 +520,7 @@ configuration:
       seed: 25
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -545,7 +545,7 @@ configuration:
       seed: 23
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -570,7 +570,7 @@ configuration:
       seed: 88
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -595,7 +595,7 @@ configuration:
       seed: 88
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -620,7 +620,7 @@ configuration:
       seed: 91
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -645,7 +645,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -670,7 +670,7 @@ configuration:
       seed: 91
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -695,7 +695,7 @@ configuration:
       seed: 96
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -720,7 +720,7 @@ configuration:
       seed: 96
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -745,7 +745,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -770,7 +770,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -795,7 +795,7 @@ configuration:
       seed: 111
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -823,7 +823,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -851,7 +851,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -879,7 +879,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -907,7 +907,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -935,7 +935,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -963,7 +963,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -991,7 +991,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1019,7 +1019,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1047,7 +1047,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1075,7 +1075,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1103,7 +1103,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1131,7 +1131,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1159,7 +1159,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1187,7 +1187,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1215,7 +1215,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1240,7 +1240,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1265,7 +1265,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1290,7 +1290,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1315,7 +1315,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1340,7 +1340,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1365,7 +1365,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1390,7 +1390,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1415,7 +1415,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1440,7 +1440,7 @@ configuration:
       seed: 103
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1468,7 +1468,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1496,7 +1496,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1524,7 +1524,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1552,7 +1552,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1580,7 +1580,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1608,7 +1608,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1636,7 +1636,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1664,7 +1664,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1692,7 +1692,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1720,7 +1720,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1748,7 +1748,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1776,7 +1776,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1804,7 +1804,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1832,7 +1832,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05
@@ -1860,7 +1860,7 @@ configuration:
       seed: 89
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.05

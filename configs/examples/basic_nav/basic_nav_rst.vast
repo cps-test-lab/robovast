@@ -20,7 +20,7 @@ configuration:
   variations:
   # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_gazebo.vast.
   - ParameterVariationList:
-      name: goal_pose
+      scenario: goal_pose
       values:
       - position: {x: 21.0, y: 6.0}
       - position: {x: 21.0, y: 4.0}
@@ -42,9 +42,14 @@ execution:
   # -- including the in-cluster service. Nothing about the simulator travels with the campaign.
     simulation:
       backend: robosito
-  # A path, because rst_nav2_example registers no `rst.worlds` provider. The backend enumerates what
-  # has to travel by running `rst scenes inputs` inside the simulator image; the world `extends:
-  # rst_scenes:depot`, which is packaged and travels with the image, so only this YAML moves.
+  # A path, because rst_nav2_example registers no `rst.worlds` provider. The backend declares it as
+  # a run file, so it is mounted at /config/<path> and archived with the campaign; the world
+  # `extends: rst_scenes:depot`, which is packaged and travels with the image, so only this YAML
+  # moves. An `extends:` chain naming a CAMPAIGN file is not followed -- enumerating that needs the
+  # simulator itself, which the backend must not import.
+  #
+  # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
+  # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
       config: world/depot_nav2.yaml
   # By digest, not `:latest`: this is the image the simulator runs, so a moving tag would mean the
   # code under test is not a recorded fact. It is also the image the run view's geometry is compiled

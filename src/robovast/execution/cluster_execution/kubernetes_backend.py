@@ -82,6 +82,8 @@ from robovast.common.execution import (build_job_links,
 from robovast.common import prepare_campaign_configs
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped,
                                           ExecutionBackend, RunOptions)
+from robovast.common.simulators import (SIMULATION_CONTAINER,
+                                        SIM_OVERRIDES_MOUNT, sim_job_overlay)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
@@ -400,6 +402,7 @@ class BatchJobRunner:
         return job_artifact_rel(index, self._batch_tag)
 
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
+                            sim_overlay=None,
                             total_jobs, s3_prefix, init_cmd, extra_main_env=()):
         """Assemble a job manifest shared by single-config and packed jobs.
 
@@ -557,16 +560,27 @@ class BatchJobRunner:
             # The backend's own env, for the container the backend describes. scenario_env
             # puts it on the main container, which is only right when the simulator IS the
             # main container (the stepped shape); in the ROS shape it is this sidecar.
-            for key, value in sidecar_backend_env(self.campaign_data.get('execution') or {},
-                                                  sc_name).items():
+            # The job's own resolved values win over the campaign default: a world belongs
+            # to a configuration, and this sidecar is running one.
+            sc_backend_env = dict(sidecar_backend_env(
+                self.campaign_data.get('execution') or {}, sc_name))
+            if sc_name == SIMULATION_CONTAINER and sim_overlay:
+                sc_backend_env.update(sim_overlay.get('env') or {})
+            for key, value in sc_backend_env.items():
                 secondary_env.append({'name': key, 'value': value})
             # So this sidecar can run /tmp/s3_upload.sh once its workload has exited.
             for k, v in _s3_env(s3_endpoint, bucket_name, s3_access_key,
                                 s3_secret_key, s3_prefix):
                 secondary_env.append({'name': k, 'value': v})
-            if sc.command:
+            # The simulator's command is the one per-configuration thing in the plan: it
+            # names the world. Everything else about this container -- image, resources,
+            # packages -- stays campaign-level.
+            sc_cmd = sc.command
+            if sc_name == SIMULATION_CONTAINER and sim_overlay and sim_overlay.get('command'):
+                sc_cmd = sim_overlay['command']
+            if sc_cmd:
                 secondary_env.append({'name': 'ROBOVAST_CONTAINER_COMMAND',
-                                      'value': shlex.join(list(sc.command))})
+                                      'value': shlex.join(list(sc_cmd))})
             secondary_spec = {
                 'name': sc_name,
                 'image': sc.image,
@@ -623,6 +637,16 @@ class BatchJobRunner:
         """
         _, _, _, _, campaign_prefix = self._s3_settings()
         job_tag = self._job_tag(job.index)
+        sim_overlay = self._sim_overlay(job)
+        # The simulator's overrides document ships per job (``<job-tag>.sim.yaml``, unique
+        # like the parameter file) but is READ at a fixed path, because a backend builds
+        # its command before any job exists and argv cannot expand an environment
+        # variable. Locally the two are reconciled by the bind mount's target; here the
+        # whole ``_transient/`` prefix is mirrored wholesale, so the reconciliation is this
+        # one copy.
+        sim_rename = (
+            f"(cp /config/{job_tag}.sim.yaml {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
+            if sim_overlay["document"] else "")
         per_config_mirror = "".join(
             f"(mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/ /config/{cn}/ 2>/dev/null || true); "
             for cn in job.config_names
@@ -632,6 +656,7 @@ class BatchJobRunner:
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
             f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
             f"{per_config_mirror}"
+            f"{sim_rename}"
             f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient; do "
             f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
             f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
@@ -655,7 +680,20 @@ class BatchJobRunner:
             s3_prefix=campaign_prefix.rstrip("/"),
             init_cmd=init_cmd,
             extra_main_env=extra_env,
+            sim_overlay=sim_overlay,
         )
+
+    def _sim_overlay(self, job) -> dict:
+        """This job's resolved simulator command, environment and overrides document.
+
+        ``job.items[0]`` speaks for the whole job: the packer groups work items by
+        ``sim_key``, so a job that mixed simulator settings cannot be built. Asked of the
+        backend with the job's own block, which is why the world differs per job while the
+        image, the resources and the container set do not.
+        """
+        return sim_job_overlay(self.campaign_data.get("execution") or {},
+                               job.items[0].config.get("sim") or {},
+                               os.path.dirname(self.campaign_data.get("vast") or ""))
 
     def _runs_per_job(self) -> int:
         """How many runs (config × run-number work items) to pack into one job."""
@@ -685,6 +723,13 @@ class BatchJobRunner:
             docs = build_job_parameter_documents(job, scenario_name)
             with open(os.path.join(transient_dir, f"{self._job_tag(job.index)}.params.yaml"), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
+            # The simulation channel's per-job document. Single-document, because the
+            # packer groups by `sim_key` and a job's items therefore agree on it.
+            document = self._sim_overlay(job)["document"]
+            if document:
+                with open(os.path.join(transient_dir,
+                                       f"{self._job_tag(job.index)}.sim.yaml"), "w") as f:
+                    yaml.dump(document, f, default_flow_style=False, sort_keys=False)
         # Canonical link manifest, consumed by the controller's upload-to-share
         # compression to materialise <config>/<run>/job symlinks into the tar.gz, and
         # by readers resolving a job's artifacts while it is still running. Written in

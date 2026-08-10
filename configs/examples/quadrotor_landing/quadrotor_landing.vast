@@ -14,16 +14,16 @@ configuration:
   # trivial lands or fatal crashes.
   variations:
   - ParameterVariationList:
-      name: thrust_gain
+      scenario: thrust_gain
       values: [1.0, 2.0]
   - ParameterVariationList:
-      name: mass
+      scenario: mass
       values: [1.8, 2.8]
   - ParameterVariationList:
-      name: wind_strength
+      scenario: wind_strength
       values: [2.5, 4.0]
   - ParameterVariationList:
-      name: descent_rate
+      scenario: descent_rate
       values: [1.5, 2.5]
 execution:
   containers:

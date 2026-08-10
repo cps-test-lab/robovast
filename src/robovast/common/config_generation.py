@@ -203,6 +203,69 @@ def _backend_run_files(vast_dir, parameters):
         return []
 
 
+def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
+    """Resolve every configuration's ``sim`` block, and stage the worlds they name.
+
+    Runs **after** the variation loop, because that is the first point at which a
+    configuration's simulator settings exist: the campaign's ``simulation`` block is only
+    the default, and a variation writing ``sim_values`` overlays it per cell.
+
+    Two things come out of it. Each configuration carries its resolved block (recorded in
+    ``configurations.yaml``, written to ``sim.config``, and read by both lanes at dispatch),
+    and the **union** of the worlds those blocks name joins ``run_files`` -- once per
+    distinct block, since a campaign varying its world has several and each has to be
+    mounted for the simulator to open it.
+
+    Errors are raised when the campaign actually uses the channel and swallowed when it does
+    not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
+    while a backend that merely cannot be imported here must not break a campaign that never
+    mentions it (validation reports that properly elsewhere).
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, flatten_sim_block, merge_sim_block, sim_input_files)
+
+    execution = parameters.get("execution", {}) or {}
+    if not backend_name(execution):
+        return
+
+    authored = {c.get("name"): (c.get("sim") or {})
+                for c in (parameters.get("configuration") or [])}
+    uses_channel = any(authored.values()) or any(c.get("sim") for c in configs)
+
+    seen_blocks = []
+    for config in configs:
+        # The authored per-configuration block first, then what variations wrote, so a
+        # variation's value wins over the fixed one it varies -- the same precedence
+        # `parameters:` and a scenario-parameter variation already have.
+        sim_values = flatten_sim_block(authored.get(config.get("_config_name")) or {})
+        sim_values.update(config.get("sim") or {})
+        deploy_paths = {rel for rel, _ in (config.get("_config_files") or [])}
+        try:
+            resolved = merge_sim_block(
+                execution, sim_values, vast_dir,
+                deploy_paths=deploy_paths, config_name=config.get("name", ""))
+        except Exception as exc:  # noqa: BLE001 - re-raised only where it is the user's
+            if uses_channel:
+                raise
+            logger.debug("simulator backend contributed no sim block: %s", exc)
+            return
+        config["sim"] = resolved
+        if resolved not in seen_blocks:
+            seen_blocks.append(resolved)
+
+    for block in seen_blocks:
+        try:
+            declared = sim_input_files(execution, block, vast_dir)
+        except Exception as exc:  # noqa: BLE001 - as above
+            if uses_channel:
+                raise
+            logger.debug("simulator backend declared no input files: %s", exc)
+            continue
+        for rel in declared:
+            if rel not in run_files:
+                run_files.append(rel)
+
+
 def _backend_cfg(backend, execution, name):
     """The backend's own validated config block."""
     from robovast.common.config import \
@@ -869,6 +932,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # world under `config:` and then again under `run_files:` states one fact twice, and
     # the failure when the second is forgotten is remote from the cause -- the simulator
     # cannot open a path that was never mounted.
+    #
+    # This is the CAMPAIGN DEFAULT only. A world belongs to a *configuration*, so the ones
+    # configurations actually resolve to are collected after the variation loop, by
+    # `_resolve_config_sim_blocks`. The default is still staged here because it is what the
+    # `.vast` declares and therefore what the composition cache key must cover; a campaign
+    # whose every configuration replaces it simply carries one file it never opens.
     for rel in _backend_run_files(vast_dir, parameters):
         if rel not in run_files:
             run_files.append(rel)
@@ -1121,6 +1190,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     path = abs_path
                 normalized.append((rel, path))
             cfg[field] = normalized
+
+    # Resolve each configuration's simulator settings, now that the configurations exist,
+    # and stage the union of the worlds they name. `run_files` is still being built at this
+    # point, so the additions travel with the campaign and are hashed into every
+    # configuration's identity exactly as the campaign-level world already was.
+    _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files)
 
     # Extract execution parameters from execution section
     #

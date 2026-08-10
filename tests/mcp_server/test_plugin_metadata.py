@@ -49,10 +49,14 @@ def test_unknown_group_reports_error_as_a_dict():
 def test_get_plugin_details_includes_parameter_schema():
     details = get_plugin_details("robovast.variation_types", "ParameterVariationList")
     params = {p["name"]: p for p in details.get("parameters", [])}
-    assert "name" in params and "values" in params
-    assert params["name"]["type"] == "str | list[str]"
-    assert params["values"]["type"] == "list[float | int | bool | dict | list]"
-    assert params["name"]["required"] is True
+    # An agent authoring a .vast reads this to learn where a factor can land, so both
+    # channels must be here -- and the retired `name` must not, since a schema offering a
+    # key that is always an error is what sends an agent round the validate loop twice.
+    assert {"scenario", "sim", "values"} <= set(params)
+    assert "name" not in params
+    assert params["scenario"]["type"] == "str | list[str] | None"
+    assert params["sim"]["type"] == "str | list[str] | None"
+    assert params["values"]["type"] == "list[float | int | bool | dict | list | str]"
     assert params["values"]["required"] is True
 
 

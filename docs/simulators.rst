@@ -239,6 +239,80 @@ Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref
 file is robosito's whole configuration — physics, plugins, robot, sensors and its
 ``extends`` chain — and "world" understates what a campaign selects.
 
+.. _sim-channel:
+
+Varying the simulator
+---------------------
+
+**A world belongs to a configuration.** The ``simulation`` block above is the campaign-wide
+*default*; each configuration resolves its own block over it, and that is what reaches the
+run. Not per campaign, and not per run: repetitions of a configuration share a world, which
+is what makes them repetitions.
+
+A ``.vast`` reaches those keys through the ``sim:`` channel -- the sibling of ``scenario:``
+(see :ref:`variations <config-variation-destination>`):
+
+.. code-block:: yaml
+
+   configuration:
+   - name: rooms
+     variations:
+     - ParameterVariationList:
+         sim: config                            # swap the world outright
+         values: [world/depot.yaml, world/warehouse.yaml]
+     - ParameterVariationDistributionUniform:
+         sim: plugins.floorplan.floor.friction  # or vary a value inside it
+         min: 0.6
+         max: 1.4
+     - ParameterVariationList:
+         scenario: goal_pose                    # the other channel, unchanged
+         values: [...]
+
+**A bare backend key is that key; anything else is a path into the world.** ``sim: config``
+selects the world file because ``config`` is one of robosito's keys, while
+``sim: plugins.floorplan.floor.friction`` lands under the backend's declared ``DOTTED_ROOT``
+(``overrides`` for robosito) -- so the prefix that would say nothing is not written. The
+explicit spelling ``sim: overrides.plugins....`` stays valid, and is how a world key that
+collided with a backend key would be reached.
+
+**Where a factor lands is decided by when the simulator can still act on it.** MuJoCo does
+not recompile mid-run, and robosito's ``simulation_interfaces`` serves no ``SpawnEntity``:
+*which* entities exist is settled when the model compiles, and a scenario only moves and
+observes them. So the boundary between the two channels is the compile -- not "the world"
+versus "the trial", since a world is not static during a run either.
+
+One consequence worth knowing: a count expressed as the *number of plugin entries* cannot be
+an override, because ``apply_overrides`` resolves a plugin by name and refuses one matching
+nothing. A plugin whose config value is a **list of instances** turns that into an ordinary
+override of one value.
+
+What each job gets
+``````````````````
+
+Two artifacts, mirroring what the scenario channel already writes:
+
+===============================================  ===========================================
+``<campaign>/<config>/_config/sim.config``       the **record** -- the whole resolved block
+``<campaign>/_transient/job-<idx>.sim.yaml``     the **input** -- the overrides, mounted at
+                                                 ``/config/sim.overrides.yaml``
+===============================================  ===========================================
+
+The world stays on argv, so a job's command names it directly::
+
+   rst sim /config/world/depot_nav2.yaml --headless --pacing realtime \
+       --override /config/sim.overrides.yaml
+
+The record is not mounted. It is there so that what the simulator was given sits next to the
+configuration it belongs to, and so its two values are the arguments that replay the cell by
+hand. Everything else about that container -- image, resources, packages -- stays
+campaign-level: only that one argv token and that one file differ between jobs.
+
+**Packing groups by the resolved block.** A job's containers start once and are not restarted
+between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore
+chunks *within* work items that agree on their simulator settings. A campaign whose
+configurations share a world -- every campaign before this existed -- packs exactly as it
+always did.
+
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
 carries ``tf_namespace``), and whether it serves the ``simulation_interfaces`` control

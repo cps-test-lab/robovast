@@ -132,7 +132,7 @@ def test_valid_project_reports_counts(tmp_path):
         "- name: c1\n"
         "  variations:\n"
         "  - ParameterVariationList:\n"
-        "      name: growth_rate\n"
+        "      scenario: growth_rate\n"
         "      values: [0.1, 0.2, 0.3]\n"
         "execution:\n"
         "  containers: {scenario: {image: example:latest}}\n"

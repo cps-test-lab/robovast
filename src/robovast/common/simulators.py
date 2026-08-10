@@ -55,6 +55,22 @@ SHAPE_STEPPED = "stepped"
 #: The simulator runs on its own and publishes ``/clock`` (``mode: ros2``).
 SHAPE_ROS = "ros"
 
+#: Where RoboVAST mounts a campaign's ``run_files``, in every container of the job. Named
+#: here rather than in each backend because it is RoboVAST's layout, not a simulator's --
+#: and a backend that guessed it wrong would fail after the image pull and the pod
+#: schedule, i.e. at the cost of a whole cell.
+CONFIG_MOUNT = "/config"
+
+#: Where RoboVAST mounts the job's resolved simulator overrides, in every container of the
+#: job. A constant rather than a per-backend choice for the same reason ``/ipc`` is one: a
+#: backend building a command has to name it, and a lane writing the file has to agree.
+SIM_OVERRIDES_MOUNT = f"{CONFIG_MOUNT}/sim.overrides.yaml"
+
+#: Name of the per-configuration record of what the simulator was given, written beside
+#: ``scenario.config`` in ``<campaign>/<config>/_config/``. A record, not an input: what
+#: the run reads is :data:`SIM_OVERRIDES_MOUNT` plus the world on argv.
+SIM_CONFIG_FILE = "sim.config"
+
 
 def shape_for(mode: str) -> str:
     """Which shape a campaign's ``execution.mode`` implies.
@@ -86,6 +102,32 @@ class SimulatorBackend:
     #: for another is refused at validation time, naming what is supported -- the
     #: "capability is declared by the plugin, never listed in core" rule.
     SUPPORTED_SHAPES: tuple = (SHAPE_STEPPED, SHAPE_ROS)
+
+    #: Which of this backend's keys a bare dotted ``sim:`` path lands under, or ``None``.
+    #:
+    #: A campaign varying a simulator almost always varies something *inside* the world
+    #: rather than swapping the world itself, so ``sim: plugins.floorplan.size`` should not
+    #: have to carry a fixed ``overrides.`` prefix that says nothing. A backend names the
+    #: key that prefix would have been. A **bare backend key always wins** -- ``sim: config``
+    #: is the world, and a world key that happens to share a backend key's name is reached
+    #: by spelling the root out (``overrides.config``), so there is no ambiguity to resolve
+    #: and no precedence to remember. With ``None`` there is no short form at all and every
+    #: ``sim:`` value must name one of this backend's keys.
+    DOTTED_ROOT: Optional[str] = None
+
+    def sim_document(self, cfg, execution: dict) -> Optional[dict]:
+        """The part of *cfg* that travels as a file rather than on the command line.
+
+        Written per job to :data:`SIM_OVERRIDES_MOUNT` and read by whatever
+        :meth:`containers` puts in argv. It exists because the values a campaign varies are
+        structured -- a nested override tree, not a scalar -- and serialising that onto a
+        command line loses it to quoting, hides it from the results, and gives a human no
+        way to replay the cell.
+
+        ``None`` -- the default -- means this backend has no file form and everything it
+        needs is already on argv; no file is written and nothing is mounted.
+        """
+        return None
 
     def containers(self, cfg, execution: dict) -> dict:
         """Container blocks this backend contributes, keyed by container name.
@@ -420,6 +462,176 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
     return result
 
 
+def campaign_sim_block(execution: dict) -> dict:
+    """The backend's own keys as the ``.vast`` declared them -- the campaign default.
+
+    Container-level keys (``image``, ``resources``, ...) are RoboVAST's and stay
+    campaign-level; what is left describes the simulator and is what a configuration may
+    overlay.
+    """
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    if not isinstance(block, dict):
+        return {}
+    return {k: v for k, v in block.items()
+            if k not in _ROBOVAST_KEYS and v is not None}
+
+
+def flatten_sim_block(block, prefix: str = "") -> dict:
+    """Nested ``sim:`` mapping -> ``{dotted path: leaf}``.
+
+    A configuration entry carries exactly one shape for this channel -- a flat mapping of
+    destination to value -- whether the value was authored as a nested ``sim:`` block or
+    written by a variation as a dotted path. Two shapes on one key is how a reader ends up
+    guessing which one they are looking at.
+    """
+    out = {}
+    for key, value in (block or {}).items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict) and value:
+            out.update(flatten_sim_block(value, f"{path}."))
+        else:
+            out[path] = value
+    return out
+
+
+def backend_own_keys(backend: SimulatorBackend) -> Optional[set]:
+    """The key names a backend's ``CONFIG_CLASS`` declares, or ``None`` if it has none."""
+    model = getattr(backend, "CONFIG_CLASS", None)
+    fields = getattr(model, "model_fields", None) if model is not None else None
+    return set(fields) if fields else None
+
+
+def resolve_sim_path(backend: SimulatorBackend, path: str, name: str = "") -> tuple:
+    """A ``sim:`` destination -> the key path it addresses in the backend's block.
+
+    A bare backend key is that key; anything else lands under the backend's
+    :attr:`~SimulatorBackend.DOTTED_ROOT`. A backend that declares no root has no short
+    form, so an unrecognised first segment is refused naming the keys that exist -- the
+    alternative being a campaign that composes cleanly and fails after the image pull.
+    """
+    parts = tuple(p for p in str(path).split(".") if p)
+    if not parts:
+        raise ValueError(
+            f"simulator backend '{name}': a sim: destination cannot be empty")
+    own = backend_own_keys(backend)
+    if own is None or parts[0] in own:
+        return parts
+    root = getattr(backend, "DOTTED_ROOT", None)
+    if root is None:
+        raise ValueError(
+            f"'{path}' is not a key of simulator backend '{name}'; its keys are: "
+            + ", ".join(sorted(own)))
+    if root not in own:
+        raise ValueError(
+            f"simulator backend '{name}' declares DOTTED_ROOT '{root}', which is not one "
+            "of its own keys: " + ", ".join(sorted(own)))
+    return (root,) + parts
+
+
+def _deep_set(target: dict, path: tuple, value) -> None:
+    """Set *value* at *path*, creating the intermediate mappings it names."""
+    node = target
+    for key in path[:-1]:
+        nxt = node.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[key] = nxt
+        node = nxt
+    node[path[-1]] = value
+
+
+def _namespace_sim_value(value, deploy_paths: set, prefix: str):
+    """Rewrite a value naming a per-config generated file to its path in the container.
+
+    The same test the scenario channel uses (:func:`~robovast.common.execution._namespace_file_params`):
+    a value is a file *because it equals a staged deploy path*, not because anyone declared
+    the key file-valued -- so no backend has to say which of its keys hold paths.
+
+    **Absolute**, unlike the scenario channel's, because a scenario resolves a file
+    parameter against its own directory while a simulator is a separate process with an
+    unrelated working directory.
+    """
+    if isinstance(value, dict):
+        return {k: _namespace_sim_value(v, deploy_paths, prefix)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_namespace_sim_value(v, deploy_paths, prefix) for v in value]
+    if isinstance(value, str) and value in deploy_paths:
+        return f"{prefix}/{value}"
+    return value
+
+
+def merge_sim_block(execution: dict, sim_values=None, base_dir: str = "", *,
+                    deploy_paths=None, config_name: str = "") -> dict:
+    """Campaign default + one configuration's ``sim`` values -> one validated block.
+
+    *sim_values* is the flat ``{dotted destination: value}`` a configuration carries. The
+    campaign's own ``simulation`` block is flattened the same way, so the two merge as one
+    kind of thing and a per-config value simply wins.
+
+    Returns a plain mapping -- the resolved block, recorded on the configuration and later
+    written to ``sim.config``. Raises naming the backend if the result is not valid for it.
+    """
+    name = backend_name(execution or {})
+    if not name:
+        return {}
+    backend = resolve_backend(name, base_dir)
+
+    merged: dict = {}
+    for path, value in flatten_sim_block(campaign_sim_block(execution)).items():
+        _deep_set(merged, resolve_sim_path(backend, path, name), value)
+    for path, value in (sim_values or {}).items():
+        _deep_set(merged, resolve_sim_path(backend, path, name), value)
+
+    if deploy_paths:
+        merged = _namespace_sim_value(
+            merged, set(deploy_paths), f"{CONFIG_MOUNT}/{config_name}")
+
+    cfg = _validated_cfg(backend, merged, name)
+    dump = getattr(cfg, "model_dump", None)
+    return dump(exclude_none=True) if dump else dict(cfg)
+
+
+def sim_input_files(execution: dict, block: dict, base_dir: str = "") -> list:
+    """:meth:`SimulatorBackend.input_files` for one resolved ``sim`` block.
+
+    Asked once per **distinct** block rather than once per campaign, because a campaign
+    that varies its world has several and every one has to travel: a world that is not
+    staged is a run that cannot start, discovered after the image pull.
+    """
+    name = backend_name(execution or {})
+    if not name:
+        return []
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    return [str(p) for p in (backend.input_files(cfg, execution) or [])]
+
+
+def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
+    """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
+
+    :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
+    the environment come from :meth:`~SimulatorBackend.containers` and
+    :meth:`~SimulatorBackend.env` invoked with this job's block, so a backend cannot answer
+    one thing at composition and another at dispatch.
+
+    ``document`` is what the lane writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
+    """
+    empty = {"command": None, "env": {}, "document": None}
+    name = backend_name(execution or {})
+    if not name:
+        return empty
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    contributed = backend.containers(cfg, execution) or {}
+    sim_container = contributed.get(SIMULATION_CONTAINER) or {}
+    return {
+        "command": sim_container.get("command"),
+        "env": backend.env(cfg, execution) or {},
+        "document": backend.sim_document(cfg, execution),
+    }
+
+
 def _set_if_unset(block: dict, key: str, value) -> None:
     """Fill ``key`` when the block does not really carry a value for it.
 
@@ -461,15 +673,24 @@ _CONTAINER_KEYS = ("image", "command", "resources", "system_packages", "python_p
 _ROBOVAST_KEYS = frozenset({"backend", *_CONTAINER_KEYS})
 
 __all__ = [
+    "CONFIG_MOUNT",
     "SHAPE_ROS",
     "SHAPE_STEPPED",
     "SIMULATOR_GROUP",
+    "SIM_CONFIG_FILE",
+    "SIM_OVERRIDES_MOUNT",
     "SCENARIO_CONTAINER",
     "SIMULATION_CONTAINER",
     "SUT_CONTAINER",
     "SimulatorBackend",
     "apply_backend",
     "backend_name",
+    "backend_own_keys",
+    "campaign_sim_block",
+    "flatten_sim_block",
+    "merge_sim_block",
     "resolve_backend",
+    "resolve_sim_path",
     "shape_for",
+    "sim_job_overlay",
 ]

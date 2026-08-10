@@ -28,7 +28,7 @@ configuration:
       seed: 42
       robot_diameter: 0.35
   - ParameterVariationList:
-      name: laserscan_gaussian_noise_std_deviation
+      scenario: laserscan_gaussian_noise_std_deviation
       values:
       - 0.0
       - 0.1

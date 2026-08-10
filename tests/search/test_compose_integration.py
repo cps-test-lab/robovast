@@ -89,7 +89,7 @@ TEMPLATE_VAST = textwrap.dedent("""\
         tg: {type: float, low: 0.3, high: 3.0}
       variations:
       - ParameterVariationList:
-          name: thrust_gain
+          scenario: thrust_gain
           values: ["$tg"]
       extract: {plugin: failure_rate}
       objectives: [{name: failure_rate}]

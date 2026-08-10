@@ -183,28 +183,72 @@ Defines parameter variations to create multiple run configurations. Each variati
 
 Multiple variations are combined using Cartesian product to generate all possible parameter combinations.
 
+.. _config-variation-destination:
+
+**Every factor names where it lands**, with exactly one of two keys — ``scenario:`` for a
+parameter the scenario file declares, ``sim:`` for the simulator's own configuration:
+
 .. code-block:: yaml
 
    configuration:
    - name: test-variations
      variations:
      - ParameterVariationList:
-         name: speed
+         scenario: speed
          values:
          - 1.0
          - 2.0
          - 3.0
      - ParameterVariationList:
-         name: distance
+         sim: plugins.floorplan.floor.friction
          values:
-         - 5.0
-         - 10.0
+         - 0.6
+         - 1.4
 
 This example creates 3 × 2 = 6 run configurations.
+
+The two keys sit at the same level and neither is a default, so a factor's destination is
+readable from the line it is written on — and each is checked against the right schema: a
+``scenario:`` name against the scenario file's declared parameters, a ``sim:`` key against
+the simulator backend's. See :ref:`the simulation channel <sim-channel>` for what can go
+on the second one.
+
+.. note::
+
+   ``name:`` is no longer a destination and is refused, naming the two keys that are. It
+   used to mean ``scenario:``; one spelling per destination is what keeps the commonest
+   line in a ``.vast`` from having two.
 
 .. note::
 
    You cannot specify both ``parameters`` and ``variations`` for the same scenario. Use ``parameters`` for fixed values or ``variations`` for parameter sweeps.
+
+
+sim
+"""
+
+**Type:** Dictionary
+
+**Required:** No
+
+Fixed values for the **simulator this configuration runs in** — the sibling of
+``parameters`` for the other channel. ``parameters`` is what the trial does; ``sim`` is what
+it runs in:
+
+.. code-block:: yaml
+
+   configuration:
+   - name: roofless
+     parameters:
+     - goal_pose: {position: {x: 10.0, y: 5.0}}
+     sim:
+       overrides:
+         plugins: {ceiling: {enabled: false}}
+
+A nested mapping against the backend's own schema, merged over
+:ref:`execution.containers.simulation <config-containers>` — which stays the campaign-wide
+*default*. A world belongs to a configuration, never to a campaign and never to a single
+run.
 
 
 Execution Section

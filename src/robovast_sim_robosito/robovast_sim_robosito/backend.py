@@ -11,9 +11,11 @@ import shlex
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from robovast.common.simulators import (SCENARIO_CONTAINER, SHAPE_ROS,
-                                        SHAPE_STEPPED, SIMULATION_CONTAINER,
-                                        SimulatorBackend, shape_for)
+from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER,
+                                        SHAPE_ROS, SHAPE_STEPPED,
+                                        SIM_OVERRIDES_MOUNT,
+                                        SIMULATION_CONTAINER, SimulatorBackend,
+                                        shape_for)
 
 #: The image robosito runs in when it has a container of its own -- robosito's **own**
 #: published image, not something a campaign builds. It carries the GL libraries,
@@ -31,9 +33,6 @@ DEFAULT_COMBINED_IMAGE = os.environ.get(
 
 #: The ``SimulationInterface`` scenario-execution steps.
 ADAPTER = "rst.scenario_adapter:MujocoSim"
-
-#: Where RoboVAST mounts a campaign's ``run_files``, in every container of the job.
-_CONFIG_MOUNT = "/config"
 
 #: The MuJoCo state recording each run writes, relative to its output directory. Named once
 #: and read twice — :meth:`RobositoBackend.env` asks for it, :meth:`run_state_file` tells the
@@ -61,7 +60,7 @@ def _config_in_container(config: str) -> str:
         return config
     if config.startswith("/"):
         return config
-    return f"{_CONFIG_MOUNT}/{config.lstrip('./')}"
+    return f"{CONFIG_MOUNT}/{config.lstrip('./')}"
 
 
 class RobositoConfig(BaseModel):
@@ -74,6 +73,20 @@ class RobositoConfig(BaseModel):
     #: is robosito's whole configuration -- physics, plugins, robot, sensors, and its
     #: ``extends`` chain -- and "world" understates what a campaign is selecting.
     config: str
+    #: Parts of the world to change before it is compiled, as a nested mapping mirroring
+    #: the world YAML with plugins addressed by name -- exactly :func:`rst.apply_overrides`'
+    #: input, and exactly what ``rst sim --set`` builds from a dotlist.
+    #:
+    #: This is what makes a world *variable* without one YAML per cell: a campaign sweeping
+    #: a floorplan dimension or a prop's mass writes ``sim: plugins.floorplan.size`` and
+    #: lands here. It travels as a file rather than as ``--set`` flags because the values are
+    #: structured, and because a file is something the results keep and a human can replay.
+    #:
+    #: Override semantics, not ``extends``: a child world's ``plugins`` are *appended* after
+    #: the parent's, so an inherited plugin can only be changed by disabling and re-adding
+    #: it. ``apply_overrides`` resolves a plugin by name and deep-merges, which is what a
+    #: campaign varying one value of one plugin actually means.
+    overrides: Optional[dict] = None
     #: The ``SimulationInterface`` scenario-execution steps, as ``module:Class``.
     #: Defaults to robosito's generic adapter, which is what an ordinary campaign wants.
     #:
@@ -98,6 +111,10 @@ class RobositoBackend(SimulatorBackend):
 
     CONFIG_CLASS = RobositoConfig
     SUPPORTED_SHAPES = (SHAPE_STEPPED, SHAPE_ROS)
+    #: A bare ``sim:`` path is a path into the world. ``sim: config`` still selects the
+    #: world file, because a bare backend key wins; a world key colliding with one is
+    #: reached by spelling this root out.
+    DOTTED_ROOT = "overrides"
 
     def containers(self, cfg, execution: dict) -> dict:
         if shape_for(execution.get("mode", "auto")) == SHAPE_ROS:
@@ -111,6 +128,12 @@ class RobositoBackend(SimulatorBackend):
             # and headless/pacing are the only two the deployment owns.
             command = ["rst", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
+            if cfg.overrides:
+                # The file spelling of --set. Not the flags themselves: a campaign's
+                # overrides are a nested tree, and flattening one onto argv loses it to
+                # quoting, keeps it out of the results, and leaves nobody able to replay
+                # the cell. RoboVAST mounts the document; this only names where.
+                command += ["--override", SIM_OVERRIDES_MOUNT]
             return {SIMULATION_CONTAINER: {"image": DEFAULT_SIM_IMAGE,
                                            "command": command}}
         # Stepped: scenario-execution calls step(), so the simulator is in its process
@@ -168,8 +191,28 @@ class RobositoBackend(SimulatorBackend):
             # In-process: no command line to put the config on, so the adapter reads it
             # from here. The scenario stays simulator-agnostic either way -- it never
             # learns that this simulator has a thing called a world.
-            env["ROBOSITO_WORLD"] = cfg.config
+            #
+            # Through `_config_in_container`, like the ROS shape. It used to be passed raw,
+            # so a stepped campaign whose world was a relative path had the simulator look
+            # beside its own working directory instead of at the mount -- the exact failure
+            # that function exists to prevent, avoided on one path and not the other.
+            env["ROBOSITO_WORLD"] = _config_in_container(cfg.config)
+            if cfg.overrides:
+                # The same document the ROS shape passes with --override, reached the way
+                # everything else is in this shape: there is no command line here.
+                env["ROBOSITO_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
         return env
+
+    def sim_document(self, cfg, execution: dict):
+        """The overrides, which is the half of the config that is a *document*.
+
+        The world itself stays on argv -- it is one token, and ``rst sim <world>`` is how a
+        person runs this simulator. What cannot go there is the override tree, so that is
+        what gets a file. Written per job by RoboVAST, mounted at
+        :data:`~robovast.common.simulators.SIM_OVERRIDES_MOUNT`, and read by ``--override``.
+        """
+        del execution
+        return cfg.overrides or None
 
     def produces_run_capture(self, cfg, execution: dict) -> bool:
         return True

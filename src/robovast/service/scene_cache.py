@@ -113,7 +113,8 @@ def _lock_for(key: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
-def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
+def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
+                   config_name: str = "") -> dict:
     """What geometry this run needs, from its capture manifest plus the campaign's image.
 
     Args:
@@ -123,6 +124,9 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
         resolve_digest: ``ref -> digest | None``, from the lane that can answer it (locally
             ``docker inspect``). Lets a campaign that recorded only a declared *tag* still be
             keyed on bytes; without it such a campaign is refused rather than guessed at.
+        config_name: the configuration this run belongs to. Needed because a world may be a
+            file the *configuration* owns rather than the campaign -- see
+            :func:`campaign_world_rel`.
 
     Returns:
         ``{producer, world, overrides, image, overrides_known}``.
@@ -185,7 +189,7 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None) -> dict:
         "execution": execution,
         "backend": backend_name(execution),
     }
-    identity.update(_campaign_world(campaign_dir, str(world)))
+    identity.update(_campaign_world(campaign_dir, str(world), config_name))
     return identity
 
 
@@ -198,19 +202,37 @@ _RUN_FILE_MOUNT = "/config/"
 _CONFIG_DIR = "_config"
 
 
-def campaign_world_rel(world: str) -> str | None:
-    """The campaign-relative path of a world that is a ``run_file``, else ``None``.
+def campaign_world_rel(world: str, config_name: str = "") -> str | None:
+    """The campaign-relative path of a world that is a run file, else ``None``.
 
-    One place knows that a recorded ``/config/...`` world is a campaign file archived
-    under ``_config/``: this. The cluster lane needs it to materialise that one object
-    before resolving identity, and :func:`_campaign_world` needs it to find the file.
+    One place knows how a recorded ``/config/...`` world maps back onto the results tree:
+    this. The cluster lane needs it to materialise the objects before resolving identity,
+    and :func:`_campaign_world` needs it to find the file.
+
+    **Two tiers**, because a world can belong to the campaign or to one configuration:
+
+    ``/config/<rel>``                 -> ``_config/<rel>``
+        A ``run_file``: declared in the ``.vast`` (or by the backend) and mounted campaign-wide.
+
+    ``/config/<config-name>/<rel>``   -> ``<config-name>/_config/<rel>``
+        A file a *variation generated* for this configuration -- a floorplan baked per cell,
+        say. Mounted under its own prefix precisely so several configurations' files cannot
+        collide in one packed job, which is why the mapping back is not the campaign one.
+
+    Getting this wrong is not a broken path but a missing 3D scene, so the per-config form
+    is recognised by the configuration's own name rather than guessed from the shape of the
+    path -- a campaign-level ``files/nav2_params.yaml`` has a directory part too.
     """
     if not world.startswith(_RUN_FILE_MOUNT):
         return None
-    return f"{_CONFIG_DIR}/{world[len(_RUN_FILE_MOUNT):]}"
+    rest = world[len(_RUN_FILE_MOUNT):]
+    prefix = f"{config_name}/" if config_name else None
+    if prefix and rest.startswith(prefix):
+        return f"{config_name}/{_CONFIG_DIR}/{rest[len(prefix):]}"
+    return f"{_CONFIG_DIR}/{rest}"
 
 
-def _campaign_world(campaign_dir, world: str) -> dict:
+def _campaign_world(campaign_dir, world: str, config_name: str = "") -> dict:
     """``{world_file, config_root, config_sha}`` when the world is a campaign file, else ``{}``.
 
     The scene cache was built for a world that lives *in the image*, installed from a
@@ -231,17 +253,26 @@ def _campaign_world(campaign_dir, world: str) -> dict:
     whose worlds share a path would serve each other's geometry -- and a campaign whose
     mesh changed would serve the old shape.
     """
-    rel = campaign_world_rel(world)
+    rel = campaign_world_rel(world, config_name)
     if rel is None:
         return {}
-    root = Path(campaign_dir) / _CONFIG_DIR
+    per_config = rel.startswith(f"{config_name}/") if config_name else False
+    root = (Path(campaign_dir) / config_name / _CONFIG_DIR if per_config
+            else Path(campaign_dir) / _CONFIG_DIR)
     local = Path(campaign_dir) / rel
     if not local.is_file():
         raise SceneUnavailable(
             f"this run's world {world!r} is a campaign file, but it is not archived with "
             f"the campaign (looked in {local}), so its geometry cannot be rebuilt.")
-    return {"world_file": str(local), "config_root": str(root),
-            "config_sha": _tree_sha(root)}
+    result = {"world_file": str(local), "config_root": str(root),
+              "config_sha": _tree_sha(root)}
+    if per_config:
+        # Where the tree goes back in the build container. A generated world names its
+        # meshes by the path it had in the JOB, which for a per-configuration file is
+        # `/config/<config-name>/...` -- so mounting its tree at `/config` like a campaign
+        # one would compile a world whose every reference is off by that segment.
+        result["config_mount"] = f"{_RUN_FILE_MOUNT}{config_name}"
+    return result
 
 
 def _campaign_execution(campaign_dir) -> dict:
@@ -405,7 +436,9 @@ def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
         # The tree, at the path the run had it. Not the world file alone: it names the rest
         # by absolute `/config/...` path, so the mount is what makes those resolve.
         entry["shell"]["inputs"] = [identity["config_root"]]
-        entry["shell"]["mount_at"] = {identity["config_root"]: _RUN_FILE_MOUNT.rstrip("/")}
+        entry["shell"]["mount_at"] = {
+            identity["config_root"]:
+                identity.get("config_mount") or _RUN_FILE_MOUNT.rstrip("/")}
     return entry
 
 

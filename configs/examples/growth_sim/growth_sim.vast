@@ -5,14 +5,14 @@ configuration:
 - name: test
   variations:
   - ParameterVariationList:
-      name: growth_rate
+      scenario: growth_rate
       values:
       - 0.05
       - 0.1
       - 0.3
       - 0.5
   - ParameterVariationList:
-      name: initial_population
+      scenario: initial_population
       values:
       - 50
       - 100

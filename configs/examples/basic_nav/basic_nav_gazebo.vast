@@ -18,7 +18,7 @@ configuration:
   variations:
   # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_rst.vast.
   - ParameterVariationList:
-      name: goal_pose
+      scenario: goal_pose
       values:
       - position: {x: 21.0, y: 6.0}
       - position: {x: 21.0, y: 4.0}
@@ -30,7 +30,7 @@ configuration:
   # in `values`, so a bare list would be rejected -- or worse, "False" would coerce to a bool.
   # An empty package name makes ros_launch read the second value as a workspace-relative path.
   - ParameterVariationList:
-      name: [sim_launch_package, sim_launch_file, headless]
+      scenario: [sim_launch_package, sim_launch_file, headless]
       values:
       - ["", "files/gazebo_tb4_launch.py", "True"]
 # Results-explorer notebook views, one per tree level. The same three the rst half declares, so

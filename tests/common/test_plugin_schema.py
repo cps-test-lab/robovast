@@ -20,9 +20,12 @@ def test_describe_model_renders_types_and_required():
         ParameterVariationListConfig
 
     fields = {f["name"]: f for f in describe_pydantic_model(ParameterVariationListConfig)}
-    assert fields["name"]["type"] == "str | list[str]"
-    assert fields["name"]["required"] is True
-    assert fields["values"]["type"] == "list[float | int | bool | dict | list]"
+    # The two destination keys are optional individually -- exactly one is required, which
+    # a per-field flag cannot express and a model validator enforces instead.
+    assert fields["scenario"]["type"] == "str | list[str] | None"
+    assert fields["scenario"]["required"] is False
+    assert fields["sim"]["type"] == "str | list[str] | None"
+    assert fields["values"]["type"] == "list[float | int | bool | dict | list | str]"
     assert fields["values"]["required"] is True
 
 
@@ -33,7 +36,9 @@ def test_describe_model_none_for_non_model():
 
 def test_plugin_parameter_schema_variation():
     fields = plugin_parameter_schema("robovast.variation_types", "ParameterVariationList")
-    assert {f["name"] for f in fields} == {"name", "values"}
+    # `name` is refused before validation rather than declared, so it must NOT appear
+    # here: a schema advertising a key that is always an error is worse than no schema.
+    assert {f["name"] for f in fields} == {"scenario", "sim", "values"}
 
 
 def test_plugin_parameter_schema_none_without_model():
@@ -49,8 +54,8 @@ def test_cli_plugin_info_prints_schema():
     result = CliRunner().invoke(
         configuration, ["plugin-info", "ParameterVariationList"])
     assert result.exit_code == 0
-    assert "list[float | int | bool | dict | list]" in result.output
-    assert "str | list[str]" in result.output
+    assert "list[float | int | bool | dict | list | str]" in result.output
+    assert "str | list[str] | None" in result.output
 
 
 def test_cli_plugin_info_unknown_exits_nonzero():

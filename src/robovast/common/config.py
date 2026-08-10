@@ -74,6 +74,14 @@ class ConfigurationConfig(BaseModel):
         "directory name. Lowercase only; no underscores, spaces, or periods "
         "(e.g. 'nav2-controller-comparison').")
     parameters: Optional[list[ScenarioParameterConfig]] = None
+    sim: Optional[dict] = Field(
+        default=None,
+        description="Fixed values for the simulator this configuration runs in, as a "
+        "nested mapping against the backend's own schema (e.g. "
+        "`{overrides: {plugins: {ceiling: {enabled: false}}}}`). The sibling of "
+        "`parameters` for the other channel: `parameters` is what the trial does, `sim` "
+        "is what it runs in. Merged over `execution.containers.simulation`, which stays "
+        "the campaign-wide default.")
     variations: Optional[list[VariationConfig]] = None
 
     @field_validator('name')

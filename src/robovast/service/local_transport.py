@@ -2291,7 +2291,8 @@ class LocalTransport(RobovastInterface):
         from robovast.service import scene_cache
         manifest = self._scene_capture(campaign_id, config_name, run_id)
         identity = scene_cache.world_identity(self._scene_source_dir(campaign_id), manifest,
-                                              resolve_digest=self._resolve_image_digest)
+                                              resolve_digest=self._resolve_image_digest,
+                                              config_name=config_name)
         return identity, scene_cache.cache_key(identity)
 
     def campaign_scene_status(self, campaign_id, config_name, run_id) -> "SceneStatus":

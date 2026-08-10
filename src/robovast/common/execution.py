@@ -34,6 +34,7 @@ from .config_identifier import (compute_config_identifier, hash_file_content,
                                 hash_run_files)
 from .config import SIMULATION_CONTAINER
 from .errors import CampaignConfigError, missing_input_error
+from .simulators import SIM_CONFIG_FILE
 
 # Compatibility version between host robovast code and the container image.
 # Bump this integer when the contract between host scripts and the container
@@ -1042,6 +1043,22 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             dst_path = os.path.join(out_dir, config_name, "_transient", rel_path)
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             shutil.copy2(abs_path, dst_path)
+
+        # The simulation channel's record, beside the scenario channel's. A record, not an
+        # input: what the run reads is the per-job overrides file plus the world on argv.
+        # It is here so that what the simulator was given is a file next to the
+        # configuration it belongs to -- greppable, diffable, and directly replayable, its
+        # two values being the arguments that reproduce the cell by hand.
+        #
+        # Written for EVERY configuration, including one that varies nothing, so a reader
+        # never has to work out whether a missing file means "no simulator" or "nothing
+        # varied".
+        sim_block = config_data.get("sim")
+        if sim_block:
+            os.makedirs(run_config_dir, exist_ok=True)
+            with open(os.path.join(run_config_dir, SIM_CONFIG_FILE), "w") as f:
+                yaml.dump(convert_dataclasses_to_dict(copy.deepcopy(sim_block)), f,
+                          default_flow_style=False, sort_keys=False)
 
         # Create config file if needed
         if "config" in config_data:

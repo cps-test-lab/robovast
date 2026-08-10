@@ -127,6 +127,20 @@ Simulators are declared, not assembled: a backend
 environment and a ``SimulationInterface`` ref before the plan is built, so nothing downstream
 knows which simulator it is looking at.
 
+**One thing in that plan is per-configuration: the simulator's own keys.** A world belongs to
+a configuration, so each one resolves its own ``sim`` block over the campaign's default
+(:ref:`sim-channel`). The plan is still built once and still holds one entry per container --
+images, resources and package lists stay campaign-level, and every consumer of
+``plan_containers`` is untouched. What varies is the simulator's *command* (one argv token:
+the world) and the overrides document mounted beside the scenario channel's parameter file.
+Both are produced where each lane already renders a per-job manifest, by the same backend
+hooks ``apply_backend`` calls -- so a backend cannot answer one thing at composition and
+another at dispatch.
+
+That is also why the packer groups work items by their resolved block: containers start once
+per job and are not restarted between packed items, so a job that mixed two worlds would run
+the second configuration against the first one's compiled model.
+
 Workspaces vs. campaigns
 ------------------------
 
@@ -473,6 +487,10 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - DB — ``data.db``'s ``postprocessing_steps``; the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
+   * - each configuration's ``_config/sim.config``
+     - File — what the simulator was given, a whole document read once (by a person
+       replaying a cell, or by the run view). Its *effective* values already reach the DB
+       through ``campaign.unit``, so a second copy would be a second source of truth
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
    * - ``_execution/launch.yaml``

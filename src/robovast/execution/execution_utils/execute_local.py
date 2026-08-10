@@ -22,13 +22,15 @@ import os
 import sys
 import tempfile
 
+import yaml
+
 from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              plan_containers, prepare_campaign_configs,
                              scenario_env)
 from robovast.common.cli import get_project_config
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import (SCENARIO_CONTAINER,
+from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
                                     declared_per_run_seconds)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
@@ -38,6 +40,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        local_parameter_overrides,
                                        resolve_robovast_image,
                                        write_job_links_manifest, sidecar_backend_env)
+from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
 from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
@@ -412,6 +415,9 @@ def _build_packed_compose_yaml(
     scenario_env_vars=None,
     execution=None,
     job_prefix='',
+    sim_command=None,
+    sim_overrides_rel=None,
+    sim_env=None,
 ):
     """Build docker-compose YAML for one job.
 
@@ -447,6 +453,12 @@ def _build_packed_compose_yaml(
     def _packed_config_mounts():
         """Volume mount lines shared by the main and secondary containers."""
         yield f'      - "{quote(results_dir_var)}/{param_file_rel}:/config/scenario.params.yaml:ro"'
+        # The simulation channel's per-job document, beside the scenario channel's. In
+        # every container for the same reason that one is: which container reads it is the
+        # backend's business, and the stepped shape has only one.
+        if sim_overrides_rel:
+            yield (f'      - "{quote(results_dir_var)}/{sim_overrides_rel}'
+                   f':{SIM_OVERRIDES_MOUNT}:ro"')
         yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
         for run_file in run_files:
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
@@ -505,7 +517,12 @@ def _build_packed_compose_yaml(
         lines.append("      - /dev/dri:/dev/dri")
 
     lines.append("    environment:")
-    for key, value in env_vars.items():
+    # With no simulation sidecar the simulator runs in this container (the stepped shape),
+    # so the job's resolved simulator environment belongs here instead.
+    main_env = dict(env_vars)
+    if sim_env and not any(sc.name == SIMULATION_CONTAINER for sc in sidecars):
+        main_env.update(sim_env)
+    for key, value in main_env.items():
         lines.append(f"      - {key}={value}")
     if pre_command:
         lines.append(f'      - PRE_COMMAND={pre_command}')
@@ -567,15 +584,27 @@ def _build_packed_compose_yaml(
         # The backend's own env, for the container the backend describes. scenario_env
         # puts it on the main container, which is only right when the simulator IS the
         # main container (the stepped shape); in the ROS shape it is this sidecar.
-        for key, value in sidecar_backend_env(execution or {}, sc_name).items():
+        # The job's own resolved values win over the campaign default: a world belongs to
+        # a configuration, and this sidecar is running one.
+        sc_backend_env = dict(sidecar_backend_env(execution or {}, sc_name))
+        if sc_name == SIMULATION_CONTAINER:
+            sc_backend_env.update(sim_env or {})
+        for key, value in sc_backend_env.items():
             lines.append(f"      - {key}={value}")
         # The container's own command, for secondary_entrypoint.sh to exec once it has
         # set the environment up. Deliberately NOT named SECONDARY_COMMAND: that name is
         # already a host-shell variable compose substitutes into `command:` above, and
         # one name meaning two things across the substitution boundary is a trap.
-        if sc.command:
+        # The simulator's command is the one thing in the plan that is per-configuration:
+        # it names the world, and a world belongs to a configuration. Every job in this
+        # campaign runs the same container from the same image with the same resources --
+        # only this one argv differs, and only because the packer guarantees a job's items
+        # agree on it.
+        sc_cmd = (sim_command if (sc_name == SIMULATION_CONTAINER and sim_command)
+                  else sc.command)
+        if sc_cmd:
             lines.append("      - ROBOVAST_CONTAINER_COMMAND="
-                         + shlex.join(list(sc.command)))
+                         + shlex.join(list(sc_cmd)))
         lines.extend(packed_env_lines)
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
@@ -950,6 +979,22 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         with open(os.path.join(config_path_result, param_rel), 'w') as f:
             f.write(dump_multi_document_yaml(documents))
 
+        # The simulation channel's per-job file, written beside the scenario channel's.
+        # Single-document, not multi: the packer groups by `sim_key`, so a job's items
+        # agree on their simulator settings by construction and `job.items[0]` speaks for
+        # all of them. (The scenario file is multi-document because its items do NOT
+        # agree -- that is the whole point of packing them.)
+        sim_overlay = sim_job_overlay(
+            campaign_data.get("execution") or {},
+            job.items[0].config.get("sim") or {},
+            os.path.dirname(campaign_data.get("vast") or ""))
+        sim_rel = None
+        if sim_overlay["document"]:
+            sim_rel = f"_transient/job-{job.index}.sim.yaml"
+            with open(os.path.join(config_path_result, sim_rel), 'w') as f:
+                yaml.dump(sim_overlay["document"], f, default_flow_style=False,
+                          sort_keys=False)
+
         compose_file = f"/tmp/robovast_compose_job-{job.index}.yml"
         mkdir_dirs = [
             os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))
@@ -972,6 +1017,9 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             scenario_env_vars=scenario_env_vars,
             execution=campaign_data.get('execution', {}),
             job_prefix=job_prefix,
+            sim_command=sim_overlay["command"],
+            sim_overrides_rel=sim_rel,
+            sim_env=sim_overlay["env"],
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a

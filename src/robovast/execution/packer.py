@@ -38,6 +38,8 @@ Two packers are provided:
 Use :func:`build_jobs` to select and apply the packer from an execution config.
 """
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 
@@ -59,6 +61,24 @@ class WorkItem:
     @property
     def config_name(self) -> str:
         return self.config.get("name", "")
+
+    @property
+    def sim_key(self) -> str:
+        """Identity of the simulator settings this item runs against.
+
+        Work items may share a job only if they share this. The simulator compiles its
+        model once per process and cannot recompile mid-run, so a job whose items disagreed
+        about the world would run the second one against the first one's model -- silently,
+        and reported as that configuration's result.
+
+        A stable hash of the resolved ``sim`` block, not the block itself, so it is cheap to
+        group by and safe to log.
+        """
+        block = self.config.get("sim") or {}
+        if not block:
+            return ""
+        canonical = json.dumps(block, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 @dataclass
@@ -103,7 +123,19 @@ class OnePerJob(Packer):
 
 
 class FixedK(Packer):
-    """Up to ``k`` work items per job (consecutive chunks)."""
+    """Up to ``k`` work items per job, chunked **within** equal simulator settings.
+
+    Items are grouped by :attr:`WorkItem.sim_key` before chunking, because one job runs one
+    compiled model: packing two worlds together would run the second configuration against
+    the first one's geometry. A campaign whose configurations share a world -- every
+    campaign before this existed -- has one group, so the chunks are the same ones it
+    always got.
+
+    Grouping preserves **first-seen order**, of the groups and of the items within them.
+    ``build_jobs`` is called from several places and the jobs it returns must match across
+    them (the per-job parameter files are written by one call and the manifests created by
+    another), so "deterministic" here means byte-identical, not merely correct.
+    """
 
     def __init__(self, k: int):
         if k < 1:
@@ -111,9 +143,13 @@ class FixedK(Packer):
         self.k = k
 
     def pack(self, items: list[WorkItem]) -> list[JobSpec]:
+        groups: dict[str, list[WorkItem]] = {}
+        for item in items:
+            groups.setdefault(item.sim_key, []).append(item)
         jobs = []
-        for job_idx, start in enumerate(range(0, len(items), self.k)):
-            jobs.append(JobSpec(items=items[start:start + self.k], index=job_idx))
+        for group in groups.values():
+            for start in range(0, len(group), self.k):
+                jobs.append(JobSpec(items=group[start:start + self.k], index=len(jobs)))
         return jobs
 
 

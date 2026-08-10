@@ -19,10 +19,77 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import model_validator
+
 from ..common import get_scenario_parameters
-from ..config import get_validated_config
+from ..config import VariationConfig, get_validated_config
 
 logger = logging.getLogger(__name__)
+
+#: The two channels a variation may write to, and the key that names each.
+SCENARIO_CHANNEL = "scenario"
+SIM_CHANNEL = "sim"
+
+
+class DestinationConfig(VariationConfig):
+    """Config base for a variation that writes **one** value to a channel the author names.
+
+    ``scenario:`` and ``sim:`` sit at the same level and exactly one must be given, so the
+    destination of a factor is readable from the line it is written on:
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            sim: config                        # the simulator's world
+            values: [world/depot.yaml, world/warehouse.yaml]
+        - ParameterVariationList:
+            scenario: goal_pose                # a parameter the .osc declares
+            values: [...]
+
+    A ``scenario:`` name is checked against the scenario file; a ``sim:`` path against the
+    simulator backend's schema. There is no default side and no mode flag: with one, the
+    commonest line in a ``.vast`` would have two spellings and a reader would have to look
+    upwards to know which channel a value lands in.
+    """
+
+    scenario: str | list[str] | None = None
+    sim: str | list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_name(cls, data):
+        """Reject the retired ``name:`` spelling *before* validation, not as a field.
+
+        Declaring ``name`` in order to refuse it would put it in the rendered schema, so
+        every plugin listing and every ``get_plugin_details`` would advertise a key that is
+        always an error. Checked on the raw input instead, so the schema shows only the two
+        keys that work.
+        """
+        if isinstance(data, dict) and data.get("name") is not None:
+            raise ValueError(
+                "'name' no longer names a destination: write 'scenario: <parameter>' for a "
+                "parameter the scenario file declares, or 'sim: <key>' for the simulator's "
+                "own configuration")
+        return data
+
+    @model_validator(mode="after")
+    def _exactly_one_destination(self):
+        given = [k for k in (SCENARIO_CHANNEL, SIM_CHANNEL) if getattr(self, k) is not None]
+        if len(given) != 1:
+            raise ValueError(
+                "exactly one of 'scenario' or 'sim' must name this variation's destination, "
+                f"got {given or 'neither'}")
+        return self
+
+    @property
+    def channel(self) -> str:
+        """Which channel this variation writes to."""
+        return SCENARIO_CHANNEL if self.scenario is not None else SIM_CHANNEL
+
+    @property
+    def destination(self) -> str | list[str]:
+        """The parameter name(s) or dotted ``sim`` path(s) it writes."""
+        return self.scenario if self.scenario is not None else self.sim
 
 # Module-level counter for generating short, unique config indexes.
 # All variation classes can call `get_config_index()` to obtain a new
@@ -124,6 +191,17 @@ class Variation():
         # vary in_configs and return result
         return None
 
+    def update_destination(self, config, values: dict, **kwargs):
+        """:meth:`update_config`, routing *values* to the channel this variation names.
+
+        For the generic plugins, whose :attr:`CONFIG_CLASS` is a :class:`DestinationConfig`:
+        the one place that maps ``scenario:`` / ``sim:`` onto ``scenario_values`` /
+        ``sim_values``, so four plugins do not each spell the branch out.
+        """
+        if getattr(self.parameters, "channel", SCENARIO_CHANNEL) == SIM_CHANNEL:
+            return self.update_config(config, {}, sim_values=values, **kwargs)
+        return self.update_config(config, values, **kwargs)
+
     @classmethod
     def get_required_container(cls, parameters):
         """Declare an auxiliary container this variation needs while it runs.
@@ -182,7 +260,29 @@ class Variation():
     def progress_update(self, msg):
         self.progress_update_callback(f"{self.__class__.__name__}: {msg}")
 
-    def update_config(self, config, scenario_values, config_files: list = None, other_values=None):
+    def update_config(self, config, scenario_values, config_files: list = None,
+                      other_values=None, sim_values=None):
+        """Produce the next configuration from *config*, with this variation's values on it.
+
+        A variation writes to **two channels**, and which one a value belongs to is decided
+        by when the simulator can still act on it:
+
+        ``scenario_values``
+            what the *trial* does -- goals, poses, protocol. Delivered as scenario
+            parameters and checked against the ``.osc``.
+        ``sim_values``
+            what the trial *runs in* -- a ``{dotted destination: value}`` mapping against
+            the simulator backend's own schema. Delivered as the resolved ``sim`` block and
+            checked against that backend.
+
+        They are arguments of **one** call rather than two knobs because a variation
+        frequently writes both and they must agree: MuJoCo does not recompile mid-run, so a
+        trial that drives six obstacles needs a world that compiled six. Splitting them into
+        separate calls would let a plugin update one and forget the other.
+
+        *other_values* remains what it was -- top-level metadata keys such as ``_map_file``
+        that readers of the configuration use and the run never sees.
+        """
         new_config = copy.deepcopy(config)
 
         # Ensure config dict exists
@@ -192,6 +292,13 @@ class Variation():
         # Add parameters to config
         for key, val in scenario_values.items():
             new_config['config'][key] = val
+
+        # The simulation channel. Flat and dotted, never nested: an authored ``sim:`` block
+        # is flattened to the same shape before it gets here, so a configuration carries one
+        # kind of thing and a reader is never guessing which. Resolution against the
+        # backend's DOTTED_ROOT happens once, later, where the backend is known.
+        if sim_values:
+            new_config.setdefault('sim', {}).update(sim_values)
 
         # Add other parameters to config
         if other_values:
