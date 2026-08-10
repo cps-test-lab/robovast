@@ -966,8 +966,19 @@ To list all available plugins and their descriptions:
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec), and register each in the run's :ref:`videos table <videos-table>` so the :ref:`camera panel <camera-panel>` and ``get_camera_frame`` can place it on the run's timeline. Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``). The rate is otherwise derived from the frames' own stamps as ``(n-1)/duration``, so the first and last frames land exactly on their recorded moments and only mid-run jitter drifts.
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
 - ``rosbags_rosout_to_csv``: Extract ROS log messages from the ``/rosout`` topic in ROS bags to a CSV file. Optional ``skip_levels`` parameter (list of log levels to skip, e.g. ``[ERROR, FATAL]``).
+- ``run_log``: Merge every container's stdout with ``/rosout`` into one ``run_log.csv`` per run, on the run's playback clock (see :ref:`merged-run-log`). Optional ``min_severity`` (``warn``/``error``; empty keeps everything, which is the default). **Auto-injected** — see the note below.
+- ``resource_usage``: Slice the job's resource-monitor samples into one ``resource_usage.csv`` per run — CPU and memory per container, per process name, per ~1 s tick (see :ref:`per-run-resource-usage`). No parameters. **Auto-injected** — see the note below.
 - ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
 - ``compress``: Create a gzipped tarball (``<name>-<timestamp>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
+
+.. note::
+
+   **``run_log`` and ``resource_usage`` run for every campaign without being declared.**
+   Both turn a *job*-level artifact into a per-*run* table, and a run whose output cannot be
+   read afterwards cannot be explained — so they are appended after the rosbag conversions
+   (which produce the ``/rosout`` and ``/clock`` data they read) rather than waiting to be
+   asked for. Declare one explicitly only to change a parameter, which also keeps its own
+   position in the order; opt out with ``--skip run_log`` / ``--skip resource_usage``.
 
 .. note::
 

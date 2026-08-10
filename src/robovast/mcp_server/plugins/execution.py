@@ -573,6 +573,9 @@ def stop_campaign(campaign_id: str) -> dict:
 def get_resource_usage(backend: str = "") -> dict:
     """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
+    Capacity **now** — what an executed run consumed is a table in its campaign's data
+    (``describe_campaign_data``), not here.
+
     Also the way to confirm a lane is actually reachable — it reads the cluster's nodes,
     so it fails when the cluster does, which ``get_service_info``'s configured
     ``backends`` list cannot tell you.

@@ -128,6 +128,7 @@ shell = "robovast.common.input_generation:Shell"
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
 compress = "robovast.results_processing.postprocessing_plugins:Compress"
+resource_usage = "robovast.results_processing.postprocessing_plugins:ResourceUsage"
 rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
 run_log = "robovast.results_processing.postprocessing_plugins:RunLog"
 

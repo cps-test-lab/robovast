@@ -444,6 +444,19 @@ _TABLE_DESCRIPTIONS = {
         "0=free, 1..100=cost, row-major) — masked/truncated in ordinary query results "
         "because they are large; the web run-view fetches a full decoded frame nearest a "
         "time via the campaign 'costmap' endpoint, not via SQL."),
+    ("main", "resource_usage"): (
+        "What a run COST: CPU and memory sampled every ~1s in each container, one row per "
+        "container per process name per tick. Not the get_resource_usage tool, which "
+        "reports a lane's free capacity now. "
+        "container joins run_log.container ('robovast' is the main container; a simulator "
+        "stepped in-process has none of its own, so its processes are in the 'robovast' "
+        "rows). timestamp is sim seconds and is empty outside the clock map's range (boot, "
+        "bring-up, after /clock stops), so ORDER BY wall_ts — epoch seconds, what the "
+        "monitor stamped. in_window=0 is bring-up and teardown, not the trial; every tick "
+        "belongs to exactly one run, so SUM over a job's runs is what that job consumed. "
+        "Load per container over time: SELECT container, wall_ts, SUM(cpu_percent) FROM "
+        "resource_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1,2. "
+        "Join on (config_name, run_id)."),
 }
 
 _DESCRIBE_NOTE = (

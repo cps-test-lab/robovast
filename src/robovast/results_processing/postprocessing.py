@@ -252,9 +252,10 @@ VIDEO_PRODUCER_COMMANDS: frozenset = frozenset({"rosbags_to_webm"})
 
 
 #: Plugins that run for every campaign without being declared, appended after the
-#: (batched) rosbag conversions because they read what those produce. Skippable by name,
-#: like any other command.
-AUTO_PLUGINS: Tuple[str, ...] = ("run_log",)
+#: (batched) rosbag conversions because they read what those produce — ``run_log`` needs
+#: ``rosout.csv`` and both need the ``clock_map.csv`` that ``rosbags_clock_to_csv`` writes.
+#: Skippable by name, like any other command.
+AUTO_PLUGINS: Tuple[str, ...] = ("run_log", "resource_usage")
 
 
 def _append_auto_plugins(commands: List, skip: "set | None" = None) -> List:

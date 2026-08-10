@@ -198,11 +198,12 @@ log, and the entrypoint's ``/rosout`` + ``/clock`` recording) belong to the **jo
 and live under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
 ``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`).
 
-Postprocessing adds one derived file to the run directory: ``run_log.csv``, the job's
+Postprocessing adds two derived files to the run directory: ``run_log.csv``, the job's
 container logs joined with ``/rosout`` and sliced to this run (see
-:ref:`merged-run-log`). It lives here, rather than beside the logs it was built from,
-because a run is what it describes — and because the ingest that turns data files into
-tables globs run directories.
+:ref:`merged-run-log`), and ``resource_usage.csv``, the job's resource-monitor samples
+sliced the same way (see :ref:`per-run-resource-usage`). They live here, rather than beside
+the job artifacts they were built from, because a run is what they describe — and because
+the ingest that turns data files into tables globs run directories.
 
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
@@ -337,6 +338,52 @@ had — 563 of 570 lines in a measured ROS run were stamped by their producer. A
 ``^Running as UID`` needs updating; the live log panel is unaffected mechanically (it pages bytes)
 but shows the prefixes too.
 
+.. _per-run-resource-usage:
+
+``resource_usage`` — what the run cost
+"""""""""""""""""""""""""""""""""""""""
+
+One row per container per process **name** per ~1 s sample, on the run's own playback clock.
+Written by the auto-injected ``resource_usage`` plugin as ``<run>/resource_usage.csv`` from
+the job's ``resource_usage_<container>.csv`` files, and ingested as the ``resource_usage``
+table like any other per-run CSV.
+
+Why it is a table and not just those files: a lane gives a job a fixed number of cores, so a
+simulator that starves the stack changes what the stack does. That is a competing
+explanation for any behavioural result, and it can only be ruled out in the same query as
+the behaviour.
+
+.. code-block:: sql
+
+   -- did anything run out of CPU during the trial?  (cpu_percent is PER-CORE:
+   -- one saturated core is 100, so the ceiling is 100 * available_cpus)
+   SELECT u.container, MAX(u.cpu) AS peak, 100.0 * r.available_cpus AS saturation
+   FROM (SELECT config_name, run_id, container, wall_ts, SUM(cpu_percent) AS cpu
+         FROM resource_usage WHERE in_window = 1 GROUP BY 1, 2, 3, 4) u
+   JOIN runs r USING (config_name, run_id)
+   GROUP BY 1, 3;
+
+Three things differ from ``run_log``, each deliberate:
+
+* **Ticks are partitioned, not shared.** ``run_log`` gives every run of a packed job all of
+  the job's lines, flagged — a line printed during another run is still evidence about this
+  one. A *sample* is not: another run's CPU is not this run's. Each tick is therefore claimed
+  by exactly one run (the gap between two runs falls to the one starting up), so ``SUM`` over
+  a job's runs is what that job consumed. Copying instead would make every aggregate over a
+  packed campaign report a multiple of the truth, with nothing raising an error.
+* **Rows are keyed by process name, not pid.** Pids churn — a respawned node is a new pid and
+  the same program — and no pid is comparable across runs. ``num_pids`` records how many
+  shared a name in that tick.
+* **A run of a packed job with no ``test.xml`` claims nothing** and gets an empty table
+  rather than the whole job's samples. It cannot be placed on the wall clock, and a table
+  saying "no data" is honest where one stating another run's numbers is not. A *single*-run
+  job in that state still gets its whole trace — there is no other run to confuse it with,
+  and a run killed mid-flight is the one whose trace matters most.
+
+``cpu_percent`` and ``memory_rss_bytes`` are sums over the processes sharing a name, and both
+carry a ``_column_notes`` entry that ``describe_campaign_data`` shows: CPU is per-core, and
+summed RSS double-counts pages shared with forks.
+
 .. _scenario-verdict:
 
 ``scenario_timestamps`` — where the trial ended
@@ -419,10 +466,10 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
        ├── system_<secondary>.log            # Secondary container log [if multi-container]
        └── rosout_bag/                       # /rosout recording [ROS mode]
 
-``resource_usage_*.csv`` files have columns ``timestamp``, ``pid``, ``name``,
-``cpu_usage``, ``mem_usage`` (one per container). For a packed job these dynamic
-artifacts span the whole job; slicing them to a single configuration's active
-time window is a planned post-processing step.
+``resource_usage_*.csv`` files have columns ``timestamp`` (wall epoch seconds), ``pid``,
+``name``, ``cpu_percent`` and ``memory_rss_bytes``, one row per process per ~1 s, one file
+per container. For a packed job these span the whole job; the ``resource_usage``
+post-processing step slices them to each run (see :ref:`per-run-resource-usage`).
 
 
 .. _reading-result-files:

@@ -68,7 +68,7 @@ def _is_digest(image: str) -> bool:
     return image.startswith("sha256:") and len(image) >= 20
 
 
-def _campaign_container_plan(campaign_dir: Path):
+def campaign_container_plan(campaign_dir: Path):
     """The container plan of a campaign's frozen ``.vast``, or ``None`` if unreadable.
 
     The snapshot is a verbatim copy of what the author wrote, so a project that left the
@@ -76,6 +76,12 @@ def _campaign_container_plan(campaign_dir: Path):
     the same order ``image_build.extract_build_specs`` uses. That needs the backend package
     importable *here*, in the service; when it is not, the declared image simply stays
     unresolved and the caller reports that rather than inventing a default.
+
+    This is the only correct answer to "which containers did this campaign run": the raw
+    ``execution.containers`` keys are not, because a ``simulation`` block with neither image
+    nor command is folded into the scenario container by ``plan_containers`` -- so a campaign
+    with two keys can have run one container, and expecting an artifact per key then reports
+    a container that never existed as having gone missing.
     """
     from robovast.common.containers import \
         plan_containers  # pylint: disable=import-outside-toplevel
@@ -146,7 +152,7 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
     declared_images = meta.get("images") or {}
     tried = []
 
-    plan = _campaign_container_plan(Path(campaign_dir))
+    plan = campaign_container_plan(Path(campaign_dir))
     backing = None
     if plan is not None:
         try:

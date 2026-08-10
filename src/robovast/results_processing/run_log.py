@@ -56,6 +56,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from robovast.common import log_summary
 from robovast.common.log_tail import MAIN_CONTAINER
 
+from . import run_slices
+
 #: Written into each run directory, one row per log event.
 FILENAME = "run_log.csv"
 
@@ -182,12 +184,14 @@ class MergeStats:
 
 
 def container_of(filename: str) -> Optional[str]:
-    """The container a ``system*.log`` belongs to, or ``None`` if it is not one."""
-    base = os.path.basename(filename)
-    if base == _MAIN_LOG:
-        return MAIN_CONTAINER
-    m = _SIDECAR_RE.match(base)
-    return m.group("container") if m else None
+    """The container a ``system*.log`` belongs to, or ``None`` if it is not one.
+
+    Delegated to :func:`run_slices.container_of`, which maps every per-container job
+    artifact. One mapping, because ``run_log.container`` and the other derived tables' are
+    joined on: if two producers spelled the main container differently the join would return
+    nothing rather than fail.
+    """
+    return run_slices.container_of(filename)
 
 
 def parse_container_log(lines: Iterable[str], container: str) -> List[LogRecord]:
@@ -450,10 +454,7 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
     rows: List[dict] = []
     for rec in records:
         wall = rec.wall_ts
-        in_window = 1
-        if wall is not None and start_epoch is not None:
-            if wall < start_epoch or (end_epoch is not None and wall > end_epoch):
-                in_window = 0
+        in_window = run_slices.in_window(wall, start_epoch, end_epoch)
         sim = clock.to_sim(wall) if clock else None
         rows.append({
             "sim_time": "" if sim is None else f"{sim:.6f}",
@@ -476,8 +477,4 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
 def write_run_log(path: str, rows: Sequence[dict]) -> None:
     """Write ``run_log.csv``. A header-only file is written when a run logged nothing, so
     the table exists and the panel can say "no lines" instead of "no table"."""
-    with open(path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+    run_slices.write_csv(path, FIELDNAMES, rows)

@@ -490,6 +490,15 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        report most of a run twice. ``rosout`` itself is *not* a second table -- it is a
        source of this one, selected with ``WHERE source = 'rosout'``. See
        :ref:`merged-run-log`.
+   * - ``resource_usage`` (per-container CPU/memory)
+     - DB — one row per container per process name per ~1 s tick, with ``timestamp``,
+       ``in_window``, ``cpu_percent``, ``memory_rss_bytes``. Built by postprocessing from the
+       job's ``resource_usage_<container>.csv``, which stay the record of what was sampled.
+       In the DB because it answers a question about a *result*: a lane gives a job fixed
+       cores, so a starved stack is a competing explanation for what a run did, and ruling
+       that out means joining it to ``runs.available_cpus`` and to the behaviour itself.
+       Unlike ``run_log``, a packed job's ticks are **partitioned** between its runs rather
+       than shared — another run's CPU is not this run's. See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``
      - File + the log tools — the raw bytes, and the **live** case is the point of reading
        them: ``data.db`` does not exist while a campaign runs. The tools reduce them on read

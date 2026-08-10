@@ -237,6 +237,13 @@ What survives as a tool is the one aggregate asked constantly —
 implemented over the same SQL — and ``list_campaigns``, which spans campaigns rather than
 querying one.
 
+**"What did this run cost?" is SQL too, and is not** ``get_resource_usage``. That tool
+reports a *lane's* free capacity now, which is a pre-flight question. What an executed run
+consumed is a table — :ref:`per-run resource usage <per-run-resource-usage>`, CPU and memory
+per container over the run, joinable to ``runs.available_cpus`` for the saturation ceiling
+and to ``poses`` for what the robot was doing at the time. The two read alike and answer
+different questions, so ``describe_campaign_data`` names the table and says which is which.
+
 **The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
 ``nav_get_path_deviation`` and ``nav_get_action_feedback`` query ``data.db`` — the tables
 postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``. They

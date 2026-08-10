@@ -421,10 +421,7 @@ class RunLog(BasePostprocessingPlugin):
         Returns:
             Tuple of (success, message).
         """
-        from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
-            list_config_dirs, list_run_dirs, read_test_result)
-        from robovast.common.execution import job_artifact_dir  # pylint: disable=import-outside-toplevel
-        from . import clock_map, run_log  # pylint: disable=import-outside-toplevel
+        from . import run_log, run_slices  # pylint: disable=import-outside-toplevel
 
         campaign_path = Path(results_dir)
         if not campaign_path.is_dir():
@@ -441,70 +438,168 @@ class RunLog(BasePostprocessingPlugin):
 
         # One job serves many runs in a packed campaign, and reading its logs is the
         # expensive part, so parse each job once and slice it per run.
-        job_cache: Dict[str, tuple] = {}
+        job_cache: Dict[str, list] = {}
         totals = run_log.MergeStats()
+        slices = run_slices.SliceStats()
         runs_written = 0
-        without_map: List[str] = []
 
-        for config_dir_path in list_config_dirs(campaign_path):
-            for run_dir in list_run_dirs(config_dir_path):
-                job_name = f"{config_dir_path.name}/{run_dir.name}"
-                try:
-                    job_dir = job_artifact_dir(str(campaign_path), job_name)
-                except FileNotFoundError:
-                    # No manifest entry: the job's artifacts are unlocatable. Reported as a
-                    # run without a log rather than silently as a run that logged nothing.
-                    without_map.append(f"{job_name} (no job_links entry)")
-                    continue
-                if job_dir not in job_cache:
-                    stats = run_log.MergeStats()
-                    records = run_log.collect_job_records(
-                        job_dir, stats, sole_container=sole_container)
-                    clock = clock_map.load_clock_map(
-                        os.path.join(job_dir, "logs", clock_map.FILENAME))
-                    job_cache[job_dir] = (records, clock, stats)
-                    totals.add_job(stats)
-                records, clock, _ = job_cache[job_dir]
-                if not clock:
-                    # No /clock bag: a non-ROS run may still have left its own map beside its
-                    # recording. Looked up per RUN, not per job, because that is where rst writes
-                    # it -- and in a packed job each run has its own.
-                    clock = clock_map.find_run_clock_map(str(run_dir))
-                if not clock:
-                    without_map.append(job_name)
+        for slice_ in run_slices.iter_run_slices(campaign_path, slices):
+            if slice_.job_dir not in job_cache:
+                stats = run_log.MergeStats()
+                job_cache[slice_.job_dir] = run_log.collect_job_records(
+                    slice_.job_dir, stats, sole_container=sole_container)
+                totals.add_job(stats)
 
-                start_epoch = end_epoch = None
-                try:
-                    result = read_test_result(run_dir)
-                    start_epoch = result.get("start_epoch")
-                    if start_epoch is not None:
-                        end_epoch = start_epoch + (result.get("duration_sec") or 0.0)
-                except (FileNotFoundError, ValueError, OSError):
-                    # A run that never wrote test.xml (killed mid-flight) has no window; its
-                    # rows keep in_window=1 rather than being dropped, because that run's
-                    # log is the one most worth reading.
-                    pass
-
-                rows = run_log.rows_for_window(records, clock, start_epoch=start_epoch,
-                                               end_epoch=end_epoch)
-                if floor is not None:
-                    rows = [r for r in rows
-                            if log_summary.severity_rank(r["severity"]) >= floor]
-                run_log.write_run_log(str(run_dir / run_log.FILENAME), rows)
-                totals.rows += len(rows)
-                runs_written += 1
+            # A log takes the run's WINDOW, not its claim: a line printed while another run
+            # of the same job was executing is still evidence about this one, so every run
+            # gets all of the job's lines with the out-of-window ones flagged. A measurement
+            # cannot do that -- see resource_usage.
+            rows = run_log.rows_for_window(job_cache[slice_.job_dir], slice_.clock,
+                                           start_epoch=slice_.start_epoch,
+                                           end_epoch=slice_.end_epoch)
+            if floor is not None:
+                rows = [r for r in rows
+                        if log_summary.severity_rank(r["severity"]) >= floor]
+            run_log.write_run_log(str(slice_.run_dir / run_log.FILENAME), rows)
+            totals.rows += len(rows)
+            runs_written += 1
 
         if not runs_written:
             return True, "run_log: no runs found"
         message = f"run_log: {runs_written} run(s), {totals.summary()}"
-        if without_map:
+        message += run_slices.describe_missing("no job artifacts for", slices.without_job)
+        if slices.without_clock:
             # Loud, because every row of these runs has an empty sim_time and the reading
             # surfaces will say "not aligned" without explaining why.
-            shown = ", ".join(without_map[:5])
-            more = f" (+{len(without_map) - 5} more)" if len(without_map) > 5 else ""
-            message += (f"; no clock map for {len(without_map)} run(s): {shown}{more}"
-                        f" -- wall time only")
+            message += run_slices.describe_missing(
+                "no clock map for", slices.without_clock) + " -- wall time only"
         return True, message
+
+
+class ResourceUsage(BasePostprocessingPlugin):
+    """Slice each job's resource-monitor samples into one ``resource_usage.csv`` per run.
+
+    Auto-injected for every campaign (see
+    :data:`~robovast.results_processing.postprocessing.AUTO_PLUGINS`), because what a run
+    cost is a competing explanation for what it did: a lane gives a job a fixed number of
+    cores, and a simulator that starves the stack changes the stack's behaviour. That can
+    only be ruled out in the same query as the behaviour, which means a table.
+
+    What it does, and why each part is not optional, is documented in
+    :mod:`robovast.results_processing.resource_usage`. In outline: every container writes
+    ``resource_usage_<container>.csv`` per **job** (``_jobs/<batch>/job-N/``), so each run
+    resolves its job through the campaign's ``job_links.yaml`` manifest — not the ``job``
+    symlink, which only appears once a job has finished and cannot exist in an object store
+    at all. The output lands in the **run** directory, where ``generate_data_db``'s glob
+    already looks, so the ``resource_usage`` table needs no ingest code of its own.
+
+    Unlike ``run_log``, a job's samples are **partitioned** between the runs it served
+    rather than given to all of them: another run's CPU is not this run's, and copying it
+    would make every aggregate over a packed campaign report a multiple of the truth.
+
+    Takes no parameters. Every filter one might add (a container, a severity, a decimation)
+    is a ``WHERE`` clause the reader already has, and one applied at write time cannot be
+    undone without re-running postprocessing.
+    """
+
+    def __call__(
+        self,
+        results_dir: str,
+        config_dir: str = "",  # pylint: disable=unused-argument
+        **kwargs,  # pylint: disable=unused-argument
+    ) -> Tuple[bool, str, list]:
+        """Write ``<config>/<run>/resource_usage.csv`` for every run of the campaign.
+
+        Args:
+            results_dir: The campaign directory to process.
+            config_dir: Unused; the plugin reads only campaign output.
+            **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
+                ``execution_image``, ``debug``, ``force`` — and only those it has
+                (``execution_image`` is set on the cluster and not locally). Naming a subset
+                therefore passes on one lane and raises ``unexpected keyword argument`` on
+                the other, which is how ``RunLog`` first failed on the cluster after passing
+                locally. This plugin needs none of them.
+
+        Returns:
+            Tuple of (success, message, provenance entries).
+        """
+        from robovast.common.campaign_data import \
+            campaign_container_plan  # pylint: disable=import-outside-toplevel
+        from . import resource_usage, run_slices  # pylint: disable=import-outside-toplevel
+
+        campaign_path = Path(results_dir)
+        if not campaign_path.is_dir():
+            return False, f"Campaign directory does not exist: {results_dir}", []
+
+        # From the container PLAN, never the .vast's container keys: a `simulation` block
+        # with neither image nor command is folded into the scenario container, so a campaign
+        # with two keys can have run one -- and expecting a file per key would report a
+        # container that never existed as having gone missing.
+        plan = campaign_container_plan(campaign_path)
+        expected = resource_usage.expected_container_files(plan)
+
+        job_cache: Dict[str, tuple] = {}
+        totals = resource_usage.ScanStats()
+        slices = run_slices.SliceStats()
+        entries: List[dict] = []
+        runs_written = 0
+        root = campaign_path.parent
+
+        for slice_ in run_slices.iter_run_slices(campaign_path, slices):
+            if slice_.job_dir not in job_cache:
+                stats = resource_usage.ScanStats()
+                label = os.path.relpath(slice_.job_dir, campaign_path)
+                ticks = resource_usage.collect_job_ticks(
+                    slice_.job_dir, expected, stats, label)
+                sources = sorted(
+                    os.path.relpath(os.path.join(slice_.job_dir, name), root)
+                    for name in os.listdir(slice_.job_dir)
+                    if name.startswith("resource_usage_") and name.endswith(".csv")
+                ) if os.path.isdir(slice_.job_dir) else []
+                job_cache[slice_.job_dir] = (ticks, sources)
+                totals.add_job(stats)
+            ticks, sources = job_cache[slice_.job_dir]
+
+            rows = resource_usage.rows_for_slice(ticks, slice_)
+            output = slice_.run_dir / resource_usage.FILENAME
+            run_slices.write_csv(str(output), resource_usage.FIELDNAMES, rows)
+            totals.rows += len(rows)
+            runs_written += 1
+            entries.append({
+                "output": os.path.relpath(output, root),
+                "sources": sources,
+                "plugin": "resource_usage",
+                "params": {},
+            })
+
+        if not runs_written:
+            return True, "resource_usage: no runs found", []
+        if not totals.rows:
+            # Lead with it: the status tooltip shows the first line only, and "no data" is
+            # not something a reader should have to notice by the absence of a table.
+            message = f"resource_usage: NO resource data ({runs_written} run(s))"
+        else:
+            message = f"resource_usage: {runs_written} run(s), {totals.summary()}"
+        if expected is None:
+            message += "; expected container set unknown -- took the files found"
+        message += run_slices.describe_missing("no job artifacts for", slices.without_job)
+        # A container the plan named that recorded nothing is a finding, not an absence:
+        # most often a vanilla sidecar image without psutil, where the monitor dies before
+        # it opens the file and the entrypoint never checks.
+        message += run_slices.describe_missing("no CSV for", totals.missing, "container(s)")
+        message += run_slices.describe_missing("empty CSV for", totals.empty, "container(s)")
+        message += run_slices.describe_missing(
+            "truncated CSV for", totals.truncated, "container(s)")
+        message += run_slices.describe_missing(
+            "unreadable CSV for", totals.unreadable, "container(s)")
+        message += run_slices.describe_missing(
+            "unexpected CSV for", totals.unexpected, "container(s)")
+        message += run_slices.describe_missing(
+            "no clock map for", slices.without_clock) + (
+                " -- wall time only" if slices.without_clock else "")
+        message += run_slices.describe_missing(
+            "no test.xml, so no samples claimed, for", slices.unplaceable)
+        return True, message, entries
 
 
 class Compress(BasePostprocessingPlugin):
@@ -616,6 +711,26 @@ class Compress(BasePostprocessingPlugin):
 # configuration).
 
 
+#: Per-column warnings a caller needs *before* aggregating, keyed by ``(table, column)``.
+#: They live in ``_column_notes`` rather than in the table's description because that is
+#: where ``describe_campaign_data`` shows them — beside the column, which is where someone
+#: about to write ``AVG(...)`` is looking — and because a description is prose spent on
+#: every request while a note is only carried by the table that has one.
+#:
+#: Written only for columns that actually exist in this campaign's data.db, so a note never
+#: describes a table that was never produced.
+_STATIC_COLUMN_NOTES: dict[tuple[str, str], str] = {
+    ("resource_usage", "cpu_percent"): (
+        "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
+        "comparing, or an average reads as a per-process figure. Per-core, so >100 is "
+        "normal — full saturation is 100 * runs.available_cpus, which is the denominator to "
+        "normalise by before comparing runs on different hosts."),
+    ("resource_usage", "memory_rss_bytes"): (
+        "summed RSS, so pages shared between a process and its forks are counted more than "
+        "once. An upper bound — read it as a trend, not as an absolute footprint."),
+}
+
+
 def _csv_to_table_name(filename: str) -> str:
     """Convert a data filename to a valid SQLite table name.
 
@@ -722,20 +837,20 @@ def _sole_container(campaign_path) -> Optional[str]:
     so writes no log, and inferring "one container" from that would mislabel its rows. Returns
     the *runtime* container name (:data:`~robovast.common.log_tail.MAIN_CONTAINER`), not the
     ``scenario`` role name the ``.vast`` uses.
+
+    Counted from the container PLAN, not from the snapshot's ``execution.containers`` keys: a
+    ``simulation`` block with neither image nor command is folded into the scenario container,
+    so such a campaign has two keys and runs one container. Counting keys made it look like
+    two, and every unattributable line of a single-container campaign then kept an empty
+    ``container`` instead of the only one it could have come from.
     """
+    from robovast.common.campaign_data import \
+        campaign_container_plan  # pylint: disable=import-outside-toplevel
     from robovast.common.log_tail import MAIN_CONTAINER  # pylint: disable=import-outside-toplevel
-    from robovast.common.results_utils import \
-        find_campaign_vast_file  # pylint: disable=import-outside-toplevel
-    try:
-        vast_path, _ = find_campaign_vast_file(str(campaign_path))
-        if not vast_path:
-            return None
-        with open(vast_path, encoding="utf-8") as handle:
-            cfg = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError):
+    plan = campaign_container_plan(Path(campaign_path))
+    if plan is None:
         return None
-    containers = ((cfg.get("execution") or {}).get("containers") or {})
-    return MAIN_CONTAINER if len(containers) == 1 else None
+    return MAIN_CONTAINER if len(plan.names()) == 1 else None
 
 
 def _clock_map_info(campaign_path, config_name: str, run_id: int):
@@ -1290,6 +1405,11 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
                  "numeric in some runs, text in others — stored as TEXT. An aggregate "
                  "reads the text rows as 0, so exclude them (e.g. WHERE col GLOB "
                  "'[0-9-]*') instead of trusting AVG/MIN/MAX."))
+        for (table, col), note in _STATIC_COLUMN_NOTES.items():
+            if table in created_tables and col in created_tables[table]:
+                conn.execute(
+                    "INSERT OR REPLACE INTO _column_notes (table_name, column_name, note) "
+                    "VALUES (?, ?, ?)", (table, col, note))
         conn.commit()
 
         # Dimension table joining per-run status/duration to scenario parameters,
