@@ -338,8 +338,10 @@ registerPanel({
   manifest: {
     type: 'scene3d',
     label: '3D scene',
-    // The full-view base layer: PanelHost renders `fill` frameless behind the overlay panels.
-    defaultPosition: { anchor: 'fill' },
+    // The base layer: it takes whatever the docked panels leave over, and the overlay panels
+    // float on top of it. Its chrome is declared here (`frameless` below), not inferred from
+    // the position -- `fill` says where the panel goes, the manifest says what it looks like.
+    defaultPosition: { fill: true },
     resizable: false,
     minimizable: false,
     frameless: true,

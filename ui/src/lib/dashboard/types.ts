@@ -19,17 +19,21 @@ export type Anchor =
   | 'top-right'
   | 'bottom-left'
   | 'bottom-right'
-  /** Centred along the bottom, floating *above* the reserved bottom band rather than docking
+  /** Centred along an edge, floating *above* that edge's reserved band rather than docking
    *  into it -- which is what lets a panel sit over the playback bar's own `bottom` anchor.
-   *  Needs a declared `width`; without one it would span the band and be a `bottom` dock. */
+   *  Needs a declared size; a full-width `bottom-center` would just be a `bottom` dock. */
+  | 'top-center'
   | 'bottom-center'
+  | 'left-center'
+  | 'right-center'
   | 'center'
-  | 'fill'
 
 export interface PanelPosition {
   anchor?: Anchor
   width?: number | string // pixels (number) or a CSS length ("40%")
   height?: number | string
+  /** Occupy the rectangle the docks leave over. Used instead of an `anchor`, not with one. */
+  fill?: boolean
 }
 
 /** A panel as declared in the vast, normalized: known fields lifted out, the rest (data bindings such

@@ -54,6 +54,7 @@ export function parseVastPanels(raw: Record<string, unknown>[]): PanelSpec[] {
         anchor: (pos.anchor as PanelSpec['position']['anchor']) ?? manifest?.defaultPosition.anchor,
         width: (pos.width as number | string | undefined) ?? manifest?.defaultPosition.width,
         height: (pos.height as number | string | undefined) ?? manifest?.defaultPosition.height,
+        fill: (pos.fill as boolean | undefined) ?? manifest?.defaultPosition.fill,
       },
       // Resizable unless the panel type or the author says otherwise. Opting in per panel made the
       // one panel that ships no host manifest -- every package-provided remote, the costmap among

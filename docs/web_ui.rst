@@ -444,47 +444,100 @@ the view once and every run of the campaign replays through it:
        - scenario_tree:
            position: { anchor: left, width: 320 }
            source: { table: behaviors }
+       - camera:
+           title: Camera
+           position: { fill: true }     # everything the docked panels leave over
+           source: { topic: /camera/image_raw }
 
 Each panel entry is a single-key mapping — the key is the panel **type** (selecting the
 panel plugin) and its value holds that panel's fields: an optional ``title``, a
 ``position`` (an ``anchor`` — ``bottom``/``top``/``left``/``right``, a corner,
-``bottom-center``, ``center``, or ``fill`` for a full-view background — plus
-``width``/``height`` in pixels or a ``"40%"`` string), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
+``top-center``/``bottom-center``/``left-center``/``right-center``, or ``center`` — plus
+``width``/``height`` in pixels or a ``"40%"`` string; or ``fill: true`` *instead of* an
+anchor), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
 **data bindings** (which ``data.db`` table or recorded topic each piece of data comes from).
 Any field you omit falls back to the panel type's built-in default, so a bare ``playback:``
 on its own is a complete panel.
 
-``bottom-center`` differs from ``bottom`` in one way that matters: ``bottom`` **docks** at the
-very edge and reserves its height, which is what the playback bar does, so a second ``bottom``
-panel would cover it. ``bottom-center`` *floats* above that reserved band, centred, and needs a
-declared ``width`` (a full-width one is just ``bottom``). Because its bottom edge is the pinned
-one, ``minimized`` collapses it down to its header at the edge and expands it back upward.
+**Docked panels reserve the space they occupy, and everything else is placed in what is
+left.** A ``top``/``bottom`` bar reserves its height and spans the full width; a
+``left``/``right`` column reserves its width and lives in the band between the bars. Both
+count in pixels or percent. Combinations that could not be honoured are rejected when the
+campaign is validated rather than quietly ignored — a ``width`` on a full-width ``top`` bar,
+for instance.
+
+**Docked panels always stack vertically**, but the two kinds of side differ in what they
+reserve. A bar owns the full width, so bars can only stack one below the other and the side
+reserves the **sum** of their heights. A column owns the full height, so several
+``anchor: left`` panels tile *down one gutter* rather than sitting beside each other, and the
+side reserves the **widest** of them, once — which is how a sidebar of two panels leaves a
+single 320 px margin, not two.
+
+A dock reserves a few pixels more than its own size, so neighbouring panels never touch: the
+gap sits between a column and what is beside it, between a bar and what is above it, and
+between the members of one column. Panels still sit flush against the view's outer edges —
+it is a gap between panels, not a margin around the page.
+
+Size a column's members by ratio, by pixels, or not at all:
+
+.. code-block:: yaml
+
+   - nav2_behavior_tree: {position: {anchor: left, width: 320, height: "50%"}}
+   - scenario_tree:      {position: {anchor: left, width: 320}}   # takes the rest
+
+A **percentage on a column member is a fraction of the column**, not of the view — two
+members at ``"50%"`` come out the same height and tile it exactly, gap included, with no
+arithmetic to subtract the playback bar. This
+is the only place a percentage is measured against something other than the whole view: a
+bar's ``height: "8%"`` and a column's ``width: "25%"`` are both of the view, which is their
+natural reading. A member with **no** ``height`` takes whatever the members above it left, so
+only the last member of a side may omit it; declaring another panel after it is refused at
+validation rather than silently stacking one on top of the other.
+
+The four ``-center`` anchors differ from the matching dock in one way that matters:
+``bottom`` **docks** at the very edge and reserves its height, which is what the playback bar
+does. ``bottom-center`` *floats* above that reserved band, centred on the free width, and
+reserves nothing itself — so it shares the bottom edge with the playback bar instead of
+covering it. It needs a declared size (a full-width one is just ``bottom``). The pinned edge
+is the one the anchor is named after, so ``minimized`` collapses the panel towards that edge
+and expands it back away from it. The corners behave the same way, and both float 12 px
+inside the reserved bands where a docked column sits flush against the edge.
+
+``fill: true`` is used **instead of** an anchor: the panel takes the whole rectangle the
+docked panels leave over, and needs no ``width``/``height`` — those come from the docks
+around it. It sits beneath the floating panels, so corners and ``-center`` panels overlay it.
+Only one panel per view may declare it; a second would occupy the same rectangle invisibly,
+and is refused at validation.
 
 **Some panels are contributed by the simulator backend and need no entry at all.** A backend
 whose runs always record the capture the ``scene3d`` panel replays supplies that panel the same
 way it supplies the environment that produces the capture — there is nothing to decide, so
 there is nothing to declare. Declaring it yourself still wins, which is how you place it
-somewhere other than the full-bleed base layer.
+somewhere other than the base layer.
 
 The declared layout is where the panels **start**, not where they are stuck:
 
 * **Move** — press the mouse on a panel's **title bar**, drag, and release to drop it there.
   A moved panel is raised above the others, and always keeps an edge inside the view so it
   can be grabbed back.
-* **Resize** — drag a panel's **free edge or corner**: the one the anchor does not pin, which
-  is the edge facing the middle of the view (a ``left`` column is dragged by its right edge,
-  a ``bottom-right`` panel by its top-left corner). The anchored side stays where it is, so
-  resizing never fights the layout. A ``left``/``right`` column with no declared ``height``
-  spans the view; dragging its bottom edge is what gives it one.
+* **Resize** — drag **any edge or corner** of a panel. The edge you grab is the one that moves
+  and the opposite one stays put, so a ``left`` column can be widened from its right edge or
+  its left, and a ``bottom-right`` panel from any of its four sides. A ``left``/``right``
+  column with no declared ``height`` spans the view; dragging its bottom edge is what gives it
+  one. An axis a panel gets no size along has no handle — a full-width ``top`` bar's width is
+  ignored by the layout, so it is resized by height alone.
 
-Panels that show no title bar cannot be moved — the docked ``playback`` transport and a
-``fill`` background such as ``scene3d`` stay put. Everything else is movable and resizable
-unless the ``.vast`` says otherwise: ``fixed: true`` locks a panel's geometry outright, and
+Panels that show no title bar cannot be moved — the docked ``playback`` transport and a base
+layer such as ``scene3d`` stay put. A ``fill: true`` panel is sized by the docks around it, so
+it has no free edge to drag either. Everything else is movable and resizable unless the
+``.vast`` says otherwise: ``fixed: true`` locks a panel's geometry outright, and
 ``resizable: false`` is the narrower opt-out for one that may be moved but not resized.
 
 These are **view-local** adjustments: they last as long as the view is open, and reloading it
-(or switching runs) restores the layout the ``.vast`` declares. To change the layout for good,
-edit it under **Edit visualization**.
+(or switching runs) restores the layout the ``.vast`` declares. The space a dock reserves is
+the one the ``.vast`` declares too, so resizing or minimizing a docked bar or column in the
+view does not re-flow the panels around it. To change the layout for good, edit it under
+**Edit visualization**.
 
 The built-in panels:
 
@@ -627,8 +680,8 @@ recovered. See :repo_link:`configs/examples/basic_nav` for a complete campaign.
 
 .. _scene3d-panel:
 
-**3D scene** (``scene3d``) — the 3D world view, typically the run view's full-bleed **base layer**
-(``position: { anchor: fill }``): the simulated world's actual geometry rendered in the browser, with
+**3D scene** (``scene3d``) — the 3D world view, typically the run view's **base layer**
+(``position: { fill: true }``): the simulated world's actual geometry rendered in the browser, with
 **everything that moved** replayed — including *articulation*, so an arm bends rather than swinging as
 one rigid piece.
 

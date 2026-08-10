@@ -260,7 +260,7 @@ shutdown, against the still-live model — no world rebuild, and no GL backend i
    visualization:
      panels:
      - scene3d:
-         position: { anchor: fill }
+         position: { fill: true }
          scene:   { path: _config/files/scene/scene.json, scope: campaign }
          capture: { path: capture/capture.json }
 

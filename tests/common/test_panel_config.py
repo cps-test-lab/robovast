@@ -9,7 +9,8 @@ Panel ``type`` is a core built-in, an installed ``robovast.panel_types`` entry p
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.config import ConfigV1, PanelConfig
+from robovast.common.config import (ConfigV1, PanelConfig, PanelPosition,
+                                    VisualizationConfig)
 from robovast.common.config_validation import _panel_problems
 
 
@@ -105,6 +106,83 @@ def test_validation_reports_every_broken_vega_panel():
 def test_validation_passes_for_complete_vega_panel():
     raw = {"visualization": {"panels": [_vega()]}}
     assert _panel_problems(raw, "/nonexistent") == []
+
+
+@pytest.mark.parametrize("anchor", [
+    "top", "bottom", "left", "right",
+    "top-left", "top-right", "bottom-left", "bottom-right",
+    "top-center", "bottom-center", "left-center", "right-center",
+    "center",
+])
+def test_every_anchor_accepted(anchor):
+    assert PanelPosition(anchor=anchor).anchor == anchor
+
+
+def test_fill_replaces_the_anchor():
+    p = PanelConfig.model_validate({"scene3d": {"position": {"fill": True}}})
+    assert (p.position.fill, p.position.anchor) == (True, None)
+
+
+@pytest.mark.parametrize("position", [
+    {"fill": True, "anchor": "left"},    # fill is used instead of an anchor, not with one
+    {"fill": True, "width": 400},        # a filling panel is sized by the docks around it
+    {"fill": True, "height": "40%"},
+    {"anchor": "top", "width": 400},     # a full-width bar's width is ignored
+    {"anchor": "bottom", "width": 400},
+    {"anchor": "fill"},                  # fill stopped being an anchor
+])
+def test_placement_rejects_combinations_it_could_not_honour(position):
+    # Each of these used to be silently dropped by the layout engine, which is how a panel ends
+    # up somewhere its author did not ask for and cannot explain from the .vast.
+    with pytest.raises(ValidationError):
+        PanelPosition.model_validate(position)
+
+
+def test_only_one_panel_may_fill():
+    with pytest.raises(ValidationError):
+        VisualizationConfig.model_validate({"panels": [
+            {"scene3d": {"position": {"fill": True}}},
+            {"camera": {"position": {"fill": True}}},
+        ]})
+
+
+def _column(*heights):
+    """A ``left`` column of members with the given heights (``None`` = takes the rest)."""
+    return {"panels": [
+        {"scenario_tree": {"position": {
+            "anchor": "left", "width": 320,
+            **({} if h is None else {"height": h})}}}
+        for h in heights
+    ]}
+
+
+@pytest.mark.parametrize("heights", [
+    ("50%", "50%"),        # split by ratio
+    ("70%", "30%"),
+    (550, None),           # exact pixels, then the rest
+    (None,),               # one member takes the whole column
+    ("calc(50% - 44px)", None),
+])
+def test_column_members_may_be_sized_by_ratio_pixels_or_remainder(heights):
+    assert len(VisualizationConfig.model_validate(_column(*heights)).panels) == len(heights)
+
+
+@pytest.mark.parametrize("heights", [
+    (None, "50%"),         # the first takes the rest; the second would land on top of it
+    ("50%", None, "20%"),
+])
+def test_only_the_last_column_member_may_omit_its_height(heights):
+    with pytest.raises(ValidationError):
+        VisualizationConfig.model_validate(_column(*heights))
+
+
+def test_a_hidden_fill_panel_does_not_count():
+    # Hidden panels are filtered out before layout, so they occupy no rectangle to collide over.
+    vis = VisualizationConfig.model_validate({"panels": [
+        {"scene3d": {"position": {"fill": True}}},
+        {"camera": {"position": {"fill": True}, "hidden": True}},
+    ]})
+    assert len(vis.panels) == 2
 
 
 def test_json_schema_accepts_shorthand():

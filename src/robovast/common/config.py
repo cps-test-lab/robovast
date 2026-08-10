@@ -470,22 +470,53 @@ VEGA_PANEL_TYPE = "vega"
 
 
 class PanelPosition(BaseModel):
-    """Where a panel sits in the run-view. ``anchor`` attaches it to an edge/corner
-    (or ``fill`` for a full-view background); ``width``/``height`` are pixels (int) or
-    a percentage string like ``"40%"``. Omitted fields fall back to the panel type's
-    registry default in the UI."""
+    """Where a panel sits in the run-view. ``anchor`` docks it against an edge, floats it
+    at a corner or centred along an edge, or centres it; ``fill`` is used *instead of* an
+    anchor and takes whatever space the docked panels leave over. ``width``/``height`` are
+    pixels (int) or a percentage string like ``"40%"``. Omitted fields fall back to the
+    panel type's registry default in the UI.
+
+    A ``top``/``bottom`` bar reserves its height and a ``left``/``right`` column its width,
+    so nothing else is laid out over them; everything else is placed in what is left."""
     model_config = ConfigDict(extra='forbid')
     anchor: Optional[Literal[
         'bottom', 'top', 'left', 'right',
         'top-left', 'top-right', 'bottom-left', 'bottom-right',
-        # Centred along the bottom and *floating above* the reserved bottom band, so it can
-        # share the bottom edge with the playback bar (which owns the ``bottom`` dock).
-        # Give it a ``width``; a full-width one is just ``bottom``.
-        'bottom-center',
-        'center', 'fill',
+        # Centred along an edge and *floating above* that edge's reserved band rather than
+        # docking into it, so e.g. ``bottom-center`` can share the bottom edge with the
+        # playback bar (which owns the ``bottom`` dock). Give these a size; a full-width
+        # ``bottom-center`` is just ``bottom``.
+        'top-center', 'bottom-center', 'left-center', 'right-center',
+        'center',
     ]] = None
     width: Optional[int | str] = None
     height: Optional[int | str] = None
+    #: Occupy the space the docked panels leave over -- below/above the ``top``/``bottom``
+    #: bars and beside the ``left``/``right`` columns -- instead of a declared
+    #: ``width``/``height``. Used *instead of* an ``anchor``, not with one.
+    fill: Optional[bool] = None
+
+    @model_validator(mode='after')
+    def _placement_is_unambiguous(self):
+        # Every combination below would be silently ignored by the layout engine, which is
+        # how a panel ends up somewhere its author did not ask for and cannot explain.
+        if self.fill:
+            if self.anchor is not None:
+                raise ValueError(
+                    f"position.fill takes the space the docked panels leave over, so it "
+                    f"replaces the anchor -- drop one of the two (got anchor: '{self.anchor}')."
+                )
+            if self.width is not None or self.height is not None:
+                raise ValueError(
+                    "position.fill sizes the panel from the space left over; a width/height "
+                    "on it would be ignored. Drop them, or anchor the panel instead."
+                )
+        if self.anchor in ('top', 'bottom') and self.width is not None:
+            raise ValueError(
+                f"a '{self.anchor}' bar spans the full width, so its width is ignored. Drop "
+                f"it, or use '{self.anchor}-center'/a corner to place a narrower panel."
+            )
+        return self
 
 
 class PanelConfig(BaseModel):
@@ -639,6 +670,39 @@ class VisualizationConfig(BaseModel):
         # ``panels:`` with no value parses as YAML null; treat it as an empty list
         # (Optional keeps the served JSON Schema from flagging null inline too).
         return [] if v is None else v
+
+    @model_validator(mode='after')
+    def _column_members_sized(self):
+        # A ``left``/``right`` column holds a stack: its members tile down one gutter, and one
+        # without a ``height`` takes the rest of it -- so anything declared after that member on
+        # the same side would be laid out on top of it. Bars are exempt: an undeclared bar height
+        # falls back to the panel's default rather than meaning "the rest".
+        for side in ('left', 'right'):
+            members = [p for p in (self.panels or [])
+                       if p.position and p.position.anchor == side and not p.hidden]
+            for p in members[:-1]:
+                if p.position.height is None:
+                    raise ValueError(
+                        f"panel '{p.type}' is in the '{side}' column with no height, so it takes "
+                        f"the rest of the column and the {len(members) - members.index(p) - 1} "
+                        f"panel(s) after it would land on top of it. Give it a height, or make it "
+                        f"the last '{side}' panel."
+                    )
+        return self
+
+    @model_validator(mode='after')
+    def _one_fill_panel(self):
+        # Two filling panels occupy the same rectangle at the same depth, so one of them is
+        # simply invisible -- a layout mistake worth naming rather than rendering.
+        filling = [p for p in (self.panels or [])
+                   if p.position and p.position.fill and not p.hidden]
+        if len(filling) > 1:
+            raise ValueError(
+                f"{len(filling)} panels declare position.fill "
+                f"({', '.join(p.type for p in filling)}); they would occupy the same "
+                f"rectangle. Keep one and anchor or hide the rest."
+            )
+        return self
 
 
 class FloatDim(BaseModel):
