@@ -154,8 +154,8 @@ class SimulatorBackend:
         """
         return {}
 
-    def describe_query(self, cfg, execution: dict, *,
-                       entities: bool = False) -> Optional["ContainerQuery"]:
+    def describe_query(self, cfg, execution: dict, *, entities: bool = False,
+                       targets: str = "") -> Optional["ContainerQuery"]:
         """A query describing what this world *provides*, or ``None``.
 
         The counterpart to :meth:`input_files`, which describes what it needs. RoboVAST uses
@@ -172,6 +172,20 @@ class SimulatorBackend:
         *entities* asks for ``{"entities": [...]}`` as well -- the names the world compiles.
         It is separate because answering it means building the model, which a caller only
         checking override targets should not pay for.
+
+        *targets* asks the simulator to also report, for the objects whose names match that
+        glob, which of its parameters a run may **override** and what they are now -- the
+        question a caller *holding* an override has to answer before it can write one. Like
+        *entities* it costs a model build, and like *entities* the vocabulary is the
+        simulator's: RoboVAST only requires the shape ``{"overridable": {"fields": [...],
+        "targets": {...}}}``, where a field row says what it does and how it can silently do
+        nothing. A backend with no such notion reports nothing there.
+
+        **Run it in the image the campaign runs**, not in a default one. Which world a ref
+        resolves to is a property of what is *installed*, so an experiment shipping its own
+        world package (``python_packages``) has worlds that exist in its built image and
+        nowhere else -- described against a base image, that ref simply does not resolve, and
+        the check silently passes for exactly the campaigns most in need of it.
 
         ``None`` -- the default -- means this backend cannot describe a world, and its
         campaigns are simply not pre-checked.

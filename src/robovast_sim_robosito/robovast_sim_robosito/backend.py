@@ -277,7 +277,6 @@ class RobositoBackend(SimulatorBackend):
         A package ref (``rst_scenes:depot``) still needs nothing, and says so without a
         container: the files arrive installed.
         """
-        del execution
         if _is_package_ref(cfg.config):
             return []
         if not _extends_a_campaign_file(cfg.config):
@@ -288,25 +287,55 @@ class RobositoBackend(SimulatorBackend):
             # `preview_configurations` too, neither of which runs anything.
             return [cfg.config]
         return ContainerQuery(
-            ContainerSpec(image=DEFAULT_SIM_IMAGE),
+            # The campaign's own image, for the same reason describe_query uses it: what a
+            # world extends is resolved by what is installed.
+            ContainerSpec(image=self._describe_image(execution)),
             ["rst", "scenes", "inputs", cfg.config])
 
-    def describe_query(self, cfg, execution: dict, *, entities: bool = False):
-        """``rst scenes describe``, in robosito's own image.
+    def describe_query(self, cfg, execution: dict, *, entities: bool = False,
+                       targets: str = ""):
+        """``rst scenes describe``, in the image this campaign runs.
 
         What makes the ``sim`` channel checkable: a campaign writes
         ``plugins.floorplan.floor.friction`` and nothing here can tell whether that plugin is in
         the world without resolving its ``extends`` chain, which needs the simulator. Asked of
         the image that will run the campaign, so the answer describes the world that will load.
         """
-        del execution
         command = ["rst", "scenes", "describe",
                    _config_in_container(cfg.config) if cfg.config.startswith("/")
                    else cfg.config]
         if entities:
             # Costs a model build, so it is asked for only when a campaign names entities.
             command.append("--entities")
-        return ContainerQuery(ContainerSpec(image=DEFAULT_SIM_IMAGE), command)
+        if targets:
+            # Same cost, same reason it is opt-in: naming what a run may override means
+            # compiling the model. The glob is the caller's, and it is what keeps the answer
+            # small -- a mobile-manipulator world has hundreds of geoms.
+            command += ["--overridable", targets]
+        return ContainerQuery(ContainerSpec(image=self._describe_image(execution)), command)
+
+    def _describe_image(self, execution: dict) -> str:
+        """The image that will actually run this campaign's simulator, else our default.
+
+        A world ref resolves to whatever is *installed*, so this cannot be a fixed image: an
+        experiment shipping its own world package has worlds that exist only in its built
+        image. Described against the default one, ``rst_x:world`` is "not a world ref" -- no
+        JSON, no check, and a campaign that overrides a plugin it misspelled sails through.
+
+        Takes the image from the container the simulator runs in, honouring the same
+        precedence the run does (the author's ``image:`` on the block outranks a backend
+        default, see ``apply_backend``). A symbolic ``build:<tag>`` is left as it is: it is not
+        an image name, and the caller reports it as "build this first" rather than passing
+        something unusable to a runner.
+        """
+        containers = (execution or {}).get("containers") or {}
+        shape = shape_for((execution or {}).get("mode", "auto"))
+        target = SIMULATION_CONTAINER if shape == SHAPE_ROS else SCENARIO_CONTAINER
+        for name in (target, SIMULATION_CONTAINER, SCENARIO_CONTAINER):
+            image = ((containers.get(name) or {}).get("image") or "").strip()
+            if image:
+                return image
+        return DEFAULT_SIM_IMAGE if shape == SHAPE_ROS else DEFAULT_COMBINED_IMAGE
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> str:

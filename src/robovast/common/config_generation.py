@@ -349,6 +349,61 @@ def _entity_names_in(value) -> set:
     return set()
 
 
+class WorldQueryUnavailable(RuntimeError):
+    """The world could not be described, with the reason a caller can act on.
+
+    Not "this campaign is wrong": it is unverifiable from here. Kept distinct from a plain
+    ``ValueError`` so a caller pre-*checking* can carry on (and warn) while a caller *asking*
+    can report why -- collapsing the two is what made a failed lookup look like a clean check.
+    """
+
+
+def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
+                           targets: str = "") -> tuple[dict, str]:
+    """Ask the simulator what a world provides. Returns ``(payload, image)``.
+
+    One place where this query is run, because there are two callers with the same needs and
+    the same traps: the override pre-check below, and the ``describe_world`` operation a caller
+    uses to *write* an override in the first place. Raises
+    :class:`WorldQueryUnavailable` when no answer is possible, naming which of the reasons it
+    is -- no backend, a backend that cannot describe, an image that has to be built first, no
+    container runner here, or a simulator that answered nothing.
+    """
+    from robovast.common.execution import \
+        is_build_image_ref  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, resolve_backend)
+
+    name = backend_name(execution or {})
+    if not name:
+        raise WorldQueryUnavailable(
+            "this campaign declares no simulator backend, so it has no world to describe")
+    backend = resolve_backend(name, vast_dir)
+    query = backend.describe_query(_validated_block(backend, block, name), execution,
+                                   entities=entities, targets=targets)
+    if query is None:
+        raise WorldQueryUnavailable(f"the {name!r} backend cannot describe a world")
+    image = getattr(query.spec, "image", "") or ""
+    if is_build_image_ref(image):
+        raise WorldQueryUnavailable(
+            f"this campaign's world is described by its own built image ({image}), which does "
+            "not exist yet -- build the experiment image first")
+    runner = _make_container_runner(query.spec)
+    if runner is None:
+        raise WorldQueryUnavailable("no container runner is available here")
+    lines = []
+    try:
+        runner.run(query.command, lines.append)
+    finally:
+        runner.close()
+    payload = _last_json_line(lines)
+    if payload is None:
+        raise WorldQueryUnavailable(
+            f"{name} could not describe this world in {image}: "
+            f"{lines[-1].strip() if lines else '(no output)'}")
+    return payload, image
+
+
 def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=None):
     """Check every ``sim`` override addresses a plugin the world actually has.
 
@@ -395,21 +450,17 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
         if not wanted and not named:
             continue
 
-        query = backend.describe_query(
-            _validated_block(backend, block, name), execution, entities=bool(named))
-        if query is None:
-            return
-        runner = _make_container_runner(query.spec)
-        if runner is None:
-            return
-        lines = []
         try:
-            runner.run(query.command, lines.append)
-        finally:
-            runner.close()
-        payload = _last_json_line(lines)
-        if payload is None:
-            logger.debug("simulator backend could not describe %s", block)
+            payload, _image = describe_world_payload(
+                execution, block, vast_dir, entities=bool(named))
+        except WorldQueryUnavailable as exc:
+            # Say so. At debug level this silently disarmed the check for exactly the campaigns
+            # most in need of it -- one whose world ships in its own built image answers
+            # nothing, and a misspelt plugin key then sailed through to the container.
+            logger.warning(
+                "sim overrides were not pre-checked (%s): %s. They are still refused in the "
+                "container if they are wrong.",
+                exc, ", ".join(sorted(wanted)) or "the entities this scenario names")
             return
 
         available = {str(p.get("key")) for p in (payload.get("plugins") or [])}
