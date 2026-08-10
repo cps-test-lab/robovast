@@ -40,6 +40,19 @@ _SKIP_DIRS = {".cache", ".preprocessed", "resolved", "_execution", "_transient",
               "_config", "_control", "_jobs", "__pycache__", ".git"}
 
 
+def _is_generated(rel: Path) -> bool:
+    """True if *rel* is a generated/cache/hidden artefact rather than authored input.
+
+    The same predicate on both sides of a push: locally these are build leftovers not
+    worth uploading, and **inside a workspace they belong to the service** — a campaign
+    writes ``.cache/`` (config generation), ``.robovast_plugins/`` and ``resolved/``
+    into the project dir it runs from. So a mirroring push must neither send them nor
+    delete them; pruning the service's own cache forces a full regeneration on every
+    relaunch, and does it while a campaign may still be reading it.
+    """
+    return any(p in _SKIP_DIRS or p.startswith(".") for p in rel.parts)
+
+
 def _is_project_input(rel: Path, main_vast: str) -> bool:
     """True if *rel* is a real project input to push.
 
@@ -47,7 +60,7 @@ def _is_project_input(rel: Path, main_vast: str) -> bool:
     other than the one being run (*main_vast*) — so generated/variation ``.vast``
     files don't violate the one-``.vast``-per-workspace rule.
     """
-    if any(p in _SKIP_DIRS or p.startswith(".") for p in rel.parts):
+    if _is_generated(rel):
         return False
     if rel.suffix.lower() == ".vast" and rel.name != main_vast:
         return False
@@ -148,20 +161,33 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     return stats
 
 
-def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
-    """Upload the project rooted at *config_path*'s directory into a new workspace.
+def push_project_files(client, workspace_id: str, config_path: str, *,
+                       prune: bool = False, echo=None) -> dict:
+    """Push the project rooted at *config_path*'s directory into an existing workspace.
 
     ``.vast``/``.osc`` files go inline; everything else (run files, notebooks,
     binaries) streams through the PUT side channel with the executable bit
-    preserved. Returns the new ``workspace_id``.
-    """
-    from robovast.service.interface import CreateWorkspaceRequest
+    preserved. With *prune*, workspace files absent from the project are deleted, so
+    the workspace mirrors the directory — what a *launch* wants, since a stale run
+    file left from an earlier push would be copied into the campaign.
 
+    Deliberately not :func:`sync_directory_to_workspace`: the predicate here is
+    :func:`_is_project_input`, which additionally drops ``__pycache__``, ``_config/``,
+    ``_transient/`` and every ``.vast`` other than the one being run — the last of
+    which is what keeps the one-``.vast``-per-workspace rule.
+
+    Prune covers everything :func:`_is_generated` does *not* claim — so a stale run file
+    goes, and so does a ``.vast`` renamed since the last push (which would otherwise
+    survive as a second one and make the workspace unlaunchable), while the service's
+    own ``.cache/`` and staged plugins are left where they are.
+
+    Returns ``{"written", "uploaded", "pruned"}`` counts.
+    """
     config_path = Path(config_path).resolve()
     project_dir = config_path.parent
     main_vast = config_path.name
-    workspace_id = client.create_workspace(
-        CreateWorkspaceRequest(name=name or project_dir.name)).workspace_id
+    stats = {"written": 0, "uploaded": 0, "pruned": 0}
+    local_rels: set[str] = set()
 
     for path in sorted(project_dir.rglob("*")):
         if not path.is_file():
@@ -169,27 +195,106 @@ def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
         rel_path = path.relative_to(project_dir)
         if not _is_project_input(rel_path, main_vast):
             continue
-        push_file(client, format_address(SOURCES, workspace_id,
-                                        rel_path.as_posix()), path)
-    logger.info("Pushed project %s into workspace %s", project_dir, workspace_id)
+        rel_str = rel_path.as_posix()
+        kind = push_file(client, format_address(SOURCES, workspace_id, rel_str), path)
+        stats["written" if kind == "written" else "uploaded"] += 1
+        local_rels.add(rel_str)
+        if echo:
+            echo(f"  + {rel_str}")
+
+    if prune:
+        existing = client.list_files(format_address(SOURCES, workspace_id),
+                                     recursive=True, limit=0).entries
+        for rel_str in sorted(existing):
+            if rel_str in local_rels or _is_generated(Path(rel_str)):
+                continue
+            client.delete_file(format_address(SOURCES, workspace_id, rel_str))
+            stats["pruned"] += 1
+            if echo:
+                echo(f"  - {rel_str} (pruned)")
+
+    logger.info("Pushed project %s into workspace %s (%s)",
+                project_dir, workspace_id, stats)
+    return stats
+
+
+def push_project_to_workspace(client, config_path: str, name: str = "") -> str:
+    """Upload the project rooted at *config_path*'s directory into a **new** workspace.
+
+    Returns the new ``workspace_id``. To reuse the workspace a project already has,
+    see :func:`workspace_for_project`.
+    """
+    from robovast.service.interface import CreateWorkspaceRequest
+
+    project_dir = Path(config_path).resolve().parent
+    workspace_id = client.create_workspace(
+        CreateWorkspaceRequest(name=name or project_dir.name)).workspace_id
+    push_project_files(client, workspace_id, config_path)
     return workspace_id
 
 
+def workspace_for_project(client, config_path: str, name: str = "",
+                          *, on_exists=None) -> tuple[str, str]:
+    """The workspace to push *config_path*'s project into; ``(workspace_id, action)``.
+
+    Named after the project directory (or *name*), and **reused** when it is already
+    there: launching the same project twice must not leave ``myproj``, ``myproj-2``,
+    ``myproj-3`` behind — the server auto-suffixes a colliding name, so creating
+    unconditionally accumulates one workspace per launch.
+
+    *on_exists* ``(name, workspace_id) -> bool`` is asked before an existing workspace
+    is reused, since reusing it overwrites its files. A false answer raises, so nothing
+    is pushed or launched. Absent, the workspace is reused.
+
+    ``action`` is ``"created"`` or ``"reused"``, for the caller to report.
+    """
+    from robovast.service.interface import CreateWorkspaceRequest
+
+    project_dir = Path(config_path).resolve().parent
+    wanted = name or project_dir.name
+
+    matches = [w for w in client.list_workspaces().workspaces if w.name == wanted]
+    if len(matches) > 1:
+        # The registry auto-suffixes, so same-named rows only exist if they were made
+        # by hand. Refuse rather than pick one and overwrite the wrong project.
+        ids = ", ".join(w.workspace_id for w in matches)
+        raise ValueError(
+            f"{len(matches)} workspaces are named {wanted!r} ({ids}); "
+            "pass an explicit workspace name")
+    if matches:
+        workspace_id = matches[0].workspace_id
+        if on_exists is not None and not on_exists(wanted, workspace_id):
+            raise ValueError(f"declined to overwrite workspace {wanted!r} ({workspace_id})")
+        return workspace_id, "reused"
+
+    created = client.create_workspace(CreateWorkspaceRequest(name=wanted))
+    return created.workspace_id, "created"
+
+
 def run_project_via_service(client, config_path: str,
-                            config_filter: str = "", runs: int = 1,
+                            config_filter: str = "", runs: int = 0,
                             feedback=None, upload_to_share: bool = False,
-                            campaign_name: str = "") -> str:
-    """Push the local project through *client* and start a campaign. Returns id."""
+                            campaign_name: str = "", description: str = "",
+                            workspace_name: str = "", on_exists=None) -> str:
+    """Push the local project through *client* and start a campaign. Returns id.
+
+    ``runs=0`` means "whatever the ``.vast`` declares": the service maps a non-positive
+    count to ``None`` and falls back to ``execution.runs``. Substituting 1 here is what
+    silently turned a 25-repetition sweep into a 1-repetition one that still finished
+    green — the same bug the MCP tool carries a comment about.
+    """
     from robovast.service.interface import CreateCampaignRequest
 
     say = feedback or logger.info
-    say("Pushing project to robovast-service ...")
-    workspace_id = push_project_to_workspace(client, config_path)
+    workspace_id, action = workspace_for_project(
+        client, config_path, workspace_name, on_exists=on_exists)
+    say(f"Pushing project to robovast-service ({action} workspace {workspace_id}) ...")
+    push_project_files(client, workspace_id, config_path, prune=True)
     say(f"Uploaded to workspace {workspace_id}; starting campaign ...")
     ref = client.create_campaign(CreateCampaignRequest(
         workspace_id=workspace_id, config_filter=config_filter,
-        campaign_name=campaign_name,
-        runs=runs if runs and runs > 0 else 1,
+        campaign_name=campaign_name, description=description,
+        runs=runs if runs and runs > 0 else 0,
         upload_to_share=upload_to_share))
     return ref.campaign_id
 

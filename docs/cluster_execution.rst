@@ -21,12 +21,31 @@ a ``vast serve --attach`` or a tunnel you brought up), or pass ``--cluster`` to 
 ``kubectl port-forward`` for the call — pushes the local project into a server-side
 workspace, and starts the campaign there. It is *fire-and-forget*
 — it returns immediately with the campaign id, and the campaign continues in the
-cluster. Internally:
+cluster.
+
+The project it runs comes from ``vast init``, or straight from a file, which needs no
+project at all::
+
+   vast -V configs/examples/growth_sim/growth_sim.vast exec cluster run \
+        --description "pilot: new inflation radius"
+
+``--description`` is one line saying what the run is *for*. Set it: it is what tells
+two same-day ``<name>-<timestamp>`` campaigns apart in the monitor and the web UI.
+Repetitions come from the ``.vast``'s ``execution.runs`` unless ``--runs`` overrides
+them. Internally:
 
 1. **Launch** — The client pushes the project to a workspace and calls
    ``create_campaign``. The service starts a :class:`CampaignController` in a
    worker thread over ``KubernetesBackend``. No per-campaign controller pod is
    created; the service is the driver.
+
+   The workspace is named after the project's directory and **reused** by later
+   launches of the same project — it is overwritten (after asking; the default is
+   yes, and off a terminal it proceeds and says so), and project files it holds that
+   the local directory no longer has are removed, so it mirrors what is on disk. What
+   the *service* generated inside it (``.cache/``, staged plugins) is left alone.
+   Reusing the workspace is what keeps one per *project* rather than one per *launch*;
+   pass ``--workspace NAME`` to push somewhere else.
 2. **Config upload + job creation** — The driver composes each batch, uploads the
    scenario configurations to the storage bucket, and creates one Kubernetes
    ``Job`` per packed job. Each job runs an ``initContainer`` that pulls its

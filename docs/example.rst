@@ -22,7 +22,7 @@ To run the example, execute the following commands in the base folder of the Rob
    vast exec cluster setup minikube
     
    # execute the tests in the cluster (fire-and-forget: returns immediately)
-   vast exec cluster run
+   vast exec cluster run --description "growth_sim: first pass"
    vast exec cluster monitor       # shows progress per run
    vast exec cluster run-cleanup   # run this after jobs complete
 
@@ -53,6 +53,13 @@ Before running any tests, you must initialize the RoboVAST project configuration
    vast init <config>
 
 This command sets up the required configuration files and prepares your project for further steps.
+
+For a one-off run there is nothing to initialize: name the ``.vast`` directly and the
+command needs no project.
+
+.. code-block:: bash
+
+   vast -V <config> exec cluster run --description "what this run is for"
 
 Run Description
 ---------------

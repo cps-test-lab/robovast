@@ -450,11 +450,33 @@ def _sole_running_campaign(client):
     return live[0].campaign_id
 
 
+def _confirm_overwrite(name, workspace_id):
+    """Ask before a launch overwrites the workspace the project already has.
+
+    Same shape as ``vast workspace init``'s collision prompt: the default is yes, so
+    Enter is enough for the common case of re-launching the project you just edited.
+    Off a TTY there is nobody to ask and blocking would hang a scripted launch, so it
+    proceeds with that default — announced, never silent.
+
+    It says *what* the overwrite can disturb because nothing else can: a campaign is
+    workspace-independent by design (``_execution/launch.yaml`` deliberately does not
+    record which workspace it came from), so neither this command nor the service can
+    tell whether one is still reading these files.
+    """
+    question = (f"workspace {name!r} ({workspace_id}) already holds this project — "
+                "overwrite its files (a campaign still running from them would see "
+                "the change)?")
+    if not sys.stdin.isatty():
+        click.echo(f"note: {question} yes (not a terminal)")
+        return True
+    return click.confirm(question, default=True)
+
+
 @cluster.command()
 @click.option('--config', '-c', default=None,
               help='Run only configurations matching this name or glob pattern (e.g. hall*)')
 @click.option('--runs', '-r', type=int, default=None,
-              help='Override the number of runs specified in the config')
+              help='Override execution.runs (default: the value in the .vast).')
 @click.option('--log-tree', '-t', is_flag=True,
               help='Log scenario execution live tree')
 @target_options
@@ -471,8 +493,16 @@ def _sole_running_campaign(client):
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
+@click.option('--description', default=None, metavar='TEXT',
+              help='One line saying what this run is for. It is what tells two '
+                   'same-day <name>-<timestamp> campaigns apart in the monitor and '
+                   'the web UI.')
+@click.option('--workspace', 'workspace_name', default=None, metavar='NAME',
+              help="Workspace to push the project into (default: the .vast's "
+                   'directory name). Reused when it already exists.')
 def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
-        poll_interval, campaign_id, campaign_name, upload_to_share):  # pylint: disable=function-redefined,redefined-outer-name
+        poll_interval, campaign_id, campaign_name, upload_to_share,
+        description, workspace_name):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
     Runs through the robovast-service, which drives the campaign in-process and
@@ -490,7 +520,10 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
 
     Use --config to run only matching configurations (batch campaigns).
 
-    Requires project initialization with ``vast init`` first.
+    Names a project with ``vast init``, or directly: ``vast -V my.vast exec cluster
+    run``. The project is pushed into a workspace named after its directory, which is
+    **reused** on later launches (overwritten, after asking) rather than accumulating
+    one workspace per run — ``--workspace`` picks a different name.
     """
     try:
         from robovast.common.cli.project_config import \
@@ -499,8 +532,18 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
             service_client  # pylint: disable=import-outside-toplevel
         from robovast.execution.execution_utils.cluster_run import \
             wait_for_cluster_campaign  # pylint: disable=import-outside-toplevel
+        from robovast.service.interface import \
+            DESCRIPTION_MAX_LEN  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
             download_campaign_via_service, run_project_via_service)
+
+        # Checked here rather than left to the request model: this says what to do
+        # instead of surfacing a pydantic validation string, and it refuses before the
+        # project is pushed.
+        if description and len(description) > DESCRIPTION_MAX_LEN:
+            raise click.ClickException(
+                f"--description is {len(description)} characters; the limit is "
+                f"{DESCRIPTION_MAX_LEN} — shorten it to one line.")
 
         project = get_project_config()
         with service_client(cluster, namespace, context,
@@ -508,8 +551,12 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
             _echo_target(target)
             cid = run_project_via_service(
                 client, project.config_path, config_filter=config or "",
-                runs=runs or 1, feedback=click.echo, upload_to_share=upload_to_share,
-                campaign_name=campaign_name or "")
+                # 0, not 1: the service reads a non-positive count as "use the .vast's
+                # execution.runs". Substituting 1 here ran a 25-repetition sweep once
+                # per configuration and still reported success.
+                runs=runs or 0, feedback=click.echo, upload_to_share=upload_to_share,
+                campaign_name=campaign_name or "", description=description or "",
+                workspace_name=workspace_name or "", on_exists=_confirm_overwrite)
             if not wait_and_download:
                 click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
                            "Track it with 'vast exec cluster monitor' or the service.")
