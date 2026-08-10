@@ -9,8 +9,9 @@ import sqlite3
 import pytest
 
 from robovast.common.analysis import (DATA_DB_SCHEMA_VERSION, CampaignDataError,
-                                      campaign_root, get_behavior_info, list_tables,
-                                      read_runs, read_table, run_scope, table_info)
+                                      attach_params, campaign_root, config_file,
+                                      get_behavior_info, list_tables, read_runs,
+                                      read_table, run_scope, table_info)
 
 BEHAVIOURS = [
     # (config_name, run_id, timestamp, behavior_name, behavior_id, status_name)
@@ -209,3 +210,62 @@ def test_an_instance_that_never_finished_is_not_given_a_duration(tmp_path):
     conn.close()
     info = get_behavior_info("nav", read_table(root, "behaviors"))
     assert ("cb", 1) not in {(r.config_name, r.run_id) for r in info.itertuples()}
+
+
+def test_with_params_attaches_each_scenario_parameter_as_a_column(tmp_path):
+    """What a metric varied with lives in `runs`, not on the metric table."""
+    root = _campaign(tmp_path)
+    frame = read_table(root, "behaviors", with_params=True)
+    assert len(frame) == len(BEHAVIOURS)
+    assert frame.loc[frame["config_name"] == "cb", "speed"].unique().tolist() == [2.0]
+    assert "param_speed" not in frame.columns
+
+
+def test_attach_params_refuses_to_shadow_a_measured_column(tmp_path):
+    """A configured value quietly overwriting a measured one reads as a plausible plot."""
+    root = _campaign(tmp_path)
+    conn = sqlite3.connect(root / "_execution" / "data.db")
+    conn.execute("ALTER TABLE runs RENAME COLUMN param_speed TO param_timestamp")
+    conn.commit()
+    conn.close()
+    with pytest.raises(CampaignDataError, match="would overwrite"):
+        read_table(root, "behaviors", with_params=True)
+
+
+def test_attach_params_needs_the_run_keys(tmp_path):
+    root = _campaign(tmp_path)
+    frame = read_table(root, "behaviors").drop(columns=["run_id"])
+    with pytest.raises(CampaignDataError, match="no \\['config_name', 'run_id'\\]"):
+        attach_params(frame, root)
+
+
+def test_config_file_resolves_against_the_campaign_snapshot(tmp_path):
+    """map_file is relative to the campaign's _config/, at every scope."""
+    root = _campaign(tmp_path)
+    target = root / "_config" / "environments" / "hexagon" / "maps" / "hexagon.yaml"
+    target.parent.mkdir(parents=True)
+    target.touch()
+    rel = "environments/hexagon/maps/hexagon.yaml"
+    for node in (root, root / "ca", root / "ca" / "0"):
+        assert config_file(node, rel) == target
+
+
+def test_config_file_prefers_a_per_configuration_copy(tmp_path):
+    root = _campaign(tmp_path)
+    for base in (root / "_config", root / "ca" / "_config"):
+        (base / "maps").mkdir(parents=True)
+        (base / "maps" / "m.yaml").touch()
+    assert config_file(root / "ca", "maps/m.yaml", "ca") == root / "ca" / "_config" / "maps" / "m.yaml"
+
+
+def test_config_file_says_what_it_looked_for(tmp_path):
+    root = _campaign(tmp_path)
+    with pytest.raises(CampaignDataError, match="Looked at"):
+        config_file(root, "maps/missing.yaml")
+
+
+def test_config_file_can_hand_back_a_candidate_for_a_caller_that_probes(tmp_path):
+    root = _campaign(tmp_path)
+    path = config_file(root, "maps/missing.yaml", must_exist=False)
+    assert path == root / "_config" / "maps" / "missing.yaml"
+    assert not path.is_file()

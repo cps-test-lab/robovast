@@ -183,6 +183,26 @@ metric table relates what varied to what happened. ``read_sql(DATA_DIR, ...)`` i
 hatch for joins and for the ``run_view`` / ``config_view`` views — it is deliberately *not*
 scoped.
 
+What a metric varied *with* is usually the question, so ``with_params=True`` attaches each
+scenario parameter of the owning run as a column, with the ``param_`` prefix dropped
+(:func:`~robovast.common.analysis.db.attach_params` does the same to a frame you already
+have). A parameter whose name collides with a column of the table raises rather than
+shadowing it:
+
+.. code-block:: python
+
+   df = read_table(DATA_DIR, "poses", with_params=True)
+   df["map_file"]        # the parameter, beside the measurements it belongs to
+
+A parameter that names a *file* — ``map_file``, ``mesh_file`` — holds a path relative to the
+campaign's ``_config/``. Resolve it with ``config_file`` rather than joining it onto
+``DATA_DIR``, which is only the campaign root at campaign scope:
+
+.. code-block:: python
+
+   config_file(DATA_DIR, df["map_file"].iloc[0])            # raises if it is not there
+   config_file(DATA_DIR, rel, config_name, must_exist=False)  # to test existence yourself
+
 **Which tables exist depends on the campaign.** ``runs``, ``behaviors``, ``run_log``,
 ``resource_usage`` and ``scenario_timestamps`` are produced whatever the simulator and whether
 or not the run used ROS. ``poses``, ``costmaps``, ``action_*`` and the ``nav2_*`` tables come

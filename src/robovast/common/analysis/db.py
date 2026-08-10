@@ -257,7 +257,7 @@ def _scope_clause(level: str, config_name: Optional[str],
 
 def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequence] = None,
                require: Optional[Iterable] = None, where: str = "",
-               params: Sequence = ()) -> pd.DataFrame:
+               params: Sequence = (), with_params: bool = False) -> pd.DataFrame:
     """One of the campaign's tables, restricted to what *data_dir* selects.
 
     Args:
@@ -271,6 +271,9 @@ def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequenc
             a frame that is quietly missing a column, or empty.
         where: Extra SQL predicate, ANDed with the scope restriction. Use ``?`` placeholders.
         params: Values for those placeholders.
+        with_params: Attach each scenario parameter of the owning run as a column — see
+            :func:`attach_params`. What a metric varied *with* is usually the question, and
+            the parameters live in ``runs`` rather than on the metric table.
 
     Returns:
         A DataFrame, empty (with the right columns) when the node produced no rows.
@@ -291,9 +294,77 @@ def read_table(data_dir: Union[str, Path], table: str, columns: Optional[Sequenc
             clause = f"{clause} AND ({where})" if clause else f"WHERE {where}"
             values = [*values, *params]
 
-        return pd.read_sql(f'SELECT {selected} FROM "{sql_name}" {clause}', conn, params=values)
+        frame = pd.read_sql(f'SELECT {selected} FROM "{sql_name}" {clause}', conn, params=values)
     finally:
         conn.close()
+
+    return attach_params(frame, data_dir) if with_params else frame
+
+
+def attach_params(frame: pd.DataFrame, data_dir: Union[str, Path]) -> pd.DataFrame:
+    """Add each scenario parameter of the owning run to *frame*, as a column.
+
+    The parameters are stored once per run in ``runs`` as ``param_*``; this joins them onto
+    a metric frame on ``(config_name, run_id)`` and drops the prefix, so a plot reads
+    ``df["map_file"]`` rather than carrying the storage layout into the analysis.
+
+    A parameter whose name collides with a column already in *frame* raises instead of
+    winning or being suffixed: silently shadowing a measured column with a configured value
+    is the kind of thing that reads as a plausible plot.
+    """
+    keys = ["config_name", "run_id"]
+    if any(k not in frame.columns for k in keys):
+        raise CampaignDataError(
+            f"Cannot attach scenario parameters: the frame has no {keys} to join on. "
+            f"It has: {', '.join(frame.columns)}.")
+
+    runs = read_runs(data_dir)
+    param_cols = [c for c in runs.columns if c.startswith("param_")]
+    renamed = {c: c[len("param_"):] for c in param_cols}
+
+    clashes = sorted(set(renamed.values()) & set(frame.columns))
+    if clashes:
+        raise CampaignDataError(
+            f"Scenario parameter(s) {', '.join(clashes)} would overwrite a column of the "
+            f"same name already in this table. Read the parameters separately with "
+            f"read_runs() and join them under names of your choosing.")
+
+    return frame.merge(runs[keys + param_cols].rename(columns=renamed), on=keys, how="left")
+
+
+def config_file(data_dir: Union[str, Path], relative_path: str,
+                config_name: Optional[str] = None, must_exist: bool = True) -> Path:
+    """Resolve a path recorded in a scenario parameter to a file in the campaign snapshot.
+
+    Parameters that name a file — ``map_file``, ``mesh_file`` — hold a path relative to the
+    campaign's ``_config/``, which is where the snapshot puts ``environments/``. Joining
+    them against the notebook's ``DATA_DIR`` instead is wrong at every scope except the
+    campaign root, and a configuration's own ``_config/`` holds only ``config.yaml`` and
+    ``scenario.config`` — so that spelling silently finds nothing.
+
+    Args:
+        data_dir: The notebook's ``DATA_DIR``, at any scope.
+        relative_path: The parameter's value, e.g. ``environments/hexagon/maps/hexagon.yaml``.
+        config_name: Checked first under that configuration's own ``_config/``, for a
+            campaign that kept a per-configuration copy.
+        must_exist: Raise when nothing is found, naming what was tried. Pass ``False`` to
+            get the campaign-level candidate back regardless, for a caller that means to
+            test existence itself.
+    """
+    root = campaign_root(data_dir)
+    candidates = []
+    if config_name is not None:
+        candidates.append(root / str(config_name) / "_config" / relative_path)
+    candidates.append(root / "_config" / relative_path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    if must_exist:
+        raise CampaignDataError(
+            f"{relative_path!r} is not in campaign {root.name}'s configuration. Looked at: "
+            + ", ".join(str(c) for c in candidates))
+    return candidates[-1]
 
 
 def read_runs(data_dir: Union[str, Path]) -> pd.DataFrame:

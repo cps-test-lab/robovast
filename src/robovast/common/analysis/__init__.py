@@ -11,8 +11,9 @@ Split by where a frame comes from, plus one module for what you compute from one
 * :mod:`ros2` — readers for rosbag artifacts on disk.
 """
 
-from .db import (CampaignDataError, DATA_DB_SCHEMA_VERSION, campaign_root, list_tables,
-                 open_campaign_db, read_runs, read_sql, read_table, run_scope, table_info)
+from .db import (CampaignDataError, DATA_DB_SCHEMA_VERSION, attach_params,
+                 campaign_root, config_file, list_tables, open_campaign_db, read_runs,
+                 read_sql, read_table, run_scope, table_info)
 from .files import (for_each_run, get_run_status, get_scenario_parameter,
                     read_output_csv, read_output_files, read_output_yaml_list,
                     read_run_statuses)
@@ -24,6 +25,8 @@ __all__ = [
     'read_table',
     'read_runs',
     'read_sql',
+    'attach_params',
+    'config_file',
     'list_tables',
     'table_info',
     'run_scope',
