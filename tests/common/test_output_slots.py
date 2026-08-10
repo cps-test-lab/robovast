@@ -321,15 +321,16 @@ def _describing(payload):
     return lambda spec: _Runner()
 
 
-def _check(block, payload, tmp_path):
+def _check(block, payload, tmp_path, params=None, scenario_parameters=None):
     import robovast.common.config_generation as cg
 
     execution = {"mode": "ros2",
                  "containers": {"simulation": {"backend": "robosito",
                                                "config": "w.yaml"}}}
+    configs = [{"name": "c", "sim": block, "config": params or {}}]
     original, cg._make_container_runner = cg._make_container_runner, _describing(payload)
     try:
-        cg._check_sim_override_targets(execution, [block], str(tmp_path))
+        cg._check_sim_against_world(execution, configs, str(tmp_path), scenario_parameters)
     finally:
         cg._make_container_runner = original
 
@@ -359,8 +360,8 @@ def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
            tmp_path)
 
 
-def test_a_campaign_that_overrides_nothing_is_not_checked(tmp_path):
-    """No container run for a campaign that only selects worlds."""
+def test_a_campaign_with_nothing_to_check_starts_no_container(tmp_path):
+    """No overrides and no entity names means nothing a description could settle."""
     import robovast.common.config_generation as cg
 
     def _refuse(_spec):
@@ -368,8 +369,67 @@ def test_a_campaign_that_overrides_nothing_is_not_checked(tmp_path):
 
     execution = {"mode": "ros2",
                  "containers": {"simulation": {"backend": "robosito", "config": "w.yaml"}}}
+    configs = [{"name": "c", "sim": {"config": "w.yaml"}, "config": {}}]
     original, cg._make_container_runner = cg._make_container_runner, _refuse
     try:
-        cg._check_sim_override_targets(execution, [{"config": "w.yaml"}], str(tmp_path))
+        cg._check_sim_against_world(execution, configs, str(tmp_path))
     finally:
         cg._make_container_runner = original
+
+
+# -- entities the trial drives must be entities the world compiled ---------------------------
+
+_SPAWN_PARAMS = [{"name": "static_objects", "type": "listofspawn_entity"}]
+
+
+def test_an_entity_the_world_never_compiled_is_refused(tmp_path):
+    """Nothing can create it at run time, so this is a run that fails on a service call."""
+    with pytest.raises(ValueError, match="does not compile: obstacle_9"):
+        _check({"config": "w.yaml"},
+               {"plugins": [], "entities": ["obstacle_0", "obstacle_1"]},
+               tmp_path,
+               params={"static_objects": [{"entity_name": "obstacle_9"}]},
+               scenario_parameters=_SPAWN_PARAMS)
+
+
+def test_entities_the_world_compiled_pass(tmp_path):
+    _check({"config": "w.yaml"},
+           {"plugins": [], "entities": ["obstacle_0", "obstacle_1"]},
+           tmp_path,
+           params={"static_objects": [{"entity_name": "obstacle_0"},
+                                      {"entity_name": "obstacle_1"}]},
+           scenario_parameters=_SPAWN_PARAMS)
+
+
+def test_only_entity_typed_parameters_are_read(tmp_path):
+    """A pose parameter is not an entity reference, whatever its fields are called."""
+    _check({"config": "w.yaml"},
+           {"plugins": [], "entities": []},
+           tmp_path,
+           params={"spawn_trigger_point": {"entity_name": "not_an_entity"}},
+           scenario_parameters=[{"name": "spawn_trigger_point", "type": "position_3d"}])
+
+
+def test_both_channels_call_an_obstacle_the_same_thing():
+    """Count and geometry agreeing is not enough if the names do not.
+
+    A placement plugin left to name its own instances calls them `boxes_0`, while the trial
+    knows `obstacle_0` -- so a scenario driving one by name would address nothing, in a
+    campaign where every other cross-check passes.
+    """
+    from dataclasses import dataclass, field
+
+    from robovast_nav.data_model import Orientation, Pose, Position
+    from robovast_nav.variation.obstacle_variation import _instances_for_sim
+
+    @dataclass
+    class _Obj:
+        entity_name: str = "obstacle_7"
+        model: str = "box.sdf.xacro"
+        xacro_arguments: str = "width:=0.5, length:=0.5, height:=1.0"
+        spawn_pose: Pose = field(default_factory=lambda: Pose(
+            position=Position(x=1.0, y=2.0), orientation=Orientation(yaw=0.0)))
+
+    instances = _instances_for_sim([_Obj()])
+    assert instances[0]["name"] == "obstacle_7"
+    assert instances[0]["size"] == [0.5, 0.5, 1.0]

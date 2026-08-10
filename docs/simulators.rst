@@ -334,6 +334,19 @@ backend offering no ``describe_query`` -- or an environment with no container ru
 checked either. In both cases the campaign behaves exactly as it did before: wrong overrides are
 still refused, just later and more expensively.
 
+**Entities the trial drives must be entities the world compiled.** Nothing creates one at run
+time -- rst does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``
+-- so a scenario naming ``obstacle_9`` against a world with four obstacles fails on a service
+call, mid-trial. Which parameters name entities is not guessed: the scenario file declares it
+(``static_objects: list of spawn_entity``), and the values of those parameters carry
+``entity_name``. Checked against the same description, which then also reports the entities the
+world compiles -- asked for only when a campaign names any, since answering it means building
+the model.
+
+In practice a variation writing both channels keeps them consistent by construction: the
+obstacles the trial drives and the ones the world compiles come from one placement, with one
+set of names. The check is what catches a hand-authored mismatch.
+
 The same seam answers the staging question. ``input_files`` may also return a query, which is
 how a world that ``extends`` **another campaign file** stages its whole chain; a world extending
 a *packaged* one, or nothing, is complete in the single file the campaign owns and says so

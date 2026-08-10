@@ -291,7 +291,7 @@ class RobositoBackend(SimulatorBackend):
             ContainerSpec(image=DEFAULT_SIM_IMAGE),
             ["rst", "scenes", "inputs", cfg.config])
 
-    def describe_query(self, cfg, execution: dict):
+    def describe_query(self, cfg, execution: dict, *, entities: bool = False):
         """``rst scenes describe``, in robosito's own image.
 
         What makes the ``sim`` channel checkable: a campaign writes
@@ -300,10 +300,13 @@ class RobositoBackend(SimulatorBackend):
         the image that will run the campaign, so the answer describes the world that will load.
         """
         del execution
-        return ContainerQuery(
-            ContainerSpec(image=DEFAULT_SIM_IMAGE),
-            ["rst", "scenes", "describe", _config_in_container(cfg.config)
-             if cfg.config.startswith("/") else cfg.config])
+        command = ["rst", "scenes", "describe",
+                   _config_in_container(cfg.config) if cfg.config.startswith("/")
+                   else cfg.config]
+        if entities:
+            # Costs a model build, so it is asked for only when a campaign names entities.
+            command.append("--entities")
+        return ContainerQuery(ContainerSpec(image=DEFAULT_SIM_IMAGE), command)
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict) -> str:

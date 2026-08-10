@@ -323,7 +323,33 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
             resolve(backend, path, name)
 
 
-def _check_sim_override_targets(execution, blocks, vast_dir):
+#: OSC types whose values carry an ``entity_name``. The scenario file declares them
+#: (``static_objects: list of spawn_entity``), so which parameters name entities is a fact
+#: RoboVAST reads rather than a convention it invents -- the same source that says whether a
+#: goal parameter takes one pose or a list.
+_ENTITY_TYPES = ("spawn_entity",)
+
+
+def entity_bearing_parameters(scenario_parameters) -> list:
+    """Names of the scenario parameters whose values carry entity names."""
+    return [p.get("name") for p in (scenario_parameters or [])
+            if isinstance(p, dict)
+            and str(p.get("type", "")).replace("listof", "") in _ENTITY_TYPES]
+
+
+def _entity_names_in(value) -> set:
+    """Every ``entity_name`` in a scenario-parameter value, at any depth."""
+    if isinstance(value, dict):
+        found = {str(value["entity_name"])} if value.get("entity_name") else set()
+        for item in value.values():
+            found |= _entity_names_in(item)
+        return found
+    if isinstance(value, list):
+        return set().union(*(_entity_names_in(v) for v in value)) if value else set()
+    return set()
+
+
+def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=None):
     """Check every ``sim`` override addresses a plugin the world actually has.
 
     The ``sim`` channel is writable without this but not *discoverable*: a campaign writes
@@ -343,18 +369,34 @@ def _check_sim_override_targets(execution, blocks, vast_dir):
     it is wrong.
     """
     from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        DOTTED_ROOT_UNSET, backend_name, resolve_backend, sim_override_keys)
+        backend_name, resolve_backend, sim_override_keys)
 
-    del DOTTED_ROOT_UNSET
     name = backend_name(execution or {})
     if not name:
         return
     backend = resolve_backend(name, vast_dir)
-    for block in blocks:
+    entity_params = entity_bearing_parameters(scenario_parameters)
+
+    # Group by resolved block: what a world offers depends on the world, not on the
+    # configuration, so one description serves every configuration sharing it.
+    by_block = {}
+    for config in configs:
+        block = config.get("sim") or {}
+        by_block.setdefault(json.dumps(block, sort_keys=True, default=str),
+                            (block, []))[1].append(config)
+
+    for block, sharing in by_block.values():
         wanted = sim_override_keys(backend, block)
-        if not wanted:
+        named = set()
+        for config in sharing:
+            params = config.get("config") or {}
+            for param in entity_params:
+                named |= _entity_names_in(params.get(param))
+        if not wanted and not named:
             continue
-        query = backend.describe_query(_validated_block(backend, block, name), execution)
+
+        query = backend.describe_query(
+            _validated_block(backend, block, name), execution, entities=bool(named))
         if query is None:
             return
         runner = _make_container_runner(query.spec)
@@ -369,12 +411,23 @@ def _check_sim_override_targets(execution, blocks, vast_dir):
         if payload is None:
             logger.debug("simulator backend could not describe %s", block)
             return
+
         available = {str(p.get("key")) for p in (payload.get("plugins") or [])}
         unknown = sorted(k for k in wanted if k not in available)
         if unknown:
             raise ValueError(
                 f"sim override targets no plugin in this world: {', '.join(unknown)}. "
                 f"The world has: {', '.join(sorted(available)) or '(none)'}")
+
+        compiled = payload.get("entities")
+        if named and compiled is not None:
+            missing = sorted(named - set(compiled))
+            if missing:
+                raise ValueError(
+                    "the scenario drives entities this world does not compile: "
+                    f"{', '.join(missing)}. The world has: "
+                    f"{', '.join(sorted(compiled)) or '(none)'}. Nothing can create them at "
+                    "run time -- which entities exist is settled when the model compiles.")
 
 
 def _validated_block(backend, block, name):
@@ -384,7 +437,8 @@ def _validated_block(backend, block, name):
     return _validated_cfg(backend, dict(block or {}), name)
 
 
-def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
+def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
+                               scenario_parameters=None):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
     Runs **after** the variation loop, because that is the first point at which a
@@ -449,7 +503,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
                 run_files.append(rel)
 
     try:
-        _check_sim_override_targets(execution, seen_blocks, vast_dir)
+        _check_sim_against_world(execution, configs, vast_dir, scenario_parameters)
     except ValueError:
         # The campaign's own mistake, and the whole point of checking here.
         raise
@@ -1390,7 +1444,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # and stage the union of the worlds they name. `run_files` is still being built at this
     # point, so the additions travel with the campaign and are hashed into every
     # configuration's identity exactly as the campaign-level world already was.
-    _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files)
+    _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
+                               existing_scenario_parameters)
 
     # Extract execution parameters from execution section
     #

@@ -154,7 +154,8 @@ class SimulatorBackend:
         """
         return {}
 
-    def describe_query(self, cfg, execution: dict) -> Optional["ContainerQuery"]:
+    def describe_query(self, cfg, execution: dict, *,
+                       entities: bool = False) -> Optional["ContainerQuery"]:
         """A query describing what this world *provides*, or ``None``.
 
         The counterpart to :meth:`input_files`, which describes what it needs. RoboVAST uses
@@ -167,6 +168,10 @@ class SimulatorBackend:
         absent from ``paths``, so an unlisted one is unverifiable rather than wrong -- but a
         plugin key matching nothing is refused by the simulator at load time, which is the
         error worth catching before an image pull.
+
+        *entities* asks for ``{"entities": [...]}`` as well -- the names the world compiles.
+        It is separate because answering it means building the model, which a caller only
+        checking override targets should not pay for.
 
         ``None`` -- the default -- means this backend cannot describe a world, and its
         campaigns are simply not pre-checked.
