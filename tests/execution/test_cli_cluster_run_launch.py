@@ -56,7 +56,7 @@ def _invoke(vast, *args):
 def test_runs_defaults_to_the_vast_not_one(launch):
     result = _invoke(launch["_vast"])
     assert result.exit_code == 0, result.output
-    # 0 means "use execution.runs"; a 1 here ran a 25-repetition sweep once per config.
+    # 0 means "use execution.runs"; any other stand-in for "unset" is a silent override.
     assert launch["runs"] == 0
 
 
@@ -79,6 +79,16 @@ def test_an_over_long_description_is_refused_before_anything_is_pushed(launch):
     assert result.exit_code != 0
     assert "shorten it" in result.output
     assert not launch.get("description"), "the project must not be pushed first"
+
+
+def test_campaign_id_is_not_accepted(launch):
+    # The service names the campaign and CreateCampaignRequest carries no id, so an
+    # accepted --campaign-id could only be ignored. Refusing the option says so.
+    result = CliRunner().invoke(
+        exec_cli.execution, ['cluster', 'run', '--campaign-id', 'my-id'],
+        obj={'vast_file': launch["_vast"]})
+    assert result.exit_code != 0
+    assert "no such option" in result.output.lower()
 
 
 def test_overwrite_prompt_proceeds_off_a_terminal(monkeypatch, capsys):

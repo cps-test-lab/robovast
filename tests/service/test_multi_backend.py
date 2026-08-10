@@ -396,3 +396,28 @@ def test_stopping_a_named_lane_leaves_the_other_alone(tmp_path, monkeypatch):
                                                ExecStopResult(stopped=True))[1])
     svc.stop_exec_container("cluster")
     assert seen == ["cluster"]
+
+
+def test_a_workspace_in_use_on_either_lane_is_reported(tmp_path):
+    """Which workspaces are busy has to cover both lanes, or it fails open.
+
+    The lanes keep separate campaign registries, so the inherited single-lane answer
+    reports a workspace as free while the other lane's campaign is still reading it —
+    and this answer exists to stop a push landing on one that is busy.
+    """
+    from robovast.common.status import Phase
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    def _entry(campaign_id, workspace_id):
+        state = ControllerState(campaign_id=campaign_id)
+        state.set_phase(Phase.RUNNING)
+        return _LocalCampaign(campaign_id, str(tmp_path), state,
+                              workspace_id=workspace_id)
+
+    svc = _make(tmp_path)
+    svc._campaigns["on-local"] = _entry("on-local", "ws-local")
+    svc._cluster._campaigns["on-cluster"] = _entry("on-cluster", "ws-cluster")
+
+    in_use = svc._workspaces_in_use()
+    assert in_use == {"ws-local": ["on-local"], "ws-cluster": ["on-cluster"]}

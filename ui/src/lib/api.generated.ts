@@ -2571,6 +2571,8 @@ export interface components {
              * @default false
              */
             read_only: boolean;
+            /** Running Campaigns */
+            running_campaigns: string[];
             /** Workspace Id */
             workspace_id: string;
         };

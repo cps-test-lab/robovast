@@ -486,8 +486,6 @@ def _confirm_overwrite(name, workspace_id):
                    'cluster run as transparent as a local run.')
 @click.option('--poll-interval', type=float, default=5.0, show_default=True,
               help='Seconds between status polls when --wait-and-download is set.')
-@click.option('--campaign-id', default=None,
-              help='Launch under this campaign id instead of generating one.')
 @click.option('--campaign-name', default=None,
               help='Override the campaign name; the id becomes <name>-<timestamp>.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
@@ -501,9 +499,15 @@ def _confirm_overwrite(name, workspace_id):
               help="Workspace to push the project into (default: the .vast's "
                    'directory name). Reused when it already exists.')
 def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
-        poll_interval, campaign_id, campaign_name, upload_to_share,
+        poll_interval, campaign_name, upload_to_share,
         description, workspace_name):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
+
+    \b
+    There is no ``--campaign-id`` here: the service names the campaign and
+    ``CreateCampaignRequest`` carries no id, so nothing could honour one. The id it
+    chose is returned by the launch. ``vast exec local run`` drives the controller
+    directly and does take one.
 
     Runs through the robovast-service, which drives the campaign in-process and
     creates the per-batch scenario Jobs. The service is auto-detected on the
@@ -552,8 +556,8 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
             cid = run_project_via_service(
                 client, project.config_path, config_filter=config or "",
                 # 0, not 1: the service reads a non-positive count as "use the .vast's
-                # execution.runs". Substituting 1 here ran a 25-repetition sweep once
-                # per configuration and still reported success.
+                # execution.runs", and a substitute for "unset" would shrink the
+                # campaign without failing anything.
                 runs=runs or 0, feedback=click.echo, upload_to_share=upload_to_share,
                 campaign_name=campaign_name or "", description=description or "",
                 workspace_name=workspace_name or "", on_exists=_confirm_overwrite)

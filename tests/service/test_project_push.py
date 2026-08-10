@@ -13,6 +13,7 @@ Everything runs against a real ``WorkspaceStore`` behind an in-process
 ``grant.url`` is ``None`` and uploads go through ``store.write_upload``.
 """
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -29,11 +30,19 @@ from robovast.service.project_push import (_resolve_workspace_id, push_file,
 from robovast.service.workspaces import WorkspaceError, WorkspaceRegistry, WorkspaceStore
 
 
+def _transport(root):
+    lt = LocalTransport.__new__(LocalTransport)
+    lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=root))
+    # ``list_workspaces`` reports which workspaces live campaigns are reading from, so
+    # the campaign registry has to exist even for a store-only transport.
+    lt._campaigns = {}
+    lt._lock = threading.Lock()
+    return lt
+
+
 @pytest.fixture
 def client(tmp_path):
-    lt = LocalTransport.__new__(LocalTransport)
-    lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return lt
+    return _transport(tmp_path / "workspaces")
 
 
 @pytest.fixture
@@ -198,9 +207,10 @@ def test_push_project_creates_workspace_and_uploads_inputs(client, project):
     wid = push_project_to_workspace(client, str(project / "demo.vast"))
     paths = _paths(client, wid)
     assert "demo.vast" in paths and "scenes/room.json" in paths and "run.sh" in paths
-    # push's _is_project_input drops hidden files (it does not special-case results/,
-    # which a fresh project never contains) — unchanged by the _upload_one refactor.
     assert not any(p.startswith(".") for p in paths)
+    # A campaign's own output is not project input: pushing results/ uploads every past
+    # campaign on disk, on every launch. Same exclusion `vast workspace init` makes.
+    assert not any(p.startswith("results/") for p in paths)
 
 
 # -- the launch path: one workspace per project, not per launch --------------
@@ -208,6 +218,17 @@ def test_push_project_creates_workspace_and_uploads_inputs(client, project):
 
 def _names(client):
     return sorted(w.name for w in client.list_workspaces().workspaces)
+
+
+def _live_campaign(campaign_id, workspace_id, done=False):
+    """A campaign entry as the service holds one while it drives the run."""
+    from robovast.common.status import Phase
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    state = ControllerState(campaign_id=campaign_id)
+    state.set_phase(Phase.FINISHED if done else Phase.RUNNING)
+    return _LocalCampaign(campaign_id, "results", state, workspace_id=workspace_id)
 
 
 def test_workspace_for_project_creates_then_reuses(client, project):
@@ -243,6 +264,36 @@ def test_workspace_for_project_declined_refuses(client, project):
     workspace_for_project(client, vast)
     with pytest.raises(ValueError, match="declined to overwrite"):
         workspace_for_project(client, vast, on_exists=lambda name, wid: False)
+
+
+def test_workspace_for_project_refuses_one_a_campaign_is_reading(client, project):
+    # A campaign reads its project out of the workspace for its whole life, so a push
+    # now would change an experiment that is still running. Not the caller's to accept:
+    # this refuses before the overwrite prompt is even reached.
+    vast = str(project / "demo.vast")
+    wid, _ = workspace_for_project(client, vast)
+    client._campaigns["camp-live"] = _live_campaign("camp-live", wid)
+
+    with pytest.raises(ValueError, match="camp-live"):
+        workspace_for_project(client, vast, on_exists=lambda name, w: True)
+
+
+def test_a_finished_campaign_does_not_hold_its_workspace(client, project):
+    vast = str(project / "demo.vast")
+    wid, _ = workspace_for_project(client, vast)
+    client._campaigns["camp-done"] = _live_campaign("camp-done", wid, done=True)
+
+    assert workspace_for_project(client, vast) == (wid, "reused")
+
+
+def test_list_workspaces_names_the_campaigns_reading_each(client, project):
+    wid, _ = workspace_for_project(client, str(project / "demo.vast"))
+    other = _wid(client, "unrelated")
+    client._campaigns["camp-live"] = _live_campaign("camp-live", wid)
+
+    by_id = {w.workspace_id: w for w in client.list_workspaces().workspaces}
+    assert by_id[wid].running_campaigns == ["camp-live"]
+    assert by_id[other].running_campaigns == []
 
 
 def test_workspace_for_project_refuses_duplicate_names():
@@ -312,8 +363,8 @@ class _LaunchClient:
 def test_run_project_leaves_runs_to_the_vast_by_default(client, project):
     launcher = _LaunchClient(client)
     run_project_via_service(launcher, str(project / "demo.vast"), feedback=lambda _: None)
-    # 0, not 1: the service reads a non-positive count as "use execution.runs". A 1 here
-    # ran every configuration once and still reported success.
+    # 0, not 1: the service reads a non-positive count as "use execution.runs", and a
+    # stand-in for "unset" shrinks the campaign without failing anything.
     assert launcher.request.runs == 0
 
 

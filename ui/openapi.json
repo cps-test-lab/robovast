@@ -2531,6 +2531,13 @@
             "title": "Read Only",
             "type": "boolean"
           },
+          "running_campaigns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Running Campaigns",
+            "type": "array"
+          },
           "workspace_id": {
             "title": "Workspace Id",
             "type": "string"
@@ -2540,6 +2547,7 @@
           "created_at",
           "name",
           "read_only",
+          "running_campaigns",
           "workspace_id"
         ],
         "title": "WorkspaceInfo",

@@ -302,6 +302,19 @@ class MultiBackendService(LocalTransport):
         with self._cluster._lock:  # noqa: SLF001 - sibling lane, one feature
             return set(self._cluster._campaigns)  # noqa: SLF001
 
+    def _workspaces_in_use(self) -> dict[str, list[str]]:
+        """Both lanes' live campaigns, keyed by the workspace each reads from.
+
+        The lanes keep separate registries, so the inherited single-lane answer would
+        report a workspace as free while a cluster campaign was still reading it —
+        and this answer exists precisely to stop a push landing on one that is busy.
+        A gap here fails open, which is the one way it must not fail.
+        """
+        merged = LocalTransport._workspaces_in_use(self)  # noqa: SLF001 - this lane
+        for workspace_id, ids in self._cluster._workspaces_in_use().items():  # noqa: SLF001
+            merged.setdefault(workspace_id, []).extend(ids)
+        return merged
+
     def _durable_campaign_ids(self) -> set[str]:
         """The cluster lane's stored campaigns, so the inherited listing includes them.
 

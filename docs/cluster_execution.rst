@@ -43,9 +43,17 @@ them. Internally:
    launches of the same project — it is overwritten (after asking; the default is
    yes, and off a terminal it proceeds and says so), and project files it holds that
    the local directory no longer has are removed, so it mirrors what is on disk. What
-   the *service* generated inside it (``.cache/``, staged plugins) is left alone.
-   Reusing the workspace is what keeps one per *project* rather than one per *launch*;
-   pass ``--workspace NAME`` to push somewhere else.
+   the *service* generated inside it (``.cache/``, staged plugins) is left alone, as
+   is ``results/`` — a campaign's output is not project input. Reusing the workspace
+   is what keeps one per *project* rather than one per *launch*; pass
+   ``--workspace NAME`` to push somewhere else.
+
+   A workspace a campaign is **currently running from** is refused, naming the
+   campaign: a campaign reads its project out of the workspace for its whole life (a
+   search campaign re-composes from it every generation), so a push would change an
+   experiment mid-flight. ``WorkspaceInfo.running_campaigns`` is what answers that —
+   live state held by the service driving the run, never a stored campaign→workspace
+   binding, because a *finished* campaign is workspace-independent.
 2. **Config upload + job creation** — The driver composes each batch, uploads the
    scenario configurations to the storage bucket, and creates one Kubernetes
    ``Job`` per packed job. Each job runs an ``initContainer`` that pulls its

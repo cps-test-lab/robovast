@@ -35,9 +35,14 @@ logger = logging.getLogger(__name__)
 
 _INLINE_EXTS = (".vast", ".osc")
 
-# Generated/cache artefacts that must not be pushed as project inputs.
+# Generated/cache artefacts that must not be pushed as project inputs. ``results`` is
+# here for the same reason ``vast workspace init`` excludes it: it is a campaign's
+# *output*, and pushing it uploads every past campaign on disk as project input on every
+# launch. Only the default name is known — a project whose ``.vast_project`` names a
+# different results dir still uploads it, and there is no way to learn that name from the
+# ``.vast`` alone.
 _SKIP_DIRS = {".cache", ".preprocessed", "resolved", "_execution", "_transient",
-              "_config", "_control", "_jobs", "__pycache__", ".git"}
+              "_config", "_control", "_jobs", "__pycache__", ".git", "results"}
 
 
 def _is_generated(rel: Path) -> bool:
@@ -263,6 +268,16 @@ def workspace_for_project(client, config_path: str, name: str = "",
             "pass an explicit workspace name")
     if matches:
         workspace_id = matches[0].workspace_id
+        # Before the prompt, because this one is not the caller's to wave through: a
+        # campaign reads its project out of the workspace for its whole life, so a push
+        # now would change an experiment that is still running. Refuse and name it.
+        running = list(getattr(matches[0], "running_campaigns", None) or [])
+        if running:
+            raise ValueError(
+                f"workspace {wanted!r} ({workspace_id}) is being read by "
+                f"{', '.join(running)} — pushing to it now would change a running "
+                "campaign's project. Wait for it, stop it, or launch into another "
+                "workspace")
         if on_exists is not None and not on_exists(wanted, workspace_id):
             raise ValueError(f"declined to overwrite workspace {wanted!r} ({workspace_id})")
         return workspace_id, "reused"
@@ -279,9 +294,9 @@ def run_project_via_service(client, config_path: str,
     """Push the local project through *client* and start a campaign. Returns id.
 
     ``runs=0`` means "whatever the ``.vast`` declares": the service maps a non-positive
-    count to ``None`` and falls back to ``execution.runs``. Substituting 1 here is what
-    silently turned a 25-repetition sweep into a 1-repetition one that still finished
-    green — the same bug the MCP tool carries a comment about.
+    count to ``None`` and falls back to ``execution.runs``. Any other substitute for
+    "unset" is an override nobody asked for, and it shrinks the campaign silently —
+    fewer repetitions is not a failure any later stage can notice.
     """
     from robovast.service.interface import CreateCampaignRequest
 

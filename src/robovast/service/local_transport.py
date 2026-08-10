@@ -209,14 +209,20 @@ class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
     __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
-                 "description")
+                 "description", "workspace_id")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
-                 description: str = ""):
+                 description: str = "", workspace_id: str = ""):
         from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
         self.state = state
+        # Which workspace this campaign is *currently* reading its project from, so a
+        # push can be refused while it runs. Live-only and deliberately never persisted:
+        # ``write_launch_record`` leaves ``workspace_id`` out because a finished campaign
+        # is workspace-independent, and that stays true. Empty for a launch with no
+        # workspace behind it (a retrigger runs from its own staged copy).
+        self.workspace_id = workspace_id
         # Held here as well as in campaign.db: the store row is written by the
         # controller, so between accepting the launch and that write (an image build
         # can make it minutes) this is the only copy — and for a campaign that fails
@@ -442,8 +448,28 @@ class LocalTransport(RobovastInterface):
         return WorkspaceInfo.model_validate(self.store.registry.create(request.name))
 
     def list_workspaces(self) -> ListWorkspacesResponse:
+        busy = self._workspaces_in_use()
         return ListWorkspacesResponse(workspaces=[
-            WorkspaceInfo.model_validate(e) for e in self.store.registry.list()])
+            WorkspaceInfo.model_validate(
+                {**e, "running_campaigns": busy.get(e["workspace_id"], [])})
+            for e in self.store.registry.list()])
+
+    def _workspaces_in_use(self) -> dict[str, list[str]]:
+        """Live campaigns per workspace — ``{workspace_id: [campaign_id, ...]}``.
+
+        A campaign reads its project out of the workspace for its whole life (a search
+        campaign re-composes from it every generation), so overwriting one mid-run
+        changes a running experiment underneath itself. Only this process knows the
+        pairing, and only while it lasts — which is exactly the question a client has
+        to be able to ask before it pushes.
+        """
+        in_use: dict[str, list[str]] = {}
+        with self._lock:
+            entries = list(self._campaigns.values())
+        for entry in entries:
+            if entry.workspace_id and not self._is_done(entry):
+                in_use.setdefault(entry.workspace_id, []).append(entry.campaign_id)
+        return in_use
 
     def get_workspace(self, workspace_id: str) -> WorkspaceInfo:
         return WorkspaceInfo.model_validate(self.store.registry.require(workspace_id))
@@ -881,7 +907,8 @@ class LocalTransport(RobovastInterface):
         # status that did not admit which campaign it described.
         state = ControllerState(campaign_id=campaign_id)
         entry = _LocalCampaign(campaign_id, results_dir, state,
-                               description=request.description)
+                               description=request.description,
+                               workspace_id=request.workspace_id)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
 
