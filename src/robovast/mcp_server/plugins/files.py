@@ -77,13 +77,12 @@ def list_files(address: str, recursive: bool = False, offset: int = 0,
                limit: int = 100) -> dict:
     """List a directory. **This is how you find a campaign's configuration names.**
 
-    SQL knows only configurations that produced runs, so on a stopped or partly-run
-    campaign the directory listing is the complete one.
+    SQL knows only configurations that produced runs, so on a stopped or partly-run campaign
+    the directory listing is the complete one.
 
     Args:
         address: ``/results/<campaign_id>/<path>`` (read-only) or
-            ``/sources/<workspace_id>/<path>``. A campaign root is
-            ``/results/<campaign_id>/``.
+            ``/sources/<workspace_id>/<path>``; a campaign root is ``/results/<campaign_id>/``.
         recursive: Walk the subtree (files only). Off by default — a campaign root has a
             directory per configuration and per run, so recursion means thousands.
         offset: First entry to return (entry index).

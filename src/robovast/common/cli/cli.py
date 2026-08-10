@@ -673,6 +673,59 @@ def workspace_list(cluster, namespace, context):
             click.echo(f"{w.workspace_id}  {w.name or '-':20}  {w.created_at or ''}")
 
 
+@workspace.command('world')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.option('--path', default='', metavar='VAST',
+              help='Which .vast in a multi-.vast workspace (default: the only one).')
+@click.option('--targets', default='', metavar='GLOB',
+              help='Also report the objects matching GLOB whose model values a run may '
+                   'override, with their current values. Costs a model build.')
+@click.option('--entities', is_flag=True,
+              help='Also list the entities the world compiles. Costs a model build.')
+@click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
+@target_options
+def workspace_world(workspace, path, targets, entities, as_json, cluster, namespace, context):
+    """Describe the world this campaign's simulator will load.
+
+    The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
+    world *offers* — which plugins an override can address, and with ``--targets`` which model
+    values a run may change at all. Both are otherwise only refused inside the container, after
+    the image pull.
+
+    Answered by the simulator, in the image the campaign runs, so the reply names that image:
+    which world a ref resolves to depends on what is installed there.
+
+    \b
+      vast workspace world tiago_pick
+      vast workspace world tiago_pick --targets 'gripper_right*' --json
+    """
+    import json as json_mod
+
+    from robovast.service.project_push import _resolve_workspace_id
+    with service_client(cluster, namespace, context) as (client, target):
+        _echo_target(target)
+        wid = _resolve_workspace_id(client, workspace)
+        described = client.describe_world(wid, path, targets, entities)
+        if as_json:
+            click.echo(json_mod.dumps(described.model_dump(), indent=2))
+            return
+        click.echo(f"world:   {described.world}"
+                   f"{' (packaged)' if described.packaged else ''}")
+        click.echo(f"asked:   {described.backend} in {described.image} "
+                   f"({described.duration_s:.1f}s)")
+        for plugin in described.plugins:
+            click.echo(f"  plugin {plugin.get('key')}  ({len(plugin.get('paths') or [])} paths)")
+        if described.entities is not None:
+            click.echo(f"  entities: {', '.join(described.entities) or '(none)'}")
+        fields = (described.overridable or {}).get("fields") or []
+        if fields:
+            click.echo(f"  overridable fields: {', '.join(f['field'] for f in fields)}")
+        for namespace_name, rows in ((described.overridable or {}).get("targets") or {}).items():
+            for row in rows:
+                values = {k: v for k, v in row.items() if k not in ("name", "body")}
+                click.echo(f"  {namespace_name} {row.get('name')}: {values}")
+
+
 @workspace.command('delete')
 @click.argument('workspace', metavar='WORKSPACE')
 @target_options

@@ -66,7 +66,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         VariationTypeInfo,
                                         VariationTypeParam, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo,
-                                        WriteFileRequest)
+                                        WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
 
@@ -2049,6 +2049,38 @@ class LocalTransport(RobovastInterface):
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
                                configurations=items, truncated=truncated)
+
+    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
+                       entities: bool = False) -> WorldDescription:
+        import yaml
+        from robovast.common.config_generation import (WorldQueryUnavailable,
+                                                       describe_world_payload)
+        from robovast.common.simulators import backend_name, campaign_sim_block
+        project = self._resolve_project(workspace_id, path)
+        with open(project.config_path, encoding="utf-8") as handle:
+            parameters = yaml.safe_load(handle) or {}
+        execution = parameters.get("execution", {}) or {}
+        # The campaign DEFAULT block. A campaign that varies its world per configuration has
+        # several; the answer names the world it described, so a caller can see which.
+        block = campaign_sim_block(execution)
+        started = time.monotonic()
+        try:
+            payload, image = describe_world_payload(
+                execution, block, str(Path(project.config_path).parent),
+                entities=entities, targets=targets)
+        except WorldQueryUnavailable as exc:
+            raise ValueError(str(exc)) from None
+        return WorldDescription(
+            backend=backend_name(execution) or "",
+            image=image,
+            world=str(payload.get("world") or ""),
+            packaged=bool(payload.get("packaged")),
+            inputs=[str(p) for p in (payload.get("inputs") or [])],
+            plugins=list(payload.get("plugins") or []),
+            entities=payload.get("entities"),
+            overridable=dict(payload.get("overridable") or {}),
+            duration_s=round(time.monotonic() - started, 3),
+        )
 
     def get_config_schema(self) -> dict:
         from robovast.common.config import ConfigV1

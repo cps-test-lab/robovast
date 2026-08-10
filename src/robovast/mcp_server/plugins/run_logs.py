@@ -289,8 +289,7 @@ async def search_run_logs(
 
     Examples::
 
-        search_run_logs("campaign-x", grep="CRITICAL FAILURE|Unable to start transition")
-        search_run_logs("campaign-x", container="simulation", summarize=True)
+        search_run_logs("campaign-x", grep="CRITICAL FAILURE")
         search_run_logs("^basic-nav-", campaign_regex=True, min_severity="error")
     """
     # `source`, `in_window`, `offset` and `top` are deliberately not parameters: the MCP tool

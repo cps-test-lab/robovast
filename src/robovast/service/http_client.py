@@ -44,7 +44,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         UploadGrant,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo,
-                                        WriteFileRequest)
+                                        WorldDescription, WriteFileRequest)
 from robovast.service.local_transport import (LocalTransport,
                                               _robovast_version)
 
@@ -331,6 +331,17 @@ class HTTPTransport(RobovastInterface):
         return PreviewResponse.model_validate(self._post(
             Routes.workspace_preview(workspace_id),
             json={"max_configs": max_configs, "path": path}))
+
+    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
+                       entities: bool = False) -> WorldDescription:
+        # The simulator answers inside a container, and on a node that has never pulled this
+        # campaign's image the first thing that happens is the pull -- the same reasoning (and
+        # the same budget) as DATA_TIMEOUT below, or a caller sees a ReadTimeout it cannot
+        # distinguish from a broken service.
+        return WorldDescription.model_validate(self._post(
+            Routes.workspace_world(workspace_id),
+            json={"path": path, "targets": targets, "entities": entities},
+            timeout=self.SCREENSHOT_TIMEOUT))
 
     def get_config_schema(self) -> dict:
         return self._get(Routes.CONFIG_SCHEMA)

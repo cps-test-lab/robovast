@@ -180,13 +180,9 @@ def validate_project(address: str) -> dict:
     as few iterations as possible.
 
     ``valid: true`` means the file is well-formed and every reference resolves. It does
-    **not** mean a ``build:`` section will build. One failure passes validation and then
-    costs a full apt+pip cycle; if the project has a ``build:``, read
-    ``search_docs("build fails schema cannot catch")`` before starting it:
-
-    * an ``ament_python`` package installed as a wheel has **no ament libexec dir**, so
-      ``Node(package=..., executable=...)`` and ``ros2 run`` cannot find its executables.
-      Start such nodes with ``ExecuteProcess`` + ``python3 -m pkg.node``.
+    **not** mean a ``build:`` section will build — those failures pass validation and then cost
+    a full apt+pip cycle, so if the project has one, read
+    ``search_docs("build fails schema cannot catch")`` first.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
@@ -268,7 +264,44 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         return {"error": str(e)}
 
 
-for _fn in (validate_project, preview_configurations):
+def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
+    """What does this campaign's world offer an override? Asked of the simulator itself.
+
+    ``preview_configurations`` says what the campaign expands to; this says what the *world*
+    does — which plugins a ``sim`` override can address, and with ``targets`` which model values
+    a run may change (friction, contact masks, actuator force limits, mass) plus the objects
+    that can be named and their current values. Guess either and the run is refused inside the
+    container, after the image pull. Answered in the image the campaign runs — which world a ref
+    resolves to depends on what is installed there — so the reply names that image.
+
+    Args:
+        targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
+            overridable *fields* only and needs no model built; a glob costs one, as does
+            *entities*, which adds the entity list.
+
+    Returns:
+        ``{backend, image, duration_s, world, packaged, inputs, plugins, entities,
+        overridable}``, ``overridable`` being ``{fields, targets}``; or ``{error}`` — including
+        when only an image this campaign has not built yet could answer.
+    """
+    from robovast.service.project_push import _resolve_workspace_id
+    try:
+        target = _address_lane(address)
+        if target is None:
+            raise ValueError(
+                "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
+                "the world is described by the campaign's own image, which only the service "
+                "knows how to reach")
+        client = service_access.client_or_local()
+        workspace_id, rel_path = target
+        described = client.describe_world(
+            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
+        return described.model_dump()
+    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
+        return {"error": str(e)}
+
+
+for _fn in (validate_project, preview_configurations, describe_world):
     _fn.__doc__ = _fn.__doc__.replace(
         "    Args:\n", f"{_ADDRESS_LANE}\n    Args:\n", 1)
 
@@ -287,6 +320,7 @@ _TOOLS = [
     create_upload,
     validate_project,
     preview_configurations,
+    describe_world,
 ]
 
 

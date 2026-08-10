@@ -332,7 +332,23 @@ refuses at load time -- previously after the image pull and the pod schedule.
 Two things keep the cost proportionate. A campaign that overrides nothing is not checked, and a
 backend offering no ``describe_query`` -- or an environment with no container runner -- is not
 checked either. In both cases the campaign behaves exactly as it did before: wrong overrides are
-still refused, just later and more expensively.
+still refused, just later and more expensively. **When a check is skipped it says so**, at
+warning level and with the reason: it used to be a debug line, which is indistinguishable from a
+check that passed.
+
+**In the image the campaign runs.** Which world a ref even names depends on what is *installed*,
+so an experiment shipping its own world package has worlds that exist in its built image and
+nowhere else -- described against a fixed base image, the ref does not resolve, the simulator
+answers nothing, and the check silently passed for exactly those campaigns. The query therefore
+takes the image from the container the simulator runs in, with the same precedence the run uses.
+An unresolved ``build:<tag>`` is reported as "build the experiment image first" rather than
+handed to a runner as an image name.
+
+The same description is what a *caller* can ask for directly, before writing an override at all:
+:meth:`~robovast.service.interface.RobovastInterface.describe_world`, surfaced as ``vast
+workspace world`` and the ``describe_world`` MCP tool. With a target glob it also reports which
+model values a run may change while it is running, and their current values -- see
+:ref:`mcp-describe-world`.
 
 **Entities the trial drives must be entities the world compiled.** Nothing creates one at run
 time -- rst does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``

@@ -740,6 +740,39 @@ class PreviewResponse(BaseModel):
     truncated: bool = False
 
 
+class WorldDescription(BaseModel):
+    """What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
+
+    The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
+    RoboVAST's: a backend answers in its own terms (robosito reports geoms and actuators; a
+    different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
+    plain mappings rather than modelled fields — typing them here would make this the second
+    place a simulator's schema is written down, and the two would disagree.
+
+    ``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,
+    so this answer is only true for that image — a caller comparing two answers has to know
+    whether it is comparing worlds or images.
+    """
+
+    #: The simulator backend that answered, the image it was asked in, and what it cost --
+    #: seconds, because the first call against a cold image pulls it.
+    backend: str = ""
+    image: str = ""
+    duration_s: float = 0.0
+    #: The world as the simulator resolved it, and whether it came from an installed package.
+    world: str = ""
+    packaged: bool = False
+    #: Everything the world is built from (a path world's YAML chain and its MJCF/meshes).
+    inputs: list[str] = Field(default_factory=list)
+    #: Each plugin under the key an override addresses it by, with the paths that exist.
+    plugins: list[dict] = Field(default_factory=list)
+    #: The entities the world compiles — ``None`` unless asked for, since it costs a build.
+    entities: Optional[list[str]] = None
+    #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
+    #: target glob was given) the objects that can be named with their current values.
+    overridable: dict = Field(default_factory=dict)
+
+
 class VariationTypeParam(BaseModel):
     """One parameter of a variation type (from its pydantic model)."""
 
@@ -1062,6 +1095,12 @@ class Routes:
     @staticmethod
     def workspace_preview(workspace_id: str) -> str:
         return f"/workspaces/{workspace_id}/preview"
+
+    @staticmethod
+    def workspace_world(workspace_id: str) -> str:
+        # What the campaign's simulator says its world provides -- answered by the simulator's
+        # own image, so it is a workspace verb rather than static authoring help.
+        return f"/workspaces/{workspace_id}/world"
 
     @staticmethod
     def variation_asset(name: str, path: str) -> str:
@@ -1594,6 +1633,28 @@ class RobovastInterface(ABC):
         Wraps ``config_generation.generate_scenario_variations(output_dir=None)``;
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
+        """
+
+    @abstractmethod
+    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
+                       entities: bool = False) -> WorldDescription:
+        """Describe the world this campaign's simulator will load.
+
+        The other half of authoring the ``sim`` channel. ``preview_configurations`` says what
+        the campaign expands to; this says what the *world* offers it — which plugins an
+        override can address, and with *targets* which model values a run may change at all,
+        with the objects that can be named and their current values. Written against a guess,
+        both are refused inside the container after an image pull; the whole point of asking
+        here is that it costs one container run and no compute.
+
+        Only the simulator can answer: resolving a world's ``extends`` chain, and which world a
+        ref even names, needs the simulator installed. So the answer comes from **the image the
+        campaign runs**, and carries which image that was.
+
+        *targets* is a glob over object names and *entities* asks for the compiled entity list;
+        both cost a model build, which is why neither is implied. Raises ``ValueError`` when no
+        answer is possible — no backend, an image that must be built first, no container runner
+        here — because "unverifiable" is not an empty result.
         """
 
     @abstractmethod

@@ -1043,6 +1043,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspaces/{workspace_id}/world": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Describe World */
+        post: operations["describe_world_workspaces__workspace_id__world_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1059,6 +1076,24 @@ export interface components {
              * @default true
              */
             ok: boolean;
+        };
+        /** Body_describe_world_workspaces__workspace_id__world_post */
+        Body_describe_world_workspaces__workspace_id__world_post: {
+            /**
+             * Entities
+             * @default false
+             */
+            entities: boolean;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /**
+             * Targets
+             * @default
+             */
+            targets: string;
         };
         /** Body_edit_sources_file_sources__workspace_id___path__post */
         Body_edit_sources_file_sources__workspace_id___path__post: {
@@ -2575,6 +2610,59 @@ export interface components {
             running_campaigns: string[];
             /** Workspace Id */
             workspace_id: string;
+        };
+        /**
+         * WorldDescription
+         * @description What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
+         *
+         *     The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
+         *     RoboVAST's: a backend answers in its own terms (robosito reports geoms and actuators; a
+         *     different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
+         *     plain mappings rather than modelled fields — typing them here would make this the second
+         *     place a simulator's schema is written down, and the two would disagree.
+         *
+         *     ``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,
+         *     so this answer is only true for that image — a caller comparing two answers has to know
+         *     whether it is comparing worlds or images.
+         */
+        WorldDescription: {
+            /**
+             * Backend
+             * @default
+             */
+            backend: string;
+            /**
+             * Duration S
+             * @default 0
+             */
+            duration_s: number;
+            /** Entities */
+            entities: string[] | null;
+            /**
+             * Image
+             * @default
+             */
+            image: string;
+            /** Inputs */
+            inputs: string[];
+            /** Overridable */
+            overridable: {
+                [key: string]: unknown;
+            };
+            /**
+             * Packaged
+             * @default false
+             */
+            packaged: boolean;
+            /** Plugins */
+            plugins: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * World
+             * @default
+             */
+            world: string;
         };
     };
     responses: never;
@@ -4581,6 +4669,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ValidationReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    describe_world_workspaces__workspace_id__world_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_describe_world_workspaces__workspace_id__world_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldDescription"];
                 };
             };
             /** @description Validation Error */

@@ -55,7 +55,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         Status,
                                         UpdatePostprocessingRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse,
-                                        VersionInfo, WorkspaceInfo, WriteFileRequest,
+                                        VersionInfo, WorkspaceInfo, WorldDescription, WriteFileRequest,
                                         CampaignDataStatus,
                                         DataDescribe, DataQueryResult,
                                         CampaignPlotsResponse,
@@ -509,6 +509,14 @@ def build_app(impl: RobovastInterface):
         path: str = Body("", embed=True),
     ) -> PreviewResponse:
         return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path))
+
+    @app.post(Routes.workspace_world("{workspace_id}"), response_model=WorldDescription,
+              tags=["workspaces"])
+    def describe_world(
+        workspace_id: str, path: str = Body("", embed=True),
+        targets: str = Body("", embed=True), entities: bool = Body(False, embed=True),
+    ) -> WorldDescription:
+        return _guard(lambda: impl.describe_world(workspace_id, path, targets, entities))
 
     # -- file side channel: grant + raw PUT ---------------------------------
 

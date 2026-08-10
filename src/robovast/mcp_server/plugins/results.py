@@ -501,19 +501,17 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
 
     Renders the world again, so the camera is yours. Needs a simulator that can re-render
     (robosito can; Gazebo cannot) and a run that recorded its state — written on a clean stop
-    only, so a run killed by its deadline has none.
-
-    For a camera *mounted in the world during the run*, use ``get_camera_frame``: a cheap read
-    of a recorded video, on any backend. This one runs a container in the campaign's
-    simulation image — seconds if that image is on the node, minutes if it must be pulled.
+    only. It runs a container in the campaign's simulation image: seconds if that image is on
+    the node, minutes if it must be pulled. For a camera *mounted in the world during the run*
+    use ``get_camera_frame`` instead — a cheap read of a recorded video, on any backend.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
         at: Simulated seconds; snaps to the nearest sample. Default: the last one.
-        view: ``key=value`` strings — ``lookat=x,y,z``, ``distance=``, ``azimuth=`` (degrees
-            around the vertical), ``elevation=`` (degrees above the horizontal).
+        view: ``key=value`` — ``lookat=x,y,z``, ``distance=``, ``azimuth=``/``elevation=`` in
+            degrees (around the vertical / above the horizontal).
         focus: Entity or body names to frame on; the simulator picks a clear angle.
         camera: A camera the world defines. It owns its pose — not with ``view``/``focus``.
         size: ``WxH``, default ``960x720``.

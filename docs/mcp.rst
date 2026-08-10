@@ -107,8 +107,9 @@ reading results. Each phase is one plugin, so the generated table below is also 
      - Reading and writing any file, in every phase. Not a phase but
        :ref:`one address space <mcp-files>`.
    * - ``authoring``
-     - Before anything runs: create a workspace, put a ``.vast`` in it, check it, and see
-       what configurations it expands to.
+     - Before anything runs: create a workspace, put a ``.vast`` in it, check it, see what
+       configurations it expands to, and ask the simulator :ref:`what its world offers an
+       override <mcp-describe-world>`.
    * - ``execution``
      - Starting a campaign and watching it: status, logs, per-job view, capacity, stop.
        Building the experiment image lives here too — a build is part of a campaign's
@@ -674,6 +675,35 @@ credentials** — the symbolic ``build:<tag>`` is all it ever sees. Requires a
 reachable ``robovast-service`` (a ``vast serve`` or a tunnel); on the cluster it
 also requires a registry configured at ``vast exec cluster setup`` (see
 :doc:`cluster_execution`).
+
+.. _mcp-describe-world:
+
+Asking what a world offers an override
+--------------------------------------
+
+The ``sim`` channel is writable long before it is *discoverable*. A campaign writes
+``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod — and
+only there is it refused, because resolving a world's ``extends`` chain needs the simulator.
+``describe_world`` (and ``vast workspace world``) asks the simulator instead, up front:
+
+.. code-block:: console
+
+   vast workspace world tiago_pick --targets 'gripper_right*'
+
+Two halves, at the two costs they actually have. ``plugins`` names each plugin under the key an
+override addresses it by, with the dotted paths that already exist — cheap, no model built.
+``overridable`` says which **model values a run may change while it is running** (the
+``model_override`` plugin: friction, contact masks, actuator force limits, mass); its ``fields``
+half is a property of the simulator rather than of the world and so is always there, while
+``targets`` needs a model built and waits for a glob. A path the world leaves at its default is
+legitimately absent, so an unlisted one is unverifiable rather than wrong; a *plugin* key
+matching nothing is unambiguous, and is what the campaign pre-check refuses before any compute.
+
+**It is asked in the image the campaign runs, and the reply says which.** Not a detail: which
+world a ref resolves to depends on what is *installed*, so an experiment shipping its own world
+package (``python_packages``) has worlds that exist in its built image and nowhere else. Asked
+against a base image such a ref does not resolve — which is why a campaign whose image has not
+been built yet is told to build it rather than handed a description of nothing.
 
 .. _mcp-container-exec:
 

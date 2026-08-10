@@ -28,6 +28,32 @@
         "title": "ActionResult",
         "type": "object"
       },
+      "Body_describe_world_workspaces__workspace_id__world_post": {
+        "properties": {
+          "entities": {
+            "default": false,
+            "title": "Entities",
+            "type": "boolean"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "targets": {
+            "default": "",
+            "title": "Targets",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entities",
+          "path",
+          "targets"
+        ],
+        "title": "Body_describe_world_workspaces__workspace_id__world_post",
+        "type": "object"
+      },
       "Body_edit_sources_file_sources__workspace_id___path__post": {
         "properties": {
           "new_string": {
@@ -2551,6 +2577,83 @@
           "workspace_id"
         ],
         "title": "WorkspaceInfo",
+        "type": "object"
+      },
+      "WorldDescription": {
+        "description": "What a campaign's world offers \u2014 :meth:`RobovastInterface.describe_world`.\n\nThe vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not\nRoboVAST's: a backend answers in its own terms (robosito reports geoms and actuators; a\ndifferent simulator would report its own objects) and RoboVAST only fixes the shape. Hence\nplain mappings rather than modelled fields \u2014 typing them here would make this the second\nplace a simulator's schema is written down, and the two would disagree.\n\n``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,\nso this answer is only true for that image \u2014 a caller comparing two answers has to know\nwhether it is comparing worlds or images.",
+        "properties": {
+          "backend": {
+            "default": "",
+            "title": "Backend",
+            "type": "string"
+          },
+          "duration_s": {
+            "default": 0.0,
+            "title": "Duration S",
+            "type": "number"
+          },
+          "entities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entities"
+          },
+          "image": {
+            "default": "",
+            "title": "Image",
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "overridable": {
+            "additionalProperties": true,
+            "title": "Overridable",
+            "type": "object"
+          },
+          "packaged": {
+            "default": false,
+            "title": "Packaged",
+            "type": "boolean"
+          },
+          "plugins": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Plugins",
+            "type": "array"
+          },
+          "world": {
+            "default": "",
+            "title": "World",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "duration_s",
+          "entities",
+          "image",
+          "inputs",
+          "overridable",
+          "packaged",
+          "plugins",
+          "world"
+        ],
+        "title": "WorldDescription",
         "type": "object"
       }
     }
@@ -5696,6 +5799,57 @@
           }
         },
         "summary": "Validate Project",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/world": {
+      "post": {
+        "operationId": "describe_world_workspaces__workspace_id__world_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_describe_world_workspaces__workspace_id__world_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorldDescription"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Describe World",
         "tags": [
           "workspaces"
         ]

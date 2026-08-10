@@ -130,40 +130,36 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
     Pilot one configuration before the full sweep (``config_filter`` + ``runs=1``).
 
     Args:
-        workspace_id: **Required unless ``from_campaign`` is given** — the workspace
-            holding the project to run. There is no server-side "current project". From
-            ``list_workspaces``, or ``create_workspace`` + ``update_workspace``.
+        workspace_id: **Required unless ``from_campaign`` is given** — the workspace holding
+            the project. There is no server-side "current project".
         from_campaign: Re-run a previous campaign from its own record (frozen config + the
-            image its runs used) rather than a workspace: a NEW campaign, source untouched,
-            whatever state it ended in. **Takes no other argument** — the record supplies
-            them, so a pilot stays a pilot; passing one errors. Refused if the campaign
-            recorded no usable image (build context is not archived — use its workspace).
-            Re-expands, so stochastic generators redraw.
+            image its runs used): a NEW campaign, source untouched. **Takes no other
+            argument** — the record supplies them, so a pilot stays a pilot; passing one
+            errors. Refused if it recorded no usable image (use its workspace). Re-expands,
+            so stochastic generators redraw.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
-        backend: ``"local"`` (Docker on the serve host) or ``"cluster"`` (Kubernetes), on
-            a service offering both. Empty uses its default lane.
+        backend: ``"local"`` (Docker on the serve host) or ``"cluster"`` (Kubernetes), on a
+            service offering both. Empty uses its default lane.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
-        show_gui: Show the simulator's window, to watch **one** run (never a sweep — every
-            configuration would open one). Local ``vast serve`` on local Docker only; anything
-            else refuses rather than running windowless, and the window opens on that machine,
-            not yours. Needs ``execution.local.gui.parameter_overrides``; without it the reply
-            says so in ``note``. **Do not close the window** — the run then never returns
-            (``stop_campaign`` ends it).
-        description: **Set this every time.** One line (≤200 chars) saying what the run
-            is *for* — it is what tells two same-day ``campaign-<timestamp>`` ids apart in
-            ``list_campaigns`` and the web UI. Not the id, filter or run count, which are
-            already recorded. Good: "pilot: 5 reps DWB vs MPPI on open_space, new
-            inflation radius". Bad: "campaign run".
+        show_gui: Show the simulator's window, to watch **one** run (never a sweep). Local
+            ``vast serve`` on local Docker only, and the window opens on that machine, not
+            yours; anything else refuses. Needs ``execution.local.gui.parameter_overrides``,
+            and ``note`` says so when it is missing. **Do not close the window** — the run
+            then never returns (``stop_campaign`` ends it).
+        description: **Set this every time.** One line (≤200 chars) saying what the run is
+            *for* — what tells two same-day ``campaign-<timestamp>`` ids apart. Not the id,
+            filter or run count, which are already recorded. Good: "pilot: 5 reps DWB vs MPPI
+            on open_space, new inflation radius". Bad: "campaign run".
 
     Returns:
         ``{campaign_id, backend}`` — or ``{campaign_id, retriggered_from}`` for a
-        ``from_campaign`` launch, whose ``campaign_id`` is the NEW campaign's. Plus ``note``
-        when the launch was accepted but will not do what was asked (see ``show_gui``), or
-        ``{error}`` — including when no service is reachable, which means **stop and say
-        so**, not run the experiment another way.
+        ``from_campaign`` launch, whose ``campaign_id`` is the NEW one. Plus ``note`` when the
+        launch was accepted but will not do what was asked (see ``show_gui``), or ``{error}`` —
+        including when no service is reachable, which means **stop and say so**, not run the
+        experiment another way.
     """
     try:
         client = service_access.service_client()
@@ -279,43 +275,34 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     diagnose a flood, because the flood *is* the finding.
 
     Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
-    default**: ``build`` (the image this campaign waited for — where a campaign that failed
-    before it ever ran explains itself), ``plugin install``, ``variation`` (config
-    generation), ``run`` (the controller, plus docker compose output locally),
+    default**: ``build`` (where a campaign that failed before it ever ran explains itself),
+    ``plugin install``, ``variation``, ``run`` (the controller, plus compose output locally),
     ``postprocessing``. A build is large and comes first, so on a campaign that has run,
     narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         limit: Maximum lines to return. Ignored with ``summarize``.
-        offset: First line to return (line offset, for paging the matches).
-        hide_shutdown: Stop at each run's scenario verdict — default true, and normally
-            what you want: past the verdict a run is only tearing down, and the
-            lifecycle/TF errors that produces are noise, not findings. Applied first, so
-            the other filters describe the trial; ``shutdown_dropped`` says what it cut.
-            False when the shutdown itself is the question.
+        offset: First line to return (for paging the matches).
+        hide_shutdown: Stop at each run's scenario verdict — default true, and normally what
+            you want: past it a run is only tearing down, and the lifecycle/TF errors that
+            produces are noise. Applied first, so the other filters describe the trial;
+            ``shutdown_dropped`` says what it cut.
         grep: Keep lines matching this regex (case-insensitive), before offset/limit.
-        tail: Keep only the last N of what survived the filters. Ignored with
-            ``summarize``.
-        min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier. Use this
-            instead of a hand-written severity ``grep`` — it is the definition the
-            campaign status uses.
-        summarize: Return distinct **patterns with counts** instead of lines —
-            timestamps, coordinates and ids are normalized so equal shapes group.
+        tail: Keep only the last N of what survived the filters. Ignored with ``summarize``.
+        min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier — the same
+            definition the campaign status uses, so prefer it to a severity ``grep``.
+        summarize: Return distinct **patterns with counts** instead of lines — timestamps,
+            coordinates and ids are normalized so equal shapes group.
         top: With ``summarize``, maximum patterns (``0`` = all).
-        phase: One of ``build``/``variation``/``run``/``postprocessing``/``plugin
-            install`` to read only that one. Empty (the default) and ``"all"`` both read
-            every phase.
+        phase: Read only one phase. Empty and ``"all"`` both read every phase.
 
     Returns:
-        Lines: ``{file_name, phases, total_lines, returned_lines, offset, content,
-        dropped, shutdown_dropped}``. With ``summarize``: ``{file_name, phases,
-        patterns, patterns_total, severity_counts, matched_lines, total_lines, dropped,
-        shutdown_dropped}`` — no ``content``, each pattern ``{pattern, count, severity,
-        example}``. Or ``{error}``.
-
-        ``phases`` always lists every section as ``{name, lines, included}``, so what a
-        read left out is stated rather than absent.
+        Lines: ``{file_name, phases, total_lines, returned_lines, offset, content, dropped,
+        shutdown_dropped}``. With ``summarize``: the same minus ``content``, plus
+        ``{patterns, patterns_total, severity_counts, matched_lines}``, each pattern
+        ``{pattern, count, severity, example}``. Or ``{error}``. ``phases`` always lists every
+        section as ``{name, lines, included}``, so what a read left out is stated.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
 
@@ -741,38 +728,33 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     entry in ``list_campaigns``, and no results to compare with anything. To run the
     experiment, use ``start_campaign``.
 
-    Three questions it answers:
+    Three questions it answers: is the image set up right (omit ``config_name`` — imports,
+    ``ros2 pkg list``, file checks; build first if it declares packages); does one config run
+    (name a ``config_name``; an empty ``command`` starts that config's scenario, detached);
+    what does bring-up look like (the same, plus ``keep_alive`` and ``show_gui``).
 
-    - is the image set up correctly? Omit ``config_name`` — imports, ``ros2 pkg list``,
-      file checks. Build first if it declares packages.
-    - does one config run? Name a ``config_name``; an empty ``command`` starts that
-      config's scenario, detached, so a follow-up call can inspect it.
-    - what does the bring-up look like? The same, plus ``keep_alive=True`` and
-      ``show_gui=True`` — the window opens on the serve host and later calls inspect it.
+    **At most one container exists at a time**, so ``reused: false`` means a fresh one —
+    anything the previous container was running is gone. ``stop_container`` ends it. A started
+    scenario logs to ``log_path`` *inside* the container, not ``stdout``: read it with a
+    follow-up ``command="tail -200 <log_path>"``.
 
-    ``keep_alive=True`` holds the container open for follow-up calls; ``stop_container``
-    ends it. **At most one container exists at a time**, so ``reused: false`` means a
-    fresh one — anything the previous container was running is gone.
-
-    A started scenario logs to ``log_path`` *inside* the container, not ``stdout``; read
-    it with a follow-up ``command="tail -200 <log_path>"``.
+    What a *world* offers — its plugins, its overridable model values — is ``describe_world``
+    rather than a command here.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
         workspace_id, config_path: A workspace and which ``.vast`` in it.
-        campaign_id: Use an existing campaign's ``_config/`` as the project instead —
-            exactly one source, this or ``workspace_id``. A *running* campaign's
-            container is never touched; to inspect a live stack, start it here.
+        campaign_id: Use an existing campaign's ``_config/`` as the project instead — exactly
+            one source, this or ``workspace_id``. A *running* campaign's container is never
+            touched; to inspect a live stack, start it here.
         config_name: Stage this config. Omitted always means the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
             Asking for one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
-        show_gui: Show the simulator's window on the serve host's display. **Only a local
-            ``vast serve`` on its local Docker backend can do this**; see
-            ``start_campaign`` for whose screen that is. Changing it between calls
-            **replaces** the container — the X socket can only be mounted when a container
-            is created — so ``reused`` comes back false and anything running in the old one
-            is gone.
+        show_gui: Show the simulator's window on the serve host's display — **local ``vast
+            serve`` on local Docker only** (see ``start_campaign`` for whose screen). Changing
+            it between calls **replaces** the container, so ``reused`` is false and whatever
+            the old one was running is gone.
         tail: Lines kept per stream.
         backend: ``"local"`` or ``"cluster"`` on a service offering both.
 
