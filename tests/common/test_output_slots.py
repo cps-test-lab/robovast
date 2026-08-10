@@ -233,3 +233,143 @@ def test_binding_the_optional_slot_puts_it_on_the_sim_channel():
                                   obstacle_configs=[], seed=1, robot_diameter=0.35)
     assert cfg.is_bound("instances")
     assert cfg.outputs()[SIM_CHANNEL] == ["plugins.obstacles.instances"]
+
+
+# -- answers that need the simulator ---------------------------------------------------------
+
+def test_a_world_with_no_campaign_parent_needs_no_container(tmp_path):
+    """The common case must not make composition depend on pulling a simulator image."""
+    from robovast.common.simulators import ContainerQuery
+    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+
+    world = tmp_path / "w.yaml"
+    world.write_text("extends: rst_scenes:depot\nplugins: []\n")
+    declared = RobositoBackend().input_files(RobositoConfig(config=str(world)), {})
+    assert not isinstance(declared, ContainerQuery)
+    assert declared == [str(world)]
+
+
+def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
+    """That chain is what the backend cannot resolve without importing the simulator."""
+    from robovast.common.simulators import ContainerQuery
+    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+
+    world = tmp_path / "w.yaml"
+    world.write_text("extends: ./base.yaml\nplugins: []\n")
+    declared = RobositoBackend().input_files(RobositoConfig(config=str(world)), {})
+    assert isinstance(declared, ContainerQuery)
+    assert declared.command[:3] == ["rst", "scenes", "inputs"]
+
+
+def test_a_packaged_world_answers_without_a_container():
+    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+
+    assert RobositoBackend().input_files(RobositoConfig(config="rst_scenes:depot"), {}) == []
+
+
+def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
+    """Files that arrived with the image must not be copied into the campaign as a second copy."""
+    from robovast.common.config_generation import _run_input_files_query
+    from robovast.common.simulators import ContainerQuery
+
+    class _Runner:
+        def run(self, _command, emit):
+            emit('{"packaged": false, "inputs": ["%s/w.yaml", "/opt/pkg/mesh.stl"]}' % tmp_path)
+
+        def close(self):
+            pass
+
+    import robovast.common.config_generation as cg
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec: _Runner()
+    try:
+        assert _run_input_files_query(ContainerQuery(None, []), str(tmp_path)) == ["w.yaml"]
+    finally:
+        cg._make_container_runner = original
+
+
+def test_a_query_that_prints_no_json_fails_loudly(tmp_path):
+    from robovast.common.config_generation import _run_input_files_query
+    from robovast.common.simulators import ContainerQuery
+
+    class _Runner:
+        def run(self, _command, emit):
+            emit("bash: rst: command not found")
+
+        def close(self):
+            pass
+
+    import robovast.common.config_generation as cg
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec: _Runner()
+    try:
+        with pytest.raises(RuntimeError, match="printed no JSON"):
+            _run_input_files_query(ContainerQuery(None, []), str(tmp_path))
+    finally:
+        cg._make_container_runner = original
+
+
+# -- checking an override before any compute is spent ------------------------------------------
+
+def _describing(payload):
+    """A container runner that answers a describe query with *payload*."""
+    class _Runner:
+        def run(self, _command, emit):
+            import json as _json
+            emit(_json.dumps(payload))
+
+        def close(self):
+            pass
+    return lambda spec: _Runner()
+
+
+def _check(block, payload, tmp_path):
+    import robovast.common.config_generation as cg
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "robosito",
+                                               "config": "w.yaml"}}}
+    original, cg._make_container_runner = cg._make_container_runner, _describing(payload)
+    try:
+        cg._check_sim_override_targets(execution, [block], str(tmp_path))
+    finally:
+        cg._make_container_runner = original
+
+
+def test_an_override_targeting_no_plugin_is_refused_before_the_image_pull(tmp_path):
+    block = {"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}}
+    with pytest.raises(ValueError, match="targets no plugin"):
+        _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
+
+
+def test_the_error_names_what_the_world_does_have(tmp_path):
+    block = {"config": "w.yaml", "overrides": {"plugins": {"nope": {}}}}
+    with pytest.raises(ValueError, match="floorplan, lidar"):
+        _check(block, {"plugins": [{"key": "lidar"}, {"key": "floorplan"}]}, tmp_path)
+
+
+def test_a_real_plugin_passes(tmp_path):
+    block = {"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}}
+    _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
+
+
+def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
+    """`paths` lists what exists; a plugin may accept a key its world never sets."""
+    block = {"config": "w.yaml",
+             "overrides": {"plugins": {"floorplan": {"never_set_in_this_world": 1}}}}
+    _check(block, {"plugins": [{"key": "floorplan", "paths": ["plugins.floorplan.mesh"]}]},
+           tmp_path)
+
+
+def test_a_campaign_that_overrides_nothing_is_not_checked(tmp_path):
+    """No container run for a campaign that only selects worlds."""
+    import robovast.common.config_generation as cg
+
+    def _refuse(_spec):
+        raise AssertionError("should not have started a container")
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "robosito", "config": "w.yaml"}}}
+    original, cg._make_container_runner = cg._make_container_runner, _refuse
+    try:
+        cg._check_sim_override_targets(execution, [{"config": "w.yaml"}], str(tmp_path))
+    finally:
+        cg._make_container_runner = original

@@ -188,7 +188,7 @@ def _backend_run_files(vast_dir, parameters):
     validation reports properly elsewhere.
     """
     from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        backend_name, resolve_backend)
+        ContainerQuery, backend_name, resolve_backend)
 
     execution = parameters.get("execution", {}) or {}
     name = backend_name(execution)
@@ -197,10 +197,73 @@ def _backend_run_files(vast_dir, parameters):
     try:
         backend = resolve_backend(name, vast_dir)
         cfg = _backend_cfg(backend, execution, name)
-        return [str(p) for p in (backend.input_files(cfg, execution) or [])]
+        declared = backend.input_files(cfg, execution)
+        if isinstance(declared, ContainerQuery):
+            return _run_input_files_query(declared, vast_dir)
+        return [str(p) for p in (declared or [])]
     except Exception as exc:  # noqa: BLE001 - reported by validation, not here
         logger.debug("simulator backend declared no input files: %s", exc)
         return []
+
+
+def _run_input_files_query(query, vast_dir):
+    """Ask the simulator's own image which files a world is made of.
+
+    A world is not one file -- it is the YAML, whatever it ``extends``, the MJCF that chain
+    settles on, and the meshes that MJCF names -- and enumerating that needs the simulator,
+    which a backend must not import. So the backend states the question and the answer comes
+    from the image that will run the campaign.
+
+    Until this existed, a world extending another *campaign* file staged only the YAML: the
+    run then failed in the container on a parent that never travelled, after the image pull.
+
+    Paths outside the campaign directory are dropped rather than staged. They are the ones
+    that arrived with the image (a packaged world's meshes), and copying them would put a
+    second, diverging copy of an installed asset into the campaign.
+    """
+    runner = _make_container_runner(query.spec)
+    if runner is None:
+        return []
+    lines = []
+    try:
+        runner.run(query.command, lines.append)
+    finally:
+        runner.close()
+
+    payload = _last_json_line(lines)
+    if payload is None:
+        raise RuntimeError(
+            "the simulator backend's input-files query printed no JSON; its output was: "
+            + " | ".join(str(line) for line in lines[-3:]))
+    if payload.get("packaged"):
+        return []
+
+    root = os.path.abspath(vast_dir)
+    relative = []
+    for path in payload.get("inputs") or []:
+        absolute = os.path.abspath(str(path))
+        if absolute.startswith(root + os.sep):
+            relative.append(os.path.relpath(absolute, root))
+    return relative
+
+
+def _last_json_line(lines):
+    """The JSON object a container command printed, or ``None``.
+
+    Scanned from the end because a runner interleaves its own progress lines with the
+    command's stdout; the answer is the last thing that parses as a JSON object.
+    """
+    for line in reversed(lines):
+        text = str(line).strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
@@ -260,6 +323,67 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
             resolve(backend, path, name)
 
 
+def _check_sim_override_targets(execution, blocks, vast_dir):
+    """Check every ``sim`` override addresses a plugin the world actually has.
+
+    The ``sim`` channel is writable without this but not *discoverable*: a campaign writes
+    ``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod,
+    and only then is refused by ``apply_overrides``. Nothing before the container could tell,
+    because resolving a world's ``extends`` chain needs the simulator.
+
+    Checked per **distinct** block, and only when the campaign actually overrides something --
+    a container run is not free, and a campaign that only selects worlds has nothing to check.
+
+    Only the *plugin key* is verified. A path a world leaves at its default is legitimately
+    absent from what the simulator reports, so flagging it would refuse a correct campaign;
+    a plugin key matching nothing is unambiguous.
+
+    A backend that cannot describe a world, or a runner that is not available here, means no
+    check -- the campaign behaves exactly as it did before, and is refused in the container if
+    it is wrong.
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        DOTTED_ROOT_UNSET, backend_name, resolve_backend, sim_override_keys)
+
+    del DOTTED_ROOT_UNSET
+    name = backend_name(execution or {})
+    if not name:
+        return
+    backend = resolve_backend(name, vast_dir)
+    for block in blocks:
+        wanted = sim_override_keys(backend, block)
+        if not wanted:
+            continue
+        query = backend.describe_query(_validated_block(backend, block, name), execution)
+        if query is None:
+            return
+        runner = _make_container_runner(query.spec)
+        if runner is None:
+            return
+        lines = []
+        try:
+            runner.run(query.command, lines.append)
+        finally:
+            runner.close()
+        payload = _last_json_line(lines)
+        if payload is None:
+            logger.debug("simulator backend could not describe %s", block)
+            return
+        available = {str(p.get("key")) for p in (payload.get("plugins") or [])}
+        unknown = sorted(k for k in wanted if k not in available)
+        if unknown:
+            raise ValueError(
+                f"sim override targets no plugin in this world: {', '.join(unknown)}. "
+                f"The world has: {', '.join(sorted(available)) or '(none)'}")
+
+
+def _validated_block(backend, block, name):
+    """The backend's validated view of a resolved ``sim`` block."""
+    from robovast.common.simulators import \
+        _validated_cfg  # pylint: disable=import-outside-toplevel
+    return _validated_cfg(backend, dict(block or {}), name)
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
@@ -312,7 +436,9 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
 
     for block in seen_blocks:
         try:
-            declared = sim_input_files(execution, block, vast_dir)
+            declared = sim_input_files(
+                execution, block, vast_dir,
+                run_query=lambda query: _run_input_files_query(query, vast_dir))
         except Exception as exc:  # noqa: BLE001 - as above
             if uses_channel:
                 raise
@@ -321,6 +447,14 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files):
         for rel in declared:
             if rel not in run_files:
                 run_files.append(rel)
+
+    try:
+        _check_sim_override_targets(execution, seen_blocks, vast_dir)
+    except ValueError:
+        # The campaign's own mistake, and the whole point of checking here.
+        raise
+    except Exception as exc:  # noqa: BLE001 - an unavailable checker is not a bad campaign
+        logger.debug("sim overrides were not pre-checked: %s", exc)
 
 
 def _backend_cfg(backend, execution, name):

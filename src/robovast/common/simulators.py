@@ -154,6 +154,25 @@ class SimulatorBackend:
         """
         return {}
 
+    def describe_query(self, cfg, execution: dict) -> Optional["ContainerQuery"]:
+        """A query describing what this world *provides*, or ``None``.
+
+        The counterpart to :meth:`input_files`, which describes what it needs. RoboVAST uses
+        it to check a campaign's overrides before any compute is spent, so the reply shape is
+        RoboVAST's contract::
+
+            {"plugins": [{"key": "floorplan", "paths": ["plugins.floorplan.mesh"]}]}
+
+        Only ``key`` is checked. A *path* a world leaves at its default is legitimately
+        absent from ``paths``, so an unlisted one is unverifiable rather than wrong -- but a
+        plugin key matching nothing is refused by the simulator at load time, which is the
+        error worth catching before an image pull.
+
+        ``None`` -- the default -- means this backend cannot describe a world, and its
+        campaigns are simply not pre-checked.
+        """
+        return None
+
     def input_files(self, cfg, execution: dict) -> list:
         """Files the simulator needs that the campaign owns, relative to the ``.vast``.
 
@@ -462,6 +481,49 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
     return result
 
 
+class ContainerQuery:
+    """A question only the simulator can answer, and where to run it.
+
+    :meth:`SimulatorBackend.input_files` may return one of these instead of a list. RoboVAST
+    runs *command* in *spec*'s image, reads **one line of JSON** from its stdout, and uses the
+    answer -- so the backend states the question without importing the simulator, and the
+    answer comes from the very image that will run the campaign.
+
+    The reply shape is RoboVAST's contract rather than any simulator's, so a second backend
+    satisfies it without anyone editing this file::
+
+        {"packaged": false, "inputs": ["/abs/path/one", "/abs/path/two"]}
+
+    ``packaged: true`` means the files arrive with something already installed in the image
+    and nothing has to travel. ``inputs`` are absolute paths **as the container sees them**;
+    the runner mounts the campaign's directory at its own path, so anything under it is a file
+    the campaign owns and everything else came with the image.
+    """
+
+    __slots__ = ("spec", "command")
+
+    def __init__(self, spec, command):
+        self.spec = spec
+        self.command = list(command)
+
+
+#: Sentinel kept out of the public surface; see ``sim_override_keys``.
+DOTTED_ROOT_UNSET = object()
+
+
+def sim_override_keys(backend: SimulatorBackend, block: dict) -> set:
+    """The plugin keys a resolved ``sim`` block's overrides address.
+
+    ``overrides.plugins.floorplan.size`` -> ``floorplan``. Only the plugin key, because that is
+    the part a simulator refuses outright; a key inside a plugin's config may be absent from the
+    world and still valid.
+    """
+    root = getattr(backend, "DOTTED_ROOT", None)
+    if not root:
+        return set()
+    plugins = ((block or {}).get(root) or {}).get("plugins")
+    return set(plugins) if isinstance(plugins, dict) else set()
+
 def campaign_sim_block(execution: dict) -> dict:
     """The backend's own keys as the ``.vast`` declared them -- the campaign default.
 
@@ -592,7 +654,8 @@ def merge_sim_block(execution: dict, sim_values=None, base_dir: str = "", *,
     return dump(exclude_none=True) if dump else dict(cfg)
 
 
-def sim_input_files(execution: dict, block: dict, base_dir: str = "") -> list:
+def sim_input_files(execution: dict, block: dict, base_dir: str = "",
+                    run_query=None) -> list:
     """:meth:`SimulatorBackend.input_files` for one resolved ``sim`` block.
 
     Asked once per **distinct** block rather than once per campaign, because a campaign
@@ -604,7 +667,14 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "") -> list:
         return []
     backend = resolve_backend(name, base_dir)
     cfg = _validated_cfg(backend, dict(block or {}), name)
-    return [str(p) for p in (backend.input_files(cfg, execution) or [])]
+    declared = backend.input_files(cfg, execution)
+    if isinstance(declared, ContainerQuery):
+        # Answering needs the simulator's image. Composition passes *run_query* because it
+        # owns the runner factory; validation and previews do not, and start no containers --
+        # they report nothing rather than a partial list, since a partial list of what must
+        # travel reads as a complete one.
+        return list(run_query(declared) or []) if run_query else []
+    return [str(p) for p in (declared or [])]
 
 
 def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:

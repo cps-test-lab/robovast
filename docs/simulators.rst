@@ -307,6 +307,38 @@ configuration it belongs to, and so its two values are the arguments that replay
 hand. Everything else about that container -- image, resources, packages -- stays
 campaign-level: only that one argv token and that one file differ between jobs.
 
+What is checked before anything runs
+`````````````````````````````````````
+
+A ``sim:`` destination is checked against the **backend's** schema at composition -- an unknown
+key, or a dotted path whose first segment is also a backend key, is refused there.
+
+What a backend cannot answer is whether ``plugins.floorplan.size`` addresses a plugin *this
+world* has: that needs the world's ``extends`` chain resolved, which needs the simulator. A
+backend may therefore offer a ``describe_query`` -- a command RoboVAST runs **in the simulator's
+own image**, whose one line of JSON names the plugins the world defines. Every override in the
+campaign is checked against it, once per distinct block:
+
+.. code-block:: text
+
+   sim override targets no plugin in this world: floorplna.
+   The world has: ceiling, floorplan, lidar, spawn_robot
+
+Only the *plugin key* is verified. A key inside a plugin's config that the world leaves at its
+default is legitimately absent from what the simulator reports, so refusing it would reject a
+correct campaign; a plugin key matching nothing is unambiguous and is what ``apply_overrides``
+refuses at load time -- previously after the image pull and the pod schedule.
+
+Two things keep the cost proportionate. A campaign that overrides nothing is not checked, and a
+backend offering no ``describe_query`` -- or an environment with no container runner -- is not
+checked either. In both cases the campaign behaves exactly as it did before: wrong overrides are
+still refused, just later and more expensively.
+
+The same seam answers the staging question. ``input_files`` may also return a query, which is
+how a world that ``extends`` **another campaign file** stages its whole chain; a world extending
+a *packaged* one, or nothing, is complete in the single file the campaign owns and says so
+without starting a container.
+
 **Packing groups by the resolved block.** A job's containers start once and are not restarted
 between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore
 chunks *within* work items that agree on their simulator settings. A campaign whose

@@ -45,8 +45,9 @@ execution:
   # A path, because rst_nav2_example registers no `rst.worlds` provider. The backend declares it as
   # a run file, so it is mounted at /config/<path> and archived with the campaign; the world
   # `extends: rst_scenes:depot`, which is packaged and travels with the image, so only this YAML
-  # moves. An `extends:` chain naming a CAMPAIGN file is not followed -- enumerating that needs the
-  # simulator itself, which the backend must not import.
+  # moves -- and the backend can see that from the one `extends:` key without opening anything
+  # else. A world extending a CAMPAIGN file instead has a chain only the simulator can resolve, so
+  # the backend asks `rst scenes inputs` in robosito's own image and stages what it names.
   #
   # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
   # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
