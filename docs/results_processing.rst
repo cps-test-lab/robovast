@@ -625,10 +625,19 @@ provenance properties:
      # Optional: list of CPS agents (robots, manipulators, etc.) involved
      # in the campaign.  Omit entirely for agent-free campaigns.
      agents:
-       - name: turtlebot4
+       - id: turtlebot4
          type: robot
-       - name: ur5
+         # Where this agent came from. One IRI, or several, or a mapping when
+         # the source carries a version.
+         derived_from: https://github.com/turtlebot/turtlebot4/tree/jazzy
+         # Files that configure this agent, relative to the configuration root.
+         configuration_files:
+           - files/nav2_params.yaml
+       - id: ur5
          type: manipulator
+         derived_from:
+           - source: https://github.com/UniversalRobots/Universal_Robots_ROS2_Description
+             version: 2.1.0
 
 ``dataset_iri``
    Base IRI for the dataset namespace used in the provenance graph.
@@ -638,10 +647,27 @@ provenance properties:
 ``agents``
    List of `PROV Agent <https://www.w3.org/TR/prov-o/#Agent>`_ nodes
    representing the physical systems under test (robots, manipulators,
-   sensors, etc.).  Each entry must have a ``name`` (used as the IRI
-   fragment) and may carry arbitrary additional properties.  If omitted,
-   no agent nodes are added to the graph — suitable for software-only or
-   simulation-only campaigns.
+   sensors, etc.).  Each entry must have an ``id`` (used as the IRI
+   fragment; ``name`` is accepted as a legacy spelling) and may carry
+   arbitrary additional properties, which become properties of the agent
+   node.  If omitted, no agent nodes are added to the graph — suitable for
+   software-only or simulation-only campaigns.
+
+   Two keys are interpreted rather than copied through:
+
+   ``derived_from``
+      What the agent was derived from, as ``prov:wasDerivedFrom``. Write a
+      single IRI, a list of them, or — when the source has a version worth
+      recording — a mapping with ``source`` and optional ``version``. An
+      entry that names no source is skipped with a warning rather than
+      dropping the campaign's provenance graph.
+
+   ``configuration_files``
+      Paths, relative to the configuration root, of the files that configure
+      this agent. Each is matched against the campaign's recorded
+      ``run_files`` and aggregated into one plan entity per agent. A path
+      with no match warns and is skipped, since a plan pointing at a file
+      the campaign never carried would misdescribe the run.
 
 Domain-specific provenance nodes (e.g. navigation map/mesh entities) are
 contributed automatically by variation plugins that implement

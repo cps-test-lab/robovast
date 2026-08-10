@@ -416,7 +416,13 @@ def generate_campaign_metadata(
                 else:
                     logger.warning("PROV metadata: %s", prov_msg)
             except Exception as prov_exc:  # noqa: BLE001
-                logger.warning("PROV metadata generation failed: %s", prov_exc)
+                # Non-fatal on purpose -- the runs and their metadata.yaml are the
+                # deliverable, and a provenance graph that cannot be built should not
+                # discard them. With exc_info, though: without a traceback this reports
+                # a bare "'str' object has no attribute 'get'" that names neither the
+                # key nor the agent it came from, which is how one such failure survived
+                # in every campaign's log.
+                logger.warning("PROV metadata generation failed: %s", prov_exc, exc_info=True)
 
     except Exception as e:
         return False, f"Metadata generation failed: {e}"

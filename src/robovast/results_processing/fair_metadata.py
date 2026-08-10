@@ -110,6 +110,20 @@ def _build_iri_context(dataset_iri: str) -> dict:
     }
 
 
+def _as_list(value) -> list:
+    """A YAML value that may be written as one item or as a list, always as a list.
+
+    A string is the trap: it is iterable, so treating a single one as a sequence yields
+    its characters rather than one entry, and every downstream check then runs against
+    ``"h"``, ``"t"``, ``"t"``... None means "not given" and yields nothing.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+        return [value]
+    return list(value)
+
+
 def _build_agents(
     agents_config: List[dict],
     run_files: list,
@@ -151,7 +165,9 @@ def _build_agents(
         agent_cfg = dict(agent_cfg)
         # .vast uses "id"; fall back to legacy "name" key
         agent_id = agent_cfg.pop("id", agent_cfg.pop("name", "agent"))
-        config_files = agent_cfg.pop("configuration_files", [])
+        # Same one-or-many tolerance: a single configuration_file written unwrapped would
+        # otherwise be matched a character at a time, and warn once per character.
+        config_files = _as_list(agent_cfg.pop("configuration_files", []))
 
         # Match each configuration_file to its plan IRI
         agent_plan_iris = []
@@ -165,17 +181,34 @@ def _build_agents(
                     agent_id, cf,
                 )
 
-        # Build derived_from entity nodes from "source" key
-        derived_from_raw = agent_cfg.pop("derived_from", [])
+        # Build derived_from entity nodes. The value is what an author would write for
+        # "where this agent came from": one IRI, several, or a mapping when the source
+        # also carries a version. A bare string is the common case and used to be
+        # iterated character by character, which asked `.get` of a str and lost the whole
+        # provenance graph to an AttributeError.
         derived_from_iris = []
-        for df in derived_from_raw:
-            iri = df.get("source")
+        for df in _as_list(agent_cfg.pop("derived_from", [])):
+            if isinstance(df, str):
+                iri, version = df, None
+            elif isinstance(df, dict):
+                iri, version = df.get("source"), df.get("version")
+            else:
+                logger.warning(
+                    "Agent '%s': ignoring derived_from entry of type %s (expected an IRI "
+                    "string, or a mapping with a 'source' key): %r",
+                    agent_id, type(df).__name__, df,
+                )
+                continue
             if not iri:
+                logger.warning(
+                    "Agent '%s': ignoring derived_from entry with no source IRI: %r",
+                    agent_id, df,
+                )
                 continue
             derived_from_iris.append(iri)
             df_node = {_ID: iri, _TYPE: PROV["Entity"]}
-            if "version" in df:
-                df_node["hasVersion"] = df["version"]
+            if version is not None:
+                df_node["hasVersion"] = version
             location_nodes.append(df_node)
 
         agent_node: dict = {
@@ -474,6 +507,14 @@ def generate_prov_metadata(
         vast_files = list(config_dir.glob("*.vast"))
         if vast_files:
             vast_file_name = vast_files[0].name
+
+    if vast_file_name is None:
+        # Without this the next line joins a None and raises a TypeError naming neither
+        # the campaign nor the file it wanted -- and the caller logs that as the reason
+        # the whole provenance graph is missing.
+        raise FileNotFoundError(
+            f"No .vast file in {config_dir}, so the campaign's configuration cannot be "
+            f"read into the provenance graph.")
 
     with open(os.path.join(config_dir, vast_file_name), "r") as f:
         vast_cfg = yaml.safe_load(f)
