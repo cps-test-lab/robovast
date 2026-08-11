@@ -8,6 +8,10 @@
 // from there (and drops it where the mouse is released), the same way dragging its resize handle
 // overrides the declared size. Both overrides live in this component and last for the mounted view --
 // the .vast stays the authored layout.
+//
+// The resize handles straddle the panel's border and hang mostly outside it, so they take a border's
+// width from the panel rather than a strip of its content -- a scrollbar at the content's edge stays
+// grabbable.
 
 import { useRef, useState, type CSSProperties, type RefObject } from 'react'
 import Box from '@mui/material/Box'
@@ -91,23 +95,55 @@ const CENTRED: Partial<Record<Anchor, { x?: true; y?: true }>> = {
  *  A corner handle carries both. Used for the resize handles and for the RESIZE map's free edge. */
 type Edge = { x?: 1 | -1; y?: 1 | -1 }
 
-// Absolute-positioned handle geometry inside the (positioned) Paper for a given resize spec.
+// A handle straddles the panel's border rather than lying inside it: `EDGE_HANDLE` thick, of which
+// `HANDLE_OUTSET` hangs outside. The grab area is a window-manager edge -- live on the border and
+// just beyond it -- and only the remaining 4px reach into the panel, against the 8px that used to
+// sit on the run log's horizontal scrollbar and leave a sliver of it to aim at.
+//
+// It does not go fully outside, for two reasons: the border itself is where a reader aims, and a
+// panel docked flush against the view (`left: 0`) has its outward part clipped by the host, so the
+// inside part is all the grab area that edge has left.
+//
+// The outset is what makes the handles siblings of the Paper instead of children (see `PanelFrame`):
+// the Paper clips its content, and a child hanging past its border would be clipped away.
+const EDGE_HANDLE = 10
+const HANDLE_OUTSET = 6
+const CORNER_HANDLE = 14
+
+// Absolute-positioned handle geometry inside the panel's (positioned) layout box for a resize spec.
 function handleSx(rz: Edge): CSSProperties {
   const base: CSSProperties = { position: 'absolute', zIndex: 2 }
+  const out = -HANDLE_OUTSET
   if (rz.x && rz.y)
     return {
       ...base,
-      width: 16,
-      height: 16,
+      width: CORNER_HANDLE,
+      height: CORNER_HANDLE,
       // Above the two edge strips it overlaps, so the corner drives both axes where they meet.
       zIndex: 3,
-      [rz.x === 1 ? 'right' : 'left']: 0,
-      [rz.y === 1 ? 'bottom' : 'top']: 0,
+      [rz.x === 1 ? 'right' : 'left']: out,
+      [rz.y === 1 ? 'bottom' : 'top']: out,
       cursor: rz.x * rz.y === 1 ? 'nwse-resize' : 'nesw-resize',
     }
+  // Run the strip out to the corners as well, so the whole edge is live; the corner squares sit
+  // above it where the two meet.
   if (rz.x)
-    return { ...base, top: 0, bottom: 0, width: 8, [rz.x === 1 ? 'right' : 'left']: 0, cursor: 'ew-resize' }
-  return { ...base, left: 0, right: 0, height: 8, [rz.y === 1 ? 'bottom' : 'top']: 0, cursor: 'ns-resize' }
+    return {
+      ...base,
+      top: out,
+      bottom: out,
+      width: EDGE_HANDLE,
+      [rz.x === 1 ? 'right' : 'left']: out,
+      cursor: 'ew-resize',
+    }
+  return {
+    ...base,
+    left: out,
+    right: out,
+    height: EDGE_HANDLE,
+    [rz.y === 1 ? 'bottom' : 'top']: out,
+    cursor: 'ns-resize',
+  }
 }
 
 // Full-width top/bottom bars and left/right columns dock at the very edge and reserve the space they
@@ -462,47 +498,55 @@ function PanelFrame({
     </Box>
   )
 
+  // Two boxes, not one: the outer box carries the layout and does NOT clip, so the handles can hang
+  // past the panel's border; the Paper inside it is what clips the content. The Paper fills the
+  // outer box as a flex child rather than by `inset: 0`, because a minimized panel's height is
+  // `auto` and an absolutely positioned child would leave the outer box with no height at all.
   return (
-    <Paper
-      ref={paperRef}
-      elevation={frameless ? 0 : 3}
-      square={frameless}
-      sx={{
-        ...layout,
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        bgcolor: frameless ? 'transparent' : 'background.paper',
-        border: frameless ? 0 : 1,
-        borderColor: 'divider',
-      }}
-    >
-      {showHeader ? (
-        <Box
-          onMouseDown={canMove ? startMove : undefined}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1,
-            px: 1,
-            py: 0.25,
-            borderBottom: minimized ? 0 : 1,
-            borderColor: 'divider',
-            bgcolor: 'action.hover',
-            ...(canMove ? { cursor: 'move', userSelect: 'none' } : null),
-          }}
-        >
-          <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
-            {spec.title ?? plugin?.manifest.label ?? spec.type}
-          </Typography>
-          {spec.minimizable ? (
-            <IconButton size="small" onClick={() => setMinimized((m) => !m)}>
-              {minimized ? <AddRoundedIcon fontSize="inherit" /> : <RemoveRoundedIcon fontSize="inherit" />}
-            </IconButton>
-          ) : null}
-        </Box>
-      ) : null}
-      {!minimized ? <Box sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>{body}</Box> : null}
+    <Box ref={paperRef} sx={{ ...layout, display: 'flex' }}>
+      <Paper
+        elevation={frameless ? 0 : 3}
+        square={frameless}
+        sx={{
+          flexGrow: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          bgcolor: frameless ? 'transparent' : 'background.paper',
+          border: frameless ? 0 : 1,
+          borderColor: 'divider',
+        }}
+      >
+        {showHeader ? (
+          <Box
+            onMouseDown={canMove ? startMove : undefined}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              px: 1,
+              py: 0.25,
+              borderBottom: minimized ? 0 : 1,
+              borderColor: 'divider',
+              bgcolor: 'action.hover',
+              ...(canMove ? { cursor: 'move', userSelect: 'none' } : null),
+            }}
+          >
+            <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
+              {spec.title ?? plugin?.manifest.label ?? spec.type}
+            </Typography>
+            {spec.minimizable ? (
+              <IconButton size="small" onClick={() => setMinimized((m) => !m)}>
+                {minimized ? <AddRoundedIcon fontSize="inherit" /> : <RemoveRoundedIcon fontSize="inherit" />}
+              </IconButton>
+            ) : null}
+          </Box>
+        ) : null}
+        {!minimized ? (
+          <Box sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>{body}</Box>
+        ) : null}
+      </Paper>
       {handles.map((use, i) => (
         <Box
           key={i}
@@ -510,7 +554,7 @@ function PanelFrame({
           sx={{ ...handleSx(use), '&:hover': { bgcolor: 'primary.main', opacity: 0.35 } }}
         />
       ))}
-    </Paper>
+    </Box>
   )
 }
 
