@@ -299,8 +299,22 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
           . Built once per world, then cached — every other run of this world is instant.
         </Alert>
       ) : null}
+      {/* TOP CENTRE, unlike every other overlay here: top-left is where a run view's own panels
+          anchor (the scenario tree is `anchor: top-left` in more than one campaign), so this alert
+          sat *behind* one and a run with no geometry looked like a run with an empty world. The
+          centre is the one edge of the viewport nothing else claims. Translated by half its own
+          width rather than given a width, so a short message stays as narrow as it reads. */}
       {sceneError || scene?.error ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 620 }}>
+        <Alert
+          severity="warning"
+          sx={{
+            position: 'absolute',
+            top: 8,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            maxWidth: 'min(620px, calc(100% - 16px))',
+          }}
+        >
           No 3D geometry: {sceneError || scene?.error}
         </Alert>
       ) : scene && !scene.overrides_known ? (
