@@ -134,9 +134,12 @@ def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
         _manifest(overrides={"plugins": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
-    cmd = scene_cache._command_for(ident, 1024, "/tmp/rst_scene_overrides.yaml")
+    # The real mount, not a literal: where the file appears is a lane constraint (the cluster
+    # only mounts AUX_MOUNTABLE_PATHS), so a test carrying its own path hid a mismatch once.
+    cmd = scene_cache._command_for(ident, 1024, scene_cache._OVERRIDES_MOUNT)
     args = shlex.split(cmd)
-    assert "--override" in args and args[args.index("--override") + 1] == "/tmp/rst_scene_overrides.yaml"
+    assert "--override" in args
+    assert args[args.index("--override") + 1] == scene_cache._OVERRIDES_MOUNT
     assert "--set" not in args, "argv is not the channel for a recorded override tree"
     assert "--manifest {out}/.generated.json" in cmd, "the tool reports its own inputs"
 

@@ -472,3 +472,60 @@ def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch):
     script = cmd[2]
     assert "cp -a" not in script, "-a preserves attributes on the mount point and fails"
     assert f"cp -R '{runner.workspace}/in/0/_config/.' '/config/'" in script
+
+
+def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
+    """A staged FILE has to land at its exact path, filename included.
+
+    `mount_at` names the path the command was written for -- the scene build's
+    `--override /aux/rst_scene_overrides.yaml` -- and only the directory around it can be a
+    volume. Both halves of this were broken: `expose` refused any path that was not itself
+    mountable, and the copy assumed a tree (`cp -R 'file/.'` copies nothing). It failed only
+    on the cluster, where a mount is an emptyDir the Pod declares, while the local lane
+    bind-mounted the file and never noticed -- so the run view asked for geometry and got
+    "a new path has to be added to AUX_MOUNTABLE_PATHS".
+    """
+    runner = _runner()
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    staged = f"{runner.workspace}/in/2/overrides.yaml"
+    runner.expose(staged, "/aux/rst_scene_overrides.yaml")
+
+    runner._place_exposed()
+
+    (cmd, _payload), = rec.calls
+    script = cmd[2]
+    assert f"cp -R '{staged}' '/aux/rst_scene_overrides.yaml'" in script
+    assert "/.'" not in script, "a file is not a tree; filling a mount with it copies nothing"
+    assert "mkdir -p '/aux'" in script
+
+
+def test_a_runner_still_refuses_a_file_outside_every_mounted_directory():
+    """The allowlist is not widened to "any file": a path nobody mounted is not writable.
+
+    `/tmp/...` is the one this actually happened with, and it must keep failing here rather
+    than inside the tool -- an emptyDir over `/tmp` would shadow whatever the aux image keeps
+    there, so the answer is a path of ours, not a wider rule.
+    """
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
+        runner.expose("/somewhere/staged.yaml", "/tmp/rst_scene_overrides.yaml")
+    with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
+        runner.expose("/somewhere/staged.yaml", "/config/nested/deeper/staged.yaml")
+
+
+def test_the_scene_builds_overrides_mount_is_one_the_cluster_can_declare():
+    """The bug was a broken JOIN: `scene_cache` picked a path, this lane declares them.
+
+    Nothing connected the two, so the mismatch surfaced as a generator failure on the
+    cluster only. This is that connection, in the direction that matters -- whoever moves
+    `_OVERRIDES_MOUNT` next has to move it somewhere the Pod mounts.
+    """
+    from robovast.execution.cluster_execution.container_runner import \
+        AUX_MOUNTABLE_PATHS
+    from robovast.service.scene_cache import _OVERRIDES_MOUNT
+    assert os.path.dirname(_OVERRIDES_MOUNT) in AUX_MOUNTABLE_PATHS, (
+        f"the scene build stages its overrides at {_OVERRIDES_MOUNT}, whose directory no aux "
+        f"Pod mounts (mountable: {list(AUX_MOUNTABLE_PATHS)})"
+    )

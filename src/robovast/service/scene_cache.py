@@ -487,7 +487,13 @@ def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = 
 #: on purpose: the campaign trees mount there, and an input nested in another input's mount
 #: has to be copied into it rather than bound (see ``stage_for_container``) -- a neutral path
 #: keeps this one an ordinary mount whatever the world's tier turns out to be.
-_OVERRIDES_MOUNT = "/tmp/rst_scene_overrides.yaml"
+#:
+#: ``/aux``, not ``/tmp``: on the cluster a fixed mount is an emptyDir the *Pod* declares, so
+#: the directory has to be one of ``AUX_MOUNTABLE_PATHS`` -- ``/tmp`` was neither mountable
+#: (the scene build failed with "a new path has to be added to AUX_MOUNTABLE_PATHS") nor a
+#: path worth mounting, since an emptyDir over it would shadow whatever the aux image keeps
+#: there. The local lane bind-mounts the file and never saw the difference.
+_OVERRIDES_MOUNT = "/aux/rst_scene_overrides.yaml"
 
 
 def _overrides_file(identity: dict, key: str) -> str | None:

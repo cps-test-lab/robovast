@@ -101,13 +101,22 @@ _TOOLS_MOUNT = "/tools"
 _MC = f"{_TOOLS_MOUNT}/mc"
 _MC_CONFIG = f"{_TOOLS_MOUNT}/mc-config"
 
-#: Absolute paths an aux container can be asked to expose a staged tree at, via
+#: Absolute DIRECTORIES an aux container can be asked to expose a staged input at, via
 #: :meth:`ClusterContainerRunner.expose`. A fixed list rather than anything a caller picks,
 #: because the mount has to be declared when the *pod* is built, long before a runner knows
 #: what it will stage -- and a path nobody mounted is not writable in an arbitrary image.
+#: Each one becomes an emptyDir, mounted on every aux container and chmod'ed by the init
+#: container, so a new entry here is all a new fixed mount needs.
+#:
 #: ``/config`` is where a job mounts a campaign's ``run_files``, so a world's own
 #: ``/config/...`` references resolve there for a rebuild exactly as they did for the run.
-AUX_MOUNTABLE_PATHS = ("/config",)
+#: ``/aux`` is the neutral one, for a single file that has to appear at a fixed path and does
+#: NOT belong to a campaign tree -- the scene build's world-overrides document, which cannot
+#: travel on argv (a nested tree does not survive ``--set``) and must not be nested inside
+#: ``/config``, where it would have to be copied into another input's mount. It is a path of
+#: our own rather than ``/tmp`` on purpose: an emptyDir over ``/tmp`` would shadow whatever
+#: the aux image keeps there, and the aux image is not ours.
+AUX_MOUNTABLE_PATHS = ("/config", "/aux")
 
 
 def _mount_volume_name(path: str) -> str:
@@ -603,17 +612,26 @@ class ClusterContainerRunner:
 
         The tree still travels as part of the workspace -- there is one transport and this
         does not add a second. It is copied across inside the container, into the emptyDir
-        the Pod already mounts at *container_path*, which is why only
-        :data:`AUX_MOUNTABLE_PATHS` can be asked for: a path the Pod does not mount is not
-        writable in an arbitrary image, and discovering that inside the tool would look
-        like the tool's own failure.
+        the Pod already mounts, which is why only :data:`AUX_MOUNTABLE_PATHS` can be asked
+        for: a path the Pod does not mount is not writable in an arbitrary image, and
+        discovering that inside the tool would look like the tool's own failure.
+
+        A *file* target is allowed when its DIRECTORY is one of those paths, because that is
+        the shape a staged single file has: ``mount_at`` names the exact path the command was
+        written for, filename included (``/aux/rst_scene_overrides.yaml``), and only the
+        directory around it can be a volume. Without this the scene build failed on the
+        cluster, at the one moment it is least diagnosable -- the run view asking for
+        geometry -- while working on the local lane, where a bind mount does not care.
         """
-        if container_path not in AUX_MOUNTABLE_PATHS:
+        container_path = str(container_path)
+        if container_path not in AUX_MOUNTABLE_PATHS \
+                and os.path.dirname(container_path) not in AUX_MOUNTABLE_PATHS:
             raise ValueError(
-                f"an aux container can only expose a staged tree at one of "
-                f"{list(AUX_MOUNTABLE_PATHS)}, not {container_path!r}; a new path has to be "
-                f"added to AUX_MOUNTABLE_PATHS so the Pod declares a volume for it.")
-        self._exposed[str(container_path)] = str(host_path)
+                f"an aux container can only expose a staged input at one of "
+                f"{list(AUX_MOUNTABLE_PATHS)}, or at a file directly inside one of them, "
+                f"not {container_path!r}; a new path has to be added to "
+                f"AUX_MOUNTABLE_PATHS so the Pod declares a volume for it.")
+        self._exposed[container_path] = str(host_path)
 
     def _client(self):
         if self._core_v1 is None:
@@ -742,11 +760,16 @@ class ClusterContainerRunner:
                                               self.workspace, force=True)
 
     def _place_exposed(self) -> None:
-        """Copy each exposed tree from the mirrored workspace into its declared mount.
+        """Copy each exposed input from the mirrored workspace into its declared mount.
 
-        After ``_copy_in``, so the source is already in the container. The trailing ``/.``
-        fills the mount rather than nesting a directory inside it, and the mount is an
-        emptyDir the init container made world-writable.
+        After ``_copy_in``, so the source is already in the container. Two shapes, told apart
+        by the target rather than by looking at the filesystem (the source is only guaranteed
+        to exist in the *container*): a tree exposed AT a mountable path fills that mount --
+        the trailing ``/.`` is what keeps it from nesting a directory inside it -- and
+        anything exposed at a path INSIDE one is copied to that exact path, which is the
+        only thing that works for a single staged file (``cp -R 'file/.'`` copies nothing).
+
+        The mount is an emptyDir the init container made world-writable.
 
         ``-R``, deliberately not ``-a``: preserving attributes means setting them on the
         destination *mount point* too, and that inode belongs to root while the aux container
@@ -755,9 +778,13 @@ class ClusterContainerRunner:
         re-published, so its timestamps and ownership carry nothing.
         """
         for container_path, staged in sorted(self._exposed.items()):
-            self._retrying_exec(["sh", "-c",
-                                 f"mkdir -p '{container_path}' && "
-                                 f"cp -R '{staged}/.' '{container_path}/'"])
+            if container_path in AUX_MOUNTABLE_PATHS:
+                script = (f"mkdir -p '{container_path}' && "
+                          f"cp -R '{staged}/.' '{container_path}/'")
+            else:
+                script = (f"mkdir -p '{os.path.dirname(container_path)}' && "
+                          f"cp -R '{staged}' '{container_path}'")
+            self._retrying_exec(["sh", "-c", script])
 
     def run(self, command, progress_update_callback=None) -> None:
         progress_update_callback = progress_update_callback or logger.debug
