@@ -662,6 +662,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/exec/resolve-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Image */
+        post: operations["resolve_image_exec_resolve_image_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -1822,6 +1839,24 @@ export interface components {
              * @default
              */
             tag: string;
+        };
+        /**
+         * ImageResolution
+         * @description The concrete image a project's container would run — resolved, nothing started.
+         *
+         *     Answers what :class:`ExecRequest`'s own image resolution would pick, without paying
+         *     for a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,
+         *     or a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists
+         *     so a caller can key a cache by "this image" — e.g. a per-image catalog a container would
+         *     report identically on every call — without running the container just to learn which one
+         *     it is.
+         */
+        ImageResolution: {
+            /**
+             * Image
+             * @default
+             */
+            image: string;
         };
         /**
          * JobCounts
@@ -3917,6 +3952,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecStopResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_image_exec_resolve_image_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageResolution"];
                 };
             };
             /** @description Validation Error */

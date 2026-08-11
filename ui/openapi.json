@@ -1210,6 +1210,21 @@
         "title": "ImageBuildStatus",
         "type": "object"
       },
+      "ImageResolution": {
+        "description": "The concrete image a project's container would run \u2014 resolved, nothing started.\n\nAnswers what :class:`ExecRequest`'s own image resolution would pick, without paying\nfor a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,\nor a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists\nso a caller can key a cache by \"this image\" \u2014 e.g. a per-image catalog a container would\nreport identically on every call \u2014 without running the container just to learn which one\nit is.",
+        "properties": {
+          "image": {
+            "default": "",
+            "title": "Image",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "title": "ImageResolution",
+        "type": "object"
+      },
       "JobCounts": {
         "description": "Aggregate job status counts for a campaign's current batch.",
         "properties": {
@@ -4568,6 +4583,47 @@
           }
         },
         "summary": "Exec In Container",
+        "tags": [
+          "exec"
+        ]
+      }
+    },
+    "/exec/resolve-image": {
+      "post": {
+        "operationId": "resolve_image_exec_resolve_image_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResolution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Image",
         "tags": [
           "exec"
         ]

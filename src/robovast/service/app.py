@@ -44,7 +44,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest,
                                         FileMeta,
-                                        ImageBuildRef, ImageBuildStatus,
+                                        ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ListCampaignsResponse,
                                         ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
@@ -816,6 +816,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
     @app.delete(Routes.EXEC, response_model=ExecStopResult, tags=["exec"])
     def stop_exec_container(backend: str = "") -> ExecStopResult:
         return _guard(lambda: impl.stop_exec_container(backend or None))
+
+    @app.post(Routes.EXEC_RESOLVE_IMAGE, response_model=ImageResolution, tags=["exec"])
+    def resolve_image(request: ExecRequest) -> ImageResolution:
+        return _guard(lambda: impl.resolve_image(request))
 
     @app.get(Routes.campaign_archive("{campaign_id}"), tags=["results"])
     def download_campaign_archive(campaign_id: str):

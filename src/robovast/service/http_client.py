@@ -287,6 +287,11 @@ class HTTPTransport(RobovastInterface):
         return ExecStopResult.model_validate(
             self._delete(Routes.EXEC, backend=backend or ""))
 
+    def resolve_image(self, request):
+        from robovast.service.interface import ImageResolution
+        return ImageResolution.model_validate(
+            self._post(Routes.EXEC_RESOLVE_IMAGE, json=request.model_dump()))
+
     def get_postprocessing(self, campaign_id: str):
         from robovast.service.interface import PostprocessingInfo
         return PostprocessingInfo.model_validate(

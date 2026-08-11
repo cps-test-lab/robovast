@@ -262,6 +262,20 @@ class ExecStopResult(BaseModel):
     target: Optional[str] = None     # what was stopped, when something was
 
 
+class ImageResolution(BaseModel):
+    """The concrete image a project's container would run — resolved, nothing started.
+
+    Answers what :class:`ExecRequest`'s own image resolution would pick, without paying
+    for a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,
+    or a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists
+    so a caller can key a cache by "this image" — e.g. a per-image catalog a container would
+    report identically on every call — without running the container just to learn which one
+    it is.
+    """
+
+    image: str = ""
+
+
 class CampaignSummary(BaseModel):
     """One row of :meth:`RobovastInterface.list_campaigns`.
 
@@ -1193,6 +1207,8 @@ class Routes:
     #: DELETE stops the held container. Produces no campaign, so it is not under
     #: ``/campaigns``.
     EXEC = "/exec"
+    #: Resolves the image EXEC would use, without running anything.
+    EXEC_RESOLVE_IMAGE = "/exec/resolve-image"
 
     @staticmethod
     def campaign_scene(campaign_id: str) -> str:
@@ -1573,6 +1589,13 @@ class RobovastInterface(ABC):
 
         Idempotent: with nothing held this reports ``stopped=False`` rather than
         failing. Never touches a campaign's container.
+        """
+
+    @abstractmethod
+    def resolve_image(self, request: ExecRequest) -> ImageResolution:
+        """Resolve the image :meth:`exec_in_container` would use for *request*, without
+        running anything. See :class:`ImageResolution`. ``request.command``/``keep_alive``/
+        ``show_gui`` are unused — only the addressing fields matter.
         """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------

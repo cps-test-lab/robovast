@@ -217,6 +217,20 @@ class MultiBackendService(LocalTransport):
             return self._cluster.exec_in_container(request)
         return LocalTransport.exec_in_container(self, request)
 
+    def resolve_image(self, request):
+        """Resolve on the lane the caller named, or the default one — same reason
+        ``exec_in_container`` overrides: today ``plan_containers``/``resolve_robovast_image``
+        do not read ``backend`` and would answer identically either way, but dispatching
+        explicitly means this stays correct if a lane's build registry ever diverges,
+        rather than silently answering from whichever lane ``self`` happens to be.
+        """
+        lane = request.backend or self._default_backend()
+        if lane not in (_LOCAL, _CLUSTER):
+            raise ValueError(f"unknown backend {lane!r}; use 'local' or 'cluster'")
+        if lane == _CLUSTER:
+            return self._cluster.resolve_image(request)
+        return LocalTransport.resolve_image(self, request)
+
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False, backend: str = ""):
         """Ask the simulator on the lane the caller named, or the default one.

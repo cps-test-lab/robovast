@@ -21,11 +21,13 @@ these tools create one, put files in it (through the address space), check the `
 they wrote, and see what configurations it would expand to. Nothing here starts work.
 """
 
+import json
 import logging
 
 from fastmcp import FastMCP
 
 from robovast.mcp_server import service_access
+from robovast.mcp_server.service_access import NO_SERVICE
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +306,76 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         return {"error": str(e)}
 
 
+def _resolved_request(address: str):
+    """*address* -> ``(client, ExecRequest)`` with no ``command`` set yet, or raise
+    ``ValueError`` naming why (no address, no service).
+    """
+    from robovast.service.interface import ExecRequest
+    from robovast.service.project_push import _resolve_workspace_id
+    target = _address_lane(address)
+    if target is None:
+        raise ValueError(
+            "this needs a workspace address (/sources/<workspace_id>/<path>): the answer "
+            "comes from the campaign's own image, which only the service knows how to reach")
+    client = service_access.service_client()
+    if client is None:
+        raise ValueError(NO_SERVICE)
+    workspace_id, rel_path = target
+    resolved_id = _resolve_workspace_id(client, workspace_id)
+    return client, ExecRequest(workspace_id=resolved_id, config_path=rel_path)
+
+
+def _exec_json(client, request, command: str) -> dict:
+    """*request* run with *command*, via ``exec_in_container``'s own lane-agnostic
+    plumbing -- not ``describe_world``'s ``_make_container_runner`` path, which only
+    gets a cluster-capable runner inside a live campaign's composition and is refused
+    standalone on the cluster lane. Returns the command's parsed stdout, or raises
+    ``ValueError`` naming why (a non-zero exit, unparseable output).
+    """
+    result = client.exec_in_container(request.model_copy(update={"command": command}))
+    if result.exit_code != 0:
+        detail = (result.stderr or result.stdout or "").strip()[:400]
+        raise ValueError(f"{command!r} failed: {detail or '(no output)'}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{command!r} produced unparseable output: {e}") from e
+
+
+def describe_scenario(address: str, scenario_path: str) -> dict:
+    """What a `.osc` file references and does. `{valid, diagnostics, actions_used,
+    tree, image}`.
+    """
+    try:
+        client, request = _resolved_request(address)
+        container_path = f"/sources/{request.workspace_id}/{scenario_path}"
+        payload = _exec_json(
+            client, request,
+            f"python -m scenario_execution.introspection describe {container_path}")
+        image = client.resolve_image(request).image
+        return {**payload, "image": image}
+    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
+        return {"error": str(e)}
+
+
+def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
+    """Body hierarchy under bodies matching the required glob `pattern`, capped per
+    match. `{bodies: [{root, tree, truncated}], image}`.
+    """
+    try:
+        if not pattern:
+            raise ValueError("pattern is required -- there is no 'describe every body' mode")
+        client, request = _resolved_request(address)
+        container_path = f"/sources/{request.workspace_id}/{world_path}"
+        payload = _exec_json(
+            client, request,
+            f"rst scenes describe {container_path} --body-tree {pattern} --json")
+        image = client.resolve_image(request).image
+        return {"bodies": payload.get("body_tree") or [], "image": image}
+    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
+        return {"error": str(e)}
+
+
 for _fn in (validate_project, preview_configurations, describe_world):
     _fn.__doc__ = _fn.__doc__.replace(
         "    Args:\n", f"{_ADDRESS_LANE}\n    Args:\n", 1)
@@ -324,6 +396,8 @@ _TOOLS = [
     validate_project,
     preview_configurations,
     describe_world,
+    describe_scenario,
+    get_world_body_tree,
 ]
 
 

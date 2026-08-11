@@ -151,6 +151,7 @@ reference = "robovast.mcp_server.plugins.reference:ReferencePlugin"
 docs = "robovast.mcp_server.plugins.docs:DocsPlugin"
 examples = "robovast.mcp_server.plugins.examples:ExamplesPlugin"
 plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
+image_catalog = "robovast.mcp_server.plugins.image_catalog:ImageCatalogPlugin"
 prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 
 [build-system]

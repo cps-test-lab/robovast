@@ -1375,6 +1375,18 @@ class LocalTransport(RobovastInterface):
         del backend            # single-lane service; a multi-backend one overrides
         return self._exec_manager.stop()
 
+    def resolve_image(self, request) -> "ImageResolution":  # noqa: F821
+        """Same resolution :meth:`exec_in_container` runs internally, without the run.
+
+        Reuses :meth:`_exec_image` directly — the same project load, ``plan_containers``,
+        and (for a ``build:`` container) build-registry lookup ``exec_in_container`` already
+        does at ``local_transport.py:1308`` — so a resolved image never drifts from what a
+        real exec would use. No container starts either way.
+        """
+        from robovast.service.interface import ImageResolution
+        vast_file = self._exec_vast_file(request)
+        return ImageResolution(image=self._exec_image(vast_file, request.container or None))
+
     def _postprocess(self, campaign_id, results_dir, state, entry):
         """Run analysis postprocessing for a just-finished local campaign.
 
