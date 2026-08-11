@@ -18,6 +18,7 @@ It provides four views, one per desktop GUI:
   (``GET /campaigns/events``), not polled: a launched campaign appears in the list
   immediately — with its true live phase and its **start time** (shown in your
   browser's locale and timezone) — and every phase change is pushed within a second.
+  Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   On a **multi-backend** serve (``vast serve --backend local+cluster``) a row that ran on
   the Docker lane is marked with a small ``local`` chip. Only that lane is marked: the
   default is the cluster, so a ``cluster`` chip would sit on nearly every row saying "as
@@ -77,6 +78,41 @@ It provides four views, one per desktop GUI:
   generated-configuration preview. The browser equivalent of ``vast config gui``.
 * **Results** — browse a campaign's data, run read-only SQL, and chart it. The
   browser equivalent of ``vast eval gui`` (SQL + charts rather than notebooks).
+
+.. _web-ui-freshness:
+
+Staying up to date
+------------------
+
+A monitor you have to remember to refresh is a monitor that lies. The page keeps itself
+current across a tab switch, a suspended laptop and a dropped ``kubectl port-forward``,
+and it does so on two mechanisms, because the page has two kinds of live data.
+
+**The streams** — the campaign list and every log panel — are Server-Sent Events, and the
+browser's own ``EventSource`` recovery covers only the easy failure. Two others are handled
+here. It **gives up**: after enough consecutive failures the browser parks the stream in
+``readyState CLOSED`` and never reopens it. And it **cannot see a zombie**: when a laptop
+suspends or a tunnel is torn down, the socket raises no error, reports ``OPEN`` forever, and
+delivers nothing more — indistinguishable from a campaign that simply has not changed. So
+the service heartbeats every quiet second with a *visible* event (:doc:`http_api`), and the
+UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
+connection whenever the tab becomes visible, the network returns, or the check next runs.
+The **Refresh** button on the campaign list does the same thing on demand — it is no longer
+the only way to get there. Anything other than a healthy stream is labelled ``reconnecting…``
+next to the heading, so a stale list always says that it might be.
+
+**The polled readings** — a campaign's phase and its per-job listing, and the sidebar's
+resource meters — deliberately stop polling while the tab is hidden, so a monitor left open
+in a background tab costs the service nothing. That is what makes coming back the moment they
+must be re-read: without it a card would show the phase from before you switched away for as
+long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
+therefore fetch once on return.
+
+What deliberately does *not* move is a result you are reading. The Results views take a
+snapshot of the campaign list and adopt a new one only when you ask (see
+`Results viewer`_) — a finished campaign is immutable, so reshuffling its tree under
+someone mid-read would cost attention and return nothing. Freshness applies to what is
+still changing.
 
 .. _web-ui-config:
 

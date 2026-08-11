@@ -42,6 +42,7 @@ import { ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { openResultsView } from '@/lib/nav'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
+import { useLiveStream } from '@/lib/liveStream'
 import { ErrorText, StatusView } from '@/components/StatusView'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
@@ -137,15 +138,22 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     queryFn: () => robovast.getStatus(id),
     // Poll while running; stop once the fetched status is terminal.
     refetchInterval: (q) => (isTerminalPhase((q.state.data as Status | undefined)?.phase) ? false : 1500),
+    // The poll above is suspended while the tab is hidden — deliberately, so a backgrounded
+    // monitor does not hammer the service — which is exactly why coming back has to read
+    // once itself. Without this the card shows a phase from before the tab was switched
+    // away, for however long the timer takes to restart. The app-wide default is off (see
+    // main.tsx); a live campaign's phase is the case that earns the exception.
+    refetchOnWindowFocus: true,
   })
 
   // Live per-job listing (running count + the clickable jobs list). Polled while the
-  // campaign runs.
+  // campaign runs, and re-read on return for the same reason as the status above.
   const terminal = isTerminalPhase((status.data as Status | undefined)?.phase)
   const jobs = useQuery({
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
     refetchInterval: () => (terminal ? false : 2000),
+    refetchOnWindowFocus: true,
   })
 
   // Stopping the poll on its own leaves the last in-flight listing on screen forever —
@@ -530,38 +538,31 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
 // Live campaign list over SSE. The server pushes the full list on connect and on
 // every change (a server-side loop over list_campaigns), so this is the single
-// source for the list — no polling. EventSource reconnects on its own after a
-// dropped connection; `reconnect` forces a fresh connection (the Refresh button).
-function useCampaignStream(reconnect: number) {
+// source for the list — no polling. useLiveStream owns the recovery: a dropped
+// connection, a stream the browser gave up on, and a socket that died silently
+// while the tab was in the background all end in a fresh EventSource, which re-sends
+// the whole list. `reconnect` is the same path on demand (the Refresh button).
+function useCampaignStream() {
   const [data, setData] = useState<ListCampaignsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [live, setLive] = useState(false)
 
-  useEffect(() => {
-    const es = new EventSource(robovast.campaignsStreamUrl())
-    es.onopen = () => setLive(true)
-    es.onmessage = (e) => {
+  const { state, reconnect } = useLiveStream(robovast.campaignsStreamUrl(), {
+    onMessage: (e) => {
       setData(JSON.parse(e.data) as ListCampaignsResponse)
       setError(null)
-      setLive(true)
-    }
-    es.addEventListener('streamerror', (e) => {
-      setError(JSON.parse((e as MessageEvent).data))
-    })
-    es.onerror = () => {
-      // Transport-level drop: EventSource retries on its own; reflect the gap but
-      // keep showing the last list until the next frame lands.
-      if (es.readyState !== EventSource.CLOSED) setLive(false)
-    }
-    return () => es.close()
-  }, [reconnect])
+    },
+    events: {
+      streamerror: (e) => setError(JSON.parse(e.data)),
+    },
+  })
 
-  return { data, error, live }
+  // Anything but `open` means the list on screen may already be behind; keep showing it
+  // (it is still the best we have) and say so.
+  return { data, error, live: state === 'open', reconnect }
 }
 
 export function Monitor() {
-  const [reconnect, setReconnect] = useState(0)
-  const { data, error, live } = useCampaignStream(reconnect)
+  const { data, error, live, reconnect } = useCampaignStream()
 
   return (
     <Stack spacing={2}>
@@ -575,11 +576,7 @@ export function Monitor() {
           </Typography>
         ) : null}
         <Box flexGrow={1} />
-        <Button
-          size="small"
-          startIcon={<RefreshRoundedIcon />}
-          onClick={() => setReconnect((n) => n + 1)}
-        >
+        <Button size="small" startIcon={<RefreshRoundedIcon />} onClick={reconnect}>
           Refresh
         </Button>
       </Stack>

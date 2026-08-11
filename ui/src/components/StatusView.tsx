@@ -12,6 +12,7 @@ import {
   type Status,
 } from '@/lib/robovastClient'
 import { formatDuration } from '@/lib/format'
+import { useLiveStream } from '@/lib/liveStream'
 import { formatLocalClock } from '@/lib/time'
 import { containerColorer } from './containerColor'
 import { MeterBar } from './MeterBar'
@@ -375,57 +376,62 @@ function renderLogLines(text: string) {
   })
 }
 
-type StreamState = 'connecting' | 'open' | 'reconnecting' | 'eof' | 'error'
+/** How the *server* ended the stream, as opposed to how the transport is doing. */
+type LogEnd = 'eof' | 'error' | null
 
-// Streams a log live over Server-Sent Events (see robovast.*StreamUrl). The browser's
-// EventSource appends each delta, auto-reconnects on a dropped connection, and resends
-// Last-Event-ID so the server resumes from the exact byte offset (no gap, no dupe) — so
-// the panel is never a silently-frozen poll loop: a blip shows `reconnecting…` and heals
-// itself; a server-side application error (e.g. pod gone, no durable copy) shows verbatim;
-// a terminal log ends cleanly on `eof`. `resetKey` restarts the stream when the source
-// changes; callers gate visibility by mounting/unmounting.
+// Streams a log live over Server-Sent Events (see robovast.*StreamUrl). Each delta is
+// appended; the browser's own reconnect resends Last-Event-ID so the server resumes from
+// the exact byte offset (no gap, no dupe), and useLiveStream covers what that reconnect
+// does not — a stream the browser gave up on, and a socket that died without saying so
+// while the tab was in the background. So the panel is never a silently-frozen tail: a
+// blip shows `reconnecting…` and heals itself; a server-side application error (e.g. pod
+// gone, no durable copy) shows verbatim; a terminal log ends cleanly on `eof`. `resetKey`
+// restarts the stream when the source changes; callers gate visibility by mounting.
 function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string }) {
   const [text, setText] = useState('')
-  const [state, setState] = useState<StreamState>('connecting')
+  const [end, setEnd] = useState<LogEnd>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const preRef = useRef<HTMLPreElement>(null)
 
-  useEffect(() => {
-    setText('')
-    setState('connecting')
-    setErrorMsg(null)
-    const es = new EventSource(streamUrl)
-    es.onopen = () => setState((s) => (s === 'eof' || s === 'error' ? s : 'open'))
-    es.onmessage = (e) => {
+  const { state, finish, generation } = useLiveStream(streamUrl, {
+    resetKey,
+    onMessage: (e) => {
       try {
         const delta = JSON.parse(e.data) as string
         if (delta) setText((t) => t + delta)
-        setState((s) => (s === 'eof' || s === 'error' ? s : 'open'))
       } catch {
-        /* keep-alive comment or malformed frame — ignore */
+        /* malformed frame — ignore rather than break the tail */
       }
-    }
-    // Transport-level drop: EventSource retries on its own (resending Last-Event-ID),
-    // so reflect "reconnecting" and keep the accumulated text — never a dead panel.
-    es.onerror = () => {
-      if (es.readyState !== EventSource.CLOSED) setState('reconnecting')
-    }
-    // Application error the server chose to surface (pod gone, upload missing, …).
-    es.addEventListener('streamerror', (e) => {
-      try {
-        setErrorMsg(JSON.parse((e as MessageEvent).data) as string)
-      } catch {
-        setErrorMsg('log stream error')
-      }
-      setState('error')
-    })
-    // Terminal log — nothing more will be written; stop cleanly.
-    es.addEventListener('eof', () => {
-      setState((s) => (s === 'error' ? 'error' : 'eof'))
-      es.close()
-    })
-    return () => es.close()
-  }, [resetKey, streamUrl])
+    },
+    events: {
+      // Application error the server chose to surface (pod gone, upload missing, …).
+      streamerror: (e) => {
+        try {
+          setErrorMsg(JSON.parse(e.data) as string)
+        } catch {
+          setErrorMsg('log stream error')
+        }
+        setEnd('error')
+        finish()
+      },
+      // Terminal log — nothing more will ever be written. Closing it deliberately also
+      // tells the watchdog not to treat the silence that follows as a fault.
+      eof: () => {
+        setEnd((e) => (e === 'error' ? e : 'eof'))
+        finish()
+      },
+    },
+  })
+
+  // A connection this component opened starts the log from byte zero (Last-Event-ID is the
+  // browser's to send, not ours), so the text it is about to re-send has to go first — or
+  // the whole log would appear twice. The browser's own reconnect does not bump the
+  // generation and correctly keeps what is on screen.
+  useEffect(() => {
+    setText('')
+    setEnd(null)
+    setErrorMsg(null)
+  }, [generation, resetKey, streamUrl])
 
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
@@ -440,12 +446,12 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
   // PodLogTail swallows the API's 400 for a container with no log). Saying `loading…`
   // there promised output that nothing was on its way to deliver.
   const footer =
-    state === 'reconnecting'
-      ? 'reconnecting…'
-      : state === 'error'
-        ? `stream error: ${errorMsg ?? 'unknown'}`
+    end === 'error'
+      ? `stream error: ${errorMsg ?? 'unknown'}`
+      : end !== 'eof' && (state === 'reconnecting' || state === 'closed')
+        ? 'reconnecting…'
         : !lines
-          ? state === 'eof'
+          ? end === 'eof'
             ? '(no log)'
             : state === 'open'
               ? '(no output yet)'
@@ -479,7 +485,7 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
           component="span"
           sx={{
             display: 'block',
-            color: state === 'error' ? 'error.main' : 'text.secondary',
+            color: end === 'error' ? 'error.main' : 'text.secondary',
             opacity: 0.85,
           }}
         >

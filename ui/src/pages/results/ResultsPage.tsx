@@ -48,8 +48,12 @@ export function ResultsPage({
     queryKey: ['campaigns'],
     queryFn: () => robovast.listCampaigns(200, 0),
     // Poll so a campaign that finishes while the Results topic is open is *noticed*; what the views
-    // show only changes when the user asks (below). Paused while the tab is unfocused.
+    // show only changes when the user asks (below). Paused while the tab is unfocused, so returning
+    // to the tab reads once — otherwise the "new results are available" prompt can sit 15s behind
+    // the campaign it is about. Only the *listing* is refreshed; the tree and the pickers still
+    // move only on Refresh.
     refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   })
   // The Results topic only shows campaigns whose results are ready to explore — finished *and*
   // postprocessed. Everything downstream (Explorer, Run, Data) shares this filtered list, so a

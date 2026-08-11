@@ -158,6 +158,11 @@ function ConnectionStatus() {
     queryKey: ['usage'],
     queryFn: () => robovast.resourceUsage(),
     refetchInterval: 15000,
+    // This block is on every page and is the app's answer to "is the backend there?", so a
+    // stale reading is worse here than anywhere: the poll pauses while the tab is hidden,
+    // and 15s of a wrong meter — or a "disconnected" that healed while you were away — is
+    // the first thing you look at on returning.
+    refetchOnWindowFocus: true,
     retry: false,
   })
   if (!usage.isSuccess) {

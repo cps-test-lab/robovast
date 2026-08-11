@@ -225,6 +225,18 @@ def build_app(impl: RobovastInterface):
     #: How often the shutdown watchdog re-checks while a pull is in flight.
     _SSE_EXIT_POLL_S = 0.05
 
+    #: What a stream sends on a tick that had nothing to report.
+    #:
+    #: A named event and not the SSE comment (``: heartbeat``) it replaces, because a
+    #: comment is invisible to ``EventSource``: it holds proxies open and tells the
+    #: browser nothing. Without a frame the client can see, a stream that is merely
+    #: quiet and one whose socket died in a suspended laptop or a torn-down
+    #: ``kubectl port-forward`` look identical — no error, ``readyState`` still OPEN,
+    #: and never another byte. That zombie is what leaves a tab showing a campaign as
+    #: still running long after it finished, so the cure is to keep saying "alive" and
+    #: let the client reconnect when we stop.
+    _SSE_HEARTBEAT = "event: heartbeat\ndata: {}\n\n"
+
     async def _pull_or_exit(pull):
         """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
 
@@ -283,6 +295,10 @@ def build_app(impl: RobovastInterface):
         the pod is gone with no durable copy) is sent as a ``streamerror`` event so
         the client renders it instead of the panel silently freezing. Deltas are
         JSON-encoded so embedded newlines can never break SSE framing.
+
+        A tick that produced no new bytes sends a ``heartbeat`` — see
+        :data:`_SSE_HEARTBEAT`, which is what lets the client tell a log nothing is
+        being written to from one whose connection has quietly died.
         """
         offset = max(0, start_offset)
         yield ": open\n\n"  # prompt proxies to flush the response headers
@@ -299,6 +315,8 @@ def build_app(impl: RobovastInterface):
             if chunk.text:
                 offset = chunk.next_offset
                 yield f"id: {offset}\ndata: {_json.dumps(chunk.text)}\n\n"
+            else:
+                yield _SSE_HEARTBEAT
             if chunk.eof:
                 yield "event: eof\ndata: {}\n\n"
                 return
@@ -313,10 +331,11 @@ def build_app(impl: RobovastInterface):
         A server-side loop over the same ``list_campaigns`` pull the CLI/MCP use, so
         the list has one source of truth (no second enumeration to drift). The full
         list is sent on connect — that is the client's initial state — and again on
-        every change; quiet ticks send a heartbeat comment so proxies hold the
-        connection. A dropped connection is resumed by the browser's native
-        ``EventSource`` reconnect, which re-runs this handler and re-sends the list,
-        so no client-side polling fallback is needed.
+        every change; quiet ticks send a ``heartbeat`` event (see
+        :data:`_SSE_HEARTBEAT`). A dropped connection is resumed by the browser's
+        native ``EventSource`` reconnect, which re-runs this handler and re-sends the
+        list; a connection that died without the browser noticing is caught by the
+        client's own heartbeat watchdog, so no polling fallback is needed either way.
         """
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
@@ -341,7 +360,7 @@ def build_app(impl: RobovastInterface):
                 last = encoded
                 yield f"data: {encoded}\n\n"
             else:
-                yield ": heartbeat\n\n"
+                yield _SSE_HEARTBEAT
             await anyio.sleep(_SSE_LIST_POLL_S)
 
     @app.get(Routes.HEALTHZ, tags=["meta"])

@@ -78,6 +78,15 @@ drops sends ``Last-Event-ID`` and continues from the line after the one it last 
 than replaying the whole log. ``GET /campaigns/{id}/archive`` streams a tar.gz of a cluster
 campaign's results as they are fetched from the object store.
 
+Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
+named event rather than the SSE comment such keepalives usually are, because a comment is
+invisible to ``EventSource`` — it holds proxies open and tells the client nothing. Without
+a frame the client can see, a stream that is merely quiet is indistinguishable from one
+whose socket died in a suspended laptop or a torn-down ``kubectl port-forward``: no error is
+raised, ``readyState`` stays ``OPEN``, and no further byte ever arrives. A client should
+therefore treat a gap of several heartbeats as a dead connection and open a new
+``EventSource``; the web UI does exactly that (see :doc:`web_ui`).
+
 Paths are defined once
 ======================
 

@@ -8,6 +8,15 @@ import { DialogProvider } from './components/DialogProvider'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { appTheme } from './theme'
 
+// Refetch-on-focus is off by default because most of what this app fetches does not change:
+// a finished campaign's results, a workspace's files, the config schema. Re-reading them
+// every time the window is touched costs a round trip — over a port-forward, a slow one —
+// and re-running a Results SQL query would be worse than pointless.
+//
+// The live readings opt back in individually: a running campaign's phase and job list
+// (Monitor), the sidebar's resource meters, the Results tab's campaign listing. They poll on
+// a timer, that timer is suspended while the tab is hidden, and so returning to the tab is
+// precisely when they must read once. See `Staying up to date` in docs/web_ui.rst.
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false } },
 })
