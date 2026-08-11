@@ -82,6 +82,13 @@ COPY robosito /opt/robosito
 # that sibling rather than against PyPI -- where `rst` is an unrelated project. This is
 # the same reason the campaigns that used to carry a wheel list installed them as one
 # group; the difference is that nobody has to maintain the list any more.
+#
+# `scenario_execution_robosito` is the substrate's OSC action library, and it is in this list for a
+# reason worth knowing: a campaign whose scenario writes `import osc.robosito` fails at scenario PARSE
+# time without it ("No plugins found for action ..."), before a single step runs. Its own
+# scenario-execution dependency is deliberately not declared (see its pyproject) -- this image already
+# carries that as a colcon package under /ws, and a pip'd copy from PyPI would be a different, older
+# project sitting on the same sys.path.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages \
         "mujoco>=3.0" \
@@ -92,7 +99,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/robosito/rst_manipulation \
         /opt/robosito/rst_manipulation_assets \
         /opt/robosito/rst_mobile_manipulation \
-        /opt/robosito/rst_scenes
+        /opt/robosito/rst_scenes \
+        /opt/robosito/scenario_execution_robosito
 
 # The ROS bridge and the nav2 example are colcon packages, not pip ones: they register
 # the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks for transport.
