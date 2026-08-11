@@ -15,6 +15,11 @@ running you can work with it — the web UI, the CLI, and the MCP server all
 auto-detect it there, so none of them needs configuring.** ``vast ui`` is just a
 shortcut that opens a browser at that port; it starts nothing.
 
+``vast serve`` also exposes its MCP tools at ``/mcp`` on that same port by
+default, so a single tunnel to ``8800`` reaches the web UI, the REST API, *and*
+MCP together — pass ``--no-mcp`` to turn that off (e.g. to run ``vast mcp serve``
+as its own separate process/port instead; see :ref:`mcp`).
+
 * **Local-only, no service** — ``vast exec local run``. One-shot local Docker
   run, no persistent service (mode 1). CLI only.
 * **Local service** — ``vast serve``. Persistent local service; web UI + CLI +
@@ -120,10 +125,17 @@ auto-detects it — nothing to export:
 
    ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel to :8800
 
-   # the CLI, the web UI, and the MCP server all follow the tunnel on :8800:
-   vast mcp serve                                    # drives the remote service
+   # the CLI and the web UI follow the tunnel on :8800:
    vast exec cluster run                             # no flags — auto-detected
    # ...author, run, and query campaigns on the VM.
+
+That one tunnel also reaches MCP, since ``vast serve`` mounts it at ``/mcp`` on
+the same port by default. A client that can spawn a local subprocess (Claude
+Desktop, the ``vast`` CLI itself) can still run ``vast mcp serve`` here on your
+own machine instead — its tool calls then reach the VM over the very same
+tunnel — but a client that only takes a URL (Open WebUI, or any HTTP/SSE MCP
+client) points straight at ``http://127.0.0.1:8800/mcp`` through the tunnel,
+with no second port to forward.
 
 Walkthrough — the in-cluster service
 ------------------------------------

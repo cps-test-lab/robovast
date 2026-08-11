@@ -315,6 +315,10 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if ui/dist looks up to date '
                    '(source checkout only).')
+@click.option('--mcp/--no-mcp', 'mount_mcp', default=True, show_default=True,
+              help='Also expose the MCP server at /mcp on this same port, so one '
+                   'tunnel covers the web UI, the REST API, and MCP tools together. '
+                   'Pass --no-mcp to run MCP separately (e.g. via "vast mcp serve").')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
               callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
@@ -327,7 +331,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
 def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
-          workspace_dir):
+          workspace_dir, mount_mcp):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
@@ -360,7 +364,8 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
 
     Security: unauthenticated in v1, so it binds ``127.0.0.1`` by default and
     must stay behind localhost / SSH tunnel / port-forward (see
-    ``docs/deployment.rst``). Web UI + OpenAPI docs at ``/`` and ``/docs``.
+    ``docs/deployment.rst``). Web UI + OpenAPI docs at ``/`` and ``/docs``; MCP
+    tools at ``/mcp`` (see ``--no-mcp``) — one tunnel reaches all three.
     """
     if attach:
         conflicts = [name for name, bad in (
@@ -368,6 +373,7 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
             ('--host', host != '127.0.0.1'),
             ('--workspace-dir', bool(workspace_dir)),
             ('--rebuild-ui', rebuild_ui),
+            ('--no-mcp', not mount_mcp),
         ) if bad]
         if conflicts:
             verb = 'does not' if len(conflicts) == 1 else 'do not'
@@ -434,11 +440,13 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
         impl = LocalTransport(workspace_dir=workspace_dir)
         storage = "local filesystem"
 
-    click.echo(f"Starting robovast-service on http://{host}:{port} (OpenAPI at /docs)")
+    mcp_note = ", MCP at /mcp" if mount_mcp else ""
+    click.echo(f"Starting robovast-service on http://{host}:{port} "
+               f"(OpenAPI at /docs{mcp_note})")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
     if workspace_dir:
         click.echo(f"Pinned read-only workspace: {workspace_dir}")
-    _serve(impl, host=host, port=port)
+    _serve(impl, host=host, port=port, mount_mcp=mount_mcp)
 
 
 def _serve_attach(port, namespace, context):

@@ -50,6 +50,18 @@ build context is not archived in its results, so launch it from its workspace in
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 **config** is one scenario parameter set within a campaign.
 
+``vast serve`` already exposes these tools at ``/mcp`` on its own port
+(``127.0.0.1:8800`` by default) — see :ref:`deployment`. That is the right
+choice whenever a ``robovast-service`` is running anyway, since it means one
+port (and, remotely, one SSH tunnel) reaches the web UI, the REST API, and MCP
+together. Pass ``--no-mcp`` to ``vast serve`` to turn that off.
+
+``vast mcp serve`` below starts MCP as its **own** separate process, on its
+own port. Reach for it only when that separation is actually wanted: a
+``stdio`` transport for a locally-spawned client such as Claude Desktop (which
+never goes over a port at all), or a deliberately standalone MCP endpoint
+decoupled from ``vast serve``'s lifecycle.
+
 .. code-block:: bash
 
    vast mcp serve                                # SSE on 127.0.0.1:8801 (default)

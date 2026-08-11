@@ -112,7 +112,7 @@ def test_serve_announces_the_shutdown_from_the_signal_handler():
     monkey = pytest.MonkeyPatch()
     try:
         monkey.setattr(uvicorn, "Server", _FakeServer)
-        monkey.setattr(app_module, "build_app", lambda impl: _StubApp())
+        monkey.setattr(app_module, "build_app", lambda impl, mount_mcp=True: _StubApp())
         assert not is_shutting_down()
         app_module.serve(impl=object())
     finally:

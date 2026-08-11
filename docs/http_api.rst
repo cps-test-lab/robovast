@@ -12,7 +12,8 @@ local run. So the routes below are not a second API — they are the one interfa
 :class:`~robovast.service.interface.RobovastInterface` describes, over HTTP.
 
 The service also serves its own OpenAPI at ``/docs`` (and ``/openapi.json``), which is
-authoritative for request and response *schemas*. This page covers what that page cannot:
+authoritative for request and response *schemas*, and mounts the MCP server itself at
+``/mcp`` (see :ref:`mcp`) — all on the one port. This page covers what ``/docs`` cannot:
 the conventions the route table assumes.
 
 Who may call it

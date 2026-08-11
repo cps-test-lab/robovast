@@ -95,6 +95,9 @@ _SSE_PULL_LIMITER = _sse_pull_limiter()
 #: Routes FastAPI registers for itself. Real, but they describe FastAPI, not this service.
 FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 
+#: Where the MCP server answers when :func:`build_app` mounts it (see ``mount_mcp``).
+MCP_PATH = "/mcp"
+
 #: Route groups, in the order a reader wants them: what a client does first, reference
 #: last. Every route carries one as its ``tags=`` — the grouping is authored at the route
 #: so the generated documentation and the OpenAPI page agree, and a new route cannot land
@@ -105,11 +108,11 @@ ROUTE_TAG_ORDER = ("meta", "authoring", "workspaces", "uploads", "files", "campa
 
 
 def api_routes(app):
-    """The routes this service defines: no FastAPI extras, no SPA mount."""
+    """The routes this service defines: no FastAPI extras, no SPA mount, no MCP."""
     out = []
     for route in app.routes:
         path = getattr(route, "path", "")
-        if not path or path == "/" or path in FRAMEWORK_PATHS:
+        if not path or path in ("/", MCP_PATH) or path in FRAMEWORK_PATHS:
             continue
         if not hasattr(route, "methods"):
             continue
@@ -140,14 +143,21 @@ def route_description(route) -> str:
     return ""
 
 
-def build_app(impl: RobovastInterface):
-    """Build the FastAPI app bound to *impl* (lazy import; needs ``fastapi``)."""
-    from contextlib import \
+def build_app(impl: RobovastInterface, mount_mcp: bool = True):
+    """Build the FastAPI app bound to *impl* (lazy import; needs ``fastapi``).
+
+    ``mount_mcp`` puts the MCP server's own ASGI app at ``/mcp`` on this same app —
+    see :func:`_build_mcp_app` — so a client only has one port to reach (or tunnel) for
+    the web UI, the REST API, *and* MCP tools together.
+    """
+    from contextlib import AsyncExitStack, \
         asynccontextmanager  # pylint: disable=import-outside-toplevel
 
     import anyio  # pylint: disable=import-outside-toplevel
     from fastapi import (Body, FastAPI,  # pylint: disable=import-outside-toplevel
                          HTTPException, Query, Request)
+
+    mcp_app = _build_mcp_app() if mount_mcp else None
 
     @asynccontextmanager
     async def _lifespan(_app):
@@ -157,14 +167,34 @@ def build_app(impl: RobovastInterface):
         wait on the daemon worker threads a local campaign runs on. Stopping them
         here — off the event loop, since the join blocks — lets a Ctrl+C tear down
         the running campaign's containers instead of orphaning them.
+
+        When the MCP app is mounted, its own lifespan has to run too — FastMCP's
+        session manager is only started/stopped there, and a mount does not run a
+        sub-app's lifespan on its own (see ``fastmcp.server.http``'s warning about
+        exactly this).
         """
-        yield
-        try:
-            await anyio.to_thread.run_sync(impl.shutdown)
-        except Exception:  # noqa: BLE001 - teardown must never mask the real exit
-            logger.exception("error during service shutdown")
+        async with AsyncExitStack() as stack:
+            if mcp_app is not None:
+                await stack.enter_async_context(mcp_app.lifespan(_app))
+            yield
+            try:
+                await anyio.to_thread.run_sync(impl.shutdown)
+            except Exception:  # noqa: BLE001 - teardown must never mask the real exit
+                logger.exception("error during service shutdown")
 
     app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
+
+    if mcp_app is not None:
+        # Not ``app.mount()``: a ``Mount`` requires a literal trailing slash after its
+        # prefix to match anything (Starlette compiles it as ``<prefix>/{path:path}``), so
+        # a client hitting the bare ``/mcp`` — the URL FastMCP's own defaults and every
+        # doc here use — gets a 404/405 instead of the server. A plain ``Route`` has no
+        # such requirement: ``methods=None`` delegates every method straight to
+        # ``mcp_app`` (itself, middleware included — nothing is unwrapped) at the exact
+        # path FastMCP already anchored it to.
+        from starlette.routing import \
+            Route  # pylint: disable=import-outside-toplevel
+        app.router.routes.append(Route(MCP_PATH, mcp_app, methods=None))
 
     # Whether the service has begun shutting down. The SSE generators below loop
     # forever and only exit on client disconnect, so an open browser tab would
@@ -1022,6 +1052,15 @@ def _resolve_variation_asset(name: str, rel_path: str):
     return _resolve_plugin_asset("robovast.variation_types", name, rel_path, "WEB_PREVIEW")
 
 
+def _build_mcp_app():
+    """The MCP server's ASGI app, already anchored at :data:`MCP_PATH` by FastMCP's own
+    default (``fastmcp.settings.streamable_http_path == "/mcp"``) — matching where
+    :func:`build_app` wires it in."""
+    from robovast.mcp_server.server import \
+        create_server  # pylint: disable=import-outside-toplevel
+    return create_server().http_app()
+
+
 def _ui_dist() -> Optional[Path]:
     """Locate the built web UI (``ui/dist``), or ``None`` if it isn't built.
 
@@ -1057,13 +1096,15 @@ def _mount_ui(app) -> None:
 
 
 def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-          log_level: str = "info") -> None:
+          log_level: str = "info", mount_mcp: bool = True) -> None:
     """Run the service in the foreground (blocking) via uvicorn.
 
     Binds ``127.0.0.1`` by default: the service is unauthenticated in v1, so it
     must stay behind a localhost / SSH-tunnel / port-forward boundary (see
     ``docs/deployment.rst``). A remote VM binds VM-localhost and is reached over
-    an SSH tunnel.
+    an SSH tunnel — ``mount_mcp`` (default on) is what lets that one tunnel also
+    reach the MCP server, at ``/mcp``, instead of needing a second one to a
+    separately-run ``vast mcp serve``.
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 
@@ -1085,9 +1126,11 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
             begin_shutdown()
             super().handle_exit(sig, frame)
 
-    app = build_app(impl)
+    app = build_app(impl, mount_mcp=mount_mcp)
     _enable_thread_dump_signal()
-    logger.info("robovast-service listening on %s:%d (OpenAPI at /docs)", host, port)
+    mcp_note = ", MCP at /mcp" if mount_mcp else ""
+    logger.info("robovast-service listening on %s:%d (OpenAPI at /docs%s)",
+                host, port, mcp_note)
     # Drive uvicorn via an explicit Server so the SSE generators can probe
     # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection
     # wait) and close their streams instead of hanging it. ``timeout_graceful_
