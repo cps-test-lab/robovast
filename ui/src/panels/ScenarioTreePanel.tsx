@@ -3,6 +3,10 @@
 // default) or any other via `source: { table }`, which is how nav2's `nav2_behaviors` is shown --
 // rebuilds the tree, and colours every node by its status at the current playback time.
 //
+// It is also navigation: double-clicking a node seeks playback to the moment that node next changes
+// status, so "when did wait_for_pick start running, and when did it finish?" is two clicks rather than
+// a scrub with one dot watched.
+//
 // The schema grew: alongside the original seven columns a row may carry child_index, type,
 // additional_detail, feedback_message, is_active, tip_id and osc_file/osc_line/osc_column. Every one
 // of those is optional and probed for, because a table produced by a different route (nav2_behaviors,
@@ -65,6 +69,27 @@ interface TreeNode {
   series: TimeSeriesSource
   /** Time of this node's first row: before it, the node had not been recorded yet. */
   firstT: number
+  /** Times at which this node's status actually changed, ascending -- what a double-click steps
+   *  through. See {@link changeTimes}. */
+  changes: number[]
+}
+
+/** The times this node's `status_name` changed, including its first recorded row.
+ *
+ *  Consecutive rows with the same status are skipped: a running action re-reports RUNNING every time
+ *  its feedback message changes, and those are not moments worth jumping to. The first row counts as a
+ *  change because before it the node had not been ticked at all -- for a --bt-log table that is the
+ *  INVALID snapshot at timestamp 0, which is where a wrap-around lands. */
+function changeTimes(series: TimeSeriesSource): number[] {
+  const out: number[] = []
+  let prev: string | null = null
+  for (const row of series.all()) {
+    const status = String(row.status_name ?? '')
+    if (status === prev) continue
+    prev = status
+    out.push(series.timeOf(row))
+  }
+  return out
 }
 
 type TreeData =
@@ -111,6 +136,7 @@ async function loadTree(data: DataProvider, table: string): Promise<TreeData> {
       oscLine: first.osc_line == null ? '' : String(first.osc_line),
       series,
       firstT: range ? range[0] : 0,
+      changes: changeTimes(series),
     })
   }
 
@@ -184,6 +210,17 @@ function rowAt(node: TreeNode, t: number): DataRow | null {
   return node.series.at(t)
 }
 
+/** The node's next status change strictly after *t*, wrapping to its first; null if it has none.
+ *
+ *  Bounded by the clock's [lo, hi] rather than the node's own range, because `hi` is the verdict while
+ *  the shutdown phase is hidden: an out-of-range target would be silently clamped by `seek`, and the
+ *  jump would look like it did nothing. Wrapping is what makes repeated double-clicks a cycle through
+ *  one action's whole history instead of a dead end at its last transition. */
+function nextChangeTime(changes: number[], t: number, lo: number, hi: number): number | null {
+  const inRange = changes.filter((c) => c >= lo && c <= hi)
+  return inRange.find((c) => c > t) ?? inRange[0] ?? null
+}
+
 //: How to produce the table, said when the run has none. Overridable via `missing_hint` in the
 //: panel's config, because the answer depends on which table the panel was pointed at: a
 //: derived panel (robovast_nav's nav2 tree) names its own postprocessing rather than bt_log,
@@ -196,7 +233,7 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   const source = (spec.config.source ?? {}) as { table?: string }
   const table = source.table ?? 'behaviors'
   const missingHint = String(spec.config.missing_hint ?? DEFAULT_MISSING_HINT)
-  const { t } = useClock(clock)
+  const { t, lo, hi, playing } = useClock(clock)
 
   const tree = useQuery({
     queryKey: ['scenario-tree', data.scope, table],
@@ -258,12 +295,30 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
     const where = node.oscLine
       ? `${node.oscFile.split('/').pop() ?? node.oscFile}:${node.oscLine}`
       : ''
-    const tip = [node.className, node.additionalDetail, where].filter(Boolean).join(' · ')
+    const tip = [node.className, node.additionalDetail, where, 'double-click → next change']
+      .filter(Boolean)
+      .join(' · ')
 
     // Nothing wraps: a node stays one row tall however narrow the panel is, so the tree's
     // depth stays readable and the overflow becomes horizontal scroll instead of reflow.
     const label = (
-      <Box sx={{ py: 0.25, whiteSpace: 'nowrap' }}>
+      <Box
+        sx={{ py: 0.25, whiteSpace: 'nowrap' }}
+        // Double click, not single: a single click on a tree row is how the tree is expanded and
+        // how a text selection ends, so seeking on it would make both unusable.
+        onDoubleClick={() => {
+          const next = nextChangeTime(node.changes, t, lo, hi)
+          if (next == null) return
+          // Otherwise the moment jumped to scrolls straight past at playback speed.
+          if (playing) clock.pause()
+          clock.seek(next)
+        }}
+        // The browser selects the word under a second mousedown; suppressing the default only for
+        // that one leaves an ordinary click-drag selection intact.
+        onMouseDown={(e) => {
+          if (e.detail > 1) e.preventDefault()
+        }}
+      >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
           <StatusMark glyph={Glyph} color={color} />
           <Box component="span" sx={{ fontSize: 13 }}>

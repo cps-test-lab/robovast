@@ -653,6 +653,12 @@ also shows its kind (sequence / selector / parallel / decorator), its feedback m
 the current time, and — on hover — its class and the ``.osc`` file and line it came from;
 when a tree ends in failure the panel names the action responsible, via ``tip_id``.
 
+**Double-clicking a node seeks playback to the moment that node next changes status** — so on an
+inactive ``wait_for_pick`` the first double-click lands exactly where it starts running, the next
+on where it succeeded or failed, and a further one wraps back to its first change. Playback pauses
+on the jump, and only real status transitions count: a node re-reporting ``RUNNING`` with a new
+feedback message is not a stop.
+
 The panel renders *any* table in the ``behaviors`` schema — point it at another with
 ``source: { table: <name> }``. Columns a table does not have are simply not shown, so an
 older or differently-produced table still renders.
