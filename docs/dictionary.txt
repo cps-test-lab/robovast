@@ -74,6 +74,7 @@ py-trees
 quadrotor
 queueing
 rasterization
+rollups
 reproducibility
 reproducible
 Retrigger
@@ -102,6 +103,7 @@ uniformly
 untracked
 vconcat
 Vega
+vitest
 waypoints
 WebM
 xacro

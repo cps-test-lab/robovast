@@ -35,7 +35,7 @@ import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider } from '@/lib/dashboard/dataProvider'
 import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
 import { PanelHost } from '@/lib/dashboard/PanelHost'
-import { ResultsTree } from './ResultsTree'
+import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { DEFAULT_CAPTURE_PATH } from '@/panels/Scene3DPanel'
 import '@/panels' // registers the built-in panels
@@ -171,20 +171,10 @@ export function RunView({
     refetchOnWindowFocus: true,
   })
 
-  // `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
-  // (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
-  // `data.db` at all -- still lists its runs and can be replayed. `runs` carries the `param_*` columns
-  // and nothing here needs them.
-  const runs = useQuery({
-    queryKey: ['runs-list', campaignId],
-    queryFn: () =>
-      robovast.queryCampaignDataSql(
-        campaignId,
-        'SELECT config_name, run_id, status, passed FROM run_view ORDER BY config_name, run_id',
-      ),
-    enabled: available,
-    retry: false,
-  })
+  // The same query the picker's tree runs (see `runsQuery`), so both read one set of rows and
+  // react-query serves them from a single fetch. Why `run_view` rather than the postprocessed
+  // `runs` table is documented on `CAMPAIGN_RUNS_SQL`.
+  const runs = useQuery({ ...runsQuery(campaignId), enabled: available })
 
   const runList: RunKey[] = useMemo(
     () =>

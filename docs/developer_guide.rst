@@ -1670,6 +1670,33 @@ in-cluster service ships the UI. If no build is present the service runs API-onl
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
 
+.. _frontend-tests:
+
+**Frontend tests stay minimal.** ``npm run test`` runs `vitest
+<https://vitest.dev>`_ over the pure modules in ``frontend/ui/src/lib/`` — and nothing else.
+The checks that matter most here are still ``npm run lint`` (``tsc --noEmit``) and
+``npm run build``; a spec is the exception, not the habit.
+
+A spec earns its place only where the logic is non-obvious and regression-prone **and**
+checking it by hand means clicking through the UI: node-id and route stability, grouping,
+rollups, formatting. ``src/lib/resultsTree.test.ts`` is the model — the Results tree's node
+ids are a contract between two components that build them independently (the tree renders
+them, the Run view reconstructs one to highlight the current run), so a drift shows up only
+as "the picker stopped opening on the selected run", which no compiler catches.
+
+What not to do, because each of these costs far more than it protects here:
+
+* no component or DOM tests, no ``jsdom``, no ``@testing-library``, no snapshots of rendered
+  output — the UI is a **thin client** of :class:`~robovast.service.interface.RobovastInterface`,
+  so behaviour belongs in the Python tests, which is where it is enforced;
+* no network mocking — if a test needs the service, it is testing the service;
+* nothing ``tsc`` already proves (a required field being present, a union being exhaustive);
+* no test framework stack beyond vitest's defaults over the existing ``vite.config.ts`` (which
+  is also where the ``@`` alias comes from, so a spec needs no path config of its own).
+
+Note that CI does not build ``frontend/ui`` at all, so these run locally and in agent
+sessions rather than as a gate — another reason to keep them few and fast.
+
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
 new interface op, then a page/tab that queries it.
 

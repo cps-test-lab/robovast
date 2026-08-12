@@ -1,10 +1,24 @@
 // Client-side model for the Results Explorer tree (campaign → config → run). Parallels
 // `fileTree.ts`: pure, React-free helpers that turn the service's data into a tree the
 // RichTreeView renders. Campaign-level status comes from `CampaignSummary`; the per-config /
-// per-run breakdown is derived from rows of the campaign's `data.db` `runs` table (fetched via
-// `queryCampaignDataSql`), since there is no dedicated per-run REST endpoint.
+// per-run breakdown is derived from rows of `run_view` (fetched via `queryCampaignDataSql`),
+// since there is no dedicated per-run REST endpoint.
 
 import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
+
+// The tree's one query, shared by the Explorer and the Run view's picker (see `runsQuery`).
+//
+// `run_view`, not the postprocessed `runs` table: it is a temp view over the live `campaign.db`
+// (written as the campaign runs), so a campaign that produced no rosbags -- and therefore has no
+// `data.db` at all -- still lists its runs. It also means both surfaces build the same tree from
+// the same rows; they used to read two different tables for it.
+export const CAMPAIGN_RUNS_SQL =
+  'SELECT config_name, run_id, status, passed FROM run_view ORDER BY config_name, run_id'
+
+// The whole tree of one campaign comes from a single query, so the cap has to hold every run of
+// every config. 500 (the client default) silently truncated a campaign of 200 runs with
+// repetitions; this is the server's own cap.
+export const CAMPAIGN_RUNS_MAX_ROWS = 5000
 
 // Pass/fail status of any node, mapped to a theme color by `statusColor`. `neutral` = no verdict
 // yet (e.g. a campaign that hasn't been postprocessed); `running` = still executing; `skipped` = a
@@ -60,7 +74,7 @@ export function campaignStatus(c: CampaignSummary): NodeStatus {
   return 'neutral'
 }
 
-// A single run's verdict, from the `runs.status` column (passed | error | failed |
+// A single run's verdict, from the `run_view.status` column (passed | error | failed |
 // composition_failed | unknown).
 export function runStatus(row: Record<string, unknown>): NodeStatus {
   const s = String(row.status ?? '').toLowerCase()
@@ -97,7 +111,7 @@ export function campaignItem(c: CampaignSummary): ResultsTreeItem {
   }
 }
 
-// Build the config → run subtree for one campaign from its `runs` rows (already ordered by
+// Build the config → run subtree for one campaign from its `run_view` rows (already ordered by
 // config_name, run_id). Configs preserve first-seen order; each carries a passed/total count.
 export function buildCampaignChildren(
   campaignId: string,

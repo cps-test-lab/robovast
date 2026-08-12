@@ -9,12 +9,24 @@ import {
   campaignItem,
   indexById,
   placeholderChild,
+  CAMPAIGN_RUNS_MAX_ROWS,
+  CAMPAIGN_RUNS_SQL,
   type ResultsTreeItem,
 } from '@/lib/resultsTree'
 import { StatusTreeItem } from './StatusTreeItem'
 
-// The per-run breakdown lives only in data.db; pull the pass/fail matrix in one query per campaign.
-const RUNS_SQL = 'SELECT config_name, run_id, status, passed FROM runs ORDER BY config_name, run_id'
+// One query per campaign feeds its whole subtree. Exported so the Run view's picker -- which
+// renders this same tree -- reuses it verbatim: same key, so react-query serves both from one
+// fetch, and the two surfaces cannot drift onto different rows for the same tree.
+export function runsQuery(campaignId: string) {
+  return {
+    queryKey: ['runs', campaignId],
+    queryFn: () =>
+      robovast.queryCampaignDataSql(campaignId, CAMPAIGN_RUNS_SQL, CAMPAIGN_RUNS_MAX_ROWS),
+    retry: false,
+    staleTime: 60_000,
+  }
+}
 
 // The shared campaign → config → run status tree (green/red, all from the DB). It is the campaign
 // selector for both the Explorer (any node → its notebooks) and the Run view (a run leaf → replay).
@@ -46,18 +58,11 @@ export function ResultsTree({
   // real campaigns — all are finished+postprocessed here). A single query per campaign feeds its
   // whole subtree.
   const expandedCampaigns = expandedItems.filter((id) => byId.has(id))
-  const runQueries = useQueries({
-    queries: expandedCampaigns.map((id) => ({
-      queryKey: ['runs', id],
-      queryFn: () => robovast.queryCampaignDataSql(id, RUNS_SQL),
-      retry: false,
-      staleTime: 60_000,
-    })),
-  })
+  const runQueries = useQueries({ queries: expandedCampaigns.map(runsQuery) })
   const runByCampaign = new Map(expandedCampaigns.map((id, i) => [id, runQueries[i]]))
 
   // Why the query above may be slow, asked in parallel with it. On a cluster campaign the
-  // first `RUNS_SQL` fetches the databases from the object store inside the request, so an
+  // first `CAMPAIGN_RUNS_SQL` fetches the databases from the object store inside the request, so an
   // unexplained "Loading…" can sit there for minutes. Cheap (two metadata lookups, and none
   // at all while a transfer is running — the service then answers from memory) and advisory:
   // a failure just means the placeholder stays generic.
@@ -80,7 +85,7 @@ export function ResultsTree({
   // once loaded, otherwise a single placeholder (loading / no-data hint).
   const items: ResultsTreeItem[] = campaigns.map((c) => {
     const base = campaignItem(c)
-    // Every campaign here is finished+postprocessed, so it always has a queryable data.db; go
+    // Every campaign here is finished+postprocessed, so it always has a queryable store; go
     // straight to the loading / real-subtree path.
     let children: ResultsTreeItem[]
     const q = runByCampaign.get(c.campaign_id)
@@ -89,10 +94,13 @@ export function ResultsTree({
       children = [placeholderChild(c.campaign_id, fetching ?? 'Loading…')]
     } else if (q.isError) {
       const msg = (q.error as Error).message
+      // `run_view` needs only `campaign.db`, so this is a campaign with no store to read at all
+      // (a deleted result dir, an unreachable object store) — not one still awaiting
+      // postprocessing, which it used to be read as when the tree came from `data.db`'s `runs`.
       children = [
         placeholderChild(
           c.campaign_id,
-          /data\.db/i.test(msg) ? 'No results yet — run postprocessing' : msg,
+          /campaign\.db/i.test(msg) ? 'No results recorded for this campaign' : msg,
         ),
       ]
     } else {
