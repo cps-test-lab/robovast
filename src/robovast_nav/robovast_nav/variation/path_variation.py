@@ -275,7 +275,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
                               f"path_length={target_path_length}, num_goal_poses={effective_num_goal_poses}, "
                               f"path_index={path_index}, seed={current_seed}")
                         start_pose, goal_poses, path, map_file, actual_path_length = self.generate_path_for_config(
-                            self.base_path, config, path_index, current_seed, target_path_length,
+                            self.output_dir, config, path_index, current_seed, target_path_length,
                             num_goal_poses=effective_num_goal_poses
                         )
 

@@ -393,6 +393,14 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
     try:
+        expose = getattr(runner, "expose", None)
+        if expose is not None:
+            # Mirrors what a real run mounts: the campaign's own files, at the same
+            # CONFIG_MOUNT path _config_in_container() already assumes when it rewrites
+            # the command. Without this the query fails even once the path is right.
+            from robovast.common.simulators import \
+                CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+            expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
         # The command's own last words, not the runner's: an old image whose simulator does not

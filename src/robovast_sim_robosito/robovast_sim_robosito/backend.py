@@ -302,9 +302,7 @@ class RobositoBackend(SimulatorBackend):
         the world without resolving its ``extends`` chain, which needs the simulator. Asked of
         the image that will run the campaign, so the answer describes the world that will load.
         """
-        command = ["rst", "scenes", "describe",
-                   _config_in_container(cfg.config) if cfg.config.startswith("/")
-                   else cfg.config]
+        command = ["rst", "scenes", "describe", _config_in_container(cfg.config)]
         if entities:
             # Costs a model build, so it is asked for only when a campaign names entities.
             command.append("--entities")
