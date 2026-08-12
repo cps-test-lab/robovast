@@ -273,6 +273,16 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
   const canDownload = !running && version.data?.backend === 'kubernetes'
 
+  // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
+  // sidebar's connection meter, so every card on the page and the sidebar share one poll
+  // rather than each issuing its own.
+  const usage = useQuery({
+    queryKey: ['usage'],
+    queryFn: () => robovast.resourceUsage(),
+    refetchInterval: 15000,
+    retry: false,
+  })
+
   // Shortcuts into the Results views, offered only where they lead somewhere. Both read the
   // *summary* — the very object the Results topic filters on — rather than the live status, so a
   // button can never open a view that would greet the reader with an empty state. `hasResults`
@@ -519,6 +529,8 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           startedAt={summary.started_at}
           liveOnly
           newest={newest}
+          showDetails={canExplore}
+          quotaCpu={usage.data?.cpu_capacity ?? null}
         />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">

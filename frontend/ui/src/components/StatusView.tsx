@@ -15,6 +15,7 @@ import { useLiveStream } from '@/lib/liveStream'
 import { formatLocalClock } from '@/lib/time'
 import { CollapsibleBox } from './CollapsibleBox'
 import { containerColorer } from './containerColor'
+import { DetailsBox } from './DetailsBox'
 import { MeterBar } from './MeterBar'
 
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
@@ -51,6 +52,8 @@ export function StatusView({
   hideLog = false,
   liveOnly = false,
   newest = true,
+  showDetails = false,
+  quotaCpu,
 }: {
   status: Status
   // The campaign this status belongs to. Passed in because the caller already knows it
@@ -72,6 +75,12 @@ export function StatusView({
   // The top card in Monitor's newest-first campaign list — see FailureBox. Defaults to
   // true so the Launcher and other single-campaign callers keep the box open.
   newest?: boolean
+  // Offer the Details panel (what the campaign cost, how it ran). Off by default because it
+  // only means anything once the campaign has finished and been postprocessed — the caller
+  // holds the summary that says so (`hasResults`), and this view does not.
+  showDetails?: boolean
+  // Lane CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
+  quotaCpu?: number | null
 }) {
   const { runs, budget } = status
   const cid = campaignId ?? status.campaign_id
@@ -233,6 +242,7 @@ export function StatusView({
           onToggle={toggleJob}
         />
       ) : null}
+      {cid && showDetails ? <DetailsBox campaignId={cid} quotaCpu={quotaCpu} /> : null}
       {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
   )

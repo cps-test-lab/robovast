@@ -35,6 +35,34 @@ const takesSize = (spec: Record<string, unknown>) => !CONTAINER_KEYS.some((k) =>
 
 const CONCAT_KEYS = ['vconcat', 'hconcat', 'concat'] as const
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** Merge a spec's `config` onto the dark theme ONE LEVEL DEEPER than a spread does.
+ *
+ *  A Vega config is a map of blocks (`axis`, `legend`, `view`, …), so a plain spread is the wrong
+ *  merge: a spec that sets `axis.labelFontSize` replaces the whole `axis` block and silently drops
+ *  `axis.labelColor` with it — leaving Vega's default BLACK labels on a dark card. That is exactly
+ *  what happened to the Details panel's charts, and it is invisible in review: the spec sets a font
+ *  size and loses a colour it never mentioned.
+ *
+ *  So each block is merged individually, and only blocks: a scalar (`background`) still overrides
+ *  wholesale, which is what an author writing one means. Deliberately not a deep merge — two levels
+ *  is the depth a config actually has, and anything deeper (a `range` array) must replace rather
+ *  than combine. */
+export function mergeVegaConfig(
+  theme: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...theme }
+  for (const [key, value] of Object.entries(override)) {
+    const base = theme[key]
+    merged[key] =
+      isPlainObject(base) && isPlainObject(value) ? { ...base, ...value } : value
+  }
+  return merged
+}
+
 /** Make a concat spec fill its container, since it cannot take a top-level width.
  *
  *  Responsive sizing is pushed down instead: `width: "container"` on each CHILD compiles cleanly (a
@@ -72,7 +100,7 @@ export function VegaLiteChart({
     // With named datasets the spec carries its own `data` references, so injecting values here
     // would override them.
     ...(datasets ? {} : { data: { values: rows ?? [] } }),
-    config: { ...DARK_CONFIG, ...((spec.config as object) ?? {}) },
+    config: mergeVegaConfig(DARK_CONFIG, (spec.config as Record<string, unknown>) ?? {}),
   } as VisualizationSpec
   return <VegaLite spec={full} data={datasets} actions={false} style={{ width: '100%' }} />
 }
