@@ -38,6 +38,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        dump_multi_document_yaml,
                                        job_artifact_rel,
                                        local_parameter_overrides,
+                                       read_job_links,
                                        resolve_robovast_image,
                                        write_job_links_manifest, sidecar_backend_env)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
@@ -965,8 +966,12 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     # Canonical record of the per-job artifact links (also used by the cluster
     # share archiver). Local runs create the links inline per job below so a
     # Ctrl+C only loses the job active at cancel time.
+    #
+    # Accumulated, not replaced: a search campaign calls this once per batch, and the
+    # manifest is campaign-level -- writing only this batch's links leaves every earlier
+    # batch's runs with no locatable job artifacts, hence no run_log and no resource_usage.
     write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs,
-                             job_prefix)
+                             job_prefix, base=read_job_links(config_path_result))
     total = len(jobs)
     for idx, job in enumerate(jobs, 1):
         documents = build_job_parameter_documents(job, scenario_name)

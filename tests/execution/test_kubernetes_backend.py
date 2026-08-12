@@ -45,7 +45,7 @@ def _runner_for_download_test(configs):
     r._ensure_k8s_initialized = lambda: None
     r._verify_admission_path = lambda: None  # no cluster to check the Kueue queues on
     r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")  # embedded: empty prefix
-    r._write_job_param_files = lambda out_dir: None
+    r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: []          # no jobs → submission loop is empty
     r.get_remaining_jobs = lambda names: []  # wait loop breaks immediately
     r._write_job_links = lambda cr: None

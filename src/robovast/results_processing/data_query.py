@@ -463,6 +463,18 @@ _TABLE_DESCRIPTIONS = {
         "therefore no 'poses' table at all. Same POSE CONTRACT columns as 'poses', and it holds "
         "every free-standing body in the world, not only what TF happened to publish. " +
         _POSE_CLOCKS_NATIVE + _POSE_ORIENTATION),
+    ("main", "run_log"): (
+        "One row per log EVENT, every container joined with /rosout, on the run's playback "
+        "clock. ORDER BY wall_ts: sim_time is empty wherever the clock map cannot place a "
+        "line (before /clock started, after it stopped), so ordering by it silently reorders "
+        "the run. A packed job (execution.runs_per_job > 1) runs several configurations in "
+        "sequence into ONE log, and that log is SPLIT between its runs -- a run's rows are "
+        "its own, so no run shows another configuration's trial. in_window=0 is this run's "
+        "bring-up, verdict and teardown, NOT another run's work; it is not the trial "
+        "boundary either -- a failing run's verdict is stamped ~1ms after the window closes, "
+        "so 'WHERE in_window=1' drops it. For where the trial ended join "
+        "scenario_timestamps. A run with no rows either had no locatable job artifacts or "
+        "shares a job and never wrote test.xml."),
     ("main", "postprocessing_steps"): (
         "How each table in this data.db was produced. One row per step: plugin, output, "
         "table_name (the data.db table it became; NULL when the output was not a CSV that "

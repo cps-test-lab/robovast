@@ -30,12 +30,19 @@ def _tick(rows, container="robovast", wall=100.0):
 
 def _slice(tmp_path, *, start=None, end=None, claim_start=-math.inf,
            claim_end=math.inf, clock=NO_CLOCK_MAP):
+    """A slice for the MEASUREMENT claim, which is all these tests exercise.
+
+    The log claim mirrors it here rather than defaulting on ``RunSlice`` itself: a partition
+    field that defaults to "claims everything" would let a caller that forgot to compute one
+    silently double-count, which is the bug the partition exists to prevent.
+    """
     run_dir = tmp_path / "cfg" / "0"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_slices.RunSlice(
         config_name="cfg", run_dir=run_dir, job_dir=str(tmp_path / "_jobs" / "job-0"),
         clock=clock, start_epoch=start, end_epoch=end,
-        claim_start=claim_start, claim_end=claim_end)
+        claim_start=claim_start, claim_end=claim_end,
+        log_claim_start=claim_start, log_claim_end=claim_end)
 
 
 # -- the container name, which two tables are joined on -----------------------

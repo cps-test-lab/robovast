@@ -353,6 +353,13 @@ The join also supplies what neither source has alone: ``/rosout`` names the node
 *container* it ran in, and that is what a reader filters by. It comes from the file the stdout
 twin was found in.
 
+**A packed job's log is split between its runs, not shared with all of them.** The artifacts are
+written per *job*, and with ``execution.runs_per_job > 1`` one job runs several configurations in
+sequence into one log. Each line is claimed by exactly one run, so a run's rows are its own —
+another configuration's trial is a different experiment, not context for this one. A run whose
+job artifacts cannot be located, or which shares a job and never wrote ``test.xml``, gets no rows
+and is named in the plugin's message; ``get_job_log`` is the whole-container view.
+
 Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container``, ``node``,
 ``source``, ``level``, ``severity``, ``message``, ``file``, ``function``, ``line``.
 
@@ -374,9 +381,15 @@ Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container`
   ``none`` where it does not. An untimed row is honest about being untimed; it is deliberately
   not backfilled from the next stamp, which would render exactly like a real time and claim the
   container booted at whatever second the first node came up.
-* ``in_window`` — 0 for a line outside this run's own wall window. In a packed multi-run job those
-  are the simulator being reset between runs: real output, attributed to the nearest run rather
-  than dropped, and flagged so a query can tell "during the trial" from "getting ready for it".
+* ``in_window`` — 0 for a line outside this run's own wall window: its bring-up, its verdict, its
+  teardown. Real output, kept rather than dropped, and flagged so a query can tell "during the
+  trial" from "getting ready for it" and "cleaning up after it".
+
+  It is **not** the boundary of the trial, and must not be used as one. A run's ``test.xml``
+  duration closes when its scenario stops, but the verdict line is logged after that — measured
+  at ~1 ms late for a failing run and ~0.1 ms *early* for a passing one. Filtering ``in_window =
+  1`` therefore drops the verdict of every failing run. Where the trial ended is
+  :ref:`scenario_timestamps <scenario-verdict>`, and a line's owner is its run's log claim.
 * ``severity`` — from ``common.log_summary.severity_of``, the same definition the status verdict
   and the MCP log tools use.
 
@@ -429,12 +442,23 @@ the behaviour.
 
 Three things differ from ``run_log``, each deliberate:
 
-* **Ticks are partitioned, not shared.** ``run_log`` gives every run of a packed job all of
-  the job's lines, flagged — a line printed during another run is still evidence about this
-  one. A *sample* is not: another run's CPU is not this run's. Each tick is therefore claimed
-  by exactly one run (the gap between two runs falls to the one starting up), so ``SUM`` over
-  a job's runs is what that job consumed. Copying instead would make every aggregate over a
-  packed campaign report a multiple of the truth, with nothing raising an error.
+* **The gap between two runs falls the other way.** Both tables partition a packed job's
+  timeline — each tick and each line is claimed by exactly one run, so ``SUM`` over a job's
+  runs is what that job consumed, and no run reads another configuration's trial as its own.
+  What differs is where inside the gap between two runs the boundary sits. A *sample* taken
+  while the simulator is being reset is the cost of the run **starting up**, so the boundary
+  is the earlier run's ``end_epoch``. The gap's *lines*, though, are the earlier run's verdict
+  and teardown followed by the later run's ``Executing scenario``, and only that marker
+  separates them — so for a log the marker **is** the boundary.
+
+  Neither end of the trial window can stand in for it, and both fail in the awkward
+  direction: a failing run's verdict is stamped ~1 ms *after* ``end_epoch``, and the marker
+  ~35 µs *before* the next run's ``start_epoch`` (it is logged, then the start is recorded).
+  Cutting at ``end_epoch`` files a failing run's own verdict under its successor; cutting at
+  ``start_epoch`` files every run's own scenario-start line under its predecessor. When the
+  markers cannot be matched one-to-one with the runs — rosout is only recorded once
+  subscribed, so one can be missing — the ``start_epoch`` boundaries are used instead, which
+  costs those microseconds rather than shifting every run by one.
 * **Rows are keyed by process name, not pid.** Pids churn — a respawned node is a new pid and
   the same program — and no pid is comparable across runs. ``num_pids`` records how many
   shared a name in that tick.
@@ -460,6 +484,13 @@ One row per run: ``config_name``, ``run_id``, ``timestamp`` (sim seconds), ``wal
 in one module, :mod:`robovast.common.scenario_markers`, and runs **here and nowhere else**: every
 later reader queries this table instead of matching the log text again, which is what keeps the
 web UI, ``search_run_logs`` and the playback clock from disagreeing about where a run ended.
+
+"The first verdict in the log" is only the right answer because ``run_log`` is **partitioned**
+per run, so a run's rows are its own. When a packed job's lines were instead shared with all of
+its runs, the first verdict in every run's log was the *first scenario's* — so every run of the
+job recorded that verdict, and a run whose own trial passed reported ``failed`` while
+``run_view.status`` said it passed. Sharing the lines is what made the simple rule wrong; the
+rule itself was never the problem.
 
 **Both clocks, because they answer different questions.** ``timestamp`` is what the playback
 timeline is measured in. ``wall_ts`` is what ``run_log`` is *ordered* by, and it is the one the

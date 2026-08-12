@@ -72,11 +72,11 @@ from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
 from robovast.common.cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
-from robovast.common.execution import (build_job_links,
-                                       build_job_parameter_documents,
+from robovast.common.execution import (build_job_parameter_documents,
                                        create_job_links,
                                        dump_multi_document_yaml,
                                        job_artifact_rel,
+                                       read_job_links,
                                        resolve_robovast_image,
                                        write_job_links_manifest, sidecar_backend_env)
 from robovast.common import prepare_campaign_configs
@@ -707,7 +707,7 @@ class BatchJobRunner:
         """
         return build_jobs(self.configs, self.num_runs, self.campaign_data.get("execution") or {})
 
-    def _write_job_param_files(self, out_dir):
+    def _write_job_param_files(self, out_dir, campaign_root=None):
         """Write one multi-document scenario-parameter file per packed job into
         ``out_dir/_transient/`` so they upload with the campaign and are mirrored
         into each packed job's ``/config`` as ``job-<idx>.params.yaml``."""
@@ -735,7 +735,18 @@ class BatchJobRunner:
         # by readers resolving a job's artifacts while it is still running. Written in
         # per-batch mode too: the manifest is batch-aware, so the batch-namespaced job
         # tag no longer breaks the target path.
-        write_job_links_manifest(transient_dir, jobs, self._batch_tag)
+        #
+        # Seeded with what the campaign already has, because THIS DIRECTORY IS UPLOADED TO
+        # THE CAMPAIGN PREFIX: a manifest holding only this batch overwrites the campaign's
+        # at the same key, and every earlier batch's runs stop resolving. The damage is not
+        # even consistent -- ``download_prefix`` skips a file whose local size matches the
+        # remote, so a same-sized batch-only copy is sometimes skipped and sometimes not, and
+        # a four-batch campaign was observed keeping exactly its last two batches.
+        # *campaign_root* is absent only for the one-shot template dir (``vast prepare``),
+        # which has no campaign to accumulate onto.
+        write_job_links_manifest(
+            transient_dir, jobs, self._batch_tag,
+            base=read_job_links(campaign_root) if campaign_root else None)
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -992,7 +1003,7 @@ class BatchJobRunner:
             prepare_campaign_configs(
                 out_dir, self.campaign_data, cluster=True,
                 instance_type_command=_instance_type_command(self.cluster_config))
-            self._write_job_param_files(out_dir)
+            self._write_job_param_files(out_dir, campaign_root)
 
             # 2. Upload to the batch's storage prefix (job init containers mirror from here).
             n = storage.upload_dir(out_dir, bucket_name, campaign_prefix)
@@ -1157,20 +1168,15 @@ class BatchJobRunner:
         across batches (the manifest is shared), uploaded by ``finalize_campaign``,
         and turned into real symlinks by the controller's upload-to-share
         compression.
-        """
-        from robovast.common.execution import \
-            JOB_LINKS_MANIFEST  # pylint: disable=import-outside-toplevel
 
-        transient = os.path.join(campaign_root, "_transient")
-        os.makedirs(transient, exist_ok=True)
-        manifest = os.path.join(transient, JOB_LINKS_MANIFEST)
-        links = {}
-        if os.path.isfile(manifest):
-            with open(manifest, encoding="utf-8") as f:
-                links = yaml.safe_load(f) or {}
-        links.update(build_job_links(self._build_jobs(), self._batch_tag))
-        with open(manifest, "w", encoding="utf-8") as f:
-            yaml.safe_dump(links, f, default_flow_style=False, sort_keys=True)
+        Run after the batch's results are downloaded, because the download can bring a
+        manifest of its own. It accumulates through the same writer the upload side uses --
+        one definition of "merge", so the two cannot drift into disagreeing about what the
+        campaign's links are.
+        """
+        write_job_links_manifest(
+            os.path.join(campaign_root, "_transient"), self._build_jobs(), self._batch_tag,
+            base=read_job_links(campaign_root))
 
 
 class KubernetesBackend(ExecutionBackend):

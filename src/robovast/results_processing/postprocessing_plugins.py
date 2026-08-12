@@ -444,26 +444,56 @@ class RunLog(BasePostprocessingPlugin):
         slices = run_slices.SliceStats()
         runs_written = 0
 
+        # Grouped by job, not streamed one run at a time: the boundary between two runs of a
+        # packed job is a property of the job's whole run set AND of its log (see below), so
+        # every run of a job has to be in hand before any of them can be cut.
+        by_job: Dict[str, List] = {}
         for slice_ in run_slices.iter_run_slices(campaign_path, slices):
-            if slice_.job_dir not in job_cache:
-                stats = run_log.MergeStats()
-                job_cache[slice_.job_dir] = run_log.collect_job_records(
-                    slice_.job_dir, stats, sole_container=sole_container)
-                totals.add_job(stats)
+            by_job.setdefault(slice_.job_dir, []).append(slice_)
 
-            # A log takes the run's WINDOW, not its claim: a line printed while another run
-            # of the same job was executing is still evidence about this one, so every run
-            # gets all of the job's lines with the out-of-window ones flagged. A measurement
-            # cannot do that -- see resource_usage.
-            rows = run_log.rows_for_window(job_cache[slice_.job_dir], slice_.clock,
-                                           start_epoch=slice_.start_epoch,
-                                           end_epoch=slice_.end_epoch)
-            if floor is not None:
-                rows = [r for r in rows
-                        if log_summary.severity_rank(r["severity"]) >= floor]
-            run_log.write_run_log(str(slice_.run_dir / run_log.FILENAME), rows)
-            totals.rows += len(rows)
-            runs_written += 1
+        for job_dir, job_slices in by_job.items():
+            if job_dir not in job_cache:
+                stats = run_log.MergeStats()
+                job_cache[job_dir] = run_log.collect_job_records(
+                    job_dir, stats, sole_container=sole_container)
+                totals.add_job(stats)
+            records = job_cache[job_dir]
+
+            # A log takes the run's LOG claim -- a partition, like a measurement takes, but
+            # cut at the other end of the gap between two runs (see run_slices). A packed job
+            # runs several *different configurations* in sequence, and another configuration's
+            # trial is a different experiment, not context for this one: giving every run all
+            # of the job's lines gave every run the FIRST scenario's verdict, so a run whose
+            # own trial passed read as failed.
+            #
+            # The boundaries come from the scenario-start lines when they can be matched to
+            # the runs, because ``test.xml``'s start is recorded microseconds AFTER the line
+            # is logged -- close enough to file every run's own marker with its predecessor.
+            # This is the one place that can do it: the partition needs the log, and only this
+            # plugin reads it.
+            #
+            # ``in_window`` still separates the trial from this run's own bring-up, verdict
+            # and teardown *inside* its claim -- the part a sample cannot express.
+            markers = [r.wall_ts for r in records if r.wall_ts is not None
+                       and scenario_markers.is_scenario_start(r.message)
+                       and scenario_markers.is_own_logger(r.node)]
+            snapped = run_slices.log_claims_from_markers(
+                [(s.job_name, s.start_epoch) for s in job_slices], markers)
+
+            for slice_ in job_slices:
+                start, end = (snapped[slice_.job_name] if snapped
+                              else (slice_.log_claim_start, slice_.log_claim_end))
+                rows = run_log.rows_for_window(
+                    [r for r in records
+                     if run_slices.claims_log(r.wall_ts, start, end)],
+                    slice_.clock, start_epoch=slice_.start_epoch,
+                    end_epoch=slice_.end_epoch)
+                if floor is not None:
+                    rows = [r for r in rows
+                            if log_summary.severity_rank(r["severity"]) >= floor]
+                run_log.write_run_log(str(slice_.run_dir / run_log.FILENAME), rows)
+                totals.rows += len(rows)
+                runs_written += 1
 
         if not runs_written:
             return True, "run_log: no runs found"

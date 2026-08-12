@@ -78,6 +78,17 @@ _STARTED_RE = re.compile(r"^Executing scenario '")
 _LOGGER_PREFIX = "scenario_execution"
 
 
+def is_own_logger(node: str) -> bool:
+    """Is *node* scenario-execution's own logger (either of the two it can run under)?
+
+    An empty *node* means "unknown", not "wrong" — a line reaching a caller through a stream
+    carries no stamp of its own, and refusing it would lose the marker on exactly the non-ROS
+    runs this has to cover. Same rule :func:`verdict_of` applies, exposed because a caller
+    that recognises a *start* needs it too.
+    """
+    return not node or node.startswith(_LOGGER_PREFIX)
+
+
 def verdict_of(message: str, node: str = "") -> str:
     """``"succeeded"`` / ``"failed"`` / ``""`` for one log *message*.
 
@@ -91,7 +102,7 @@ def verdict_of(message: str, node: str = "") -> str:
     reaches here through a stream, and refusing it would lose the verdict on exactly the
     non-ROS runs this is meant to cover.
     """
-    if node and not node.startswith(_LOGGER_PREFIX):
+    if not is_own_logger(node):
         return ""
     if _SUCCEEDED_RE.match(message):
         return "succeeded"

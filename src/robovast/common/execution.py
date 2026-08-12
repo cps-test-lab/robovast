@@ -1196,14 +1196,39 @@ def build_job_links(jobs, job_prefix="") -> dict:
     return links
 
 
-def write_job_links_manifest(transient_dir, jobs, job_prefix="") -> None:
+def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -> None:
     """Write the ``job_links.yaml`` manifest (link → relative target) for *jobs*.
 
     No-op when there are no links (e.g. single-config jobs have no ``_jobs``
     split). The manifest is plain data, so it survives an S3 round-trip and is
     consumed where results are materialised (locally and in the share archiver).
+
+    *base* is what this manifest must keep: the links the campaign already has, from
+    :func:`read_job_links`. **The manifest is campaign-level while it is written per batch**,
+    so a batch that publishes only its own links leaves every earlier batch's runs
+    unresolvable — no ``run_log``, no ``resource_usage``, reported only as "no job_links
+    entry". Pass it whenever more batches may follow.
+
+    It is accumulated **only when** *job_prefix* namespaces the target, and that is not a
+    detail. Unprefixed, a target is ``_jobs/job-<idx>``, an index meaningful only within the
+    call that assigned it: re-running a campaign, or packing it differently, moves ``cfg/1``
+    from ``job-1`` to ``job-0``, and keeping the older entry would aim a run at another run's
+    artifacts. Prefixed (``_jobs/batch-3/job-0``) it is stable for the life of the campaign,
+    and accumulating is then not optional but required. So an unprefixed write replaces,
+    which is also what a single-batch campaign — one call, the default — has always done.
+
+    Within a prefixed accumulation an entry whose target would *change* raises: one run's
+    artifacts cannot live in two jobs, and picking a winner silently is how a run ends up
+    resolving to another batch's log.
     """
-    links = build_job_links(jobs, job_prefix)
+    links = dict(base or {}) if job_prefix else {}
+    for link, target in build_job_links(jobs, job_prefix).items():
+        previous = links.get(link)
+        if previous is not None and previous != target:
+            raise ValueError(
+                f"conflicting {JOB_LINKS_MANIFEST} entry for {link!r}: "
+                f"already {previous!r}, now {target!r}")
+        links[link] = target
     if not links:
         return
     os.makedirs(transient_dir, exist_ok=True)
