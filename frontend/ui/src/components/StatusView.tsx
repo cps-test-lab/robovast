@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Box from '@mui/material/Box'
-import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
-import Collapse from '@mui/material/Collapse'
-import IconButton from '@mui/material/IconButton'
-import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
-import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import {
@@ -18,6 +13,7 @@ import {
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
 import { formatLocalClock } from '@/lib/time'
+import { CollapsibleBox } from './CollapsibleBox'
 import { containerColorer } from './containerColor'
 import { MeterBar } from './MeterBar'
 
@@ -277,29 +273,26 @@ function JobsSection({
 }) {
   const shown = jobs.slice(0, JOBS_RENDER_CAP)
   return (
-    <Box>
-      <Button size="small" variant="text" onClick={onToggleOpen}>
-        {open ? 'Hide jobs' : `Show jobs (${jobs.length})`}
-      </Button>
-      {open ? (
-        <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-          {shown.map((job) => (
-            <JobRow
-              key={job.job_name}
-              campaignId={campaignId}
-              job={job}
-              open={expanded.has(job.job_name)}
-              onToggle={() => onToggle(job.job_name)}
-            />
-          ))}
-          {jobs.length > shown.length ? (
-            <Typography variant="caption" color="text.secondary">
-              … {jobs.length - shown.length} more not shown
-            </Typography>
-          ) : null}
-        </Stack>
-      ) : null}
-    </Box>
+    <CollapsibleBox title="Jobs" meta={jobs.length} open={open} onToggle={onToggleOpen}>
+      {/* Flat rows separated by hairlines rather than a bordered card each: the section is
+          already a card, and a box per job turned a 20-job batch into 20 nested frames. */}
+      <Stack divider={<Box sx={{ borderTop: 1, borderColor: 'divider' }} />}>
+        {shown.map((job) => (
+          <JobRow
+            key={job.job_name}
+            campaignId={campaignId}
+            job={job}
+            open={expanded.has(job.job_name)}
+            onToggle={() => onToggle(job.job_name)}
+          />
+        ))}
+        {jobs.length > shown.length ? (
+          <Typography variant="caption" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+            … {jobs.length - shown.length} more not shown
+          </Typography>
+        ) : null}
+      </Stack>
+    </CollapsibleBox>
   )
 }
 
@@ -315,46 +308,43 @@ function JobRow({
   onToggle: () => void
 }) {
   return (
-    <Box>
-      <Stack direction="row" spacing={1} alignItems="center">
+    <CollapsibleBox
+      variant="row"
+      open={open}
+      onToggle={onToggle}
+      leading={
         <Chip
           label={job.status}
           size="small"
           color={JOB_STATUS_COLOR[job.status] ?? 'default'}
           variant="outlined"
+          sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.65rem' } }}
         />
-        <Button
-          size="small"
-          variant="text"
-          onClick={onToggle}
-          sx={{ textTransform: 'none', justifyContent: 'flex-start', minWidth: 0 }}
-        >
-          {job.display_name || job.job_name}
-        </Button>
-      </Stack>
-      {/* Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message —
-          so a job that can never start is legible instead of silently pending. */}
-      {job.detail ? (
-        <Typography
-          variant="caption"
-          sx={{
-            display: 'block',
-            color: 'error.main',
-            pl: 0.5,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {job.detail}
-        </Typography>
-      ) : null}
-      {open ? (
-        <LogPanel
-          resetKey={`${campaignId}/${job.job_name}`}
-          streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
-        />
-      ) : null}
-    </Box>
+      }
+      title={job.display_name || job.job_name}
+      // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
+      // that can never start is legible without opening its (empty) log.
+      note={
+        job.detail ? (
+          <Typography
+            variant="caption"
+            sx={{
+              display: 'block',
+              color: 'error.main',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {job.detail}
+          </Typography>
+        ) : null
+      }
+    >
+      <LogPanel
+        resetKey={`${campaignId}/${job.job_name}`}
+        streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
+      />
+    </CollapsibleBox>
   )
 }
 
@@ -474,11 +464,10 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
         m: 0,
         px: 1,
         py: 0.75,
-        bgcolor: 'background.paper',
+        // Darker than the card it sits in, and with no border of its own: it is always
+        // mounted inside a CollapsibleBox body, which supplies the frame.
+        bgcolor: 'background.default',
         color: 'text.primary',
-        border: 1,
-        borderColor: 'divider',
-        borderRadius: 1,
         fontFamily: 'monospace',
         fontSize: '0.72rem',
         whiteSpace: 'pre-wrap',
@@ -510,14 +499,9 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
 export function CampaignLog({ campaignId }: { campaignId: string }) {
   const [open, setOpen] = useState(false)
   return (
-    <Box>
-      <Button size="small" variant="text" onClick={() => setOpen((o) => !o)}>
-        {open ? 'Hide log' : 'Show log'}
-      </Button>
-      {open ? (
-        <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
-      ) : null}
-    </Box>
+    <CollapsibleBox title="Log" open={open} onToggle={() => setOpen((o) => !o)}>
+      <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
+    </CollapsibleBox>
   )
 }
 
@@ -552,62 +536,30 @@ export function ErrorText({ children }: { children: ReactNode }) {
 export function FailureBox({ error, defaultOpen = true }: { error: string; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <Box
-      sx={{
-        border: 1,
-        borderColor: 'error.main',
-        borderRadius: 1,
-        bgcolor: 'error.main',
-        color: 'error.contrastText',
-      }}
+    <CollapsibleBox
+      title="Failure"
+      tone="error"
+      open={open}
+      onToggle={() => setOpen((o) => !o)}
     >
-      <Stack
-        direction="row"
-        alignItems="center"
-        justifyContent="space-between"
-        onClick={() => setOpen((o) => !o)}
-        sx={{ cursor: 'pointer', userSelect: 'none' }}
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          px: 1,
+          py: 0.75,
+          bgcolor: 'background.default',
+          color: 'text.primary',
+          fontFamily: 'monospace',
+          fontSize: '0.75rem',
+          whiteSpace: 'pre-wrap',
+          overflowX: 'auto',
+          maxHeight: 240,
+          overflowY: 'auto',
+        }}
       >
-        <Typography variant="caption" component="span" sx={{ px: 1, py: 0.5, fontWeight: 600 }}>
-          Failure
-        </Typography>
-        <IconButton
-          size="small"
-          aria-label={open ? 'Hide failure details' : 'Show failure details'}
-          aria-expanded={open}
-          onClick={(e) => {
-            e.stopPropagation()
-            setOpen((o) => !o)
-          }}
-          sx={{ color: 'inherit', mr: 0.5 }}
-        >
-          {open ? (
-            <KeyboardArrowUpRoundedIcon fontSize="small" />
-          ) : (
-            <KeyboardArrowDownRoundedIcon fontSize="small" />
-          )}
-        </IconButton>
-      </Stack>
-      <Collapse in={open} unmountOnExit>
-        <Box
-          component="pre"
-          sx={{
-            m: 0,
-            px: 1,
-            py: 0.75,
-            bgcolor: 'background.paper',
-            color: 'text.primary',
-            fontFamily: 'monospace',
-            fontSize: '0.75rem',
-            whiteSpace: 'pre-wrap',
-            overflowX: 'auto',
-            maxHeight: 240,
-            overflowY: 'auto',
-          }}
-        >
-          {error}
-        </Box>
-      </Collapse>
-    </Box>
+        {error}
+      </Box>
+    </CollapsibleBox>
   )
 }
