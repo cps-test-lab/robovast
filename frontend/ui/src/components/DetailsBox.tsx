@@ -22,7 +22,6 @@ import {
   formatMemQuantity,
   jobsInFlight,
   memHeadline,
-  outlierRuns,
   summariseActions,
   summariseBatches,
   summariseCpu,
@@ -31,7 +30,6 @@ import {
   type CpuRow,
   type CpuSummary,
   type DeclaredCpuRow,
-  type OutlierRun,
   type RunRow,
 } from '@/lib/campaignDetails'
 
@@ -71,12 +69,15 @@ function TooFew({ height, runs }: { height: number; runs: number }) {
   )
 }
 
-function useDetails(campaignId: string, enabled: boolean) {
+function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean) {
   return useQuery({
-    queryKey: ['campaign-details', campaignId],
+    // `postprocessed` is part of the key so the answer is re-fetched when the metric tables
+    // arrive: a finished campaign is postprocessed a few minutes LATER, and the panel used to
+    // cache the pre-postprocessing answer for the whole session.
+    queryKey: ['campaign-details', campaignId, postprocessed],
     enabled,
     retry: false,
-    // The campaign is finished before this panel is offered, so its rows cannot change.
+    // Within one postprocessing state the rows cannot change, so this is read once.
     staleTime: Infinity,
     queryFn: async () => {
       const runs = await robovast.queryCampaignDataSql(
@@ -92,21 +93,28 @@ function useDetails(campaignId: string, enabled: boolean) {
       // written by scenario_execution's --bt-log, so a campaign whose trials are not driven by a
       // scenario tree has no such table at all. Each optional query resolves to [] on its own, so
       // one missing table costs one column rather than the panel.
+      //
+      // Each carries its own failure rather than flattening to []: "no rows" and "the query
+      // failed" are different facts, and the CPU column states a CAUSE. It once said "not
+      // postprocessed" about a campaign with 43k rows of `resource_usage`, because a swallowed
+      // error and an absent table were indistinguishable by the time it rendered.
+      const optional = <T,>(sql: string) =>
+        robovast
+          .queryCampaignDataSql(campaignId, sql, DETAILS_MAX_ROWS)
+          .then((r) => ({ rows: r.rows as T[], error: null as string | null }))
+          .catch((e) => ({ rows: [] as T[], error: (e as Error)?.message ?? 'query failed' }))
       const [cpu, declared, actions] = await Promise.all([
-        robovast
-          .queryCampaignDataSql(campaignId, DETAILS_CPU_SQL, DETAILS_MAX_ROWS)
-          .then((r) => r.rows as CpuRow[])
-          .catch(() => [] as CpuRow[]),
-        robovast
-          .queryCampaignDataSql(campaignId, DETAILS_DECLARED_CPU_SQL, DETAILS_MAX_ROWS)
-          .then((r) => r.rows as DeclaredCpuRow[])
-          .catch(() => [] as DeclaredCpuRow[]),
-        robovast
-          .queryCampaignDataSql(campaignId, DETAILS_ACTIONS_SQL, DETAILS_MAX_ROWS)
-          .then((r) => r.rows as ActionRow[])
-          .catch(() => [] as ActionRow[]),
+        optional<CpuRow>(DETAILS_CPU_SQL),
+        optional<DeclaredCpuRow>(DETAILS_DECLARED_CPU_SQL),
+        optional<ActionRow>(DETAILS_ACTIONS_SQL),
       ])
-      return { runs: runs.rows as RunRow[], cpu, declared, actions }
+      return {
+        runs: runs.rows as RunRow[],
+        cpu: cpu.rows,
+        cpuError: cpu.error,
+        declared: declared.rows,
+        actions: actions.rows,
+      }
     },
   })
 }
@@ -270,40 +278,6 @@ function Stat({ value, label, tip }: { value: string; label: string; tip?: strin
   return tip ? <Tooltip title={tip}>{body}</Tooltip> : body
 }
 
-/** The runs that did not do what their siblings did.
- *
- *  A list and not a chart: five rows of "which run, how far off" is the whole answer, and each
- *  row is an address to go and look at. A chart of five points would take the same space and hand
- *  back less. */
-function Outliers({ runs }: { runs: OutlierRun[] }) {
-  return (
-    <Box sx={{ minHeight: CHART_HEIGHT }}>
-      {runs.map((r) => (
-        <Tooltip
-          key={r.run}
-          title={`${formatDuration(r.duration_s)} against a median of ${formatDuration(r.median)} over the other runs of ${r.config}`}
-          placement="top"
-        >
-          <Stack direction="row" spacing={1} alignItems="baseline" sx={{ cursor: 'help' }}>
-            <Typography variant="caption" noWrap sx={{ minWidth: 0, flexShrink: 1 }}>
-              {r.run}
-            </Typography>
-            <Box flexGrow={1} />
-            <Typography
-              variant="caption"
-              sx={{ fontWeight: 600, color: r.ratio > 1 ? 'warning.main' : 'info.main' }}
-            >
-              {/* The multiple, not the difference: "2.4x" is comparable between a 20 s cell and
-                  a 20 min one, where "+80 s" is only meaningful once you know which. */}
-              {r.ratio >= 1 ? `${r.ratio.toFixed(1)}×` : `${(1 / r.ratio).toFixed(1)}× fast`}
-            </Typography>
-          </Stack>
-        </Tooltip>
-      ))}
-    </Box>
-  )
-}
-
 function Column({
   title,
   meta,
@@ -355,17 +329,23 @@ function Column({
 export function DetailsBox({
   campaignId,
   quotaCpu,
+  postprocessed = false,
 }: {
   campaignId: string
   /** Lane CPU capacity, for the "jobs in flight" estimate. Omitted when unknown, and then
    *  the estimate is simply not shown -- there is no default worth inventing. */
   quotaCpu?: number | null
+  /** Whether the campaign's metric tables exist yet. Part of the query key, not a display flag:
+   *  a campaign can be FINISHED and not yet postprocessed, and then its `resource_usage` rows
+   *  appear minutes later. Without this the first answer -- correctly "not postprocessed" -- was
+   *  cached for the session and the columns never filled in. */
+  postprocessed?: boolean
 }) {
   // Closed by default, always: the campaign list holds every campaign, and this panel's three
   // queries include one that scans every 1 Hz sample of every run. Opening it on mount would
   // charge a page of twenty cards for twenty campaigns nobody asked about.
   const [open, setOpen] = useState(false)
-  const { data, isLoading, isError, error } = useDetails(campaignId, open)
+  const { data, isLoading, isError, error } = useDetails(campaignId, open, postprocessed)
 
   const model = useMemo(() => {
     if (!data) return null
@@ -375,7 +355,6 @@ export function DetailsBox({
       cpu,
       batches,
       actions: summariseActions(data.actions),
-      outliers: outlierRuns(data.runs),
       totals: totals(data.runs, cpu),
       histogram: durationHistogram(data.runs),
       // `summariseBatches` returns the campaign row alone when there is only one batch, so
@@ -431,7 +410,16 @@ export function DetailsBox({
                   a single strip. The strip replaced a column of per-run bars: one line carries the
                   same comparison (which runs were slow, and were they the failing ones) in a
                   fifth of the height, which is what let memory have a column. */}
-              <Column title="Overview">
+              {/* The median rides here rather than on the histogram: this is the column of
+                  numbers, and the histogram's own axis ends already state its range. */}
+              <Column
+                title="Overview"
+                meta={
+                  all.medianDuration === null
+                    ? undefined
+                    : `median ${formatDuration(all.medianDuration)}`
+                }
+              >
                 <Stack
                   direction="row"
                   spacing={1.5}
@@ -502,7 +490,9 @@ export function DetailsBox({
                   <Charts kind="cpu" rows={model.cpu.containers} height={CHART_HEIGHT} />
                 ) : (
                   <Typography variant="caption" color="text.secondary">
-                    not postprocessed
+                    {data?.cpuError
+                      ? `could not read resource usage — ${data.cpuError}`
+                      : 'not postprocessed'}
                   </Typography>
                 )}
               </Column>
@@ -528,23 +518,10 @@ export function DetailsBox({
                 </Column>
               ) : null}
 
-              {model.outliers.length ? (
-                <Column title="Stood out" meta={`vs. its own config`}>
-                  <Outliers runs={model.outliers} />
-                </Column>
-              ) : null}
-
               {/* The distribution the heat strip cannot show. Gated on the run count: a histogram
                   of two runs is two blocks with an axis around them, which looks like a finding
                   and is none. */}
-              <Column
-                title="Duration"
-                meta={
-                  all.medianDuration === null
-                    ? undefined
-                    : `median ${formatDuration(all.medianDuration)}`
-                }
-              >
+              <Column title="Duration">
                 {enoughRuns ? (
                   <Charts kind="histogram" rows={model.histogram} height={CHART_HEIGHT} />
                 ) : (

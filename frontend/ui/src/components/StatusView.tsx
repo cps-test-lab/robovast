@@ -54,6 +54,7 @@ export function StatusView({
   newest = true,
   showDetails = false,
   quotaCpu,
+  postprocessed = false,
 }: {
   status: Status
   // The campaign this status belongs to. Passed in because the caller already knows it
@@ -81,6 +82,9 @@ export function StatusView({
   showDetails?: boolean
   // Lane CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
   quotaCpu?: number | null
+  // Whether the metric tables exist yet -- the Details panel re-queries when this flips, since a
+  // campaign is postprocessed a few minutes after it finishes.
+  postprocessed?: boolean
 }) {
   const { runs, budget } = status
   const cid = campaignId ?? status.campaign_id
@@ -140,18 +144,16 @@ export function StatusView({
   // over. Runs that produced a *failing* result are already in `completed`.
   const done = runs.completed + runs.no_result
   const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
-  // Only a search campaign has multiple batches; a plain batch run always has one,
-  // so the "batch N" counter is noise there and is shown for search only.
-  const isSearch = status.mode === 'search'
   return (
     <Stack spacing={1.5}>
       <Box>
         <Stack direction="row" justifyContent="space-between">
+          {/* Just "runs". The batch counter that used to ride here -- `batch 2 (3 done)` --
+              said what the batches bar directly below already shows, and this label sits
+              above a bar measuring RUNS, so a batch number on it invited reading the bar as
+              batch progress. */}
           <Typography variant="caption" color="text.secondary">
             runs
-            {isSearch
-              ? ` · batch ${status.batch}${status.batches_done ? ` (${status.batches_done} done)` : ''}`
-              : ''}
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {liveOnly
@@ -242,7 +244,13 @@ export function StatusView({
           onToggle={toggleJob}
         />
       ) : null}
-      {cid && showDetails ? <DetailsBox campaignId={cid} quotaCpu={quotaCpu} /> : null}
+      {cid && showDetails ? (
+        <DetailsBox
+          campaignId={cid}
+          quotaCpu={quotaCpu}
+          postprocessed={postprocessed}
+        />
+      ) : null}
       {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
   )

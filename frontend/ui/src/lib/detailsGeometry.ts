@@ -67,35 +67,76 @@ export interface Point {
  *  two rounds is a reading aid rather than a claim about a moment in between. `yMin` is taken from
  *  the data instead of forced to zero, because a search's interesting range is usually a narrow
  *  band well away from it and anchoring at zero flattens the very curve the chart exists to show. */
-export function linePoints(points: Point[], width: number, height: number): string {
+export function linePoints(
+  points: Point[],
+  width: number,
+  height: number,
+  domain?: [number, number],
+): string {
   if (!points.length) return ''
   const xs = points.map((p) => p.x)
-  const ys = points.map((p) => p.y)
   const xMin = Math.min(...xs)
   const xSpan = Math.max(...xs) - xMin || 1
-  const yMin = Math.min(...ys)
-  const ySpan = Math.max(...ys) - yMin || 1
+  const heights = fractions(points, domain)
   return points
-    .map((p) => {
+    .map((p, i) => {
       const x = ((p.x - xMin) / xSpan) * width
-      const y = height - ((p.y - yMin) / ySpan) * height
-      return `${x.toFixed(2)},${y.toFixed(2)}`
+      return `${x.toFixed(2)},${(height * (1 - heights[i])).toFixed(2)}`
     })
     .join(' ')
 }
 
+/** Each point's height as a 0..1 fraction, 0 at the bottom.
+ *
+ *  A CONSTANT series sits in the middle, not on the floor. Anchoring at the minimum is right when
+ *  values differ — that is what stops a narrow band from being flattened — but when they are all
+ *  equal the minimum IS the value, and every point lands at zero: a search whose objective never
+ *  moved drew its line along the bottom edge with its dots half-clipped by it, which reads as "the
+ *  objective collapsed" rather than "the objective held". Centring says "no change" without
+ *  claiming a direction. */
+function fractions(points: Point[], domain?: [number, number]): number[] {
+  if (domain) {
+    // An explicit scale wins outright, including for a constant series: on a fixed axis a flat
+    // line at 1 and a flat line at 0.2 are different findings, and centring both would erase
+    // exactly the difference the fixed scale was chosen to show.
+    const [lo, hi] = domain
+    const span = hi - lo || 1
+    return points.map((p) => Math.min(1, Math.max(0, (p.y - lo) / span)))
+  }
+  const ys = points.map((p) => p.y)
+  const yMin = Math.min(...ys)
+  const ySpan = Math.max(...ys) - yMin
+  if (ySpan === 0) return points.map(() => 0.5)
+  return points.map((p) => (p.y - yMin) / ySpan)
+}
+
+/** The y scale for an objective: the unit interval when the values live in it, else the data's own
+ *  range.
+ *
+ *  A normalized objective -- a rate, a fraction, a success probability -- carries meaning in its
+ *  ABSOLUTE position: `best = 1` is "as good as it can get", and a curve read against 0..1 says how
+ *  much of the available room the search actually took. Anchoring such a series to its own range
+ *  throws that away, and draws 0.98 -> 0.99 identically to 0.1 -> 0.9.
+ *
+ *  An objective on any other scale (metres of path, seconds of settling time) has no such meaning:
+ *  0 is not special, its interesting band is usually narrow and far from zero, and forcing a fixed
+ *  domain would flatten it into a straight line or push it off the top. Those keep the data range.
+ *  Either way the plot's y labels state the range in force, so the reader is never guessing. */
+export function objectiveDomain(values: number[]): [number, number] | undefined {
+  if (!values.length) return undefined
+  return values.every((v) => v >= 0 && v <= 1) ? [0, 1] : undefined
+}
+
 /** Where each point lands, as 0..100 percentages — for placing DOM nodes (a dot, a label) on the
  *  same geometry the SVG line uses, without a second scale to keep in step. */
-export function linePercents(points: Point[]): Point[] {
+export function linePercents(points: Point[], domain?: [number, number]): Point[] {
   if (!points.length) return []
   const xs = points.map((p) => p.x)
-  const ys = points.map((p) => p.y)
   const xMin = Math.min(...xs)
   const xSpan = Math.max(...xs) - xMin || 1
-  const yMin = Math.min(...ys)
-  const ySpan = Math.max(...ys) - yMin || 1
-  return points.map((p) => ({
+  const heights = fractions(points, domain)
+  return points.map((p, i) => ({
     x: ((p.x - xMin) / xSpan) * 100,
-    y: ((p.y - yMin) / ySpan) * 100,
+    y: heights[i] * 100,
   }))
 }

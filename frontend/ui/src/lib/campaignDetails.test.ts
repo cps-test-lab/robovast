@@ -22,7 +22,6 @@ import {
   summariseActions,
   summariseCpu,
   totals,
-  outlierRuns,
   TOP_ACTIONS,
   type RunRow,
 } from './campaignDetails'
@@ -345,47 +344,6 @@ describe('summariseActions', () => {
   it('keeps at most the top five actions', () => {
     const rows = Array.from({ length: 9 }, (_, i) => action('passed', `a${i}`, 9 - i))
     expect(new Set(summariseActions(rows).map((p) => p.action)).size).toBe(TOP_ACTIONS)
-  })
-})
-
-describe('outlierRuns', () => {
-  const timed = (config: string, id: number, duration: number, status = 'passed'): RunRow => ({
-    config_name: config,
-    run_id: id,
-    status,
-    duration_s: duration,
-    batch: 0,
-    start_time: '2026-08-12T10:00:00+00:00',
-    objective: null,
-  })
-
-  it('compares a run against its own configuration, never across the campaign', () => {
-    // The slow cell's runs are not outliers: they are what that goal costs. Only the run that
-    // deviates from ITS OWN siblings is.
-    const found = outlierRuns([
-      timed('near', 0, 10),
-      timed('near', 1, 10),
-      timed('near', 2, 30),
-      timed('far', 0, 100),
-      timed('far', 1, 100),
-      timed('far', 2, 100),
-    ])
-    expect(found.map((r) => r.run)).toEqual(['near/2'])
-    expect(found[0].median).toBe(10)
-  })
-
-  it('reports a run that finished far too early as well as one that dragged', () => {
-    // A trial that gave up in seconds and one that ran long are the same question -- why did
-    // this run not do what its siblings did -- and only one of them is slow.
-    const found = outlierRuns([timed('c', 0, 100), timed('c', 1, 100), timed('c', 2, 5)])
-    expect(found.map((r) => r.run)).toEqual(['c/2'])
-    expect(found[0].ratio).toBeLessThan(1)
-  })
-
-  it('says nothing about a configuration with too few siblings to be unlike', () => {
-    // Two runs have no majority to deviate from: the median is their mean, and each is exactly
-    // as far from it as the other.
-    expect(outlierRuns([timed('c', 0, 10), timed('c', 1, 100)])).toEqual([])
   })
 })
 

@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react'
 import Box from '@mui/material/Box'
+import { useTheme } from '@mui/material/styles'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { containerColorer } from './containerColor'
 import { MeterBar } from './MeterBar'
-import { formatCpu, formatMemQuantity } from '@/lib/campaignDetails'
-import { formatAxisDuration, linePercents, linePoints, niceMax, pct } from '@/lib/detailsGeometry'
+import { formatCpu } from '@/lib/campaignDetails'
+import {
+  formatAxisDuration,
+  linePercents,
+  linePoints,
+  niceMax,
+  objectiveDomain,
+  pct,
+} from '@/lib/detailsGeometry'
 import type {
   ActionPoint,
   ResourceStats,
@@ -102,7 +110,7 @@ const BAR_HEIGHT = 10
  *  labels the container name and the maximum labels the suggested-value gutter, and neither number
  *  points at the thing it scales. */
 const LABEL_WIDTH = 62
-const VALUE_WIDTH = 34
+const VALUE_WIDTH = 46
 
 /** How the containers combine into one pod request, as a ring.
  *
@@ -127,6 +135,11 @@ function PodRing({
   caption: string
   size?: number
 }) {
+  // `sx` resolves palette paths for `color`/`bgcolor`, but NOT for the SVG presentation
+  // properties: `stroke: 'action.hover'` reaches the DOM verbatim and is simply invalid, so the
+  // element draws nothing and nothing warns. Concrete values from the theme instead -- this is why
+  // the objective chart shipped as dots with no line between them.
+  const theme = useTheme()
   const [swept, setSwept] = useState(false)
   useEffect(() => {
     // A frame, not a timeout: the browser has to paint the zero-length state once for the
@@ -172,7 +185,7 @@ function PodRing({
             cx="20"
             cy="20"
             r={radius}
-            sx={{ fill: 'none', stroke: 'action.hover', strokeWidth: stroke }}
+            sx={{ fill: 'none', stroke: theme.palette.action.hover, strokeWidth: stroke }}
           />
           {slices.map((slice) => {
             const share = sum > 0 ? (slice.value / sum) * 100 : 0
@@ -247,7 +260,6 @@ function ResourceBars({
           mean: row.meanCores, declared: row.declared, suggested: row.suggested,
         }
       : row.mem
-  const format = (value: number) => (cpu ? formatCpu(value) : formatMemQuantity(value))
   // Two decimals of a core is meaningful; two decimals of a byte count is not, so the measured
   // figures go through the reading formatter and the actionable ones through the config formatter.
   const measured = (value: number) => (cpu ? value.toFixed(2) : formatBytes(value))
@@ -348,6 +360,11 @@ function ResourceBars({
                 />
               ) : null}
             </Box>
+            {/* What it MEASURED, not what is suggested. The row is a picture of the
+                distribution, so the number closing it has to belong to that picture -- the median,
+                which is the tick inside the box. The suggestion is advice rather than data, and
+                advice reads wrong in a column of measurements; it lives in the header's hover,
+                beside the p95 and peak it is derived from. */}
             <Typography
               variant="caption"
               sx={{
@@ -358,7 +375,7 @@ function ResourceBars({
                 fontWeight: 600,
               }}
             >
-              {stats[i].suggested === null ? '—' : format(stats[i].suggested as number)}
+              {measured(stats[i].p50)}
             </Typography>
           </Stack>
         </Box>
@@ -374,21 +391,6 @@ function ResourceBars({
       </Box>
     </Stack>
   )
-}
-
-/** Verdict colour for the duration histogram, whose subject is time rather than outcome.
- *
- *  An ordinary run is the app's own teal, not success green. The chart is read as "how long did the
- *  runs take", and on a campaign where nothing failed a green histogram looks like a status display
- *  reporting good news — green spent on "nothing to report" leaves nothing louder for the case that
- *  matters. Teal says "this is data", so the pink-red is the only semantic colour on the chart and a
- *  single failing bar is unmissable at 7px wide.
- *
- *  `Ended in` keeps green, because there the pass/fail split IS the subject. */
-function durationHue(status: string): string {
-  if (status === 'failed' || status === 'error') return 'error.main'
-  if (status === 'passed') return 'primary.main'
-  return 'text.disabled'
 }
 
 /** Where each run's trial ended: a mini meter per action, split by verdict, most runs first. */
@@ -459,11 +461,6 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
   // bin's tooltip -- is in one unit and reads as a scale rather than as unrelated numbers.
   const span = rows.length ? rows[rows.length - 1].to - rows[0].from : 0
   const label = (value: number) => formatAxisDuration(value, span)
-  const parts = [
-    { key: 'passed' as const, color: durationHue('passed') },
-    { key: 'failed' as const, color: durationHue('failed') },
-    { key: 'other' as const, color: durationHue('unknown') },
-  ]
   return (
     <Box>
       <Stack direction="row" spacing="1px" alignItems="flex-end" sx={{ height: plot }}>
@@ -478,8 +475,12 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
               (bin.other ? `, ${bin.other} without a verdict` : '')
             }
           >
-            {/* Stacked bottom-up: passes at the base, so a bin's failing share reads as the
-                coloured cap rather than something to measure against a moving baseline. */}
+            {/* One bar per bin, one colour. The verdict split that used to be stacked in here is
+                gone: at 24 bins a campaign needs 100+ runs before a bin holds enough of both to
+                stack, and below that every bar came out solid -- so the colour was reporting a
+                single run's verdict in a chart whose whole job is to aggregate them. The counts
+                are still in the hover, where they cost no width, and `Ended in` is where a
+                failure gets attributed. */}
             <Stack
               justifyContent="flex-end"
               sx={{
@@ -490,19 +491,17 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
                 cursor: bin.runs ? 'help' : 'default',
               }}
             >
-              {parts.map(({ key, color }) =>
-                bin[key] ? (
-                  <Box
-                    key={key}
-                    sx={{
-                      height: `${pct(bin[key], max)}%`,
-                      bgcolor: color,
-                      opacity: 0.85,
-                      '&:hover': { opacity: 1 },
-                    }}
-                  />
-                ) : null,
-              )}
+              {bin.runs ? (
+                <Box
+                  sx={{
+                    height: `${pct(bin.runs, max)}%`,
+                    bgcolor: 'primary.main',
+                    opacity: 0.85,
+                    borderRadius: '2px 2px 0 0',
+                    '&:hover': { opacity: 1 },
+                  }}
+                />
+              ) : null}
             </Stack>
           </Tooltip>
         ))}
@@ -515,59 +514,89 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
   )
 }
 
-/** A search's best objective per round. */
+/** A search's best objective per round: a line through one point per batch.
+ *
+ *  Both axes are labelled, which the other columns can get away with skipping and this one cannot.
+ *  Elsewhere the quantity is named by the column header and the unit is obvious (cores, seconds); an
+ *  objective is whatever the campaign declared it to be, its scale is arbitrary, and it is usually a
+ *  narrow band far from zero. Without the y range on the plot, a rising line says only "it went up
+ *  by some amount" -- and a search that improved by 0.4% looks identical to one that doubled.
+ *
+ *  The y axis is NOT zero-based, for that same reason: forcing the origin in flattens the curve the
+ *  chart exists to show. The labels are what make that honest. */
 function ObjectiveLine({ rows, height }: { rows: BatchSummary[]; height: number }) {
+  const theme = useTheme()
   const data = rows
     .filter((r) => r.batch !== null && r.bestObjective !== null)
     .map((r) => ({ x: r.batch as number, y: r.bestObjective as number }))
   if (data.length < 2) return <Note height={height}>one round</Note>
   const plot = height - 14
   const W = 100
+  const ys = data.map((d) => d.y)
+  // A rate-shaped objective is read against the whole unit interval; anything else keeps its own
+  // range. `objectiveDomain` owns that choice and says why.
+  const domain = objectiveDomain(ys)
+  const [low, high] = domain ?? [Math.min(...ys), Math.max(...ys)]
+  const tick = { fontSize: 9, lineHeight: 1, color: 'text.secondary' as const }
   return (
     <Box>
-      <Box sx={{ position: 'relative', height: plot }}>
-        <Box
-          component="svg"
-          viewBox={`0 0 ${W} ${plot}`}
-          preserveAspectRatio="none"
-          sx={{ width: '100%', height: plot, display: 'block', overflow: 'visible' }}
-        >
+      <Stack direction="row" spacing={0.5} alignItems="stretch">
+        {/* The y ticks, outside the plot so the line still gets the full width. High at the top,
+            low at the bottom, matching where each value actually sits. */}
+        <Stack justifyContent="space-between" sx={{ height: plot, flexShrink: 0 }}>
+          <Typography variant="caption" sx={tick} noWrap>
+            {domain ? high : high.toPrecision(3)}
+          </Typography>
+          <Typography variant="caption" sx={tick} noWrap>
+            {domain ? low : low.toPrecision(3)}
+          </Typography>
+        </Stack>
+        <Box sx={{ position: 'relative', height: plot, flexGrow: 1, minWidth: 0 }}>
           <Box
-            component="polyline"
-            points={linePoints(data, W, plot)}
-            sx={{
-              fill: 'none',
-              stroke: 'warning.main',
-              strokeWidth: 1.5,
-              vectorEffect: 'non-scaling-stroke',
-            }}
-          />
-        </Box>
-        {/* The dots are DOM, not SVG, so each carries its own MUI hover and stays round under the
-            non-uniform scaling the viewBox applies to the line. */}
-        {linePercents(data).map((p, i) => (
-          <Tooltip
-            key={data[i].x}
-            placement="top"
-            title={`batch ${data[i].x} — best ${data[i].y.toPrecision(4)}`}
+            component="svg"
+            viewBox={`0 0 ${W} ${plot}`}
+            preserveAspectRatio="none"
+            sx={{ width: '100%', height: plot, display: 'block', overflow: 'visible' }}
           >
             <Box
+              component="polyline"
+              points={linePoints(data, W, plot, domain)}
               sx={{
-                position: 'absolute',
-                left: `${p.x}%`,
-                top: `${100 - p.y}%`,
-                width: 5,
-                height: 5,
-                ml: '-2.5px',
-                mt: '-2.5px',
-                borderRadius: '50%',
-                bgcolor: 'warning.main',
-                cursor: 'help',
+                fill: 'none',
+                // A concrete colour: `sx` does not resolve palette paths for `stroke`, so
+                // 'warning.main' reached the DOM verbatim and the line was never drawn.
+                stroke: theme.palette.warning.main,
+                strokeWidth: 1.5,
+                vectorEffect: 'non-scaling-stroke',
               }}
             />
-          </Tooltip>
-        ))}
-      </Box>
+          </Box>
+          {/* The dots are DOM, not SVG, so each carries its own MUI hover and stays round under
+              the non-uniform scaling the viewBox applies to the line. */}
+          {linePercents(data, domain).map((p, i) => (
+            <Tooltip
+              key={data[i].x}
+              placement="top"
+              title={`batch ${data[i].x} — best ${data[i].y.toPrecision(4)}`}
+            >
+              <Box
+                sx={{
+                  position: 'absolute',
+                  left: `${p.x}%`,
+                  top: `${100 - p.y}%`,
+                  width: 5,
+                  height: 5,
+                  ml: '-2.5px',
+                  mt: '-2.5px',
+                  borderRadius: '50%',
+                  bgcolor: 'warning.main',
+                  cursor: 'help',
+                }}
+              />
+            </Tooltip>
+          ))}
+        </Box>
+      </Stack>
       <AxisEnds left={`batch ${data[0].x}`} right={`batch ${data[data.length - 1].x}`} />
     </Box>
   )

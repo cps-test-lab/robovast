@@ -499,7 +499,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         <StepFailure
           headline={
             'Postprocessing failed — the runs finished; retrigger postprocessing from the ' +
-            'actions menu.'
+            'actions menu. The full output is in the campaign log below.'
           }
           error={postprocError}
           defaultOpen={newest}
@@ -531,6 +531,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           newest={newest}
           showDetails={canExplore}
           quotaCpu={usage.data?.cpu_capacity ?? null}
+          postprocessed={!!summary.postprocessed}
         />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">

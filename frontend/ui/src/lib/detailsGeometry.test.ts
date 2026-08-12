@@ -60,6 +60,7 @@ describe('linePoints', () => {
   })
 
   it('does not divide by zero when every value is identical', () => {
+    // Centred rather than on the floor -- see 'a series that never moves' below for why.
     const points = linePoints(
       [
         { x: 0, y: 5 },
@@ -68,7 +69,7 @@ describe('linePoints', () => {
       100,
       50,
     )
-    expect(points).toBe('0.00,50.00 100.00,50.00')
+    expect(points).toBe('0.00,25.00 100.00,25.00')
   })
 })
 
@@ -111,5 +112,23 @@ describe('formatAxisDuration', () => {
 
   it('never renders a negative', () => {
     expect(formatAxisDuration(-5, 10)).toBe('0s')
+  })
+})
+
+describe('a series that never moves', () => {
+  it('draws through the middle, not along the floor', () => {
+    // icra-random-recovery-3x5 found its maximum in batch 0 and held it: objective 1, 1, 1.
+    // Anchoring at the minimum put every point at the bottom edge with the dots half-clipped by
+    // it, which reads as "the objective collapsed" rather than "the objective held".
+    expect(linePoints([{ x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 }], 100, 50)).toBe(
+      '0.00,25.00 50.00,25.00 100.00,25.00',
+    )
+    expect(linePercents([{ x: 0, y: 1 }, { x: 1, y: 1 }]).map((p) => p.y)).toEqual([50, 50])
+  })
+
+  it('still anchors a series that does move at its minimum', () => {
+    // The centring must not cost the narrow-band behaviour it sits beside: a real spread still
+    // fills the plot, or a 0.4% improvement would look identical to a doubling.
+    expect(linePoints([{ x: 0, y: 1 }, { x: 1, y: 2 }], 100, 50)).toBe('0.00,50.00 100.00,0.00')
   })
 })
