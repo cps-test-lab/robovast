@@ -559,21 +559,17 @@ export function FailureBox({ error, defaultOpen = true }: { error: string; defau
         borderRadius: 1,
         bgcolor: 'error.main',
         color: 'error.contrastText',
-        cursor: open ? 'default' : 'pointer',
       }}
-      onClick={() => !open && setOpen(true)}
     >
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography
-          variant="caption"
-          component="span"
-          onClick={(e) => {
-            e.stopPropagation()
-            setOpen((o) => !o)
-          }}
-          sx={{ px: 1, py: 0.5, fontWeight: 600, cursor: 'pointer', userSelect: 'none' }}
-        >
-          failure
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        onClick={() => setOpen((o) => !o)}
+        sx={{ cursor: 'pointer', userSelect: 'none' }}
+      >
+        <Typography variant="caption" component="span" sx={{ px: 1, py: 0.5, fontWeight: 600 }}>
+          Failure
         </Typography>
         <IconButton
           size="small"
