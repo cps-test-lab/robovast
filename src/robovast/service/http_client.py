@@ -501,7 +501,7 @@ class HTTPTransport(RobovastInterface):
 
     def render_campaign_notebook(
         self, campaign_id: str, workload: str, level: str,
-        config_name: str = "", run_id=None, theme: str = "light",
+        config_name: str = "", run_id=None, theme: str = "light", batch=None,
     ) -> str:
         import requests
         params = {"workload": workload, "level": level, "theme": theme}
@@ -509,6 +509,8 @@ class HTTPTransport(RobovastInterface):
             params["config_name"] = config_name
         if run_id is not None:
             params["run_id"] = run_id
+        if batch is not None:
+            params["batch"] = batch
         resp = requests.get(
             f"{self.base_url}{Routes.campaign_notebook(campaign_id)}",
             params=params, timeout=max(self.timeout, 600))

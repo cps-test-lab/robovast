@@ -519,9 +519,9 @@ class MultiBackendService(LocalTransport):
 
     def render_campaign_notebook(self, campaign_id: str, workload: str, level: str,
                                  config_name: str = "", run_id: Optional[int] = None,
-                                 theme: str = "light"):
+                                 theme: str = "light", batch: Optional[int] = None):
         return self._route(campaign_id, "render_campaign_notebook", campaign_id,
-                           workload, level, config_name, run_id, theme)
+                           workload, level, config_name, run_id, theme, batch)
 
     # -- lifecycle ----------------------------------------------------------
 
