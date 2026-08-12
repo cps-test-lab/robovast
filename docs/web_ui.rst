@@ -61,6 +61,8 @@ It provides four views, one per desktop GUI:
   pilot. A campaign that never recorded a usable image is refused rather than rebuilt
   from a guess: a campaign's build context is not archived in its results, so the
   refusal names the container and points back at the workspace.
+  A finished campaign also carries a collapsed **Details** box — what it cost, how it
+  behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
   the* ``results_processing.postprocessing`` *block* (in a Monaco YAML editor) and
   re-run the analysis against the preserved raw rosbags — to compute different metrics
@@ -113,6 +115,84 @@ snapshot of the campaign list and adopt a new one only when you ask (see
 `Results viewer`_) — a finished campaign is immutable, so reshuffling its tree under
 someone mid-read would cost attention and return nothing. Freshness applies to what is
 still changing.
+
+.. _web-ui-details:
+
+The Details panel
+-----------------
+
+A finished campaign's card carries a collapsed **Details** box: what the campaign cost, how
+it behaved, and — the reason it exists — what the next one should reserve. It answers "did
+this run well, and what did it cost?"; the Results explorer keeps answering "what did it
+find?", which is why there is no per-configuration breakdown here.
+
+It is **closed by default and queries nothing until opened**. Its four SQL statements include
+one that scans every 1 Hz resource sample of every run, so a page of twenty campaigns would
+otherwise pay for twenty campaigns nobody asked about. Opening it reads once; the answer is
+re-read when the campaign's metric tables appear, since a campaign is *finished* some minutes
+before it is *postprocessed*.
+
+Columns, each answering something the others cannot:
+
+* **Overview** — CPU-hours consumed, simulated time (summed run durations; the simulator runs
+  at realtime pacing, so one simulated second is one wall second) and completed runs per
+  minute of wall clock. Counted in runs, which is what the data records — a job with
+  ``execution.runs_per_job > 1`` carries several.
+* **CPU** and **Memory** — a ring of MEAN usage per container, showing which of them the pod's
+  demand is actually made of, beside one bar per container: the box is the p25–p75 of per-tick
+  demand, the whiskers p05–p95, the tick inside it the median, the amber tick the peak, and the
+  faint backdrop what the ``.vast`` reserved. An over-reservation is the backdrop the box does
+  not fill. The row ends with the measured median; the **suggestion is in the column header's
+  hover**, with the p95 and peak it comes from.
+* **Ended in** — which scenario action each run's trial was in when it ended, top five, split
+  pass/fail. Derived from the ``behaviors`` table that ``scenario_execution`` writes for every
+  campaign, and campaign-independent by construction: it names no action, topic or plugin. A
+  run that timed out is attributed to the goal it was pursuing, not to the scenario's own
+  terminal marker.
+* **Duration** — the distribution of run durations. Binned over the data's range rather than
+  from zero, with a ten-second floor so a campaign whose runs agreed to within milliseconds
+  does not draw that noise as if it were a spread.
+* **Objective** — a search's best objective per round, with its stopping criteria beneath.
+  Rate-shaped objectives are drawn against 0..1, since ``best = 1`` then means "as good as it
+  can get"; anything on another scale keeps its own range, and both axes are labelled either
+  way.
+
+.. _web-ui-sizing:
+
+Sizing advice
+~~~~~~~~~~~~~
+
+The CPU and Memory hovers give, per container, what was declared, what was measured, and what
+to reserve — the value to write into ``execution.containers.<name>.resources.cpu`` /
+``.memory``, plus the pod total, which is the figure that divides into the cluster quota.
+
+The two rules differ, and the difference is not cosmetic:
+
+* **CPU is sized on sustained use** (p95) plus 25% headroom, rounded up to a quarter core.
+  Exceeding a cpu reservation costs CFS throttling for that scheduling period — slower, still
+  correct — which is the right price for not reserving a brief peak permanently. A container
+  whose peak is far above its sustained use is marked ⚡: it will be throttled during those
+  bursts, and that is the trade rather than an oversight.
+* **Memory is sized on the PEAK** plus 25% headroom, rounded up to 128Mi. Exceeding a memory
+  limit is an OOM kill: the run dies and the campaign loses that cell. Sizing memory on a
+  percentile would be choosing how often a run survives. Its figures are upper bounds —
+  ``memory_rss_bytes`` is summed per process name, so pages shared with a fork count twice.
+
+A suggestion is withheld, with the reason shown, when the container produced fewer than 30
+samples: a campaign of sub-second runs yields single digits of in-window ticks across every
+run put together, and a p95 over seven points is the maximum wearing a percentile's name.
+
+The advice works on a campaign that declares no ``resources`` block at all — which is the
+campaign that most needs it, since nothing else says what to set. The container *names* are
+read from the config either way, so the measured main container (recorded under the role name
+``robovast``) still resolves to a name that appears in the reader's file.
+
+**The same advice reaches an agent.** ``get_campaign_summary`` in the MCP server returns an
+``advice`` list computed by :mod:`robovast.results_processing.advice`, which is the authority
+for these rules; ``tests/results_processing/test_advice.py`` pins the web UI's constants
+against it, so the two cannot drift into telling a human and an agent to reserve different
+amounts for the same campaign. Each item carries a plain-text ``title`` and ``detail`` beside
+its ``kind``, so a consumer that has never heard of a particular kind can still show it.
 
 .. _web-ui-config:
 

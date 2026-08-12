@@ -153,8 +153,13 @@ def get_campaign_summary(campaign_id: str) -> dict:
 
     Returns:
         ``{campaign_id, num_configs, num_runs, num_success, num_failed, num_unknown,
-        worst_configs}`` plus the execution provenance (which robovast, image, lane)
-        once the campaign has produced it; or ``{error}``.
+        worst_configs, advice}`` plus the execution provenance (which robovast, image,
+        lane) once the campaign has produced it; or ``{error}``.
+
+        ``advice`` is what this campaign's measurements say the next one should reserve --
+        cpu and memory, per container and per pod, with the evidence behind each item.
+        Empty when there is nothing worth saying. Each item carries a plain-text ``title``
+        and ``detail``, so it can be reported as-is without knowing its ``kind``.
     """
     per_config = data_access.rows(campaign_id, """
         SELECT config_name,
@@ -190,6 +195,13 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "worst_configs": sorted(
             configs_info, key=lambda c: (-(c["failed"] + c["unknown"]), c["name"]))[:3],
     }
+
+    # What this campaign's own measurements say the NEXT one should reserve. Advice rather
+    # than data, so it is additive: an agent that ignores the key loses nothing, and one that
+    # reads it gets the same numbers the web UI's Details panel shows a human -- see
+    # results_processing/advice.py, which is the authority for the sizing rules.
+    from robovast.results_processing.advice import campaign_advice
+    result.update(campaign_advice(lambda sql: data_access.rows(campaign_id, sql)))
 
     provenance = data_access.rows(campaign_id, """
         SELECT robovast_version, execution_type, image, image_revision,
