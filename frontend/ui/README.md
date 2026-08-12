@@ -5,11 +5,11 @@ A plain Vite + React + TypeScript app (MUI + TanStack Query) that is a thin clie
 
 ```bash
 npm install
-npm run build     # -> ui/dist, served by the service (vast serve)
+npm run build     # -> frontend/ui/dist, served by the service (vast serve)
 npm run dev       # Vite dev server on :5173, proxies the API to a running `vast serve`
 ```
 
-The service serves `ui/dist` itself, so the UI starts together with `vast serve` (or the
+The service serves `frontend/ui/dist` itself, so the UI starts together with `vast serve` (or the
 in-cluster service) at the same URL as the REST API — open that URL in a browser.
 Point the dev server at another service with `ROBOVAST_SERVICE_URL`.
 

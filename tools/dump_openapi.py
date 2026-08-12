@@ -9,7 +9,7 @@ Built from the app itself rather than fetched from a running service, so generat
 web UI's client needs no ``vast serve`` and works in CI. The interface is what the schema
 describes; a service happens to serve it.
 
-    python tools/dump_openapi.py ui/openapi.json
+    python tools/dump_openapi.py frontend/ui/openapi.json
 """
 
 import json
@@ -49,7 +49,7 @@ def _mark_response_fields_required(schema: dict) -> None:
 def main(argv: list[str]) -> int:
     from robovast.service.app import build_app
 
-    out = pathlib.Path(argv[1] if len(argv) > 1 else "ui/openapi.json")
+    out = pathlib.Path(argv[1] if len(argv) > 1 else "frontend/ui/openapi.json")
     schema = build_app(_Stub()).openapi()
     _mark_response_fields_required(schema)
     # Sorted and newline-terminated so a regeneration produces a reviewable diff rather

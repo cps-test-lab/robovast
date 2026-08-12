@@ -42,4 +42,4 @@ repeat, not one mutated in place.
 `@/…` or anything robovast-specific.** The directory is shared-candidate code for other projects
 rendering the same descriptor, so keeping this boundary makes extraction into a common package
 mechanical. Host-specific wiring (data providers, clocks, panel/config plumbing) belongs in the
-consumer — here, `ui/src/panels/Scene3DPanel.tsx`.
+consumer — here, `frontend/ui/src/panels/Scene3DPanel.tsx`.

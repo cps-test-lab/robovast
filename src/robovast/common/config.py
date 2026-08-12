@@ -454,7 +454,7 @@ class EvaluationConfig(BaseModel):
 
 
 #: Core built-in panel types bundled into the web UI itself (statically imported in
-#: ``ui/src/panels``). Kept here (rather than only in the UI) so the ``.vast`` fails fast
+#: ``frontend/ui/src/panels``). Kept here (rather than only in the UI) so the ``.vast`` fails fast
 #: on a typo instead of silently dropping a panel. Package-provided panels (e.g.
 #: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
 #: group and are accepted in addition to these (see ``PanelConfig._known_type``).

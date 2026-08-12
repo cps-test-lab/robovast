@@ -10,7 +10,7 @@ RoboVAST exposes one operation contract — `RobovastInterface`
 backends**. A feature is not done until it works on all of them:
 
 - **CLI** (`vast …`) **and MCP** (the `robovast.mcp_plugins` tools) — both are thin
-  clients of the same interface; the web UI (`ui/`) is a third. When you add or change
+  clients of the same interface; the web UI (`frontend/ui/`) is a third. When you add or change
   an operation, thread it end-to-end:
   1. `interface.py` — the abstract method + `Routes` entry + request/response models;
   2. `client.py` — **both** transports (`LocalTransport` in-process **and**

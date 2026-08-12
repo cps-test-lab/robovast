@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
-// In production the robovast-service serves ui/dist itself, so the SPA is same-origin with the REST
+// In production the robovast-service serves frontend/ui/dist itself, so the SPA is same-origin with the REST
 // API and the client uses relative paths. In dev (this Vite server) we proxy the API path prefixes to
 // a running `vast serve` so the browser stays same-origin here too (no CORS). Point at another service
 // with ROBOVAST_SERVICE_URL. The RobovastInterface routes all live at the root, so we proxy them by

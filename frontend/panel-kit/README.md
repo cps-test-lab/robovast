@@ -4,7 +4,7 @@ The single source of the run-view **panel contract** (`PanelProps`, `PanelSpec`,
 `PlaybackClock`) and the **clock-driven scaffolding** every time-synced panel needs
 (`useCanvasClock`, the time-index binary search, `useKeyframePump`).
 
-It exists because the host UI (`ui/`) and package-provided panels (`src/robovast_nav/web/`, built as
+It exists because the host UI (`frontend/ui/`) and package-provided panels (`src/robovast_nav/web/`, built as
 Module-Federation remotes) are two separately-built npm packages that must agree on one contract. The
 remote shares only `react`/`react-dom` with the host at runtime, so it cannot import the host's modules
 — before this package, `robovast_nav/web/src/contract.ts` was a **hand-maintained copy** of the host's

@@ -1,7 +1,7 @@
 # Docker build context = the repository root (the images need pyproject.toml,
-# poetry.lock, README.md, src/ and ui/). Everything else is excluded so the
+# poetry.lock, README.md, src/ and frontend/ui/). Everything else is excluded so the
 # context stays small — without this the daemon is sent multiple GB (venv, .git,
-# ui/node_modules, results) on every build.
+# frontend/ui/node_modules, results) on every build.
 
 # Local environments / VCS
 .git
@@ -15,8 +15,8 @@ venv
 
 # Web UI: sources are copied in and built inside the image; never ship the host's
 # node_modules (platform-specific) or a stale dist.
-ui/node_modules
-ui/dist
+frontend/ui/node_modules
+frontend/ui/dist
 
 # Campaign outputs / generated artifacts
 results

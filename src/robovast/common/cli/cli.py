@@ -194,19 +194,19 @@ def init(config, results_dir, project_log_level, force):
 
 
 def _ensure_ui_built(rebuild: bool = False) -> None:
-    """(Re)build the web UI's ``ui/dist`` for a source checkout, when needed.
+    """(Re)build the web UI's ``frontend/ui/dist`` for a source checkout, when needed.
 
     No-op unless run from a source tree: a packaged install / in-cluster pod has
-    no ``ui/`` sources (its dist is baked in and pointed at by ``ROBOVAST_UI_DIST``),
-    so there is nothing — and no ``npm`` — to build. In a checkout, build only when
-    ``ui/dist`` is missing or older than the UI sources (or when *rebuild*), so a
-    normal ``vast serve`` costs just an mtime scan.
+    no ``frontend/ui/`` sources (its dist is baked in and pointed at by
+    ``ROBOVAST_UI_DIST``), so there is nothing — and no ``npm`` — to build. In a
+    checkout, build only when ``frontend/ui/dist`` is missing or older than the UI
+    sources (or when *rebuild*), so a normal ``vast serve`` costs just an mtime scan.
     """
     import subprocess
     from pathlib import Path
     if os.environ.get('ROBOVAST_UI_DIST'):
         return  # packaged/baked dist — nothing to build here
-    ui_dir = Path(__file__).resolve().parents[4] / 'ui'
+    ui_dir = Path(__file__).resolve().parents[4] / 'frontend' / 'ui'
     if not (ui_dir / 'package.json').is_file():
         return  # not a source checkout
     dist_index = ui_dir / 'dist' / 'index.html'
@@ -220,7 +220,7 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
     if npm is None:
         raise click.ClickException(
             "the web UI needs building but 'npm' was not found; install Node.js "
-            "(or prebuild once with 'cd ui && npm run build')")
+            "(or prebuild once with 'cd frontend/ui && npm run build')")
     if not (ui_dir / 'node_modules').is_dir():
         click.echo('Installing web UI dependencies (npm install)…')
         subprocess.run([npm, 'install'], cwd=str(ui_dir), check=True)  # noqa: S603
@@ -313,7 +313,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='With --backend cluster or --attach: namespace the '
                    'robovast-service is deployed in.')
 @click.option('--rebuild-ui', is_flag=True,
-              help='Force a web UI rebuild even if ui/dist looks up to date '
+              help='Force a web UI rebuild even if frontend/ui/dist looks up to date '
                    '(source checkout only).')
 @click.option('--mcp/--no-mcp', 'mount_mcp', default=True, show_default=True,
               help='Also expose the MCP server at /mcp on this same port, so one '
@@ -338,7 +338,7 @@ def serve(host, port, backend, attach, context, k8s_namespace, rebuild_ui,
     runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
     and campaigns survive client exit (unlike ``vast exec local run``). The
     service serves the web UI at the same URL — from a source checkout this
-    (re)builds ``ui/dist`` first when it is missing or stale (needs ``npm``;
+    (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
     ``--rebuild-ui`` forces it). Ways it makes the port live:
 
     * **local** (default off-cluster) — runs the app in-process: local Docker +

@@ -1639,9 +1639,9 @@ Web UI internals
 ----------------
 
 The web frontend (user guide: :ref:`web_ui`) is a **plain Vite + React + TypeScript
-app** (MUI + `TanStack Query <https://tanstack.com/query>`_) living at the repo-root
-``ui/`` directory. It has its own ``package.json`` / ``node_modules`` and is
-independent of the Python build; ``npm run build`` emits ``ui/dist``.
+app** (MUI + `TanStack Query <https://tanstack.com/query>`_) living at
+``frontend/ui/``. It has its own ``package.json`` / ``node_modules`` and is
+independent of the Python build; ``npm run build`` emits ``frontend/ui/dist``.
 
 It is deliberately **not** a plugin framework or a shared UI shell — most of what a
 bespoke shell would provide maps to stable, widely-used OSS (server-state polling →
@@ -1649,24 +1649,24 @@ TanStack Query, charts → Plotly, forms → Monaco/rjsf), so the app is an ordi
 React app that reuses those libraries directly.
 
 **Thin client of the interface.** All service access goes through one seam,
-``ui/src/lib/robovastClient.ts``, which mirrors
+``frontend/ui/src/lib/robovastClient.ts``, which mirrors
 :class:`robovast.service.interface.RobovastInterface` — the ``Routes`` paths and the
 request/response models (including :class:`~robovast.execution.control_server.Status`)
 — **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
 update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
 the Monitor's live polling; mutations drive create/stop). Current pages:
-``ui/src/pages/Monitor.tsx`` and ``ui/src/pages/Launcher.tsx``, sharing
-``ui/src/components/StatusView.tsx`` for the live ``Status`` render.
+``frontend/ui/src/pages/Monitor.tsx`` and ``frontend/ui/src/pages/Launcher.tsx``, sharing
+``frontend/ui/src/components/StatusView.tsx`` for the live ``Status`` render.
 
 **The service serves the SPA.** :func:`robovast.service.app.build_app` mounts
-``ui/dist`` at ``/`` (``_mount_ui`` / ``_ui_dist``) **after** registering the API
+``frontend/ui/dist`` at ``/`` (``_mount_ui`` / ``_ui_dist``) **after** registering the API
 routes, so the interface routes win and the SPA is served from everything else. The
 UI is therefore same-origin with the API (no CORS in production) and **starts with the
-service**. The build location is ``ui/dist`` relative to the repo, overridable with
+service**. The build location is ``frontend/ui/dist`` relative to the repo, overridable with
 ``ROBOVAST_UI_DIST``; package the built assets into the service/controller image so the
 in-cluster service ships the UI. If no build is present the service runs API-only.
 
-**Dev loop.** ``cd ui && npm run dev`` runs Vite (:5173) and proxies the API path
+**Dev loop.** ``cd frontend/ui && npm run dev`` runs Vite (:5173) and proxies the API path
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
 
@@ -1706,8 +1706,8 @@ service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
 this version requires setting it up again** (``vast exec cluster cleanup`` then ``setup``,
 or ``setup --force``) to add the grant.
 
-**Config editor** (``ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
-a **Monaco** editor (``ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
+**Config editor** (``frontend/ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
+a **Monaco** editor (``frontend/ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
 ``monaco-yaml``, drives completion/inline-validation from ``get_config_schema()``). It edits a
 workspace's ``.vast`` (workspace = the project, since a browser has no CWD), autosaves +
 debounce-validates through ``validate_project``, and previews resolved configurations through
@@ -1720,7 +1720,7 @@ a structured problem so the editor's live validation never 500s on in-progress Y
 
 **Per-variation previews.** ``preview_configurations`` returns, per configuration, a ``previews``
 list (``{variation_type, params, remote}``) read from the config's declared ``variations``. The
-editor (``ui/src/preview/``) renders **built-in** variation types host-native — ``builtins.tsx``
+editor (``frontend/ui/src/preview/``) renders **built-in** variation types host-native — ``builtins.tsx``
 maps a variation-type name to a Plotly component (distribution curves for
 ``ParameterVariationDistribution*``, a value list for ``ParameterVariationList``). An **external**
 variation plugin may instead ship a web preview: it sets ``Variation.WEB_PREVIEW`` to a
@@ -1730,9 +1730,9 @@ package-relative dir holding a built **Module Federation** remote (``remoteEntry
 descriptor, which ``RemotePreview.tsx`` loads at runtime (sharing the host's React singletons).
 Built-ins ship no assets; a type with neither shows just the resolved parameters.
 
-**Results viewer** (``ui/src/pages/Eval.tsx``) is the browser ``vast eval gui``: pick a
+**Results viewer** (``frontend/ui/src/pages/Eval.tsx``) is the browser ``vast eval gui``: pick a
 campaign, browse its ``data.db`` schema, run read-only SQL, and chart the result with
-**Vega-Lite** (``ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
+**Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
 **promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
 helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3`` authorizer,
@@ -1744,7 +1744,7 @@ results identically, local or cluster. User-declared plots (``evaluation.plots``
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
-**Run view panel framework** (``ui/src/lib/dashboard/``) — the Run view (user guide:
+**Run view panel framework** (``frontend/ui/src/lib/dashboard/``) — the Run view (user guide:
 :ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so a
 future **live view** (watching a running system instead of replaying a rosbag) slots in
 without touching any panel:
@@ -1752,7 +1752,7 @@ without touching any panel:
 * **Panels** are plugins with **two delivery mechanisms behind one contract**. A
   ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
   ``PanelProps`` (``{spec, clock, data}``). *Core built-in* panels self-register via
-  ``registerPanel`` (``registry.ts``) by importing ``ui/src/panels/index.ts``. *Remote*
+  ``registerPanel`` (``registry.ts``) by importing ``frontend/ui/src/panels/index.ts``. *Remote*
   panels — package-provided or user-authored — are loaded at runtime as Module-Federation
   remotes (see below) and never touch the static registry. The ``.vast``'s
   ``visualization.panels`` specs are normalized by ``parseVastPanels.ts`` (single-key
@@ -1787,7 +1787,7 @@ descriptor. A **user-authored** ``custom`` panel names a bundle path relative to
 ``_collect_analysis_input_files`` stages the bundle into the campaign's ``_config/`` and it is
 served at ``GET /campaigns/{id}/panel_assets/{path}`` (``resolve_campaign_panel_asset``,
 path-confined). Both descriptors are ``{name, remote_entry_url, module}``; on the client,
-``useRemoteComponent`` (``ui/src/lib/remote.ts``, factored out of ``RemotePreview.tsx``) loads
+``useRemoteComponent`` (``frontend/ui/src/lib/remote.ts``, factored out of ``RemotePreview.tsx``) loads
 the module — seeding the host's React singletons — and ``PanelHost`` mounts it with the full
 ``PanelProps``. **Reference example:** the ``costmap`` panel, relocated out of the core UI into
 ``robovast_nav`` — Python descriptor in ``robovast_nav/panels.py``, build sources in
@@ -1797,7 +1797,7 @@ untested) variation-preview loading path too. Its **data endpoint** is likewise 
 see *Package-provided service data endpoints* below — so both halves of the costmap panel live in
 ``robovast_nav``.
 
-**Write a remote against** :repo_link:`panel-kit` (``@robovast/panel-kit``), never against a copy
+**Write a remote against** :repo_link:`frontend/panel-kit` (``@robovast/panel-kit``), never against a copy
 of the host's types. Sharing only ``react``/``react-dom`` at runtime is a *runtime* constraint, not
 a source one: the contract (``PanelProps``, ``DataProvider``, ``PlaybackClock``) and the
 clock-driven scaffolding (``useCanvasClock``, the time-index binary search, ``keyframes`` for
@@ -1853,7 +1853,7 @@ table in an existing schema still gets a type of its own, but derives the panel.
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
-``data.fetchRun(name, params)``, ``ui/src/lib/dashboard/dataProvider.ts``). This closes the last
+``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
 core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
 ``data.db`` table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
 points. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
@@ -1873,7 +1873,7 @@ GET→JSON only — *binary/large per-run artifacts* are already served by the f
 ``read_costmap_frame`` — it reads the ``costmaps`` table via ``ctx.open_db()`` and returns the frame
 dict the costmap panel decodes.
 
-**3D scene viewer core** (``ui/src/lib/scene3d/``) — renders the browser scene
+**3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the browser scene
 descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
 the format is RoboVAST's, see :doc:`run_capture`. ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
@@ -1887,7 +1887,7 @@ sizes the frustum each frame to enclose the world's bounding sphere — measured
 from the pivot, which the wheel now carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the consumer, ``ui/src/panels/Scene3DPanel.tsx``, which
+robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which
 binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
 (``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
 directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in

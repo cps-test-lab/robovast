@@ -145,7 +145,7 @@ def test_the_dev_proxy_covers_every_served_prefix():
     """
     import re
 
-    config = (pathlib.Path(__file__).resolve().parents[2] / "ui" / "vite.config.ts") \
+    config = (pathlib.Path(__file__).resolve().parents[2] / "frontend" / "ui" / "vite.config.ts") \
         .read_text(encoding="utf-8")
     block = config.split("const API_PREFIXES")[1].split("\n]")[0]
     proxied = set(re.findall(r"'/([A-Za-z0-9_.-]+)'", block))
@@ -154,11 +154,11 @@ def test_the_dev_proxy_covers_every_served_prefix():
     missing = sorted(served - proxied)
     assert not missing, (
         f"top-level API prefixes the dev server would not proxy: {missing}. Add them to "
-        "API_PREFIXES in ui/vite.config.ts.")
+        "API_PREFIXES in frontend/ui/vite.config.ts.")
 
 
 def test_the_generated_ui_client_is_up_to_date():
-    """``ui/src/lib/api.generated.ts`` must match the schema the app publishes now.
+    """``frontend/ui/src/lib/api.generated.ts`` must match the schema the app publishes now.
 
     The UI's ~40 response types used to be hand-written mirrors of the pydantic models
     with nothing tying them together, so a renamed or newly-optional field stayed
@@ -166,14 +166,14 @@ def test_the_generated_ui_client_is_up_to_date():
     is what makes that real, because a generated file nobody regenerates is just a slower
     hand-written one.
 
-    Regenerate with ``cd ui && npm run generate:api``.
+    Regenerate with ``cd frontend/ui && npm run generate:api``.
     """
     import json
 
-    ui = pathlib.Path(__file__).resolve().parents[2] / "ui"
+    ui = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "ui"
     committed = ui / "openapi.json"
     if not committed.is_file():
-        pytest.skip("ui/openapi.json not present (no web UI checkout)")
+        pytest.skip("frontend/ui/openapi.json not present (no web UI checkout)")
 
     from robovast.service.app import build_app
     from tools.dump_openapi import _mark_response_fields_required  # noqa: PLC0415
@@ -181,5 +181,5 @@ def test_the_generated_ui_client_is_up_to_date():
     current = build_app(_Stub()).openapi()
     _mark_response_fields_required(current)
     assert json.loads(committed.read_text()) == current, (
-        "ui/openapi.json is stale — the service's schema changed. Run "
-        "`cd ui && npm run generate:api` and commit the result.")
+        "frontend/ui/openapi.json is stale — the service's schema changed. Run "
+        "`cd frontend/ui && npm run generate:api` and commit the result.")

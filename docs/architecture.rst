@@ -661,11 +661,11 @@ three:
   list (:class:`robovast.common.config.VisualizationConfig`), served verbatim to the UI by
   ``list_campaign_panels`` (the same raw-load pattern as ``list_campaign_plots``). The
   frontend normalizes it against each panel type's registry defaults
-  (``ui/src/lib/dashboard/parseVastPanels.ts``).
-* **Registry + host** — panel plugins self-register (``ui/src/lib/dashboard/registry.ts``);
+  (``frontend/ui/src/lib/dashboard/parseVastPanels.ts``).
+* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/dashboard/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.
-* **Shared panel kit** — ``@robovast/panel-kit`` (``panel-kit/``) holds the panel contract
+* **Shared panel kit** — ``@robovast/panel-kit`` (``frontend/panel-kit/``) holds the panel contract
   (``PanelProps`` / ``PanelSpec`` / ``DataProvider`` / ``PlaybackClock``) and the clock-driven
   scaffolding (``useCanvasClock``, the time-index binary search, ``keyframes``). It exists
   because the host and the package-provided panel *remotes* are separately-built npm packages
@@ -675,12 +675,12 @@ three:
   it **by path** (a ``tsconfig`` ``paths`` entry plus a matching vite ``resolve.alias``); it has
   no build of its own and is deliberately *not* an MF ``shared`` module, so each side bundles
   its own copy and a version skew is an ordinary build rather than a remote-load failure.
-* **Clock** — ``PlaybackClock`` (``panel-kit/src/clock.ts``) is the single shared
+* **Clock** — ``PlaybackClock`` (``frontend/panel-kit/src/clock.ts``) is the single shared
   time source (seconds on the rosbag timeline). The playback panel is the only writer; the
   rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
   don't re-render the tree.
-* **Data seam** — ``DataProvider`` (declared in ``panel-kit/src/dataProvider.ts``, implemented
-  by ``dbDataProvider`` in ``ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
+* **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
+  by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
   rows/frames by table + time, decoupled from transport. Today it reads one run's rows from
   ``data.db`` through the existing ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
@@ -732,7 +732,7 @@ it for that topic. This is the one panel that fetches **per clock position** rat
 preloading its series, so "nearest" alone is not an interpretable answer — the query always
 returns something, however far away, and the panel could not tell a current frame from the
 first or last one clamped to a cursor minutes off. From that pair
-(``panel-kit``'s ``frameValidity``) it derives the interval over which the frame stays the
+(``frontend/panel-kit``'s ``frameValidity``) it derives the interval over which the frame stays the
 nearest one — so it re-requests only when the answer could change, and a latched topic such as
 ``/map`` is fetched once per session — and the local publish period, hence how far the cursor
 may drift before the layer is reported as absent instead of drawn as current. A latched topic

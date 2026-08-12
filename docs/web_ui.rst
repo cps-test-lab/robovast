@@ -245,7 +245,7 @@ Build the UI once, then start the service:
 
 .. code-block:: bash
 
-   cd ui && npm install && npm run build     # emits ui/dist (served by the service)
+   cd frontend/ui && npm install && npm run build     # emits frontend/ui/dist (served by the service)
    vast serve                                # serves the UI + REST API on one port
 
 Open the service URL in a browser and you get the UI; the REST API is served
@@ -1005,7 +1005,7 @@ service:
 .. code-block:: bash
 
    vast serve                # in one terminal (the service to talk to)
-   cd ui && npm run dev      # in another (Vite on :5173)
+   cd frontend/ui && npm run dev      # in another (Vite on :5173)
 
 The dev server proxies the API path prefixes to the service so the browser stays
 same-origin (no CORS). Point it at a different service with

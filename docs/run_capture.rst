@@ -37,7 +37,7 @@ renders something misleading.
 
 rst is the first producer of both: ``rst export web`` for the scene, ``rst export capture`` (or its
 scenario adapter, at shutdown) for the capture. The reference readers are
-``ui/src/lib/scene3d/sceneLoader.ts`` and ``ui/src/lib/scene3d/runCapture.ts``.
+``frontend/ui/src/lib/scene3d/sceneLoader.ts`` and ``frontend/ui/src/lib/scene3d/runCapture.ts``.
 
 **When each is produced.** A capture is written by the run, because only the simulator that ran can
 write it. A scene descriptor is *not* written by the run: it is a function of the world, so the service
@@ -218,7 +218,7 @@ Shaped for a live source
 
 The capture is defined as a **motion source** — a time base plus named tracks — of which these two files
 are one *serialization*. A live source is another, so following a running simulation lands as a second
-implementation of ``MotionSource`` (``ui/src/lib/scene3d/motionSource.ts``) with no change to the panel
+implementation of ``MotionSource`` (``frontend/ui/src/lib/scene3d/motionSource.ts``) with no change to the panel
 and none to this format. Five rules exist for that, each cheap now and expensive to retrofit:
 
 #. ``t1`` may be absent and ``complete`` may be ``false`` when the upper bound can still move. A consumer

@@ -25,13 +25,13 @@
 # here (stage below) and pointed at via ROBOVAST_UI_DIST. Without it the in-cluster
 # service comes up API-only and the browser gets a 404 on `/`.
 
-# -- web UI (ui/dist), served by `vast serve` from this image -----------------
+# -- web UI (frontend/ui/dist), served by `vast serve` from this image -------
 FROM node:20-slim AS ui-build
 WORKDIR /ui
 # Install deps against the lockfile first so this layer caches across UI edits.
-COPY ui/package.json ui/package-lock.json ./
+COPY frontend/ui/package.json frontend/ui/package-lock.json ./
 RUN npm ci
-COPY ui/ ./
+COPY frontend/ui/ ./
 RUN npm run build          # -> /ui/dist
 
 FROM python:3.12-slim

@@ -90,7 +90,7 @@ fi
 build_base() {
   # A context of its own, holding only what the Dockerfile stages. The repo root was passed
   # before and never read -- no COPY in that Dockerfile touched it -- so this only stops the
-  # whole working tree (ui/node_modules included) being sent to the daemon on every build.
+  # whole working tree (frontend/ui/node_modules included) being sent to the daemon on every build.
   local ctx
   ctx=$(mktemp -d) || return 1
   trap 'rm -rf "$ctx"' RETURN

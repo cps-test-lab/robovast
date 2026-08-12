@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "generate:api": "python ../tools/dump_openapi.py openapi.json && openapi-typescript openapi.json -o src/lib/api.generated.ts"
+    "generate:api": "python ../../tools/dump_openapi.py openapi.json && openapi-typescript openapi.json -o src/lib/api.generated.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.13.0",

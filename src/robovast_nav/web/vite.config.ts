@@ -1,7 +1,7 @@
 // Builds robovast_nav's run-view panels as a single Module-Federation REMOTE. The output
 // (remoteEntry.js + chunks) is written into the Python package as data (robovast_nav/web/dist)
 // and served by the robovast service at /panel_types/<type>/assets/... . The host UI loads it at
-// runtime (see ui/src/lib/remote.ts) and renders it with the PanelProps contract.
+// runtime (see frontend/ui/src/lib/remote.ts) and renders it with the PanelProps contract.
 //
 // One shared container ('robovast_nav') hosts every panel this package ships, so they share
 // React/vendor chunks. Each panel type's Python class (robovast_nav/panels.py) sets REMOTE_NAME to
@@ -27,7 +27,7 @@ export default defineConfig({
     // NOT an MF `shared` module: bundling our own copy means a version skew against a newer host is an
     // ordinary build rather than a remote-load failure. Must match the tsconfig `paths` entry.
     alias: {
-      '@robovast/panel-kit': fileURLToPath(new URL('../../../panel-kit/src/index.ts', import.meta.url)),
+      '@robovast/panel-kit': fileURLToPath(new URL('../../../frontend/panel-kit/src/index.ts', import.meta.url)),
     },
   },
   plugins: [

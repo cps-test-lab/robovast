@@ -1066,22 +1066,23 @@ def _build_mcp_app():
 
 
 def _ui_dist() -> Optional[Path]:
-    """Locate the built web UI (``ui/dist``), or ``None`` if it isn't built.
+    """Locate the built web UI (``frontend/ui/dist``), or ``None`` if it isn't built.
 
-    Order: ``ROBOVAST_UI_DIST`` env override, then the repo-root ``ui/dist`` relative
-    to this source file (the dev / ``vast serve`` layout). Packaged images set the
-    env var to the assets baked into the image.
+    Order: ``ROBOVAST_UI_DIST`` env override, then the repo-root ``frontend/ui/dist``
+    relative to this source file (the dev / ``vast serve`` layout). Packaged images set
+    the env var to the assets baked into the image.
     """
     import os  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
 
     env = os.environ.get("ROBOVAST_UI_DIST")
-    candidate = Path(env) if env else Path(__file__).resolve().parents[3] / "ui" / "dist"
+    candidate = (Path(env) if env
+                 else Path(__file__).resolve().parents[3] / "frontend" / "ui" / "dist")
     return candidate if (candidate / "index.html").is_file() else None
 
 
 def _mount_ui(app) -> None:
-    """Serve the built SPA (``ui/dist``) from the service so the UI starts with it.
+    """Serve the built SPA (``frontend/ui/dist``) from the service so the UI starts with it.
 
     The RobovastInterface routes are registered first and win; this mounts the SPA at
     ``/`` for everything else (``html=True`` serves ``index.html`` at the root). Served
@@ -1091,7 +1092,7 @@ def _mount_ui(app) -> None:
     dist = _ui_dist()
     if dist is None:
         logger.info("web UI build not found — serving API only "
-                    "(build it with `cd ui && npm run build`)")
+                    "(build it with `cd frontend/ui && npm run build`)")
         return
     from fastapi.staticfiles import \
         StaticFiles  # pylint: disable=import-outside-toplevel
