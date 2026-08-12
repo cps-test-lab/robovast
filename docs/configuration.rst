@@ -821,9 +821,17 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 
 **Available fields:**
 
-- ``cpu`` (Optional): Number of CPU cores (integer), or a per-cluster list
+- ``cpu`` (Optional): Number of CPU cores — whole (``4``), fractional (``0.5``) or in the
+  millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list
 - ``memory`` (Optional): Memory limit (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
 - ``gpu`` (Optional): Number of GPUs (enables the NVIDIA runtime when set)
+
+Fractional cores are worth the trouble on the cluster, where a campaign's throughput is
+``quota // pod_request``: rounding a sidecar that measures 0.3 cores up to a whole one is
+paid on **every job of the sweep**. The Monitor's **Details** panel measures what each
+container actually used and suggests the number to type here (see :doc:`web_ui`). Both
+lanes take the fractional value — the local lane converts a millicore declaration to
+Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accepts.
 
 **Per-cluster resource values** are supported when multiple clusters need different
 allocations. See :ref:`cluster-execution` for the full syntax.

@@ -104,6 +104,40 @@ def test_mode_auto_is_refused_with_a_backend():
     validate_config(cfg)
 
 
+# -- resources ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("cpu", [4, 0.5, 4.75, "500m", "0.25"])
+def test_cpu_takes_fractional_cores_and_millicores(cpu):
+    """On the cluster a campaign's throughput is ``quota // pod_request``, so rounding a
+    measured 0.3-core sidecar up to a whole core is paid on every job of the sweep."""
+    c = validate_config(_cfg(scenario={"image": "a", "resources": {"cpu": cpu}}))
+    assert c.execution.containers["scenario"].resources.cpu == cpu
+
+
+def test_a_whole_core_stays_an_int():
+    """Both lanes render the value with ``str()``. Coercing 4 to 4.0 would rewrite every
+    existing campaign's manifest from "4" to "4.0" for no reason."""
+    c = validate_config(_cfg(scenario={"image": "a", "resources": {"cpu": 4}}))
+    assert isinstance(c.execution.containers["scenario"].resources.cpu, int)
+
+
+@pytest.mark.parametrize("cpu", ["4Gi", "lots", "", -1])
+def test_cpu_that_is_not_a_cpu_quantity_is_refused_here(cpu):
+    """Now that ``cpu`` accepts strings, the annotation alone would pass "4Gi" through to
+    the manifest — where it surfaces as a pod that never schedules, far from the line
+    that caused it."""
+    with pytest.raises(ValueError, match="is not a CPU quantity"):
+        validate_config(_cfg(scenario={"image": "a", "resources": {"cpu": cpu}}))
+
+
+def test_a_per_cluster_cpu_list_is_checked_entry_by_entry():
+    """The per-cluster form is where a bad value hides longest: only the cluster whose
+    entry is wrong ever fails, and only once it is the active context."""
+    with pytest.raises(ValueError, match="is not a CPU quantity"):
+        validate_config(_cfg(scenario={"image": "a", "resources": {
+            "cpu": [{"gcp-c4": "500m"}, {"local": "8Gi"}]}}))
+
+
 # -- the v1 cut --------------------------------------------------------------------
 
 def test_version_1_is_refused_with_instructions():

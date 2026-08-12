@@ -41,6 +41,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        read_job_links,
                                        resolve_robovast_image,
                                        write_job_links_manifest, sidecar_backend_env)
+from robovast.common.quantity import to_cores
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
 from robovast.execution.packer import build_jobs
 
@@ -379,7 +380,14 @@ fi
 
 
 def _compose_resources_block(cpu, memory, indent="    "):
-    """Return deploy.resources.limits YAML lines for a service, or empty string if none specified."""
+    """Return deploy.resources.limits YAML lines for a service, or empty string if none specified.
+
+    ``cpu`` is normalized to a plain number of cores because Compose's ``cpus`` is a decimal
+    count, **not** a Kubernetes quantity: ``cpus: '500m'`` is a Compose validation error, so
+    passing the millicore spelling through verbatim would make a ``.vast`` that validates and
+    runs on the cluster fail on the local lane. ``memory`` needs no such treatment — Compose
+    takes the same suffixed form (``2Gi``) that Kubernetes does.
+    """
     if not cpu and not memory:
         return ""
     lines = [
@@ -388,10 +396,23 @@ def _compose_resources_block(cpu, memory, indent="    "):
         f"{indent}    limits:",
     ]
     if cpu:
-        lines.append(f"{indent}      cpus: '{cpu}'")
+        lines.append(f"{indent}      cpus: '{_compose_cpus(cpu)}'")
     if memory:
         lines.append(f"{indent}      memory: {memory}")
     return "\n".join(lines)
+
+
+def _compose_cpus(cpu) -> str:
+    """A cpu declaration as Compose's decimal core count (``"500m"`` -> ``"0.5"``).
+
+    An unparseable value is passed through unchanged rather than dropped: the config layer
+    already rejects those, and if one ever reaches here, Compose's own error naming the bad
+    value beats this silently removing the limit.
+    """
+    cores = to_cores(cpu)
+    if cores is None:
+        return str(cpu)
+    return str(int(cores)) if float(cores).is_integer() else str(cores)
 
 
 def _build_packed_compose_yaml(
@@ -917,8 +938,11 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         for d in mkdir_dirs:
             s += f'mkdir -p "{d}/logs"\n'
             s += f'chmod -R 777 "{d}"\n'
-        # Set AVAILABLE_CPUS/MEM from configured resources
-        s += f'AVAILABLE_CPUS="{main_cpu}"\n'
+        # Set AVAILABLE_CPUS/MEM from configured resources. CPU is normalized to cores for the
+        # same reason the compose block is, plus one of its own: this lands in sysinfo.yaml and
+        # then in the ``runs.available_cpus`` REAL column, where "500m" would be stored as text
+        # in a numeric column and every comparison against it would quietly stop working.
+        s += f'AVAILABLE_CPUS="{_compose_cpus(main_cpu) if main_cpu else ""}"\n'
         if main_memory:
             s += f'AVAILABLE_MEM="{main_memory}"\n'
         else:

@@ -1098,10 +1098,13 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     # Param columns are typed from the resolved param values across all configs, so
     # a numeric factor stays numeric: `ORDER BY param_wind_strength` and
     # `WHERE param_speed > 0.5` mean what they say instead of comparing text.
+    # ``available_cpus`` is REAL, not INTEGER: ``execution.resources.cpu`` takes fractional
+    # cores, and an INTEGER column would silently truncate a 0.5-core reservation to 0 — which
+    # then reads as "this run had no CPU" in every query that joins to it.
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
-                                  "available_cpus", "available_mem_bytes",
-                                  "clock_map_samples")
-                 else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s")
+                                  "available_mem_bytes", "clock_map_samples")
+                 else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s",
+                                    "available_cpus")
                  else TEXT)
              for c in base_cols}
     for key, col in zip(param_keys, param_cols):

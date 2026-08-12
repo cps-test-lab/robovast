@@ -21,6 +21,8 @@ from typing import Annotated, Any, Literal, Optional, Union
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator, model_validator)
 
+from robovast.common.quantity import to_cores
+
 logger = logging.getLogger(__name__)
 
 # A search-variable marker: a string whose *entire* value is ``$name`` or
@@ -114,9 +116,44 @@ class ResourcesConfig(BaseModel):
           memory:
             - gke_my-project_us-central1_my-cluster: 10Gi
             - minikube: 20Gi
+
+    ``cpu`` takes fractional cores (``0.5``) and the millicore spelling Kubernetes uses
+    (``"500m"``), not only whole cores. On the cluster lane a campaign's throughput is
+    ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
+    paid on **every job of the sweep** — and both lanes have always accepted the fractional
+    value (the Kubernetes manifest takes ``str(cpu)``, Compose takes ``cpus: '<cpu>'``). The
+    integer-only annotation was the only thing rejecting it.
     """
-    cpu: Optional[Union[int, list[dict[str, int]]]] = None
+    # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
+    # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
+    # "4" to "4.0" for no reason.
+    cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
     memory: Optional[Union[str, list[dict[str, str]]]] = None
+
+    @field_validator('cpu')
+    @classmethod
+    def validate_cpu_quantity(cls, v):
+        """Reject a cpu value that is not a CPU quantity.
+
+        Without this, ``str`` in the annotation would accept ``"4Gi"`` or ``"lots"`` and pass
+        it through to the manifest, where the failure surfaces as a pod that never schedules
+        — far from the line that caused it.
+        """
+        def check(value):
+            if to_cores(value) is None:
+                raise ValueError(
+                    f'cpu {value!r} is not a CPU quantity: use cores (4, 0.5) '
+                    'or millicores ("500m")')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
 
 
 #: The container that runs scenario-execution. Always present; when a simulator backend

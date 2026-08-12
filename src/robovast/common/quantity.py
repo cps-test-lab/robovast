@@ -83,3 +83,44 @@ def to_bytes(value) -> int | None:
     if multiplier is None:
         return None
     return int(magnitude * multiplier)
+
+
+def to_cores(value) -> float | None:
+    """Parse a Kubernetes-style CPU quantity into a float number of cores.
+
+    Accepts a plain number of cores (``4``, ``0.5``) or the millicore spelling Kubernetes
+    itself uses (``"500m"`` → ``0.5``). Unlike :func:`to_bytes` the binary suffixes are not
+    accepted: ``Gi`` of CPU is meaningless, and reading it as a decimal multiplier would
+    turn a typo into a reservation big enough that the pod never schedules.
+
+    Returns ``None`` for anything unparseable, so a caller reports "not declared" rather
+    than substituting a number nothing measured.
+
+    >>> to_cores(4)
+    4.0
+    >>> to_cores("500m")
+    0.5
+    >>> to_cores(0.25)
+    0.25
+    >>> to_cores("4Gi") is None
+    True
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    match = _PATTERN.match(value)
+    if match is None:
+        return None
+    number, suffix = match.groups()
+    if suffix not in ("", "m"):
+        return None
+    try:
+        magnitude = float(number)
+    except ValueError:
+        return None
+    if magnitude < 0:
+        return None
+    return magnitude / 1000 if suffix == "m" else magnitude

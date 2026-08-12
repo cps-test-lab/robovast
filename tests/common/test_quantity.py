@@ -10,7 +10,7 @@ as a number that is wrong by a factor of 10^9.
 
 import pytest
 
-from robovast.common.quantity import to_bytes
+from robovast.common.quantity import to_bytes, to_cores
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -50,3 +50,36 @@ def test_unparseable_is_none_not_a_guess(value):
     """None means "not recorded". Guessing a unit would put an authoritative-looking
     wrong number into a column an analysis averages."""
     assert to_bytes(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    # Whole cores, the form every existing .vast uses.
+    (4, 4.0),
+    ("4", 4.0),
+    (0, 0.0),
+    # Fractional cores: the point of the exercise. On the cluster a campaign's throughput is
+    # quota // pod_request, so rounding a 0.3-core sidecar up to a whole core is paid per job.
+    (0.5, 0.5),
+    (4.75, 4.75),
+    ("0.25", 0.25),
+    # Millicores: what Kubernetes itself writes, so a .vast author may well write it too.
+    ("500m", 0.5),
+    ("250m", 0.25),
+    ("1000m", 1.0),
+])
+def test_to_cores_parses_cores_and_millicores(value, expected):
+    assert to_cores(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [
+    None, "", "lots", "  ", [], {},
+    # Byte suffixes are not CPU quantities. Accepting "4Gi" as 4e9 cores would turn a typo into
+    # a reservation no cluster can schedule, and the pod would simply never start.
+    "4Gi", "512M", "16G",
+    # A negative reservation is not a reservation.
+    -1, "-2",
+    # bool is an int subclass; True must not read as one core.
+    True, False,
+])
+def test_to_cores_rejects_what_is_not_a_cpu_quantity(value):
+    assert to_cores(value) is None
