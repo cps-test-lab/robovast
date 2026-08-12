@@ -32,6 +32,10 @@ WORKDIR /ui
 COPY frontend/ui/package.json frontend/ui/package-lock.json ./
 RUN npm ci
 COPY frontend/ui/ ./
+# @robovast/panel-kit is in-tree source, not an npm package -- resolved via a
+# tsconfig/vite path alias at ../panel-kit relative to this WORKDIR, so it must
+# land as a sibling of /ui for that alias to resolve inside the build.
+COPY frontend/panel-kit/ /panel-kit
 RUN npm run build          # -> /ui/dist
 
 FROM python:3.12-slim
