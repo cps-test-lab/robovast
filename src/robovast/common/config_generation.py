@@ -1451,6 +1451,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
+            except RuntimeError as exc:
+                # execute_variation already normalizes a plugin's own failure (a raised
+                # exception or a None/empty return) into RuntimeError. Drop just this one
+                # config rather than aborting every other config in the batch -- a
+                # probabilistic failure in one search draw (e.g. ObstacleVariation losing
+                # its placement budget) should not cost the rest.
+                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - {exc}")
+                current_configs = []
+                break
             finally:
                 if container_runner is not None:
                     container_runner.close()

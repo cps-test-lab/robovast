@@ -551,7 +551,18 @@ class CampaignController:
                 self._run_postprocessing()
 
                 for ps in group:
-                    config_name = name_by_id[ps.id]
+                    config_name = name_by_id.get(ps.id)
+                    if config_name is None:
+                        # Composition itself failed for this param set (see
+                        # Compose._resolve_names) -- no config_dir was ever produced, so
+                        # there is nothing to evaluate or run. Record it for visibility
+                        # and leave it out of `evaluations`: every strategy this campaign
+                        # can use tolerates a shorter list than it asked for.
+                        self.store.record_unit(
+                            batch_id=batch_id, paramset_id=ps.id, config_name="",
+                            params=ps.values, objectives={}, measures={},
+                            n_samples=0, status="composition_failed", result_dir="")
+                        continue
                     config_dir = Path(self.campaign_root) / config_name
                     ev = self.evaluator.evaluate(config_dir, ps)
                     evaluations.append(ev)

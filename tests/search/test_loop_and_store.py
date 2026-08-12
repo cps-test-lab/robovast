@@ -68,7 +68,27 @@ class FakeCompose:
         return campaign_data, name_by_id
 
 
-def _search_controller(cfg, tmp_path, strategy=None, runs=2):
+class FakeComposePartialFailure:
+    """Mimics Compose._resolve_names omitting one param set's id from name_by_id
+    -- e.g. a variation plugin (ObstacleVariation, ...) failed to compose it."""
+
+    def __init__(self, fail_index=0):
+        self.fail_index = fail_index
+
+    def compose(self, param_sets, output_dir):
+        name_by_id, configs = {}, []
+        for i, ps in enumerate(param_sets):
+            if i == self.fail_index:
+                continue
+            name = f"c{ps.id}"
+            name_by_id[ps.id] = name
+            configs.append({"name": name})
+        campaign_data = {"execution": {"containers": {"scenario": {"image": "img"}}, "runs": 1},
+                         "configs": configs}
+        return campaign_data, name_by_id
+
+
+def _search_controller(cfg, tmp_path, strategy=None, runs=2, compose=None):
     from robovast.search.stopping import build_stop_conditions
     store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
     backend = FakeBackend()
@@ -76,7 +96,7 @@ def _search_controller(cfg, tmp_path, strategy=None, runs=2):
         campaign_id="camp", results_dir=str(tmp_path), runs=runs, backend=backend,
         options=RunOptions(), store=store, campaign_config_dump={"version": 1},
         vast_dir=str(tmp_path), strategy=strategy or build_strategy(cfg),
-        evaluator=Evaluator(cfg, str(tmp_path)), compose=FakeCompose(),
+        evaluator=Evaluator(cfg, str(tmp_path)), compose=compose or FakeCompose(),
         per_batch=cfg.per_batch, stop_conditions=build_stop_conditions(cfg))
     return controller, store, backend
 
@@ -170,6 +190,38 @@ def test_n_reps_override_groups_runs(tmp_path):
     by_x = {ev.params.values["x"]: ev.n_samples for ev in report.evaluations}
     assert by_x[0.1] == 5 and by_x[0.2] == 5 and by_x[0.3] == 2
     store.close()
+
+
+def test_a_composition_failure_is_recorded_and_skipped_not_fatal(tmp_path):
+    """One param set failing to compose (Compose._resolve_names omitting its id, e.g. a
+    probabilistic ObstacleVariation placement failure) must not abort the batch: it is
+    recorded as `composition_failed` and left out of what the strategy is told, while
+    the rest of the batch is evaluated normally."""
+    cfg = _cfg(batches=1, per_batch=3)
+    param_sets = [ParamSet(values={"x": 0.1}),
+                  ParamSet(values={"x": 0.2}),
+                  ParamSet(values={"x": 0.3})]
+    controller, store, _backend = _search_controller(
+        cfg, tmp_path, strategy=_Fixed(cfg, param_sets),
+        compose=FakeComposePartialFailure(fail_index=0))
+
+    report = controller.run()  # must not raise
+
+    assert len(report.evaluations) == 2  # the failed param set is excluded
+    assert {ev.params.values["x"] for ev in report.evaluations} == {0.2, 0.3}
+
+    conn = sqlite3.connect(store.db_path)
+    rows = conn.execute(
+        "SELECT paramset_id, config_name, status, n_samples, result_dir FROM unit"
+    ).fetchall()
+    conn.close()
+    store.close()
+
+    assert len(rows) == 3  # every param set is recorded, including the failed one
+    failed = [r for r in rows if r[2] == "composition_failed"]
+    assert len(failed) == 1
+    assert failed[0][0] == param_sets[0].id
+    assert failed[0][1] == "" and failed[0][3] == 0 and failed[0][4] == ""
 
 
 def test_end_batch_progress_reports_resultless_runs(tmp_path):

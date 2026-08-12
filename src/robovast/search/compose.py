@@ -210,11 +210,14 @@ class Compose:
                 name_by_id[ps_id] = got[0]
                 continue
             if not got:
-                raise ValueError(
-                    f"Search variation produced no config for param set "
-                    f"'{block_name}'. A variation in search.variations filtered "
-                    f"everything out — check its parameters (e.g. an impossible "
-                    f"path/obstacle constraint).")
+                # A variation filtered everything out for this one param set (e.g. an
+                # impossible path/obstacle constraint) -- omit it from name_by_id rather
+                # than failing the whole batch; the caller records it as a failed
+                # evaluation and moves on with the rest of the group.
+                logger.warning(
+                    "Search variation produced no config for param set '%s' -- "
+                    "treating it as a failed evaluation.", block_name)
+                continue
             raise ValueError(
                 f"Search variation expanded param set '{block_name}' into "
                 f"{len(got)} configs ({got}). Each search param set must map to "
