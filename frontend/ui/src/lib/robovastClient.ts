@@ -73,7 +73,11 @@ export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocess
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
 // zero means there is no store to read — the campaign never started, or ended before writing one.
 // Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
-export const hasRecordedRuns = (c: CampaignSummary) => c.num_runs > 0
+// A search campaign whose every draw failed to compose also has zero runs, but it *did* record
+// why: hiding it left the one campaign most in need of inspection missing from the picker with no
+// explanation, so it counts as having something to show.
+export const hasRecordedRuns = (c: CampaignSummary) =>
+  c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 

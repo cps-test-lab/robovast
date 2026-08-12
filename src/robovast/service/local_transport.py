@@ -1002,6 +1002,10 @@ class LocalTransport(RobovastInterface):
                     if is_search:
                         run_search_campaign(
                             target.config_path, campaign_config, results_dir, runs,
+                            # Passed, not dropped: a search cannot honour a config
+                            # filter, and silently ignoring one launched the whole
+                            # budget for a caller who asked for a single-config pilot.
+                            config_filter=config_filter,
                             backend=backend, options=options,
                             campaign_id=campaign_id, state=state,
                             description=request.description)
@@ -2041,15 +2045,29 @@ class LocalTransport(RobovastInterface):
     def preview_configurations(
         self, workspace_id: str, max_configs: int = 0, path: str = ""
     ) -> PreviewResponse:
+        from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
         project = self._resolve_project(workspace_id, path)
-        try:
-            campaign_data, _ = generate_scenario_variations(
-                variation_file=project.config_path, output_dir=None)
-        except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
-            raise ValueError(str(e)) from e
-        configs = campaign_data["configs"]
-        runs = campaign_data.get("execution", {}).get("runs", 1)
+        # A search .vast has no `configuration:` to expand -- its variations live under
+        # `search.variations` and are only realized per sampled ParamSet. Composing a
+        # sample the way a real batch does is the only preview that means anything;
+        # the plain call would report zero configs, indistinguishable from an empty file.
+        if (load_config(project.config_path) or {}).get("search"):
+            from robovast.search.compose import preview_search_sample
+            try:
+                sample = preview_search_sample(project.config_path)
+            except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
+                raise ValueError(str(e)) from e
+            configs = sample["configs"]
+            runs = sample["runs_per_config"]
+        else:
+            try:
+                campaign_data, _ = generate_scenario_variations(
+                    variation_file=project.config_path, output_dir=None)
+            except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
+                raise ValueError(str(e)) from e
+            configs = campaign_data["configs"]
+            runs = campaign_data.get("execution", {}).get("runs", 1)
         remotes = _variation_remotes()
         items = [PreviewConfiguration(
                     name=c["name"], parameters=c.get("config", {}),
@@ -2621,6 +2639,7 @@ class LocalTransport(RobovastInterface):
             started_at=started_at,
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
             num_failed=counts["num_failed"] + counts["num_errors"],
+            num_composition_failed=counts.get("num_composition_failed", 0),
             # From the same snapshot as the phase, so a listing cannot show a campaign as
             # finished-and-fine while its Status says postprocessing failed.
             postprocessing_error=snap.postprocessing_error or "",
@@ -2641,7 +2660,11 @@ class LocalTransport(RobovastInterface):
         from robovast.common.store import read_run_counts
 
         counts = read_run_counts(campaign_dir)
-        if counts is not None and (live or counts["num_runs"] > 0):
+        if counts is not None and (live or counts["num_runs"] > 0
+                                   or counts.get("num_composition_failed", 0) > 0):
+            # A campaign whose every draw failed to compose has zero runs and yet is
+            # fully accounted for: without this the store's real answer is discarded
+            # for a disk walk that can only find the runs that do not exist.
             return counts
         if not live:
             import sqlite3
@@ -2657,7 +2680,12 @@ class LocalTransport(RobovastInterface):
 
     @staticmethod
     def _walk_counts(campaign_dir: Path) -> dict:
-        """Legacy fallback: derive counts by walking each run's ``test.xml``."""
+        """Legacy fallback: derive counts by walking each run's ``test.xml``.
+
+        ``num_composition_failed`` is 0 here by necessity, not by finding none: a
+        draw that never composed left no directory for a disk walk to see. Only the
+        store knows about those, which is why this is the last resort.
+        """
         from robovast.common.campaign_data import get_vast_configuration_info
         try:
             info = get_vast_configuration_info(campaign_dir)
@@ -2668,6 +2696,7 @@ class LocalTransport(RobovastInterface):
             "num_passed": info.get("num_passed", 0),
             "num_failed": info.get("num_failed", 0),
             "num_errors": info.get("num_errors", 0),
+            "num_composition_failed": 0,
         }
 
     def _started_at_for(self, cid: str) -> Optional[str]:

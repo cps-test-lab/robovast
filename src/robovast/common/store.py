@@ -573,6 +573,11 @@ class CampaignStore:
         ``failed`` only), and ``num_errors`` (status ``error``). An ``unknown`` run
         counts toward ``num_runs`` but none of the others, so
         ``num_passed + num_failed + num_errors`` may be < ``num_runs``.
+
+        ``num_composition_failed`` counts *units* rather than runs (a search draw
+        that could not be composed never produced one), so it is reported beside
+        the run tallies rather than folded into them: ``num_runs`` keeps meaning
+        "runs that happened".
         """
         rows = self._conn.execute(
             "SELECT r.status AS status, COUNT(*) AS n FROM run r "
@@ -581,11 +586,16 @@ class CampaignStore:
             "WHERE b.campaign_id = ? GROUP BY r.status", (campaign_id,)
         ).fetchall()
         by_status = {row["status"]: row["n"] for row in rows}
+        composition_failed = self._conn.execute(
+            "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? AND u.status = 'composition_failed'",
+            (campaign_id,)).fetchone()[0]
         return {
             "num_runs": sum(by_status.values()),
             "num_passed": by_status.get("passed", 0),
             "num_failed": by_status.get("failed", 0),
             "num_errors": by_status.get("error", 0),
+            "num_composition_failed": composition_failed,
         }
 
 
@@ -671,6 +681,18 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM run GROUP BY status").fetchall()
+            # Counts units, not runs: a search draw that could not be composed never
+            # produced one. Reported beside the run tallies rather than inside them, so
+            # ``num_runs`` keeps meaning "runs that happened" -- while the draw itself
+            # stops being invisible in every summary that reads these counts. Its own
+            # try: a store without a ``unit`` table still has usable run tallies, and
+            # losing them to a missing column would be the worse failure.
+            try:
+                composition_failed = conn.execute(
+                    "SELECT COUNT(*) FROM unit WHERE status = 'composition_failed'"
+                ).fetchone()[0]
+            except sqlite3.Error:
+                composition_failed = 0
     except sqlite3.Error:
         return None  # no ``run`` table (v1) or unreadable store
     by_status = {r[0]: r[1] for r in rows}
@@ -679,4 +701,5 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
         "num_passed": by_status.get("passed", 0),
         "num_failed": by_status.get("failed", 0),
         "num_errors": by_status.get("error", 0),
+        "num_composition_failed": composition_failed,
     }

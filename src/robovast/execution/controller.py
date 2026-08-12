@@ -43,6 +43,7 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -521,6 +522,27 @@ class CampaignController:
                 best = v
         return best
 
+    @contextmanager
+    def _variation_log(self):
+        """Route composition output to the campaign's ``variation.log`` phase file.
+
+        Appends, so every batch's composition accumulates into the one VARIATION
+        phase. Never fails the campaign over its own logging: a handler that cannot
+        be opened is warned about and the composition proceeds unlogged.
+        """
+        handler = None
+        try:
+            handler = add_campaign_log_handler(
+                os.path.join(self.campaign_root, "_execution", "variation.log"))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not open variation.log; continuing without it.",
+                           exc_info=True)
+        try:
+            yield
+        finally:
+            if handler is not None:
+                remove_campaign_log_handler(handler)
+
     def _run_search_batch(self, param_sets, batch_idx, batch_id):
         """Compose, execute and score one batch.
 
@@ -544,7 +566,14 @@ class CampaignController:
                 # Compose into a temp dir (intermediate config artifacts); the backend
                 # stages from it and only results land under the campaign root.
                 with tempfile.TemporaryDirectory(prefix="robovast_compose_") as artifacts:
-                    campaign_data, name_by_id = self.compose.compose(group, artifacts)
+                    # Composition happens once per batch here, rather than once up front
+                    # as in batch mode -- but it is the same phase, and it is where an
+                    # unrealizable draw is reported. Without this handler that narrative
+                    # lands in controller.log among the run output, and get_campaign_log's
+                    # VARIATION phase (documented as where a campaign that failed before
+                    # it ever ran explains itself) never appears for a search at all.
+                    with self._variation_log():
+                        campaign_data, name_by_id = self.compose.compose(group, artifacts)
                     self.backend.run_batch(
                         campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
                         runs=reps, options=self.options)
@@ -827,10 +856,19 @@ def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> N
 
 
 def run_search_campaign(vast_file, campaign_config, results_dir, runs,
+                        config_filter=None,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None, campaign_id=None, state=None,
                         notifier=None, description=""):
-    """Build and run a search campaign. Requires ``campaign_config.search``."""
+    """Build and run a search campaign. Requires ``campaign_config.search``.
+
+    ``config_filter`` exists here only to be **refused**. A search names its
+    configurations after parameter sets it has not drawn yet, so there is nothing
+    for a glob to select — but the launch path used to accept the filter and
+    silently drop it, which turned the documented "pilot one configuration before
+    the full sweep" into a launch of the entire search budget. Failing is the
+    point; ``pilot`` below is the affordance that actually works here.
+    """
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
     from robovast.search.stopping import build_stop_conditions
@@ -839,6 +877,13 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     search_cfg = campaign_config.search
     if search_cfg is None:
         raise ValueError("run_search_campaign called without a 'search' block")
+    if config_filter:
+        raise CampaignConfigError(
+            f"config_filter ({config_filter!r}) does not apply to a search campaign: "
+            "its configurations are generated from parameter sets the strategy draws "
+            "at run time, so there are no configuration names to match before it "
+            "starts. To run a small pilot of a search, reduce 'search.per_batch' and "
+            "'search.budget' in the .vast (e.g. per_batch: 1, budget: [{batches: 1}]).")
 
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs

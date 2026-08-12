@@ -7,8 +7,10 @@
 import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 
 // Pass/fail status of any node, mapped to a theme color by `statusColor`. `neutral` = no verdict
-// yet (e.g. a campaign that hasn't been postprocessed); `running` = still executing.
-export type NodeStatus = 'passed' | 'failed' | 'unknown' | 'running' | 'neutral'
+// yet (e.g. a campaign that hasn't been postprocessed); `running` = still executing; `skipped` = a
+// search parameter set whose configuration could not be built at all, so it never ran — distinct
+// from `failed` (which ran and lost) and from `unknown` (which may yet have a verdict).
+export type NodeStatus = 'passed' | 'failed' | 'skipped' | 'unknown' | 'running' | 'neutral'
 
 export type NodeKind = 'campaign' | 'config' | 'run' | 'placeholder'
 
@@ -37,6 +39,10 @@ export function statusColor(status: NodeStatus): string {
       return 'error.main'
     case 'running':
       return 'warning.main'
+    // Deliberately not `error.main`: a draw that was never realizable is not a
+    // regression to chase, and colouring it as one buries the runs that did fail.
+    case 'skipped':
+      return 'info.main'
     case 'unknown':
       return 'text.secondary'
     default:
@@ -54,30 +60,40 @@ export function campaignStatus(c: CampaignSummary): NodeStatus {
   return 'neutral'
 }
 
-// A single run's verdict, from the `runs.status` column (passed | error | failed | unknown).
+// A single run's verdict, from the `runs.status` column (passed | error | failed |
+// composition_failed | unknown).
 export function runStatus(row: Record<string, unknown>): NodeStatus {
   const s = String(row.status ?? '').toLowerCase()
   if (s === 'passed') return 'passed'
   if (s === 'failed' || s === 'error') return 'failed'
+  if (s === 'composition_failed') return 'skipped'
   return 'unknown'
 }
 
-// A config's rollup from its runs: any failure → failed; all passed → passed; else unknown.
+// A config's rollup from its runs: any failure → failed; all passed → passed; all skipped →
+// skipped (the draw never became runnable, so there is nothing pending); else unknown.
 function rollupConfig(runs: NodeStatus[]): NodeStatus {
   if (runs.some((s) => s === 'failed')) return 'failed'
   if (runs.length > 0 && runs.every((s) => s === 'passed')) return 'passed'
+  if (runs.length > 0 && runs.every((s) => s === 'skipped')) return 'skipped'
   return 'unknown'
 }
 
 // The top-level label/status for a campaign node (children are attached lazily on expand).
 export function campaignItem(c: CampaignSummary): ResultsTreeItem {
+  const skipped = c.num_composition_failed ?? 0
+  // Appended rather than folded into the denominator: those draws produced no runs, so
+  // counting them there would understate the pass rate of the runs that did happen —
+  // while dropping them entirely is what made a half-uncomposable search look complete.
+  const runs = c.num_runs > 0 ? `${c.num_passed}/${c.num_runs}` : undefined
+  const count = skipped > 0 ? [runs, `${skipped} skipped`].filter(Boolean).join(' · ') : runs
   return {
     id: c.campaign_id,
     label: c.campaign_id,
     kind: 'campaign',
     campaignId: c.campaign_id,
     status: campaignStatus(c),
-    count: c.num_runs > 0 ? `${c.num_passed}/${c.num_runs}` : undefined,
+    count,
   }
 }
 
@@ -90,23 +106,38 @@ export function buildCampaignChildren(
   const byConfig = new Map<string, ResultsTreeItem[]>()
   for (const row of rows) {
     const configName = String(row.config_name ?? '')
-    const runId = Number(row.run_id ?? 0)
     const status = runStatus(row)
-    const runNode: ResultsTreeItem = {
-      id: `${campaignId}//cfg/${configName}//run/${runId}`,
-      label: `run ${runId}`,
-      kind: 'run',
-      campaignId,
-      configName,
-      runId,
-      status,
-    }
+    // A composition-failed draw has a NULL run_id: there is no run behind it, so it gets
+    // no run number and is not selectable — clicking through would open a run view for a
+    // run that does not exist. Coercing the NULL to 0 would invent "run 0" instead.
+    const composed = row.run_id !== null && row.run_id !== undefined
+    const runId = composed ? Number(row.run_id) : undefined
+    const runNode: ResultsTreeItem = composed
+      ? {
+          id: `${campaignId}//cfg/${configName}//run/${runId}`,
+          label: `run ${runId}`,
+          kind: 'run',
+          campaignId,
+          configName,
+          runId,
+          status,
+        }
+      : {
+          id: `${campaignId}//cfg/${configName}//not-composed`,
+          label: 'not composed — parameters could not be realized',
+          kind: 'placeholder',
+          campaignId,
+          configName,
+          status,
+          disabled: true,
+        }
     const list = byConfig.get(configName)
     if (list) list.push(runNode)
     else byConfig.set(configName, [runNode])
   }
 
   return [...byConfig.entries()].map(([configName, runs]) => {
+    const status = rollupConfig(runs.map((r) => r.status))
     const passed = runs.filter((r) => r.status === 'passed').length
     return {
       id: `${campaignId}//cfg/${configName}`,
@@ -114,8 +145,9 @@ export function buildCampaignChildren(
       kind: 'config',
       campaignId,
       configName,
-      status: rollupConfig(runs.map((r) => r.status)),
-      count: `${passed}/${runs.length}`,
+      status,
+      // "0/0 passed" would be a misleading verdict on something that never ran.
+      count: status === 'skipped' ? 'skipped' : `${passed}/${runs.length}`,
       children: runs,
     }
   })

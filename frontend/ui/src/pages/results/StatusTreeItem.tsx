@@ -11,7 +11,16 @@ import {
 } from '@mui/x-tree-view/TreeItem2'
 import { TreeItem2Icon } from '@mui/x-tree-view/TreeItem2Icon'
 import { TreeItem2Provider } from '@mui/x-tree-view/TreeItem2Provider'
-import { statusColor, type ResultsTreeItem } from '@/lib/resultsTree'
+import { statusColor, type NodeStatus, type ResultsTreeItem } from '@/lib/resultsTree'
+
+const STATUS_TITLE: Record<NodeStatus, string> = {
+  passed: 'passed',
+  failed: 'failed',
+  skipped: 'skipped — the configuration could not be built from these parameters, so it never ran',
+  running: 'running',
+  unknown: 'no verdict',
+  neutral: 'nothing to judge yet',
+}
 
 // Custom RichTreeView item for the Results Explorer: the default expand/collapse + label, with a
 // colored pass/fail status dot (same idiom as the sidebar connection dot) and a trailing
@@ -47,6 +56,10 @@ export const StatusTreeItem = forwardRef(function StatusTreeItem(
           </TreeItem2IconContainer>
           {item && item.kind !== 'placeholder' ? (
             <Box
+              // Named on hover: colour alone cannot separate "ran and failed" from
+              // "never ran because its parameters were unrealizable", and reading one
+              // as the other sends you hunting for a regression that does not exist.
+              title={STATUS_TITLE[item.status]}
               sx={{
                 width: 8,
                 height: 8,

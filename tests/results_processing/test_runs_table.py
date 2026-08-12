@@ -106,6 +106,43 @@ def test_runs_table_normalizes_a_suffixed_memory_quantity(tmp_path):
     assert typ == "integer"
 
 
+def test_composition_failed_units_reach_the_runs_table(tmp_path):
+    """A search draw that never composed has no directory, so the config-dir walk
+    cannot see it — yet it is exactly the record that says the search space is partly
+    unrealizable. It must arrive as a run-less row carrying its parameters, or a
+    campaign that failed to build half its draws reads as one that proposed fewer.
+    """
+    conn0 = sqlite3.connect(tmp_path / "campaign.db")
+    conn0.execute("CREATE TABLE unit (config_name TEXT, params_json TEXT, "
+                  "objective REAL, status TEXT, paramset_id TEXT)")
+    conn0.execute("INSERT INTO unit VALUES (?,?,?,?,?)",
+                  ("cfg-a", json.dumps({"wind": 3.0}), 1.5, "evaluated", "ps-1"))
+    # No config_name and no result dir — all it has is its paramset_id and its params.
+    conn0.execute("INSERT INTO unit VALUES (?,?,?,?,?)",
+                  ("", json.dumps({"wind": 99.0}), None, "composition_failed", "ps-2"))
+    conn0.commit()
+    conn0.close()
+
+    cfg = tmp_path / "cfg-a"
+    _write_run(cfg / "0", start_ts=1_700_000_000.0, duration=1.0)
+
+    conn = sqlite3.connect(":memory:")
+    _build_runs_table(conn, tmp_path, [cfg])
+
+    row = conn.execute(
+        "SELECT config_name, run_id, status, param_wind FROM runs "
+        "WHERE status='composition_failed'").fetchone()
+    assert row is not None, "the failed draw vanished from the runs table"
+    config_name, run_id, status, wind = row
+    assert config_name == "ps-2"      # falls back to the paramset id
+    assert run_id is None             # there is no run to number
+    assert wind == 99.0               # the parameters are the point of the row
+
+    # The real run is unaffected, and run statistics can still exclude the draw.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE run_id IS NOT NULL").fetchone()[0] == 1
+
+
 def test_runs_table_tolerates_missing_sysinfo(tmp_path):
     """A run with no sysinfo.yaml must still produce a row (nulls, not a crash)."""
     conn0 = sqlite3.connect(tmp_path / "campaign.db")

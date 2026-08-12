@@ -289,6 +289,12 @@ class CampaignSummary(BaseModel):
     num_runs: int = 0
     num_passed: int = 0
     num_failed: int = 0
+    #: Search parameter sets whose configuration could not be built at all (an
+    #: unrealizable draw). They never ran, so they are counted apart from the run
+    #: tallies above rather than inside them -- but they are counted, because a
+    #: campaign that could not compose half of what it proposed must not read as a
+    #: campaign that simply proposed less. Always 0 for a batch campaign.
+    num_composition_failed: int = 0
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     # A campaign whose runs all passed still *finishes* when a post-run step fails -- the

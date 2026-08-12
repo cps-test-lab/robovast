@@ -243,6 +243,11 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
         else:
             host = "NULL AS job_dir, NULL AS sysinfo_json"
             join = ""
+        # A composition-failed unit (a search draw whose parameters could not be
+        # realized) has no `run` rows at all, so the join alone drops it -- and with
+        # it the only record that the draw was ever attempted. It is added back as a
+        # single run-less row: without it a search campaign silently reports itself as
+        # if it had only ever proposed the draws that happened to work.
         views["run_view"] = f"""
             SELECT u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,
@@ -250,6 +255,15 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
             FROM {schema}.run r
             JOIN {schema}.unit u ON r.unit_id = u.id
             {join}
+            UNION ALL
+            SELECT COALESCE(NULLIF(u.config_name, ''), u.paramset_id) AS config_name,
+                   NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s,
+                   NULL AS errors, NULL AS failures, NULL AS tests,
+                   NULL AS start_time, NULL AS failure_message,
+                   u.params_json, u.objective, u.paramset_id,
+                   NULL AS job_dir, NULL AS sysinfo_json
+            FROM {schema}.unit u
+            WHERE u.status = 'composition_failed'
         """
     if "campaign" in have:
         # The .vast as rows. ``atom`` (not ``value``) is load-bearing: it is NULL for
@@ -402,7 +416,13 @@ _TABLE_DESCRIPTIONS = {
         "Per-run metrics: join a metric table on (config_name, run_id). "
         "params_json holds each parameter as the scenario received it, so a file-valued "
         "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
-        "job_dir and sysinfo_json are NULL when the campaign has no recorded host info."),
+        "job_dir and sysinfo_json are NULL when the campaign has no recorded host info. "
+        "status='composition_failed' marks a SEARCH parameter set whose configuration "
+        "could not be built at all (an unrealizable draw, e.g. no valid obstacle "
+        "placement): it never ran, so run_id and every run column are NULL and "
+        "config_name falls back to paramset_id. Exclude those rows (WHERE run_id IS NOT "
+        "NULL) for run statistics; count them to see how much of the search space is "
+        "infeasible."),
     ("temp", "config_view"): (
         "The campaign's .vast configuration as rows, one per key. Query unqualified: "
         "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.containers.scenario.image'), key, "
@@ -454,7 +474,12 @@ _TABLE_DESCRIPTIONS = {
         "(instance_type, cpu_name, available_cpus, available_mem_bytes — bytes, so "
         "divide by 1024*1024*1024 for GiB). Join to any metric table on (config_name, "
         "run_id). Exists only after postprocessing; run_view answers the same per-run "
-        "questions before it."),
+        "questions before it. "
+        "status='composition_failed' marks a SEARCH parameter set whose configuration "
+        "could not be built at all (an unrealizable draw): it never ran, so run_id and "
+        "every run column are NULL, config_name falls back to paramset_id, and only the "
+        "param_* columns are meaningful. Add WHERE run_id IS NOT NULL for run "
+        "statistics."),
     ("campaign", "campaign"): (
         "One row for the campaign. Execution provenance, and what to compare across "
         "campaigns: robovast_version, execution_type (local|cluster), image, "

@@ -1000,18 +1000,36 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     params_by_config: dict[str, dict] = {}
     objective_by_config: dict[str, object] = {}
     outcomes: dict[str, dict[int, dict]] = {}
+    # Search draws that never composed: they have no config_name and no directory on
+    # disk, so the config-dir walk below cannot see them. Carried separately (keyed by
+    # paramset_id, the only identity they have) and appended as run-less rows, because
+    # a campaign that could not build half of what it proposed must not read as one
+    # that proposed less.
+    composition_failed: list[tuple[str, dict]] = []
     campaign_db = campaign_path / "campaign.db"
     if campaign_db.exists():
         cc = sqlite3.connect(f"file:{campaign_db}?mode=ro", uri=True)
         try:
-            for cn, pj, obj in cc.execute(
-                    "SELECT config_name, params_json, objective FROM unit"):
+            # status/paramset_id are absent from a store predating them; fall back to
+            # the columns every version has rather than losing every unit's params.
+            try:
+                rows = cc.execute(
+                    "SELECT config_name, params_json, objective, status, paramset_id "
+                    "FROM unit").fetchall()
+            except sqlite3.Error:
+                rows = [(cn, pj, obj, None, None) for cn, pj, obj in cc.execute(
+                    "SELECT config_name, params_json, objective FROM unit")]
+            for cn, pj, obj, status, psid in rows:
+                try:
+                    params = json.loads(pj) if pj else {}
+                except (TypeError, ValueError):
+                    params = {}
+                if status == "composition_failed":
+                    composition_failed.append((cn or str(psid), params))
+                    continue
                 if not cn:
                     continue
-                try:
-                    params_by_config[cn] = json.loads(pj) if pj else {}
-                except (TypeError, ValueError):
-                    params_by_config[cn] = {}
+                params_by_config[cn] = params
                 objective_by_config[cn] = obj
         except sqlite3.Error:
             pass
@@ -1041,8 +1059,9 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                  # logged nothing before the clock started, and "which source said so" is
                  # the difference. See results_processing.clock_map.
                  "clock_map_source", "clock_map_samples", "clock_map_wall_span_s"]
-    param_keys = sorted({k for p in params_by_config.values() for k in p
-                         if f"param_{k}" not in base_cols})
+    param_keys = sorted({k for p in (*params_by_config.values(),
+                                     *(p for _, p in composition_failed))
+                         for k in p if f"param_{k}" not in base_cols})
     param_cols = [f"param_{k}" for k in param_keys]
     all_cols = base_cols + param_cols
 
@@ -1057,7 +1076,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
              for c in base_cols}
     for key, col in zip(param_keys, param_cols):
         types[col] = UNKNOWN
-        for params in params_by_config.values():
+        for params in (*params_by_config.values(),
+                       *(p for _, p in composition_failed)):
             if key in params:
                 value = params[key]
                 types[col] = widen(
@@ -1102,6 +1122,19 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             param_vals = [params.get(k) for k in param_keys]
             conn.execute(insert_sql, [sql_value(v, types[c])
                                       for c, v in zip(all_cols, base_vals + param_vals)])
+
+    # The draws that never became a configuration. One row each, run_id NULL (there is
+    # no run to number) and every run-derived column NULL — the parameters are the whole
+    # point: they are what the search proposed and what turned out to be unrealizable.
+    for identity, params in composition_failed:
+        base_vals = [identity, None, "composition_failed", 0, None,
+                     None, None, None,
+                     None, None,
+                     None, None, None, None,
+                     None, None, None]
+        param_vals = [params.get(k) for k in param_keys]
+        conn.execute(insert_sql, [sql_value(v, types[c])
+                                  for c, v in zip(all_cols, base_vals + param_vals)])
 
 
 def _build_postprocessing_steps_table(conn, campaign_path, name_map: dict) -> None:

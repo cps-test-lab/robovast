@@ -439,6 +439,11 @@
             ],
             "title": "Finished At"
           },
+          "num_composition_failed": {
+            "default": 0,
+            "title": "Num Composition Failed",
+            "type": "integer"
+          },
           "num_failed": {
             "default": 0,
             "title": "Num Failed",
@@ -491,6 +496,7 @@
           "campaign_id",
           "description",
           "finished_at",
+          "num_composition_failed",
           "num_failed",
           "num_passed",
           "num_runs",

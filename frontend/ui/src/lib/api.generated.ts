@@ -1322,6 +1322,11 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
             /**
+             * Num Composition Failed
+             * @default 0
+             */
+            num_composition_failed: number;
+            /**
              * Num Failed
              * @default 0
              */

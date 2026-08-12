@@ -526,6 +526,12 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           <Typography variant="caption" color="text.secondary">
             {summary.num_passed}/{summary.num_runs} passed
             {summary.num_failed ? ` · ${summary.num_failed} failed` : ''}
+            {/* Search draws that never became a runnable configuration. Shown apart from
+                the run tallies: they are absent from num_runs, so without this a campaign
+                that could not compose most of what it proposed reads as a smaller one. */}
+            {summary.num_composition_failed
+              ? ` · ${summary.num_composition_failed} skipped`
+              : ''}
           </Typography>
         </Stack>
       )}
