@@ -45,9 +45,10 @@ per-run and per-configuration detail:
    carries ready-made queries. Two flat views are the entry points, queried
    unqualified:
    - **`run_view`** – one row per run: `config_name`, `run_id`, `status`,
-     `duration_s`, the config's `params_json` and `objective`, and the host record
-     (`sysinfo_json`). Always filter by `config_name` — `run_id` restarts at 0 in
-     every configuration, so `run_id` alone also matches runs in other configs.
+     `duration_s`, the config's `params_json` and `objective`, the search round that
+     proposed it (`batch`), and the host record (`sysinfo_json`). Always filter by
+     `config_name` — `run_id` restarts at 0 in every configuration, so `run_id` alone
+     also matches runs in other configs.
    - **`config_view`** – the campaign's `.vast` as rows (`fullkey`, `value`), for
      exploring the configuration without pulling one huge cell.
    Metric tables (one per recorded CSV) and the wide `runs` dimension table appear

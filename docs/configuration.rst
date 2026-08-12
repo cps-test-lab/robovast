@@ -1263,7 +1263,9 @@ visualization
 
 **Required:** No
 
-Defines evaluation notebooks for visualization in the evaluation GUI. Each entry creates a tab in the GUI.
+Defines evaluation notebooks for visualization in the evaluation GUI. Each entry creates a
+tab in the GUI — in the desktop viewer (``vast eval gui``) and in the web Results Explorer
+alike, which execute the same notebooks against the same ``DATA_DIR`` contract.
 
 Each dictionary can have a custom name and four reserved keys for different evaluation scopes:
 
@@ -1298,10 +1300,10 @@ The RoboVAST GUI automatically replaces this with the path to the selected run
 directory when executing the notebook.
 
 ``batch`` notebooks only appear for searches (a batch tree node exists only in
-search mode). Because the search results layout is flat — every batch's
-configurations live directly under the campaign root — ``DATA_DIR`` alone cannot
-identify the batch, so a batch notebook also receives an injected ``BATCH``
-variable (the batch index) and selects its configurations from
+search mode, in both front-ends). Because the search results layout is flat — every
+batch's configurations live directly under the campaign root — ``DATA_DIR`` alone cannot
+identify the batch, so a batch notebook receives the campaign root as its ``DATA_DIR``
+plus an injected ``BATCH`` variable (the batch index), and selects its configurations from
 ``campaign.db``:
 
 .. code-block:: python

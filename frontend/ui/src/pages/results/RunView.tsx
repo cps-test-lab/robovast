@@ -30,7 +30,7 @@ import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
-import type { ResultsTreeItem } from '@/lib/resultsTree'
+import { runNodeId, type ResultsTreeItem } from '@/lib/resultsTree'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider } from '@/lib/dashboard/dataProvider'
 import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
@@ -139,6 +139,9 @@ function capturePathOf(panels: { type: string; config: Record<string, unknown> }
 interface RunKey {
   config_name: string
   run_id: string
+  /** The search round this run belongs to, or null when the campaign is not grouped by batch.
+   *  Carried only to rebuild the run's tree id — a run is *identified* by config + index. */
+  batch: number | null
 }
 
 export function RunView({
@@ -176,13 +179,17 @@ export function RunView({
   // `runs` table is documented on `CAMPAIGN_RUNS_SQL`.
   const runs = useQuery({ ...runsQuery(campaignId), enabled: available })
 
+  // The batch is only meaningful when the picker's tree groups by it; for a batch-mode campaign
+  // it stays null so the tree id built from it is the ungrouped one.
+  const grouped = replayable.find((c) => c.campaign_id === campaignId)?.mode === 'search'
   const runList: RunKey[] = useMemo(
     () =>
       (runs.data?.rows ?? []).map((r) => ({
         config_name: String(r.config_name ?? ''),
         run_id: String(r.run_id ?? ''),
+        batch: grouped && r.batch !== null && r.batch !== undefined ? Number(r.batch) : null,
       })),
-    [runs.data],
+    [runs.data, grouped],
   )
 
   const [picked, setRun] = useState<RunKey | null>(null)
@@ -292,10 +299,14 @@ export function RunView({
   const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null)
 
   const pickRun = (item: ResultsTreeItem) => {
-    // Only a run leaf resolves to a replayable run; campaigns/configs just expand in the tree.
+    // Only a run leaf resolves to a replayable run; campaigns/batches/configs just expand.
     if (item.kind !== 'run' || item.runId == null) return
     if (item.campaignId !== campaignId) onCampaignChange(item.campaignId)
-    setRun({ config_name: item.configName ?? '', run_id: String(item.runId) })
+    setRun({
+      config_name: item.configName ?? '',
+      run_id: String(item.runId),
+      batch: item.batch ?? null,
+    })
     setRunAnchor(null)
   }
 
@@ -307,9 +318,11 @@ export function RunView({
     queryClient.invalidateQueries({ queryKey: ['panels-source', campaignId] })
   }
 
-  // Mirror buildCampaignChildren's run-node id so the current run highlights in the tree.
+  // The tree's own id builder, so the current run highlights in the picker. Shared rather than
+  // spelled again here: this used to be a hand-written copy of the id, which any change to the
+  // tree's shape (such as the batch level) would silently break.
   const selectedTreeId = run
-    ? `${campaignId}//cfg/${run.config_name}//run/${run.run_id}`
+    ? runNodeId(campaignId, run.batch, run.config_name, run.run_id)
     : ''
 
   return (
@@ -324,9 +337,11 @@ export function RunView({
     >
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Run view</Typography>
-        {/* The label names all three levels the picker selects — campaign · config · run — so the
-            view says which campaign is on screen without opening the tree. Wide enough for a typical
-            campaign id, with the label itself ellipsized rather than wrapping the button. */}
+        {/* The label names every level the picker selected — campaign · [batch ·] config · run — so
+            the view says which campaign is on screen without opening the tree. The batch appears
+            only for a search campaign, where the config name is a hash and the round is what places
+            it. Wide enough for a typical campaign id, with the label itself ellipsized rather than
+            wrapping the button. */}
         <Button
           variant="outlined"
           size="small"
@@ -343,7 +358,14 @@ export function RunView({
             component="span"
             sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           >
-            {run ? `${campaignId} · ${run.config_name} · run ${run.run_id}` : 'Select run'}
+            {run
+              ? [
+                  campaignId,
+                  ...(run.batch === null ? [] : [`batch ${run.batch}`]),
+                  run.config_name,
+                  `run ${run.run_id}`,
+                ].join(' · ')
+              : 'Select run'}
           </Box>
         </Button>
         {/* Beside the picker it feeds: the reload is what puts a newly finished campaign into

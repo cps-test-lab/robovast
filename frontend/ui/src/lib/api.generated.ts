@@ -1322,6 +1322,11 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
             /**
+             * Mode
+             * @default
+             */
+            mode: string;
+            /**
              * Num Composition Failed
              * @default 0
              */
@@ -1367,8 +1372,9 @@ export interface components {
         /**
          * CampaignVisualization
          * @description One ``evaluation.visualization`` notebook workload + the node levels it
-         *     defines a notebook for (a subset of ``run``/``config``/``campaign`` — ``batch``
-         *     is omitted, the web tree has no batch node).
+         *     defines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).
+         *     A ``batch`` notebook is only reachable on a search campaign, whose tree has the
+         *     batch nodes to select.
          */
         CampaignVisualization: {
             /** Levels */
@@ -3161,6 +3167,7 @@ export interface operations {
                 config_name?: string;
                 run_id?: number | null;
                 theme?: string;
+                batch?: number | null;
             };
             header?: never;
             path: {

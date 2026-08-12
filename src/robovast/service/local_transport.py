@@ -2502,9 +2502,11 @@ class LocalTransport(RobovastInterface):
         self._publish_config_edit(request.campaign_id)
         return PanelsSource(campaign_id=request.campaign_id, content=request.content)
 
-    # Node levels the web Explorer tree can address (campaign → config → run). The
-    # desktop's ``batch`` level is omitted: the web tree has no batch node.
-    _VIS_LEVELS = ("run", "config", "campaign")
+    # Node levels the web Explorer tree can address (campaign → batch → config → run), the
+    # same set the desktop viewer offers. ``batch`` is a *logical* level: it has no directory
+    # of its own (see :meth:`_node_data_dir`), so it is identified by the injected ``BATCH``
+    # index instead, and it only appears in the tree for a search campaign.
+    _VIS_LEVELS = ("run", "config", "batch", "campaign")
 
     def _visualization_workloads(self, campaign_id: str):
         """Parse ``evaluation.visualization`` from the snapshot ``.vast``.
@@ -2551,7 +2553,7 @@ class LocalTransport(RobovastInterface):
 
     def render_campaign_notebook(
         self, campaign_id: str, workload: str, level: str,
-        config_name: str = "", run_id=None, theme: str = "light",
+        config_name: str = "", run_id=None, theme: str = "light", batch=None,
     ) -> str:
         from robovast.results_processing.notebook_render import render_notebook_html
         workloads, _ = self._visualization_workloads(campaign_id)
@@ -2559,9 +2561,13 @@ class LocalTransport(RobovastInterface):
         if not notebooks or level not in notebooks:
             raise KeyError(f"No '{level}' notebook for workload '{workload}'.")
         data_dir = self._node_data_dir(campaign_id, level, config_name, run_id)
+        # Which batch a ``batch``-level notebook is for. Injected rather than derived from
+        # DATA_DIR because a batch has no directory of its own; passed only when known, so a
+        # notebook's own ``BATCH = None`` default survives and it can say so.
+        inject = {"BATCH": int(batch)} if batch is not None else None
         with self._render_progress(campaign_id, workload) as on_cell:
             return render_notebook_html(notebooks[level], data_dir, theme=theme,
-                                        on_cell=on_cell)
+                                        on_cell=on_cell, inject=inject)
 
     @contextlib.contextmanager
     def _render_progress(self, campaign_id: str, workload: str):
@@ -2578,7 +2584,11 @@ class LocalTransport(RobovastInterface):
     def _node_data_dir(self, campaign_id: str, level: str, config_name: str, run_id):
         """The ``DATA_DIR`` for a selected node — the campaign/config/run directory."""
         base = Path(self._data_dir(campaign_id))
-        if level == "campaign":
+        # A batch is a grouping recorded in the store, not a directory level: a search
+        # campaign's configs sit flat under the campaign root whichever round proposed them.
+        # So a batch notebook gets the campaign root and is told *which* batch through the
+        # injected ``BATCH`` index -- the same contract the desktop viewer uses.
+        if level in ("campaign", "batch"):
             return str(base)
         if level == "config":
             return str(base / config_name)
@@ -2616,6 +2626,7 @@ class LocalTransport(RobovastInterface):
         return self._campaign_dir(cid)
 
     def _summary_for(self, cid: str) -> CampaignSummary:
+        from robovast.common.store import read_campaign_mode
         from robovast.execution.status_recovery import \
             reconstruct_status_from_disk
         campaign_dir = self._record_dir(cid)
@@ -2637,6 +2648,12 @@ class LocalTransport(RobovastInterface):
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
             description=self._description_for(cid) or "",
             started_at=started_at,
+            # The store is consulted behind the snapshot rather than instead of it: a
+            # reconstructed Status can carry no mode at all, because the `outcome.json`
+            # early-return path hands back whatever the controller journalled and an older
+            # record predates the field. `read_campaign_mode` is the read-only fallback that
+            # exists for exactly this, and "" is recorded when neither knows.
+            mode=snap.mode or read_campaign_mode(campaign_dir) or "",
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
             num_failed=counts["num_failed"] + counts["num_errors"],
             num_composition_failed=counts.get("num_composition_failed", 0),

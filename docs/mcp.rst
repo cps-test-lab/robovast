@@ -234,8 +234,12 @@ The entry points are two flat views, queried unqualified:
      - Answers
    * - ``run_view``
      - One row per run: ``config_name``, ``run_id``, ``status``, ``duration_s``, the
-       configuration's ``params_json`` and ``objective``, and the host record
-       (``sysinfo_json``). Available as soon as runs are recorded.
+       configuration's ``params_json`` and ``objective``, the search round that proposed it
+       (``batch``), and the host record (``sysinfo_json``). Available as soon as runs are
+       recorded. ``batch`` is 0 throughout a batch-mode campaign and only means something
+       when ``campaign.campaign.mode`` is ``search``, where
+       ``SELECT batch, COUNT(*), AVG(objective) FROM run_view GROUP BY 1 ORDER BY 1`` is the
+       search's history over time.
    * - ``config_view``
      - The campaign's ``.vast`` as one row per key (``fullkey``, ``value``) — for reading
        the configuration without pulling one oversized cell.

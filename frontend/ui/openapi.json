@@ -439,6 +439,11 @@
             ],
             "title": "Finished At"
           },
+          "mode": {
+            "default": "",
+            "title": "Mode",
+            "type": "string"
+          },
           "num_composition_failed": {
             "default": 0,
             "title": "Num Composition Failed",
@@ -496,6 +501,7 @@
           "campaign_id",
           "description",
           "finished_at",
+          "mode",
           "num_composition_failed",
           "num_failed",
           "num_passed",
@@ -510,7 +516,7 @@
         "type": "object"
       },
       "CampaignVisualization": {
-        "description": "One ``evaluation.visualization`` notebook workload + the node levels it\ndefines a notebook for (a subset of ``run``/``config``/``campaign`` \u2014 ``batch``\nis omitted, the web tree has no batch node).",
+        "description": "One ``evaluation.visualization`` notebook workload + the node levels it\ndefines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).\nA ``batch`` notebook is only reachable on a search campaign, whose tree has the\nbatch nodes to select.",
         "properties": {
           "levels": {
             "items": {
@@ -3370,6 +3376,22 @@
               "default": "light",
               "title": "Theme",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "batch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch"
             }
           }
         ],

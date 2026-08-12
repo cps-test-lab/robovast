@@ -8,6 +8,7 @@ import {
   buildCampaignChildren,
   campaignItem,
   indexById,
+  objectiveDirection,
   placeholderChild,
   CAMPAIGN_RUNS_MAX_ROWS,
   CAMPAIGN_RUNS_SQL,
@@ -28,8 +29,9 @@ export function runsQuery(campaignId: string) {
   }
 }
 
-// The shared campaign → config → run status tree (green/red, all from the DB). It is the campaign
-// selector for both the Explorer (any node → its notebooks) and the Run view (a run leaf → replay).
+// The shared campaign → [batch →] config → run status tree (green/red, all from the DB). It is the
+// campaign selector for both the Explorer (any node → its notebooks) and the Run view (a run leaf →
+// replay). The batch level appears only for a search campaign, where a batch is one ask/tell round.
 // Selection is controlled by the parent; `onSelect` fires with the clicked item (never a placeholder).
 export function ResultsTree({
   campaigns,
@@ -104,7 +106,12 @@ export function ResultsTree({
         ),
       ]
     } else {
-      const built = buildCampaignChildren(c.campaign_id, q.data.rows)
+      // Only a search campaign gets the batch level: a batch-mode campaign has exactly one
+      // batch, so grouping by it would add a node that says nothing.
+      const built = buildCampaignChildren(c.campaign_id, q.data.rows, {
+        grouped: c.mode === 'search',
+        direction: objectiveDirection(q.data.rows),
+      })
       children = built.length ? built : [placeholderChild(c.campaign_id, 'No runs recorded')]
     }
     return { ...base, children }

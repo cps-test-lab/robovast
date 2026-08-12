@@ -157,7 +157,7 @@ function SelectionDetail({ item }: { item?: ResultsTreeItem }) {
   if (!item) {
     return (
       <Alert severity="info" variant="outlined">
-        Select a campaign, config, or run to see its visualizations.
+        Select a campaign, batch, config, or run to see its visualizations.
       </Alert>
     )
   }
@@ -181,11 +181,13 @@ function SelectionDetail({ item }: { item?: ResultsTreeItem }) {
 const LOG_TAB = '\u0000log'
 
 // The selected node's tabs: one per evaluation.visualization workload that declares a notebook
-// for this node's level (campaign/config/run), then the built-in Log. The active notebook is
-// executed server-side and rendered as HTML.
+// for this node's level (campaign/batch/config/run), then the built-in Log. The active notebook
+// is executed server-side and rendered as HTML.
 function NotebookPanel({ item }: { item: ResultsTreeItem }) {
   const campaignId = item.campaignId
-  const level = item.kind // 'campaign' | 'config' | 'run' — matches the backend level names
+  // The tree's node kinds are the backend's level names, so this needs no translation — a
+  // 'batch' node asks for the campaign's `batch:` notebook.
+  const level = item.kind
 
   const vis = useQuery({
     queryKey: ['visualizations', campaignId],
@@ -307,8 +309,12 @@ function NotebookFrame({
   // Render the notebook in the app's colour scheme so the iframe doesn't glare white in the dark UI.
   const mode = useTheme().palette.mode
   const html = useQuery({
+    // `batch` is part of the key, not just the request: two batch nodes of one campaign agree on
+    // every other component (a batch has no config or run of its own), so without it they would
+    // share one cache entry and every round would show the first one's notebook.
     queryKey: [
-      'notebook', item.campaignId, workload, level, item.configName ?? '', item.runId ?? '', mode,
+      'notebook', item.campaignId, workload, level, item.configName ?? '', item.runId ?? '',
+      item.batch ?? '', mode,
     ],
     queryFn: () =>
       robovast.fetchNotebookHtml(item.campaignId, {
@@ -316,6 +322,7 @@ function NotebookFrame({
         level,
         configName: item.configName,
         runId: item.runId,
+        batch: item.batch,
         theme: mode,
       }),
     retry: false,

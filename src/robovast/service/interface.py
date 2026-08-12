@@ -286,6 +286,12 @@ class CampaignSummary(BaseModel):
     phase: str = Phase.UNKNOWN       # open vocabulary; see the Phase enum
     description: str = ""            # the launcher's free text; "" when none was given
     postprocessed: bool = False      # configured postprocessing pipelines have run
+    #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
+    #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,
+    #: which a reader must treat as "not a search" rather than guessing -- an old store may
+    #: predate the field. Carried on the listing because it decides how results are *read*:
+    #: only for a search is a configuration's batch a meaningful grouping.
+    mode: str = ""
     num_runs: int = 0
     num_passed: int = 0
     num_failed: int = 0
@@ -1022,8 +1028,9 @@ class CampaignPanelsResponse(BaseModel):
 
 class CampaignVisualization(BaseModel):
     """One ``evaluation.visualization`` notebook workload + the node levels it
-    defines a notebook for (a subset of ``run``/``config``/``campaign`` — ``batch``
-    is omitted, the web tree has no batch node)."""
+    defines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).
+    A ``batch`` notebook is only reachable on a search campaign, whose tree has the
+    batch nodes to select."""
 
     name: str
     levels: list[str] = Field(default_factory=list)
@@ -1827,6 +1834,7 @@ class RobovastInterface(ABC):
     def render_campaign_notebook(
         self, campaign_id: str, workload: str, level: str,
         config_name: str = "", run_id: Optional[int] = None, theme: str = "light",
+        batch: Optional[int] = None,
     ) -> str:
         """Execute *workload*'s ``level`` notebook for the selected node and return the
         exported HTML. ``DATA_DIR`` is the node's directory: the campaign root
@@ -1834,7 +1842,12 @@ class RobovastInterface(ABC):
         ``<root>/<config_name>/<run_id>`` (``run``). The dir is resolved per transport
         (local disk / object-store fetch), so the same code serves both backends.
         ``theme`` (``'light'``/``'dark'``) drives the exported HTML's nbconvert theme so
-        the render can match the web UI's colour scheme."""
+        the render can match the web UI's colour scheme.
+
+        A ``batch`` node is the exception: it has no directory of its own (a search
+        campaign's configs are flat under the campaign root), so it gets the campaign root
+        as ``DATA_DIR`` and *batch* is injected into the notebook as ``BATCH``. Passing
+        *batch* for any other level is harmless but pointless."""
 
     # -- lifecycle ----------------------------------------------------------
 

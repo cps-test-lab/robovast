@@ -961,6 +961,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
     def render_campaign_notebook(
         campaign_id: str, workload: str, level: str,
         config_name: str = "", run_id: int | None = None, theme: str = "light",
+        batch: int | None = None,
     ):
         from fastapi.responses import \
             HTMLResponse  # pylint: disable=import-outside-toplevel
@@ -972,7 +973,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
         def _render():
             try:
                 return impl.render_campaign_notebook(
-                    campaign_id, workload, level, config_name, run_id, theme)
+                    campaign_id, workload, level, config_name, run_id, theme, batch)
             except CellExecutionError as e:
                 # A notebook can `raise SystemExit("...")` to bail cleanly when there's nothing
                 # to show (e.g. no rosbag data for this node). Render that as a neutral empty-state

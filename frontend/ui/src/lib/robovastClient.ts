@@ -479,12 +479,16 @@ export const robovast = {
       level: string
       configName?: string
       runId?: number | string
+      // Which search round a `batch`-level notebook is for. A batch has no directory of its
+      // own, so this is what identifies it — the service injects it as `BATCH`.
+      batch?: number
       theme?: 'light' | 'dark'
     },
   ): Promise<string> => {
     const params = new URLSearchParams({ workload: opts.workload, level: opts.level })
     if (opts.configName) params.set('config_name', opts.configName)
     if (opts.runId !== undefined) params.set('run_id', String(opts.runId))
+    if (opts.batch !== undefined) params.set('batch', String(opts.batch))
     if (opts.theme) params.set('theme', opts.theme)
     const res = await fetch(
       `${BASE}/campaigns/${encodeURIComponent(campaignId)}/notebook?${params.toString()}`,

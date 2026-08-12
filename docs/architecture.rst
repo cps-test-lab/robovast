@@ -600,7 +600,7 @@ needs. What gates a query is whether the columns are there, which the reader che
 the version only sharpens the error when they are not.
 
 **Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
-run: config, status, duration, params, host record) and ``config_view`` (the ``.vast`` as
+run: config, status, duration, params, search round, host record) and ``config_view`` (the ``.vast`` as
 one row per key) are created on the query connection as ``TEMP`` views, and are queried
 unqualified. They exist because a forgotten join does not raise — ``run_id`` is unique only
 *within* a configuration, so a query filtering on ``run_id`` alone silently returns rows
@@ -611,8 +611,11 @@ They are views on the *connection*, not objects in the file, because ``campaign.
 attached read-only (nothing may be written to it), because a store predating the ``job``
 table would otherwise carry a view over a table it does not have, and because a change to
 a view then never needs a schema migration. Where the underlying tables are missing,
-``run_view`` keeps its column set and reports NULL host columns — one query shape for every
-store version, with "not recorded" reading as NULL rather than as a broken query.
+``run_view`` keeps its column set and reports NULL for the host and ``batch`` columns — one
+query shape for every store version, with "not recorded" reading as NULL rather than as a
+broken query. That the views are computed per query is also what makes a *new* column
+retroactive: adding ``batch`` gave every campaign already on disk its search history back,
+with no migration and no re-postprocessing.
 
 ``describe_campaign_data`` lists both views first and carries the canonical query for each
 question a caller is likely to ask — the per-run lookup, a configuration's parameters, how

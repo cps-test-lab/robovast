@@ -61,6 +61,37 @@ def campaign(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def search_campaign(tmp_path):
+    """A search over two rounds, the second of which also failed to compose a draw.
+
+    One run per configuration keeps it small; what matters is that the units sit in
+    *different* batches while their result dirs stay flat under the campaign root, which is
+    why the batch cannot be recovered from a path.
+    """
+    with CampaignStore(tmp_path / STORE_FILENAME) as store:
+        cid = store.create_campaign("s", {"search": {"per_batch": 1}}, mode="search",
+                                    config_dir="_config")
+        for idx, (cfg, objective) in enumerate((("c-early", 0.25), ("c-late", 0.75))):
+            bid = store.open_batch(cid, idx, ".")
+            run_dir = tmp_path / cfg / "0"
+            run_dir.mkdir(parents=True)
+            (run_dir / "test.xml").write_text(
+                '<testsuite errors="0" failures="0" tests="1"><testcase time="1.0"/>'
+                '</testsuite>', encoding="utf-8")
+            unit = store.record_unit(
+                batch_id=bid, paramset_id=cfg, config_name=cfg, params={"speed": objective},
+                objectives={"score": objective}, measures={}, status="evaluated",
+                result_dir=cfg)
+            store.record_runs(unit, [read_run_outcome(run_dir, tmp_path)])
+            if idx == 1:
+                # A draw whose configuration could not be built: no config dir, no runs.
+                store.record_unit(
+                    batch_id=bid, paramset_id="c-dead", config_name="c-dead", params={},
+                    objectives={}, measures={}, status="composition_failed", result_dir="")
+    return tmp_path
+
+
 def _rows(campaign_dir, sql):
     return query_data_db(campaign_dir, sql)["rows"]
 
@@ -165,6 +196,56 @@ def test_run_view_works_before_postprocessing(campaign):
     assert not (campaign / "_execution" / "data.db").exists()
     rows = _rows(campaign, "SELECT status, COUNT(*) AS n FROM run_view GROUP BY status")
     assert {r["status"]: r["n"] for r in rows} == {"passed": 3, "failed": 1}
+
+
+def test_run_view_reports_the_batch_of_a_batch_mode_campaign(campaign):
+    """A batch campaign has exactly one round, so every row reports batch 0.
+
+    Not a formality: the web tree decides whether to *group* by batch from
+    ``campaign.mode``, and reads this column to do it. A NULL here would silently
+    un-group a campaign that has a perfectly good round recorded.
+    """
+    rows = _rows(campaign, "SELECT config_name, run_id, batch FROM run_view")
+    assert {r["batch"] for r in rows} == {0}
+
+
+def test_run_view_separates_the_rounds_of_a_search(search_campaign):
+    """Each configuration reports the round that proposed it — including one that never ran.
+
+    The uncomposable draw is the interesting case: it has no ``run`` rows at all and so
+    reaches the view through its second UNION arm. If that arm dropped ``batch``, a round
+    whose every draw failed to compose would vanish from the search's history.
+    """
+    rows = _rows(search_campaign,
+                 "SELECT config_name, run_id, batch, objective FROM run_view "
+                 "ORDER BY batch, config_name, run_id")
+    by_config = {r["config_name"]: r["batch"] for r in rows}
+    assert by_config == {"c-early": 0, "c-late": 1, "c-dead": 1}
+
+    # The documented per-round aggregate, which is what makes the view a search history.
+    per_round = _rows(search_campaign,
+                      "SELECT batch, COUNT(*) AS n FROM run_view GROUP BY 1 ORDER BY 1")
+    assert [(r["batch"], r["n"]) for r in per_round] == [(0, 1), (1, 2)]
+
+    dead = next(r for r in rows if r["config_name"] == "c-dead")
+    assert dead["run_id"] is None and dead["batch"] == 1
+
+
+def test_run_view_degrades_to_a_null_batch_on_a_store_without_the_batch_table(campaign):
+    """Same column-parity rule as the host columns: shape first, values second."""
+    conn = sqlite3.connect(campaign / STORE_FILENAME)
+    # The FK is unenforced here, so the units survive their batch row -- which is exactly
+    # the "recorded runs, unrecorded round" case the LEFT JOIN exists to keep visible.
+    conn.executescript("DROP TABLE batch;")
+    conn.commit()
+    conn.close()
+
+    result = query_data_db(campaign, "SELECT config_name, run_id, batch FROM run_view "
+                                     "ORDER BY config_name, run_id")
+    assert list(result["columns"]) == ["config_name", "run_id", "batch"]
+    # Every run still listed: dropping them would lose results over missing metadata.
+    assert len(result["rows"]) == 4
+    assert all(r["batch"] is None for r in result["rows"])
 
 
 def test_run_view_degrades_to_null_host_columns_on_an_old_store(campaign):

@@ -231,9 +231,10 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
     over a missing table is created happily and then fails at query time with a confusing
     ``no such table: campaign.job``. Hence the tables are checked here instead.
 
-    When ``job`` is absent the host columns are selected as NULL rather than dropped, so
-    ``run_view`` has the **same column set** on every store version: the caller writes one
-    query, and a missing host record reads as NULL instead of as a different schema.
+    When ``job`` or ``batch`` is absent its columns are selected as NULL rather than dropped,
+    so ``run_view`` has the **same column set** on every store version: the caller writes one
+    query, and a missing host record (or batch row) reads as NULL instead of as a different
+    schema.
     """
     views = {}
     if {"run", "unit"} <= have:
@@ -243,26 +244,39 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
         else:
             host = "NULL AS job_dir, NULL AS sysinfo_json"
             join = ""
+        # Which search round proposed this configuration. LEFT JOIN rather than an inner one
+        # even though `unit.batch_id` is NOT NULL: an orphan id would then silently *drop
+        # runs*, the failure class this view exists to prevent. NULL reads as "not recorded",
+        # the rule the host columns above already follow.
+        if "batch" in have:
+            batch = "b.idx AS batch"
+            bjoin = f"LEFT JOIN {schema}.batch b ON u.batch_id = b.id"
+        else:
+            batch = "NULL AS batch"
+            bjoin = ""
         # A composition-failed unit (a search draw whose parameters could not be
         # realized) has no `run` rows at all, so the join alone drops it -- and with
         # it the only record that the draw was ever attempted. It is added back as a
         # single run-less row: without it a search campaign silently reports itself as
-        # if it had only ever proposed the draws that happened to work.
+        # if it had only ever proposed the draws that happened to work. It carries
+        # `batch` too, so a round whose every draw failed to compose is still a round.
         views["run_view"] = f"""
             SELECT u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,
-                   u.params_json, u.objective, u.paramset_id, {host}
+                   u.params_json, u.objective, u.paramset_id, {batch}, {host}
             FROM {schema}.run r
             JOIN {schema}.unit u ON r.unit_id = u.id
+            {bjoin}
             {join}
             UNION ALL
             SELECT COALESCE(NULLIF(u.config_name, ''), u.paramset_id) AS config_name,
                    NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s,
                    NULL AS errors, NULL AS failures, NULL AS tests,
                    NULL AS start_time, NULL AS failure_message,
-                   u.params_json, u.objective, u.paramset_id,
+                   u.params_json, u.objective, u.paramset_id, {batch},
                    NULL AS job_dir, NULL AS sysinfo_json
             FROM {schema}.unit u
+            {bjoin}
             WHERE u.status = 'composition_failed'
         """
     if "campaign" in have:
@@ -405,7 +419,7 @@ _TABLE_DESCRIPTIONS = {
     ("temp", "run_view"): (
         "START HERE for per-run and per-configuration questions. One row per run, joined: "
         "config_name, run_id, status, passed, duration_s, errors, failures, tests, "
-        "start_time, failure_message, params_json, objective, paramset_id, job_dir, "
+        "start_time, failure_message, params_json, objective, paramset_id, batch, job_dir, "
         "sysinfo_json. Query unqualified: FROM run_view. Works before postprocessing. "
         "ALWAYS filter with config_name, not run_id alone: run_id restarts at 0 in every "
         "configuration, so run_id alone matches one run per config and returns rows you "
@@ -417,6 +431,11 @@ _TABLE_DESCRIPTIONS = {
         "params_json holds each parameter as the scenario received it, so a file-valued "
         "parameter resolves under /results/<campaign>/<config_name>/_config/<value>. "
         "job_dir and sysinfo_json are NULL when the campaign has no recorded host info. "
+        "batch is the ask/tell round that proposed the configuration: 0 for every row of a "
+        "batch-mode campaign (which has exactly one), the search iteration for a search "
+        "campaign, NULL on a store predating the batch table. It is a search's history over "
+        "time: SELECT batch, COUNT(*), AVG(objective) FROM run_view GROUP BY 1 ORDER BY 1. "
+        "Whether batch means anything is campaign.campaign.mode ('search' | 'batch'). "
         "status='composition_failed' marks a SEARCH parameter set whose configuration "
         "could not be built at all (an unrealizable draw, e.g. no valid obstacle "
         "placement): it never ran, so run_id and every run column are NULL and "
@@ -495,7 +514,8 @@ _TABLE_DESCRIPTIONS = {
         "returns truncated. Use config_view to explore it."),
     ("campaign", "batch"): (
         "One row per search batch/iteration; idx is the iteration index — the "
-        "search history over time."),
+        "search history over time. You rarely need this table: run_view already "
+        "carries idx as its `batch` column, so no join is required."),
     ("campaign", "unit"): (
         "One row per evaluated configuration. objectives_json (all named "
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
@@ -545,7 +565,9 @@ _DESCRIBE_NOTE = (
     "run_id=?; a config's parameters -> SELECT DISTINCT params_json FROM run_view WHERE "
     "config_name=?; a run's host -> SELECT sysinfo_json FROM run_view WHERE ...; configs "
     "that produced runs -> SELECT DISTINCT config_name FROM run_view (for ALL configs, "
-    "including any that never ran, list the campaign's directories instead); how a metric "
+    "including any that never ran, list the campaign's directories instead); a search's "
+    "rounds -> SELECT batch, COUNT(*), AVG(objective) FROM run_view GROUP BY 1 ORDER BY 1 "
+    "(batch is meaningful only when campaign.campaign.mode is 'search'); how a metric "
     "was produced -> main.postprocessing_steps; what the campaign ran on -> "
     "campaign.campaign. "
     "Join the 'runs' table (param_* columns + status/duration) to any metric table "

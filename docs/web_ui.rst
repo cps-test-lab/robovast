@@ -307,7 +307,8 @@ Results viewer
 --------------
 
 The **Results** tab explores a finished campaign's data through three sub-views: an
-**Explorer** (a campaign → config → run tree with per-node notebook reports), a
+**Explorer** (a campaign → config → run tree with per-node notebook reports — with a
+**batch** level between campaign and config for a search campaign), a
 **Run view** (a time-driven, panel-based replay of one run — see below), and a
 **Data browser** (ad-hoc SQL + charts). Each carries a small icon, used in the sidebar
 and again on the campaign cards.
@@ -326,13 +327,26 @@ from in one press.
 dot; selecting a node opens its details on the right. When a campaign declares
 :ref:`evaluation notebooks <evaluation-notebooks>` under
 ``evaluation.visualization``, each workload appears as a **tab**, and the notebook for
-the selected node's level (campaign / config / run) is executed server-side and shown
-as a rendered HTML page — the web equivalent of ``vast eval gui``. The notebook's
+the selected node's level (campaign / batch / config / run) is executed server-side and
+shown as a rendered HTML page — the web equivalent of ``vast eval gui``. The notebook's
 ``DATA_DIR`` is set to the selected node's directory (the same contract the desktop
 tool uses), so the *same* notebooks work in both. Output is cached, so re-selecting a
 node is instant. Selecting a campaign here also selects it for the other two sub-views
 (it is the shared, URL-carried selection); the config or run picked below it is the
 Explorer's own.
+
+**Search campaigns group by batch.** A search proposes its configurations one round at a
+time, so a flat config list buries the very thing that says whether the search worked. For
+a campaign whose ``mode`` is ``search`` the tree therefore inserts a **batch** node per
+ask/tell round: each carries the round's pass tally and its best objective, and each config
+below it is labelled with its own objective. A batch-mode campaign has exactly one round,
+so it is left flat — grouping it would add a node that says nothing.
+
+A batch is a grouping recorded in the store, **not** a directory: a search's configs sit
+flat under the campaign root whichever round proposed them. A ``batch`` notebook is
+therefore given the campaign root as its ``DATA_DIR`` and told *which* round through an
+injected ``BATCH`` index — again the same contract as the desktop tool, so one notebook
+serves both. See :ref:`evaluation notebooks <evaluation-notebooks>` for how to declare one.
 
 After the declared workloads comes a built-in **Log** tab, which needs nothing in the ``.vast``.
 It shows the same merged log as the run-view panel — same filters, same colours — over whatever
