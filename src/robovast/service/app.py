@@ -1137,6 +1137,22 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs%s)",
                 host, port, mcp_note)
+
+    # These four vars are the only knobs that move a campaign off the built-in
+    # image defaults (see _resolve_image() / robovast_sim_robosito.backend); a
+    # persistent service running against a non-default image for months is easy
+    # to forget, so surface it once at startup rather than only on demand.
+    import os  # pylint: disable=import-outside-toplevel
+    image_overrides = {
+        var: value for var in
+        ("ROBOVAST_IMAGE", "ROBOVAST_ROBOSITO_IMAGE",
+         "ROBOVAST_CONTROLLER_IMAGE", "ROBOSITO_IMAGE")
+        if (value := os.environ.get(var, "").strip())
+    }
+    if image_overrides:
+        logger.info("image overrides from environment: %s",
+                     ", ".join(f"{k}={v}" for k, v in image_overrides.items()))
+
     # Drive uvicorn via an explicit Server so the SSE generators can probe
     # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection
     # wait) and close their streams instead of hanging it. ``timeout_graceful_
