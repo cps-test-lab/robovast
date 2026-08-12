@@ -31,6 +31,29 @@ SCENARIO_CHANNEL = "scenario"
 SIM_CHANNEL = "sim"
 
 
+class VariationInfeasibleError(RuntimeError):
+    """A specific parameter draw cannot be realized (e.g. no valid obstacle
+    placement exists), as opposed to a bug in the plugin itself. The only
+    exception type composition is allowed to treat as "skip this one config"
+    rather than a fatal error.
+
+    ``config_name`` is filled in by composition (a plugin does not know which
+    config block it is running for) so a reporting layer can name it in its own
+    structured field rather than only inside the message.
+
+    ``include_traceback = False`` (see :func:`robovast.common.status.failure_detail`):
+    the message names the plugin, the config and the reason, which is the whole of
+    what a reader can act on. A stack trace through the composition internals only
+    makes an unrealizable parameter combination look like a RoboVAST crash.
+    """
+
+    include_traceback = False
+
+    def __init__(self, message, config_name=None):
+        super().__init__(message)
+        self.config_name = config_name
+
+
 class DestinationConfig(VariationConfig):
     """Config base for a variation whose outputs the author binds to channels.
 

@@ -803,11 +803,37 @@ def validate_project_file(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
 
     # No problems — compute the same counts as ``vast config info``.
+    if raw.get("search"):
+        return _search_composition_report(config_path)
+    return _batch_composition_report(config_path)
+
+
+def _batch_composition_report(config_path):
+    """Compose a batch-mode ``.vast`` and report its counts.
+
+    Composition stops at the first failure by design: a batch sweep is a
+    deterministic cartesian expansion, so an infeasible cell means the sweep's
+    own bounds are wrong — something to fix in the file, not to skip past.
+    """
     from robovast.common.config_generation import \
         generate_scenario_variations  # pylint: disable=import-outside-toplevel
+    from robovast.common.variation.base_variation import \
+        VariationInfeasibleError  # pylint: disable=import-outside-toplevel
     try:
         campaign_data, _ = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
+    except VariationInfeasibleError as e:
+        # The message already names the config block and the plugin's reason; say
+        # explicitly that the rest was never reached, so "one problem" is not read
+        # as "one problem exists".
+        return {"valid": False,
+                "problems": [_problem(
+                    "generation",
+                    f"{e} — this parameter combination cannot be realized. "
+                    "Composition stopped here, so any later configuration was "
+                    "not checked.",
+                    config=e.config_name)],
+                "configs": 0, "runs_per_config": 0, "total_trials": 0}
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
                 "problems": [_problem("generation", str(e))],
@@ -817,3 +843,46 @@ def validate_project_file(config_path):
     return {"valid": True, "problems": [],
             "configs": len(configs), "runs_per_config": runs_per_config,
             "total_trials": len(configs) * runs_per_config}
+
+
+def _search_composition_report(config_path):
+    """Compose a sample of a search-mode ``.vast`` and report what it produced.
+
+    A search ``.vast`` has no ``configuration:`` block to expand, so the batch
+    path would report zero configs and call the file valid — hiding exactly the
+    infeasible draws a pre-flight check exists to surface. Infeasible draws are
+    reported as advisories rather than errors: unlike a batch sweep's fixed
+    cells, a probabilistic draw failing is an expected property of the search
+    space, and the campaign tolerates it (skipping that param set) rather than
+    dying.
+    """
+    from robovast.search.compose import \
+        preview_search_sample  # pylint: disable=import-outside-toplevel
+    try:
+        sample = preview_search_sample(config_path)
+    except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
+        return {"valid": False,
+                "problems": [_problem("generation", str(e))],
+                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+
+    problems = []
+    if sample["infeasible"]:
+        listed = "; ".join(f"{item['name']} {item['params']}"
+                           for item in sample["infeasible"])
+        problems.append(_problem(
+            "search-composition",
+            f"{len(sample['infeasible'])} of {sample['sampled']} sampled parameter "
+            f"set(s) could not be composed: {listed}. The campaign skips such draws "
+            "and continues, but a high rate here means much of the search space is "
+            "infeasible — check the search_space bounds against the variation's "
+            "constraints.",
+            field="search.search_space"))
+
+    # Counts describe one composed batch, not the whole campaign: how many configs a
+    # search ultimately evaluates depends on its budget and on how many draws turn out
+    # infeasible, neither of which is knowable before it runs.
+    configs = sample["composed"]
+    runs_per_config = sample["runs_per_config"]
+    return {"valid": True, "problems": problems,
+            "configs": configs, "runs_per_config": runs_per_config,
+            "total_trials": configs * runs_per_config}

@@ -27,7 +27,8 @@ from rdflib import Namespace
 from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation import VariationGuiRenderer
 from robovast.common.variation.base_variation import (DestinationConfig,
-                                                      ProvContribution)
+                                                      ProvContribution,
+                                                      VariationInfeasibleError)
 
 from ..gui.navigation_gui import NavigationGui
 from ..object_shapes import (get_object_type_from_model_path,
@@ -544,8 +545,15 @@ class ObstacleVariation(NavVariation):
                     self.progress_update(
                         f"Warning: Could not place {effective_amount} obstacles while maintaining navigation"
                     )
-                    raise ValueError(
-                        f"Could not place {effective_amount} obstacles while maintaining navigation after {max_attempts} attempts"
+                    # `path_length` above is only resolved when an `amount_per_m` config needs
+                    # it; `_path_length` is set by a preceding path variation (e.g.
+                    # PathVariationRandom) whenever one ran, regardless of which obstacle_config
+                    # style is in use, so prefer it here for an accurate diagnostic.
+                    reported_path_length = config.get('_path_length', path_length)
+                    raise VariationInfeasibleError(
+                        f"Could not place {effective_amount} obstacles while maintaining navigation "
+                        f"after {max_attempts} attempts (path_length={reported_path_length:.2f}, "
+                        f"max_distance={obstacle_config.max_distance})"
                     )
 
         # Always create variation with parameter, even if obstacle_objects is empty

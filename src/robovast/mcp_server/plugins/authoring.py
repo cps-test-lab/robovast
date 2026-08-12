@@ -227,15 +227,24 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         ``{configs, runs_per_config, total_trials, configurations, truncated, lane}``,
         each configuration ``{name, parameters}``; or ``{error}``.
     """
+    from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
     from robovast.service.project_push import _resolve_workspace_id
     try:
         target = _address_lane(address)
         if target is None:
-            campaign_data, _ = generate_scenario_variations(
-                variation_file=address, output_dir=None)
-            configs = campaign_data["configs"]
-            runs = campaign_data.get("execution", {}).get("runs", 1)
+            # A search .vast expands per sampled ParamSet, not from a `configuration:`
+            # block; composing a sample is the only preview that reflects what it runs.
+            if (load_config(address) or {}).get("search"):
+                from robovast.search.compose import preview_search_sample
+                sample = preview_search_sample(address)
+                configs = sample["configs"]
+                runs = sample["runs_per_config"]
+            else:
+                campaign_data, _ = generate_scenario_variations(
+                    variation_file=address, output_dir=None)
+                configs = campaign_data["configs"]
+                runs = campaign_data.get("execution", {}).get("runs", 1)
             items = [{"name": c["name"], "parameters": c.get("config", {})}
                      for c in configs]
             truncated = bool(limit) and len(items) > limit

@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 # log handler (gated at INFO) drops — leaving a plugin install silent.
 variation_logger = logging.getLogger("robovast.variation")
 
+#: A preview composes for real (the variation plugins run), so a campaign with a
+#: large ``per_batch`` is sampled down rather than expanded in full.
+_PREVIEW_SAMPLE_CAP = 8
+
 
 def config_name_for(param_set: ParamSet) -> str:
     """Deterministic, schema-valid config/result-dir name for a param set.
@@ -169,6 +173,7 @@ class Compose:
                 variation_file=temp_vast,
                 output_dir=output_dir,
                 use_cache=False,
+                tolerate_infeasible=True,
                 progress_update_callback=variation_logger.info,
             )
             # Repoint "vast" at the persistent original (same dir, so relative
@@ -227,3 +232,47 @@ class Compose:
                 f"max_distance per obstacle_configs entry; FloorplanVariation "
                 f"num_variations=1.")
         return name_by_id
+
+
+def preview_search_sample(vast_file: str, sample_size: int = 0) -> dict:
+    """Compose a representative sample of a ``search:``-mode ``.vast``'s configs.
+
+    A search ``.vast`` has no top-level ``configuration:`` block — its variations
+    live under ``search.variations`` and are expanded only per sampled
+    :class:`ParamSet`, at run time. ``generate_scenario_variations`` alone
+    therefore reports zero configs for one, which reads as "empty/broken
+    campaign" rather than "not expandable that way". This runs the *same*
+    pipeline a real batch uses (``build_strategy(...).ask(n)`` ->
+    :meth:`Compose.compose`) against a small sample, so a pre-flight check sees
+    what the campaign would actually produce — including which draws are
+    infeasible, which is the whole point of checking before spending compute.
+
+    Returns ``{sampled, composed, infeasible, configs, runs_per_config}``, where
+    ``infeasible`` lists ``{name, params}`` per sampled param set that could not
+    be composed and ``configs`` are the composed config dicts.
+    """
+    from robovast.common.config import validate_config
+    from robovast.search.strategy import build_strategy
+
+    vast_file = os.path.abspath(vast_file)
+    search_cfg = validate_config(load_config(vast_file)).search
+    if search_cfg is None:
+        raise ValueError("preview_search_sample called without a 'search' block")
+
+    # The campaign's own batch size is the representative sample — it is what one
+    # real ask/tell round draws — capped, because composing runs the variation
+    # plugins for real and a preview should stay cheap.
+    n = sample_size or min(search_cfg.per_batch, _PREVIEW_SAMPLE_CAP)
+    param_sets = build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n)
+
+    with tempfile.TemporaryDirectory(prefix="robovast_preview_") as artifacts:
+        campaign_data, name_by_id = Compose(vast_file).compose(param_sets, artifacts)
+
+    return {
+        "sampled": len(param_sets),
+        "composed": len(name_by_id),
+        "infeasible": [{"name": config_name_for(ps), "params": ps.values}
+                       for ps in param_sets if ps.id not in name_by_id],
+        "configs": campaign_data.get("configs", []),
+        "runs_per_config": campaign_data.get("execution", {}).get("runs", 1),
+    }

@@ -40,6 +40,7 @@ from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry,
                                resolve_out_dir, run_input_generators)
 from .plugin_ref import is_file_ref, load_ref
+from .variation.base_variation import VariationInfeasibleError
 from .variation.loader import _validate_variation_class
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,11 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
 
     try:
         configs = variation.variation(copy.deepcopy(configs))
+    except VariationInfeasibleError as e:
+        msg = f"Variation failed. {variation_class.__name__}: {e}"
+        logger.error(msg)
+        progress_update_callback(msg)
+        raise VariationInfeasibleError(msg, config_name=e.config_name) from e
     except Exception as e:
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
@@ -966,6 +972,7 @@ def _build_generate_cache_key(
     run_files: list,
     analysis_files: list,
     configurations: list,
+    tolerate_infeasible: bool = False,
 ) -> CacheKey:
     """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations.
 
@@ -977,6 +984,10 @@ def _build_generate_cache_key(
 
     # Cache format version — bumped whenever the stored structure changes.
     key.add("cache_format_version", _CACHE_FORMAT_VERSION)
+
+    # A cache entry composed with one tolerance policy must never satisfy a request
+    # made with the other -- same file, different composition outcome.
+    key.add("tolerate_infeasible", tolerate_infeasible)
 
     # .vast file itself
     key.add_file(variation_file, base_dir=vast_dir)
@@ -1095,7 +1106,8 @@ def _result_from_transport(data: dict, output_dir) -> dict:
     return data
 
 
-def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback):
+def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
+                      tolerate_infeasible=False):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1126,6 +1138,7 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 "variation_file": os.path.abspath(variation_file),
                 "output_dir": output_dir,
                 "use_cache": bool(use_cache),
+                "tolerate_infeasible": bool(tolerate_infeasible),
                 "result_path": result_path,
             }, f)
 
@@ -1160,8 +1173,18 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False):
     """Generate all scenario variation configs from a .vast file.
+
+    ``tolerate_infeasible`` controls what happens when a variation raises
+    :class:`~.variation.base_variation.VariationInfeasibleError` (a specific
+    parameter draw cannot be realized, as opposed to a plugin bug): when
+    ``False`` (the default — batch-mode campaigns and direct callers) it
+    propagates and aborts composition, same as any other exception; when
+    ``True`` (search-mode composition, via :class:`~robovast.search.compose.Compose`)
+    the affected top-level config block is dropped and composition continues
+    with the rest. Every other exception always propagates regardless of this
+    flag.
 
     Caching is active for all flows when ``use_cache=True``.  Two cache
     entries are stored under ``<vast_dir>/.cache/``:
@@ -1323,6 +1346,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             run_files=run_files,
             analysis_files=analysis_files,
             configurations=configurations,
+            tolerate_infeasible=tolerate_infeasible,
         )
         _cached = _cache_meta.get_json(_cache_key)
         if _cached is not None:
@@ -1357,7 +1381,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # GUI classes are skipped (headless callers discard them). The worker itself
     # writes the cache, so the next build hits the fast path above without forking.
     if should_isolate:
-        return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback), {}
+        return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
+                                 tolerate_infeasible), {}
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
@@ -1451,13 +1476,21 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except RuntimeError as exc:
-                # execute_variation already normalizes a plugin's own failure (a raised
-                # exception or a None/empty return) into RuntimeError. Drop just this one
-                # config rather than aborting every other config in the batch -- a
-                # probabilistic failure in one search draw (e.g. ObstacleVariation losing
-                # its placement budget) should not cost the rest.
-                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - {exc}")
+            except VariationInfeasibleError as exc:
+                # Name the config block here -- neither execute_variation nor the plugin
+                # knows it, but it is exactly what a reader needs to act on the message
+                # (which config, not just which plugin/why), whether this propagates
+                # (batch mode) or is only logged before the config is dropped (search).
+                named_exc = VariationInfeasibleError(
+                    f"config '{config['name']}': {exc}", config_name=config['name'])
+                if not tolerate_infeasible:
+                    raise named_exc from exc
+                # This parameter draw cannot be realized (e.g. ObstacleVariation lost its
+                # placement budget) -- drop just this one config rather than aborting every
+                # other config in the batch. Only opted into by search composition
+                # (Compose.compose), where a bad draw is an expected, probabilistic outcome
+                # rather than a sweep-design error.
+                progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - {named_exc}")
                 current_configs = []
                 break
             finally:
