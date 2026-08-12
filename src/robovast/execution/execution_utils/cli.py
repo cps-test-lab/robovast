@@ -173,15 +173,18 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
             upload_to_share=upload_to_share)
 
         if campaign_config.search is not None:
+            # --start-only / --abort-on-failure are harmless no-ops here, so a note is
+            # enough. --config is not: it is how one asks for a pilot, and answering a
+            # request to run *one* configuration by running the entire search budget is
+            # the opposite of what was asked. It is passed through and refused below.
             ignored = [name for name, set_ in (
-                ("--config", config), ("--start-only", start_only),
-                ("--abort-on-failure", abort_on_failure),
+                ("--start-only", start_only), ("--abort-on-failure", abort_on_failure),
             ) if set_]
             if ignored:
                 click.echo(f"Note: {', '.join(ignored)} ignored in search mode.")
             report = run_search_campaign(
                 project_config.config_path, campaign_config, results_dir, runs,
-                options=options, campaign_id=campaign_id)
+                config_filter=config, options=options, campaign_id=campaign_id)
             _print_search_summary(report)
         else:
             report = run_batch_campaign(
