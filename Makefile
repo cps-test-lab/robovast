@@ -76,6 +76,11 @@ build:
 	poetry build
 	cd src/robovast_nav && poetry build
 
+.PHONY: release-images
+release-images:
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1]"; exit 1; }
+	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,)
+
 .PHONY: publish-test
 publish-test: build
 	@echo "Publishing robovast to TestPyPI..."

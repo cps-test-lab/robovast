@@ -149,9 +149,11 @@ build_robosito() {
           --exclude='external/' --exclude='docs/build/' \
           "${ROBOSITO_SRC%/}/" "$ctx/robosito/" || return 1
   else
-    echo "robosito source: ${ROBOSITO_REPO} @ ${ROBOSITO_REF:-main} (clone)"
+    # main was restructured to a sim_suite_* layout for a different consumer and no longer
+    # has the rst_* packages installed below; robovast is the branch that still does.
+    echo "robosito source: ${ROBOSITO_REPO} @ ${ROBOSITO_REF:-robovast} (clone)"
     git clone --quiet "$ROBOSITO_REPO" "$ctx/robosito" || return 1
-    git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-main}" || return 1
+    git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-robovast}" || return 1
   fi
 
   DOCKER_BUILDKIT=1 docker build \
