@@ -17,6 +17,7 @@
 """Postprocessing functionality for run result data."""
 import inspect
 import json
+import re
 import os
 import tempfile
 from importlib.metadata import entry_points
@@ -268,6 +269,49 @@ def _append_auto_plugins(commands: List, skip: "set | None" = None) -> List:
     declared = {c if isinstance(c, str) else list(c.keys())[0] for c in commands}
     return list(commands) + [name for name in AUTO_PLUGINS
                              if name not in declared and name not in skip_names]
+
+
+#: What a cause-shaped line looks like. A failing step's first line is usually its exit status
+#: ("rosbags_process failed with exit code 1"), which says THAT it failed and nothing about why;
+#: the reason is further down, in the tool's own output. Two shapes cover nearly all of it: a
+#: line a tool prefixes ("Error: ...", "usage: ..."), and a Python exception line, whose class
+#: name carries the word rather than starting with it -- ``ValueError: no such column`` is the
+#: line that matters and begins with a V.
+_CAUSE_RE = re.compile(
+    r"^([A-Za-z_][\w.]*(Error|Exception)\b|error|fatal|traceback|exception|usage:)",
+    re.IGNORECASE,
+)
+
+#: How much of the cause to carry. The field is read in a campaign list and a tooltip, so it must
+#: stay one glanceable line -- but a truncated cause still names the thing that went wrong, which
+#: an exit code never does.
+_CAUSE_CHARS = 300
+
+
+def _failure_summary(message: object) -> str:
+    """One line for the status field: what failed, and -- where the output says so -- why.
+
+    Previously this was ``splitlines()[0]``, on the reasoning that a plugin may print a whole
+    traceback and the status field is small. True, but it made the field useless for the most
+    common failure: ``rosbags_process failed with exit code 1`` reached the campaign list, the
+    web UI and the MCP status, while ``Error: unknown handler type(s): ['nav2bt_to_csv']`` --
+    the line that says what to fix -- stayed in a log nobody reads until they are already stuck.
+
+    So: the first line still leads, and the LAST cause-shaped line is appended when there is one.
+    Last rather than first because a traceback ends with its exception; a tool that prints one
+    error prints it once, so the two coincide.
+    """
+    lines = [line.strip() for line in str(message).strip().splitlines() if line.strip()]
+    if not lines:
+        return "failed (no output)"
+    head = lines[0]
+    causes = [line for line in lines[1:] if _CAUSE_RE.match(line)]
+    if not causes:
+        return head
+    cause = causes[-1]
+    if len(cause) > _CAUSE_CHARS:
+        cause = cause[:_CAUSE_CHARS - 1] + "…"
+    return f"{head} — {cause}"
 
 
 def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
@@ -731,9 +775,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
             if not plugin_success:
                 output(f"✗ {message}")
-                # First line only: a plugin may report a whole traceback, and the status field is
-                # read in a list and a tooltip. The log still has all of it.
-                failures.append(f"{plugin_name}: {str(message).strip().splitlines()[0]}")
+                failures.append(f"{plugin_name}: {_failure_summary(message)}")
                 success = False
                 continue
             display_message = message if debug else message.splitlines()[0]
