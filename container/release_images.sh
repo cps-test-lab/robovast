@@ -105,6 +105,16 @@ image_ref() {
   echo "${digest:-$tag}"
 }
 
+if [[ -n "$PUSH" ]]; then
+  BASE_REF=$(image_ref "$BASE_TAG")
+  ROBOSITO_IMAGE_REF=$(image_ref "$ROBOSITO_TAG")
+  CONTROLLER_IMAGE_REF=$(image_ref "$CONTROLLER_TAG")
+else
+  BASE_REF="$BASE_TAG"
+  ROBOSITO_IMAGE_REF="$ROBOSITO_TAG"
+  CONTROLLER_IMAGE_REF="$CONTROLLER_TAG"
+fi
+
 echo
 echo "== done =="
 if [[ -n "$PUSH" ]]; then
@@ -117,19 +127,43 @@ echo "  $ROBOSITO_TAG"
 echo "  $CONTROLLER_TAG"
 echo
 if [[ -n "$PUSH" ]]; then
-  echo "To point a run at these images, add to your project's .env (or export directly) --"
-  echo "pinned by digest rather than the floating :latest tag, so the image a run actually"
-  echo "uses stays a recorded fact:"
-  echo "  ROBOVAST_IMAGE=$(image_ref "$BASE_TAG")"
-  echo "  ROBOVAST_ROBOSITO_IMAGE=$(image_ref "$ROBOSITO_TAG")"
-  echo "  ROBOVAST_CONTROLLER_IMAGE=$(image_ref "$CONTROLLER_TAG")"
+  echo "Referenced below by digest rather than the floating :latest tag, so the image a run"
+  echo "actually uses stays a recorded fact:"
 else
-  echo "To point a run at these images once pushed, add to your project's .env (or export"
-  echo "directly) -- shown here by :latest since nothing was pushed; re-run with --push to"
-  echo "get a pinnable digest instead:"
-  echo "  ROBOVAST_IMAGE=${BASE_TAG}"
-  echo "  ROBOVAST_ROBOSITO_IMAGE=${ROBOSITO_TAG}"
-  echo "  ROBOVAST_CONTROLLER_IMAGE=${CONTROLLER_TAG}"
+  echo "Referenced below by :latest since nothing was pushed; re-run with --push to get a"
+  echo "pinnable digest instead:"
 fi
+echo "  ROBOVAST_IMAGE=${BASE_REF}"
+echo "  ROBOVAST_ROBOSITO_IMAGE=${ROBOSITO_IMAGE_REF}"
+echo "  ROBOVAST_CONTROLLER_IMAGE=${CONTROLLER_IMAGE_REF}"
 echo "Note: a .vast file's own 'image:' field overrides .env/env vars -- edit it directly if a"
 echo "campaign pins its image explicitly (as configs/examples/basic_nav/*.vast do)."
+
+# Offer to write the three lines above into ./.env -- the file `vast` itself loads (see
+# src/robovast/common/env_file.py: current directory only, current directory when `vast`
+# runs). Only ever touches these three keys in place; any other line (e.g. registry
+# credentials) is left untouched. Skipped outside an interactive terminal (e.g. CI) rather
+# than hanging on a read that will never come.
+set_env_var() {
+  local key="$1" value="$2" file="${3:-.env}"
+  touch "$file"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+if [[ -t 0 ]]; then
+  echo
+  read -r -p "Update ./.env with these 3 lines now? [y/N] " REPLY || REPLY=""
+  if [[ "$REPLY" =~ ^[Yy] ]]; then
+    set_env_var ROBOVAST_IMAGE "$BASE_REF"
+    set_env_var ROBOVAST_ROBOSITO_IMAGE "$ROBOSITO_IMAGE_REF"
+    set_env_var ROBOVAST_CONTROLLER_IMAGE "$CONTROLLER_IMAGE_REF"
+    echo "Updated ./.env."
+  fi
+else
+  echo
+  echo "(non-interactive -- run this script directly in a terminal to be offered an automatic .env update)"
+fi
