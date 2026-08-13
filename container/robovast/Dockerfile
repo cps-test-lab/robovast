@@ -99,10 +99,10 @@ RUN  if [ -n "$(ls -A /tmp/scenario-execution-src 2>/dev/null)" ]; then \
        echo "scenario-execution: staged working tree (--scenario-execution-src)" && \
        cp -a /tmp/scenario-execution-src /ws/src/scenario-execution; \
      else \
-       echo "scenario-execution: clone @ e1cc8e25cfcf604ae56a15f19ac68a1d76ea1bf3" && \
+       echo "scenario-execution: clone @ e2ff74d1cf46c880483230ade5f8131c2671b36f" && \
        git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
        cd /ws/src/scenario-execution && \
-       git checkout e1cc8e25cfcf604ae56a15f19ac68a1d76ea1bf3; \
+       git checkout e2ff74d1cf46c880483230ade5f8131c2671b36f; \
      fi && \
      rm -rf /tmp/scenario-execution-src && \
      cd /ws && \
