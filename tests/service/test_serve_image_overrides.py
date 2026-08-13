@@ -43,7 +43,7 @@ def _run_serve(monkeypatch):
     from robovast.service import app as app_module
 
     monkeypatch.setattr(uvicorn, "Server", _FakeServer)
-    monkeypatch.setattr(app_module, "build_app", lambda impl, mount_mcp=True: _StubApp())
+    monkeypatch.setattr(app_module, "build_app", lambda impl, mount_mcp=True, auth_token=None: _StubApp())
     app_module.serve(impl=object())
 
 

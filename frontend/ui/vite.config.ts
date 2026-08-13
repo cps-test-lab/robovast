@@ -24,7 +24,7 @@ const API_PREFIXES = [
   // control
   '/campaigns', '/workspaces', '/uploads', '/image-builds', '/exec',
   // metadata + authoring help
-  '/version', '/healthz', '/usage', '/config', '/variation_types', '/panel_types',
+  '/version', '/healthz', '/login', '/usage', '/config', '/variation_types', '/panel_types',
   // the two content namespaces (files by address)
   '/results', '/sources',
   // FastAPI's own pages

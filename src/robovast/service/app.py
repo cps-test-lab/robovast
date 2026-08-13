@@ -31,11 +31,13 @@ CLI, the MCP server, and a future web UI. ``fastapi``/``uvicorn`` are imported
 lazily so importing this module stays cheap.
 """
 
+import hmac
 import logging
 from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.common import file_address
+from robovast.service import auth
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         CampaignRef,
@@ -98,6 +100,46 @@ FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", 
 #: Where the MCP server answers when :func:`build_app` mounts it (see ``mount_mcp``).
 MCP_PATH = "/mcp"
 
+#: The login page. Deliberately server-rendered and dependency-free: it has to work
+#: before the SPA loads, and the SPA's bundle is behind the very session this page
+#: issues. The name field is optional — an unattributed campaign records nothing rather
+#: than an invented placeholder.
+_LOGIN_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoboVAST</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; display: grid; place-items: center;
+         min-height: 100vh; margin: 0; }
+  form { display: grid; gap: .75rem; min-width: min(22rem, 90vw); }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  label { display: grid; gap: .25rem; font-size: .875rem; }
+  input { font: inherit; padding: .5rem; }
+  button { font: inherit; padding: .5rem; cursor: pointer; }
+  .hint { font-size: .8125rem; opacity: .7; margin: 0; }
+  .err { color: #b3261e; font-size: .875rem; margin: 0; }
+</style></head>
+<body><form method="post" action="/login">
+  <h1>RoboVAST</h1>
+  <!--error-->
+  <label>Access token
+    <input type="password" name="token" autofocus required autocomplete="current-password">
+  </label>
+  <label>Your name <span class="hint">(optional, shown on campaigns you start)</span>
+    <input type="text" name="name" autocomplete="nickname">
+  </label>
+  <input type="hidden" name="next" value="{{next}}">
+  <button type="submit">Sign in</button>
+</form></body></html>
+"""
+
+
+def _html_escape(value: str) -> str:
+    """Escape a value interpolated into the login page (the ``next`` target)."""
+    import html
+    return html.escape(value, quote=True)
+
 #: Route groups, in the order a reader wants them: what a client does first, reference
 #: last. Every route carries one as its ``tags=`` — the grouping is authored at the route
 #: so the generated documentation and the OpenAPI page agree, and a new route cannot land
@@ -143,12 +185,21 @@ def route_description(route) -> str:
     return ""
 
 
-def build_app(impl: RobovastInterface, mount_mcp: bool = True):
+def build_app(impl: RobovastInterface, mount_mcp: bool = True,
+              auth_token: str | None = None):
     """Build the FastAPI app bound to *impl* (lazy import; needs ``fastapi``).
 
     ``mount_mcp`` puts the MCP server's own ASGI app at ``/mcp`` on this same app —
-    see :func:`_build_mcp_app` — so a client only has one port to reach (or tunnel) for
-    the web UI, the REST API, *and* MCP tools together.
+    see :func:`_build_mcp_app` — so a client only has one port to reach for the web UI,
+    the REST API, *and* MCP tools together. It is inside the authentication gate like
+    everything else, which is the reason the gate is ASGI middleware rather than a
+    FastAPI dependency: a mounted sub-app does not run the parent's dependencies.
+
+    ``auth_token`` is the shared secret. **There is no way to build an app without
+    one**: an unset token is minted rather than disabling the check, so development and
+    production run the same code and "reachable but open" is not a state you can reach
+    by forgetting something. The resolved value is on ``app.state.auth_token`` so
+    ``serve()`` can print a login URL for an ephemeral one.
     """
     from contextlib import AsyncExitStack, \
         asynccontextmanager  # pylint: disable=import-outside-toplevel
@@ -183,6 +234,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
                 logger.exception("error during service shutdown")
 
     app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
+
+    auth_token, _ephemeral = auth.resolve_token(auth_token)
+    app.state.auth_token = auth_token
+    app.add_middleware(auth.AuthMiddleware, token=auth_token)
 
     if mcp_app is not None:
         # Not ``app.mount()``: a ``Mount`` requires a literal trailing slash after its
@@ -398,23 +453,48 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
         """Liveness probe: answers ``{"ok": true}`` as soon as the app is serving."""
         return {"ok": True}
 
-    #: Client hosts allowed to learn the service's filesystem roots. Real loopback
-    #: addresses only — a harness name here would make the guard unverifiable by
-    #: reading it, which is the one thing a security-relevant check must not be.
-    _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+    @app.get(Routes.LOGIN, tags=["meta"], include_in_schema=False)
+    def login_page(next: str = "/", token: str = ""):
+        """The browser's way in: a password box, or a ready-made ``?token=`` link.
+
+        A page rather than a bare 401 because a person who types the URL should meet
+        something they can act on. The ``token`` query parameter is what makes the URL
+        ``vast serve`` prints clickable — the same shape Jupyter has used for years.
+        """
+        from fastapi.responses import HTMLResponse
+        if token:
+            return _login_response(token, next=next, name="")
+        return HTMLResponse(_LOGIN_HTML.replace("{{next}}", _html_escape(next)))
+
+    @app.post(Routes.LOGIN, tags=["meta"], include_in_schema=False)
+    async def login_submit(request: Request):
+        """Exchange the shared secret for a session cookie."""
+        form = await request.form()
+        return _login_response(str(form.get("token", "")),
+                               next=str(form.get("next", "/") or "/"),
+                               name=str(form.get("name", "")),
+                               secure=request.url.scheme == "https")
+
+    def _login_response(token: str, *, next: str, name: str, secure: bool = False):
+        from fastapi.responses import HTMLResponse, RedirectResponse
+        if not auth_token or not hmac.compare_digest(token.encode(),
+                                                     auth_token.encode()):
+            return HTMLResponse(
+                _LOGIN_HTML.replace("{{next}}", _html_escape(next)).replace(
+                    "<!--error-->", '<p class="err">That token was not accepted.</p>'),
+                status_code=401)
+        # 303, so the browser follows with GET regardless of how it got here.
+        response = RedirectResponse(next or "/", status_code=303)
+        response.set_cookie(auth.SESSION_COOKIE, token, httponly=True, secure=secure,
+                            samesite="strict", path="/")
+        # Readable by the SPA on purpose: it is a label to display, not a credential.
+        response.set_cookie(auth.NAME_COOKIE, name.strip(), httponly=False,
+                            secure=secure, samesite="strict", path="/")
+        return response
 
     @app.get(Routes.VERSION, response_model=VersionInfo, tags=["meta"])
-    def version(request: Request) -> VersionInfo:
-        info = _guard(impl.version)
-        # The roots are only useful to a caller on this machine, and only true for one:
-        # over a tunnel or a port-forward the same path names the *server's* disk, which
-        # the client cannot open. Advertising it there would be a path that looks
-        # actionable and is not — so the address space is the only route it gets.
-        host = request.client.host if request.client else ""
-        if host not in _LOOPBACK:
-            info.results_root = None
-            info.sources_root = None
-        return info
+    def version() -> VersionInfo:
+        return _guard(impl.version)
 
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
     def resource_usage(backend: str | None = None) -> ResourceUsage:
@@ -1138,11 +1218,26 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
             begin_shutdown()
             super().handle_exit(sig, frame)
 
-    app = build_app(impl, mount_mcp=mount_mcp)
+    token, ephemeral = auth.resolve_token(None)
+    app = build_app(impl, mount_mcp=mount_mcp, auth_token=token)
     _enable_thread_dump_signal()
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs%s)",
                 host, port, mcp_note)
+
+    if ephemeral:
+        # Printed, not logged: it is the one line the person starting the service has to
+        # act on, and a log level could hide it. The URL carries the token so the answer
+        # to "no token was configured" is a link to click rather than a secret to hunt
+        # for -- the shape Jupyter has used for years.
+        scheme = "http"
+        display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104
+        print(f"\n  RoboVAST: {scheme}://{display_host}:{port}"
+              f"{Routes.LOGIN}?token={token}\n"
+              f"  (no {auth.TOKEN_ENV_VAR} configured, so this one is temporary and "
+              f"changes on restart)\n", flush=True)
+    else:
+        logger.info("authenticating with the configured %s", auth.TOKEN_ENV_VAR)
 
     # These four vars are the only knobs that move a campaign off the built-in
     # image defaults (see _resolve_image() / robovast_sim_robosito.backend); a

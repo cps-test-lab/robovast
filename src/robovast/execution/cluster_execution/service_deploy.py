@@ -480,6 +480,43 @@ ENV_SECRET_SOURCES = (
     (REGISTRY_CONFIG_SECRET_NAME, _registry_env_from_host),
 )
 
+#: The shared secret every client authenticates with. Deliberately **not** in
+#: ``ENV_SECRET_SOURCES``: those are all replaced together on ``setup --force``, so
+#: rotating the access token would also churn the git, share, ntfy and registry
+#: credentials and reconcile RBAC — four unrelated changes to alter one password. Its own
+#: Secret makes rotation a Secret update plus a rollout, and nothing else.
+AUTH_SECRET_NAME = "robovast-auth"
+
+
+def auth_secret_manifest(namespace, token):
+    """The Secret holding the service's shared access token."""
+    return _env_secret_manifest(namespace, AUTH_SECRET_NAME,
+                                {"ROBOVAST_AUTH_TOKEN": token})
+
+
+def existing_auth_token(namespace, kube_context=None):
+    """The token already deployed in *namespace*, or ``""``.
+
+    Setup reads it back rather than minting a new one on every run: re-running setup to
+    change an unrelated setting must not silently log out all four users, so a token is
+    generated once and then left alone unless ``--rotate-token`` asks for a new one.
+    """
+    import base64  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    try:
+        secret = client.CoreV1Api().read_namespaced_secret(AUTH_SECRET_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    encoded = (secret.data or {}).get("ROBOVAST_AUTH_TOKEN", "")
+    return base64.b64decode(encoded).decode() if encoded else ""
+
 
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
@@ -504,7 +541,8 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
 
 def service_manifests(namespace="default", image=None, env=None,
                       config_name=None, config_kwargs=None, git_token=None,
-                      share_env=None, kube_context=None, pull_secret=""):
+                      share_env=None, kube_context=None, pull_secret="",
+                      auth_token=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -545,6 +583,14 @@ def service_manifests(namespace="default", image=None, env=None,
             extra.append(_env_secret_manifest(namespace, name, resolved))
             env_secret_names.append(name)
 
+    # The access token. Its own Secret rather than an ENV_SECRET_SOURCES entry (see
+    # AUTH_SECRET_NAME), but still an envFrom source: the service reads it from
+    # os.environ like any other. Passing it in is what lets setup preserve an already
+    # deployed token instead of logging everyone out on an unrelated re-run.
+    if auth_token:
+        extra.append(auth_secret_manifest(namespace, auth_token))
+        env_secret_names.append(AUTH_SECRET_NAME)
+
     # Registry push/pull credentials (dockerconfigjson) — created only when an
     # external registry's auth is configured at setup. Not an envFrom secret: it is
     # mounted into the build Job and referenced as an imagePullSecret by campaign
@@ -569,12 +615,18 @@ def service_manifests(namespace="default", image=None, env=None,
 
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
-                   config_name=None, config_kwargs=None, dry_run=False):
+                   config_name=None, config_kwargs=None, dry_run=False,
+                   rotate_token=False):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
     ``dry_run=True`` performs a **server-side** dry run (validates against the
     real API server / admission, persists nothing) — useful to check the
     manifests without an image or scheduling.
+
+    The access token is **preserved** across re-runs unless *rotate_token* is set:
+    re-running setup to change something unrelated must not silently log out
+    everyone who is using the service. A cluster that has none yet gets one minted
+    here, so there is no deployment without authentication.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
@@ -601,10 +653,17 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     except ApiException:
         pull_secret = ""
 
+    # Reuse the deployed token unless asked for a new one; mint one the first time.
+    from robovast.service.auth import \
+        generate_token  # pylint: disable=import-outside-toplevel
+    auth_token = "" if rotate_token else existing_auth_token(namespace, kube_context)
+    auth_token = auth_token or generate_token()
+
     manifests = service_manifests(
         namespace=namespace, image=image, env=env,
         config_name=config_name, config_kwargs=config_kwargs,
-        kube_context=kube_context, pull_secret=pull_secret)
+        kube_context=kube_context, pull_secret=pull_secret,
+        auth_token=auth_token)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]

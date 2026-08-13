@@ -1104,6 +1104,10 @@ class Routes:
 
     VERSION = "/version"
     HEALTHZ = "/healthz"
+    #: Exchange the shared secret for a session cookie. Served, so the dev proxy and the
+    #: middleware's public-path list must both know it — hence a member here rather than
+    #: a literal at the route.
+    LOGIN = "/login"
     USAGE = "/usage"
     CAMPAIGNS = "/campaigns"
     #: SSE stream of the campaign list — a server-side loop over the same
