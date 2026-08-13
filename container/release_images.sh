@@ -88,31 +88,75 @@ echo "== controller =="
 # into its docker build call raw, corrupting the argument list.
 "$BASEDIR/controller/build.sh" -t "$CONTROLLER_TAG" "${PUSH_FLAG[@]}" $EXTRA_ARGS
 
-# The digest for a repo:tag we just pushed, as repo@sha256:... -- printed instead of the
-# floating tag below, matching this repo's own pin-by-digest convention (see the robosito
-# image comment in configs/examples/basic_nav/basic_nav_rst.vast): a push updates the
-# local image's RepoDigests for that repo, so this needs no registry round trip. Falls
-# back to the plain tag if no digest is found (e.g. --push was not given).
+# The digest for a repo:tag, as repo@sha256:... -- printed instead of the floating tag
+# below, matching this repo's own pin-by-digest convention (see the robosito image comment
+# in configs/examples/basic_nav/basic_nav_rst.vast).
+#
+# Two sources, cheapest first:
+#   1. the local image's RepoDigests. Set when this image was pushed to (or pulled from)
+#      that repo, so it needs no registry round trip -- and its presence is itself the
+#      proof that the local image really is in the registry under that digest. Consulted
+#      whether or not --push was given: a fully cached rebuild yields the same image id
+#      and therefore the same, still-valid, digest.
+#   2. the registry itself, via buildx imagetools. Needed because a push does not always
+#      leave a RepoDigest behind (containerd image store, a buildx --push builder). Only
+#      trusted right after our own push, when the tag in the registry is by definition
+#      what we just wrote -- resolving it without a push would name whatever older image
+#      the floating tag still points at, which is exactly the confusion digests prevent.
 #
 # Matches against both the full repo and the repo with a leading "docker.io/" stripped:
 # Docker normalizes docker.io (the implicit default registry) out of RepoDigests entries,
 # so a --project docker.io/... repo would otherwise never match its own digest.
 image_ref() {
-  local tag="$1" repo="${1%:latest}" repo_norm="${1%:latest}" digest
+  # ${1%:*} rather than ${1%:latest}: the tag is :latest today, but a repo whose tag was
+  # not stripped matches no RepoDigests entry at all -- it would report "no digest" for an
+  # image that has one. A registry port (host:5000/ns/img:tag) survives this, since only
+  # the last colon-suffix is removed.
+  local tag="$1" repo="${1%:*}" repo_norm="${1%:*}" digest
   repo_norm="${repo_norm#docker.io/}"
   digest=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$tag" 2>/dev/null \
     | grep -F -e "${repo}@" -e "${repo_norm}@" | tail -1)
-  echo "${digest:-$tag}"
+
+  if [[ -z "$digest" && -n "$PUSH" ]]; then
+    local manifest_digest
+    manifest_digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$tag" 2>/dev/null)
+    [[ "$manifest_digest" == sha256:* ]] && digest="${repo}@${manifest_digest}"
+  fi
+
+  echo "$digest"
 }
 
-if [[ -n "$PUSH" ]]; then
-  BASE_REF=$(image_ref "$BASE_TAG")
-  ROBOSITO_IMAGE_REF=$(image_ref "$ROBOSITO_TAG")
-  CONTROLLER_IMAGE_REF=$(image_ref "$CONTROLLER_TAG")
-else
-  BASE_REF="$BASE_TAG"
-  ROBOSITO_IMAGE_REF="$ROBOSITO_TAG"
-  CONTROLLER_IMAGE_REF="$CONTROLLER_TAG"
+resolve_refs() {
+  local name tag ref
+  MISSING_DIGESTS=()
+  for name in BASE ROBOSITO_IMAGE CONTROLLER_IMAGE; do
+    case "$name" in
+      BASE)             tag="$BASE_TAG" ;;
+      ROBOSITO_IMAGE)   tag="$ROBOSITO_TAG" ;;
+      CONTROLLER_IMAGE) tag="$CONTROLLER_TAG" ;;
+    esac
+    ref=$(image_ref "$tag")
+    if [[ -z "$ref" ]]; then
+      MISSING_DIGESTS+=("$tag")
+      ref="$tag"
+    fi
+    printf -v "${name}_REF" '%s' "$ref"
+  done
+}
+
+resolve_refs
+
+# A --push run whose digest cannot be resolved is a failure, not a footnote: the tags
+# printed below would be indistinguishable from a successful digest run for anyone
+# copying them into a .vast or .env, and a floating :latest silently changes what a
+# campaign ran on. Say so and exit non-zero rather than hand out an unpinnable ref.
+if [[ -n "$PUSH" && ${#MISSING_DIGESTS[@]} -gt 0 ]]; then
+  echo >&2
+  echo "ERROR: pushed, but could not resolve a digest for:" >&2
+  printf '  %s\n' "${MISSING_DIGESTS[@]}" >&2
+  echo "Neither the local image's RepoDigests nor 'docker buildx imagetools inspect' named one." >&2
+  echo "Check that the push actually reached ${PROJECT%/} (credentials, 'docker login') and retry." >&2
+  exit 1
 fi
 
 echo
@@ -126,12 +170,16 @@ echo "  $BASE_TAG"
 echo "  $ROBOSITO_TAG"
 echo "  $CONTROLLER_TAG"
 echo
-if [[ -n "$PUSH" ]]; then
+if [[ ${#MISSING_DIGESTS[@]} -eq 0 ]]; then
   echo "Referenced below by digest rather than the floating :latest tag, so the image a run"
   echo "actually uses stays a recorded fact:"
 else
-  echo "Referenced below by :latest since nothing was pushed; re-run with --push to get a"
-  echo "pinnable digest instead:"
+  # Only reachable without --push (a --push run with a missing digest exited above). A
+  # mixed list is normal there: an image whose rebuild was fully cached still carries the
+  # RepoDigest of its earlier push and is pinnable; a rebuilt one is not in the registry.
+  echo "${#MISSING_DIGESTS[@]} of 3 images are not in ${PROJECT%/} under a digest and are named by"
+  echo ":latest below -- there is nothing pinnable for them yet. Re-run with --push to publish"
+  echo "them and get repo@sha256:... refs instead:"
 fi
 echo "  ROBOVAST_IMAGE=${BASE_REF}"
 echo "  ROBOVAST_ROBOSITO_IMAGE=${ROBOSITO_IMAGE_REF}"

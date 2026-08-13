@@ -78,7 +78,7 @@ build:
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1]"; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1]"; echo "PUSH=1 publishes the images and reports them as repo@sha256:... -- without it there is nothing in the registry to pin to."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,)
 
 .PHONY: publish-test
