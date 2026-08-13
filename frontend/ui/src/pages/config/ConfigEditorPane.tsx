@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useRef } from 'react'
 import Editor from '@monaco-editor/react'
+import type { editor as monacoEditor } from 'monaco-editor'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -13,19 +15,42 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { type ValidationReport } from '@/lib/robovastClient'
 import { type ConfigEditor } from './useConfigEditor'
 
-/** What Monaco says when someone types into a campaign's frozen config. The editor is the one place
- *  the read-only rule is *discovered* rather than read — a keystroke is how most people ask. */
-const READ_ONLY_MESSAGE = {
-  value: 'This is the configuration a campaign already ran. Use **Create workspace from this** '
-    + 'above to get an editable copy.',
-}
-
 // The .vast editor: pick (or create) a .vast, edit it in Monaco with live server-side validation.
 // No file tree — the .vast is auto-selected when there is one, otherwise chosen from a dropdown;
 // other files live in the Files tab. Fills its container height so it reads as a full-height editor.
 export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
   const { selected, setSelected, vastFiles, content, saving, onChange, validation, createVast,
     readOnly } = editor
+
+  const instance = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
+  // Read inside the listener rather than captured: the editor is mounted once and kept alive
+  // (see KeepAlive in App), so one instance serves both a workspace and, later, a campaign.
+  const readOnlyNow = useRef(readOnly)
+  readOnlyNow.current = readOnly
+
+  // A read-only pane takes no cursor at all. `readOnly` alone still lets one be placed, which
+  // invites the edit it then refuses; blocking the mousedown that would place it is the only
+  // thing Monaco offers. Scrollbar drags are let through — this is about not typing, not about
+  // making a long file unreadable — and the wheel never reaches here.
+  const onMount = useCallback((ed: monacoEditor.IStandaloneCodeEditor) => {
+    instance.current = ed
+    const node = ed.getDomNode()
+    node?.addEventListener('mousedown', (e) => {
+      if (!readOnlyNow.current) return
+      if ((e.target as HTMLElement).closest('.monaco-scrollable-element > .scrollbar')) return
+      e.preventDefault()
+      e.stopPropagation()
+    }, true)
+  }, [])
+
+  // Keyboard is the other way in: drop the hidden textarea out of the tab order while read-only,
+  // and let go of a cursor the pane already had when it was a workspace.
+  useEffect(() => {
+    const textarea = instance.current?.getDomNode()?.querySelector('textarea')
+    if (!textarea) return
+    textarea.tabIndex = readOnly ? -1 : 0
+    if (readOnly) textarea.blur()
+  }, [readOnly, selected])
 
   return (
     <Stack spacing={1} sx={{ minWidth: 0, height: '100%' }}>
@@ -52,7 +77,7 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
         )}
         <Box flexGrow={1} />
         {/* Nothing here when read-only: there is no file to create and no save to report, and the
-            banner above the page already says what this is. Monaco itself answers a keystroke. */}
+            banner above the page already says what this is. */}
         {readOnly ? null : (
           <>
             <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
@@ -67,13 +92,23 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
           </>
         )}
       </Stack>
-      <Paper sx={{ flexGrow: 1, minHeight: 0, overflow: 'hidden' }}>
+      <Paper
+        sx={{
+          flexGrow: 1,
+          minHeight: 0,
+          overflow: 'hidden',
+          // Belt to the mousedown handler's braces: whatever else focuses the editor — a screen
+          // reader, a stray programmatic focus — no caret is drawn where none can be placed.
+          ...(readOnly ? { '& .monaco-editor .cursor': { display: 'none' } } : {}),
+        }}
+      >
         <Editor
           height="100%"
           language="yaml"
           path={selected || 'config.vast'}
           value={content}
           onChange={onChange}
+          onMount={onMount}
           theme="vs-dark"
           options={{
             minimap: { enabled: false },
@@ -81,7 +116,6 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
             scrollBeyondLastLine: false,
             readOnly: readOnly || !selected,
             domReadOnly: readOnly,
-            ...(readOnly ? { readOnlyMessage: READ_ONLY_MESSAGE } : {}),
           }}
         />
       </Paper>
