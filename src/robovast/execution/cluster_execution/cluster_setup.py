@@ -296,7 +296,8 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
     return cfg
 
 
-def setup_server(config_name=None, list_configs=False, force=False, **cluster_kwargs):
+def setup_server(config_name=None, list_configs=False, force=False,
+                 service_kwargs=None, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
@@ -384,11 +385,16 @@ def setup_server(config_name=None, list_configs=False, force=False, **cluster_kw
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
-    from robovast.execution.cluster_execution.service_deploy import deploy_service
+    from robovast.execution.cluster_execution.service_deploy import (
+        deploy_service, wait_for_service_ready)
     deploy_service(namespace=namespace, kube_context=kube_context,
-                   config_name=config_name, config_kwargs=cluster_kwargs)
+                   config_name=config_name, config_kwargs=cluster_kwargs,
+                   **(service_kwargs or {}))
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
+    # Only now is the cluster actually set up. Returning at "Deployment created"
+    # reported success for a pod that may never start.
+    wait_for_service_ready(namespace=namespace, kube_context=kube_context)
 
 
 def delete_server(config_name=None, **cluster_kwargs_override):

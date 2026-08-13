@@ -1202,8 +1202,27 @@ def log(campaign, follow, cluster, namespace, context):
               help='Force re-setup even if cluster is already set up')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
+@click.option('--ingress-host', default='', metavar='HOST',
+              help='Publish the service at this hostname, so users reach it in a '
+                   'browser without kubectl. Needs TLS (see --issuer/--tls-secret) '
+                   'and an access token; both are refused otherwise.')
+@click.option('--ingress-class', default='', metavar='NAME',
+              help='IngressClass to use (e.g. nginx). Default: the cluster default.')
+@click.option('--issuer', default='', metavar='NAME',
+              help='cert-manager ClusterIssuer to obtain the certificate from. '
+                   'tools/setup_ingress_tls.py creates one.')
+@click.option('--tls-secret', default='', metavar='NAME',
+              help='Existing TLS Secret to serve, instead of a cert-manager issuer.')
+@click.option('--insecure-http', is_flag=True,
+              help='Publish over plain HTTP. The shared token then crosses the '
+                   'network in clear text; only for a trusted network.')
+@click.option('--rotate-token', is_flag=True,
+              help='Issue a new access token, logging everyone out. Without this an '
+                   'already-deployed token is preserved across re-runs.')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, namespace, options, force, kube_context, cluster_config):
+def setup(list_configs, namespace, options, force, kube_context, ingress_host,
+          ingress_class, issuer, tls_secret, insecure_http, rotate_token,
+          cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
@@ -1271,9 +1290,21 @@ def setup(list_configs, namespace, options, force, kube_context, cluster_config)
         key, value = option.split('=', 1)
         cluster_kwargs[key] = value
 
+    service_kwargs = {
+        'ingress_host': ingress_host, 'ingress_class': ingress_class,
+        'issuer': issuer, 'tls_secret': tls_secret,
+        'insecure_http': insecure_http, 'rotate_token': rotate_token,
+    }
     try:
-        setup_server(config_name=cluster_config, list_configs=False, force=force, **cluster_kwargs)
+        setup_server(config_name=cluster_config, list_configs=False, force=force,
+                     service_kwargs=service_kwargs, **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
+        if ingress_host:
+            scheme = 'http' if insecure_http else 'https'
+            click.echo(f"  RoboVAST is at {scheme}://{ingress_host}")
+            click.echo("  Give users that URL and the access token "
+                       "(kubectl get secret robovast-auth "
+                       "-o jsonpath='{.data.ROBOVAST_AUTH_TOKEN}' | base64 -d).")
 
     except Exception as e:
         handle_cli_exception(e)

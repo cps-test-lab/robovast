@@ -47,6 +47,9 @@ def _deploy_stubs(monkeypatch):
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    # Setup now waits for the pod to be Ready before reporting success; with the
+    # deploy stubbed there is no pod to wait for.
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
                  "apply_controller_rbac"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())

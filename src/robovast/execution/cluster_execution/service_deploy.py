@@ -236,6 +236,49 @@ def _service_manifest(namespace):
     }
 
 
+def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180.0):
+    """Block until the service Deployment has a Ready replica, or say why it has not.
+
+    Setup used to return the moment the Deployment was *created* and print
+    "✓ Cluster setup completed successfully!", so an image that cannot be pulled
+    surfaced one command later as a connection failure — pointing at the network
+    rather than at the ImagePullBackOff that actually happened. The pod's own reason is
+    right there; reporting it here is the difference between a five-second fix and a
+    debugging session.
+
+    Raises:
+        RuntimeError: not Ready within *timeout_s*, carrying the pod's pending reason.
+    """
+    import time  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.kube import \
+        pod_pending_reason  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    apps = client.AppsV1Api()
+    core = client.CoreV1Api()
+    deadline = time.monotonic() + timeout_s
+    reason = ""
+    while time.monotonic() < deadline:
+        status = apps.read_namespaced_deployment_status(SERVICE_NAME, namespace).status
+        if (status.ready_replicas or 0) >= 1:
+            return
+        pods = core.list_namespaced_pod(namespace,
+                                        label_selector=f"app={SERVICE_NAME}").items
+        # The newest pod: a rollout leaves the old one Running while the new one fails,
+        # and the old one's contented status is not the answer to "why is this stuck?".
+        if pods:
+            newest = max(pods, key=lambda p: p.metadata.creation_timestamp)
+            reason = pod_pending_reason(newest) or (newest.status.phase or "")
+        time.sleep(2)
+    raise RuntimeError(
+        f"the {SERVICE_NAME} pod was not ready within {int(timeout_s)}s"
+        f"{f': {reason}' if reason else ''}. "
+        f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
+
+
 class IngressRefused(RuntimeError):
     """An Ingress was asked for in a configuration that would publish an open service."""
 
