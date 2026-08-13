@@ -438,9 +438,10 @@ campaign that is still running can be read while it runs.
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
 write route at all), and the card's link is the only way to it: clicking **Config** in the
-sidebar always returns to your workspaces. The editor marks it — a lock banner, a
-``read-only snapshot`` chip, and a Monaco buffer that refuses keystrokes — because a YAML
-pane that silently discarded edits would be worse than one that cannot be typed in.
+sidebar always returns to your workspaces. Where a workspace has its picker, the header
+names what is on screen — ``<campaign_id>/<file>.vast (read-only)`` — and the editor takes
+no cursor at all: a caret blinking in a YAML buffer is an invitation to type an edit that
+would then be refused.
 
 Two things are unavailable in that mode, and both for the same reason: live validation and
 **Generate** are workspace operations, and validating the snapshot in place would be wrong

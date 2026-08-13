@@ -54,44 +54,47 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
 
   return (
     <Stack spacing={1} sx={{ minWidth: 0, height: '100%' }}>
-      <Stack direction="row" spacing={1} alignItems="center">
-        {vastFiles.length > 1 ? (
-          <TextField
-            select
-            size="small"
-            label=".vast file"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            sx={{ minWidth: 200 }}
-          >
-            {vastFiles.map((p) => (
-              <MenuItem key={p} value={p}>
-                {p}
-              </MenuItem>
-            ))}
-          </TextField>
-        ) : (
-          <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-            {selected || '(no .vast yet)'}
-          </Typography>
-        )}
-        <Box flexGrow={1} />
-        {/* Nothing here when read-only: there is no file to create and no save to report, and the
-            banner above the page already says what this is. */}
-        {readOnly ? null : (
-          <>
-            <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
-              New .vast
-            </Button>
-            <Chip
+      {/* Read-only with one .vast has nothing to put here — no file to create, no save to report,
+          and the page header already names the file — so the strip goes rather than sitting empty.
+          A picker still appears if the snapshot holds several. */}
+      {readOnly && vastFiles.length <= 1 ? null : (
+        <Stack direction="row" spacing={1} alignItems="center">
+          {vastFiles.length > 1 ? (
+            <TextField
+              select
               size="small"
-              variant="outlined"
-              label={saving === 'saving' ? 'saving…' : saving === 'saved' ? 'saved' : saving === 'error' ? 'save failed' : '—'}
-              color={saving === 'error' ? 'error' : saving === 'saved' ? 'success' : 'default'}
-            />
-          </>
-        )}
-      </Stack>
+              label=".vast file"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              sx={{ minWidth: 200 }}
+            >
+              {vastFiles.map((p) => (
+                <MenuItem key={p} value={p}>
+                  {p}
+                </MenuItem>
+              ))}
+            </TextField>
+          ) : (
+            <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
+              {selected || '(no .vast yet)'}
+            </Typography>
+          )}
+          <Box flexGrow={1} />
+          {readOnly ? null : (
+            <>
+              <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
+                New .vast
+              </Button>
+              <Chip
+                size="small"
+                variant="outlined"
+                label={saving === 'saving' ? 'saving…' : saving === 'saved' ? 'saved' : saving === 'error' ? 'save failed' : '—'}
+                color={saving === 'error' ? 'error' : saving === 'saved' ? 'success' : 'default'}
+              />
+            </>
+          )}
+        </Stack>
+      )}
       <Paper
         sx={{
           flexGrow: 1,
