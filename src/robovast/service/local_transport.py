@@ -1617,16 +1617,25 @@ class LocalTransport(RobovastInterface):
 
         Runs are discovered on disk as ``<config>/<run-number>`` directories (the
         same layout :func:`get_vast_configuration_info` reads); a run is
-        ``completed``/``failed`` by its ``test.xml`` result, or ``running`` when the
-        campaign is still live and the run has not produced one yet (local is
-        sequential, so at most one). Pending (not-yet-started) runs have no directory,
-        so they are counted from the controller's expected total but not listed.
+        ``completed``/``failed`` by its ``test.xml`` result, ``killed`` when an operator
+        stopped its job, or ``running`` when the campaign is still live and the run has
+        not produced one yet (local is sequential, so at most one). Pending
+        (not-yet-started) runs have no directory, so they are counted from the
+        controller's expected total but not listed.
+
+        The kill has to be consulted because "running" here means *no ``test.xml`` yet* —
+        and a killed run's ``test.xml`` is precisely the thing that never arrives. Without
+        it the job stayed ``running`` for the rest of the campaign's life, keeping a row in
+        the live Jobs list and a Stop button on a job that was already dead.
         """
-        from robovast.common.campaign_data import read_test_result
+        from robovast.common.campaign_data import (killed_failure_message,
+                                                   killed_runs, read_test_result)
         campaign_dir = self._campaigns_root() / campaign_id
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         live = entry is not None and not self._is_done(entry)
+        # One read for the whole listing, and `{}` for every campaign nobody intervened in.
+        killed = killed_runs(campaign_dir)
 
         jobs: list[JobSummary] = []
         if campaign_dir.is_dir():
@@ -1639,14 +1648,25 @@ class LocalTransport(RobovastInterface):
                     (d for d in config_dir.iterdir() if d.is_dir() and d.name.isdigit()),
                     key=lambda d: int(d.name))
                 for run_dir in run_dirs:
+                    job_name = f"{config_dir.name}/{run_dir.name}"
+                    detail = None
                     try:
                         status = "completed" if read_test_result(run_dir)["success"] \
                             else "failed"
                     except FileNotFoundError:
-                        status = "running" if live else "failed"
+                        # Same precedence as ``read_run_outcome``: a kill only explains a
+                        # run that delivered nothing. One that wrote a ``test.xml`` before
+                        # the kill landed keeps the verdict it earned, above.
+                        entry_killed = killed.get(job_name)
+                        if entry_killed is not None:
+                            status = "killed"
+                            detail = killed_failure_message(entry_killed)
+                        else:
+                            status = "running" if live else "failed"
                     jobs.append(JobSummary(
-                        job_name=f"{config_dir.name}/{run_dir.name}",
+                        job_name=job_name,
                         status=status,
+                        detail=detail,
                         display_name=f"{config_dir.name} · run {run_dir.name}"))
 
         expected_total = 0
@@ -1659,6 +1679,7 @@ class LocalTransport(RobovastInterface):
             pending=pending,
             completed=sum(1 for j in jobs if j.status == "completed"),
             failed=sum(1 for j in jobs if j.status == "failed"),
+            killed=sum(1 for j in jobs if j.status == "killed"),
             total=len(jobs) + pending)
         return ListJobsResponse(jobs=jobs, counts=counts)
 

@@ -1260,6 +1260,11 @@
             "title": "Failed",
             "type": "integer"
           },
+          "killed": {
+            "default": 0,
+            "title": "Killed",
+            "type": "integer"
+          },
           "pending": {
             "default": 0,
             "title": "Pending",
@@ -1285,6 +1290,7 @@
           "blocked",
           "completed",
           "failed",
+          "killed",
           "pending",
           "running",
           "total",
@@ -1668,7 +1674,7 @@
         "type": "object"
       },
       "RunProgress": {
-        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to.",
+        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n* ``killed`` \u2014 an operator stopped the run's job by hand (see\n  :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and\n  *not* part of ``failed``: a run somebody ended says nothing about the system under\n  test, so counting it as a trial failure would put a human intervention into the\n  campaign's measured outcome. It is a subset of ``no_result`` \u2014 a killed run delivered\n  nothing, which is exactly why it was recorded \u2014 so it explains part of that number\n  rather than adding to it.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to.",
         "properties": {
           "completed": {
             "default": 0,
@@ -1678,6 +1684,11 @@
           "failed": {
             "default": 0,
             "title": "Failed",
+            "type": "integer"
+          },
+          "killed": {
+            "default": 0,
+            "title": "Killed",
             "type": "integer"
           },
           "no_result": {
@@ -1694,6 +1705,7 @@
         "required": [
           "completed",
           "failed",
+          "killed",
           "no_result",
           "total"
         ],
@@ -3176,6 +3188,83 @@
           }
         },
         "summary": "Stream Job Log",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/job-stop": {
+      "post": {
+        "operationId": "stop_job_campaigns__campaign_id__job_stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_name",
+            "required": true,
+            "schema": {
+              "title": "Job Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "api",
+              "title": "Source",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Job",
         "tags": [
           "campaigns"
         ]

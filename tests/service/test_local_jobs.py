@@ -575,3 +575,56 @@ def test_job_stop_route_carries_a_job_name_containing_a_slash(transport, monkeyp
 
     assert resp.status_code == 200
     assert sorted(_killed(cdir)) == ["cfg-with-dash/7"]
+
+
+def test_a_killed_run_stops_reporting_itself_as_running(transport, monkeypatch):
+    """The reported bug: the Jobs list kept a row for a job that was already dead.
+
+    "running" on this lane means *no ``test.xml`` yet*, and a killed run's ``test.xml`` is
+    exactly the thing that never arrives — so it stayed running for the rest of the
+    campaign's life, leaving a live row and a Stop button on a job nothing was executing.
+    """
+    cid = "campaign-2026-08-13-160000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "goal-2", "0", job_index=0)
+    _live(transport, cid, "running", total=1)
+    monkeypatch.setattr(transport, "_kill_scenario_container", lambda: None)
+
+    assert transport.list_jobs(cid).jobs[0].status == "running"
+
+    transport.stop_job(cid, "goal-2/0", "wedged", "webui")
+
+    resp = transport.list_jobs(cid)
+    assert resp.jobs[0].status == "killed", "a stopped job must not still report running"
+    assert resp.counts.running == 0
+    assert resp.counts.killed == 1
+    assert resp.counts.failed == 0, "a kill is not a failed job"
+    # The row explains itself without opening the (empty) log.
+    assert resp.jobs[0].detail == "manually stopped via webui: wedged"
+
+
+def test_a_killed_job_that_had_already_delivered_keeps_its_verdict(transport, monkeypatch):
+    """Same precedence as the run outcome: a kill only explains a run that produced nothing."""
+    cid = "campaign-2026-08-13-161000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "goal-2", "0", xml=_PASS_XML, job_index=0)
+    _live(transport, cid, "running", total=1)
+    from robovast.common.campaign_data import record_killed_job
+    record_killed_job(cdir, job_dir="_jobs/batch-0/job-0", job_name="goal-2/0",
+                      source="webui", reason="late kill", runs=("goal-2/0",))
+
+    assert transport.list_jobs(cid).jobs[0].status == "completed"
+
+
+def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transport, monkeypatch):
+    """With the campaign gone, a resultless run reads `failed` — unless somebody stopped it."""
+    cid = "campaign-2026-08-13-162000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "goal-2", "0", job_index=0)
+    _run(cdir, "goal-3", "0", job_index=1)  # simply lost its result
+    from robovast.common.campaign_data import record_killed_job
+    record_killed_job(cdir, job_dir="_jobs/batch-0/job-0", job_name="goal-2/0",
+                      source="cli", reason=None, runs=("goal-2/0",))
+
+    by_name = {j.job_name: j.status for j in transport.list_jobs(cid).jobs}
+    assert by_name == {"goal-2/0": "killed", "goal-3/0": "failed"}

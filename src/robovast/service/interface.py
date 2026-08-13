@@ -339,7 +339,7 @@ class JobSummary(BaseModel):
     """
 
     job_name: str
-    # running | pending | waiting | completed | failed | blocked
+    # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
     # Why a job is in its state, when there is something to say — the Kubernetes reason
@@ -359,6 +359,10 @@ class JobCounts(BaseModel):
     waiting: int = 0
     completed: int = 0
     failed: int = 0
+    # Jobs an operator stopped by hand (``stop_job``). Its own tally, and never part of
+    # ``failed``: nothing was learned from the run about the system under test, so
+    # counting it as a failed trial would put a human decision into the campaign's result.
+    killed: int = 0
     # Jobs that cannot start and will not recover on their own (image pull / config
     # error). Distinct from ``failed``: Kubernetes still counts them active, but they
     # make no progress — see ``JobSummary.detail`` for the reason.

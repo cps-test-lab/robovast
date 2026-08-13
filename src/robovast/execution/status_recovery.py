@@ -70,12 +70,19 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     """A :class:`~robovast.common.status.RunProgress` payload from verdict tallies.
 
     *counts* carries the ``num_runs`` / ``num_passed`` / ``num_failed`` /
-    ``num_errors`` keys that both :func:`read_run_counts` (the store's ``run`` table)
-    and :func:`get_vast_configuration_info` (the ``test.xml`` walk) return — the two
-    ways this module learns what the runs did. A run that errored is a failure like
-    any other, matching how ``CampaignSummary.num_failed`` is tallied; a run with no
-    verdict at all delivered no result, which is the other failure axis and must not
-    be folded into the passing ones.
+    ``num_errors`` / ``num_killed`` keys that both :func:`read_run_counts` (the store's
+    ``run`` table) and :func:`get_vast_configuration_info` (the ``test.xml`` walk)
+    return — the two ways this module learns what the runs did. A run that errored is a
+    failure like any other, matching how ``CampaignSummary.num_failed`` is tallied; a run
+    with no verdict at all delivered no result, which is the other failure axis and must
+    not be folded into the passing ones.
+
+    ``killed`` — a job an operator stopped by hand — is carried through rather than
+    recomputed. It is a subset of ``no_result`` (a killed run delivered nothing, which is
+    why it was recorded) and is deliberately **not** in ``failed``: reconstructing a
+    campaign from disk must not turn a human intervention into a trial failure, which is
+    exactly what dropping it did — the live status said ``killed: 1`` and the recovered
+    one said ``0``, for the same campaign.
     """
     failed = counts.get("num_failed", 0) + counts.get("num_errors", 0)
     completed = counts.get("num_passed", 0) + failed
@@ -84,6 +91,7 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     # every batch, and "80 completed of 16" is not a thing a reader can render.
     total = max(total, counts.get("num_runs", 0), completed)
     return {"completed": completed, "total": total, "failed": failed,
+            "killed": counts.get("num_killed", 0),
             "no_result": max(0, total - completed)}
 
 

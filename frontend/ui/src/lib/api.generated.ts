@@ -203,6 +203,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/job-stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Job */
+        post: operations["stop_job_campaigns__campaign_id__job_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/jobs": {
         parameters: {
             query?: never;
@@ -1895,6 +1912,11 @@ export interface components {
              */
             failed: number;
             /**
+             * Killed
+             * @default 0
+             */
+            killed: number;
+            /**
              * Pending
              * @default 0
              */
@@ -2192,6 +2214,14 @@ export interface components {
          *       failing trial is still a successful execution. Set when the batch's outcomes are
          *       recorded, so 0 before then.
          *
+         *     * ``killed`` — an operator stopped the run's job by hand (see
+         *       :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and
+         *       *not* part of ``failed``: a run somebody ended says nothing about the system under
+         *       test, so counting it as a trial failure would put a human intervention into the
+         *       campaign's measured outcome. It is a subset of ``no_result`` — a killed run delivered
+         *       nothing, which is exactly why it was recorded — so it explains part of that number
+         *       rather than adding to it.
+         *
          *     ``completed`` counts runs that produced results — including failing ones — and
          *     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
          *     failed=1`` means every run delivered data and one trial did not pass: 24 usable.
@@ -2213,6 +2243,11 @@ export interface components {
              * @default 0
              */
             failed: number;
+            /**
+             * Killed
+             * @default 0
+             */
+            killed: number;
             /**
              * No Result
              * @default 0
@@ -3056,6 +3091,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_job_campaigns__campaign_id__job_stop_post: {
+        parameters: {
+            query: {
+                job_name: string;
+                reason?: string | null;
+                source?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
                 };
             };
             /** @description Validation Error */

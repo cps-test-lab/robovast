@@ -23,6 +23,10 @@ import { containerColorer } from './containerColor'
 import { DetailsBox } from './DetailsBox'
 import { MeterBar } from './MeterBar'
 
+// Job states that mean the job is over, so the live view stops showing a row for it. A
+// *failed* job is deliberately not here: a failure is the thing the reader came to look at.
+const DONE_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'killed'])
+
 // Renders one campaign's live Status — the browser analog of what `vast exec cluster monitor` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
@@ -136,10 +140,13 @@ export function StatusView({
   // expand (the row's only affordance). Whole batches sit there at launch, so listing
   // them buries the handful of jobs that are really doing something. The backlog is
   // reported by the `waiting N` counter instead, which is what makes it legible anyway.
+  // `killed` is dropped from the live view for the same reason as `completed`: the job is
+  // over. It used to linger as `running` — its `test.xml` is the thing that never arrives —
+  // so the Jobs list kept a row, and a Stop button, on a job that was already dead.
   const shownJobs = jobs?.jobs.filter(
     (j) =>
       j.status !== 'waiting' &&
-      (!liveOnly || j.status !== 'completed' || expandedJobs.has(j.job_name)),
+      (!liveOnly || !DONE_JOB_STATUSES.has(j.status) || expandedJobs.has(j.job_name)),
   )
   // Live-view count summary: every non-completed state that is present. `waiting` is
   // the only way the queued backlog shows up at all now that it has no rows.
@@ -279,6 +286,9 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   pending: 'warning',
   completed: 'success',
   failed: 'error',
+  // Neutral, not red: somebody chose this. Painting it as an error would put a deliberate
+  // intervention next to the trials that actually failed.
+  killed: 'default',
   blocked: 'error',
 }
 
