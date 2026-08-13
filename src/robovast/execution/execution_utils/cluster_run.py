@@ -22,69 +22,34 @@ drives them in-process. The old ``launch_cluster_campaign`` — which built a de
 wheel, created a per-campaign controller pod and ``kubectl cp``'d the inputs in —
 is gone with that pod.
 
-What remains is the poll loop that backs ``--wait-and-download``, expressed
-against the service's status contract like every other client surface.
+What remains is the ``--wait-and-download`` outcome mapping. The poll loop behind it
+moved to :mod:`robovast.execution.campaign_wait`, since nothing about waiting on the
+service's status contract is cluster-specific and every other surface needs it too.
 """
 
 import logging
 
-from robovast.execution.control_server import Phase, is_terminal
+from robovast.execution.control_server import Phase
 
 logger = logging.getLogger(__name__)
 
 
 def wait_for_cluster_campaign(campaign_id, *, service_url="", interval=5.0,
                               timeout=None, feedback=None, client=None):
-    """Block until a cluster campaign reaches a terminal phase.
+    """Block until a cluster campaign is over; report ``"succeeded"``/``"failed"``.
 
-    Polls the service's ``get_status`` — the service drives the campaign, so its
-    phase *is* the campaign's. ``phase == "finished"`` is genuinely terminal now:
-    delivery is the object store (the service streams the download from it), so
-    unlike the old controller-pod flow there is no separate "uploaded" stage to
-    wait for.
-
-    Args:
-        campaign_id: The campaign to wait for.
-        service_url: The robovast-service to poll (ignored when *client* is given).
-        interval: Poll interval in seconds.
-        timeout: Optional overall timeout in seconds (None = wait forever).
-        feedback: Optional ``str -> None`` progress sink (e.g. ``click.echo``).
-        client: Optional pre-built client (used by tests).
-
-    Returns:
-        ``"succeeded"`` or ``"failed"``.
-
-    Raises:
-        TimeoutError: if *timeout* elapses first.
+    The waiting itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`
+    — nothing about polling the service's status is cluster-specific, and a second copy
+    here is how the terminal test drifted across surfaces before. What stays is this
+    entry point's own contract: the two-value outcome ``--wait-and-download`` branches
+    on, and echoing the failure reason to the operator watching the command.
     """
-    import time
-
-    from robovast.service.client import RobovastClient
+    from robovast.execution.campaign_wait import wait_for_campaign_status
 
     say = feedback or (lambda _msg: None)
-    client = client or RobovastClient(service_url)
-    deadline = None if timeout is None else (time.monotonic() + timeout)
-    last_report = None
-
-    while True:
-        try:
-            status = client.get_status(campaign_id)
-        except Exception as e:  # noqa: BLE001 - transient service/network hiccup
-            logger.debug("status poll for %s failed: %s", campaign_id, e)
-            status = None
-
-        if status is not None:
-            report = status.phase + (f"/{status.stage}" if status.stage else "")
-            if report != last_report:
-                say(f"{campaign_id}: {report}")
-                last_report = report
-            if is_terminal(status.phase):
-                if status.phase == Phase.FAILED and status.error:
-                    say(f"{campaign_id}: {status.error}")
-                return "succeeded" if status.phase == Phase.FINISHED else "failed"
-
-        if deadline is not None and time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Campaign {campaign_id!r} did not finish within {timeout}s "
-                f"(last state: {last_report})")
-        time.sleep(interval)
+    status = wait_for_campaign_status(
+        campaign_id, client=client, service_url=service_url, interval=interval,
+        timeout=timeout, feedback=feedback)
+    if status.phase == Phase.FAILED and status.error:
+        say(f"{campaign_id}: {status.error}")
+    return "succeeded" if status.phase == Phase.FINISHED else "failed"
