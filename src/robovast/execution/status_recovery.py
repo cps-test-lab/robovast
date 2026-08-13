@@ -28,10 +28,17 @@ Precedence, loud and fixed:
 
 1. ``_execution/outcome.json`` — the durable terminal record the controller
    writes on any terminal exit (finished / failed / stopped / crashed). This is
-   the canonical status journal and wins when present — with the one exception
-   spelled out below.
-2. Otherwise, derive a ``finished`` from the on-disk result artifacts (each run's
-   ``test.xml``).
+   the canonical status journal and wins when present — with the two exceptions
+   spelled out below. A record that is *not* terminal is reported as ``crashed``:
+   the finish tail journals one before the campaign ends, and reconstruction only
+   happens when nothing drives the campaign any more, so a non-terminal record means
+   the driver went away without ever recording an ending.
+2. Otherwise, derive from the on-disk result artifacts (each run's ``test.xml``):
+   ``finished`` only when the verdicts are *complete*, ``crashed`` when they are not.
+   Deriving ``finished`` unconditionally reported a campaign whose service had just
+   been restarted out from under it — jobs still running, half its runs missing — as
+   finished, which is the answer that stops a reader from ever looking again. Nothing
+   may claim an ending it has no evidence for.
 3. A campaign directory that does not exist is ``unknown`` — genuinely
    unrecoverable, reported as such rather than guessed.
 
@@ -56,7 +63,7 @@ from robovast.common.campaign_data import (get_vast_configuration_info,
                                            read_execution_outcome,
                                            write_execution_outcome)
 from robovast.common.store import read_campaign_mode, read_run_counts
-from robovast.execution.control_server import Phase, Status
+from robovast.execution.control_server import Phase, Status, is_terminal
 
 
 def _runs_from_verdicts(counts: dict, total: int) -> dict:
@@ -126,6 +133,14 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
         outcome.postprocessed = outcome.postprocessed or postprocessed
         if counts is not None:
             outcome.runs = _runs_from_verdicts(counts, outcome.runs.total)
+        # A record that is not terminal was written mid-flight — the finish tail
+        # journals one before the campaign ends — and reconstruction only happens when
+        # nothing is driving the campaign any more. So the driver went away without
+        # ever recording an ending: that is `crashed`, not "still finishing". Handing
+        # back the non-terminal phase would leave every waiter blocked on a campaign
+        # nobody is going to advance.
+        if not is_terminal(outcome.phase):
+            outcome.phase = Phase.CRASHED
         return outcome
 
     # No durable record. Nothing here may claim a run passed without a verdict saying
@@ -137,11 +152,19 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
             counts = get_vast_configuration_info(campaign_dir)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             counts = {}
-    return Status(phase=Phase.FINISHED, campaign_id=campaign_id,
+    runs = _runs_from_verdicts(counts, expected_total or counts.get("num_runs", 0))
+    # `finished` is a claim, and without a durable record the only evidence for it is
+    # the artifacts. A complete set of verdicts is that evidence; an incomplete one is
+    # evidence of the opposite. Deriving `finished` either way reported a campaign whose
+    # driver had just been restarted out from under it — jobs still running, half its
+    # runs missing — as a finished campaign, which is the answer that stops a reader
+    # (and a waiter) from ever looking again.
+    complete = runs["completed"] > 0 and runs["no_result"] == 0
+    return Status(phase=Phase.FINISHED if complete else Phase.CRASHED,
+                  campaign_id=campaign_id,
                   mode=read_campaign_mode(campaign_dir),
                   postprocessed=postprocessed,
-                  runs=_runs_from_verdicts(
-                      counts, expected_total or counts.get("num_runs", 0)))
+                  runs=runs)
 
 
 def record_step_outcome(campaign_dir: str | Path, *,

@@ -36,16 +36,47 @@ def test_stopped_outcome_survives_reconstruction(tmp_path):
     assert reconstruct_status_from_disk(campaign).phase == Phase.STOPPED
 
 
-def test_derives_finished_without_outcome(tmp_path):
-    """No durable record: derive a 'finished' from artifacts."""
+def test_incomplete_artifacts_without_outcome_are_crashed(tmp_path):
+    """No durable record and missing verdicts: the campaign did not finish.
+
+    This used to derive ``finished`` regardless, which is what a campaign looks like
+    after its service is restarted out from under it — jobs still running, most runs
+    without a verdict yet. Reported as finished, a reader (and a waiter) stops looking.
+    """
     campaign = tmp_path / "camp-2026-01-01-000002"
     campaign.mkdir()
     st = reconstruct_status_from_disk(campaign, expected_total=5)
-    assert st.phase == Phase.FINISHED
+    assert st.phase == Phase.CRASHED
     assert st.runs.total == 5  # expected_total surfaced when no artifacts counted
     # Nothing on disk delivered a verdict, so nothing may be reported as passing:
     # the five runs are resultless, not silently complete.
     assert (st.runs.completed, st.runs.failed, st.runs.no_result) == (0, 0, 5)
+
+
+def test_complete_artifacts_without_outcome_are_finished(tmp_path):
+    """A full set of verdicts *is* evidence of an ending, so it still derives one.
+
+    This is the campaign that predates the durable record, or whose record was never
+    uploaded — it plainly ran to completion, and must not be relabelled crashed.
+    """
+    campaign = tmp_path / "camp-2026-01-01-000005"
+    campaign.mkdir()
+    _store_with_runs(campaign, {"passed": 3, "failed": 1})
+    st = reconstruct_status_from_disk(campaign)
+    assert st.phase == Phase.FINISHED
+    assert (st.runs.completed, st.runs.failed, st.runs.no_result) == (4, 1, 0)
+
+
+def test_a_non_terminal_record_is_crashed(tmp_path):
+    """The finish tail journals a record *before* the campaign ends on the lane whose
+    worker owns the ending. Reconstruction only runs when nothing is driving the
+    campaign, so such a record means the driver died mid-flight — reporting its phase
+    verbatim would block every waiter on a campaign nobody will advance."""
+    campaign = tmp_path / "camp-2026-01-01-000006"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.FINISHING, campaign_id=campaign.name))
+    assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED
 
 
 # -- the run tally comes from the run table, not from the journal --------------
