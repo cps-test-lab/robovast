@@ -639,8 +639,10 @@ GCP (Google Kubernetes Engine)
 
 **Config name:** ``gcp``
 
-Uses a GCP Persistent Disk (PD) as MinIO storage, provisioned automatically
-through a dedicated ``StorageClass``.
+Stores results in a **Google Cloud Storage bucket you provide**. Nothing is deployed
+for storage — no MinIO pod, no PersistentVolume — so there is also nothing to reclaim
+afterwards. RoboVAST never creates the bucket: it is user-managed, and setup fails
+loudly rather than inventing one.
 
 **Prerequisites:**
 
@@ -665,16 +667,22 @@ through a dedicated ``StorageClass``.
       kubectl config rename-context \
         gke_<project>_<region>_<cluster-name> gcp-c4
 
+5. **Create the bucket yourself** and give the credential below read/write on it.
+
+6. Generate the credential — either HMAC keys for the bucket, or a service-account
+   JSON key.
+
 **Setup:**
 
 .. code-block:: bash
 
-   vast execution cluster setup gcp
+   vast exec cluster setup gcp \
+     -o gcs_bucket=my-robovast-results \
+     -o gcs_access_key=GOOG... -o gcs_secret_key=...
 
-   # With a larger disk or a faster disk type:
-   vast execution cluster setup gcp \
-     --option storage_size=50Gi \
-     --option disk_type=pd-ssd
+   # or with a service-account key file instead of HMAC keys:
+   vast exec cluster setup gcp \
+     -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
 
 Available options:
 
@@ -682,20 +690,31 @@ Available options:
    :header-rows: 1
 
    * - Option
-     - Default
+     - Required
      - Description
-   * - ``storage_size``
-     - ``10Gi``
-     - Size of the GCP PD PVC
-   * - ``disk_type``
-     - ``pd-standard``
-     - GCP PD type (``pd-standard``, ``pd-ssd``, ``pd-balanced``)
+   * - ``gcs_bucket``
+     - **yes**
+     - The bucket results are written to. Must already exist.
+   * - ``gcs_access_key``
+     - unless ``gcs_key_file``
+     - HMAC access key with read/write on the bucket.
+   * - ``gcs_secret_key``
+     - unless ``gcs_key_file``
+     - The matching HMAC secret.
+   * - ``gcs_key_file``
+     - unless HMAC keys
+     - Service-account JSON key file, inlined into the deployment instead.
 
-.. note::
+Each also has an environment variable — ``ROBOVAST_GCS_BUCKET``,
+``ROBOVAST_GCS_ACCESS_KEY``, ``ROBOVAST_GCS_SECRET_KEY``, ``ROBOVAST_GCS_KEY_FILE`` —
+so they can live in ``.env`` rather than on the command line. See ``.env.example``.
 
-   After a cleanup, the PersistentVolume may need to be deleted manually
-   in the GCP console (the ``StorageClass`` uses ``reclaimPolicy: Delete``
-   but cloud disks are not always reclaimed immediately).
+.. warning::
+
+   These credentials are stored in clear text in the Deployment's
+   ``ROBOVAST_CLUSTER_CONFIG_KWARGS`` environment variable, so anyone who can
+   ``kubectl get deploy -o yaml`` in the namespace can read them. Scope the HMAC key
+   or service account to that one bucket.
 
 .. _cluster-config-rke2:
 

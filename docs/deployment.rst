@@ -182,23 +182,57 @@ Keeping the service up to date
 
 Controllers are launched per campaign, so execution always tracks the configured
 controller image. The persistent service Deployment does not, so it has to be
-updated deliberately. The client/service exchange a version at ``/version`` so a
-stale service can be surfaced.
-
-Tear it down and set it up again:
+updated deliberately.
 
 .. code-block:: bash
 
-   vast exec cluster cleanup
-   vast exec cluster setup rke2
+   vast exec cluster upgrade
 
-Campaign data lives in the object store and survives this. Plain ``setup`` over a
-live service is refused (``Cluster is already set up``); ``setup --force``
-updates it without the teardown.
+That rolls the Deployment onto the resolved image, reconciles RBAC, and waits for
+the pod to be Ready before saying anything. **Secrets are untouched**, so nobody is
+logged out by a version bump.
 
-Setting up again also reconciles the service's RBAC. In particular, the
-``/usage`` endpoint (cluster CPU/memory capacity and usage, shown in the web UI
-top bar and via the ``resource_usage`` MCP tool) needs a cluster-scoped
-read-only ``ClusterRole`` over ``nodes``/``pods`` — so a service first deployed
-by an older setup must be set up again to gain it, otherwise ``/usage`` returns a
-permissions error.
+RBAC reconciliation is not decoration. The ``/usage`` endpoint (cluster CPU/memory,
+shown in the web UI top bar and by the ``resource_usage`` MCP tool) once needed a new
+cluster-scoped ``ClusterRole`` over ``nodes``/``pods``; a service deployed before that
+returned a permissions error until it was set up again. An upgrade that skipped RBAC
+would reintroduce exactly that, as a runtime 403 that reads like a bug rather than a
+missed migration.
+
+The three lifecycle verbs are deliberately distinct:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Command
+     - What it changes
+   * - ``vast exec cluster upgrade``
+     - The image and RBAC. Secrets, including the access token, are left alone.
+   * - ``vast exec cluster setup --force``
+     - Additionally re-reads ``.env`` and **replaces every Secret**. This is how
+       credentials are rotated — and how everyone is logged out, so it is not what
+       you want for a version bump. ``--rotate-token`` issues a new access token
+       specifically.
+   * - ``vast exec cluster cleanup``
+     - Removes the deployment entirely.
+
+Campaign data lives in the object store and survives all three. Plain ``setup`` over
+a live service is refused (``Cluster is already set up``).
+
+Checking a deployment
+---------------------
+
+.. code-block:: bash
+
+   vast doctor              # prerequisites, capacity, permissions
+   vast doctor --flavor gcp # also what the gcp flavor needs
+   vast doctor -x local     # a specific kubeconfig context
+
+Reads only, so it is safe at any time — which makes it usable both as the first step
+of an install and as the first step of debugging one. Every failure names its remedy.
+It checks the Python version, ``kubectl``/``helm``/``gcloud``, that the kubeconfig
+resolves and the API server answers, that the caller may create ClusterRoles (setup
+does), and that one node is large enough for the Kueue controller's 4 CPU / 16 GiB —
+a cluster with plenty of *total* capacity but no node big enough leaves that
+controller Pending and admits no campaign at all.

@@ -423,6 +423,39 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
 
 
 @cli.command()
+@click.option('--flavor', default='', metavar='NAME',
+              help='Also check what this cluster flavor needs (e.g. gcp).')
+@click.option('--context', '-x', default=None, metavar='NAME',
+              help='Kubernetes context to check (default: the active one).')
+def doctor(flavor, context):
+    """Check the prerequisites, before something else finds them the hard way.
+
+    Reads only — safe to run at any time, which is what makes it usable both as the
+    first step of an install and as the first step of debugging one.
+
+    Every failure names its remedy: a check that reports "helm: missing" and stops has
+    moved the problem rather than solved it.
+    """
+    from robovast.common.cli.doctor import run_checks
+
+    checks = run_checks(flavor=flavor, context=context)
+    width = max(len(c.name) for c in checks)
+    marks = {"ok": "✓", "warn": "⚠", "FAIL": "✗"}
+    for check in checks:
+        click.echo(f"  {marks[check.status]} {check.name:<{width}}  {check.detail}")
+
+    failed = [c for c in checks if not c.ok and not c.optional]
+    warned = [c for c in checks if not c.ok and c.optional]
+    for check in failed + warned:
+        click.echo(f"\n{marks[check.status]} {check.name}: {check.fix}")
+
+    if failed:
+        raise click.ClickException(
+            f"{len(failed)} prerequisite(s) not met — see above.")
+    click.echo("\n✓ ready")
+
+
+@cli.command()
 @click.argument('url', required=False)
 @click.option('--token', default=None,
               help='The access token. Prompted for (hidden) when omitted.')

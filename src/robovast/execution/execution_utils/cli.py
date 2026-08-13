@@ -1423,6 +1423,60 @@ def run_cleanup(campaign, data, force, namespace, context):
 
 
 @cluster.command()
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Namespace the robovast-service runs in')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+@click.option('--image', default=None, metavar='REF',
+              help='Image to roll out (default: the configured controller image).')
+def upgrade(namespace, kube_context, image):
+    """Move a running instance to a new RoboVAST version.
+
+    Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
+    pod to be Ready before reporting anything.
+
+    RBAC reconciliation is not decoration: a version needing a permission the last one
+    did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
+    deploy and then fail at runtime with a 403, which reads as a bug rather than as a
+    missed migration.
+
+    Distinct from ``setup --force``, deliberately:
+
+    \b
+      upgrade        the image and RBAC. Secrets, including the access token,
+                     are left exactly as they are.
+      setup --force  additionally re-reads .env and replaces every Secret. That is
+                     how credentials are rotated -- and how everyone gets logged
+                     out, so it is not what you want for a version bump.
+
+    Campaign data lives in the object store and survives both.
+    """
+    from robovast.execution.cluster_execution.cluster_setup import \
+        apply_controller_rbac
+    from robovast.execution.cluster_execution.service_deploy import (
+        deploy_service, read_service_config_from_cluster, wait_for_service_ready)
+
+    try:
+        config_name, config_kwargs = read_service_config_from_cluster(
+            namespace, kube_context)
+        if not config_name:
+            raise click.ClickException(
+                f"no robovast-service found in namespace {namespace!r}. "
+                "Run 'vast exec cluster setup <flavor>' first.")
+
+        click.echo(f"Upgrading robovast-service in {namespace}...")
+        apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+        deploy_service(namespace=namespace, kube_context=kube_context, image=image,
+                       config_name=config_name, config_kwargs=config_kwargs)
+        wait_for_service_ready(namespace=namespace, kube_context=kube_context)
+        click.echo("✓ upgraded and ready")
+    except click.ClickException:
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command()
 @click.option('--cluster-config', '-c', 'config_name', default=None,
               help='Cluster configuration plugin to use (auto-detects if not specified)')
 @click.option('--namespace', '-n', default=None,
