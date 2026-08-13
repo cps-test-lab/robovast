@@ -579,6 +579,13 @@ class ResourceUsage(BaseModel):
 
 class CreateWorkspaceRequest(BaseModel):
     name: str = ""
+    #: Seed the new workspace from this campaign's frozen ``_config/`` — the way from *reading*
+    #: a campaign's configuration (``/results/<id>/_config/``, read-only) to *editing* it.
+    #: A campaign id rather than a source address, because the copy is not a copy: ``_config/``
+    #: stores the scenario at its basename while the ``.vast`` may declare a subdirectory path,
+    #: so the tree has to be reconstructed the way a retrigger reconstructs it
+    #: (:func:`robovast.service.retrigger.stage_project`). Empty for an empty workspace.
+    from_campaign: str = ""
 
 
 class WorkspaceInfo(BaseModel):
@@ -1335,7 +1342,13 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def create_workspace(self, request: CreateWorkspaceRequest) -> WorkspaceInfo:
-        """Create an empty workspace to author a project in."""
+        """Create a workspace to author a project in.
+
+        Empty, or -- with ``from_campaign`` -- seeded from that campaign's frozen ``_config/``,
+        reconstructed rather than copied (the scenario is placed where the ``.vast`` declares
+        it). Refuses, leaving no workspace behind, when the snapshot cannot produce a project
+        that would run the same configuration.
+        """
 
     @abstractmethod
     def list_workspaces(self) -> ListWorkspacesResponse:

@@ -669,6 +669,11 @@
       },
       "CreateWorkspaceRequest": {
         "properties": {
+          "from_campaign": {
+            "default": "",
+            "title": "From Campaign",
+            "type": "string"
+          },
           "name": {
             "default": "",
             "title": "Name",

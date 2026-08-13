@@ -445,7 +445,53 @@ class LocalTransport(RobovastInterface):
     # -- workspaces ---------------------------------------------------------
 
     def create_workspace(self, request: CreateWorkspaceRequest) -> WorkspaceInfo:
-        return WorkspaceInfo.model_validate(self.store.registry.create(request.name))
+        entry = self.store.registry.create(request.name)
+        if request.from_campaign:
+            try:
+                self._seed_from_campaign(entry["workspace_id"], request.from_campaign)
+            except BaseException:
+                # A half-populated workspace is worse than none: it would sit in the dropdown
+                # looking like a project, and the caller was told the create failed.
+                self.store.registry.delete(entry["workspace_id"])
+                raise
+        return WorkspaceInfo.model_validate(entry)
+
+    def _seed_from_campaign(self, workspace_id: str, campaign_id: str) -> None:
+        """Fill a new workspace with *campaign_id*'s frozen ``_config/``, reconstructed.
+
+        Not a directory copy: ``_config/`` archives the scenario at its basename while
+        ``execution.scenario_file`` may declare a subdirectory path, so a copied tree would fail
+        config generation with "scenario file not found". ``retrigger.reconstruct_project`` is
+        exactly this rebuild, shared with the retrigger path rather than reimplemented beside it.
+
+        An incomplete snapshot is refused, not silently seeded: a workspace short a file the
+        original run used would look like that campaign's project and launch a different one.
+        The reason names the files, so the caller can author them and try again.
+        """
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.common.results_utils import campaign_vast
+        from robovast.service import retrigger
+
+        source_dir = Path(self._retrigger_source_dir(campaign_id))
+        try:
+            vast_path = campaign_vast(source_dir)
+        except ValueError as e:
+            raise ValueError(
+                f"campaign {campaign_id!r} froze no configuration under _config/, so there is "
+                f"nothing to create a workspace from ({e}). A campaign that failed before its "
+                f"configuration was frozen has none to copy.") from e
+
+        project_dir = self.store.registry.project_dir(workspace_id)
+        retrigger.reconstruct_project(source_dir, project_dir,
+                                      validate_config(load_config(str(vast_path))))
+        missing = retrigger.missing_run_files(source_dir, project_dir)
+        if missing:
+            raise ValueError(
+                f"campaign {campaign_id!r} froze a configuration missing {len(missing)} file(s) "
+                f"its own run used: {', '.join(sorted(missing))}. A workspace seeded from it "
+                f"would name that campaign's configuration while running a different one, so "
+                f"this refuses instead.")
 
     def list_workspaces(self) -> ListWorkspacesResponse:
         busy = self._workspaces_in_use()

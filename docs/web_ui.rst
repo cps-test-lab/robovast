@@ -83,9 +83,12 @@ It provides four views, one per desktop GUI:
   the* ``results_processing.postprocessing`` *block* (in a Monaco YAML editor) and
   re-run the analysis against the preserved raw rosbags — to compute different metrics
   after the fact without a new run. Because a campaign is self-contained (it carries
-  the ``.vast`` that ran), the edit is saved as a *new versioned override* of that
-  file (``_control/postprocess/rev-N.vast``); the immutable ``_config/`` snapshot is
-  never touched. The browser equivalent of ``vast exec cluster monitor``.
+  the ``.vast`` that ran), the edit is written **into that file in place**: the
+  ``results_processing.postprocessing`` block of the campaign's own
+  ``_config/<name>.vast``, with no override file and no revision history. It is the one
+  narrow exception to the snapshot being a record of what ran, and it is why the
+  read-only config view calls that snapshot *frozen* rather than *immutable*. The
+  browser equivalent of ``vast exec cluster monitor``.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, *Postprocess when done* and *Upload to share when done*
   toggles) and watches its live status. The browser equivalent of ``vast exec
@@ -93,7 +96,9 @@ It provides four views, one per desktop GUI:
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
 * **Config** — a workspace-based ``.vast`` editor with live validation and a
-  generated-configuration preview. The browser equivalent of ``vast config gui``.
+  generated-configuration preview. The browser equivalent of ``vast config gui``. It also
+  serves, read-only, the configuration a campaign already ran — see
+  :ref:`web-ui-campaign-config`.
 * **Results** — browse a campaign's data, run read-only SQL, and chart it. The
   browser equivalent of ``vast eval gui`` (SQL + charts rather than notebooks).
 
@@ -443,7 +448,7 @@ anyway — ``_config/`` archives the scenario at its *basename* while a ``.vast`
 ``scenarios/foo.osc``, so it would report a scenario that is plainly there as missing.
 **Create workspace from this** is the way on: it reconstructs the snapshot into a new,
 ordinary workspace — placing the scenario where the ``.vast`` declares it, the same
-reconstruction a :ref:`retrigger <web-ui-retrigger>` performs — and refuses, creating
+reconstruction **Retrigger campaign** performs — and refuses, creating
 nothing, if the snapshot is short a file its own run used. From there everything works
 normally, and launching it starts a campaign of your own rather than editing a record of
 one that already ran.

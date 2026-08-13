@@ -265,6 +265,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await res.json()) as T
 }
 
+// Read any address in the space above, whichever namespace it is in — the campaign-config viewer
+// reads `/results/<id>/_config/...` with the same two calls the workspace editor uses for
+// `/sources/<ws>/...`. Recursive and undetailed: every consumer builds a path tree and none shows a
+// size, so ask for the names only. Deliberately read-only: there is no `writeFileAt`, because only
+// `/sources` accepts writes and the write calls below name a workspace id for that reason.
+const listFilesAt = (address: string) =>
+  request<FileListing>('GET', `${address}?recursive=1&limit=0`)
+
+const readFileAt = (address: string) =>
+  request<FileText>('GET', `${address}?as=text&lines=0`)
+
 // -- the interface (Phase-0 subset the M1 UI needs) -------------------------
 
 export const robovast = {
@@ -360,7 +371,11 @@ export const robovast = {
 
   // -- workspaces & files ---------------------------------------------------
 
-  createWorkspace: (name = '') => request<WorkspaceInfo>('POST', '/workspaces', { name }),
+  // `fromCampaign` seeds the new workspace from that campaign's frozen `_config/` — the way out of
+  // the read-only campaign-config view. The service reconstructs the tree rather than copying it
+  // (the scenario goes where the .vast declares it) and refuses an incomplete snapshot.
+  createWorkspace: (name = '', fromCampaign = '') =>
+    request<WorkspaceInfo>('POST', '/workspaces', { name, from_campaign: fromCampaign }),
 
   deleteWorkspace: (id: string) =>
     request<ActionResult>('DELETE', `/workspaces/${encodeURIComponent(id)}`),
@@ -371,11 +386,12 @@ export const robovast = {
   // segments are encoded individually so the '/' separators survive.
   // Recursive and undetailed: every consumer builds a path tree, and none of them shows
   // a size — so ask for the names only.
-  listProjectFiles: (id: string) =>
-    request<FileListing>('GET', `${sourcesUrl(id, '')}?recursive=1&limit=0`),
+  listFilesAt,
+  readFileAt,
 
-  readProjectFile: (id: string, path: string) =>
-    request<FileText>('GET', `${sourcesUrl(id, path)}?as=text&lines=0`),
+  listProjectFiles: (id: string) => listFilesAt(sourcesUrl(id, '')),
+
+  readProjectFile: (id: string, path: string) => readFileAt(sourcesUrl(id, path)),
 
   writeProjectFile: (id: string, path: string, content: string) =>
     request<FileMeta>('PUT', sourcesUrl(id, path), { content }),

@@ -32,7 +32,7 @@ from robovast.mcp_server.service_access import NO_SERVICE
 logger = logging.getLogger(__name__)
 
 
-def create_workspace(name: str = "") -> dict:
+def create_workspace(name: str = "", from_campaign: str = "") -> dict:
     """Create a workspace — the only project binding a campaign can be started from.
 
     Holds editable inputs only, and is independent of campaigns: a started campaign is
@@ -41,6 +41,8 @@ def create_workspace(name: str = "") -> dict:
 
     Args:
         name: Optional human-friendly label.
+        from_campaign: Seed it from this campaign's frozen config, to adapt a campaign that
+            already ran instead of re-authoring its project. Refuses an incomplete snapshot.
 
     Returns:
         ``{workspace_id, name, created_at}``.
@@ -48,7 +50,7 @@ def create_workspace(name: str = "") -> dict:
     from robovast.service.interface import CreateWorkspaceRequest
     try:
         return service_access.client_or_local().create_workspace(
-            CreateWorkspaceRequest(name=name)).model_dump()
+            CreateWorkspaceRequest(name=name, from_campaign=from_campaign)).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

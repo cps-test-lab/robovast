@@ -14,27 +14,40 @@ import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded'
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined'
 import { robovast } from '@/lib/robovastClient'
 import { buildTree, type TreeNode } from '@/lib/fileTree'
+import {
+  configDirUrl,
+  configFilesKey,
+  isEmptySource,
+  isReadOnlySource,
+  type ConfigSource,
+} from '@/lib/configSource'
 import { useDirectoryUpload } from './useDirectoryUpload'
 
-// Read-only workspace file browser: shows the project's structure and accepts uploads — a
-// single file via the button, or a whole folder dropped onto the panel (structure preserved).
-// No editing here: author .vast/.osc in the Editor tab, replace other files by re-uploading.
-export function FilesView({ workspaceId }: { workspaceId: string }) {
+// The project's file browser: shows its structure and accepts uploads — a single file via the
+// button, or a whole folder dropped onto the panel (structure preserved). No editing here: author
+// .vast/.osc in the Editor tab, replace other files by re-uploading.
+//
+// A read-only source (a campaign's frozen config) shows the tree and nothing else: no upload
+// button, and the drop handlers are not attached at all, so a dragged folder is the browser's
+// problem rather than a request the service refuses.
+export function FilesView({ source }: { source: ConfigSource }) {
+  const readOnly = isReadOnlySource(source)
   const files = useQuery({
-    queryKey: ['files', workspaceId],
-    queryFn: () => robovast.listProjectFiles(workspaceId),
-    enabled: !!workspaceId,
+    queryKey: configFilesKey(source),
+    queryFn: () => robovast.listFilesAt(configDirUrl(source)),
+    enabled: !isEmptySource(source),
+    retry: false,
   })
   const paths = useMemo(() => files.data?.entries ?? [], [files.data])
   const tree = useMemo(() => buildTree(paths), [paths])
   const { dragging, progress, error, onDragOver, onDragLeave, onDrop, uploadPicked } =
-    useDirectoryUpload(workspaceId)
+    useDirectoryUpload(source.kind === 'workspace' ? source.id : '')
 
   return (
     <Paper
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
+      onDragOver={readOnly ? undefined : onDragOver}
+      onDragLeave={readOnly ? undefined : onDragLeave}
+      onDrop={readOnly ? undefined : onDrop}
       sx={{
         p: 1,
         height: '100%',
@@ -51,17 +64,19 @@ export function FilesView({ workspaceId }: { workspaceId: string }) {
         </Typography>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           {progress ? <Chip size="small" variant="outlined" label={progress} /> : null}
-          <IconButton size="small" component="label" title="Upload a file">
-            <UploadFileRoundedIcon fontSize="small" />
-            <input
-              hidden
-              type="file"
-              onChange={(e) => {
-                uploadPicked(e.target.files)
-                e.target.value = ''
-              }}
-            />
-          </IconButton>
+          {readOnly ? null : (
+            <IconButton size="small" component="label" title="Upload a file">
+              <UploadFileRoundedIcon fontSize="small" />
+              <input
+                hidden
+                type="file"
+                onChange={(e) => {
+                  uploadPicked(e.target.files)
+                  e.target.value = ''
+                }}
+              />
+            </IconButton>
+          )}
         </Stack>
       </Stack>
 
@@ -75,7 +90,9 @@ export function FilesView({ workspaceId }: { workspaceId: string }) {
         <TreeList nodes={tree} />
       ) : (
         <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>
-          no files — drop a project folder here, or author a <code>.vast</code> in the Editor tab
+          {readOnly
+            ? 'no files — this campaign froze no configuration'
+            : <>no files — drop a project folder here, or author a <code>.vast</code> in the Editor tab</>}
         </Typography>
       )}
 

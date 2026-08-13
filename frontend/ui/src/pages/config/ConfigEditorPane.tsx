@@ -13,12 +13,19 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { type ValidationReport } from '@/lib/robovastClient'
 import { type ConfigEditor } from './useConfigEditor'
 
+/** What Monaco says when someone types into a campaign's frozen config. The editor is the one place
+ *  the read-only rule is *discovered* rather than read — a keystroke is how most people ask. */
+const READ_ONLY_MESSAGE = {
+  value: 'This is the configuration a campaign already ran. Use **Create workspace from this** '
+    + 'above to get an editable copy.',
+}
+
 // The .vast editor: pick (or create) a .vast, edit it in Monaco with live server-side validation.
 // No file tree — the .vast is auto-selected when there is one, otherwise chosen from a dropdown;
 // other files live in the Files tab. Fills its container height so it reads as a full-height editor.
 export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
-  const { selected, setSelected, vastFiles, content, saving, onChange, validation, createVast } =
-    editor
+  const { selected, setSelected, vastFiles, content, saving, onChange, validation, createVast,
+    readOnly } = editor
 
   return (
     <Stack spacing={1} sx={{ minWidth: 0, height: '100%' }}>
@@ -44,15 +51,21 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
           </Typography>
         )}
         <Box flexGrow={1} />
-        <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
-          New .vast
-        </Button>
-        <Chip
-          size="small"
-          variant="outlined"
-          label={saving === 'saving' ? 'saving…' : saving === 'saved' ? 'saved' : saving === 'error' ? 'save failed' : '—'}
-          color={saving === 'error' ? 'error' : saving === 'saved' ? 'success' : 'default'}
-        />
+        {/* Nothing here when read-only: there is no file to create and no save to report, and the
+            banner above the page already says what this is. Monaco itself answers a keystroke. */}
+        {readOnly ? null : (
+          <>
+            <Button size="small" startIcon={<AddRoundedIcon />} onClick={createVast}>
+              New .vast
+            </Button>
+            <Chip
+              size="small"
+              variant="outlined"
+              label={saving === 'saving' ? 'saving…' : saving === 'saved' ? 'saved' : saving === 'error' ? 'save failed' : '—'}
+              color={saving === 'error' ? 'error' : saving === 'saved' ? 'success' : 'default'}
+            />
+          </>
+        )}
       </Stack>
       <Paper sx={{ flexGrow: 1, minHeight: 0, overflow: 'hidden' }}>
         <Editor
@@ -62,16 +75,26 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
           value={content}
           onChange={onChange}
           theme="vs-dark"
-          options={{ minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false, readOnly: !selected }}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 13,
+            scrollBeyondLastLine: false,
+            readOnly: readOnly || !selected,
+            domReadOnly: readOnly,
+            ...(readOnly ? { readOnlyMessage: READ_ONLY_MESSAGE } : {}),
+          }}
         />
       </Paper>
-      <ValidationPanel report={validation} />
+      <ValidationPanel report={validation} readOnly={readOnly} />
     </Stack>
   )
 }
 
-function ValidationPanel({ report }: { report: ValidationReport | null }) {
+function ValidationPanel({ report, readOnly }: { report: ValidationReport | null; readOnly?: boolean }) {
   if (!report) {
+    // Nothing at all when read-only: there is no edit to validate, and a line explaining the
+    // absence of a feature is one more thing to read on every campaign config that is opened.
+    if (readOnly) return null
     return (
       <Typography variant="caption" color="text.secondary">
         edit to validate…

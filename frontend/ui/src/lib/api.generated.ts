@@ -1487,6 +1487,11 @@ export interface components {
         /** CreateWorkspaceRequest */
         CreateWorkspaceRequest: {
             /**
+             * From Campaign
+             * @default
+             */
+            from_campaign: string;
+            /**
              * Name
              * @default
              */

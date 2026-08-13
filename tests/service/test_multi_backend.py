@@ -15,7 +15,8 @@ import pytest
 
 from robovast.service.cluster_service import ClusterService
 from robovast.service.interface import (CampaignRef, CreateCampaignRequest,
-                                        ResourceUsage)
+                                        CreateWorkspaceRequest, ResourceUsage,
+                                        WorkspaceInfo)
 from robovast.service.local_transport import LocalTransport
 from robovast.service.multi_backend import MultiBackendService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
@@ -106,6 +107,26 @@ def test_retrigger_runs_on_the_lane_that_ran_the_source(tmp_path, monkeypatch):
     assert seen == ["cluster"] and ref.campaign_id == "c2"
     # The campaign it created is this router's now, and resolves without re-reading disk.
     assert svc._lane_for("c2") == "cluster"
+
+
+def test_a_workspace_seeded_from_a_campaign_reads_the_owning_lane(tmp_path, monkeypatch):
+    """Routed by the campaign whose ``_config/`` is the source: a cluster campaign's snapshot is
+    in the object store, and resolving it locally would refuse a campaign that is plainly there.
+    An *empty* create is a write to the one shared store and must not route."""
+    svc = _make(tmp_path)
+    svc._lane_map["clu"] = "cluster"
+    seen = []
+    monkeypatch.setattr(LocalTransport, "create_workspace",
+                        lambda self, r: seen.append(("local", r.from_campaign))
+                        or WorkspaceInfo(workspace_id="ws-l"))
+    monkeypatch.setattr(ClusterService, "create_workspace",
+                        lambda self, r: seen.append(("cluster", r.from_campaign))
+                        or WorkspaceInfo(workspace_id="ws-c"))
+
+    assert svc.create_workspace(
+        CreateWorkspaceRequest(from_campaign="clu")).workspace_id == "ws-c"
+    assert svc.create_workspace(CreateWorkspaceRequest(name="plain")).workspace_id == "ws-l"
+    assert seen == [("cluster", "clu"), ("local", "")]
 
 
 def test_create_rejects_unknown_backend(tmp_path):

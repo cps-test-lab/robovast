@@ -247,6 +247,18 @@ class MultiBackendService(LocalTransport):
             return self._cluster.describe_world(workspace_id, path, targets, entities)
         return LocalTransport.describe_world(self, workspace_id, path, targets, entities)
 
+    def create_workspace(self, request):
+        """Route only the seeded form: the source ``_config/`` lives on the campaign's lane.
+
+        An empty workspace is a write to the one shared store, so the inherited implementation is
+        already right for it. ``from_campaign`` reads a campaign, though, and a cluster campaign's
+        snapshot is in the object store — resolving it on the local lane would find nothing and
+        refuse a campaign that is plainly there.
+        """
+        if request.from_campaign:
+            return self._route(request.from_campaign, "create_workspace", request)
+        return LocalTransport.create_workspace(self, request)
+
     def stop_exec_container(self, backend: Optional[str] = None):
         """Stop the held container on the named lane, or on **both** when none is named.
 

@@ -773,6 +773,10 @@ lives in the ``run_data`` MCP plugin):
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
   / ``delete_workspace`` / ``create_upload``. A workspace's *files* are not separate
   operations: they are the writable half of the file address space below.
+  ``create_workspace`` also takes ``from_campaign``, which seeds the new workspace from
+  that campaign's frozen ``_config/`` — the one bridge from the read-only results tree
+  back into editable inputs, and a reconstruction rather than a copy (the scenario is
+  placed where the ``.vast`` declares it, as a retrigger does).
 * **Files** — ``list_files`` / ``read_file`` / ``read_file_bytes`` / ``write_file``
   (``.vast``/``.osc`` only) / ``edit_file`` / ``delete_file`` / ``create_upload``, each
   taking one **address** (see :ref:`file-address-space`). The upload grant is

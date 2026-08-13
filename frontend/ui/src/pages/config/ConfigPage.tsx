@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
+import AlertTitle from '@mui/material/AlertTitle'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
@@ -10,8 +11,10 @@ import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
+import LockRoundedIcon from '@mui/icons-material/LockRounded'
 import { robovast } from '@/lib/robovastClient'
 import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
+import { type ConfigSource } from '@/lib/configSource'
 import { useDialogs } from '@/components/DialogProvider'
 import { ConfigEditorPane } from './ConfigEditorPane'
 import { ConfigPreviewPane } from './ConfigPreviewPane'
@@ -22,12 +25,28 @@ import { useConfigEditor } from './useConfigEditor'
 // (full height), the right column keeps the resolved-config preview. The workspace bar and the
 // .vast schema (loaded once, so Monaco gets completion + inline validation) live here; the editor
 // and preview share a single selection via useConfigEditor.
-export function ConfigPage() {
+//
+// Two modes, one page. Normally it edits a workspace. With `campaignId` — a deep link from a
+// campaign card, never a sidebar click — it shows that campaign's frozen `_config/` read-only: the
+// configuration that campaign actually ran, which is not a workspace and is deliberately absent
+// from the picker below. The workspace state is left untouched while that is on screen, so leaving
+// returns to whatever was being edited.
+export function ConfigPage({
+  campaignId = '',
+  onExit,
+}: {
+  campaignId?: string
+  onExit?: () => void
+} = {}) {
   const qc = useQueryClient()
   const { prompt, confirm } = useDialogs()
   const [workspaceId, setWorkspaceId] = useState('')
   const [tab, setTab] = useState<'editor' | 'files'>('editor')
-  const editor = useConfigEditor(workspaceId)
+  const campaignMode = !!campaignId
+  const source: ConfigSource = campaignMode
+    ? { kind: 'campaign', id: campaignId }
+    : { kind: 'workspace', id: workspaceId }
+  const editor = useConfigEditor(source)
 
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => robovast.listWorkspaces() })
   useQuery({
@@ -47,10 +66,14 @@ export function ConfigPage() {
   }, [workspaces.data, workspaceId])
 
   const createWs = useMutation({
-    mutationFn: (name: string) => robovast.createWorkspace(name),
+    mutationFn: ({ name, fromCampaign = '' }: { name: string; fromCampaign?: string }) =>
+      robovast.createWorkspace(name, fromCampaign),
     onSuccess: (ws) => {
       qc.invalidateQueries({ queryKey: ['workspaces'] })
       setWorkspaceId(ws.workspace_id)
+      // Seeded from a campaign: the point was to get somewhere editable, so leave the read-only
+      // view behind rather than leaving the new workspace selected underneath it.
+      onExit?.()
     },
   })
 
@@ -62,7 +85,18 @@ export function ConfigPage() {
       confirmLabel: 'Create',
     })
     if (name === null) return
-    createWs.mutate(name)
+    createWs.mutate({ name })
+  }
+
+  const workspaceFromCampaign = async () => {
+    const name = await prompt({
+      title: 'New workspace from this campaign',
+      label: 'Name',
+      defaultValue: `${campaignId}-config`,
+      confirmLabel: 'Create',
+    })
+    if (name === null) return
+    createWs.mutate({ name, fromCampaign: campaignId })
   }
 
   const list = workspaces.data?.workspaces ?? []
@@ -95,7 +129,54 @@ export function ConfigPage() {
 
   return (
     <Stack spacing={2} sx={{ height: 'calc(100vh - 48px)' }}>
-      <Stack direction="row" spacing={2} alignItems="center">
+      {campaignMode ? (
+        <Alert
+          severity="warning"
+          variant="filled"
+          icon={<LockRoundedIcon />}
+          action={
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                color="inherit"
+                variant="outlined"
+                onClick={workspaceFromCampaign}
+                disabled={createWs.isPending}
+              >
+                Create workspace from this
+              </Button>
+              <Button size="small" color="inherit" onClick={onExit}>
+                Back to workspaces
+              </Button>
+            </Stack>
+          }
+        >
+          <AlertTitle sx={{ mb: 0 }}>Read-only</AlertTitle>
+          The configuration campaign{' '}
+          <Box component="code" sx={{ fontFamily: 'monospace' }}>{campaignId}</Box> was staged with.
+          Not editable here — create a workspace from it to change anything.
+        </Alert>
+      ) : null}
+      {createWs.isError && campaignMode ? (
+        <Alert severity="error" variant="outlined">
+          {(createWs.error as Error).message}
+        </Alert>
+      ) : null}
+      {editor.filesError ? (
+        <Alert severity="error" variant="outlined">
+          {editor.filesError.message}
+          {campaignMode
+            ? ' — this campaign froze no configuration under _config/, which is what a campaign'
+              + ' that failed before its configuration was staged looks like.'
+            : null}
+        </Alert>
+      ) : null}
+      <Stack
+        direction="row"
+        spacing={2}
+        alignItems="center"
+        sx={{ display: campaignMode ? 'none' : 'flex' }}
+      >
         <Typography variant="h6">Configuration</Typography>
         <TextField
           select
@@ -141,7 +222,7 @@ export function ConfigPage() {
         </Button>
       </Stack>
 
-      {!workspaceId ? (
+      {!campaignMode && !workspaceId ? (
         <Alert severity="info" variant="outlined">
           Select or create a workspace, then author a <code>.vast</code> and upload your scenario/run files.
         </Alert>
@@ -149,7 +230,9 @@ export function ConfigPage() {
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
+            // One column in campaign mode: Generate and validation are workspace operations, so
+            // there is no resolved-config preview to put beside the editor.
+            gridTemplateColumns: campaignMode ? '1fr' : '1fr 1fr',
             gap: 2,
             flexGrow: 1,
             minHeight: 0,
@@ -171,13 +254,13 @@ export function ConfigPage() {
                 <ConfigEditorPane editor={editor} />
               </Box>
               <Box sx={{ display: tab === 'files' ? 'block' : 'none', height: '100%' }}>
-                <FilesView workspaceId={workspaceId} />
+                <FilesView source={source} />
               </Box>
             </Box>
           </Box>
 
           {/* Right column: the resolved-config preview, always visible regardless of the left tab. */}
-          <ConfigPreviewPane editor={editor} />
+          {campaignMode ? null : <ConfigPreviewPane editor={editor} />}
         </Box>
       )}
     </Stack>

@@ -277,6 +277,24 @@ def stage_project(source_dir, staging_dir, campaign_config) -> None:
     rather than a hung request.
     """
     source_dir, staging_dir = Path(source_dir), Path(staging_dir)
+    reconstruct_project(source_dir, staging_dir, campaign_config)
+    missing = missing_run_files(source_dir, staging_dir)
+    if missing:
+        raise RetriggerRefused(
+            "the campaign's frozen _config/ is missing "
+            f"{len(missing)} file(s) its own run recorded using: {', '.join(sorted(missing))}. "
+            "Relaunching from it would run a different configuration, so this refuses instead. "
+            "Launch it again from the workspace it came from.")
+
+
+def reconstruct_project(source_dir, staging_dir, campaign_config) -> None:
+    """Rebuild a runnable project tree from a campaign's frozen ``_config/``.
+
+    The reconstruction alone, without the completeness check: shared with the service's
+    "create a workspace from this campaign's config", which reports an incomplete snapshot in
+    its own words because nothing is being relaunched there.
+    """
+    source_dir, staging_dir = Path(source_dir), Path(staging_dir)
     config_dir = source_dir / "_config"
     for src in sorted(config_dir.rglob("*")):
         if src.is_dir():
@@ -287,7 +305,6 @@ def stage_project(source_dir, staging_dir, campaign_config) -> None:
             shutil.copy2(src, dst)
 
     _place_scenario(staging_dir, campaign_config)
-    _check_run_files(source_dir, staging_dir)
 
 
 def _place_scenario(staging_dir: Path, campaign_config) -> None:
@@ -314,41 +331,37 @@ def _place_scenario(staging_dir: Path, campaign_config) -> None:
     shutil.copy2(flat, target)
 
 
-def _check_run_files(source_dir: Path, staging_dir: Path) -> None:
-    """Refuse if the staged tree is missing a file the source campaign ran with.
+def missing_run_files(source_dir, staging_dir) -> list:
+    """Files the source campaign ran with that the staged tree does not have.
 
-    Worth its own check because the failure it prevents is silent: ``execution.run_files`` is a
-    list of globs, and a glob that matches nothing is only a warning during config generation.
-    A ``_config/`` that never archived a params file would therefore produce a campaign that
-    runs, and runs *differently*, with nothing in its log saying so.
+    Worth checking because the failure it prevents is silent: ``execution.run_files`` is a list
+    of globs, and a glob that matches nothing is only a warning during config generation. A
+    ``_config/`` that never archived a params file would therefore produce a campaign that runs,
+    and runs *differently*, with nothing in its log saying so.
 
     ``_transient/configurations.yaml`` records the expanded file list from the original run, so
-    it is the thing to compare against. Its ``_input_files`` are only warned about -- the
-    original staging also skipped a missing one, so requiring them here would refuse campaigns
-    that were already short an analysis notebook when they ran.
+    it is the thing to compare against; an absent record makes no coverage claim and yields no
+    findings. ``_input_files`` are only warned about -- the original staging also skipped a
+    missing one, so reporting them would condemn campaigns that were already short an analysis
+    notebook when they ran.
     """
     import yaml
+    source_dir, staging_dir = Path(source_dir), Path(staging_dir)
     recorded = source_dir / "_transient" / "configurations.yaml"
     if not recorded.is_file():
-        return                        # nothing to compare against; the coverage claim is unmade
+        return []                     # nothing to compare against; the coverage claim is unmade
     with open(recorded, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-
-    missing = [rel for rel in (data.get("_run_files") or [])
-               if not (staging_dir / rel).is_file()]
-    if missing:
-        raise RetriggerRefused(
-            "the campaign's frozen _config/ is missing "
-            f"{len(missing)} file(s) its own run recorded using: {', '.join(sorted(missing))}. "
-            "Relaunching from it would run a different configuration, so this refuses instead. "
-            "Launch it again from the workspace it came from.")
 
     absent_inputs = [rel for rel in (data.get("_input_files") or [])
                      if not (staging_dir / rel).is_file()]
     if absent_inputs:
         logger.warning(
-            "Retrigger source archived no %s; the original run skipped them too, so the "
-            "campaign runs without them.", ", ".join(sorted(absent_inputs)))
+            "Campaign config snapshot archived no %s; the original run skipped them too, so a "
+            "project rebuilt from it is short the same files.", ", ".join(sorted(absent_inputs)))
+
+    return [rel for rel in (data.get("_run_files") or [])
+            if not (staging_dir / rel).is_file()]
 
 
 def sweep_orphans(workspaces_root, campaigns_root, is_live: Optional[Callable[[str], bool]] = None) -> int:
