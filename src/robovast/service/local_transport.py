@@ -209,10 +209,11 @@ class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
     __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
-                 "description", "workspace_id")
+                 "description", "created_by", "workspace_id")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
-                 description: str = "", workspace_id: str = ""):
+                 description: str = "", workspace_id: str = "",
+                 created_by: str = ""):
         from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
@@ -228,6 +229,7 @@ class _LocalCampaign:
         # can make it minutes) this is the only copy — and for a campaign that fails
         # during the build it stays the only one.
         self.description = description
+        self.created_by = created_by
         self.thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
         # Real launch time, recorded the instant the campaign is registered — so a
@@ -329,6 +331,7 @@ class LocalTransport(RobovastInterface):
         # campaign_id -> recorded description (see _description_for). Same contract as
         # the start-time cache: write-once values only, so no invalidation is needed.
         self._description_cache: dict[str, str] = {}
+        self._created_by_cache: dict[str, str] = {}
         # Prime psutil's non-blocking CPU sampler so the first resource_usage()
         # reading reflects real load instead of the 0.0 a cold sampler returns.
         import psutil  # pylint: disable=import-outside-toplevel
@@ -954,7 +957,8 @@ class LocalTransport(RobovastInterface):
         state = ControllerState(campaign_id=campaign_id)
         entry = _LocalCampaign(campaign_id, results_dir, state,
                                description=request.description,
-                               workspace_id=request.workspace_id)
+                               workspace_id=request.workspace_id,
+                               created_by=request.created_by)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
         # Who ends the campaign. The builders' finish tail is outermost only when
@@ -1067,13 +1071,15 @@ class LocalTransport(RobovastInterface):
                             config_filter=config_filter,
                             backend=backend, options=options,
                             campaign_id=campaign_id, state=state,
-                            notifier=notifier, description=request.description)
+                            notifier=notifier, description=request.description,
+                            created_by=request.created_by)
                     else:
                         run_batch_campaign(
                             target.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
                             options=options, campaign_id=campaign_id, state=state,
-                            notifier=notifier, description=request.description)
+                            notifier=notifier, description=request.description,
+                            created_by=request.created_by)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
                 # phase "stopped". Not a failure — no error, no traceback. Persist the
@@ -2832,6 +2838,7 @@ class LocalTransport(RobovastInterface):
         return CampaignSummary(
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
             description=self._description_for(cid) or "",
+            created_by=self._created_by_for(cid) or "",
             started_at=started_at,
             # The store is consulted behind the snapshot rather than instead of it: a
             # reconstructed Status can carry no mode at all, because the `outcome.json`
@@ -2950,6 +2957,28 @@ class LocalTransport(RobovastInterface):
         if description is not None:
             self._description_cache[cid] = description
         return description
+
+    def _created_by_for(self, cid: str) -> Optional[str]:
+        """Who says they launched *cid*, or None when nobody gave a name.
+
+        Sibling of :meth:`_description_for`, with the same precedence and the same
+        reason for caching: the live entry answers for a campaign this process
+        launched, the durable ``campaign.db`` for every other one, and the SSE stream
+        re-lists once a second. Written once with the campaign row and never edited, so
+        a cached value cannot go stale.
+        """
+        from robovast.common.store import read_campaign_created_by
+        with self._lock:
+            entry = self._campaigns.get(cid)
+        if entry is not None:
+            return entry.created_by or None
+        cached = self._created_by_cache.get(cid)
+        if cached is not None:
+            return cached
+        created_by = read_campaign_created_by(self._record_dir(cid))
+        if created_by is not None:
+            self._created_by_cache[cid] = created_by
+        return created_by
 
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import \

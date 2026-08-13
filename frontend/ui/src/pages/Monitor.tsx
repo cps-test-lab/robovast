@@ -45,6 +45,7 @@ import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
 import { ErrorText, StatusView } from '@/components/StatusView'
+import { LaunchedBy } from '@/components/LaunchedBy'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { LaunchBar } from './LaunchBar'
@@ -486,11 +487,14 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         ) : null}
       </Stack>
 
-      {summary.description ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          {summary.description}
-        </Typography>
-      ) : null}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+        <LaunchedBy name={summary.created_by} />
+        {summary.description ? (
+          <Typography variant="body2" color="text.secondary">
+            {summary.description}
+          </Typography>
+        ) : null}
+      </Stack>
 
       {/* The headline stays one line and the backend's own text goes below it in ErrorText — a
           traceback spliced into the middle of a sentence buries the advice that follows it. */}

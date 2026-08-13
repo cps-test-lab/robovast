@@ -1332,6 +1332,11 @@ export interface components {
             /** Campaign Id */
             campaign_id: string;
             /**
+             * Created By
+             * @default
+             */
+            created_by: string;
+            /**
              * Description
              * @default
              */
@@ -1460,6 +1465,11 @@ export interface components {
              * @default
              */
             config_path: string;
+            /**
+             * Created By
+             * @default
+             */
+            created_by: string;
             /**
              * Description
              * @default

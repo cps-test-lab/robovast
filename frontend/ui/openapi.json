@@ -423,6 +423,11 @@
             "title": "Campaign Id",
             "type": "string"
           },
+          "created_by": {
+            "default": "",
+            "title": "Created By",
+            "type": "string"
+          },
           "description": {
             "default": "",
             "title": "Description",
@@ -499,6 +504,7 @@
         "required": [
           "backend",
           "campaign_id",
+          "created_by",
           "description",
           "finished_at",
           "mode",
@@ -609,6 +615,12 @@
           "config_path": {
             "default": "",
             "title": "Config Path",
+            "type": "string"
+          },
+          "created_by": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Created By",
             "type": "string"
           },
           "description": {

@@ -82,6 +82,11 @@ class CreateCampaignRequest(BaseModel):
     # campaign's store and shown in listings. Capped so it stays a listing-sized label
     # rather than a place to put notes; the id-shaped `campaign_name` cannot carry it.
     description: str = Field("", max_length=DESCRIPTION_MAX_LEN)
+    #: Who says they launched this. **Filled in by the service** from the caller's
+    #: ``X-Robovast-User`` header, not by the client — a client-supplied value here
+    #: would be a second, competing answer to a question the request already answers.
+    #: Self-declared either way: with one shared secret nobody can prove who they are.
+    created_by: str = Field("", max_length=64)
     runs: int = 1                    # runs per configuration
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
@@ -285,6 +290,11 @@ class CampaignSummary(BaseModel):
     campaign_id: str
     phase: str = Phase.UNKNOWN       # open vocabulary; see the Phase enum
     description: str = ""            # the launcher's free text; "" when none was given
+    #: Who *says* they started it. With one shared secret nobody can prove who they are,
+    #: so this is a label, not an identity, and the UI presents it as self-declared.
+    #: ``""`` means nobody gave a name -- a different fact from an anonymous someone,
+    #: which is why it is not filled in with a placeholder.
+    created_by: str = ""
     postprocessed: bool = False      # configured postprocessing pipelines have run
     #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
     #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,

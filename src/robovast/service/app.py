@@ -794,7 +794,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             file_address.format_address(file_address.SOURCES, workspace_id, path)))
 
     @app.post(Routes.CAMPAIGNS, response_model=CampaignRef, tags=["campaigns"])
-    def create_campaign(request: CreateCampaignRequest) -> CampaignRef:
+    def create_campaign(request: CreateCampaignRequest,
+                        http_request: Request) -> CampaignRef:
+        # The name comes from the authenticated caller, never from the body: a client
+        # could otherwise send one name in the header and another here, and the record
+        # would answer a question nobody asked. Self-declared either way — that is what
+        # a shared secret permits — but at least it is the same claim throughout.
+        principal = getattr(http_request.state, "principal", None)
+        request = request.model_copy(
+            update={"created_by": (principal.display_name if principal else None) or ""})
         return _guard(lambda: impl.create_campaign(request))
 
     @app.get(Routes.CAMPAIGNS, response_model=ListCampaignsResponse, tags=["campaigns"])

@@ -104,7 +104,12 @@ CREATE TABLE IF NOT EXISTS campaign (
     image                TEXT,
     image_revision       TEXT,    -- repo@sha256:… the runs actually used
     execution_started_at TEXT,    -- ISO 8601; execution.yaml's misnamed "execution_time"
-    execution_json       TEXT
+    execution_json       TEXT,
+    -- Who said they started this. Self-declared and unverified: with one shared secret
+    -- nobody can prove who they are, so this answers "who says they did?" and the UI
+    -- labels it as such. NULL means nobody gave a name -- a different fact from
+    -- somebody anonymous, and not one to paper over with a placeholder.
+    created_by    TEXT
 );
 CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
@@ -262,8 +267,16 @@ ALTER TABLE campaign ADD COLUMN execution_started_at TEXT;
 ALTER TABLE campaign ADD COLUMN execution_json TEXT;
 """
 
+# 4 -> 5: who says they started the campaign.
+#
+# Nullable and never backfilled: campaigns that ran before anyone could give a name
+# genuinely have none, and inventing one would make the column lie about the past.
+_MIGRATION_ADD_CREATED_BY = """
+ALTER TABLE campaign ADD COLUMN created_by TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -277,6 +290,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_RUN,
     _MIGRATION_ADD_DESCRIPTION,
     _MIGRATION_ADD_JOB_AND_PROVENANCE,
+    _MIGRATION_ADD_CREATED_BY,
 ]
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
 
@@ -339,7 +353,7 @@ class CampaignStore:
 
     def create_campaign(self, name: str, config: dict, mode: str = "search",
                         config_dir: str = "", created_at: Any = _STAMP_NOW,
-                        description: str = "") -> int:
+                        description: str = "", created_by: str = "") -> int:
         """Insert the campaign row. ``created_at`` is the campaign's START time.
 
         Omitting it stamps now, which is correct for the live path: the controller calls
@@ -353,13 +367,18 @@ class CampaignStore:
 
         ``description`` is the launcher's free text about *this* run (empty when none
         was given); it is recorded verbatim and never derived from the config.
+
+        ``created_by`` is the name the launcher gave for themselves, which with a shared
+        secret is a claim rather than a fact. Empty is stored as NULL, because "nobody
+        said" and "somebody called themselves X" are different answers and the UI shows
+        them differently.
         """
         cur = self._conn.execute(
             "INSERT INTO campaign (name, mode, config_dir, config_json, created_at, "
-            "description) VALUES (?, ?, ?, ?, ?, ?)",
+            "description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (name, mode, config_dir, json.dumps(config, default=str),
              time.time() if created_at is _STAMP_NOW else created_at,
-             description or None),
+             description or None, created_by or None),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -665,6 +684,25 @@ def read_campaign_description(campaign_dir: str | Path) -> Optional[str]:
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             row = conn.execute("SELECT description FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
+
+
+def read_campaign_created_by(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of who *said* they launched the campaign, or ``None``.
+
+    Read-only, like its neighbours, so listing never migrates or locks a store a running
+    campaign is still writing. A store written before this column existed (schema < 5)
+    therefore reports ``None`` — the same answer as a campaign launched without a name,
+    which is correct: neither knows who ran it.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT created_by FROM campaign LIMIT 1").fetchone()
     except sqlite3.Error:
         return None
     return row[0] if row and row[0] else None

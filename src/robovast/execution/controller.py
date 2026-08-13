@@ -131,7 +131,8 @@ class CampaignController:
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
-                 stop_conditions=None, state=None, notifier=None, description=""):
+                 stop_conditions=None, state=None, notifier=None, description="",
+                 created_by=""):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -143,6 +144,8 @@ class CampaignController:
         # Free text describing this launch; recorded on the campaign row so it stays
         # with the results (empty when the launcher gave none).
         self.description = description
+        #: Who says they launched this. Self-declared; see CampaignStore.create_campaign.
+        self.created_by = created_by
         self.strategy = strategy
         self.evaluator = evaluator
         self.compose = compose
@@ -191,7 +194,8 @@ class CampaignController:
         # campaign's evaluation.visualization notebooks resolve in the GUI.
         campaign_id = self.store.create_campaign(
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
-            config_dir="_config", description=self.description)
+            config_dir="_config", description=self.description,
+            created_by=self.created_by)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id,
                               progress_deadline_s=self._progress_deadline())
@@ -992,7 +996,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
                         config_filter=None,
                         backend: ExecutionBackend | None = None,
                         options: RunOptions | None = None, campaign_id=None, state=None,
-                        notifier=None, description=""):
+                        notifier=None, description="", created_by=""):
     """Build and run a search campaign. Requires ``campaign_config.search``.
 
     ``config_filter`` exists here only to be **refused**. A search names its
@@ -1040,7 +1044,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
         stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier,
-        description=description)
+        description=description, created_by=created_by)
     try:
         return controller.run()
     finally:
@@ -1175,7 +1179,7 @@ def _preflight_upload_to_share(backend: ExecutionBackend, opts: RunOptions) -> N
 def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_filter=None,
                        backend: ExecutionBackend | None = None,
                        options: RunOptions | None = None, campaign_id=None, state=None,
-                       notifier=None, description=""):
+                       notifier=None, description="", created_by=""):
     """Build and run a batch campaign (no ``search:`` block)."""
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
@@ -1223,7 +1227,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
             backend=be, options=opts,
             store=store, campaign_config_dump=campaign_config.model_dump(),
             vast_dir=vast_dir, batch_campaign_data=campaign_data, state=state,
-            notifier=notifier, description=description)
+            notifier=notifier, description=description, created_by=created_by)
         try:
             return controller.run()
         finally:

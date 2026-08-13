@@ -236,7 +236,7 @@ availability by deployment rather than by backend:
    * - ``--backend cluster`` (off-cluster driver)
      - yes
      - ``--workspace-dir``; the driver reads inputs from this filesystem
-   * - ``--attach``, in-pod
+   * - the deployed service (in-pod), reached over its Ingress
      - **no**
      - upload with ``vast workspace init`` / ``create_workspace`` +
        ``update_workspace``; edits need a re-push
@@ -409,24 +409,39 @@ non-recursive at the store and not merely in the response.
 Fetch what the caller needs, not the campaign
 ----------------------------------------------
 
-``ClusterService`` resolves a campaign to a local directory through **two** seams, and which
-one a caller uses decides whether it moves kilobytes or gigabytes:
-
-``_data_dir`` → ``fetch_campaign``
-    The whole campaign prefix, downloaded into ``/tmp/robovast-campaigns/<id>``. For callers
-    that genuinely need arbitrary files from it: notebook rendering, panel assets, and the
-    endpoint plugins reached via ``resolve_data_dir``.
+``ClusterService`` makes a caller **say which part of a campaign it needs**, because the
+same answer is a directory read locally and an object-store transfer on the cluster:
 
 ``_query_dir``
     Just ``_execution/data.db`` and ``campaign.db`` — the only two objects
     ``data_query._open_db`` opens. Used by ``describe_campaign_data`` and
     ``query_campaign_data_sql``.
 
-The split exists because those two are the same answer locally and orders of magnitude apart
-on the cluster. A query used to arrive through ``_data_dir``, so ``SELECT COUNT(*)`` over a
-40 MB ``data.db`` pulled every rosbag the campaign produced — in the deployment where
-campaigns are largest, and inside the HTTP request, where the client's timeout was 30 s. The
-web UI survived it only because ``fetch`` sets no timeout at all.
+``_config_dir``
+    The frozen ``_config`` snapshot: a handful of small objects. Used by the cheap
+    readers — declared plots, panel assets, visualization workloads.
+
+``_whole_campaign_dir`` → ``fetch_campaign``
+    The whole prefix, downloaded into ``/tmp/robovast-campaigns/<id>``. For the callers
+    that genuinely cannot know which files they will read: notebook rendering against run
+    outputs, the ``/results`` address space, and the endpoint plugins reached via
+    ``resolve_data_dir``.
+
+``_data_dir``
+    **Refused on this lane.** It is the local transport's "the campaign's directory",
+    which on the cluster has no cheap answer.
+
+The refusal is the design. While ``_data_dir`` silently meant ``fetch_campaign``, every
+*inherited* method that touched it became a whole-campaign download — and nothing errored,
+so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` over a
+40 MB ``data.db`` pulled every rosbag the campaign produced, inside an HTTP request whose
+client timeout was 30 s; the web UI survived it only because ``fetch`` sets no timeout at
+all. ``list_campaign_plots`` arrived that way too, and the Results page calls it *per
+campaign*, so opening the UI moved gigabytes to render a list of plot names.
+
+Fixing those one at a time left the trap armed for the next method. Now a caller that
+reaches for ``_data_dir`` fails immediately, naming the three alternatives, instead of
+quietly moving a terabyte in production.
 
 Two properties of the narrow path are load-bearing:
 
@@ -719,9 +734,10 @@ That path is also why ``local_file`` has to dispatch per lane. ``FileResponse`` 
 ``Range``, and the route asks the transport for a path outright rather than probing for the
 method: every transport has it (they all subclass ``LocalTransport``), so a presence check can
 only ever succeed. While one was believed to be meaningful, a cluster campaign fell through to
-the *local* resolver, whose ``_data_dir`` is ``fetch_campaign`` — pulling an entire campaign to
-serve one file. Each lane now answers with its own cost: local hands back the path, the cluster
-fetches the single object behind the address.
+the *local* resolver, whose ``_data_dir`` used to mean ``fetch_campaign`` — pulling an entire
+campaign to serve one file. Each lane now answers with its own cost: local hands back the path,
+the cluster fetches the single object behind the address. (That fall-through is also what
+``_data_dir`` refusing on the cluster now catches outright, rather than by being slow.)
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
 descriptor per *world*, so one build serves every run that used it — worth a background thread,
