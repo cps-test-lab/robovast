@@ -37,7 +37,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+from robovast.common.execution import resolve_sidecar_image
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                     'volumes': volumes,
                     'initContainers': [{
                         'name': 'context-fetch',
-                        'image': SIDECAR_IMAGE,
+                        'image': resolve_sidecar_image(),
                         'command': ['sh', '-c', context_fetch_command()],
                         'env': init_env,
                         'volumeMounts': [{'name': 'context',

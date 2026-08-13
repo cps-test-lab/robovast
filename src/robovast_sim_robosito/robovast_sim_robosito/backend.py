@@ -32,8 +32,13 @@ DEFAULT_SIM_IMAGE = os.environ.get(
 #: roles are one container, so it must carry both the RoboVAST contract
 #: (``/etc/robovast_compat_version``, scenario-execution, the ``/out`` mount) and
 #: robosito -- which is the one thing robosito's own image does not have.
+#: The tag is ``:latest`` because that is what ``.github/workflows/image.yml`` publishes
+#: for this image (``type=raw,value=latest`` on the default branch, plus branch/PR/semver
+#: tags). It defaulted to ``:jazzy`` — a tag CI has never produced — so the fallback named
+#: an image that does not exist, and only a campaign setting the image explicitly worked.
+#: ``tests/common/test_image_defaults.py`` keeps the two in agreement.
 DEFAULT_COMBINED_IMAGE = os.environ.get(
-    "ROBOVAST_ROBOSITO_IMAGE", "ghcr.io/cps-test-lab/robovast-robosito:jazzy")
+    "ROBOVAST_ROBOSITO_IMAGE", "ghcr.io/cps-test-lab/robovast-robosito:latest")
 
 #: The ``SimulationInterface`` scenario-execution steps.
 ADAPTER = "rst.scenario_adapter:MujocoSim"

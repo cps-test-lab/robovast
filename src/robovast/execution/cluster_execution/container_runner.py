@@ -350,7 +350,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     """
     from robovast.execution.cluster_execution.cluster_execution import \
         _label_safe_campaign
-    from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+    from robovast.common.execution import resolve_sidecar_image
 
     tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
     # One emptyDir per mountable path, on every aux container. Empty unless a runner stages
@@ -406,7 +406,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         # may be nobody in particular.
         chmods = " && ".join(f'chmod 0777 {mount["mountPath"]}' for mount in config_mounts)
         spec["initContainers"] = [{
-            "name": "mc-tools", "image": SIDECAR_IMAGE,
+            "name": "mc-tools", "image": resolve_sidecar_image(),
             "imagePullPolicy": "IfNotPresent",
             "command": ["sh", "-c",
                         f'cp "$(command -v mc)" {_MC} && chmod 0755 {_MC} && '

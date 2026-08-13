@@ -52,11 +52,15 @@ execution:
   # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
   # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
       config: world/depot_nav2.yaml
-  # By digest, not `:latest`: this is the image the simulator runs, so a moving tag would mean the
-  # code under test is not a recorded fact. It is also the image the run view's geometry is compiled
-  # in, cached by image identity. Rebuild with
-  # `robovast/container/robovast/build.sh --image robosito --robosito-src ...` and re-pin here.
-      image: harbor.example.org/robovast/robovast_robosito_jazzy@sha256:ce5952ade11ca1ee0127b960ba6a554129111ab9f218e62813fb45e9c1895918
+  # The published image, so this example runs for anyone who clones the repo. It was pinned by
+  # digest to a private registry that only one site could pull, which made the example
+  # unrunnable everywhere else.
+  #
+  # Pin it by digest for real work: this is the image the simulator runs, so a moving tag means
+  # the code under test is not a recorded fact. It is also the image the run view's geometry is
+  # compiled in, cached by image identity. `make release-images PROJECT=... PUSH=1` prints the
+  # `repo@sha256:...` refs to paste here (or into .env).
+      image: ghcr.io/cps-test-lab/robovast-robosito:latest
       resources:
         cpu: 1
   # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.

@@ -43,11 +43,12 @@ import logging
 import re
 import time
 
+from robovast.common.execution import resolve_sidecar_image
+
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 
 logger = logging.getLogger(__name__)
 
-SIDECAR_IMAGE = "ghcr.io/cps-test-lab/robovast-sidecar:latest"
 #: Staging prefix the Job mirrors its outputs to (campaign-relative layout preserved).
 POSTPROC_PREFIX = "_postproc"
 _POLL_SECONDS = 5
@@ -426,7 +427,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                             # (The scripts are no longer copied by an initContainer —
                             # they arrive read-only from the ConfigMap volume above.)
                             "name": "s3-init",
-                            "image": SIDECAR_IMAGE,
+                            "image": resolve_sidecar_image(),
                             "command": ["sh", "-c",
                                         'cp "$(command -v mc)" /tools/mc && '
                                         'chmod +x /tools/mc; '

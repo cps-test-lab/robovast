@@ -211,10 +211,10 @@ def test_the_init_container_is_the_sidecar_not_the_image_under_test(tmp_path):
     without it. (The old restore step ran the experiment image because a ConfigMap needed
     only ``cp``.)
     """
-    from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+    from robovast.common.execution import resolve_sidecar_image
     init, = _manifest(_spec(tmp_path))["spec"]["initContainers"]
     assert init["name"] == "s3-init"
-    assert init["image"] == SIDECAR_IMAGE
+    assert init["image"] == resolve_sidecar_image()
     assert init["image"] != "img:1"
     script = init["command"][-1]
     assert "mc mirror" in script and "/config/" in script

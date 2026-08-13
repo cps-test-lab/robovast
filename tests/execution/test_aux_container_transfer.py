@@ -247,11 +247,11 @@ def test_partial_store_wiring_is_refused_at_construction():
 def test_mc_is_injected_from_the_sidecar_not_required_of_the_aux_image():
     """The aux image belongs to a plugin author (``scenery_builder``); we cannot add
     tools to it, so the binary is copied in from the sidecar at pod creation."""
-    from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+    from robovast.common.execution import resolve_sidecar_image
     spec = ContainerSpec(image="example/img:1")
     m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
     init, = m["initContainers"]
-    assert init["image"] == SIDECAR_IMAGE
+    assert init["image"] == resolve_sidecar_image()
     assert "command -v mc" in init["command"][-1]
     # The tools volume comes first; the mountable-path volumes follow it (see
     # AUX_MOUNTABLE_PATHS), so this asserts what the tooling contributes, not the whole pod.

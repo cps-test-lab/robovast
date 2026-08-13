@@ -317,7 +317,7 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
     the service's intent even if the reaper never runs.
     """
     from robovast.execution.cluster_execution.cluster_image_build import s3_init_env
-    from robovast.execution.cluster_execution.postprocess_job import SIDECAR_IMAGE
+    from robovast.common.execution import resolve_sidecar_image
 
     metadata = {"name": _pod_name(), "namespace": namespace, "labels": dict(_labels())}
     if owner_ref:
@@ -347,7 +347,7 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
             "initContainers": [{
                 # The sidecar, not the experiment image: it carries `mc`, and staging
                 # must not depend on what the image under test happens to install.
-                "name": "s3-init", "image": SIDECAR_IMAGE,
+                "name": "s3-init", "image": resolve_sidecar_image(),
                 "imagePullPolicy": "IfNotPresent",
                 "command": ["sh", "-c", _mirror_command(spec)],
                 "env": init_env,

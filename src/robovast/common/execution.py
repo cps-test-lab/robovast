@@ -55,6 +55,9 @@ DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
 DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
 # robovast-controller hosts the in-cluster CampaignController for cluster runs.
 DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
+# robovast-sidecar is the small (alpine + mc + boto3) helper used by the object-store
+# init container and the postprocessing Job.
+DEFAULT_ROBOVAST_SIDECAR_IMAGE = "ghcr.io/cps-test-lab/robovast-sidecar:latest"
 
 
 # Marks an image ref that is *produced by a build* rather than pulled: ``build:<name>``,
@@ -126,10 +129,13 @@ def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
             # a campaign whose execution.image *was* set (to a build: ref) — sending
             # the reader to a knob that was not the unpinned one.
             resolved = default
+            # An image whose only knob *is* the env var (the sidecar) would otherwise
+            # read "checked ROBOVAST_SIDECAR_IMAGE, ROBOVAST_SIDECAR_IMAGE".
+            checked = pin_hint if pin_hint == env_var else f"{pin_hint}, {env_var}"
             logger.warning(
-                "No %s configured (checked %s, %s); using the built-in default %r. "
+                "No %s configured (checked %s); using the built-in default %r. "
                 "This is a mutable tag — pin it for a reproducible run.",
-                role, pin_hint, env_var, resolved)
+                role, checked, resolved)
     if is_build_image_ref(resolved):
         raise CampaignConfigError(
             f"unresolved build image ref '{resolved}': the 'build:' image must be "
@@ -182,6 +188,20 @@ def resolve_controller_image(explicit: str | None = None,
                           explicit=explicit, config_image=config_image,
                           role="controller image",
                           pin_hint="--controller-image")
+
+
+def resolve_sidecar_image(explicit: str | None = None) -> str:
+    """Resolve the robovast-sidecar image (object-store init + postprocessing Job).
+
+    Overridable via ``ROBOVAST_SIDECAR_IMAGE``. It was the one image with no knob at
+    all — hard-coded in two places — so an interim build pushed to a dev registry
+    could be tested for three of the four images and silently kept the published
+    sidecar for the fourth.
+    """
+    return _resolve_image(DEFAULT_ROBOVAST_SIDECAR_IMAGE, "ROBOVAST_SIDECAR_IMAGE",
+                          explicit=explicit,
+                          role="sidecar image",
+                          pin_hint="ROBOVAST_SIDECAR_IMAGE")
 
 
 def get_app_version() -> str:

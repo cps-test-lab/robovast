@@ -78,6 +78,7 @@ from robovast.common.execution import (build_job_parameter_documents,
                                        job_artifact_rel,
                                        read_job_links,
                                        resolve_robovast_image,
+                                       resolve_sidecar_image,
                                        write_job_links_manifest, sidecar_backend_env)
 from robovast.common import prepare_campaign_configs
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped,
@@ -479,7 +480,7 @@ class BatchJobRunner:
         spec['initContainers'] = [
             {
                 'name': 's3-init',
-                'image': 'ghcr.io/cps-test-lab/robovast-sidecar:latest',
+                'image': resolve_sidecar_image(),
                 'command': ['sh', '-c', init_cmd],
                 'env': init_env,
                 'volumeMounts': [
