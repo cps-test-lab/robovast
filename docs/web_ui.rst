@@ -933,6 +933,10 @@ time column (``source``, ``x``, ``y``; ``trail: false`` disables the driven path
 timeline with a cursor at the current time (``source`` + a ``series`` list of
 ``{ column, label }``).
 
+Every panel binding a ``source`` takes ``decimate_hz`` (and ``key``) with it, on the same terms as
+the :ref:`vega panel <vega-panel>` below: a run longer than the row cap is cut at the head unless it
+is thinned.
+
 **State** (``state``) — the current numeric values of selected columns as labelled
 read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
 
@@ -942,8 +946,9 @@ read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
 <https://vega.github.io/vega-lite/>`_ spec over one of the run's ``data.db`` tables. Where
 ``timeseries`` plots columns that *already exist*, a spec's ``transform`` can **derive** what the
 run never recorded, and any Vega-Lite mark is available. It binds a ``source`` (the same
-``{ table, time_column, filter }`` as ``timeseries``, so the run scope and the frame filter happen
-in SQL) plus a ``vega_lite`` spec, and optionally ``max_rows`` (default 5000).
+``{ table, time_column, filter, decimate_hz, key }`` as ``timeseries``, so the run scope, the frame
+filter and the thinning all happen in SQL) plus a ``vega_lite`` spec, and optionally ``max_rows``
+(default 5000, which is also the ceiling — see below).
 
 *Which of the two to pick:* ``timeseries`` is a hand-rolled canvas chart — the cheap path for
 numeric columns at high sample rates. ``vega`` costs a full Vega render but expresses everything
@@ -960,13 +965,26 @@ The playback cursor is layered in **automatically**, into the top-level spec and
 gets no cursor, and ``facet``/``repeat`` specs are left alone. Reference the ``cursor`` dataset
 yourself to place it anywhere else.
 
-Two things to know when charting a ``poses`` table, because every such spec hits them:
+Three things to know when charting a ``poses`` table, because every such spec hits them:
 
 * **Dotted column names.** ``rosbags_tf_to_csv`` writes ``position.x`` / ``orientation.yaw``, and a
   Vega-Lite ``field`` reads a dot as a nested path. Either escape it (``position\.x``) or — usually
   clearer — hoist it to a flat name in a ``calculate`` transform: ``datum['position.x']``.
 * **Every ``data.db`` column is TEXT.** The panel coerces each column whose values all parse as
   finite numbers, so ``type: quantitative`` works without a ``format.parse`` block.
+* **A long run needs ``decimate_hz``, not a bigger ``max_rows``.** The row cap is a ``LIMIT`` applied
+  *after* ``ORDER BY`` time, so a run that outgrows it is cut at the **head**: the chart ends
+  mid-run while looking complete. Raising ``max_rows`` cannot fix that — the data query clamps at
+  5000 rows whatever a panel asks for, which is why ``vast check`` rejects a larger one.
+  ``source: {decimate_hz: 5}`` instead keeps one sample per 1/hz second across the *whole* run, in
+  SQL. Rule of thumb: ``hz ≈ 4000 / run seconds``; a 460×380 panel resolves nothing past a few
+  hundred points anyway. The panel says so itself when a query is truncated.
+
+  On a multi-keyed table (``poses`` is keyed by ``frame``) either ``filter`` down to one series, as
+  the example below does, or name the key — ``source: {decimate_hz: 5, key: frame}``. Without one of
+  those, each time bucket keeps a single row from a *single* frame and the other frames vanish
+  entirely rather than being thinned. Thinning also assumes a numeric time column: an ISO-8601
+  ``timestamp`` casts to 0 and lands the whole run in one bucket.
 
 A worked example over a ``poses`` table — derived speed above the raw pose, sharing one time axis, so
 both charts get a cursor:
@@ -976,7 +994,7 @@ both charts get a cursor:
    - vega:
        title: base_link
        position: {anchor: bottom-right, width: 460, height: 380}
-       source: {table: poses, filter: {frame: base_link}}
+       source: {table: poses, filter: {frame: base_link}, decimate_hz: 5}
        vega_lite:
          resolve: {scale: {x: shared}}
          transform:

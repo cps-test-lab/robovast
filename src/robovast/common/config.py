@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
 import re
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -513,6 +514,46 @@ CUSTOM_PANEL_TYPE = "custom"
 #: ``vega_lite``/``source`` bindings are validated by ``PanelConfig._vega_needs_bindings``.
 VEGA_PANEL_TYPE = "vega"
 
+#: The row ceiling every JSON data query is clamped to
+#: (:func:`robovast.results_processing.data_query.query_data_db`). A panel asking for more gets this,
+#: silently — hence the check below rather than a number that looks honoured.
+DATA_QUERY_ROW_CAP = 5000
+
+
+def panel_source_problems(props):
+    """``(field suffix, message)`` for a panel's row-cap and thinning bindings.
+
+    Shared by :meth:`PanelConfig._vega_needs_bindings` and ``config_validation``: the two report
+    differently (raise on the first vs. collect every one), but there is no reason for them to
+    disagree about what is wrong.
+
+    Both of these fail *quietly* at replay time — a bad ``decimate_hz`` reaches the SQL as a bucket
+    width and an over-large ``max_rows`` is clamped — so the panel draws a plausible chart of the
+    wrong rows. Better to say so while the author is still holding the ``.vast``.
+    """
+    problems = []
+    source = props.get("source")
+    if isinstance(source, dict) and source.get("decimate_hz") is not None:
+        hz = source["decimate_hz"]
+        try:
+            value = float(hz)
+        except (TypeError, ValueError):
+            value = float("nan")
+        if isinstance(hz, bool) or not math.isfinite(value) or value <= 0:
+            problems.append((
+                "source.decimate_hz",
+                "'decimate_hz' keeps one sample per 1/hz second, so it must be a number > 0, "
+                f"got {hz!r}; 0 would collapse the whole run into a single sample"))
+    max_rows = props.get("max_rows")
+    if isinstance(max_rows, int) and not isinstance(max_rows, bool) \
+            and max_rows > DATA_QUERY_ROW_CAP:
+        problems.append((
+            "max_rows",
+            f"'max_rows' is clamped to {DATA_QUERY_ROW_CAP} by the data query, so {max_rows} does "
+            "not buy more of the run: the cap cuts at the head (ORDER BY time LIMIT n) and the "
+            "chart ends mid-run. Set 'source.decimate_hz' to thin the whole run instead"))
+    return problems
+
 
 class PanelPosition(BaseModel):
     """Where a panel sits in the run-view. ``anchor`` docks it against an edge, floats it
@@ -688,6 +729,8 @@ class PanelConfig(BaseModel):
             raise ValueError(
                 "a 'vega' panel must set 'source' to a data.db table, e.g. "
                 "source: {table: poses, filter: {frame: base_link}}")
+        for _field, message in panel_source_problems(extra):
+            raise ValueError(message)
         return self
 
 

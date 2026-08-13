@@ -457,6 +457,9 @@ def _vega_panel_problems(i, props):
 
     Mirrors ``PanelConfig._vega_needs_bindings``; the duplication is the point — the schema
     raises on the first bad panel, this reports every one of them in a single report."""
+    from robovast.common.config import \
+        panel_source_problems  # pylint: disable=import-outside-toplevel
+
     problems = []
     prefix = f"visualization.panels[{i}]"
     spec = props.get("vega_lite")
@@ -474,6 +477,8 @@ def _vega_panel_problems(i, props):
             "a 'vega' panel must set 'source' to a data.db table, e.g. "
             "source: {table: poses, filter: {frame: base_link}}",
             field=f"{prefix}.source"))
+    for field, message in panel_source_problems(props):
+        problems.append(_problem("panel", message, field=f"{prefix}.{field}"))
     return problems
 
 

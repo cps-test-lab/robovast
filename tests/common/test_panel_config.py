@@ -9,8 +9,8 @@ Panel ``type`` is a core built-in, an installed ``robovast.panel_types`` entry p
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.config import (ConfigV1, PanelConfig, PanelPosition,
-                                    VisualizationConfig)
+from robovast.common.config import (DATA_QUERY_ROW_CAP, ConfigV1, PanelConfig,
+                                    PanelPosition, VisualizationConfig)
 from robovast.common.config_validation import _panel_problems
 
 
@@ -106,6 +106,41 @@ def test_validation_reports_every_broken_vega_panel():
 def test_validation_passes_for_complete_vega_panel():
     raw = {"visualization": {"panels": [_vega()]}}
     assert _panel_problems(raw, "/nonexistent") == []
+
+
+@pytest.mark.parametrize("hz", [0, -1, "fast", float("inf"), True])
+def test_vega_rejects_thinning_that_cannot_thin(hz):
+    # Each of these reaches the browser as a bucket width and draws a *plausible* chart of the wrong
+    # rows -- 0 collapses the run into one sample -- so it has to be caught while the author is still
+    # holding the .vast rather than at replay time.
+    with pytest.raises(ValidationError):
+        PanelConfig.model_validate(_vega(source={"table": "poses", "decimate_hz": hz}))
+
+
+@pytest.mark.parametrize("hz", [5, 0.5, "2.5"])
+def test_vega_accepts_a_positive_rate(hz):
+    p = PanelConfig.model_validate(_vega(source={"table": "poses", "decimate_hz": hz}))
+    assert p.__pydantic_extra__["source"]["decimate_hz"] == hz
+
+
+def test_vega_rejects_a_row_cap_the_service_will_not_honour():
+    # The query clamps at DATA_QUERY_ROW_CAP, so a bigger number is not a bigger chart: it is the
+    # same head-truncated one, with the author believing otherwise.
+    with pytest.raises(ValidationError, match="clamped"):
+        PanelConfig.model_validate(_vega(max_rows=DATA_QUERY_ROW_CAP * 4))
+    assert PanelConfig.model_validate(_vega(max_rows=DATA_QUERY_ROW_CAP)).type == "vega"
+
+
+def test_validation_reports_thinning_problems_per_panel():
+    raw = {"visualization": {"panels": [
+        _vega(source={"table": "poses", "decimate_hz": 0}),
+        _vega(max_rows=99999),
+    ]}}
+    fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
+    assert fields == [
+        "visualization.panels[0].source.decimate_hz",
+        "visualization.panels[1].max_rows",
+    ]
 
 
 @pytest.mark.parametrize("anchor", [
