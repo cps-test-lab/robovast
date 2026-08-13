@@ -46,6 +46,12 @@ It provides four views, one per desktop GUI:
   campaign's unified *infrastructure* log — the variation (config generation), run
   (controller) and postprocessing phases assembled into one stream with
   ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.
+  Both tails **follow the newest line only while you are at the newest line**, the same
+  contract as the :ref:`run log <run-view>`: scroll back and the arriving lines are
+  appended without moving the view, so a passage stays where you are reading it, and a
+  button in the corner jumps back to the end and resumes following. A selection also
+  pauses the follow while you hold it — auto-scrolling out from under a drag is what
+  made a live log impossible to copy from — and dropping it resumes the tail by itself.
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
   running work halts promptly (not only after the current batch). A finished cluster
   campaign also shows a **Download** button that streams its postprocessed

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
+import Fab from '@mui/material/Fab'
 import Stack from '@mui/material/Stack'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
@@ -395,6 +398,11 @@ function renderLogLines(text: string) {
 /** How the *server* ended the stream, as opposed to how the transport is doing. */
 type LogEnd = 'eof' | 'error' | null
 
+// How far from the bottom still counts as "at the bottom", in px. Not zero: a sub-pixel
+// scroll height (fractional line metrics, a zoomed browser) leaves a fraction of a pixel of
+// slack that would read as the reader having deliberately scrolled away.
+const BOTTOM_SLACK_PX = 24
+
 // Streams a log live over Server-Sent Events (see robovast.*StreamUrl). Each delta is
 // appended; the browser's own reconnect resends Last-Event-ID so the server resumes from
 // the exact byte offset (no gap, no dupe), and useLiveStream covers what that reconnect
@@ -408,6 +416,9 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
   const [end, setEnd] = useState<LogEnd>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const preRef = useRef<HTMLPreElement>(null)
+  // The tail follows the newest line only while the reader is *at* the newest line. Starts true
+  // so an opening panel shows the end of the log, which is what a tail is for.
+  const [following, setFollowing] = useState(true)
 
   const { state, finish, generation } = useLiveStream(streamUrl, {
     resetKey,
@@ -447,11 +458,9 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
     setText('')
     setEnd(null)
     setErrorMsg(null)
+    // A different log (or one restarted from byte zero) is a new thing to read from its end.
+    setFollowing(true)
   }, [generation, resetKey, streamUrl])
-
-  useEffect(() => {
-    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
-  }, [text])
 
   const lines = useMemo(() => (text ? renderLogLines(text) : null), [text])
 
@@ -474,39 +483,88 @@ function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl: string
               : 'loading…'
           : null
 
+  // Stick to the bottom only while following, and never out from under a selection: a scroll
+  // mid-drag loses the anchor, which is what made a live log impossible to copy from. Holding a
+  // selection does not clear `following` either, so dropping it resumes the tail by itself —
+  // same contract as RunLogView's follow mode.
+  //
+  // `footer` is a dependency as much as the text is: `reconnecting…` appearing under the last
+  // line grows the body exactly like one more log line.
+  useEffect(() => {
+    const el = preRef.current
+    if (!el || !following) return
+    const sel = window.getSelection()
+    const held = !!sel && !sel.isCollapsed && !!sel.anchorNode && el.contains(sel.anchorNode)
+    if (held) return
+    el.scrollTop = el.scrollHeight
+  }, [text, footer, following])
+
+  // Appending below the viewport moves nothing and fires no scroll event, so every scroll that
+  // arrives here is the reader's — or this panel's own jump, which lands at the bottom and so
+  // correctly re-arms following.
+  const onScroll = () => {
+    const el = preRef.current
+    if (!el) return
+    setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK_PX)
+  }
+
   return (
-    <Box
-      component="pre"
-      ref={preRef}
-      sx={{
-        m: 0,
-        px: 1,
-        py: 0.75,
-        // Darker than the card it sits in, and with no border of its own: it is always
-        // mounted inside a CollapsibleBox body, which supplies the frame.
-        bgcolor: 'background.default',
-        color: 'text.primary',
-        fontFamily: 'monospace',
-        fontSize: '0.72rem',
-        whiteSpace: 'pre-wrap',
-        overflowX: 'auto',
-        maxHeight: 320,
-        overflowY: 'auto',
-      }}
-    >
-      {lines}
-      {footer ? (
-        <Box
-          component="span"
-          sx={{
-            display: 'block',
-            color: end === 'error' ? 'error.main' : 'text.secondary',
-            opacity: 0.85,
-          }}
-        >
-          {lines ? '\n' : ''}
-          {footer}
-        </Box>
+    <Box sx={{ position: 'relative' }}>
+      <Box
+        component="pre"
+        ref={preRef}
+        onScroll={onScroll}
+        sx={{
+          m: 0,
+          px: 1,
+          py: 0.75,
+          // Darker than the card it sits in, and with no border of its own: it is always
+          // mounted inside a CollapsibleBox body, which supplies the frame.
+          bgcolor: 'background.default',
+          color: 'text.primary',
+          fontFamily: 'monospace',
+          fontSize: '0.72rem',
+          whiteSpace: 'pre-wrap',
+          overflowX: 'auto',
+          maxHeight: 320,
+          overflowY: 'auto',
+        }}
+      >
+        {lines}
+        {footer ? (
+          <Box
+            component="span"
+            sx={{
+              display: 'block',
+              color: end === 'error' ? 'error.main' : 'text.secondary',
+              opacity: 0.85,
+            }}
+          >
+            {lines ? '\n' : ''}
+            {footer}
+          </Box>
+        ) : null}
+      </Box>
+
+      {/* The only visible sign that the tail was paused, and the way back. Shown only once the
+          reader has actually left the bottom of a log that has something in it — a panel that
+          fits its log entirely never scrolls, so it never detaches and never grows a button. */}
+      {!following && lines ? (
+        <Tooltip title="Jump to the latest line and resume following">
+          <Fab
+            size="small"
+            color="primary"
+            aria-label="jump to the latest log line"
+            onClick={() => {
+              const el = preRef.current
+              if (el) el.scrollTop = el.scrollHeight
+              setFollowing(true)
+            }}
+            sx={{ position: 'absolute', right: 14, bottom: 10, zIndex: 2 }}
+          >
+            <ArrowDownwardRoundedIcon fontSize="small" />
+          </Fab>
+        </Tooltip>
       ) : null}
     </Box>
   )
