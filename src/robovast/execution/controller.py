@@ -411,6 +411,7 @@ class CampaignController:
             self._end_batch_progress()
 
         failed_runs = 0
+        killed_runs = 0
         for cfg in configs:
             name = cfg["name"]
             cdir = os.path.join(self.campaign_root, name)
@@ -426,11 +427,15 @@ class CampaignController:
             # live state is what makes a failing trial visible to a status poll. Without
             # it the only failure count was "produced no result", which a scenario that
             # ran and failed does not trip — so the campaign reported itself clean.
-            failed_runs += sum(1 for o in outcomes if o.get("status") != "passed")
+            cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+            failed_runs += cfg_failed
+            killed_runs += cfg_killed
         if self.state is not None:
             if failed_runs:
                 logger.warning("Batch complete: %d run(s) did not pass.", failed_runs)
-            self.state.update_runs(failed=failed_runs)
+            if killed_runs:
+                logger.warning("Batch complete: %d run(s) stopped manually.", killed_runs)
+            self.state.update_runs(failed=failed_runs, killed=killed_runs)
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
         self.notifier.batch_finished(0, len(configs))
@@ -569,6 +574,7 @@ class CampaignController:
         self._begin_batch_progress(sum((ps.n_reps or self.runs) for ps in param_sets))
         evaluations = []
         failed_runs = 0
+        killed_runs = 0
         try:
             for reps, group in sorted(groups.items()):
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
@@ -611,14 +617,20 @@ class CampaignController:
                         result_dir=os.path.relpath(config_dir, self.campaign_root))
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
-                    failed_runs += sum(1 for o in outcomes
-                                       if o.get("status") != "passed")
+                    cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+                    failed_runs += cfg_failed
+                    killed_runs += cfg_killed
         finally:
             # Same tally as batch mode: a trial that ran and failed is invisible in the
             # resultless count, so surface it before the batch's progress is closed out.
-            if self.state is not None and failed_runs:
-                logger.warning("Batch %d: %d run(s) did not pass.", batch_idx, failed_runs)
-                self.state.update_runs(failed=failed_runs)
+            if self.state is not None and (failed_runs or killed_runs):
+                if failed_runs:
+                    logger.warning("Batch %d: %d run(s) did not pass.",
+                                   batch_idx, failed_runs)
+                if killed_runs:
+                    logger.warning("Batch %d: %d run(s) stopped manually.",
+                                   batch_idx, killed_runs)
+                self.state.update_runs(failed=failed_runs, killed=killed_runs)
             self._end_batch_progress()
         return evaluations
 
@@ -730,6 +742,20 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
 
+def _tally_outcomes(outcomes) -> tuple[int, int]:
+    """``(failed, killed)`` over one config's run outcomes.
+
+    One definition, shared by batch and search mode, so the two cannot come to disagree
+    about what counts as a failure. ``killed`` — a job an operator stopped by hand — is
+    counted apart and deliberately kept **out** of ``failed``: it is not a verdict about
+    the system under test, so folding it in would report a human intervention as a trial
+    failure in the live status, the notification, and every reader downstream of them.
+    """
+    killed = sum(1 for o in outcomes if o.get("status") == "killed")
+    failed = sum(1 for o in outcomes if o.get("status") not in ("passed", "killed"))
+    return failed, killed
+
+
 def outcome_summary(snap) -> tuple[str, bool]:
     """One line describing what a finished campaign actually produced, and whether it
     is degraded.
@@ -743,8 +769,16 @@ def outcome_summary(snap) -> tuple[str, bool]:
     parts = [f"{runs.completed}/{runs.total} runs"]
     if runs.failed:
         parts.append(f"{runs.failed} failed trial(s)")
-    if runs.no_result:
-        parts.append(f"{runs.no_result} without result")
+    # A killed run delivered nothing, so it is already inside ``no_result``. Naming both
+    # in full would report the same run twice, in two different vocabularies — so the
+    # resultless count is the ones nobody chose to end, and the kills are named as such.
+    if runs.killed:
+        parts.append(f"{runs.killed} stopped manually")
+    unexplained = max(0, runs.no_result - runs.killed)
+    if unexplained:
+        parts.append(f"{unexplained} without result")
+    # A manual kill still degrades the campaign: it delivered fewer usable runs than it
+    # was asked for, and whoever reads this later is not necessarily whoever killed it.
     degraded = bool(runs.failed or runs.no_result)
     if snap.postprocessing_error:
         parts.append(f"POSTPROCESSING FAILED ({snap.postprocessing_error}) — "

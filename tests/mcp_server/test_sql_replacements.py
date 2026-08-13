@@ -265,3 +265,50 @@ def test_run_view_degrades_to_null_host_columns_on_an_old_store(campaign):
         "config_name", "run_id", "status", "job_dir", "sysinfo_json"]
     assert len(result["rows"]) == 4
     assert all(r["job_dir"] is None and r["sysinfo_json"] is None for r in result["rows"])
+
+
+def test_campaign_summary_counts_a_kill_apart_from_the_failures(monkeypatch):
+    """``num_killed`` never lands in ``num_failed``, and a kill never makes a config "worst".
+
+    A run an operator stopped says nothing about the system under test. Counting it as a
+    failure would put a human decision into the campaign's measured outcome, and letting it
+    rank a config into ``worst_configs`` would send the next reader to investigate a defect
+    that does not exist.
+    """
+    from robovast.mcp_server import data_access
+    from robovast.mcp_server.plugins import results
+
+    per_config = [
+        {"config_name": "cfg-a", "num_runs": 4, "success": 3, "failed": 1,
+         "unknown": 0, "killed": 0},
+        # Nothing wrong with cfg-b: someone stopped two of its runs by hand.
+        {"config_name": "cfg-b", "num_runs": 4, "success": 2, "failed": 0,
+         "unknown": 0, "killed": 2},
+    ]
+    monkeypatch.setattr(data_access, "rows",
+                        lambda cid, sql: per_config if "GROUP BY config_name" in sql else [])
+    monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
+                        lambda _rows: {})
+
+    summary = results.get_campaign_summary("campaign-x")
+
+    assert summary["num_failed"] == 1, "a kill must not be counted as a failure"
+    assert summary["num_killed"] == 2
+    assert summary["worst_configs"][0]["name"] == "cfg-a", \
+        "the config with the real failure must rank above the one that was merely stopped"
+
+
+def test_campaign_summary_omits_num_killed_when_nothing_was_killed(monkeypatch):
+    """A campaign nobody intervened in carries no key saying so."""
+    from robovast.mcp_server import data_access
+    from robovast.mcp_server.plugins import results
+
+    monkeypatch.setattr(
+        data_access, "rows",
+        lambda cid, sql: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
+                            "failed": 0, "unknown": 0, "killed": 0}]
+                          if "GROUP BY config_name" in sql else []))
+    monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
+                        lambda _rows: {})
+
+    assert "num_killed" not in results.get_campaign_summary("campaign-x")

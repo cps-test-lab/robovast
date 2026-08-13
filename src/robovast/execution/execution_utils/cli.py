@@ -1094,6 +1094,43 @@ def stop(campaign, cluster, namespace, context):
         handle_cli_exception(e)
 
 
+@cluster.command('stop-job')
+@click.argument('job_name')
+@click.option('--campaign', '-i', default=None,
+              help='Campaign the job belongs to (default: the only running one)')
+@click.option('--reason', default=None, metavar='TEXT',
+              help='Why you stopped it — stored with the run and shown in the results')
+@target_options
+def stop_job(job_name, campaign, reason, cluster, namespace, context):
+    """Kill ONE running job; the rest of the campaign keeps going.
+
+    For a job that is visibly wedged and will not exit on its own. This is not how a
+    campaign is ended -- that is ``vast exec cluster stop``, which stops all of it.
+
+    Only a *running* job can be stopped (``vast exec cluster jobs`` lists them with their
+    status). The kill is permanent and recorded: the runs it cut short report
+    ``status='killed'`` in the campaign data, with the reason, and count as neither passes
+    nor failures.
+    """
+    try:
+        with service_client(cluster, namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                click.echo("No running campaign found.")
+                return
+            result = client.stop_job(campaign_id, job_name, reason, "cli")
+            if result.ok:
+                click.echo(f"Stopped job '{job_name}' of '{campaign_id}'. {result.message}")
+            else:
+                click.echo(f"Stop failed: {result.message}")
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @cluster.command()
 @click.option('--campaign', '-i', default=None,
               help='Campaign to show the log for (default: the only running one)')

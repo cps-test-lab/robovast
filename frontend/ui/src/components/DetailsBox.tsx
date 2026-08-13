@@ -463,6 +463,21 @@ export function DetailsBox({
                   {model.multiBatch ? (
                     <Stat value={String(model.totals.batches)} label="batches" />
                   ) : null}
+                  {/* Only when it happened, like every other optional stat here — but then
+                      always, because a short dataset that looks complete is the failure this
+                      exists to prevent. It sits beside the counts rather than with the
+                      failures: nothing was learned from these runs either way. */}
+                  {all.killed ? (
+                    <Stat
+                      value={String(all.killed)}
+                      label={all.killed === 1 ? 'run stopped' : 'runs stopped'}
+                      tip={
+                        'Runs an operator stopped by hand while the campaign ran. They produced ' +
+                        'no result and are NOT trial failures — exclude them from pass rates ' +
+                        "(WHERE status <> 'killed'). Each row's failure_message says why."
+                      }
+                    />
+                  ) : null}
                 </Stack>
               </Column>
 

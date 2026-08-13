@@ -1711,6 +1711,69 @@ class LocalTransport(RobovastInterface):
         self._kill_scenario_container()
         return ActionResult(ok=True, message="stop requested")
 
+    def stop_job(self, campaign_id: str, job_name: str,
+                 reason: "str | None" = None, source: str = "api") -> ActionResult:
+        """Kill the running job's scenario container; the run loop moves to the next run.
+
+        Deliberately **not** ``request_stop()``: that flag is what ends the campaign, and
+        leaving it clear is the whole difference between this and :meth:`stop`. The
+        generated ``run.sh`` runs one ``docker compose up``/``down`` cycle per job, so
+        removing the container makes only *that* cycle exit non-zero and the loop proceeds
+        (see :class:`~robovast.execution.backends.DockerBackend`).
+
+        The named job must be the one actually in flight. This lane is single-flight
+        behind a fixed container name, so the kill lands on whichever job is current
+        regardless of what was asked for — accepting a stale name would report success for
+        killing a *different* run than the caller named, which is the one outcome worse
+        than refusing.
+        """
+        from robovast.common.campaign_data import record_killed_job
+        from robovast.common.execution import job_artifact_dir
+        campaign_dir = self._campaigns_root() / campaign_id
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is None:
+            raise KeyError(f"campaign {campaign_id!r} not tracked here")
+        job = self._require_running_job(campaign_id, job_name)
+        # Recorded before the kill, not after: the container dies asynchronously and a
+        # crash in between would leave a dead run with no explanation for why it stopped.
+        try:
+            job_dir = os.path.relpath(job_artifact_dir(campaign_dir, job_name),
+                                      campaign_dir)
+        except (FileNotFoundError, OSError, ValueError):
+            # No manifest entry yet (the documented startup race). The run key below is
+            # this lane's own job identity, so resolution does not depend on it.
+            job_dir = ""
+        record_killed_job(campaign_dir, job_dir=job_dir, job_name=job_name,
+                          source=source, reason=reason, runs=(job_name,))
+        self._kill_scenario_container()
+        return ActionResult(
+            ok=True,
+            message=(f"killed job {job.display_name or job_name}; the campaign continues "
+                     f"with its remaining runs and this run is recorded as 'killed'"))
+
+    def _require_running_job(self, campaign_id: str, job_name: str):
+        """The named job, or raise — shared by both lanes' :meth:`stop_job` preconditions.
+
+        Resolved through :meth:`list_jobs` rather than a lane-specific probe so the
+        precondition is checked against the very status the caller was shown. ``KeyError``
+        for a job that does not exist, ``RuntimeError`` naming the phase for one that
+        exists but is not running: only a job that is *underway* has something to kill.
+        """
+        jobs = self.list_jobs(campaign_id).jobs
+        job = next((j for j in jobs if j.job_name == job_name), None)
+        if job is None:
+            known = ", ".join(j.job_name for j in jobs) or "none"
+            raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r} "
+                           f"(jobs: {known})")
+        if job.status != "running":
+            running = [j.job_name for j in jobs if j.status == "running"]
+            hint = f"; running now: {', '.join(running)}" if running else ""
+            raise RuntimeError(
+                f"job {job_name!r} is {job.status}, not running — only a running job can "
+                f"be stopped{hint}")
+        return job
+
     def _kill_scenario_container(self) -> None:
         """Force-remove the single-flight scenario container so the worker unblocks.
 

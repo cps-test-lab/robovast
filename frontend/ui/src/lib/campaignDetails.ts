@@ -549,6 +549,9 @@ export function jobsInFlight(podCpu: number | null, quotaCpu: number | null): nu
 
 const PASSED = 'passed'
 const FAILED = new Set(['failed', 'error'])
+/** A run whose job an operator stopped by hand. Deliberately NOT in `FAILED`: it is a missing
+ *  measurement, not a verdict about the system under test. */
+const KILLED = 'killed'
 
 export interface BatchSummary {
   /** null for the campaign-wide row. */
@@ -556,8 +559,11 @@ export interface BatchSummary {
   runs: number
   passed: number
   failed: number
-  /** Neither passed nor failed: no verdict reached us (a missing `test.xml`), or the draw never
-   *  composed. Counted apart so the three tallies always add up to `runs`. */
+  /** Runs an operator stopped by hand (`stop_job`). Its own tally rather than part of `failed`,
+   *  so a human intervention is never read as the system under test failing. */
+  killed: number
+  /** Neither passed, failed nor killed: no verdict reached us (a missing `test.xml`), or the draw
+   *  never composed. Counted apart so the four tallies always add up to `runs`. */
   other: number
   /** Median of the runs that recorded one; null when none did. */
   medianDuration: number | null
@@ -577,10 +583,12 @@ function median(values: number[]): number | null {
 function summariseRows(rows: RunRow[], batch: number | null, maximize: boolean): BatchSummary {
   let passed = 0
   let failed = 0
+  let killed = 0
   const durations: number[] = []
   let best: number | null = null
   for (const row of rows) {
     if (row.status === PASSED) passed += 1
+    else if (row.status === KILLED) killed += 1
     else if (row.status && FAILED.has(row.status)) failed += 1
     if (typeof row.duration_s === 'number' && Number.isFinite(row.duration_s)) {
       durations.push(row.duration_s)
@@ -595,7 +603,8 @@ function summariseRows(rows: RunRow[], batch: number | null, maximize: boolean):
     runs: rows.length,
     passed,
     failed,
-    other: rows.length - passed - failed,
+    killed,
+    other: rows.length - passed - failed - killed,
     medianDuration: median(durations),
     simulatedSeconds: durations.reduce((n, v) => n + v, 0),
     bestObjective: best,

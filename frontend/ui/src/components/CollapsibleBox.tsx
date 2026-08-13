@@ -23,6 +23,7 @@ export function CollapsibleBox({
   title,
   meta,
   leading,
+  actions,
   note,
   tone = 'neutral',
   variant = 'card',
@@ -36,6 +37,10 @@ export function CollapsibleBox({
   meta?: ReactNode
   // Rendered before the title, for a status chip or icon.
   leading?: ReactNode
+  // Controls in the header, before the chevron — a job's Stop button. Its own slot rather
+  // than part of `leading`, because a control inside the header's click target would toggle
+  // the block as well as fire: the wrapper's own handler is stopped for this region.
+  actions?: ReactNode
   // Always-visible text under the header row, independent of `open`. For the reason a thing
   // is stuck — that has to be readable without unfolding anything.
   note?: ReactNode
@@ -94,6 +99,16 @@ export function CollapsibleBox({
             >
               {meta}
             </Typography>
+          ) : null}
+          {actions ? (
+            // Clicks here are the action's, not the header's: without this a Stop button would
+            // also fold the block it sits on, so the log you wanted to read closes as you act.
+            <Box
+              sx={{ display: 'flex', alignItems: 'center', cursor: 'auto' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {actions}
+            </Box>
           ) : null}
           <IconButton
             size="small"

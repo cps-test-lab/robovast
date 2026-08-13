@@ -251,6 +251,37 @@ class Command(BasePostprocessingPlugin):
             return False, f"Error executing command: {e}"
 
 
+def _killed_job_dirs(results_dir: str) -> list:
+    """Campaign-relative artifact dirs of the jobs an operator stopped by hand.
+
+    **The shared seam for this pipeline's missing-data rule.** A step that cannot read
+    something a stopped job should have produced *describes the gap and succeeds* — it does
+    not fail the campaign. That rule is not new here: :func:`run_slices._read_window`
+    states it ("a run killed mid-flight never wrote ``test.xml``. That is not an error
+    here"), and ``run_log`` / ``resource_usage`` implement it by reporting through
+    :func:`~robovast.results_processing.run_slices.describe_missing`. Only a genuine
+    conversion error fails a step.
+
+    ``rosbags_process`` was the one step that did not follow it — it exits non-zero on any
+    unreadable bag — so one stopped job failed the whole campaign's postprocessing and cost
+    the metrics of every job that did finish. Any future step that *scans* rather than
+    iterating the run table should consult this rather than inventing a second answer.
+
+    ``[]`` for every campaign nobody intervened in — the ledger file does not exist — so
+    this costs one missing-file check on the normal path and changes nothing about it.
+
+    Read here rather than passed in because the postprocessing pipeline runs where the
+    campaign is (in-cluster, against the object-store mount), and its plugins take their
+    inputs from ``results_dir``; there is no caller in that process holding the kill.
+    """
+    from robovast.common.campaign_data import read_killed_jobs
+    try:
+        entries = read_killed_jobs(results_dir)
+    except Exception:  # noqa: BLE001 - never let the ledger break postprocessing
+        return []
+    return sorted({e["job_dir"] for e in entries if e.get("job_dir")})
+
+
 class RosbagsProcess(BasePostprocessingPlugin):
     """Unified single-pass rosbag processor with internal plugin system.
 
@@ -325,6 +356,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:
             cmd.extend(["--bag-dir", bag_dir])
+        # A job an operator stopped by hand was SIGKILLed mid-write, so its rosbag is
+        # unfinalized and cannot be opened — ever. Without this the campaign's whole
+        # postprocessing step fails on that one bag, which would mean using the per-job
+        # stop costs the analysis of every job that DID finish.
+        for job_dir in _killed_job_dirs(results_dir):
+            cmd.extend(["--tolerate-under", job_dir])
         if debug:
             cmd.append("--debug")
         if force:

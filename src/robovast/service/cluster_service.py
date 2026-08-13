@@ -1430,6 +1430,100 @@ class ClusterService(LocalTransport):
         self._teardown_campaign_jobs(campaign_id)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
+    def stop_job(self, campaign_id: str, job_name: str,
+                 reason: "str | None" = None, source: str = "api") -> ActionResult:
+        """Delete one running scenario Job; its siblings and the batch keep going.
+
+        Deliberately **not** ``request_stop()`` and **not** ``_teardown_campaign_jobs``:
+        the flag ends the campaign and the teardown is label-scoped to *every* Job of it.
+        A single ``delete_namespaced_job`` is enough because the batch wait loop treats a
+        gone Job as finished (``get_remaining_jobs``), so the remaining Jobs run to
+        completion and the batch still projects its results.
+
+        ``Background`` propagation so the pod — and, through its owner reference, the
+        Kueue Workload — is collected with the Job. Whatever this job's runs had already
+        uploaded to the object store survives: each job uploads its own results.
+        """
+        from kubernetes import client
+
+        from robovast.common.campaign_data import record_killed_job
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is None:
+            raise KeyError(f"campaign {campaign_id!r} is not running here")
+        self._require_running_job(campaign_id, job_name)
+        job_dir = self._job_artifact_dir(job_name)
+        # Recorded before the delete: the pod dies asynchronously, and a failure in
+        # between must not leave a cut-short run with no record of why.
+        campaign_root = self._campaigns_root() / campaign_id
+        record_killed_job(campaign_root, job_dir=job_dir, job_name=job_name,
+                          source=source, reason=reason)
+        self._publish_killed_jobs(campaign_id, campaign_root)
+        try:
+            self._k8s_batch().delete_namespaced_job(
+                job_name, self.namespace,
+                grace_period_seconds=0, propagation_policy="Background")
+        except client.exceptions.ApiException as e:
+            if e.status != 404:
+                raise
+            # It finished between the precondition and here. The record stands: its runs
+            # either delivered results (and keep their real verdict) or did not.
+            return ActionResult(ok=True, message=f"job {job_name} was already gone")
+        return ActionResult(
+            ok=True,
+            message=(f"deleted job {job_name}; the campaign continues with its remaining "
+                     f"jobs and this job's unfinished runs are recorded as 'killed'"))
+
+    def _publish_killed_jobs(self, campaign_id: str, campaign_root) -> None:
+        """Push the kill ledger to the object store **now**, not at finalize.
+
+        Postprocessing runs as its own in-cluster Job reading the campaign from the object
+        store, and it starts *before* ``_finalize`` uploads the campaign root — so a ledger
+        that waited for finalize would reach the store only after the step that needs it
+        had already failed on the killed job's unfinalized rosbag.
+
+        Best-effort, like every other record this lane publishes: a kill that could not be
+        mirrored still took effect and is still on local disk, and the run is still
+        recorded as ``killed`` by the controller, which reads that disk.
+        """
+        from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.common.campaign_data import _KILLED_FILENAME
+        path = campaign_root / "_execution" / _KILLED_FILENAME
+        try:
+            cfg = self._cluster_config()
+            storage = in_pod_storage.storage_client_for(cfg)
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage.upload_file(str(path), bucket,
+                                f"{prefix}_execution/{_KILLED_FILENAME}")
+        except Exception as e:  # noqa: BLE001 - never block the stop on the mirror
+            logger.warning("Could not publish the kill ledger for %s: %s", campaign_id, e)
+
+    def _job_artifact_dir(self, job_name: str) -> str:
+        """The Job's campaign-relative artifact dir, read off the Job itself.
+
+        The pod already carries it as ``OUTPUT_DIR=/out/_jobs/<batch>/job-<idx>`` (see
+        ``kubernetes_backend.create_job_manifest``), so this reads back what the backend
+        actually stamped rather than re-deriving the layout from the Job's *name* — a
+        parse of ``<batch>-job-<idx>`` would be a second definition of that layout, free
+        to drift from :func:`~robovast.common.execution.job_artifact_rel`.
+
+        ``""`` when the Job carries no such variable, which keeps the kill recordable:
+        the ledger's other resolution path (the job-link manifest) is what needs this, and
+        a record without it is still a truthful record that a human stopped the job.
+        """
+        from kubernetes import client
+        try:
+            job = self._k8s_batch().read_namespaced_job(job_name, self.namespace)
+        except client.exceptions.ApiException:
+            return ""
+        containers = (getattr(job.spec.template.spec, "containers", None) or []
+                      if job.spec and job.spec.template and job.spec.template.spec else [])
+        for container in containers:
+            for var in getattr(container, "env", None) or []:
+                if var.name == "OUTPUT_DIR" and var.value:
+                    return var.value.removeprefix("/out/").lstrip("/")
+        return ""
+
     def _teardown_campaign_jobs(self, campaign_id: str) -> None:
         """Delete one campaign's in-flight cluster workloads (Kueue-aware, scoped).
 

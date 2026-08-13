@@ -530,6 +530,57 @@ queryable live and the postprocessed ``data.db`` ``runs`` view is built from tho
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
+.. _stopping-one-job:
+
+A run somebody stopped: ``killed``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``run_view.status`` is ``passed``, ``failed``, ``error``, ``unknown`` — or ``killed``,
+which means an operator ended that run's job by hand while the campaign was running (the
+web UI's per-job **Stop**, the ``stop_job`` MCP tool, or ``vast exec cluster stop-job``).
+
+**A killed run is not a trial failure.** Nothing was learned from it about the system
+under test, so it is a *missing measurement*: RoboVAST counts it apart from the failures
+everywhere it reports them — ``num_killed`` beside ``num_failed`` in the campaign counts
+and ``get_campaign_summary``, its own tally in the web UI's Details panel, and
+``runs.killed`` on the live status. Treat it the same way in your own analysis::
+
+   SELECT config_name, COUNT(*) FILTER (WHERE status = 'passed') AS passed,
+          COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed
+   FROM run_view WHERE status <> 'killed' GROUP BY config_name
+
+``failure_message`` on a killed run names the surface that stopped it and the reason its
+operator gave (``manually stopped via webui: stuck in nav recovery``), which is the only
+record of *why* — so it is worth giving one.
+
+Its rosbag is unreadable, and that is not a failure
+"""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Stopping a job kills its process mid-write, so the rosbag it was recording is never
+finalized and can never be opened. Postprocessing is told which directories belong to
+stopped jobs and counts their unreadable bags **apart** from real handler errors — they are
+reported (``N from stopped job(s)``, plus a ``NOTE`` line) but do not fail the step. Without
+that, one stopped job would cost the metrics of every job that *did* finish, which is the
+opposite of what stopping one job is for.
+
+A real conversion error anywhere else still fails postprocessing, exactly as before; and a
+stopped job's bags are still *attempted*, because a kill that landed between bags leaves
+readable ones whose data is worth having.
+
+This is the pipeline's general rule rather than a rosbag special case: **a step that cannot
+read something describes the gap and succeeds** — ``run_log`` and ``resource_usage`` already
+report theirs ("no job artifacts for 1 run(s): …") and a run with no ``test.xml`` simply has
+no trial window, so it is left out of the per-run metrics instead of breaking them. Only a
+genuine conversion error fails a step. The rosbag scanner was the one place that did not
+follow the rule.
+
+``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
+already written a valid ``test.xml`` keeps its real verdict. That matters when a job packs
+several runs (``runs_per_job`` > 1), where the earlier ones routinely finish before anyone
+stops the job — their results are measurement and are never overwritten. The kills
+themselves are recorded in ``_execution/killed_jobs.json``, which exists only for a
+campaign somebody intervened in.
+
 .. note::
 
    ``metadata.yaml`` is **not** how a caller reads a campaign's results. It is written

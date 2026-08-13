@@ -336,6 +336,17 @@ export const robovast = {
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
 
+  // Kill ONE running job; the campaign keeps going and that run is recorded as `killed`.
+  // Refused (409) unless the job is running. `job_name` is a query param because locally it
+  // is a "<config>/<run>" id and contains a slash.
+  stopJob: (campaignId: string, jobName: string, reason?: string) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/job-stop?job_name=${encodeURIComponent(
+        jobName,
+      )}&source=webui${reason ? `&reason=${encodeURIComponent(reason)}` : ''}`,
+    ),
+
   // Launch a NEW campaign from this one's frozen config and pinned image — the source is
   // untouched, and the returned id is the new campaign's, not this one's. Refuses (400) when
   // the campaign never recorded an image its runs could start from.

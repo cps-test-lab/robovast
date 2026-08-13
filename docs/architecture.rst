@@ -151,7 +151,7 @@ and container specs, so the long-lived service carries no MuJoCo). A backend the
 by returning a **question**, :class:`~robovast.common.simulators.ContainerQuery`: a command and
 the image to run it in, whose one line of JSON RoboVAST reads.
 
-Three rules make those answers trustworthy, and each of them was a bug first:
+Four rules make those answers trustworthy, and each of them was a bug first:
 
 * **In the image the campaign runs.** Which world a ref even names depends on what is
   *installed*, so a query answered in a fixed base image describes a different world -- or none,
@@ -163,6 +163,13 @@ Three rules make those answers trustworthy, and each of them was a bug first:
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
   pre-check that logged this at debug and carried on was indistinguishable from a check that
   passed, which is how a misspelt plugin key reached the container after the image pull.
+* **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
+  answered what it could, and that payload is taken. A world whose model does not compile in the
+  image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
+  say which plugin keys it has -- that half needs no build -- and discarding the reply cost the
+  campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
+  because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
+  is warned about by name.
 * **The lane is not implied.** The query runs a container, so a service offering both lanes
   routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
   a campaign's composition (a per-campaign aux pod), so the cluster lane refuses this query with
@@ -527,6 +534,14 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        through ``campaign.unit``, so a second copy would be a second source of truth
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
+   * - ``_execution/killed_jobs.json``
+     - File — the jobs an operator stopped by hand (``stop_job``), keyed by job artifact
+       dir. It *becomes* DB content: ``read_run_outcome`` turns each entry into
+       ``campaign.run.status = 'killed'`` for the runs it cut short, so the queryable fact
+       has one home. The file stays because the two writers differ — the **service**
+       records the kill, the **controller** writes ``campaign.db``, and a SQLite file
+       shared between them would be a race. It exists only for a campaign somebody
+       intervened in, which is what keeps every other campaign's read path unchanged.
    * - ``_execution/launch.yaml``
      - File — how the campaign was *asked for*; a whole document, read once by a
        retrigger. Its ``config_filter`` / requested ``runs`` are comparable across

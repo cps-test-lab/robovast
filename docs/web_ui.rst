@@ -42,7 +42,15 @@ It provides four views, one per desktop GUI:
   every container it runs, merged into one stream, each line tagged ``[<container>]``
   and colored per container when the job has more than one. That matters in the ROS
   shape, where the simulator and the system under test have their own containers and a
-  failure is only legible when their output is read against the scenario's. The campaign **live log** panel below is the
+  failure is only legible when their output is read against the scenario's.
+  A **running** job's row also carries a red **Stop** button, which kills *that job alone*
+  and lets the rest of the campaign carry on — the intervention for a job that is visibly
+  wedged and will not exit by itself. It is offered on running jobs only: a queued one has
+  not started, and a blocked one has a cause (no quota, an unpullable image) that deleting
+  it does not fix. Confirming asks for an optional reason, and the reason is worth giving —
+  it is stored with the run and is what explains the kill to whoever reads the results
+  later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
+  :ref:`stopping-one-job`), counted as neither passes nor failures. The campaign **live log** panel below is the
   campaign's unified *infrastructure* log — the variation (config generation), run
   (controller) and postprocessing phases assembled into one stream with
   ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.
@@ -53,7 +61,9 @@ It provides four views, one per desktop GUI:
   pauses the follow while you hold it — auto-scrolling out from under a drag is what
   made a live log impossible to copy from — and dropping it resumes the tail by itself.
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
-  running work halts promptly (not only after the current batch). A finished cluster
+  running work halts promptly (not only after the current batch). That is the whole
+  campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
+  A finished cluster
   campaign also shows a **Download** button that streams its postprocessed
   ``tar.gz`` straight from the object store (offered only for a cluster service — a
   local service's results are already on its filesystem). A finished campaign's
@@ -408,6 +418,35 @@ it can deliver: the Explorer button once the campaign is finished **and** postpr
 campaign also recorded runs to replay. Changing the campaign inside a view updates the
 URL without adding a browser-history step, so **Back** always returns to where you came
 from in one press.
+
+.. _web-ui-campaign-config:
+
+Reading the configuration a campaign ran
+----------------------------------------
+
+The leftmost shortcut on a campaign card opens **Config** on that campaign's frozen
+``_config/`` — the configuration it was actually staged with — at
+``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
+(after variation expansion) and stays for the rest of its life, so the configuration of a
+campaign that is still running can be read while it runs.
+
+**This is not a workspace, and it is deliberately not in the workspace picker.** It is
+served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
+write route at all), and the card's link is the only way to it: clicking **Config** in the
+sidebar always returns to your workspaces. The editor marks it — a lock banner, a
+``read-only snapshot`` chip, and a Monaco buffer that refuses keystrokes — because a YAML
+pane that silently discarded edits would be worse than one that cannot be typed in.
+
+Two things are unavailable in that mode, and both for the same reason: live validation and
+**Generate** are workspace operations, and validating the snapshot in place would be wrong
+anyway — ``_config/`` archives the scenario at its *basename* while a ``.vast`` may declare
+``scenarios/foo.osc``, so it would report a scenario that is plainly there as missing.
+**Create workspace from this** is the way on: it reconstructs the snapshot into a new,
+ordinary workspace — placing the scenario where the ``.vast`` declares it, the same
+reconstruction a :ref:`retrigger <web-ui-retrigger>` performs — and refuses, creating
+nothing, if the snapshot is short a file its own run used. From there everything works
+normally, and launching it starts a campaign of your own rather than editing a record of
+one that already ran.
 
 **Explorer.** The tree shows each campaign's configs and runs with a pass/fail status
 dot; selecting a node opens its details on the right. When a campaign declares

@@ -20,6 +20,7 @@ These functions provide a common interface for reading campaign data,
 used by both MCP plugins and the FAIR metadata generator.
 """
 
+import json
 import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -364,6 +365,129 @@ def read_execution_outcome(campaign_dir: Path):
     return Status.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+#: Manual-kill ledger — the jobs an operator stopped by hand, so a run that was cut short
+#: deliberately can be told apart from one that failed on its own. Its own file in
+#: ``_execution/`` because the *service* writes it (that is where a stop request lands) while
+#: the run's own records are written by the run, and because it must survive: the run status
+#: is re-derived from disk by ``campaign_index`` long after the process that did the killing
+#: is gone, so an in-memory set would silently lose the distinction.
+#:
+#: Not a column on the ``job`` table, which is keyed by the same job dir and looks like the
+#: natural home: the killer (the service) and the writer of ``campaign.db`` (the controller)
+#: are different writers, and sharing one SQLite file between them is a race, not a design.
+_KILLED_FILENAME = "killed_jobs.json"
+
+
+def record_killed_job(campaign_root: Path, *, job_dir: str, job_name: str,
+                      source: str, reason: str | None = None,
+                      runs: "tuple[str, ...]" = ()) -> None:
+    """Append a manually-stopped job to ``_execution/killed_jobs.json``.
+
+    Args:
+        campaign_root: The campaign's results directory.
+        job_dir: The job's artifact dir, campaign-root-relative (``_jobs/batch-0/job-3``).
+            The durable identity of what was stopped, and what
+            :func:`killed_runs` resolves through the job-link manifest.
+        job_name: The job as the caller named it — ``<config>/<run>`` locally, the
+            Kubernetes Job name on the cluster. Recorded for the audit trail; it is
+            lane-specific, so it is not what resolution keys on.
+        source: Which surface requested it — ``"webui"``, ``"mcp"`` or ``"cli"``. Not a
+            user identity: the service is unauthenticated (see ``service/app.py``'s
+            ``serve``), so a name here would be invented rather than known.
+        reason: The operator's optional explanation.
+        runs: Run keys (``<config>/<run>``) the caller already knows this job was
+            executing. The local lane knows exactly one and passes it; the cluster lane
+            passes none and lets the manifest answer. It is a *hint*, never the only
+            source — see :func:`killed_runs`.
+
+    Appends rather than replaces: several jobs of one campaign may be stopped over its
+    lifetime, and each is a separate event with its own reason.
+    """
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    path = exec_dir / _KILLED_FILENAME
+    entries = read_killed_jobs(campaign_root)
+    entries.append({
+        "job_dir": job_dir,
+        "job_name": job_name,
+        "runs": list(runs),
+        "source": source,
+        "reason": reason,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+
+
+def read_killed_jobs(campaign_dir: Path) -> list[dict[str, Any]]:
+    """The campaign's manual-kill ledger; ``[]`` when nothing was ever killed.
+
+    An empty list is the overwhelmingly common case — the file does not exist unless
+    someone stopped a job — and every caller is on a path that otherwise behaves exactly
+    as it did before this record existed.
+    """
+    path = Path(campaign_dir) / "_execution" / _KILLED_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A truncated ledger must not take the whole result read down with it: the runs
+        # are still readable and their verdicts still true, minus the kill annotation.
+        return []
+    return entries if isinstance(entries, list) else []
+
+
+def killed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
+    """Which runs a manual kill cut short: ``{"<config>/<run>": ledger entry}``.
+
+    Resolves each ledger entry to the runs it covers from **two** sources, unioned:
+
+    * the entry's own ``runs`` hint, which the local lane fills because there
+      ``job_name`` *is* the run key; and
+    * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact
+      dir — the only way to answer it for a cluster Job, and the way that also covers a
+      packed job's remaining runs without the killer having to enumerate them.
+
+    The manifest, not the ``job`` symlink :func:`read_run_job` follows: that symlink is
+    created when a job *finishes*, so it is missing for precisely the jobs this function
+    is asked about. The manifest is written before the first job starts (see
+    :func:`~robovast.common.execution.job_artifact_dir`).
+
+    Returns ``{}`` without touching the manifest when the ledger is empty, which is the
+    default for every campaign nobody intervened in.
+    """
+    entries = read_killed_jobs(campaign_dir)
+    if not entries:
+        return {}
+    from robovast.common.execution import read_job_links
+    by_job_dir = {e["job_dir"]: e for e in entries if e.get("job_dir")}
+    out: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        for run_key in entry.get("runs") or ():
+            out[run_key] = entry
+    for link, target in read_job_links(campaign_dir).items():
+        # ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``; normalizing the
+        # target against the link's own directory yields the campaign-relative job dir
+        # the ledger records.
+        run_key = link[:-len("/job")] if link.endswith("/job") else link
+        entry = by_job_dir.get(os.path.normpath(os.path.join(run_key, target)))
+        if entry is not None:
+            out.setdefault(run_key, entry)
+    return out
+
+
+def killed_failure_message(entry: dict[str, Any]) -> str:
+    """The ``failure_message`` a manually-stopped run carries.
+
+    One phrasing, built here, so the reason a reader sees is the same in the ``run``
+    table, the SQL views and the web UI rather than three near-identical strings.
+    """
+    reason = (entry.get("reason") or "").strip()
+    where = entry.get("source") or "unknown surface"
+    return (f"manually stopped via {where}: {reason}" if reason
+            else f"manually stopped via {where}")
+
+
 #: Campaign launch record — the request the campaign was *asked for*, beside the records
 #: describing what then happened. Its own file, and not fields on ``execution.yaml``, for a
 #: timing reason: ``execution.yaml`` is written **by the run** (locally by the generated run
@@ -561,21 +685,37 @@ def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any
 
 
 def read_run_outcome(run_dir: Path,
-                     campaign_root: Path | None = None) -> dict[str, Any]:
+                     campaign_root: Path | None = None,
+                     killed: "dict[str, dict[str, Any]] | None" = None) -> dict[str, Any]:
     """Per-run outcome for the ``run`` table, derived from ``test.xml``.
 
     The single place the JUnit result is mapped to a normalized ``status`` —
     ``passed`` (no errors, no failures), ``error`` (errors present), ``failed``
-    (failures only), or ``unknown`` (``test.xml`` missing/unparseable). The
-    controller records these live, :mod:`campaign_index` backfills them from disk,
-    and postprocessing reads them back, so the mapping must live once here.
+    (failures only), ``killed`` (an operator stopped its job by hand) or ``unknown``
+    (``test.xml`` missing/unparseable). The controller records these live,
+    :mod:`campaign_index` backfills them from disk, and postprocessing reads them back,
+    so the mapping must live once here.
+
+    ``killed`` replaces ``unknown`` and **only** ``unknown``. A run whose job was killed
+    but which wrote a valid ``test.xml`` finished *before* the kill landed — its verdict
+    is real measurement, and overwriting it would destroy data that a packed job
+    (``runs_per_job > 1``) routinely produces. So a manual kill can only ever annotate a
+    run that delivered nothing, which is what makes this whole distinction additive:
+    no run that ever produced a verdict changes status.
+
+    Args:
+        run_dir: The run's directory (``<campaign>/<config>/<run>``).
+        campaign_root: The campaign root, which adds ``job_dir`` / ``sysinfo`` from
+            :func:`read_run_job` — :meth:`~robovast.common.store.CampaignStore.record_runs`
+            turns those into the ``job`` row and the run's ``job_id``.
+        killed: A :func:`killed_runs` mapping, when the caller already built one.
+            Passed in rather than read here so a whole config's runs share one read of
+            the ledger; ``None`` means "look it up", and an empty mapping means "nothing
+            was killed" — the default.
 
     Returns a dict keyed exactly like the ``run`` columns: ``run_id``, ``status``,
     ``passed`` (0/1), ``errors``, ``failures``, ``tests``, ``duration_s``,
-    ``start_time``, ``failure_message``. When *campaign_root* is given it also carries
-    ``job_dir`` / ``sysinfo`` from :func:`read_run_job`, which
-    :meth:`~robovast.common.store.CampaignStore.record_runs` turns into the ``job`` row
-    and the run's ``job_id``.
+    ``start_time``, ``failure_message``.
     """
     run_id = int(run_dir.name) if run_dir.name.isdigit() else -1
     job: dict[str, Any] = {}
@@ -589,6 +729,16 @@ def read_run_outcome(run_dir: Path,
         # (crashed mid-run), still gets a row so it is counted — marked ``unknown``
         # rather than silently dropped. ``OSError`` covers the missing-file case
         # (``FileNotFoundError``); ``ET.ParseError``/``ValueError`` the malformed one.
+        if killed is None and campaign_root is not None:
+            killed = killed_runs(campaign_root)
+        entry = (killed or {}).get(f"{run_dir.parent.name}/{run_dir.name}")
+        if entry is not None:
+            # Deliberately stopped, not lost: ``unknown`` would file this with the runs
+            # whose result went missing for reasons nobody chose.
+            return {"run_id": run_id, "status": "killed", "passed": 0,
+                    "errors": 0, "failures": 0, "tests": 0,
+                    "duration_s": None, "start_time": None,
+                    "failure_message": killed_failure_message(entry), **job}
         return {"run_id": run_id, "status": "unknown", "passed": 0,
                 "errors": 0, "failures": 0, "tests": 0,
                 "duration_s": None, "start_time": None, "failure_message": None,
@@ -608,8 +758,16 @@ def read_run_outcome(run_dir: Path,
 
 def read_run_outcomes(config_dir: Path,
                       campaign_root: Path | None = None) -> list[dict[str, Any]]:
-    """:func:`read_run_outcome` for every numeric run dir under *config_dir*."""
-    return [read_run_outcome(rd, campaign_root) for rd in list_run_dirs(config_dir)]
+    """:func:`read_run_outcome` for every numeric run dir under *config_dir*.
+
+    The manual-kill ledger is resolved **once** here and shared across the config's runs,
+    rather than per run: with no ledger that is a single ``is_file`` miss for the whole
+    config, and the outcomes are then identical to what this returned before the ledger
+    existed.
+    """
+    killed = killed_runs(campaign_root) if campaign_root is not None else {}
+    return [read_run_outcome(rd, campaign_root, killed)
+            for rd in list_run_dirs(config_dir)]
 
 
 def read_sysinfo(run_dir: Path) -> dict[str, Any]:

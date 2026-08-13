@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
     unit_id         INTEGER NOT NULL REFERENCES unit(id),
     run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
-    status          TEXT,               -- passed / failed / error / unknown
+    status          TEXT,               -- passed / failed / error / killed / unknown
     passed          INTEGER,            -- 0/1
     errors          INTEGER,
     failures        INTEGER,
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
     unit_id         INTEGER NOT NULL REFERENCES unit(id),
     run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
-    status          TEXT,               -- passed / failed / error / unknown
+    status          TEXT,               -- passed / failed / error / killed / unknown
     passed          INTEGER,            -- 0/1
     errors          INTEGER,
     failures        INTEGER,
@@ -570,9 +570,13 @@ class CampaignStore:
         """Pass/fail tallies for a campaign, from one ``GROUP BY`` over ``run``.
 
         Returns ``num_runs`` (all rows), ``num_passed``, ``num_failed`` (status
-        ``failed`` only), and ``num_errors`` (status ``error``). An ``unknown`` run
-        counts toward ``num_runs`` but none of the others, so
-        ``num_passed + num_failed + num_errors`` may be < ``num_runs``.
+        ``failed`` only), ``num_errors`` (status ``error``) and ``num_killed`` (a job an
+        operator stopped by hand). An ``unknown`` run counts toward ``num_runs`` but none
+        of the others, so the four may sum to < ``num_runs``.
+
+        ``num_killed`` is reported apart from ``num_failed`` on purpose: a run somebody
+        stopped says nothing about the system under test, and folding it into the failures
+        would put a human intervention into the campaign's measured outcome.
 
         ``num_composition_failed`` counts *units* rather than runs (a search draw
         that could not be composed never produced one), so it is reported beside
@@ -595,6 +599,7 @@ class CampaignStore:
             "num_passed": by_status.get("passed", 0),
             "num_failed": by_status.get("failed", 0),
             "num_errors": by_status.get("error", 0),
+            "num_killed": by_status.get("killed", 0),
             "num_composition_failed": composition_failed,
         }
 
@@ -701,5 +706,6 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
         "num_passed": by_status.get("passed", 0),
         "num_failed": by_status.get("failed", 0),
         "num_errors": by_status.get("error", 0),
+        "num_killed": by_status.get("killed", 0),
         "num_composition_failed": composition_failed,
     }

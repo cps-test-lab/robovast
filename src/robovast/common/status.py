@@ -124,6 +124,14 @@ class RunProgress(BaseModel):
       failing trial is still a successful execution. Set when the batch's outcomes are
       recorded, so 0 before then.
 
+    * ``killed`` — an operator stopped the run's job by hand (see
+      :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and
+      *not* part of ``failed``: a run somebody ended says nothing about the system under
+      test, so counting it as a trial failure would put a human intervention into the
+      campaign's measured outcome. It is a subset of ``no_result`` — a killed run delivered
+      nothing, which is exactly why it was recorded — so it explains part of that number
+      rather than adding to it.
+
     ``completed`` counts runs that produced results — including failing ones — and
     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
     failed=1`` means every run delivered data and one trial did not pass: 24 usable.
@@ -137,6 +145,7 @@ class RunProgress(BaseModel):
     total: int = 0
     no_result: int = 0
     failed: int = 0
+    killed: int = 0
 
 
 class BudgetItem(BaseModel):

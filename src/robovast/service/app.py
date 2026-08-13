@@ -774,6 +774,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True):
     def stop(campaign_id: str) -> ActionResult:
         return _guard(lambda: impl.stop(campaign_id))
 
+    @app.post(Routes.job_stop("{campaign_id}"), response_model=ActionResult,
+              tags=["campaigns"])
+    def stop_job(campaign_id: str, job_name: str, reason: "str | None" = None,
+                 source: str = "api") -> ActionResult:
+        return _guard(lambda: impl.stop_job(campaign_id, job_name, reason, source))
+
     @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
               tags=["campaigns"],
               description="Launch a new campaign from an existing one's frozen config and "

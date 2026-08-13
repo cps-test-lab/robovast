@@ -315,3 +315,35 @@ def register_video(out_dir: str, row: dict) -> str:
     return path
 
 
+
+
+# -- bags whose failure to open is expected -----------------------------------
+#
+# Lives here for the same reason as the clock map above: the predicate is used by the
+# standalone container script (rosbags_process.py, which can import nothing from the
+# robovast package) and has to be testable on the host, where the script itself cannot
+# even be imported — it pulls in rosbag2_py at module level.
+
+
+def resolve_tolerated_roots(input_root: str, relative_dirs: Sequence[str]) -> List[str]:
+    """Absolute forms of *relative_dirs*, resolved once against *input_root*.
+
+    Resolved up front so the per-bag test is a prefix compare rather than a path join
+    per bag — a campaign can carry thousands.
+    """
+    return [os.path.normpath(os.path.join(input_root, rel)) for rel in relative_dirs or ()]
+
+
+def is_under_tolerated_root(bag_path: str, tolerated_roots: Sequence[str]) -> bool:
+    """Is *bag_path* inside one of *tolerated_roots*?
+
+    True for a bag belonging to a job an operator stopped by hand: killing the pod
+    mid-write leaves the bag unfinalized, so it cannot be opened and never will be.
+    Such an error is expected and must not fail the postprocessing step — see
+    ``rosbags_process.py --tolerate-under``.
+
+    The separator is part of the test (``root + os.sep``) so ``_jobs/job-2`` does not
+    swallow ``_jobs/job-20``, which is exactly the sibling a packed campaign has.
+    """
+    path = os.path.abspath(bag_path)
+    return any(path == root or path.startswith(root + os.sep) for root in tolerated_roots)

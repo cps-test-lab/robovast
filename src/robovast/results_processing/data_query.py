@@ -436,6 +436,10 @@ _TABLE_DESCRIPTIONS = {
         "campaign, NULL on a store predating the batch table. It is a search's history over "
         "time: SELECT batch, COUNT(*), AVG(objective) FROM run_view GROUP BY 1 ORDER BY 1. "
         "Whether batch means anything is campaign.campaign.mode ('search' | 'batch'). "
+        "status='killed' marks a run whose job an operator stopped by hand (stop_job): it "
+        "delivered no result and is NOT a trial failure, so exclude it from pass-rate "
+        "statistics rather than counting it against the system under test — "
+        "WHERE status <> 'killed'. failure_message says which surface stopped it and why. "
         "status='composition_failed' marks a SEARCH parameter set whose configuration "
         "could not be built at all (an unrealizable draw, e.g. no valid obstacle "
         "placement): it never ran, so run_id and every run column are NULL and "
@@ -536,9 +540,10 @@ _TABLE_DESCRIPTIONS = {
         "'run' rows. For per-run detail use run_view, which joins this to run."),
     ("campaign", "run"): (
         "One row per individual run, child of unit via unit_id and of a job via job_id. "
-        "status is passed/failed/error/unknown (unknown = test.xml missing or "
-        "unparseable), passed is 0/1, with errors/failures/tests/duration_s/start_time/"
-        "failure_message. Available before postprocessing. "
+        "status is passed/failed/error/killed/unknown (unknown = test.xml missing or "
+        "unparseable; killed = an operator stopped the job by hand), passed is 0/1, with "
+        "errors/failures/tests/duration_s/start_time/failure_message. "
+        "Available before postprocessing. "
         "run_id is the index WITHIN its config and is not unique on its own; config_name "
         "is on campaign.unit. Prefer run_view, which joins unit and job for you."),
     ("main", "costmaps"): (

@@ -352,8 +352,9 @@ def _exec_json(client, request, command: str) -> dict:
 
 
 def describe_scenario(address: str, scenario_path: str) -> dict:
-    """What a `.osc` file references and does. `{valid, diagnostics, actions_used,
-    tree, image}`.
+    """What a ``.osc`` file references and does.
+
+    Returns ``{valid, diagnostics, actions_used, tree, image}``.
     """
     try:
         client, request = _resolved_request(address)

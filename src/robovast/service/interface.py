@@ -1191,6 +1191,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/jobs"
 
     @staticmethod
+    def job_stop(campaign_id: str) -> str:
+        # ``job_name`` is a query param for the same reason as ``job_log`` below: locally
+        # it is a "<config>/<run>" id and contains a '/'.
+        return f"/campaigns/{campaign_id}/job-stop"
+
+    @staticmethod
     def job_log(campaign_id: str) -> str:
         # ``job_name`` is a query param (it may contain '/', e.g. a local
         # "<config>/<run>" id), so it never has to be path-encoded.
@@ -1503,6 +1509,41 @@ class RobovastInterface(ABC):
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop of a running campaign."""
+
+    @abstractmethod
+    def stop_job(self, campaign_id: str, job_name: str,
+                 reason: Optional[str] = None,
+                 source: str = "api") -> ActionResult:
+        """Kill **one** running job; the rest of the campaign keeps going.
+
+        The narrow intervention for a job that is visibly wedged and will not exit on its
+        own. It is not how a campaign is ended — that is :meth:`stop`, which requests the
+        cooperative stop this deliberately does *not*.
+
+        Only a job whose status is ``running`` may be stopped. Anything else raises
+        ``RuntimeError`` naming the phase it is actually in: a ``pending`` or ``waiting``
+        job has not started (there is nothing wedged to kill), and a ``blocked`` one has a
+        problem — no quota, an unpullable image — that deleting it does not fix.
+
+        The kill is recorded durably (:func:`~robovast.common.campaign_data.record_killed_job`),
+        so the runs it cut short report ``status == "killed"`` rather than being
+        indistinguishable from runs whose results went missing on their own. That record
+        is permanent and is *not* a trial failure: a killed run is excluded from a
+        campaign's pass/fail counts as a distinct category.
+
+        Args:
+            campaign_id: The campaign the job belongs to.
+            job_name: The job as :meth:`list_jobs` reports it — ``<config>/<run>``
+                locally, the Kubernetes Job name on the cluster.
+            reason: The operator's optional explanation, stored with the record.
+            source: Which surface asked — ``"webui"``, ``"mcp"``, ``"cli"``. Recorded for
+                the audit trail; not a user identity, since the service is
+                unauthenticated.
+
+        Raises:
+            KeyError: No such campaign, or no such job in it.
+            RuntimeError: The job is not running.
+        """
 
     @abstractmethod
     def list_campaigns(

@@ -315,6 +315,10 @@ class MultiBackendService(LocalTransport):
     def stop(self, campaign_id: str) -> ActionResult:
         return self._route(campaign_id, "stop", campaign_id)
 
+    def stop_job(self, campaign_id: str, job_name: str,
+                 reason: "str | None" = None, source: str = "api") -> ActionResult:
+        return self._route(campaign_id, "stop_job", campaign_id, job_name, reason, source)
+
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return self._route(campaign_id, "delete_campaign", campaign_id)
 

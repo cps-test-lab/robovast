@@ -160,6 +160,11 @@ class _FakeClient:
         self.calls.append(("stop", campaign_id))
         return ActionResult(ok=True, message="stop requested")
 
+    def stop_job(self, campaign_id, job_name, reason=None, source="api"):
+        from robovast.service.interface import ActionResult
+        self.calls.append(("stop_job", campaign_id, job_name, reason, source))
+        return ActionResult(ok=True, message=f"killed job {job_name}")
+
     def list_campaigns(self, request=None):
         from robovast.service.interface import (CampaignSummary,
                                                 ListCampaignsResponse)
@@ -293,6 +298,37 @@ def test_service_stop_routes_to_client(service):
     res = execution.stop_campaign("svc-campaign-1")
     assert res["stopped"] is True and res["status"] == "stopping"
     assert ("stop", "svc-campaign-1") in service.calls
+
+
+def test_stop_job_routes_to_client_and_names_its_surface(service):
+    res = execution.stop_job("svc-campaign-1", "cfgA/1", reason="wedged in recovery")
+    assert res["stopped"] is True and res["job_name"] == "cfgA/1"
+    # ``source`` is what the record shows months later, so the tool stamps its own name
+    # rather than leaving the service to guess which client called.
+    assert ("stop_job", "svc-campaign-1", "cfgA/1", "wedged in recovery", "mcp") \
+        in service.calls
+
+
+def test_stop_job_sends_no_reason_rather_than_an_empty_one(service):
+    """An omitted reason must reach the record as absent, not as ``""``."""
+    execution.stop_job("svc-campaign-1", "cfgA/1")
+    assert ("stop_job", "svc-campaign-1", "cfgA/1", None, "mcp") in service.calls
+
+
+def test_stop_job_reports_a_refusal_as_an_error(monkeypatch):
+    """The service refuses a job that is not running; the tool must not swallow that."""
+    class _Refusing(_FakeClient):
+        def stop_job(self, campaign_id, job_name, reason=None, source="api"):
+            raise RuntimeError(f"job {job_name!r} is completed, not running")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Refusing())
+    res = execution.stop_job("svc-campaign-1", "cfgA/0")
+    assert "not running" in res["error"]
+
+
+def test_stop_job_without_a_service_says_so(monkeypatch):
+    monkeypatch.setattr(service_access, "service_client", lambda: None)
+    assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
 
 
 def test_resource_usage_passes_backend(service):
@@ -689,3 +725,28 @@ def test_an_unknown_phase_is_reported_not_ignored(monkeypatch):
     _service_with_log(monkeypatch, _log_with_build())
     out = execution.get_campaign_log("camp-2026-01-01-000000", phase="biuld")
     assert "unknown phase" in out["error"]
+
+
+def test_status_names_a_killed_run_apart_from_a_lost_one(monkeypatch):
+    """``batch_runs_killed`` distinguishes a deliberate stop from a run that vanished.
+
+    A killed run is counted inside ``no_result`` (it delivered nothing), so without its own
+    field the reader sees only "1 without result" and goes hunting for a fault that is not
+    there. Omitted entirely when nothing was killed.
+    """
+    class _Killed(_FakeClient):
+        def get_status(self, campaign_id):
+            from robovast.service.interface import Status
+            self.calls.append(("get_status", campaign_id))
+            return Status(phase="finished", campaign_id=campaign_id,
+                          runs={"completed": 2, "total": 3, "no_result": 1,
+                                "failed": 0, "killed": 1})
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Killed())
+    status = execution.get_campaign_status("svc-campaign-1")
+    assert status["batch_runs_killed"] == 1
+    assert status["batch_runs_failed"] == 0, "a kill is not a failed trial"
+
+
+def test_status_omits_the_killed_count_when_nothing_was_killed(service):
+    assert "batch_runs_killed" not in execution.get_campaign_status("svc-campaign-1")

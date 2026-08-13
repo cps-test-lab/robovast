@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded'
+import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import Fab from '@mui/material/Fab'
+import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
@@ -58,6 +60,8 @@ export function StatusView({
   showDetails = false,
   quotaCpu,
   postprocessed = false,
+  onStopJob,
+  stoppingJob,
 }: {
   status: Status
   // The campaign this status belongs to. Passed in because the caller already knows it
@@ -88,6 +92,13 @@ export function StatusView({
   // Whether the metric tables exist yet -- the Details panel re-queries when this flips, since a
   // campaign is postprocessed a few minutes after it finishes.
   postprocessed?: boolean
+  // Offer each running job a Stop button. Omitted → no buttons, which is what the Launcher
+  // wants: this view stays presentational and the caller owns the confirm + the mutation,
+  // because it also owns the jobs query that has to be invalidated afterwards.
+  onStopJob?: (job: JobSummary) => void
+  // The job a stop is currently in flight for, so its button can disable itself rather than
+  // inviting a second click at a job that is already going away.
+  stoppingJob?: string | null
 }) {
   const { runs, budget } = status
   const cid = campaignId ?? status.campaign_id
@@ -245,6 +256,8 @@ export function StatusView({
           onToggleOpen={() => setJobsOpen((o) => !o)}
           expanded={expandedJobs}
           onToggle={toggleJob}
+          onStopJob={onStopJob}
+          stoppingJob={stoppingJob}
         />
       ) : null}
       {cid && showDetails ? (
@@ -281,6 +294,8 @@ function JobsSection({
   onToggleOpen,
   expanded,
   onToggle,
+  onStopJob,
+  stoppingJob,
 }: {
   campaignId: string
   jobs: JobSummary[]
@@ -291,6 +306,8 @@ function JobsSection({
   onToggleOpen: () => void
   expanded: Set<string>
   onToggle: (jobName: string) => void
+  onStopJob?: (job: JobSummary) => void
+  stoppingJob?: string | null
 }) {
   const shown = jobs.slice(0, JOBS_RENDER_CAP)
   return (
@@ -305,6 +322,8 @@ function JobsSection({
             job={job}
             open={expanded.has(job.job_name)}
             onToggle={() => onToggle(job.job_name)}
+            onStopJob={onStopJob}
+            stopping={stoppingJob === job.job_name}
           />
         ))}
         {jobs.length > shown.length ? (
@@ -322,17 +341,41 @@ function JobRow({
   job,
   open,
   onToggle,
+  onStopJob,
+  stopping,
 }: {
   campaignId: string
   job: JobSummary
   open: boolean
   onToggle: () => void
+  onStopJob?: (job: JobSummary) => void
+  stopping?: boolean
 }) {
+  // Offered only on a `running` job — the same rule the service enforces, so the UI never
+  // shows a button the server would refuse. A pending or queued job has not started, and a
+  // blocked one has a cause that deleting it does not fix.
+  const canStop = Boolean(onStopJob) && job.status === 'running'
   return (
     <CollapsibleBox
       variant="row"
       open={open}
       onToggle={onToggle}
+      actions={
+        canStop ? (
+          <Tooltip title="Stop this job. The campaign continues; this run is recorded as killed.">
+            <IconButton
+              size="small"
+              color="error"
+              aria-label={`Stop job ${job.display_name || job.job_name}`}
+              disabled={stopping}
+              onClick={() => onStopJob?.(job)}
+              sx={{ p: 0.25 }}
+            >
+              <StopRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null
+      }
       leading={
         <Chip
           label={job.status}

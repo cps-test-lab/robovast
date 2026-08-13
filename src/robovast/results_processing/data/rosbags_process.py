@@ -65,7 +65,8 @@ import numpy as np
 
 from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME,
                             DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator,
-                            find_rosbags, gen_msg_values, register_video,
+                            find_rosbags, gen_msg_values, is_under_tolerated_root,
+                            register_video, resolve_tolerated_roots,
                             write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 
@@ -1270,6 +1271,18 @@ def main() -> int:
         help="Reprocess all bags even if already cached",
     )
     parser.add_argument(
+        "--tolerate-under",
+        action="append",
+        default=[],
+        metavar="REL_DIR",
+        help="A directory, relative to the input root, whose unreadable bags are "
+             "EXPECTED rather than a failure. Given for each job an operator stopped by "
+             "hand: killing a pod mid-write leaves its rosbag unfinalized, so it cannot "
+             "be opened and never will be. Such a bag is still attempted (a kill that "
+             "landed between bags leaves readable ones, and their data is worth having); "
+             "it just does not fail the step. Repeatable.",
+    )
+    parser.add_argument(
         "--output-root",
         default=None,
         help="Write outputs under this root, mirroring each bag's path relative to "
@@ -1314,6 +1327,14 @@ def main() -> int:
     n_bags = len(rosbag_paths)
     input_root = os.path.abspath(args.input)
 
+    # Bags whose failure to open is expected: their job was killed by hand mid-write (see
+    # --tolerate-under). The predicate lives in rosbags_common so it is testable on the
+    # host — this script cannot be imported there, it pulls in rosbag2_py at module level.
+    _tolerated_roots = resolve_tolerated_roots(input_root, args.tolerate_under)
+
+    def _is_tolerated(bag_path: str) -> bool:
+        return is_under_tolerated_root(bag_path, _tolerated_roots)
+
     def _out_dir_for(bag_path: str) -> Optional[str]:
         """Mirror the bag's location under --output-root, or None (beside the bag)."""
         if not args.output_root:
@@ -1332,6 +1353,10 @@ def main() -> int:
     processed_bags = 0
     cached_bags = 0
     error_bags = 0
+    # Errors under a --tolerate-under dir: reported, never fatal. Counted apart from
+    # ``error_bags`` rather than ignored, so "we skipped 1 unreadable bag" stays visible
+    # instead of a campaign quietly having less data than it looks like it has.
+    expected_error_bags = 0
     failed_bags = 0
     completed = 0
     all_results: List[Tuple[str, int, List[Tuple[int, List[str]]]]] = []
@@ -1366,7 +1391,10 @@ def main() -> int:
             cached_bags += 1
             continue
         if bag_total == -2:
-            error_bags += 1
+            if _is_tolerated(bag_path):
+                expected_error_bags += 1
+            else:
+                error_bags += 1
             continue
 
         source_rel = os.path.relpath(bag_path, input_root)
@@ -1374,7 +1402,10 @@ def main() -> int:
 
         for j, (record_count, output_files) in enumerate(handler_results):
             if record_count == -2:
-                error_bags += 1
+                if _is_tolerated(bag_path):
+                    expected_error_bags += 1
+                else:
+                    error_bags += 1
                 continue
             if record_count > 0:
                 total_records += record_count
@@ -1398,14 +1429,22 @@ def main() -> int:
 
     elapsed = time.time() - start
     cached_str = f", {cached_bags} cached" if cached_bags else ""
+    killed_str = f", {expected_error_bags} from stopped job(s)" if expected_error_bags else ""
     print(
         f"Summary: {len(rosbag_paths)} rosbags "
-        f"({processed_bags} success{cached_str}, {error_bags} errors, {failed_bags} no-data), "
-        f"{total_records} total records, {elapsed:.2f}s"
+        f"({processed_bags} success{cached_str}, {error_bags} errors{killed_str}, "
+        f"{failed_bags} no-data), {total_records} total records, {elapsed:.2f}s"
     )
+    if expected_error_bags:
+        # Stated, not silent: the campaign really does have less data than its run count
+        # suggests, and the reason is a decision somebody made rather than a defect.
+        print(f"NOTE: {expected_error_bags} unreadable bag(s) belong to job(s) stopped by "
+              f"hand — expected, not counted as failures")
     # A handler that failed outright must not be reported as a successful postprocessing step: this
     # exit code is what the campaign's results phase reads, and returning 0 regardless meant a run
-    # could be graded on data a handler had already refused to produce.
+    # could be graded on data a handler had already refused to produce. A bag left unfinalized by a
+    # deliberate kill is the one exception, and it is excluded above rather than here — so the
+    # campaign that ran a per-job stop still gets its metrics for every job that did finish.
     if error_bags:
         print(f"ERROR: {error_bags} handler error(s) — see the messages above")
         return 1

@@ -239,7 +239,7 @@ describe('summariseBatches', () => {
     expect(summaries[1].runs).toBe(2)
   })
 
-  it('counts error as failed and keeps the three tallies summing to runs', () => {
+  it('counts error as failed and keeps the four tallies summing to runs', () => {
     const [all] = summariseBatches([
       run('passed'),
       run('failed'),
@@ -247,8 +247,16 @@ describe('summariseBatches', () => {
       run('unknown'),
       run('composition_failed', { duration: null, start: null }),
     ])
-    expect([all.passed, all.failed, all.other]).toEqual([1, 2, 2])
-    expect(all.passed + all.failed + all.other).toBe(all.runs)
+    expect([all.passed, all.failed, all.killed, all.other]).toEqual([1, 2, 0, 2])
+    expect(all.passed + all.failed + all.killed + all.other).toBe(all.runs)
+  })
+
+  it('counts a killed run apart from the failures', () => {
+    // A run someone stopped by hand says nothing about the system under test, so folding it
+    // into `failed` would read as the campaign finding a defect it never found.
+    const [all] = summariseBatches([run('passed'), run('failed'), run('killed')])
+    expect([all.passed, all.failed, all.killed, all.other]).toEqual([1, 1, 1, 0])
+    expect(all.passed + all.failed + all.killed + all.other).toBe(all.runs)
   })
 
   it('takes the best objective by the campaign direction', () => {

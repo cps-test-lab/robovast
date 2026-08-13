@@ -94,6 +94,11 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # Progress age and the stall verdict, derived once in the status contract so the
     # CLI monitor and this tool cannot disagree about whether a run is wedged.
     result.update(stall_report(st))
+    # Only when it happened, but then always: a killed run is inside ``no_result``, so
+    # without this the count reads as a run that vanished on its own rather than one
+    # somebody deliberately ended — and the reader goes looking for a fault there is none.
+    if st.runs and st.runs.killed:
+        result["batch_runs_killed"] = st.runs.killed
     if st.batches_done:
         result["batches_done"] = st.batches_done
     if st.best_objective is not None:
@@ -486,6 +491,9 @@ def list_campaign_jobs(campaign_id: str) -> dict:
     """The campaign's current-batch jobs, live — one run locally, one Kubernetes Job each
     on the cluster. Pair with ``get_job_log`` to read a running one.
 
+    To end a single ``running`` job that will not finish on its own, ``stop_job`` — it
+    leaves the rest of the campaign running and records that run as ``killed``.
+
     Args:
         campaign_id: The id from ``start_campaign``.
 
@@ -616,6 +624,35 @@ def stop_campaign(campaign_id: str) -> dict:
         res = client.stop(campaign_id)
         return {"campaign_id": campaign_id, "stopped": res.ok,
                 "status": "stopping", "note": res.message}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
+    """Kill ONE ``running`` job that will not finish; the campaign continues without it.
+
+    Not how you end a campaign (``stop_campaign``). Refused unless the job is ``running``,
+    naming its phase. **Permanent:** cut-short runs report ``status='killed'`` with *reason*
+    in ``failure_message`` and count as neither pass nor failure — exclude them in your SQL
+    (``status <> 'killed'``).
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        job_name: As ``list_campaign_jobs`` reports it.
+        reason: Why — the only record explaining the kill later.
+
+    Returns:
+        ``{campaign_id, job_name, stopped, note}`` or ``{error}``.
+    """
+    from robovast.mcp_server.client_text import unescape_client_text
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {"error": NO_SERVICE}
+        res = client.stop_job(campaign_id, job_name,
+                              unescape_client_text(reason) or None, "mcp")
+        return {"campaign_id": campaign_id, "job_name": job_name,
+                "stopped": res.ok, "note": res.message}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -889,6 +926,7 @@ _TOOLS = [
     list_campaign_jobs,
     get_job_log,
     stop_campaign,
+    stop_job,
     get_resource_usage,
     build_experiment_image,
     wait_for_image_build,

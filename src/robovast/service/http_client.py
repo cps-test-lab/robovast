@@ -102,10 +102,15 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.json()
 
-    def _post(self, route: str, json=None, *, timeout: "float | None" = None):
+    def _post(self, route: str, json=None, *, timeout: "float | None" = None, **params):
         import requests
+        # ``params`` for the routes whose argument cannot be a path segment (a job name
+        # contains '/'), the same way ``_delete`` takes them. ``None`` values are dropped
+        # so an omitted optional argument is absent rather than the string "None".
+        query = {k: v for k, v in params.items() if v is not None}
         resp = requests.post(f"{self.base_url}{route}", json=json,
-                            timeout=timeout or self.timeout)
+                             params=query or None,
+                             timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
@@ -237,6 +242,12 @@ class HTTPTransport(RobovastInterface):
 
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
+
+    def stop_job(self, campaign_id: str, job_name: str,
+                 reason: Optional[str] = None, source: str = "api") -> ActionResult:
+        return ActionResult.model_validate(
+            self._post(Routes.job_stop(campaign_id), job_name=job_name,
+                       reason=reason, source=source))
 
     def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
         return CampaignRef.model_validate(

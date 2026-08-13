@@ -445,6 +445,16 @@ Single-backend services (a plain local or in-cluster ``vast serve``, or
    scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
    service considers live (all lanes).
 
+   ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
+   the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a
+   job that is running and will not end on its own, and you still want the other runs —
+   a merely slow run finishes by itself, and the lane's deadline kills a genuinely hung
+   one without help, so check ``get_campaign_status``'s ``stalled`` before deciding. It
+   refuses anything that is not ``running``, naming the phase. The kill is permanent and
+   recorded: that run reports ``status='killed'`` with the reason in ``failure_message``
+   for the life of the campaign, and counts as neither a pass nor a failure — so exclude
+   it from pass rates (``WHERE status <> 'killed'``). See :ref:`stopping-one-job`.
+
 .. note::
 
    ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same **live

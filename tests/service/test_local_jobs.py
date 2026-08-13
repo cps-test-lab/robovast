@@ -377,3 +377,201 @@ def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path
     assert seen['dir'] == str(vast.parent)
     assert seen['base_dir'] == str(vast.parent), \
         "no base_dir means a '<file>.py:<Class>' backend cannot resolve either"
+
+
+# -- stop_job: killing one running job, and refusing everything else ---------------------
+#
+# The lane is single-flight behind a container named `robovast`, so the kill lands on
+# whichever job is current no matter what was asked for. That is why the precondition is
+# checked against `list_jobs` first: accepting a stale name would report success for
+# killing a DIFFERENT run than the caller named.
+
+
+def _killed(campaign_dir):
+    """The campaign's kill ledger, resolved to the run keys it covers."""
+    from robovast.common.campaign_data import killed_runs
+    return killed_runs(campaign_dir)
+
+
+def test_stop_job_kills_the_running_job_without_stopping_the_campaign(transport, monkeypatch):
+    cid = "campaign-2026-08-13-140000"
+    cdir = transport._campaigns_root() / cid
+    # One run per job, which is this lane's default packing (``runs_per_job: 1``).
+    _run(cdir, "cfgA", "0", xml=_PASS_XML, log="done\n", job_index=0)
+    _run(cdir, "cfgA", "1", log="running\n", job_index=1)  # no test.xml + live → running
+    _live(transport, cid, "running", total=3, completed=1)
+    killed_containers = []
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: killed_containers.append(True))
+
+    result = transport.stop_job(cid, "cfgA/1", "wedged in recovery", "webui")
+
+    assert result.ok
+    assert killed_containers == [True], "the scenario container was not killed"
+    # The cooperative flag is what ENDS a campaign. Leaving it clear is the entire
+    # difference between this and stop(); setting it here would end the sweep.
+    assert transport._campaigns[cid].state.stop_requested is False
+    assert sorted(_killed(cdir)) == ["cfgA/1"]
+    assert _killed(cdir)["cfgA/1"]["reason"] == "wedged in recovery"
+    assert _killed(cdir)["cfgA/1"]["source"] == "webui"
+    # What the results actually report: the killed run is `killed`, and the one that had
+    # already delivered keeps its verdict.
+    from robovast.common.campaign_data import read_run_outcomes
+    assert {o["run_id"]: o["status"]
+            for o in read_run_outcomes(cdir / "cfgA", cdir)} == {0: "passed", 1: "killed"}
+
+
+def test_stop_job_refuses_a_job_that_is_not_the_running_one(transport, monkeypatch):
+    """A stale name must be refused, not silently applied to the current run."""
+    cid = "campaign-2026-08-13-141000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML)  # already completed
+    _run(cdir, "cfgA", "1")                 # the one actually running
+    _live(transport, cid, "running", total=3, completed=1)
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: pytest.fail("nothing may be killed on a refusal"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        transport.stop_job(cid, "cfgA/0", None, "mcp")
+
+    message = str(excinfo.value)
+    assert "completed" in message, "the refusal must name the phase the job is in"
+    assert "cfgA/1" in message, "the refusal must name the job that IS running"
+    assert _killed(cdir) == {}, "a refused stop must record nothing"
+
+
+def test_stop_job_refuses_an_unknown_job(transport, monkeypatch):
+    cid = "campaign-2026-08-13-142000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0")
+    _live(transport, cid, "running", total=1)
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: pytest.fail("nothing may be killed on a refusal"))
+
+    with pytest.raises(KeyError) as excinfo:
+        transport.stop_job(cid, "cfgZ/9", None, "mcp")
+
+    assert "cfgZ/9" in str(excinfo.value)
+    assert _killed(cdir) == {}
+
+
+def test_stop_job_refuses_an_untracked_campaign(transport):
+    with pytest.raises(KeyError):
+        transport.stop_job("campaign-does-not-exist", "cfgA/0", None, "cli")
+
+
+def test_stop_job_records_before_it_kills(transport, monkeypatch):
+    """The container dies asynchronously, so the record cannot depend on what follows.
+
+    If the kill raised and the record had not been written yet, the run would end with no
+    result and no explanation — indistinguishable from one that vanished on its own.
+    """
+    cid = "campaign-2026-08-13-143000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0")
+    _live(transport, cid, "running", total=1)
+
+    def _explode():
+        raise OSError("docker daemon went away")
+
+    monkeypatch.setattr(transport, "_kill_scenario_container", _explode)
+
+    with pytest.raises(OSError):
+        transport.stop_job(cid, "cfgA/0", "why", "cli")
+
+    assert sorted(_killed(cdir)) == ["cfgA/0"], \
+        "the kill was not recorded before the container teardown was attempted"
+
+
+# -- the HTTP surface: what the web UI's Stop button actually hits ------------------------
+
+
+def _app_client(transport, monkeypatch):
+    """A TestClient over the real app, with the container kill recorded rather than run.
+
+    Always patched, never left real: closing the client runs the app's lifespan, whose
+    ``shutdown`` terminates still-running campaigns — which would otherwise shell out to
+    ``docker rm -f robovast`` on the machine running the tests. The returned list also
+    lets a test assert that a *refused* stop killed nothing, as long as it asserts inside
+    the client's scope (the shutdown kill lands after it).
+    """
+    from fastapi.testclient import TestClient
+
+    from robovast.service.app import build_app
+    kills = []
+    monkeypatch.setattr(transport, "_kill_scenario_container",
+                        lambda: kills.append(True))
+    return TestClient(build_app(transport)), kills
+
+
+def test_job_stop_route_kills_the_job_and_records_the_reason(transport, monkeypatch):
+    cid = "campaign-2026-08-13-150000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", job_index=0)
+    _live(transport, cid, "running", total=1)
+    client, kills = _app_client(transport, monkeypatch)
+
+    with client:
+        resp = client.post(f"/campaigns/{cid}/job-stop",
+                           params={"job_name": "cfgA/0", "reason": "wedged",
+                                   "source": "webui"})
+        assert kills == [True], "the scenario container was not killed"
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    entry = _killed(cdir)["cfgA/0"]
+    assert (entry["reason"], entry["source"]) == ("wedged", "webui")
+
+
+def test_job_stop_route_refusing_a_finished_job_is_a_409(transport, monkeypatch):
+    """A conflict, not a 500: the job finished between the poll and the click.
+
+    409 is what ``_guard`` maps ``RuntimeError`` to, and it is the status the web UI
+    renders as a warning rather than an error — this is an expected race, not a fault.
+    """
+    cid = "campaign-2026-08-13-151000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML, job_index=0)
+    _live(transport, cid, "running", total=1, completed=1)
+    client, kills = _app_client(transport, monkeypatch)
+
+    with client:
+        resp = client.post(f"/campaigns/{cid}/job-stop", params={"job_name": "cfgA/0"})
+        # Asserted in here: the lifespan's own shutdown kill lands on the way out.
+        assert kills == [], "a refused stop must kill nothing"
+
+    assert resp.status_code == 409
+    assert "not running" in resp.json()["detail"]
+    assert _killed(cdir) == {}
+
+
+def test_job_stop_route_unknown_job_is_a_404(transport, monkeypatch):
+    cid = "campaign-2026-08-13-152000"
+    _run(transport._campaigns_root() / cid, "cfgA", "0")
+    _live(transport, cid, "running", total=1)
+    client, _kills = _app_client(transport, monkeypatch)
+
+    with client:
+        resp = client.post(f"/campaigns/{cid}/job-stop", params={"job_name": "cfgZ/9"})
+
+    assert resp.status_code == 404
+
+
+def test_job_stop_route_carries_a_job_name_containing_a_slash(transport, monkeypatch):
+    """``job_name`` is a query param precisely because locally it contains a '/'.
+
+    As a path segment it would have to be double-encoded by every client; this asserts the
+    plain name survives the round trip.
+    """
+    cid = "campaign-2026-08-13-153000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfg-with-dash", "7", job_index=0)
+    _live(transport, cid, "running", total=1)
+    client, _kills = _app_client(transport, monkeypatch)
+
+    with client:
+        resp = client.post(f"/campaigns/{cid}/job-stop",
+                           params={"job_name": "cfg-with-dash/7"})
+
+    assert resp.status_code == 200
+    assert sorted(_killed(cdir)) == ["cfg-with-dash/7"]

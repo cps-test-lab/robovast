@@ -153,8 +153,13 @@ def get_campaign_summary(campaign_id: str) -> dict:
 
     Returns:
         ``{campaign_id, num_configs, num_runs, num_success, num_failed, num_unknown,
-        worst_configs, advice}`` plus the execution provenance (which robovast, image,
-        lane) once the campaign has produced it; or ``{error}``.
+        num_killed, worst_configs, advice}`` plus the execution provenance (which
+        robovast, image, lane) once the campaign has produced it; or ``{error}``.
+
+        ``num_killed`` counts runs an operator stopped by hand (``stop_job``). They are
+        **not** in ``num_failed``: nobody learned anything about the system under test
+        from them, so they are missing measurements rather than negative results, and a
+        config is not ranked ``worst`` for carrying them.
 
         ``advice`` is what this campaign's measurements say the next one should reserve --
         cpu and memory, per container and per pod, with the evidence behind each item.
@@ -166,7 +171,8 @@ def get_campaign_summary(campaign_id: str) -> dict:
                COUNT(*)                                        AS num_runs,
                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS success,
                SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed,
-               SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) AS unknown
+               SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) AS unknown,
+               SUM(CASE WHEN status = 'killed' THEN 1 ELSE 0 END) AS killed
         FROM run_view GROUP BY config_name ORDER BY config_name
     """)
     if not per_config:
@@ -183,6 +189,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "success": _int(c.get("success")),
         "failed": _int(c.get("failed")),
         "unknown": _int(c.get("unknown")),
+        **({"killed": _int(c.get("killed"))} if _int(c.get("killed")) else {}),
     } for c in per_config]
 
     result: dict[str, Any] = {
@@ -192,9 +199,17 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "num_success": sum(c["success"] for c in configs_info),
         "num_failed": sum(c["failed"] for c in configs_info),
         "num_unknown": sum(c["unknown"] for c in configs_info),
+        # Ranked on failures and lost results only. A deliberate kill is not evidence
+        # against a config, so a config someone intervened in must not be promoted into
+        # the list of the ones worth investigating.
         "worst_configs": sorted(
             configs_info, key=lambda c: (-(c["failed"] + c["unknown"]), c["name"]))[:3],
     }
+    num_killed = sum(c.get("killed", 0) for c in configs_info)
+    if num_killed:
+        # Omitted when zero, like every other optional field on this surface: a campaign
+        # nobody intervened in should not carry a key saying so.
+        result["num_killed"] = num_killed
 
     # What this campaign's own measurements say the NEXT one should reserve. Advice rather
     # than data, so it is additive: an agent that ignores the key loses nothing, and one that

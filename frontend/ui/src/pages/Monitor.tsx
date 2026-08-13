@@ -35,11 +35,12 @@ import {
   hasResults,
   isTerminalPhase,
   type CampaignSummary,
+  type JobSummary,
   type ListCampaignsResponse,
   type Status,
 } from '@/lib/robovastClient'
-import { ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
-import { openResultsView } from '@/lib/nav'
+import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
+import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
@@ -172,7 +173,37 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     },
   })
 
-  const { confirm } = useDialogs()
+  // One job, killed by hand; the campaign keeps running. Invalidates the jobs query (the row's
+  // status changes) and the status one (its `runs.killed` counter moves) — which is also why
+  // this lives here rather than in StatusView: those queries are owned by this card.
+  const stopJob = useMutation({
+    mutationFn: ({ jobName, reason }: { jobName: string; reason?: string }) =>
+      robovast.stopJob(id, jobName, reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs', id] })
+      qc.invalidateQueries({ queryKey: ['status', id] })
+    },
+  })
+
+  const { confirm, prompt } = useDialogs()
+
+  // One dialog, not a confirm followed by a prompt: submitting *is* the confirmation, and the
+  // reason field is the point of asking at all. Cancel (null) means don't stop — an empty
+  // string is a deliberate "no reason given" and still goes through.
+  const onStopJob = async (job: JobSummary) => {
+    const reason = await prompt({
+      title: `Stop job ${job.display_name || job.job_name}?`,
+      message:
+        'The rest of the campaign keeps running. This run is permanently recorded as ' +
+        'killed — it will not count as a pass or a failure, and it cannot be resumed.',
+      label: 'Reason (optional)',
+      placeholder: 'e.g. stuck in nav recovery, will never finish',
+      confirmLabel: 'Stop job',
+    })
+    if (reason === null) return
+    stopJob.mutate({ jobName: job.job_name, reason: reason.trim() || undefined })
+  }
+
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const closeMenu = () => setMenuAnchor(null)
   const [ppOpen, setPpOpen] = useState(false)
@@ -231,6 +262,11 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
+  // A campaign freezes its project into `_config/` only once variation has expanded, so during a
+  // pre-run phase there is provably nothing to open and the shortcut is hidden rather than offered
+  // and answered with a 404. From then on it stays, running or finished: the configuration a
+  // campaign is running is worth reading while it runs.
+  const hasConfig = !PRE_RUN_PHASES.has(phase)
   // How long the current phase has been held, shown only while a *pre-run* phase is in
   // effect. Those are the phases with no progress bar to watch, so a stalled project
   // push or image build otherwise looks exactly like a slow one — indefinitely.
@@ -343,6 +379,17 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         ) : null}
         <Box flexGrow={1} />
         {status.isFetching ? <CircularProgress size={14} /> : null}
+        {hasConfig ? (
+          <Tooltip title="Open this campaign's configuration (read-only)">
+            <IconButton
+              size="small"
+              aria-label="open campaign config"
+              onClick={() => openCampaignConfig(id)}
+            >
+              <ConfigIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {canExplore ? (
           <Tooltip title="Open this campaign in the results Explorer">
             <IconButton
@@ -458,6 +505,20 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         </Alert>
       ) : null}
 
+      {/* A refusal is the expected outcome when the job finished between the poll that drew the
+          button and the click — so the server's own message (which names the phase it is in) is
+          the whole explanation, and it is a warning rather than an error. */}
+      {stopJob.isError ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          Could not stop that job.
+          <ErrorText>{(stopJob.error as Error).message}</ErrorText>
+        </Alert>
+      ) : stopJob.data && !stopJob.data.ok ? (
+        <Alert severity="warning" sx={{ mb: 1 }}>
+          <ErrorText>{stopJob.data.message ?? 'Stopping the job had no effect.'}</ErrorText>
+        </Alert>
+      ) : null}
+
       {del.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Delete failed.
@@ -532,6 +593,8 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           showDetails={canExplore}
           quotaCpu={usage.data?.cpu_capacity ?? null}
           postprocessed={!!summary.postprocessed}
+          onStopJob={onStopJob}
+          stoppingJob={stopJob.isPending ? (stopJob.variables?.jobName ?? null) : null}
         />
       ) : (
         <Stack direction="row" spacing={1} alignItems="center">
