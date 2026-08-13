@@ -8,16 +8,7 @@ per tool call, and once a token was required, a process authenticating to itself
 worked only because it happened to hold its own secret.
 """
 
-import pytest
-
 from robovast.mcp_server import service_access
-
-
-@pytest.fixture(autouse=True)
-def _reset():
-    """The binding is process-wide; never let it leak between tests."""
-    yield
-    service_access.use_in_process_service(None)
 
 
 def test_without_mounting_the_client_is_resolved_over_http(monkeypatch):

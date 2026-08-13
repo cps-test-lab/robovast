@@ -1200,12 +1200,13 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
           log_level: str = "info", mount_mcp: bool = True) -> None:
     """Run the service in the foreground (blocking) via uvicorn.
 
-    Binds ``127.0.0.1`` by default: the service is unauthenticated in v1, so it
-    must stay behind a localhost / SSH-tunnel / port-forward boundary (see
-    ``docs/deployment.rst``). A remote VM binds VM-localhost and is reached over
-    an SSH tunnel — ``mount_mcp`` (default on) is what lets that one tunnel also
-    reach the MCP server, at ``/mcp``, instead of needing a second one to a
-    separately-run ``vast mcp serve``.
+    Every request needs the shared token; when none is configured one is minted and
+    printed as a clickable login URL, so there is no unauthenticated mode to start by
+    accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
+    deliberate act (``vast exec cluster setup --ingress-host``, which insists on TLS).
+
+    ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
+    the web UI, the REST API and the tools together.
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 

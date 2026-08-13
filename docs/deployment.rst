@@ -24,11 +24,12 @@ as its own separate process/port instead; see :ref:`mcp`).
   run, no persistent service (mode 1). CLI only.
 * **Local service** — ``vast serve``. Persistent local service; web UI + CLI +
   MCP share its state (mode 2). ``vast ui`` opens it.
-* **Cluster service** — ``vast exec cluster setup`` deploys it (mode 3); then
-  ``vast serve --attach`` from your machine holds a tunnel to it, and while that
-  runs the CLI, MCP, and ``vast ui`` all reach it. In-pod, the Deployment runs
-  ``vast serve --backend cluster``; run ``vast serve --backend cluster -x
-  <context>`` off-cluster to debug the driver locally against a real cluster.
+* **Cluster service** — ``vast exec cluster setup --ingress-host …`` deploys and
+  publishes it (mode 3); users then reach it in a browser, or with ``vast login
+  <url>`` for the CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.**
+  In-pod, the Deployment runs ``vast serve --backend cluster``; run ``vast serve
+  --backend cluster -x <context>`` off-cluster to debug the driver locally against a
+  real cluster.
 * **Dual-lane dev service** — ``vast serve --backend local+cluster`` offers
   *both* a local Docker lane and a cluster lane in one service and chooses per
   campaign (``start_campaign`` ``backend``; default cluster). A dev-host mode
@@ -36,16 +37,25 @@ as its own separate process/port instead; see :ref:`mcp`).
   and scale the same session to the cluster without re-pointing serve. The
   deployed in-cluster service stays single-backend.
 * **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
-  <host>`` or ``kubectl port-forward … 8800:8800`` on the conventional port is
-  equivalent to ``vast serve --attach``; the web UI and every ``vast`` command
-  then follow it automatically.
+  <host>`` or ``kubectl port-forward svc/robovast-service 8800:8800`` puts a service
+  on the conventional port, and every client finds it there. That is the break-glass
+  route when the Ingress itself is broken; it is kubectl's feature, not a mode
+  RoboVAST wraps.
 
-.. warning::
+.. note::
 
-   The service is **unauthenticated in v1**. It binds ``127.0.0.1`` by default
-   and must stay behind a localhost / SSH-tunnel / ``kubectl port-forward``
-   boundary. Do not expose it directly on a network until authenticated access
-   (token + TLS / reverse-proxy / Ingress) is added.
+   **Every request needs the shared token.** There is no unauthenticated mode: when
+   ``ROBOVAST_AUTH_TOKEN`` is unset, ``vast serve`` mints one and prints a login URL
+   carrying it, and ``vast exec cluster setup`` generates one and preserves it across
+   re-runs (``--rotate-token`` issues a new one, logging everyone out).
+
+   Browsers authenticate with a cookie obtained at ``/login``; the CLI and MCP send
+   ``Authorization: Bearer``. The cookie is not a preference — ``EventSource`` cannot
+   set headers, so it is what keeps the live streams in the web UI working.
+
+   Publishing the service insists on TLS, and on a token being configured. Both
+   refusals are deliberate: a campaign names its own container image, so an open
+   Ingress lets anyone who finds the URL run containers in the cluster.
 
 The three modes
 ---------------
@@ -99,15 +109,15 @@ Access matrix
        authentication and encryption. The VM analog of ``kubectl port-forward``.
    * - Cluster service
      - ``HTTPTransport``
-     - ``vast serve --attach`` holds a ``kubectl port-forward`` to the deployed
-       service on ``127.0.0.1:8800`` for as long as it runs (the equivalent of
-       running ``kubectl port-forward svc/robovast-service 8800:8800`` yourself).
-       While it is up, every client — including ``vast ui`` — follows it. Or
-       skip the held tunnel and pass ``vast exec cluster … --cluster`` for an
-       ephemeral per-call tunnel.
+     - ``https://robovast.<domain>`` directly, over the Ingress that
+       ``vast exec cluster setup --ingress-host`` created. A browser logs in at
+       ``/login``; the CLI and MCP use ``vast login <url>``. Nothing is held open and
+       no kubeconfig is involved.
 
-The deferred hardening for direct remote access (mode 2 remote / mode 3 without a
-tunnel) is a public **Ingress + token/TLS**, decided once for the whole surface.
+That last row is the hardening this page used to defer — "a public **Ingress +
+token/TLS**, decided once for the whole surface". It is decided: one shared secret,
+presented as a cookie by browsers and a bearer header by everything else, in front of
+an Ingress that refuses to exist without TLS.
 
 Walkthrough — a remote VM service over an SSH tunnel
 ----------------------------------------------------
@@ -140,18 +150,32 @@ with no second port to forward.
 Walkthrough — the in-cluster service
 ------------------------------------
 
+The operator, once, with a kubeconfig:
+
 .. code-block:: bash
 
-   vast exec cluster setup rke2                     # deploys robovast-service
-   vast serve --attach                              # holds the tunnel on :8800
+   python tools/setup_ingress_tls.py                # hostname + certificate
+   vast exec cluster setup rke2 \
+       --ingress-host robovast.example.org \
+       --ingress-class nginx --issuer robovast-ca   # deploys and publishes it
 
-``vast serve --attach`` brings the service up on ``:8800`` and holds it there;
-while it runs everything else auto-detects it — ``vast ui`` opens a browser at
-it, an MCP user (an LLM) just calls tools with no URL to configure, and ``vast
-exec cluster run`` (and ``workspace``/``monitor``) need no flags. Prefer your own
-``kubectl port-forward svc/robovast-service 8800:8800`` and it is exactly
-equivalent. To skip the held tunnel entirely, pass ``--cluster`` on a command to
-open an ephemeral per-call tunnel instead.
+Setup prints the access token once, and waits for the pod to be Ready before
+reporting success — so an image that cannot be pulled is reported *here*, with the
+pod's own reason, rather than as a connection failure from the next command.
+
+Everybody else, from a machine with no kubeconfig:
+
+.. code-block:: bash
+
+   # a browser: open https://robovast.example.org and log in
+   vast login https://robovast.example.org          # CLI and stdio MCP
+   claude mcp add --transport http robovast \
+       https://robovast.example.org/mcp \
+       --header "Authorization: Bearer <token>"     # MCP over HTTP
+
+``vast ui`` opens whichever service this machine talks to. When the Ingress itself is
+broken, ``kubectl port-forward svc/robovast-service 8800:8800`` puts one back on the
+conventional port and every client finds it there.
 
 Keeping the service up to date
 ------------------------------

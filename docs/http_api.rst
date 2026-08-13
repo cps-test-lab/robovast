@@ -21,7 +21,7 @@ Who may call it
 
 The service binds ``127.0.0.1`` by default and assumes a trusted caller: there is no
 authentication. Reaching a remote one is an SSH tunnel, not a public bind — see
-:doc:`deployment` for the boundary and ``vast serve --attach``.
+:doc:`deployment` for the boundary and ``vast login``.
 
 Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
 ``sources_root`` for a non-loopback client, because those are filesystem paths that are

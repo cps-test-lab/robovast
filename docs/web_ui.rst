@@ -297,32 +297,29 @@ run files, and author the ``.vast`` in the Monaco editor.
    campaign, so pin the collection rather than each project. Hidden files and
    ``results/`` are skipped, exactly like ``workspace init``.
 
-   **It lands wherever the UI is — usually with no flag at all.** A workspace
-   lives in the store of whichever service you talk to, and ``vast workspace``
-   **follows whatever service is already running**: it probes the local service
-   port, so if a local ``vast serve`` or a ``vast serve --attach`` (a held-open
-   tunnel to the cluster) is up, the command rides that same endpoint — the exact
-   one the browser is on:
+   **It lands wherever the UI is — with no flag at all.** A workspace lives in the
+   store of whichever service you talk to, and ``vast workspace`` follows the same
+   one the browser is on: a service answering on the local port, otherwise the one
+   ``vast login`` recorded.
 
    .. code-block:: bash
 
-      # (a) vast serve --attach running in another terminal → this follows it:
+      # (a) a service running on this machine → this follows it:
       vast workspace init configs/examples/growth_sim
-      #> Target: service (http://127.0.0.1:8800) [detected — following a running vast serve]
+      #> Target: service (http://127.0.0.1:8800) [detected]
 
-      # (b) nothing running → this machine, in-process:
+      # (b) logged in to the deployed one → this goes there:
+      vast workspace init configs/examples/growth_sim
+      #> Target: service (https://robovast.example.org) [detected]
+
+      # (c) neither → this machine, in-process:
       vast workspace init configs/examples/growth_sim
       #> Target: this machine, in-process (store: …)
 
-      # (c) reach the cluster with NO service running → open your own ephemeral tunnel:
-      vast workspace init configs/examples/growth_sim --cluster
-      #> Target: in-cluster service (http://127.0.0.1:…)
-
-   So you rarely type ``--cluster``: keep a ``vast serve --attach`` open and every
-   ``vast workspace`` command follows it automatically. Use ``--cluster`` only to
-   reach the cluster when no service is up (it opens an ephemeral
-   ``kubectl port-forward`` for the call; add ``-x <context>`` / ``-n
-   <namespace>`` to pick the cluster). Every command prints the ``Target:`` it
+   There is no flag to pick between them, and there used to be: ``--cluster`` opened
+   an ephemeral ``kubectl port-forward`` for the call. With the service published and
+   authenticated, an operator uses the same path as everybody else. Every command
+   prints the ``Target:`` it
    resolved — including ``[detected]`` — so the choice is never silent. To reach a
    service that is neither local nor in this cluster (a remote VM), bring up your
    own tunnel to the conventional port ``127.0.0.1:8800``
@@ -364,18 +361,17 @@ it:
 .. code-block:: bash
 
    vast serve            # this machine: local service on :8800
-   vast serve --attach   # the in-cluster service: holds a tunnel on :8800
-   vast ui               # open a browser at whatever is serving on :8800
+   vast login <url>      # the deployed one, published over its Ingress
+   vast ui               # open a browser at whichever of those answers
 
 * **This machine** — run ``vast serve`` (local backend, serves the UI itself),
-  then ``vast ui`` to open it. If nothing is answering on the port, ``vast ui``
-  says so and exits rather than starting anything — ``vast serve`` is the one
-  command that owns the service lifecycle.
-* **Cluster** — deploy with ``vast exec cluster setup``, then ``vast serve
-  --attach`` (``-x/--context``, ``-n/--namespace`` pick which cluster) holds a
-  ``kubectl port-forward`` on :8800; ``vast ui`` then opens it. Needs ``kubectl``
-  + a kubeconfig; the attach process runs in the foreground and Ctrl-C closes the
-  tunnel.
+  then ``vast ui`` to open it. If nothing answers, ``vast ui`` says so and exits
+  rather than starting anything — ``vast serve`` is the one command that owns the
+  service lifecycle.
+* **Cluster** — deploy and publish it with ``vast exec cluster setup
+  --ingress-host``, then open ``https://robovast.<domain>`` and log in. No kubectl,
+  no kubeconfig, nothing held open. ``vast login <url>`` points the CLI and MCP at
+  the same place.
 * **Remote VM** — the service binds ``127.0.0.1`` there, so reach it with your
   own SSH tunnel (``ssh -N -L 8800:127.0.0.1:8800 <vm>``) and open
   ``http://127.0.0.1:8800``. Because that is the conventional port, ``vast ui``
@@ -383,8 +379,8 @@ it:
 
 Because the service serves the **web UI and the REST API on the same port**,
 whatever ``vast ui`` opens is all a browser, the ``vast`` CLI, and the MCP server
-need. Other service-touching commands (``vast workspace …``) reach the same place
-with the same ``--cluster`` switch, so nothing needs to be exported.
+need. Other service-touching commands (``vast workspace …``) resolve the same
+target the same way, so nothing needs to be exported.
 
 A connection indicator in the top bar turns green once the service answers, and
 shows the backend's live **resource usage** — used vs. total CPU cores and memory

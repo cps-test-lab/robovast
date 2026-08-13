@@ -16,9 +16,8 @@ Every cluster run — batch **and** search — is driven by the
 **robovast-service**, which runs the campaign *in-process* (one worker thread per
 campaign) and creates the scenario Jobs itself. So cluster runs require a deployed
 service (``vast execution cluster setup`` installs it); ``vast execution cluster
-run`` finds it — auto-detected on the conventional local port (a ``vast serve``,
-a ``vast serve --attach`` or a tunnel you brought up), or pass ``--cluster`` to open an ephemeral
-``kubectl port-forward`` for the call — pushes the local project into a server-side
+run`` finds it — a service answering on the conventional local port, or the deployed
+one ``vast login`` recorded — pushes the local project into a server-side
 workspace, and starts the campaign there. It is *fire-and-forget*
 — it returns immediately with the campaign id, and the campaign continues in the
 cluster.
@@ -79,7 +78,7 @@ them. Internally:
 .. note::
 
    Live status, ``stop`` and ``monitor`` all go through the service — auto-detected
-   on the conventional local port, or reached with ``--cluster`` — there is no
+   on the conventional local port, or the one ``vast login`` recorded — there is no
    controller pod to ``kubectl port-forward`` into any more. The web UI additionally
    streams each campaign's ``controller.log`` live from the service, and offers a
    **Download** button (the postprocessed ``tar.gz``, streamed from the object
@@ -192,7 +191,7 @@ Running Scenarios
 ``run`` is fire-and-forget: it starts the campaign on the service and returns
 immediately, printing the campaign id. The campaign continues in the cluster —
 watch it with ``vast execution cluster monitor``. (It needs a reachable service:
-auto-detected on the conventional local port, or reached with ``--cluster``; run
+auto-detected on the conventional local port, or the one ``vast login`` stored; run
 ``vast execution cluster setup`` first if you have none.)
 
 
@@ -249,7 +248,7 @@ campaign that is still running:
    vast execution cluster download-cleanup
    vast execution cluster download-cleanup --campaign campaign-2025-06-01-120000
 
-The service is auto-detected on the conventional local port, or pass ``--cluster``
+The service is auto-detected on the conventional local port, or named by ``vast login``
 (``-x`` context, ``-n`` namespace) to tunnel to the in-cluster service for the call.
 ``run-cleanup --data`` deletes the buckets the same way after removing the Jobs.
 

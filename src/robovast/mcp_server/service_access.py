@@ -31,8 +31,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 #: Canonical failure when no ``robovast-service`` answers on the conventional local port.
-NO_SERVICE = ("no robovast-service reachable — start a 'vast serve' (local) or "
-              "'vast serve --attach' (cluster), or open a tunnel to one, so the "
+NO_SERVICE = ("no robovast-service reachable — start one on this machine "
+              "('vast serve'), or point at the deployed one "
+              "('vast login https://robovast.<domain>'), so the "
               "MCP has an execution authority to drive. Report this and stop; do not "
               "substitute a local docker/script run, which produces no pinned image, "
               "no provenance and no repetitions, and answers a different question")

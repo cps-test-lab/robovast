@@ -34,7 +34,7 @@ binding the service accepts, and ``config_path`` selects among several
 the service runs. Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
 only for a service running on that host) or by uploading one with
-``create_workspace`` + ``update_workspace`` (required for ``vast serve --attach``
+``create_workspace`` + ``update_workspace`` (required for a remote service
 and in-pod services, where the directory does not exist locally).
 
 The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
@@ -397,7 +397,7 @@ Campaign control
 
 The ``execution`` plugin lets an assistant drive campaigns. It is a
 **strict client of a running** ``robovast-service`` — a ``vast serve`` locally,
-or a tunnel / ``vast serve --attach`` to a remote VM or cluster. The service is
+or the deployed one recorded by ``vast login``. The service is
 the single execution authority and owns run-state tracking; there is **no local
 subprocess path**. When no service is reachable the control tools fail loudly
 (``{"error": "no robovast-service reachable — start a 'vast serve' …"}``) rather

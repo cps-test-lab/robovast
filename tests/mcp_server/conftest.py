@@ -20,3 +20,20 @@ def _no_stray_service(monkeypatch):
     monkeypatch.setattr(
         "robovast.common.cli.service_target.detected_service_url",
         lambda *a, **k: "", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_in_process_service():
+    """Clear the in-process binding a mounted MCP sets, before and after each test.
+
+    ``build_app(mount_mcp=True)`` binds the implementation process-wide so a mounted
+    MCP calls it directly instead of over loopback HTTP. One process serves one app, so
+    that is right in production — but a test session builds many, and a service test
+    that mounts MCP would otherwise leave every later MCP test resolving *its*
+    implementation instead of the one under test. The symptom is order-dependent
+    failures, which is the worst kind to debug.
+    """
+    from robovast.mcp_server import service_access
+    service_access.use_in_process_service(None)
+    yield
+    service_access.use_in_process_service(None)

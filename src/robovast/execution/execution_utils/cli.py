@@ -358,7 +358,7 @@ def _print_search_summary(report):
               help='Leave the container running so later calls can inspect it.')
 @target_options
 def exec_command(shell_command, workspace_id, config_path, campaign_id, config_name,
-                 keep_alive, cluster, namespace, context):  # pylint: disable=redefined-outer-name
+                 keep_alive, namespace, context):  # pylint: disable=redefined-outer-name
     """Test a container and its setup by running SHELL_COMMAND in the experiment image.
 
     Produces **no campaign data** — nothing durable, no provenance, no repetitions. Use
@@ -376,7 +376,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
     """
     from robovast.service.interface import ExecRequest
     try:
-        with service_client(cluster, namespace, context) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             result = client.exec_in_container(ExecRequest(
                 command=shell_command, workspace_id=workspace_id,
@@ -406,10 +406,10 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
 
 @execution.command('stop-container')
 @target_options
-def stop_container(cluster, namespace, context):  # pylint: disable=redefined-outer-name
+def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
     """Stop the held container-exec container, if there is one."""
     try:
-        with service_client(cluster, namespace, context) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             result = client.stop_exec_container('cluster' if cluster else None)
     except Exception as e:  # noqa: BLE001
@@ -426,7 +426,7 @@ def stop_container(cluster, namespace, context):  # pylint: disable=redefined-ou
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
-def wait(campaign, interval, timeout, cluster, namespace, context):  # noqa: F811
+def wait(campaign, interval, timeout, namespace, context):  # noqa: F811
     """Block until CAMPAIGN is over, then exit 0 (finished) or 1 (failed/stopped).
 
     The lane-agnostic wait: the service drives every campaign, so its phase *is* the
@@ -444,7 +444,7 @@ def wait(campaign, interval, timeout, cluster, namespace, context):  # noqa: F81
     from robovast.execution.campaign_wait import wait_for_campaign_status
     from robovast.execution.control_server import Phase
     try:
-        with service_client(cluster, namespace, context) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             status = wait_for_campaign_status(
                 campaign, client=client, interval=interval, timeout=timeout,
@@ -551,7 +551,7 @@ def _confirm_overwrite(name, workspace_id):
 @click.option('--workspace', 'workspace_name', default=None, metavar='NAME',
               help="Workspace to push the project into (default: the .vast's "
                    'directory name). Reused when it already exists.')
-def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
+def run(config, runs, log_tree, namespace, context, wait_and_download,
         poll_interval, campaign_name, upload_to_share,
         description, workspace_name):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
@@ -563,12 +563,9 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
     directly and does take one.
 
     Runs through the robovast-service, which drives the campaign in-process and
-    creates the per-batch scenario Jobs. The service is auto-detected on the
-    conventional local port, so with a ``vast serve`` (or an SSH /
-    ``kubectl port-forward`` / ``vast serve --attach`` tunnel) up, this needs
-    **no flags**; otherwise pass
-    ``--cluster`` (with ``-x`` to pick the context) to tunnel to the in-cluster
-    service for this call. By default the command is fire-and-forget: it returns
+    creates the per-batch scenario Jobs. The service is the one answering on the
+    conventional local port, or the deployed one ``vast login`` recorded — either
+    way this needs **no flags**. By default the command is fire-and-forget: it returns
     once the campaign is launched. Track it with 'vast exec cluster monitor'.
 
     Pass ``--wait-and-download`` to instead block until the campaign finishes and
@@ -603,7 +600,7 @@ def run(config, runs, log_tree, cluster, namespace, context, wait_and_download,
                 f"{DESCRIPTION_MAX_LEN} — shorten it to one line.")
 
         project = get_project_config()
-        with service_client(cluster, namespace, context,
+        with service_client(namespace, context,
                             require_service=True) as (client, target):
             _echo_target(target)
             cid = run_project_via_service(
@@ -1067,7 +1064,7 @@ def monitor(interval, once, kube_context, namespace):
 @click.option('--campaign', '-i', default=None,
               help='Campaign to stop (default: the only running one)')
 @target_options
-def stop(campaign, cluster, namespace, context):
+def stop(campaign, namespace, context):
     """Ask a running campaign to stop gracefully (after the current batch).
 
     Goes through the robovast-service, which drives the campaign in-process: the
@@ -1075,7 +1072,7 @@ def stop(campaign, cluster, namespace, context):
     usual. A no-op if nothing is running.
     """
     try:
-        with service_client(cluster, namespace, context,
+        with service_client(namespace, context,
                             require_service=True) as (client, target):
             _echo_target(target)
             campaign_id = campaign or _sole_running_campaign(client)
@@ -1101,7 +1098,7 @@ def stop(campaign, cluster, namespace, context):
 @click.option('--reason', default=None, metavar='TEXT',
               help='Why you stopped it — stored with the run and shown in the results')
 @target_options
-def stop_job(job_name, campaign, reason, cluster, namespace, context):
+def stop_job(job_name, campaign, reason, namespace, context):
     """Kill ONE running job; the rest of the campaign keeps going.
 
     For a job that is visibly wedged and will not exit on its own. This is not how a
@@ -1113,7 +1110,7 @@ def stop_job(job_name, campaign, reason, cluster, namespace, context):
     nor failures.
     """
     try:
-        with service_client(cluster, namespace, context,
+        with service_client(namespace, context,
                             require_service=True) as (client, target):
             _echo_target(target)
             campaign_id = campaign or _sole_running_campaign(client)
@@ -1137,7 +1134,7 @@ def stop_job(job_name, campaign, reason, cluster, namespace, context):
 @click.option('--follow', '-f', is_flag=True,
               help='Stream new output until the campaign finishes')
 @target_options
-def log(campaign, follow, cluster, namespace, context):
+def log(campaign, follow, namespace, context):
     """Print a campaign's unified infrastructure log.
 
     The same divider-separated stream the web UI and MCP show — the variation
@@ -1149,7 +1146,7 @@ def log(campaign, follow, cluster, namespace, context):
     """
     try:
         from robovast.service.client import HTTPTransport
-        with service_client(cluster, namespace, context) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             if isinstance(client, HTTPTransport):
                 campaign_id = campaign or _sole_running_campaign(client)
@@ -1316,7 +1313,7 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
 @click.option('--force', is_flag=True,
               help='Delete a named campaign even if the service still considers it live.')
 @target_options
-def download_cleanup(campaign, force, cluster, namespace, context):
+def download_cleanup(campaign, force, namespace, context):
     """Remove result buckets from the cluster object store (via the service).
 
     Deletes run result buckets (``campaign-*``) from the object store. This runs
@@ -1331,7 +1328,7 @@ def download_cleanup(campaign, force, cluster, namespace, context):
     """
     try:
         from robovast.service.interface import CleanupDataRequest
-        with service_client(cluster, namespace, context,
+        with service_client(namespace, context,
                             require_service=True) as (client, target):
             _echo_target(target)
             res = client.cleanup_campaign_data(
@@ -1353,7 +1350,7 @@ def download_cleanup(campaign, force, cluster, namespace, context):
 @click.option('--force', is_flag=True,
               help='With --data: delete a named campaign even if the service still considers it live.')
 @target_options
-def run_cleanup(campaign, data, force, cluster, namespace, context):
+def run_cleanup(campaign, data, force, namespace, context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
@@ -1410,7 +1407,7 @@ def run_cleanup(campaign, data, force, cluster, namespace, context):
             # Bucket cleanup runs server-side: the service owns the object-store
             # credentials and the authoritative live-campaign guard.
             from robovast.service.interface import CleanupDataRequest
-            with service_client(cluster, namespace, context,
+            with service_client(namespace, context,
                                 require_service=True) as (client, target):
                 _echo_target(target)
                 res = client.cleanup_campaign_data(

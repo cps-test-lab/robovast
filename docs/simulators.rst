@@ -197,7 +197,7 @@ that will run the campaign.
 
 **A backend must be resolvable where the campaign is COMPOSED**, which is not always
 where you typed the command: a local run composes in your own environment, but ``vast
-serve --attach`` holds only a tunnel and the in-cluster service composes in *its* image.
+login`` only records where the service is; the in-cluster service composes in *its* image.
 Three ways to satisfy that, in the order you should reach for them:
 
 1. **Installed in the service environment** — the normal answer, and the only one that

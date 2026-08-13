@@ -27,9 +27,9 @@ service and the MCP plugins.
 
 Two properties every caller depends on and none should re-implement:
 
-* **A failed poll is not a failed wait.** Restarting a ``vast serve --attach`` mid-run,
-  or a network hiccup, drops one status read; the campaign is untouched. The loop keeps
-  going and only ``timeout`` ends it.
+* **A failed poll is not a failed wait.** Restarting the service mid-run, or a network
+  hiccup, drops one status read; the campaign is untouched. The loop keeps going and
+  only ``timeout`` ends it.
 * **Terminal means terminal.** It became true to say so only once a campaign stopped
   publishing ``finished`` before its share and postprocessing had run — see
   ``controller.end_campaign``.
