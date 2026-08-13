@@ -191,7 +191,12 @@ def service(monkeypatch):
 
 def test_service_start_routes_to_client(service):
     started = execution.start_campaign(config_filter="hospital*", runs=5)
-    assert started == {"campaign_id": "svc-campaign-1", "backend": "service-default"}
+    assert started == {"campaign_id": "svc-campaign-1", "backend": "service-default",
+                       # The launch hands back the command that waits for it, id
+                       # filled in. Left to the tool description alone it was simply not
+                       # run — the whole reason a campaign's end went unnoticed. Its exact
+                       # wording is tested in test_wait_tools; here it must just be there.
+                       "next_step": execution._wait_next_step("svc-campaign-1")}
     name, req = service.calls[-1]
     assert name == "create_campaign"
     assert req.config_filter == "hospital*" and req.runs == 5
@@ -201,7 +206,8 @@ def test_service_start_routes_to_client(service):
 def test_from_campaign_retriggers_instead_of_creating(service):
     out = execution.start_campaign(from_campaign="pilot-2026-08-08-120000")
     assert out == {"campaign_id": "svc-campaign-2",
-                   "retriggered_from": "pilot-2026-08-08-120000"}
+                   "retriggered_from": "pilot-2026-08-08-120000",
+                   "next_step": execution._wait_next_step("svc-campaign-2")}
     name, cid = service.calls[-1]
     assert name == "retrigger_campaign" and cid == "pilot-2026-08-08-120000"
 

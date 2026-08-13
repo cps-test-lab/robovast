@@ -193,14 +193,19 @@ The loop:
 1. `create_workspace`, then `write_file` / `update_workspace` to put a `.vast` in it.
 2. `validate_project` — reports every problem at once, before any compute is spent.
 3. `build_experiment_image` when the project declares a `build:` section, then
-   `exec_in_container` to check that image — an import, `ros2 pkg list`, a file check, or
-   one config's scenario. Seconds here, and it produces no campaign data; the same
-   mistake found by a campaign costs the campaign.
+   `wait_for_image_build`, then `exec_in_container` to check that image — an import,
+   `ros2 pkg list`, a file check, or one config's scenario. Seconds here, and it produces
+   no campaign data; the same mistake found by a campaign costs the campaign.
 4. `preview_configurations` — what the sweep actually expands to.
 5. `get_resource_usage` — does this lane have room, and is it reachable?
 6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
    then the full sweep. Always pass `description`.
-7. `get_campaign_status` — read `stalled` and `postprocessed`, not just `status`.
+7. **Wait for it** — background `vast exec wait <campaign_id>`, the shell command
+   `start_campaign` hands back in `next_step`. It exits when the campaign is genuinely
+   over (past postprocessing), so you stay free meanwhile instead of holding a tool call
+   open for a run that may take days. `get_campaign_status` is the single-read version.
+   A campaign nobody waits for is one whose end nobody notices; if you will not wait, say
+   so and say that ntfy announces the end instead.
 8. Read results with SQL: `describe_campaign_data`, then `query_campaign_data_sql`.
 
 If no service is reachable, every control tool says so. **Stop and report that** — do

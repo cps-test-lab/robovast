@@ -405,9 +405,16 @@ than silently running a divergent local lane. (For a serviceless local run, use
 the ``vast exec local run`` CLI directly.)
 
 ``start_campaign`` validates and launches through the service and returns
-immediately; poll ``get_campaign_status``. Results live wherever the service
-keeps them — local disk for a local ``vast serve``, the object store for a
-cluster service (retrieve via the web UI or ``get_campaign_download``).
+immediately — the campaign has barely started. Wait for it with ``vast exec
+wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
+elapsed), which returns only once the campaign is genuinely over, past
+postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
+run for days, and a blocking tool call would occupy its caller for the whole of
+it, where a command can be backgrounded and waited on. ``get_campaign_status``
+is the single-read version for a campaign you are not waiting on. Results live
+wherever the service keeps them — local disk for a local ``vast serve``, the
+object store for a cluster service (retrieve via the web UI or
+``get_campaign_download``).
 
 Pass a ``description`` (≤ 200 characters) saying what the run is *for*. It is
 recorded on the campaign row in its ``campaign.db``, so it travels with the

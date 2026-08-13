@@ -26,12 +26,14 @@ separate lifecycle stage, so its tools belong beside the run they serve.
 """
 
 import logging
+import os
 import time
+from typing import Optional
 
 from fastmcp import FastMCP
 
 from robovast.common.log_summary import DEFAULT_TOP
-from robovast.common.status import stall_report
+from robovast.common.status import Phase, is_terminal, stall_report
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE
 from robovast.service.interface import Routes
@@ -115,6 +117,23 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     return result
 
 
+def _wait_next_step(campaign_id: str) -> str:
+    """The literal command to run next, id already filled in.
+
+    In-band rather than in the tool description: a launch that hands back only an id
+    leaves "and now wait for it" to be remembered, and the reported bug behind this whole
+    seam is precisely that it was not.
+
+    A **shell command, not an MCP tool**, and deliberately so. Waiting inside a tool call
+    occupies the caller for as long as the campaign runs — minutes for a pilot, days for
+    a sweep — whereas a backgrounded command lets an agent harness get on with other work
+    and be notified when it exits. Same poll loop either way (``execution.campaign_wait``);
+    only who holds the wait differs, and the caller is the wrong place to hold it.
+    """
+    return (f"run in the background: vast exec wait {campaign_id} --interval 10 "
+            f"(exit 0 finished, 1 failed/stopped)")
+
+
 def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
@@ -122,21 +141,22 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                    from_campaign: str = "") -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
-    This is how a RoboVAST experiment is executed — not a local ``docker compose`` or a
-    script on this host, which produce no pinned image, no recorded provenance and no
-    repetitions, so their output is not comparable with anything. Poll
-    ``get_campaign_status``; size the lane first with ``get_resource_usage``.
+    This is how a RoboVAST experiment is executed — not a ``docker compose`` or a script on
+    this host, which produce no pinned image, no provenance and no repetitions, so their
+    output compares with nothing. Size the lane first with ``get_resource_usage``, and pilot
+    one configuration before the full sweep (``config_filter`` + ``runs=1``).
 
-    Pilot one configuration before the full sweep (``config_filter`` + ``runs=1``).
+    **It is not over when this returns** — background the ``next_step`` command to be told
+    when it truly is. Not waiting is fine if you *say* so (ntfy announces the end); stopping
+    silently is not.
 
     Args:
-        workspace_id: **Required unless ``from_campaign`` is given** — the workspace holding
-            the project. There is no server-side "current project".
-        from_campaign: Re-run a previous campaign from its own record (frozen config + the
-            image its runs used): a NEW campaign, source untouched. **Takes no other
-            argument** — the record supplies them, so a pilot stays a pilot; passing one
-            errors. Refused if it recorded no usable image (use its workspace). Re-expands,
-            so stochastic generators redraw.
+        workspace_id: **Required unless ``from_campaign``** — the workspace holding the
+            project. There is no server-side "current project".
+        from_campaign: Re-run a past campaign from its own record (frozen config + the image
+            its runs used): a NEW campaign, source untouched. **Takes no other argument** —
+            the record supplies them, so a pilot stays a pilot. Refused if it recorded no
+            usable image. Re-expands, so stochastic generators redraw.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -144,22 +164,19 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             service offering both. Empty uses its default lane.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
-        show_gui: Show the simulator's window, to watch **one** run (never a sweep). Local
-            ``vast serve`` on local Docker only, and the window opens on that machine, not
-            yours; anything else refuses. Needs ``execution.local.gui.parameter_overrides``,
-            and ``note`` says so when it is missing. **Do not close the window** — the run
-            then never returns (``stop_campaign`` ends it).
+        show_gui: Watch **one** run in the simulator's window (never a sweep). Local
+            ``vast serve`` on local Docker only; the window opens on that machine, not
+            yours, and needs ``execution.local.gui.parameter_overrides`` (``note`` says so
+            when missing). **Do not close it** — the run then never returns.
         description: **Set this every time.** One line (≤200 chars) saying what the run is
-            *for* — what tells two same-day ``campaign-<timestamp>`` ids apart. Not the id,
-            filter or run count, which are already recorded. Good: "pilot: 5 reps DWB vs MPPI
-            on open_space, new inflation radius". Bad: "campaign run".
+            *for* — what tells two same-day ids apart. Good: "pilot: 5 reps DWB vs MPPI on
+            open_space, new inflation radius".
 
     Returns:
-        ``{campaign_id, backend}`` — or ``{campaign_id, retriggered_from}`` for a
-        ``from_campaign`` launch, whose ``campaign_id`` is the NEW one. Plus ``note`` when the
-        launch was accepted but will not do what was asked (see ``show_gui``), or ``{error}`` —
-        including when no service is reachable, which means **stop and say so**, not run the
-        experiment another way.
+        ``{campaign_id, backend, next_step}``, or ``{campaign_id, retriggered_from}`` for a
+        ``from_campaign`` launch (``campaign_id`` is the NEW one). Plus ``note`` when the
+        launch was accepted but will not do what was asked, or ``{error}`` — including no
+        service reachable, which means **stop and say so**, not run it another way.
     """
     try:
         client = service_access.service_client()
@@ -197,7 +214,8 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                         f"— drop them, or start from a workspace instead. The retriggered "
                         f"campaign's description is derived from the source's."}
             ref = client.retrigger_campaign(from_campaign)
-            out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign}
+            out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
+                   "next_step": _wait_next_step(ref.campaign_id)}
             if ref.note:
                 out["note"] = ref.note
             return out
@@ -213,7 +231,8 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             runs=runs if runs and runs > 0 else 0,
             upload_to_share=upload_to_share, show_gui=show_gui,
             backend=backend or None))
-        out = {"campaign_id": ref.campaign_id, "backend": backend or "service-default"}
+        out = {"campaign_id": ref.campaign_id, "backend": backend or "service-default",
+               "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
             out["note"] = ref.note
         return out
@@ -222,7 +241,10 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
 
 
 def get_campaign_status(campaign_id: str) -> dict:
-    """Is it progressing, is it wedged, and are there results? Poll this after starting.
+    """Is it progressing, is it wedged, and are there results? One read, no waiting.
+
+    To *wait* for a campaign, background ``vast exec wait <campaign_id>`` — it exits when
+    the campaign is genuinely over. This is a single look at one you are not waiting on.
 
     Two fields decide what to do next, and ``status`` is neither of them.
 
@@ -263,6 +285,47 @@ def get_campaign_status(campaign_id: str) -> dict:
         return result
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
+
+
+#: Hard ceiling on a single blocking wait, whatever the caller asks for. A wait holds a
+#: worker thread, and the MCP client kills the call at its own timeout anyway.
+_WAIT_MAX_S = int(os.environ.get("ROBOVAST_MCP_WAIT_MAX_S", "600"))
+
+
+def wait_for_image_build(build_id: str, timeout_s: int = 240,
+                         poll_interval_s: int = 5) -> dict:
+    """Block until an image build finishes. Call this after ``build_experiment_image``.
+
+    Blocking is right here, unlike for a campaign: a build takes minutes and always has
+    work behind it in the same turn, so nothing is gained by handing the wait to a shell.
+    On ``done: false`` the build is still going and ``next_step`` is the call to repeat.
+    On failure read ``error_detail`` — it names what to change — before reaching for the
+    builder log.
+
+    Args:
+        build_id: One id from ``build_experiment_image``.
+        timeout_s: How long this call blocks before returning ``done: false``.
+        poll_interval_s: Seconds between status reads.
+
+    Returns:
+        ``get_image_build_status``'s fields plus ``done`` and ``next_step``, or
+        ``{error}``.
+    """
+    deadline = time.monotonic() + max(1, min(int(timeout_s), _WAIT_MAX_S))
+    interval = max(1, int(poll_interval_s))
+    while True:
+        result = get_image_build_status(build_id)
+        if result.get("error"):
+            return result
+        if result.get("done"):
+            result["next_step"] = (
+                f"get_image_build_log(build_id={build_id!r})"
+                if result.get("error_detail") else "start_campaign(...)")
+            return result
+        if time.monotonic() >= deadline:
+            result["next_step"] = f"wait_for_image_build(build_id={build_id!r})"
+            return result
+        time.sleep(interval)
 
 
 def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
@@ -828,6 +891,7 @@ _TOOLS = [
     stop_campaign,
     get_resource_usage,
     build_experiment_image,
+    wait_for_image_build,
     get_image_build_status,
     get_image_build_log,
     exec_in_container,

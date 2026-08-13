@@ -126,9 +126,14 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    Only then the full sweep. A sweep that fails in its last cell has cost everything.
 5. **Describe every run.** `description` is what tells two same-day
    `campaign-<timestamp>` ids apart a week later. Say what the run is *for*.
-6. **Watch it.** `get_campaign_status`: `status` alone says nothing — read `stalled`
-   (`null` means no verdict is possible, not "healthy") and `postprocessed` (`finished`
-   does not imply results). On anything wrong, `get_campaign_log(summarize=True)` first:
+6. **Wait for it.** Background `vast exec wait <campaign_id>` (exit 0 finished, 1
+   failed/stopped) — it exits when the campaign is genuinely over, past postprocessing,
+   and leaves you free meanwhile. Never end a turn on a campaign you started without
+   either waiting for it or saying you are not: an unwatched campaign's end goes
+   unnoticed, which is what ntfy (`ROBOVAST_NTFY_TOPIC`) is for. Then check what it
+   actually produced — `status: finished` does not imply results, and a campaign whose
+   postprocessing failed still finishes. On anything wrong,
+   `get_campaign_log(summarize=True)` first:
    a wedged run repeats one message thousands of times, and the summary is one line.
    `list_campaign_jobs` + `get_job_log(summarize=True)` for a single job. Every log tool
    stops at the scenario's verdict by default — what a run says while shutting down is
@@ -164,8 +169,8 @@ and a scenario's `remote("ipc:///ipc/sut")`.
 
 `start_campaign` builds whatever a container needs as its first step, so a build is
 rarely a separate act. A failed build is then a **failed campaign, not a failed
-request** — the start succeeded, so read `get_campaign_status`; do not retry and create
-a second campaign.
+request** — the start succeeded, so the wait reports the failure; do not
+retry and create a second campaign.
 
 Config version 2 replaced `execution.image`, `execution.resources`,
 `execution.secondary_containers` and the top-level `build:` section with `containers`.
