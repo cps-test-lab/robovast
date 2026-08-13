@@ -236,6 +236,74 @@ def _service_manifest(namespace):
     }
 
 
+class IngressRefused(RuntimeError):
+    """An Ingress was asked for in a configuration that would publish an open service."""
+
+    #: A caller error with a self-contained message; a traceback would only obscure it.
+    include_traceback = False
+
+
+def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
+                      issuer="", *, auth_token="", insecure=False):
+    """Ingress publishing the service at *host*, or ``None`` when none was asked for.
+
+    **Refuses two configurations rather than documenting them as dangerous.**
+
+    Without an access token, an Ingress publishes an unauthenticated UI whose campaigns
+    name their own container image — anyone who reaches it can run containers in the
+    cluster. And over plain HTTP the shared secret crosses the network in clear text
+    while the session cookie's ``Secure`` flag makes it unusable anyway, so the login
+    would not merely be insecure, it would not work.
+
+    This is the one place the code is deliberately opinionated: both mistakes are
+    invisible once made, and both are made by omission.
+    """
+    if not host:
+        return None
+    if not auth_token:
+        raise IngressRefused(
+            "refusing to create an Ingress with no access token configured: it would "
+            "publish an unauthenticated RoboVAST, and a campaign names its own "
+            "container image. Set ROBOVAST_AUTH_TOKEN, or let setup generate one.")
+    if not (tls_secret or issuer) and not insecure:
+        raise IngressRefused(
+            f"refusing to publish {host} over plain HTTP: the shared token would cross "
+            "the network in clear text, and the session cookie is Secure so the login "
+            "would not work at all. Pass a TLS secret or a cert-manager issuer "
+            "(tools/setup_ingress_tls.py sets one up), or --insecure-http to accept "
+            "this on a trusted network.")
+
+    annotations = {}
+    if issuer:
+        annotations["cert-manager.io/cluster-issuer"] = issuer
+    spec = {
+        "rules": [{
+            "host": host,
+            "http": {"paths": [{
+                "path": "/",
+                "pathType": "Prefix",
+                "backend": {"service": {"name": SERVICE_NAME,
+                                        "port": {"number": SERVICE_PORT}}},
+            }]},
+        }],
+    }
+    if ingress_class:
+        spec["ingressClassName"] = ingress_class
+    if tls_secret or issuer:
+        # cert-manager fills a secret named here when an issuer is annotated; naming it
+        # explicitly is what tells the controller where to put (or find) the cert.
+        spec["tls"] = [{"hosts": [host],
+                        "secretName": tls_secret or f"{SERVICE_NAME}-tls"}]
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {"name": SERVICE_NAME, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME},
+                     **({"annotations": annotations} if annotations else {})},
+        "spec": spec,
+    }
+
+
 #: Secret + key holding the GitHub token that lets the service install a
 #: private-repo (``git+https``) variation plugin declared in a ``.vast``'s
 #: ``plugins:``. Sourced from the host env at setup; never reaches a controller pod.
@@ -542,7 +610,8 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
 def service_manifests(namespace="default", image=None, env=None,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
-                      auth_token=""):
+                      auth_token="", ingress_host="", ingress_class="",
+                      tls_secret="", issuer="", insecure_http=False):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -604,6 +673,9 @@ def service_manifests(namespace="default", image=None, env=None,
     if registry_ca:
         extra.append(registry_ca)
 
+    ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
+                                tls_secret, issuer, auth_token=auth_token,
+                                insecure=insecure_http)
     return [
         *_service_rbac_manifests(namespace),
         *extra,
@@ -611,6 +683,7 @@ def service_manifests(namespace="default", image=None, env=None,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret),
         _service_manifest(namespace),
+        *([ingress] if ingress else []),
     ]
 
 
