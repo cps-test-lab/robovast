@@ -257,7 +257,6 @@ export function LaunchBar() {
               placeholder="what this run is for"
               size="small"
               sx={{ minWidth: 320 }}
-              helperText={`${description.length}/${DESCRIPTION_MAX_LEN}`}
               slotProps={{
                 inputLabel: { shrink: true },
                 htmlInput: { maxLength: DESCRIPTION_MAX_LEN },
