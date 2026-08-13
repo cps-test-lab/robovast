@@ -208,7 +208,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     from fastapi import (Body, FastAPI,  # pylint: disable=import-outside-toplevel
                          HTTPException, Query, Request)
 
-    mcp_app = _build_mcp_app() if mount_mcp else None
+    mcp_app = _build_mcp_app(impl) if mount_mcp else None
 
     @asynccontextmanager
     async def _lifespan(_app):
@@ -1143,12 +1143,21 @@ def _resolve_variation_asset(name: str, rel_path: str):
     return _resolve_plugin_asset("robovast.variation_types", name, rel_path, "WEB_PREVIEW")
 
 
-def _build_mcp_app():
+def _build_mcp_app(impl: RobovastInterface):
     """The MCP server's ASGI app, already anchored at :data:`MCP_PATH` by FastMCP's own
     default (``fastmcp.settings.streamable_http_path == "/mcp"``) — matching where
-    :func:`build_app` wires it in."""
+    :func:`build_app` wires it in.
+
+    *impl* is handed to the tool layer so a mounted MCP calls the implementation
+    **directly** instead of going out over loopback HTTP and back into this same
+    process — which was a wasted round trip per tool call and, once a token was
+    required, a process authenticating to itself.
+    """
     from robovast.mcp_server.server import \
         create_server  # pylint: disable=import-outside-toplevel
+    from robovast.mcp_server.service_access import \
+        use_in_process_service  # pylint: disable=import-outside-toplevel
+    use_in_process_service(impl)
     return create_server().http_app()
 
 

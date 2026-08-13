@@ -38,12 +38,33 @@ NO_SERVICE = ("no robovast-service reachable — start a 'vast serve' (local) or
               "no provenance and no repetitions, and answers a different question")
 
 
-def service_client():
-    """A ``RobovastClient`` bound to a reachable service, or ``None``.
+#: Set by :func:`use_in_process_service` when the MCP app is mounted inside the service.
+_IN_PROCESS = None
 
-    A service answers on the conventional local port when a ``vast serve`` runs locally,
-    or a tunnel / ``vast serve --attach`` reaches a remote VM or cluster.
+
+def use_in_process_service(impl):
+    """Serve tools from *impl* directly, for the MCP mounted inside the service.
+
+    ``vast serve`` mounts the MCP app on its own port, so in that deployment the tools
+    and the implementation are in **one process**. Without this they still went out over
+    loopback HTTP and back in — a wasted round trip per tool call, and once the service
+    required a token, a process authenticating to itself and only working because it
+    happened to hold its own secret.
+
+    Off-cluster and over stdio nothing calls this, and the HTTP path below is used.
     """
+    global _IN_PROCESS  # noqa: PLW0603 - process-wide, set once at app construction
+    _IN_PROCESS = impl
+
+
+def service_client():
+    """A client for a reachable service, or ``None``.
+
+    In-process when the MCP app is mounted inside the service; otherwise the service
+    answering on the conventional local port, or the one ``vast login`` stored.
+    """
+    if _IN_PROCESS is not None:
+        return _IN_PROCESS
     from robovast.common.cli.service_target import detected_service_url
     url = detected_service_url()
     if not url:
