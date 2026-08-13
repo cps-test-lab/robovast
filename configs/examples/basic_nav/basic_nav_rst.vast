@@ -138,11 +138,16 @@ visualization:
   # A `vega` panel and not `timeseries` because speed is derived: the run records poses, not
   # velocities, so it is a finite difference computed in the spec. `datum['position.x']` rather than
   # a `field`, because the CSV column names contain dots.
+  #
+  # `decimate_hz` because TF outruns the query's 5000-row cap in a couple of minutes, and that cap
+  # cuts at the HEAD: without it the chart would stop mid-run while looking finished. It also widens
+  # the interval the speed below is differenced over, which costs nothing here -- the raw difference
+  # of consecutive TF samples is the noise the rolling mean exists to hide.
   - vega:
       title: base_link
       position: {anchor: bottom-right, width: 320, height: 380}
       minimizable: true
-      source: {table: poses, filter: {frame: base_link}}
+      source: {table: poses, filter: {frame: base_link}, decimate_hz: 5}
       vega_lite:
         resolve: {scale: {x: shared}}
         spacing: 8
