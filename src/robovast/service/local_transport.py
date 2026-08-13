@@ -911,6 +911,12 @@ class LocalTransport(RobovastInterface):
                                workspace_id=request.workspace_id)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
+        # Who ends the campaign. The builders' finish tail is outermost only when
+        # nothing of the campaign happens after it returns — which is exactly the
+        # transport that does *not* postprocess in-process. Derived from that predicate
+        # rather than set per transport, so a new transport cannot forget it and leave
+        # its campaigns either ending early or never ending at all.
+        options.finalize_phase = not self._postprocess_in_process()
 
         # Register the instant the campaign is accepted — before the (possibly slow)
         # image build — so it is listed with a live phase from t=0 rather than only
@@ -961,7 +967,14 @@ class LocalTransport(RobovastInterface):
 
         def _drive_campaign():
             from robovast.execution.backends import CampaignStopped
+            from robovast.execution.controller import end_campaign
+            from robovast.execution.notify import Notifier
             backend = None
+            # Built here, not left to the builder, because on this lane the worker is
+            # the campaign's outermost scope (see options.finalize_phase): the builder
+            # returns while postprocessing is still to come, so the one notification
+            # that says "this campaign is over" has to be sent from out here.
+            notifier = Notifier.from_env(campaign_id)
             try:
                 # Before anything that can fail, so every later outcome — a doomed build
                 # included — belongs to a campaign that can be found again.
@@ -1008,13 +1021,13 @@ class LocalTransport(RobovastInterface):
                             config_filter=config_filter,
                             backend=backend, options=options,
                             campaign_id=campaign_id, state=state,
-                            description=request.description)
+                            notifier=notifier, description=request.description)
                     else:
                         run_batch_campaign(
                             target.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
                             options=options, campaign_id=campaign_id, state=state,
-                            description=request.description)
+                            notifier=notifier, description=request.description)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
                 # phase "stopped". Not a failure — no error, no traceback. Persist the
@@ -1040,11 +1053,18 @@ class LocalTransport(RobovastInterface):
                 self._record_campaign_failure(
                     campaign_id, results_dir, state, e, backend)
                 return
-            # Analysis postprocessing (rosbags → CSV → data.db) — what the eval
-            # viewer / `query_campaign_data_sql` read. The batch/search loop leaves
-            # it separate, so run it here when the caller asked (the default).
-            if request.postprocess and self._postprocess_in_process():
-                self._postprocess(campaign_id, results_dir, state, entry)
+            else:
+                # Analysis postprocessing (rosbags → CSV → data.db) — what the eval
+                # viewer / `query_campaign_data_sql` read. The batch/search loop leaves
+                # it separate, so run it here when the caller asked (the default).
+                if request.postprocess and self._postprocess_in_process():
+                    self._postprocess(campaign_id, results_dir, state, entry)
+            finally:
+                # This lane's outermost scope, so the campaign ends here — on every
+                # path, including the `return`s above and a campaign that asked for no
+                # postprocessing at all. Without this the run leaves the phase at
+                # `finishing` and every waiter blocks until its timeout.
+                end_campaign(campaign_id, state, notifier)
 
         thread = threading.Thread(
             target=_worker, name=f"robovast-{campaign_id}", daemon=True)

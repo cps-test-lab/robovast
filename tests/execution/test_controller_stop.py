@@ -15,9 +15,16 @@ from robovast.execution.control_server import Phase
 
 
 def _state(stop_requested, phase=Phase.RUNNING):
-    return types.SimpleNamespace(
-        stop_requested=stop_requested,
-        snapshot=lambda: types.SimpleNamespace(phase=phase))
+    """A control-channel double whose phase actually moves.
+
+    ``_finish_campaign`` now *ends* the campaign as well as finishing its work, so a
+    double that cannot record a phase change would pass while the thing under test
+    silently failed to publish one.
+    """
+    st = types.SimpleNamespace(stop_requested=stop_requested, phase=phase)
+    st.snapshot = lambda: types.SimpleNamespace(phase=st.phase)
+    st.set_phase = lambda p, **kw: setattr(st, "phase", p)
+    return st
 
 
 def test_finish_campaign_skips_work_when_stopped(monkeypatch):
@@ -27,9 +34,14 @@ def test_finish_campaign_skips_work_when_stopped(monkeypatch):
     monkeypatch.setattr(controller, "_finalize",
                         lambda *a, **k: calls.append("finalize"))
 
-    controller._finish_campaign(object(), "/root", "camp-1", _state(True), None)
+    state = _state(True)
+    controller._finish_campaign(object(), "/root", "camp-1", state, None)
 
     assert calls == []  # neither postprocessing nor finalize attempted
+    # ...but the campaign is still ended. Skipping the work is not the same as leaving
+    # the campaign non-terminal: a stop that never published one would hang every
+    # waiter until its timeout and look identical to a campaign still running.
+    assert state.phase == Phase.FINISHED
 
 
 def test_finish_campaign_runs_normally_when_not_stopped(monkeypatch):
@@ -39,9 +51,11 @@ def test_finish_campaign_runs_normally_when_not_stopped(monkeypatch):
     monkeypatch.setattr(controller, "_finalize",
                         lambda *a, **k: calls.append("finalize"))
 
-    controller._finish_campaign(object(), "/root", "camp-1", _state(False), None)
+    state = _state(False)
+    controller._finish_campaign(object(), "/root", "camp-1", state, None)
 
     assert calls == ["postprocess", "finalize"]  # postprocess before finalize
+    assert state.phase == Phase.FINISHED
 
 
 def test_finish_campaign_skips_postprocess_but_finalizes_on_failure(monkeypatch):
@@ -54,10 +68,13 @@ def test_finish_campaign_skips_postprocess_but_finalizes_on_failure(monkeypatch)
     monkeypatch.setattr(controller, "_finalize",
                         lambda *a, **k: calls.append("finalize"))
 
-    controller._finish_campaign(object(), "/root", "camp-1",
-                                _state(False, phase=Phase.FAILED), None)
+    state = _state(False, phase=Phase.FAILED)
+    controller._finish_campaign(object(), "/root", "camp-1", state, None)
 
     assert calls == ["finalize"]  # postprocessing skipped, finalize still runs
+    # FAILED is already terminal, so ending the campaign must not overwrite it with
+    # FINISHED — that would paint a failed campaign green.
+    assert state.phase == Phase.FAILED
 
 
 def test_finish_campaign_runs_when_no_state(monkeypatch):

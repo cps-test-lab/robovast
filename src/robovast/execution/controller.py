@@ -57,7 +57,7 @@ from robovast.common.store import STORE_FILENAME, CampaignStore
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend,
                        ExecutionBackend, RunOptions)
-from .control_server import Phase, failure_detail
+from .control_server import Phase, failure_detail, is_terminal
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -205,9 +205,13 @@ class CampaignController:
                 result = self._run_batch_mode(campaign_id)
             else:
                 result = self._run_search(campaign_id)
+            # Not FINISHED: share and postprocessing still have to run in the builders'
+            # finally, and a campaign that reports terminal before its metrics exist
+            # sends every reader — the waiter, the webui, the phone — away with an
+            # answer that is wrong for as long as those steps take. `end_campaign`
+            # publishes the terminal phase once, from whichever scope is outermost.
             if self.state is not None:
-                self.state.set_phase(Phase.FINISHED)
-            self.notifier.finished(f"{self.mode} campaign complete.")
+                self.state.set_phase(Phase.FINISHING)
             return result
         except CampaignStopped:
             # A clean cooperative stop (Ctrl+C / Stop button / MCP stop).
@@ -225,12 +229,17 @@ class CampaignController:
                 raise CampaignStopped(str(exc)) from None
             if self.state is not None:
                 self.state.set_phase(Phase.FAILED)
-            self.notifier.failed(f"{type(exc).__name__}: {exc}")
+            # Not notified here: `end_campaign` sends the campaign's one notification,
+            # so a failure *before* the controller ever ran (an image build that could
+            # not resolve) is announced by the same path as one inside it. Notifying
+            # from both left build failures silent and run failures double-reported.
             raise
         finally:
             self._record_execution_provenance(campaign_id, time.monotonic() - run_started)
             self._stop_progress_poller()
-            self.notifier.stop_heartbeat()
+            # The heartbeat deliberately outlives run(): share and postprocessing are
+            # the longest stretch of a campaign in which nothing else reports, and
+            # stopping it here left exactly that window silent. `end_campaign` stops it.
             remove_campaign_log_handler(log_handler)
 
     def _progress_deadline(self) -> int | None:
@@ -721,40 +730,130 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
 
+def outcome_summary(snap) -> tuple[str, bool]:
+    """One line describing what a finished campaign actually produced, and whether it
+    is degraded.
+
+    Built here rather than at each reader because "did this campaign succeed?" cannot
+    be answered from ``phase`` alone — a campaign whose trials all passed but whose
+    postprocessing failed stays ``finished`` with no CSVs and no ``data.db``. Every
+    channel that used to answer from ``phase`` reported that as a clean success.
+    """
+    runs = snap.runs
+    parts = [f"{runs.completed}/{runs.total} runs"]
+    if runs.failed:
+        parts.append(f"{runs.failed} failed trial(s)")
+    if runs.no_result:
+        parts.append(f"{runs.no_result} without result")
+    degraded = bool(runs.failed or runs.no_result)
+    if snap.postprocessing_error:
+        parts.append(f"POSTPROCESSING FAILED ({snap.postprocessing_error}) — "
+                     "no CSVs or data.db")
+        degraded = True
+    elif snap.postprocessed:
+        parts.append("postprocessed")
+    if snap.share_error:
+        parts.append(f"upload-to-share failed ({snap.share_error})")
+        degraded = True
+    return ", ".join(parts), degraded
+
+
+def publish_terminal_phase(state) -> None:
+    """Mark the campaign over — once.
+
+    Idempotent by the terminal test, because the stop and failure paths and
+    ``_chain_postprocessing``'s failure branches already published one, each carrying a
+    ``stage`` string that a blanket re-set would wipe.
+    """
+    if state is not None and not is_terminal(state.snapshot().phase):
+        state.set_phase(Phase.FINISHED)
+
+
+def end_campaign(campaign_id: str, state, notifier=None) -> None:
+    """End a campaign exactly once: terminal phase, heartbeat off, one notification.
+
+    Called by whichever scope is **outermost** for the lane, and only by it — see
+    ``RunOptions.finalize_phase``. ``run()`` no longer publishes ``finished`` when it
+    returns, because share and postprocessing still have to happen; the campaign is over
+    when this runs and not before.
+
+    Callers run it from a ``finally``: a campaign left non-terminal would block every
+    waiter until its timeout, which is a worse failure than the early ``finished`` this
+    seam replaces.
+    """
+    publish_terminal_phase(state)
+    if notifier is None:
+        return
+    notifier.stop_heartbeat()
+    if state is None:
+        return
+    snap = state.snapshot()
+    if snap.phase == Phase.STOPPED:
+        notifier.stopped(outcome_summary(snap)[0])
+    elif snap.phase in (Phase.FAILED, Phase.CRASHED):
+        # The recorded error, not an exception in scope here: this path also carries
+        # failures that happened *before* the controller ran at all — an image build
+        # that could not resolve — which previously went unannounced entirely.
+        notifier.failed(snap.error or snap.stage or "no reason recorded")
+    else:
+        summary, degraded = outcome_summary(snap)
+        notifier.finished(summary, degraded=degraded)
+
+
 def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id: str,
                      state, options: "RunOptions | None", notifier=None) -> None:
-    """The builders' ``finally`` tail: chain postprocessing, then finalize-upload.
+    """The builders' ``finally`` tail: chain postprocessing, finalize-upload, then end.
 
-    Skipped entirely when a cooperative **stop** was requested: on Ctrl+C the cluster
-    storage tunnel is torn down with the process group, so a download/postprocess/
-    upload here would only fail noisily against a dead endpoint. A stopped campaign's
-    per-run results were already uploaded by its jobs, so there is nothing to salvage.
+    Postprocessing and the finalize upload are skipped when a cooperative **stop** was
+    requested: on Ctrl+C the cluster storage tunnel is torn down with the process
+    group, so a download/postprocess/upload here would only fail noisily against a dead
+    endpoint. A stopped campaign's per-run results were already uploaded by its jobs, so
+    there is nothing to salvage. The campaign is still *ended* — a stop that reported
+    nothing was indistinguishable from a campaign still running.
+
+    ``end_campaign`` runs from a ``finally`` and only when this tail is the campaign's
+    outermost scope (``RunOptions.finalize_phase``). The local service sets that false
+    and ends the campaign itself, after the postprocessing it runs once this returns.
     """
-    if state is not None and state.stop_requested:
-        logger.info("Campaign %s stopped — skipping postprocessing and finalize upload.",
-                    campaign_id)
-        return
-    if options is not None and options.upload_to_share:
-        _share_campaign(backend, campaign_root, options, state, notifier)
-    # A failed campaign (run() set Phase.FAILED before re-raising into this finally)
-    # never finished projecting its results, so campaign_root is missing pieces
-    # postprocessing needs — e.g. _config/*.vast. Running it anyway only raises a
-    # second, misleading error ("no .vast under _config") that masks the real failure.
-    # Skip only the derived-data step; _finalize still runs below so the failure
-    # outcome is published (as does _record_campaign_failure).
-    if state is not None and state.snapshot().phase == Phase.FAILED:
-        logger.info("Campaign %s failed — skipping analysis postprocessing.", campaign_id)
-    else:
-        _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
-        # Persist the terminal outcome once, after both share and postprocessing, so a
-        # single _execution/outcome.json carries phase=finished + share_error +
-        # postprocessing_error. Without this a cleanly-finished (or finished-but-a-
-        # post-step-failed) cluster campaign has no durable record and a stateless
-        # service reconstructs it as unknown after the driver is gone. A run failure
-        # (Phase.FAILED, handled above) is recorded by _record_campaign_failure instead.
-        if state is not None:
-            _record_controller_outcome(campaign_root, campaign_id, state, backend)
-    _finalize(backend, campaign_root)
+    options = options or RunOptions()
+    try:
+        if state is not None and state.stop_requested:
+            logger.info(
+                "Campaign %s stopped — skipping postprocessing and finalize upload.",
+                campaign_id)
+            return
+        if options.upload_to_share:
+            _share_campaign(backend, campaign_root, options, state, notifier)
+        # A failed campaign (run() set Phase.FAILED before re-raising into this finally)
+        # never finished projecting its results, so campaign_root is missing pieces
+        # postprocessing needs — e.g. _config/*.vast. Running it anyway only raises a
+        # second, misleading error ("no .vast under _config") that masks the real failure.
+        # Skip only the derived-data step; _finalize still runs below so the failure
+        # outcome is published (as does _record_campaign_failure).
+        if state is not None and state.snapshot().phase == Phase.FAILED:
+            logger.info("Campaign %s failed — skipping analysis postprocessing.",
+                        campaign_id)
+        else:
+            _chain_postprocessing(backend, campaign_root, campaign_id, state, options)
+            # End the campaign *before* recording, so the record carries its final
+            # phase — but only when this tail owns the ending. When it does not (the
+            # local service runs postprocessing after this returns), the record is
+            # deliberately written non-terminal: a campaign that is not over must not
+            # leave behind a record saying it is, and whoever does end it rewrites this.
+            if options.finalize_phase:
+                publish_terminal_phase(state)
+            # Persist the terminal outcome once, after both share and postprocessing, so
+            # a single _execution/outcome.json carries phase=finished + share_error +
+            # postprocessing_error. Without this a cleanly-finished (or finished-but-a-
+            # post-step-failed) cluster campaign has no durable record and a stateless
+            # service reconstructs it as unknown after the driver is gone. A run failure
+            # (Phase.FAILED, handled above) is recorded by _record_campaign_failure.
+            if state is not None:
+                _record_controller_outcome(campaign_root, campaign_id, state, backend)
+        _finalize(backend, campaign_root)
+    finally:
+        if options.finalize_phase:
+            end_campaign(campaign_id, state, notifier)
 
 
 def _share_campaign(backend: ExecutionBackend, campaign_root: str,

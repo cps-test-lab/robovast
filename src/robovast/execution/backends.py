@@ -95,6 +95,15 @@ class RunOptions:
     # provider. Off by default; a per-campaign option (travels with the options, not
     # the process env) exactly like ``postprocess``.
     upload_to_share: bool = False
+    # -- who ends the campaign ------------------------------------------------
+    # True when the builders' finish tail is the campaign's **outermost** scope and
+    # must therefore publish the terminal phase, stop the heartbeat and send the one
+    # notification (see controller.end_campaign). The local service sets it False:
+    # there postprocessing runs *after* the builder returns, so the builder ending the
+    # campaign would report "finished" with no metrics yet — the very bug this seam
+    # removes. A per-campaign option rather than an env var for the same reason as
+    # ``postprocess``: the service drives many campaigns concurrently in one process.
+    finalize_phase: bool = True
 
 
 def _scenario_image(execution: dict, options: RunOptions) -> str:

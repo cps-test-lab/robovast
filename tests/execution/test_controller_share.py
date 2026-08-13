@@ -12,15 +12,22 @@ import types
 
 from robovast.execution import controller
 from robovast.execution.backends import RunOptions
-from robovast.execution.control_server import Phase
+from robovast.execution.control_server import Phase, Status
 
 
 def _state(stop_requested, phase=Phase.RUNNING):
-    ns = types.SimpleNamespace(stop_requested=stop_requested,
-                               set_phase=lambda *a, **k: None,
-                               fields={})
-    ns.update = lambda **kw: ns.fields.update(kw)
-    ns.snapshot = lambda: types.SimpleNamespace(phase=phase)
+    """A control-channel double whose snapshot is a real :class:`Status`.
+
+    Ending a campaign reads the run tallies and the postprocess/share error fields to
+    say what it actually produced, so a hand-rolled namespace would have to grow a
+    field every time that message does. The real model cannot drift from itself.
+    """
+    ns = types.SimpleNamespace(stop_requested=stop_requested, fields={})
+    ns.status = Status(phase=phase)
+    ns.update = lambda **kw: (ns.fields.update(kw),
+                              [setattr(ns.status, k, v) for k, v in kw.items()])
+    ns.set_phase = lambda p, **kw: setattr(ns.status, "phase", p)
+    ns.snapshot = lambda: ns.status
     return ns
 
 
@@ -86,11 +93,25 @@ def test_share_failure_still_runs_postprocess_and_finalize(monkeypatch):
 
 
 class _RecordingNotifier:
+    """The notifier surface ``_finish_campaign`` now drives.
+
+    Beyond ``uploaded`` it also ends the campaign, which stops the heartbeat and sends
+    exactly one terminal message — see ``controller.end_campaign``.
+    """
+
     def __init__(self):
         self.uploaded_with = []
+        self.finished_with = []
+        self.heartbeat_stopped = False
 
     def uploaded(self, share_type):
         self.uploaded_with.append(share_type)
+
+    def stop_heartbeat(self):
+        self.heartbeat_stopped = True
+
+    def finished(self, summary, *, degraded=False):
+        self.finished_with.append((summary, degraded))
 
 
 def test_notifier_uploaded_fires_on_successful_share(monkeypatch):
