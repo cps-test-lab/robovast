@@ -49,6 +49,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    :maxdepth: 2
    :caption: Contents:
 
+   quickstart
    setup
    how_to_run
    configuration

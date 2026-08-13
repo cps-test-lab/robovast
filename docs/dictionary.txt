@@ -33,8 +33,10 @@ gz
 gzipped
 hardcoded
 hconcat
+hostname
 JUnit
 jupyter
+Keychain
 kubeconfig
 kubectl
 kubernetes
@@ -45,6 +47,7 @@ layerable
 Lite
 localhost
 lookups
+macOS
 mcap
 memoryless
 MiB
@@ -69,15 +72,16 @@ postprocessed
 postprocessing
 pre
 preprocess
-pyribs
 py-trees
+pyribs
 quadrotor
 queueing
+Quickstart
 rasterization
-rollups
 reproducibility
 reproducible
 Retrigger
+rollups
 ROS
 rosbag
 rosbags

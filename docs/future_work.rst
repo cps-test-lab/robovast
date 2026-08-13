@@ -235,3 +235,45 @@ which records exactly like the old hardcoded empty. So a green campaign proves n
 verify by running one on each provider and checking ``SELECT DISTINCT instance_type FROM
 runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
 ``api-version`` is pinned in the URL.
+
+.. _future-dev-loop:
+
+A faster developer loop, and the tunnel machinery it would retire
+=================================================================
+
+The off-cluster driver (``vast serve --backend cluster -x <ctx>``) is worth keeping: a
+local debugger against a real cluster is hard to replace. It is also the **sole** reason
+roughly 340 lines of tunnel-resilience exist —
+``ClusterService._minio_port_forward_endpoint`` and its prober thread, the generation
+counters, ``in_pod_storage._resilient``, and the shutdown coupling that stops a stalled
+forward being resurrected mid-teardown. None of it runs in-pod, and none of it runs on
+GCP, where the object store has a real endpoint.
+
+Running that same local driver **inside the cluster's network** would make the machinery
+unnecessary rather than merely unused:
+
+.. code-block:: bash
+
+   mirrord exec -- vast serve --backend cluster
+
+`mirrord <https://mirrord.dev>`_ needs no cluster-side install — it spawns a temporary
+agent pod — while `telepresence <https://telepresence.io>`_ wants a traffic manager. Under
+either, the local process resolves ``robovast:9000`` natively: same debugger, same
+edit-restart loop, no tunnel at all. That is the rare change that makes the loop *faster*
+and deletes code, so it is worth an afternoon's trial before deciding.
+
+If it holds, the port-forward path in ``bucket_ops`` and the reconnect machinery above can
+go with it.
+
+.. _future-dual-lane:
+
+Whether ``--backend local+cluster`` earns its keep
+==================================================
+
+``vast serve --backend local+cluster`` offers both lanes in one service and picks per
+campaign. It costs 549 lines in ``multi_backend.py`` plus a backend choice on the campaign
+API, for a mode that needs Docker **and** a kubeconfig and therefore runs off-cluster only.
+
+The question is simply whether anyone uses it. Removing it would make "pilot locally, then
+scale to the cluster" two commands instead of one session — a real loss, if that is a
+workflow people actually follow. Worth answering before the next person extends it.

@@ -27,14 +27,51 @@ backends**. A feature is not done until it works on all of them:
 Keep the CLI, MCP, and web UI behaviourally consistent — same inputs, same results,
 regardless of which client or backend is used.
 
+### On the cluster lane, say which part of a campaign you need
+
+`ClusterService._data_dir` **raises**. It is `LocalTransport`'s "the campaign's
+directory", which on the cluster has no cheap answer — it used to mean `fetch_campaign`,
+so every inherited method that touched it silently became a whole-campaign download.
+Nothing errored; the page was just slow and the pod moved gigabytes. `list_campaign_plots`
+pulled every rosbag to read one small `.vast`, once per campaign, on every Results load.
+
+So a caller states its need, and pays only that:
+
+- `_query_dir` — the two databases a SQL query opens;
+- `_config_dir` — the frozen `_config` snapshot (declared plots, panel assets);
+- `_whole_campaign_dir` — everything, when the caller genuinely cannot know which files
+  it will read (notebook rendering, the `/results` address space).
+
+If you add a method that wants "the campaign directory", pick one of those. Reaching for
+`_data_dir` fails immediately rather than quietly costing a terabyte in production.
+
+### Every request is authenticated
+
+There is no unauthenticated mode, in development or in production
+(`src/robovast/service/auth.py`). An unset `ROBOVAST_AUTH_TOKEN` is *minted*, not ignored,
+so "reachable but open" is not a state anyone reaches by forgetting a variable.
+
+Two carriers, and the distinction is load-bearing: **browsers use a cookie** because
+`EventSource` cannot set request headers, so a header-only scheme would break every live
+stream in the web UI; **the CLI and MCP send `Authorization: Bearer`**. A new route is
+covered automatically — the gate is ASGI middleware, not a FastAPI dependency, because a
+mounted sub-app (`/mcp`) does not run the parent's dependencies, and `BaseHTTPMiddleware`
+buffers streaming responses.
+
+The middleware resolves a `Principal`, not a boolean. Read identity from it rather than
+re-parsing headers, so swapping the shared secret for an identity provider later replaces
+one resolver instead of every route.
+
 ## 2. Documentation is split into user-facing and internal
 
 `docs/` separates the two audiences — keep them distinct and both current:
 
-- **User-facing** — how to *use* RoboVAST: `how_to_run.rst`, `configuration.rst`,
-  `variation.rst`, `results_processing.rst`, `evaluation.rst`, `deployment.rst`,
-  `web_ui.rst`, `mcp.rst`, `setup.rst`, `example.rst`. Task-oriented, no
-  implementation detail beyond what a user needs.
+- **User-facing** — how to *use* RoboVAST: `quickstart.rst`, `how_to_run.rst`,
+  `configuration.rst`, `variation.rst`, `results_processing.rst`, `evaluation.rst`,
+  `deployment.rst`, `web_ui.rst`, `mcp.rst`, `setup.rst`, `example.rst`. Task-oriented, no
+  implementation detail beyond what a user needs. `quickstart.rst` is split by *role* —
+  operator versus user — because only one of them touches Kubernetes; keep that split when
+  editing it.
 - **Internal / developer** — how RoboVAST *works*: `developer_guide.rst`,
   `architecture.rst` (the client–server design), and internals sections. Design,
   seams, and extension points.
