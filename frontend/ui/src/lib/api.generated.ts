@@ -2722,6 +2722,8 @@ export interface components {
              * @default
              */
             backend: string;
+            /** Dropped Transport */
+            dropped_transport: string[];
             /**
              * Duration S
              * @default 0
@@ -2729,6 +2731,10 @@ export interface components {
             duration_s: number;
             /** Entities */
             entities: string[] | null;
+            /** Errors */
+            errors: {
+                [key: string]: unknown;
+            };
             /**
              * Image
              * @default

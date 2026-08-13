@@ -2637,6 +2637,13 @@
             "title": "Backend",
             "type": "string"
           },
+          "dropped_transport": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped Transport",
+            "type": "array"
+          },
           "duration_s": {
             "default": 0.0,
             "title": "Duration S",
@@ -2655,6 +2662,11 @@
               }
             ],
             "title": "Entities"
+          },
+          "errors": {
+            "additionalProperties": true,
+            "title": "Errors",
+            "type": "object"
           },
           "image": {
             "default": "",
@@ -2694,8 +2706,10 @@
         },
         "required": [
           "backend",
+          "dropped_transport",
           "duration_s",
           "entities",
+          "errors",
           "image",
           "inputs",
           "overridable",

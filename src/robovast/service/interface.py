@@ -808,6 +808,15 @@ class WorldDescription(BaseModel):
     #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
     #: target glob was given) the objects that can be named with their current values.
     overridable: dict = Field(default_factory=dict)
+    #: Transport plugins the simulator left out of the build that answered this — a describe
+    #: publishes nothing, so a bridge contributes nothing to it but a way to fail. Reported
+    #: because ``entities`` was arrived at without them.
+    dropped_transport: list[str] = Field(default_factory=list)
+    #: Why a half of the answer is missing, when the simulator could produce only part of it
+    #: (``{"build": "..."}`` with ``entities`` left ``None``). Empty when the reply is complete —
+    #: and a caller must read it before concluding that a null ``entities`` means the world
+    #: compiles none.
+    errors: dict = Field(default_factory=dict)
 
 
 class VariationTypeParam(BaseModel):

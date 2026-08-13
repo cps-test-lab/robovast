@@ -8,6 +8,8 @@ file is about the case that form cannot express -- a plugin whose outputs are se
 *names* the campaign chooses, and which may straddle the two channels.
 """
 
+import logging
+
 import pytest
 from pydantic import ValidationError
 
@@ -440,6 +442,29 @@ def test_entities_the_world_compiled_pass(tmp_path):
            params={"static_objects": [{"entity_name": "obstacle_0"},
                                       {"entity_name": "obstacle_1"}]},
            scenario_parameters=_SPAWN_PARAMS)
+
+
+def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
+    """A build that failed costs the entity check, not the plugin-key check -- and says which."""
+    with caplog.at_level(logging.WARNING):
+        _check({"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}},
+               {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+                "errors": {"build": "unresolved plugins: ros2_bridge"}},
+               tmp_path,
+               params={"static_objects": [{"entity_name": "obstacle_0"}]},
+               scenario_parameters=_SPAWN_PARAMS)
+    assert "entities this scenario names were not pre-checked" in caplog.text
+    assert "obstacle_0" in caplog.text
+    assert "ros2_bridge" in caplog.text, "the reason has to be in the line, not just the fact"
+
+
+def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
+    """The plugin keys came back, so a misspelt one is refused exactly as it always was."""
+    with pytest.raises(ValueError, match="targets no plugin"):
+        _check({"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}},
+               {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+                "errors": {"build": "unresolved plugins: ros2_bridge"}},
+               tmp_path)
 
 
 def test_only_entity_typed_parameters_are_read(tmp_path):

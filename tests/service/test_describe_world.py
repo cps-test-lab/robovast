@@ -130,3 +130,38 @@ def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
             {"mode": "ros2", "containers": {"simulation": {"backend": "robosito",
                                                            "image": "img:1"}}},
             {"config": "rst_scenes:depot"}, ".", targets="*")
+
+
+def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch):
+    """A world whose model does not compile here can still say which plugin keys it has.
+
+    The reported case: a `*_ros` world described where the colcon-packaged bridge does not
+    resolve. The build failed, so `entities` is null -- but the plugin-key check needed no build,
+    and discarding the whole reply cost the campaign a check it could have had. Which half went
+    travels in the payload's own `errors`; nothing here has to know.
+    """
+    import json
+    import subprocess
+
+    from robovast.common import config_generation
+
+    reply = {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+             "errors": {"build": "unresolved plugins: ros2_bridge"}}
+
+    class _Runner:
+        def run(self, command, sink):
+            del command
+            sink("cannot build world /config/w.yaml: unresolved plugins: ros2_bridge")
+            sink(json.dumps(reply))
+            raise subprocess.CalledProcessError(1, "docker")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
+    payload, image = describe_world_payload(
+        {"mode": "ros2", "containers": {"simulation": {"backend": "robosito",
+                                                       "image": "img:1"}}},
+        {"config": "rst_scenes:depot"}, ".", entities=True)
+    assert payload == reply
+    assert image == "img:1"

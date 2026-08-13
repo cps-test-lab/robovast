@@ -2260,6 +2260,10 @@ class LocalTransport(RobovastInterface):
             plugins=list(payload.get("plugins") or []),
             entities=payload.get("entities"),
             overridable=dict(payload.get("overridable") or {}),
+            # Both carry how the answer was arrived at, so dropping them here would hand a caller
+            # a null `entities` with nothing to distinguish "compiles none" from "could not ask".
+            dropped_transport=[str(p) for p in (payload.get("dropped_transport") or [])],
+            errors=dict(payload.get("errors") or {}),
             duration_s=round(time.monotonic() - started, 3),
         )
 

@@ -374,6 +374,11 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
     :class:`WorldQueryUnavailable` when no answer is possible, naming which of the reasons it
     is -- no backend, a backend that cannot describe, an image that has to be built first, no
     container runner here, or a simulator that answered nothing.
+
+    A **partial** answer is not one of those reasons: a simulator that exits non-zero having still
+    printed a payload answered what it could, and that payload is returned with whatever it says in
+    its own ``errors``. Every consumer here already treats an absent half as unverifiable rather
+    than as wrong, so half an answer is strictly better than none.
     """
     from robovast.common.execution import \
         is_build_image_ref  # pylint: disable=import-outside-toplevel
@@ -409,6 +414,14 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
             expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
+        # A non-zero exit that nonetheless PRINTED a payload is a partial answer, not a failure: a
+        # simulator that could not build the world can still say which plugin keys it has, and that
+        # half needs no build. Taking it costs nothing and is what keeps the pre-check alive for a
+        # world whose model does not compile here -- the reason travels in the payload's own
+        # ``errors``. Generic on purpose: nothing here knows which half was lost.
+        partial = _last_json_line(lines)
+        if partial is not None:
+            return partial, image
         # The command's own last words, not the runner's: an old image whose simulator does not
         # know a flag says so itself ("unrecognized arguments: --overridable"), and that names
         # the remedy. Without this the CalledProcessError left the service returning a bare 500.
@@ -456,7 +469,9 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
 
     A backend that cannot describe a world, or a runner that is not available here, means no
     check -- the campaign behaves exactly as it did before, and is refused in the container if
-    it is wrong.
+    it is wrong. A **partial** description means no check for the half it could not answer: the
+    entity check needs a compiled model, the plugin-key check does not, so a world that fails to
+    build still gets the cheaper one. Each half that goes unchecked says so.
     """
     from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
         backend_name, resolve_backend, sim_override_keys)
@@ -497,6 +512,15 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
                 "container if they are wrong.",
                 exc, ", ".join(sorted(wanted)) or "the entities this scenario names")
             return
+
+        errors = payload.get("errors") or {}
+        if errors and named:
+            # The plugin-key half below still runs -- what a partial answer costs is the entity
+            # check, and which half went is worth a line. Silence here would read as a clean check.
+            logger.warning(
+                "the entities this scenario names were not pre-checked (%s): %s. They are still "
+                "refused in the container if they are wrong.",
+                "; ".join(f"{k}: {v}" for k, v in sorted(errors.items())), ", ".join(sorted(named)))
 
         available = {str(p.get("key")) for p in (payload.get("plugins") or [])}
         unknown = sorted(k for k in wanted if k not in available)

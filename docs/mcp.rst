@@ -738,6 +738,13 @@ package (``python_packages``) has worlds that exist in its built image and nowhe
 against a base image such a ref does not resolve — which is why a campaign whose image has not
 been built yet is told to build it rather than handed a description of nothing.
 
+**A partial reply is a reply.** The halves that need a model built can fail on their own — a
+ROS world described where the simulator's colcon-packaged bridge is not on the path is the case
+that made this rule — and then ``errors`` says why while the cheap half still answers. Read
+``errors`` before concluding that a ``null`` ``entities`` means the world compiles none; and
+read ``dropped_transport``, which names the transport plugins left out of the build (a describe
+publishes nothing, so they contribute nothing but a way to fail).
+
 .. _mcp-container-exec:
 
 Testing a container and its setup

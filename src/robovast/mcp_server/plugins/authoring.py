@@ -281,24 +281,26 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
                    backend: str = "") -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
-    ``preview_configurations`` says what the campaign expands to; this says what the *world*
-    does — which plugins a ``sim`` override can address, and with ``targets`` which model values
-    a run may change (friction, contact masks, actuator force limits, mass) plus the objects
-    that can be named and their current values. Guess either and the run is refused inside the
-    container, after the image pull. Answered in the image the campaign runs — which world a ref
-    resolves to depends on what is installed there — so the reply names that image.
+    Which plugins a ``sim`` override can address, and with ``targets`` which model values a run
+    may change (friction, contact masks, force limits, mass) and the objects that can be named.
+    Guess either and the run is refused in the container, after the image pull. Asked in the
+    image the campaign runs — a world ref resolves to what is installed there — and the reply
+    names it.
 
     Args:
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
-            overridable *fields* only and needs no model built; a glob costs one, as does
-            *entities*, which adds the entity list.
-        backend: ``"local"`` or ``"cluster"`` on a service offering both. The cluster lane
-            refuses this query today and says why.
+            overridable *fields* only and builds no model; a glob builds one, as does
+            *entities*.
+        backend: ``"local"`` or ``"cluster"``; the cluster lane refuses this query today and
+            says why.
 
     Returns:
-        ``{backend, image, duration_s, world, packaged, inputs, plugins, entities,
-        overridable}``, ``overridable`` being ``{fields, targets}``; or ``{error}`` — including
-        when only an image this campaign has not built yet could answer.
+        ``{backend, image, duration_s, world, packaged, inputs, plugins, entities, overridable,
+        dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``; or
+        ``{error}`` — including when only an unbuilt image could answer. A non-empty ``errors``
+        means a partial answer: read it before taking a null ``entities`` for a world that
+        compiles none. ``dropped_transport`` names transport plugins the build left out, which a
+        describe does not need.
     """
     from robovast.service.project_push import _resolve_workspace_id
     try:
