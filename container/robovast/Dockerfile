@@ -74,8 +74,11 @@ RUN \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
-# Install MinIO client (mc) for S3 upload in post-run script
-RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc && \
+# Install MinIO client (mc) for S3 upload in post-run script.
+# TARGETARCH (amd64 / arm64), not a hard-coded linux-amd64: this image is built for both,
+# so the fixed URL put an x86 binary into every arm64 image.
+ARG TARGETARCH
+RUN curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
 
 RUN mkdir -p /ws/src
@@ -146,9 +149,10 @@ RUN mkdir -p /out && chmod 777 /out
 # (local, cluster, postprocessing) to detect host/container mismatches.
 RUN echo "2" > /etc/robovast_compat_version
 
+ARG TARGETARCH
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
-    curl -SsL https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - && \
+    curl -SsL "https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-${TARGETARCH}.tar.gz" | tar -C /usr/local/bin -xzf - && \
     chown root:root /usr/local/bin/fixuid && \
     chmod 4755 /usr/local/bin/fixuid && \
     mkdir -p /etc/fixuid && \

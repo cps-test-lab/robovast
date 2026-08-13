@@ -40,6 +40,11 @@ RUN npm run build          # -> /ui/dist
 
 FROM python:3.12-slim
 
+# BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
+# download below interpolates an empty string and 404s -- so it is declared here
+# rather than left to the automatic build arg.
+ARG TARGETARCH
+
 # mc (MinIO client) + curl, for parity with the storage tooling used elsewhere.
 # pigz: parallel gzip used by the in-controller upload-to-share compression
 # (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
@@ -61,7 +66,7 @@ RUN apt-get update \
         libglib2.0-0 libegl1 libfontconfig1 libx11-6 \
         libxkbcommon0 libgl1 libfreetype6 libdbus-1-3 \
  && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
+ && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc
 
 WORKDIR /opt/robovast

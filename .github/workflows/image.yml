@@ -65,10 +65,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Read the architecture policy
+        id: plat
+        # container/platforms.env is the single source of truth, shared with
+        # container/release_images.sh, so a CI build and a local build cannot disagree
+        # about what an image is built for.
+        run: . container/platforms.env && echo "platforms=$PLATFORMS_ROBOVAST" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.plat.outputs.platforms }}
           context: .
           file: ./container/robovast/Dockerfile
           push: true
@@ -119,9 +126,17 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Read the architecture policy
+        id: plat
+        # container/platforms.env is the single source of truth, shared with
+        # container/release_images.sh, so a CI build and a local build cannot disagree
+        # about what an image is built for.
+        run: . container/platforms.env && echo "platforms=$PLATFORMS_ROBOSITO" >> "$GITHUB_OUTPUT"
+
       - name: Build and push robosito image
         uses: docker/build-push-action@v6
         with:
+          platforms: ${{ steps.plat.outputs.platforms }}
           context: .
           file: ./container/robovast/Dockerfile.robosito
           push: true
@@ -225,10 +240,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Read the architecture policy
+        id: plat
+        # container/platforms.env is the single source of truth, shared with
+        # container/release_images.sh, so a CI build and a local build cannot disagree
+        # about what an image is built for.
+        run: . container/platforms.env && echo "platforms=$PLATFORMS_SIDECAR" >> "$GITHUB_OUTPUT"
+
       - name: Build and push sidecar image
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.plat.outputs.platforms }}
           context: ./container/sidecar
           file: ./container/sidecar/Dockerfile
           push: true
@@ -272,10 +294,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Read the architecture policy
+        id: plat
+        # container/platforms.env is the single source of truth, shared with
+        # container/release_images.sh, so a CI build and a local build cannot disagree
+        # about what an image is built for.
+        run: . container/platforms.env && echo "platforms=$PLATFORMS_CONTROLLER" >> "$GITHUB_OUTPUT"
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.plat.outputs.platforms }}
           # Repo root context so pyproject + src are available for `pip install .`.
           context: .
           file: ./container/controller/Dockerfile

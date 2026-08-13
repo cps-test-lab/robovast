@@ -31,12 +31,20 @@ IMAGE="robovast"
 ROBOSITO_SRC=""
 SCENARIO_EXECUTION_SRC=""
 ROBOSITO_REPO="${ROBOSITO_REPO:-https://github.com/cps-test-lab/robosito.git}"
+PLATFORM=""
+
+# shellcheck source=../platforms.env
+. "$BASEDIR/../platforms.env"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
     --image)
       IMAGE="$2"
+      shift 2
+      ;;
+    --platform)
+      PLATFORM="$2"
       shift 2
       ;;
     --project)
@@ -77,6 +85,26 @@ case "$IMAGE" in
   *) echo "unknown --image '$IMAGE' (expected robovast, robosito or all)" >&2; exit 2 ;;
 esac
 
+# A push publishes for the cluster (linux/amd64), so honour the declared policy rather
+# than the host's architecture -- an arm64 Mac otherwise pushes an image no node can
+# run, failing as an exec-format error in a pod rather than here. Building without
+# --push targets this machine, which is what makes the result runnable locally.
+# `docker buildx build` replaces `docker build` so local and CI use one builder.
+buildx_args() {
+  local platform="$1"
+  BUILDX_ARGS=()
+  [[ -n "$platform" ]] && BUILDX_ARGS+=(--platform "$platform")
+  if [[ -n "${PUSH:-}" ]]; then
+    BUILDX_ARGS+=(--push)
+  elif [[ "$platform" == *,* ]]; then
+    # No single image exists to load for a multi-platform build.
+    echo "refusing to build $platform without --push: a multi-platform image cannot be loaded into the local docker daemon" >&2
+    return 2
+  else
+    BUILDX_ARGS+=(--load)
+  fi
+}
+
 echo "Using Dockerfile: $BASEDIR"
 echo "From Context: $PWD"
 echo "Project: $PROJECT"
@@ -107,19 +135,18 @@ build_base() {
     echo "scenario-execution source: pinned clone (see Dockerfile)"
   fi
 
-  DOCKER_BUILDKIT=1 docker build \
+  buildx_args "${PLATFORM:-${PUSH:+$PLATFORMS_ROBOVAST}}" || return $?
+
+  # One buildx invocation tagged with both names: a multi-platform build produces no
+  # local image for `docker tag` to rename afterwards.
+  docker buildx build \
+    "${BUILDX_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
     -t robovast_${ROS_DISTRO}:latest \
+    -t ${PROJECT}robovast_${ROS_DISTRO} \
     -f $BASEDIR/Dockerfile \
     "$ctx"
-
-  docker tag robovast_${ROS_DISTRO} ${PROJECT}robovast_${ROS_DISTRO}
-
-  if [ -n "${PUSH:-}" ]; then
-    echo "Pushing docker image to ${PROJECT}robovast_${ROS_DISTRO}"
-    docker push "${PROJECT}robovast_${ROS_DISTRO}"
-  fi
 }
 
 build_robosito() {
@@ -156,19 +183,16 @@ build_robosito() {
     git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-robovast}" || return 1
   fi
 
-  DOCKER_BUILDKIT=1 docker build \
+  buildx_args "${PLATFORM:-${PUSH:+$PLATFORMS_ROBOSITO}}" || return $?
+
+  docker buildx build \
+    "${BUILDX_ARGS[@]}" \
     --build-arg BASE_IMAGE="$base" \
     $EXTRA_ARGS \
     -t robovast_robosito_${ROS_DISTRO}:latest \
+    -t ${PROJECT}robovast_robosito_${ROS_DISTRO} \
     -f $BASEDIR/Dockerfile.robosito \
     "$ctx"
-
-  docker tag robovast_robosito_${ROS_DISTRO} ${PROJECT}robovast_robosito_${ROS_DISTRO}
-
-  if [ -n "${PUSH:-}" ]; then
-    echo "Pushing docker image to ${PROJECT}robovast_robosito_${ROS_DISTRO}"
-    docker push "${PROJECT}robovast_robosito_${ROS_DISTRO}"
-  fi
 }
 
 case "$IMAGE" in

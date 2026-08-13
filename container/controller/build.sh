@@ -16,11 +16,19 @@ ROOT=$(cd "$BASEDIR/../.." && pwd)
 
 TAG="robovast-controller:latest"
 PUSH=""
+PLATFORM=""
+
+# shellcheck source=../platforms.env
+. "$ROOT/container/platforms.env"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     -t|--tag)
       TAG="$2"
+      shift 2
+      ;;
+    --platform)
+      PLATFORM="$2"
       shift 2
       ;;
     --push|-n)
@@ -33,20 +41,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# A push publishes for the cluster, which is linux/amd64 -- so honour the declared
+# policy rather than the host's architecture. Building on an arm64 Mac otherwise
+# pushes an image no node can run, and the failure surfaces as an exec-format error
+# in a pod rather than here.
+[[ -n "$PUSH" && -z "$PLATFORM" ]] && PLATFORM="$PLATFORMS_CONTROLLER"
+
 # Pass remaining arguments to docker build
 EXTRA_ARGS="$@"
 
 echo "Using Dockerfile: $BASEDIR/Dockerfile"
 echo "From context:     $ROOT"
 echo "Target tag:       $TAG"
+echo "Platform:         ${PLATFORM:-<host>}"
 
-DOCKER_BUILDKIT=1 docker build \
+# buildx, the same builder CI uses, so a local image and a published one are produced
+# the same way. A multi-platform build cannot --load into the local daemon (there is no
+# single image to load), so it is only valid with --push; a host-architecture build
+# loads, which is what makes a locally built image runnable straight away.
+BUILDX_ARGS=()
+[[ -n "$PLATFORM" ]] && BUILDX_ARGS+=(--platform "$PLATFORM")
+if [[ -n "${PUSH:-}" ]]; then
+  BUILDX_ARGS+=(--push)
+elif [[ "$PLATFORM" == *,* ]]; then
+  echo "refusing to build $PLATFORM without --push: a multi-platform image cannot be loaded into the local docker daemon" >&2
+  exit 2
+else
+  BUILDX_ARGS+=(--load)
+fi
+
+docker buildx build \
+  "${BUILDX_ARGS[@]}" \
   $EXTRA_ARGS \
   -t "$TAG" \
   -f "$BASEDIR/Dockerfile" \
   "$ROOT"
-
-if [ -n "${PUSH:-}" ]; then
-  echo "Pushing docker image to $TAG"
-  docker push "$TAG"
-fi

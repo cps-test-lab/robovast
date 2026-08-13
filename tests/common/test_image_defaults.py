@@ -63,6 +63,77 @@ def test_robosito_default_matches_its_ci_tag():
     assert "${{ env.IMAGE_NAME }}-robosito" in WORKFLOW.read_text()
 
 
+PLATFORMS_ENV = WORKFLOW.parents[2] / "container" / "platforms.env"
+
+
+def _platform_policy():
+    """``container/platforms.env`` as a dict, without sourcing a shell."""
+    policy = {}
+    for line in PLATFORMS_ENV.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            policy[key] = value
+    return policy
+
+
+def test_every_build_job_reads_the_shared_platform_policy():
+    """No job may hard-code `platforms:`; both builders read one file.
+
+    The architecture rule has to hold in CI *and* in container/release_images.sh.
+    Written out twice it drifts, which is how the robosito job ended up with no
+    `platforms:` at all while its base image was multi-arch.
+    """
+    workflow = WORKFLOW.read_text()
+    policy = _platform_policy()
+
+    for line in workflow.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("platforms:"):
+            assert "steps.plat.outputs.platforms" in stripped, (
+                f"hard-coded platforms in image.yml: {stripped!r} — "
+                f"read it from container/platforms.env instead")
+
+    read = {line.split("$PLATFORMS_")[1].split("\"")[0]
+            for line in workflow.splitlines() if "$PLATFORMS_" in line}
+    assert read, "no job reads container/platforms.env"
+    for name in read:
+        assert f"PLATFORMS_{name}" in policy, (
+            f"image.yml reads PLATFORMS_{name}, which container/platforms.env "
+            f"does not define (it has: {sorted(policy)})")
+
+
+def test_cluster_only_images_are_single_arch():
+    """The cluster is linux/amd64; a second architecture there is never pulled."""
+    policy = _platform_policy()
+    assert policy["CLUSTER_PLATFORM"] == "linux/amd64"
+    for name in ("PLATFORMS_CONTROLLER", "PLATFORMS_SIDECAR"):
+        assert policy[name] == policy["CLUSTER_PLATFORM"], (
+            f"{name} builds for an architecture no cluster node runs")
+    for name in ("PLATFORMS_ROBOVAST", "PLATFORMS_ROBOSITO"):
+        assert policy["CLUSTER_PLATFORM"] in policy[name], (
+            f"{name} must still cover the cluster's architecture")
+
+
+def test_no_dockerfile_hardcodes_a_download_architecture():
+    """A fixed linux-amd64 URL in a multi-arch image ships the wrong binary.
+
+    Both the base image's `mc` and `fixuid` did, so every arm64 build carried x86
+    executables.
+    """
+    container = WORKFLOW.parents[2] / "container"
+    offenders = []
+    for path in sorted(container.rglob("Dockerfile*")):
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            # Comments may name the architecture while explaining why it is not fixed.
+            if line.lstrip().startswith("#"):
+                continue
+            if "linux-amd64" in line:
+                offenders.append(f"{path.relative_to(container)}:{number}")
+    assert not offenders, (
+        f"Dockerfiles hard-code linux-amd64 downloads: {offenders} — use $TARGETARCH")
+
+
 def test_no_shipped_example_pins_a_private_registry():
     """A shipped example must be runnable by anyone who clones the repo.
 

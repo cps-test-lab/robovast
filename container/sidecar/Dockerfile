@@ -13,5 +13,8 @@ RUN apk add --no-cache pigz==2.8-r1 \
  && pip install --no-cache-dir \
         boto3==1.42 google-auth==2.49.0 requests==2.32.5 paramiko==4.0.0 pyyaml==6.0.2
 
-RUN wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
+# TARGETARCH rather than a hard-coded linux-amd64, so the binary matches the image it
+# lands in if this is ever built for another architecture.
+ARG TARGETARCH
+RUN wget -q "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -O /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
