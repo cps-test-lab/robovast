@@ -133,15 +133,30 @@ def _service_alive(url):
 
 
 def detected_service_url():
-    """The service answering on the conventional local port, or ``''``.
+    """The service this machine should talk to, or ``''``.
 
-    The one convention every client shares: a local ``vast serve``, a ``vast serve
-    --attach`` / SSH / ``kubectl port-forward`` tunnel binds ``127.0.0.1:8800``,
-    and everything auto-detects it there. No environment variable, no guessing.
+    Two ways in, tried in this order:
+
+    1. **A service answering on the conventional local port.** A local ``vast serve``,
+       or any tunnel someone has put there. First, so the dev workflow is unchanged:
+       start a service on this machine and every command follows it, exactly as before.
+    2. **A stored ``vast login``.** The deployed instance behind its Ingress — how a
+       user with no kubeconfig reaches it.
+
+    This is a deliberate widening of a contract that used to be "the local port, full
+    stop, no environment variable, no guessing". That was right while the only way to
+    reach a remote service was a tunnel *to* the local port; it cannot express "the
+    service is at https://robovast.example.org and here is my token". The narrowness is
+    preserved where it mattered — there is still no ambient env var naming a service,
+    and ``echo_target`` still prints what was resolved, so the choice is never silent.
     """
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
     probe = f'http://127.0.0.1:{SERVICE_PORT}'
-    return probe if _service_alive(probe) else ''
+    if _service_alive(probe):
+        return probe
+    from robovast.common.cli.login import credentials
+    url, _token, _name = credentials()
+    return url or ''
 
 
 def target_options(func):

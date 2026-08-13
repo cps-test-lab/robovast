@@ -65,8 +65,12 @@ def _capture(monkeypatch):
             return _Resp()
         return _call
 
+    # Patched on the Session, not the module: every request goes through one now,
+    # which is what carries the credentials to the routes that build their own
+    # request rather than using the verb helpers.
     for method in ("get", "put", "post", "delete"):
-        monkeypatch.setattr(requests, method, fake(method))
+        monkeypatch.setattr(requests.Session, method,
+                            lambda self, *a, _m=method, **kw: fake(_m)(*a, **kw))
     return calls
 
 
@@ -150,7 +154,8 @@ def _refusing(monkeypatch, status: int, payload=None, text: str = ""):
     def _call(url, params=None, timeout=None, json=None, **kw):
         return _Resp(status_code=status, payload=payload, text=text)
     for method in ("get", "put", "post", "delete"):
-        monkeypatch.setattr(requests, method, _call)
+        monkeypatch.setattr(requests.Session, method,
+                            lambda self, *a, **kw: _call(*a, **kw))
 
 
 def test_a_refusal_carries_the_services_own_message(monkeypatch):

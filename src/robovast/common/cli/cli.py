@@ -510,6 +510,81 @@ def _serve_attach(port, namespace, context):
 
 
 @cli.command()
+@click.argument('url', required=False)
+@click.option('--token', default=None,
+              help='The access token. Prompted for (hidden) when omitted.')
+@click.option('--name', default=None,
+              help='Display name shown on campaigns you start. Pass "" for none.')
+def login(url, token, name):
+    """Store the credentials for a robovast-service, so every command can reach it.
+
+    \b
+      vast login https://robovast.example.org
+
+    The operator hands you the URL and the access token. Both are kept per **user** in
+    ``~/.config/robovast/config.json`` (mode 0600), not in a project ``.env``: which
+    instance you talk to follows you rather than a checkout, and a token inside a
+    project directory is one ``git add -A`` from being committed.
+
+    The name is optional and **self-declared** — with one shared secret nobody can prove
+    who they are, so it is a label for "who started this run?", not an identity. Give an
+    empty one and campaigns you start are recorded as unattributed rather than as
+    somebody invented.
+
+    Run it again to change any of the three. ``vast logout`` forgets them.
+    """
+    from robovast.common.cli import login as login_config
+
+    stored_url, stored_token, stored_name = login_config.credentials()
+
+    if not url:
+        url = stored_url
+        if not url:
+            raise click.ClickException(
+                "no service URL given and none stored — "
+                "run 'vast login https://robovast.example.org'")
+    url = url.rstrip('/')
+
+    if token is None:
+        # Only offer the stored token as a default when the URL is unchanged; a token
+        # is per-instance, so silently reusing one against a different service would
+        # send someone's secret somewhere it does not belong.
+        reuse = stored_token if url == stored_url else ''
+        token = click.prompt('Access token', hide_input=True, default=reuse,
+                             show_default=False) if not reuse else reuse
+    if name is None:
+        default_name = stored_name or login_config.default_name()
+        name = click.prompt('Your name (optional)', default=default_name,
+                            show_default=bool(default_name))
+
+    # Verify before storing, so a typo is caught here rather than surfacing as a 401
+    # from the next unrelated command.
+    from robovast.service.client import RobovastClient
+    client = RobovastClient(url, token=token, user=name)
+    try:
+        client.version()
+    except Exception as exc:  # noqa: BLE001 - every failure means "not logged in"
+        raise click.ClickException(
+            f"could not authenticate against {url}: {exc}\n"
+            "Check the URL and the token the operator gave you.") from exc
+
+    path = login_config.save(url, token, name)
+    click.echo(f"✓ logged in to {url}")
+    click.echo(f"  as {name}" if name else "  without a name (campaigns stay unattributed)")
+    click.echo(f"  stored in {path}")
+
+
+@cli.command()
+def logout():
+    """Forget the stored robovast-service credentials."""
+    from robovast.common.cli import login as login_config
+    if login_config.clear():
+        click.echo("✓ logged out")
+    else:
+        click.echo("Not logged in.")
+
+
+@cli.command()
 @click.option('--port', default=0, type=int, metavar='PORT',
               help='Service port to open. 0 (default) uses the conventional port.')
 @click.option('--no-browser', is_flag=True,

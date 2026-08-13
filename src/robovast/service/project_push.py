@@ -95,8 +95,10 @@ def push_file(client, address: str, path: Path) -> str:
         address=address, executable=os.access(path, os.X_OK)))
     data = path.read_bytes()
     if grant.url:  # HTTP service issued an absolute PUT URL
-        import requests
-        requests.put(grant.url, data=data, timeout=120).raise_for_status()
+        # The client's own session, not a bare requests.put: the upload route is
+        # behind the same authentication as everything else, and a fresh request
+        # would carry no credentials.
+        client.session.put(grant.url, data=data, timeout=120).raise_for_status()
     elif hasattr(client, "store"):  # in-process LocalTransport
         client.store.write_upload(grant.token, data)
     else:
@@ -323,7 +325,6 @@ def download_campaign_via_service(client, campaign_id: str,
     """
     import tarfile
 
-    import requests
     from robovast.service.interface import Routes
 
     say = feedback or logger.info
@@ -332,7 +333,7 @@ def download_campaign_via_service(client, campaign_id: str,
     os.makedirs(results_dir, exist_ok=True)
     # Stream-extract straight off the socket (mode "r|gz") so a large (up to ~1TB)
     # campaign never has to be buffered in memory on the client.
-    with requests.get(url, timeout=600, stream=True) as resp:
+    with client.session.get(url, timeout=600, stream=True) as resp:
         resp.raise_for_status()
         resp.raw.decode_content = True
         with tarfile.open(fileobj=resp.raw, mode="r|gz") as tar:

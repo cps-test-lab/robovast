@@ -45,6 +45,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         ValidationReport, VariationTypesResponse,
                                         VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
+from robovast.service.auth import USER_HEADER
 from robovast.service.local_transport import (LocalTransport,
                                               _robovast_version)
 
@@ -54,14 +55,29 @@ logger = logging.getLogger(__name__)
 class HTTPTransport(RobovastInterface):
     """Talks to a running ``robovast-service`` over the :class:`Routes` contract.
 
-    The base URL is typically ``http://127.0.0.1:<port>`` reached via an SSH
-    tunnel (remote VM) or ``kubectl port-forward`` (cluster); the tunnel is
-    managed by the caller (e.g. ``vast mcp serve``), not here.
+    The base URL is either the service on this machine (``http://127.0.0.1:<port>``)
+    or the deployed one behind its Ingress (``https://robovast.<domain>``) — see
+    ``robovast.common.cli.service_target`` for how a command chooses.
+
+    Every request goes through one :class:`requests.Session`, which is what carries the
+    credentials to the *eight* places that talk HTTP here: the four verb helpers and the
+    four routes that build their own request (byte reads, the streamed CSV, screenshots,
+    the rendered notebook). Adding a header per call site is how one of them ends up
+    forgotten and 401s only for the one user who tried that feature. The session also
+    brings connection pooling, which this class never had.
     """
 
-    def __init__(self, base_url: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, timeout: float = 30.0,
+                 token: str = "", user: str = ""):
+        import requests
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.session = requests.Session()
+        if token:
+            self.session.headers["Authorization"] = f"Bearer {token}"
+        if user:
+            # Self-declared and unverified; the service records it as such.
+            self.session.headers[USER_HEADER] = user
 
     @staticmethod
     def raise_for_status(resp) -> None:
@@ -96,34 +112,30 @@ class HTTPTransport(RobovastInterface):
     # read/delete) doesn't collide with this positional. `timeout` is keyword-only for the
     # same reason and is likewise reserved: no route takes a `timeout` query param.
     def _get(self, route: str, *, timeout: "float | None" = None, **params):
-        import requests
-        resp = requests.get(f"{self.base_url}{route}", params=params or None,
+        resp = self.session.get(f"{self.base_url}{route}", params=params or None,
                             timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
     def _post(self, route: str, json=None, *, timeout: "float | None" = None, **params):
-        import requests
         # ``params`` for the routes whose argument cannot be a path segment (a job name
         # contains '/'), the same way ``_delete`` takes them. ``None`` values are dropped
         # so an omitted optional argument is absent rather than the string "None".
         query = {k: v for k, v in params.items() if v is not None}
-        resp = requests.post(f"{self.base_url}{route}", json=json,
+        resp = self.session.post(f"{self.base_url}{route}", json=json,
                              params=query or None,
                              timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
     def _put(self, route: str, json=None):
-        import requests
-        resp = requests.put(f"{self.base_url}{route}", json=json,
+        resp = self.session.put(f"{self.base_url}{route}", json=json,
                             timeout=self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
     def _delete(self, route: str, **params):
-        import requests
-        resp = requests.delete(f"{self.base_url}{route}", params=params or None,
+        resp = self.session.delete(f"{self.base_url}{route}", params=params or None,
                                timeout=self.timeout)
         self.raise_for_status(resp)
         return resp.json()
@@ -192,8 +204,7 @@ class HTTPTransport(RobovastInterface):
             Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
 
     def read_file_bytes(self, address: str) -> bytes:
-        import requests
-        resp = requests.get(f"{self.base_url}{Routes.file(address)}",
+        resp = self.session.get(f"{self.base_url}{Routes.file(address)}",
                             timeout=self.timeout)
         self.raise_for_status(resp)
         return resp.content
@@ -394,11 +405,10 @@ class HTTPTransport(RobovastInterface):
         query on a cluster campaign fetches its databases inside the request, exactly as
         the JSON query does.
         """
-        import requests
         params = {"sql": sql}
         if extra_campaign_ids:
             params["extra_campaign_ids"] = ",".join(extra_campaign_ids)
-        resp = requests.get(f"{self.base_url}{Routes.campaign_query_csv(campaign_id)}",
+        resp = self.session.get(f"{self.base_url}{Routes.campaign_query_csv(campaign_id)}",
                             params=params, timeout=self.DATA_TIMEOUT, stream=True)
         self.raise_for_status(resp)
         return resp.iter_content(chunk_size=64 * 1024, decode_unicode=True)
@@ -445,7 +455,6 @@ class HTTPTransport(RobovastInterface):
         from pathlib import Path
         from urllib.parse import urlencode
 
-        import requests
 
         params = [("config_name", config_name), ("run_id", str(run_id)), ("size", size)]
         if at is not None:
@@ -454,7 +463,7 @@ class HTTPTransport(RobovastInterface):
             params.append(("camera", camera))
         params += [("view", f"{k}={v}") for k, v in sorted((view or {}).items())]
         params += [("focus", str(f)) for f in (focus or [])]
-        resp = requests.post(
+        resp = self.session.post(
             f"{self.base_url}{Routes.campaign_screenshot(campaign_id)}?{urlencode(params)}",
             timeout=self.SCREENSHOT_TIMEOUT)
         self.raise_for_status(resp)
@@ -514,7 +523,6 @@ class HTTPTransport(RobovastInterface):
         self, campaign_id: str, workload: str, level: str,
         config_name: str = "", run_id=None, theme: str = "light", batch=None,
     ) -> str:
-        import requests
         params = {"workload": workload, "level": level, "theme": theme}
         if config_name:
             params["config_name"] = config_name
@@ -522,7 +530,7 @@ class HTTPTransport(RobovastInterface):
             params["run_id"] = run_id
         if batch is not None:
             params["batch"] = batch
-        resp = requests.get(
+        resp = self.session.get(
             f"{self.base_url}{Routes.campaign_notebook(campaign_id)}",
             params=params, timeout=max(self.timeout, 600))
         self.raise_for_status(resp)
@@ -534,17 +542,28 @@ class HTTPTransport(RobovastInterface):
 # ---------------------------------------------------------------------------
 
 
-def RobovastClient(service_url: str = "", timeout: float = 30.0) -> RobovastInterface:  # noqa: N802
+def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
+                   token: str | None = None,
+                   user: str | None = None) -> RobovastInterface:
     """Return a transport-agnostic client.
 
     * ``service_url`` set → :class:`HTTPTransport` to that ``robovast-service``.
     * empty (default) → :class:`LocalTransport` (in-process local Docker).
 
-    Callers resolve *service_url* explicitly (the CLI/MCP auto-detect a service on
-    the conventional local port via
+    Callers resolve *service_url* explicitly (see
     :func:`robovast.common.cli.service_target.detected_service_url`); there is no
-    ambient environment-variable selection.
+    ambient environment-variable selection of *which service*.
+
+    Credentials, by contrast, **are** ambient when not given: ``token``/``user`` default
+    to the stored ``vast login``. Every one of the eight construction sites would
+    otherwise have to fetch and thread them, and the one that forgot would 401 only for
+    remote users. Pass them explicitly to override.
     """
-    if service_url:
-        return HTTPTransport(service_url, timeout=timeout)
-    return LocalTransport()
+    if not service_url:
+        return LocalTransport()
+    if token is None or user is None:
+        from robovast.common.cli.login import credentials
+        _url, stored_token, stored_name = credentials()
+        token = stored_token if token is None else token
+        user = stored_name if user is None else user
+    return HTTPTransport(service_url, timeout=timeout, token=token or "", user=user or "")
