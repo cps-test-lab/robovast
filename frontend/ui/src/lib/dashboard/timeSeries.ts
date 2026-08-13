@@ -17,6 +17,17 @@ export interface TimeSeriesBinding {
   table: string
   time_column?: string
   filter?: Record<string, string | number>
+  /** Thin the rows to one sample per 1/hz second across the WHOLE run, in SQL.
+   *
+   *  Without it a run longer than `max_rows / rate` is cut at the HEAD: the row cap is a LIMIT after
+   *  ORDER BY time, so the chart ends mid-run rather than getting coarser, and the service clamps
+   *  that cap at 5000 no matter what a panel asks for. Rule of thumb: 4000 / run seconds. */
+  decimate_hz?: number
+  /** The column identifying one series in a multi-keyed table (`poses` is keyed by `frame`).
+   *
+   *  Needed with `decimate_hz` unless `filter` already isolates one series: a bucket keeps one row
+   *  from ONE key, so undecimated-looking series simply disappear. */
+  key?: string
 }
 
 export interface TimeSeriesSource {
@@ -29,6 +40,10 @@ export interface TimeSeriesSource {
   upTo(t: number): DataRow[]
   /** Every sample, in time order (static chart lines). */
   all(): DataRow[]
+  /** Whether the query hit the row cap, i.e. these are the first samples of the run and the rest is
+   *  missing. Comes from the service, which fetches one row past the cap to know -- a row count
+   *  cannot tell, since rows with an unparseable time are dropped below. */
+  truncated: boolean
   /** The columns present on the rows (from the first sample). */
   columns: string[]
   /** The numeric time (seconds) extracted from a row, using this source's time column. */
@@ -39,7 +54,11 @@ const DEFAULT_TIME_COLUMN = 'timestamp'
 
 /** Build a TimeSeriesSource from rows already loaded (via DataProvider.series or any other origin).
  *  Rows are sorted by the coerced time here, so callers need not pre-sort. */
-export function timeSeriesFromRows(rows: DataRow[], timeColumn = DEFAULT_TIME_COLUMN): TimeSeriesSource {
+export function timeSeriesFromRows(
+  rows: DataRow[],
+  timeColumn = DEFAULT_TIME_COLUMN,
+  truncated = false,
+): TimeSeriesSource {
   const timeOf = (row: DataRow) => Number(row[timeColumn])
   // Sort a shallow copy by numeric time; drop rows whose time isn't a finite number so lookups and
   // the range stay well-defined.
@@ -68,6 +87,7 @@ export function timeSeriesFromRows(rows: DataRow[], timeColumn = DEFAULT_TIME_CO
     all() {
       return sorted
     },
+    truncated,
     columns,
     timeOf,
   }
@@ -82,14 +102,16 @@ export async function buildTimeSeriesSource(
   maxRows?: number,
 ): Promise<TimeSeriesSource> {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
-  const cols = columns && columns.length ? Array.from(new Set([timeCol, ...columns])) : undefined
-  const rows = await data.series(binding.table, {
+  // The key column has to survive into the rows for the GROUP BY to be honest about what it kept.
+  const named = columns?.length ? [timeCol, ...columns, ...(binding.key ? [binding.key] : [])] : null
+  const page = await data.seriesPage(binding.table, {
     timeCol,
-    columns: cols,
+    columns: named ? Array.from(new Set(named)) : undefined,
     match: binding.filter,
     maxRows,
+    decimate: binding.decimate_hz ? { hz: binding.decimate_hz, key: binding.key } : undefined,
   })
-  return timeSeriesFromRows(rows, timeCol)
+  return timeSeriesFromRows(page.rows, timeCol, page.truncated)
 }
 
 /** React Query wrapper so panels get `{ data: source, isPending, error }` and share the cache by
@@ -110,6 +132,8 @@ export function useTimeSeries(
       binding.table,
       timeCol,
       binding.filter ?? null,
+      binding.key ?? null,
+      binding.decimate_hz ?? null,
       columns ?? null,
       maxRows ?? null,
     ],
@@ -122,9 +146,8 @@ export function useTimeSeries(
  *  the canonical one -- keyed by `frame`, it holds every TF frame a run recorded, which is one series
  *  per moving thing in the world rather than one per table. */
 export interface TimeSeriesGroupBinding extends TimeSeriesBinding {
+  /** Required here, where every distinct value becomes its own series. */
   key: string
-  /** Cap the samples per series at this rate (see SeriesOptions.decimate). */
-  decimate_hz?: number
 }
 
 /** Resolve a multi-keyed table to one TimeSeriesSource per key value, in **one** query.
@@ -143,7 +166,7 @@ export async function buildTimeSeriesGroups(
   const cols = columns?.length
     ? Array.from(new Set([binding.key, timeCol, ...columns]))
     : undefined
-  const rows = await data.series(binding.table, {
+  const page = await data.seriesPage(binding.table, {
     timeCol,
     columns: cols,
     match: binding.filter,
@@ -151,15 +174,16 @@ export async function buildTimeSeriesGroups(
     decimate: binding.decimate_hz ? { hz: binding.decimate_hz, key: binding.key } : undefined,
   })
   const byKey = new Map<string, DataRow[]>()
-  for (const row of rows) {
+  for (const row of page.rows) {
     const k = row[binding.key]
     if (k == null) continue
     const list = byKey.get(String(k))
     if (list) list.push(row)
     else byKey.set(String(k), [row])
   }
+  // The cap applied to the one combined query, so it truncated all of these series or none.
   return new Map(
-    Array.from(byKey, ([k, list]) => [k, timeSeriesFromRows(list, timeCol)] as const),
+    Array.from(byKey, ([k, list]) => [k, timeSeriesFromRows(list, timeCol, page.truncated)] as const),
   )
 }
 

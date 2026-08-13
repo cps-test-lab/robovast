@@ -7,10 +7,17 @@
 // for high-rate numeric columns, this one for everything else.
 //
 // Bindings (vast visualization.panels):
-//   source:    { table, time_column?, filter? }  -- the rows; same binding as `timeseries`, so the
-//                                                   run scope and the frame filter happen in SQL
+//   source:    { table, time_column?, filter?,   -- the rows; same binding as `timeseries`, so the
+//                decimate_hz?, key? }               run scope, the frame filter and the thinning all
+//                                                   happen in SQL
 //   vega_lite: { ... }                           -- the spec, with no `data` block of its own
-//   max_rows:  int                               -- row cap (default 5000)
+//   max_rows:  int                               -- row cap (default 5000, and the service clamps
+//                                                   there, so this cannot buy a longer run)
+//
+// A run that outruns the cap is cut at the HEAD, not sampled: the query is `ORDER BY time LIMIT n`.
+// `source.decimate_hz` is therefore the only way to chart a whole long run -- and since the cap is
+// the ceiling too, hitting it is worth saying out loud rather than plotting the first minute of a
+// ten-minute run as if it were the run.
 //
 // The spec is bound to two named datasets: `table` (the rows) and `cursor` (a single row `{t}` at the
 // playback time). Only the `cursor` dataset changes as the clock runs, so ticking the cursor updates
@@ -28,7 +35,8 @@ import type { DataRow, PanelProps, PlaybackClock } from '@robovast/panel-kit'
 const TABLE = 'table'
 const CURSOR = 'cursor'
 const DEFAULT_TIME_COLUMN = 'timestamp'
-// Matches DataProvider.series' own default; named here so the truncation warning can compare.
+// Matches DataProvider.series' own default. Also the service's hard clamp, which is why the
+// truncation warning points at `decimate_hz` rather than at a bigger number here.
 const DEFAULT_MAX_ROWS = 5000
 // The clock ticks at display rate (~60 Hz). A cursor rule does not need that, and each update is a
 // Vega dataset change rather than a canvas line, so it is throttled well below it.
@@ -179,11 +187,20 @@ function VegaPanel({ spec, clock, data }: PanelProps) {
   return (
     <Box sx={{ width: '100%', height: '100%', overflow: 'auto', bgcolor: '#12171f', p: 0.5 }}>
       {/* A clipped chart read as a complete one is worse than no chart, so say so rather than
-          quietly plotting the first `maxRows` samples. */}
-      {rows.length >= maxRows ? (
+          quietly plotting the run's first `maxRows` samples. Read from the query rather than from
+          `rows.length >= maxRows`: the row count is a guess that misses exactly this case, because
+          the source drops rows whose time does not parse, and it also cries truncation over a table
+          that happens to hold exactly `maxRows` rows. */}
+      {query.data?.truncated ? (
         <Alert severity="warning" variant="outlined" sx={{ py: 0, mb: 0.5 }}>
-          Showing the first {maxRows} rows of <code>{source.table}</code> — raise{' '}
-          <code>max_rows</code> to plot the whole run.
+          Showing only the first {rows.length} rows of <code>{source.table}</code>
+          {source.decimate_hz
+            ? `, even at ${source.decimate_hz} Hz — the run ends after them. Lower `
+            : ' — the rest of the run is not plotted. Set '}
+          <code>source.decimate_hz</code>
+          {source.decimate_hz
+            ? '.'
+            : ' to thin the whole run instead; the service caps max_rows at 5000, so raising it cannot help.'}
         </Alert>
       ) : null}
       <VegaLiteChart spec={chartSpec} datasets={{ [TABLE]: rows, [CURSOR]: [{ t }] }} />

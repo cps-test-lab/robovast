@@ -25,8 +25,18 @@ export interface SeriesOptions {
   // multi-keyed case: a table holding every TF frame of a world carries one series per frame, so
   // "all of them at recording rate" scales with the number of moving things (a 17-bone walker at
   // 30 Hz over 90 s is 46k rows by itself) while a viewer needs nothing near that resolution.
-  // Requires `columns`: the SQL must name them, because the time column is replaced by an aggregate.
+  //
+  // `hz` must be a finite number > 0. On a multi-keyed table set `key` (or `match` one series):
+  // without it a bucket keeps one row from ONE key and the other series vanish entirely rather than
+  // being thinned. `columns` is optional -- omitting it keeps `SELECT *`.
   decimate?: { hz: number; key?: string }
+}
+
+export interface SeriesPage {
+  rows: DataRow[]
+  // Whether the query hit the row cap. Then `rows` are the FIRST `maxRows` BY TIME and the tail of
+  // the run is simply absent -- a chart of them ends mid-run while looking complete.
+  truncated: boolean
 }
 
 export interface DataProvider {
@@ -49,6 +59,17 @@ export interface DataProvider {
   timeRange(table: string, timeCol?: string): Promise<[number, number] | null>
   /** All rows of the run in [t0, t1] ordered by time. */
   series(table: string, opts?: SeriesOptions): Promise<DataRow[]>
+  /** The same rows, plus whether the query hit the row cap.
+   *
+   *  Separate from `series` rather than a wider return type on it, because a panel remote is a
+   *  *prebuilt bundle* loaded at runtime: one built against today's `series` would break on a changed
+   *  return shape as `rows.map is not a function`, at render time, with nothing to catch it at
+   *  compile time. A new method is invisible to those bundles -- only the host implements this
+   *  interface, panels merely consume it.
+   *
+   *  Prefer it wherever the answer is charted: the cap is a LIMIT after ORDER BY time, so its
+   *  omission is silent, and a row count cannot detect it (the caller may drop rows of its own). */
+  seriesPage(table: string, opts?: SeriesOptions): Promise<SeriesPage>
   /** The single row whose `timeCol` is nearest `t`, or null if the table is empty. */
   nearest(table: string, t: number, timeCol?: string): Promise<DataRow | null>
   /** GET a run-scoped JSON endpoint under the campaign (`config_name`+`run_id` applied), for a panel
