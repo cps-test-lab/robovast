@@ -29,12 +29,6 @@ from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
 
 logger = logging.getLogger(__name__)
 
-# Legacy ServiceAccount name, kept so `cluster setup` still reconciles/removes the
-# RBAC it created before campaigns moved into the service. Nothing runs as it now:
-# the service drives campaigns in-process under its own ServiceAccount.
-CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
-
-
 def _controller_cluster_role_name(namespace):
     """Name for the cluster-scoped controller RBAC objects.
 
@@ -88,9 +82,6 @@ def _controller_rbac_manifests(namespace):
     ]
 
 
-_CONTROLLER_RBAC_NAME = "robovast-controller"
-
-
 def apply_controller_rbac(namespace="default", kube_context=None):
     """Create/update the service's node-read ClusterRole + binding (idempotent).
 
@@ -135,13 +126,7 @@ def apply_controller_rbac(namespace="default", kube_context=None):
 
 
 def delete_controller_rbac(namespace="default", kube_context=None):
-    """Remove the node ClusterRole/binding **and** the legacy controller RBAC.
-
-    The ``robovast-controller`` ServiceAccount/Role/RoleBinding are no longer
-    created (campaigns run inside the service), but they linger on clusters set up
-    before that change — so this still deletes them to leave nothing behind.
-    Best-effort throughout.
-    """
+    """Remove the service's node-read ClusterRole and its binding. Best-effort."""
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
@@ -154,15 +139,11 @@ def delete_controller_rbac(namespace="default", kube_context=None):
     except Exception as exc:  # pragma: no cover - best-effort cleanup
         logger.warning("Failed to load kube config for RBAC cleanup: %s", exc)
         return
-    core = client.CoreV1Api()
     rbac = client.RbacAuthorizationV1Api()
     cluster_role_name = _controller_cluster_role_name(namespace)
     deletions = [
         ("ClusterRoleBinding", lambda: rbac.delete_cluster_role_binding(cluster_role_name)),
         ("ClusterRole", lambda: rbac.delete_cluster_role(cluster_role_name)),
-        ("RoleBinding", lambda: rbac.delete_namespaced_role_binding(_CONTROLLER_RBAC_NAME, namespace)),
-        ("Role", lambda: rbac.delete_namespaced_role(_CONTROLLER_RBAC_NAME, namespace)),
-        ("ServiceAccount", lambda: core.delete_namespaced_service_account(CONTROLLER_SERVICE_ACCOUNT, namespace)),
     ]
     for kind, call in deletions:
         try:

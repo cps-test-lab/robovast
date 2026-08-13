@@ -61,9 +61,7 @@ from robovast.service.interface import (ActionResult, FileListing, FileText,
 
 logger = logging.getLogger(__name__)
 
-CONTROLLER_LABEL = "app=robovast-controller"
 AUX_LABEL = "app=robovast-aux"
-CONTROLLER_SERVICE_ACCOUNT = "robovast-controller"
 
 
 def _object_entry(name: str, size):
