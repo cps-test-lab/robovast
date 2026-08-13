@@ -120,7 +120,10 @@ def test_get_world_body_tree_runs_rst_scenes_describe_with_the_flag(service):
     assert "rst scenes describe" in request.command
     assert "/sources/ws-1/worlds/depot.yaml" in request.command
     assert "--body-tree gripper*" in request.command
-    assert "--json" in request.command
+    # Only flags the CLI actually has. This used to assert `--json`, which `rst scenes describe`
+    # rejects -- argparse refuses the whole command over an unknown flag, so the tool failed
+    # against every real image while passing here against a stub.
+    assert "--json" not in request.command
 
 
 def test_get_world_body_tree_extracts_the_body_tree_key_and_the_image(service):
