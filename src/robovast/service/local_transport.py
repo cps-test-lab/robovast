@@ -558,7 +558,7 @@ class LocalTransport(RobovastInterface):
             # Through the store, so ``/sources`` inherits its confinement rather than
             # re-deriving the root here.
             return namespace, owner, rel, self.store.resolve(owner, rel)
-        root = Path(self._data_dir(owner))
+        root = Path(self._whole_campaign_dir(owner))
         if not root.is_dir():
             raise KeyError(f"no campaign {owner!r} in the results tree")
         return namespace, owner, rel, (safe_join(root, rel) if rel else root)
@@ -2340,35 +2340,66 @@ class LocalTransport(RobovastInterface):
                  "them in place")
 
     def _data_dir(self, campaign_id: str):
-        """Campaign dir holding data.db/campaign.db. Local: on disk (this transport
-        overrides via ``_campaign_dir``); the cluster service fetches from the
-        object store (``ClusterService`` overrides this)."""
+        """Campaign dir holding data.db/campaign.db — **local lane only**.
+
+        Locally this is a directory on disk and everything below can share it. On the
+        cluster there is no such thing: the campaign lives in the object store, and any
+        answer here would have to materialise it. ``ClusterService`` therefore **refuses**
+        this call and each caller states what it needs instead — :meth:`_query_dir` (two
+        databases), :meth:`_config_dir` (the frozen ``.vast``), or
+        :meth:`_whole_campaign_dir` (everything, said out loud).
+
+        That refusal is the point. While this method silently answered "the whole
+        campaign", every inherited method that touched it became a whole-campaign
+        download — ``list_campaign_plots`` pulled every rosbag to read one YAML file, per
+        campaign, on every Results page load.
+        """
         return self._campaign_dir(campaign_id)
+
+    def _whole_campaign_dir(self, campaign_id: str):
+        """Campaign dir for a caller that genuinely needs **arbitrary** files from it.
+
+        The honest, explicit form of what ``_data_dir`` used to do implicitly: notebook
+        rendering against run outputs, and the ``/results`` file address space. On the
+        cluster this is a full ``fetch_campaign``, which is expensive and now says so at
+        the call site rather than hiding behind a resolver name.
+        """
+        return self._data_dir(campaign_id)
+
+    def _config_dir(self, campaign_id: str):
+        """Dir holding the campaign's frozen ``_config`` snapshot.
+
+        Separate seam because it is what the *cheap* readers actually want — declared
+        plots, panel assets, visualization workloads — and on the cluster it is a handful
+        of small objects rather than the campaign.
+        """
+        return Path(self._data_dir(campaign_id)) / "_config"
 
     def _query_dir(self, campaign_id: str):
         """Dir a **query** reads: it needs only ``_execution/data.db`` + ``campaign.db``
         (see ``data_query._open_db``).
 
-        Locally identical to :meth:`_data_dir`. Separate from it because on the cluster the
-        two answers differ by orders of magnitude — ``_data_dir`` materializes the whole
-        campaign, a query needs two objects — so ``ClusterService`` overrides this one
-        alone. Callers needing arbitrary campaign files (notebook render, panel assets,
-        endpoint plugins via :meth:`resolve_data_dir`) must keep using ``_data_dir``."""
+        Locally identical to :meth:`_data_dir`. Separate from it because on the cluster a
+        query needs two objects and the campaign may be terabytes, so ``ClusterService``
+        overrides this one alone. Callers needing more say which more: the frozen config
+        via :meth:`_config_dir`, or everything via :meth:`_whole_campaign_dir`."""
         return self._data_dir(campaign_id)
 
     def resolve_data_dir(self, campaign_id: str):
-        """Public seam: resolve a campaign's data dir (local disk or, on the cluster,
-        an object-store fetch — ``ClusterService`` overrides ``_data_dir``). Used by the
-        service's package-provided endpoint dispatch (see ``endpoint_plugin``) so plugins
-        get local/cluster transparency without touching the private resolver."""
-        return self._data_dir(campaign_id)
+        """Public seam: a campaign's whole data dir, for the endpoint-plugin dispatch
+        (see ``endpoint_plugin``), which cannot know which files a plugin will read.
+
+        The one caller entitled to the whole campaign without naming its files — and on
+        the cluster that is a full fetch, so it goes through
+        :meth:`_whole_campaign_dir` rather than the refused ``_data_dir``."""
+        return self._whole_campaign_dir(campaign_id)
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         # Raw-load (not full validation) — reading declared plots must not depend on
         # the rest of the snapshot config being re-validatable.
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPlotsResponse
-        config_dir = Path(self._data_dir(campaign_id)) / "_config"
+        config_dir = Path(self._config_dir(campaign_id))
         vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
         plots = []
         if vasts:
@@ -2428,7 +2459,7 @@ class LocalTransport(RobovastInterface):
         """Resolve a ``custom`` panel's staged bundle file, confined to the campaign's
         immutable ``_config/`` snapshot. Raises ``ValueError`` (→ 400) on a path escape,
         ``KeyError`` (→ 404) if the file is missing."""
-        base = (Path(self._data_dir(campaign_id)) / "_config").resolve()
+        base = Path(self._config_dir(campaign_id)).resolve()
         target = (base / rel_path).resolve()
         if target != base and not str(target).startswith(str(base) + os.sep):
             raise ValueError("path escapes the campaign config directory")
@@ -2670,7 +2701,7 @@ class LocalTransport(RobovastInterface):
         visualization notebooks are copied (see ``common.execution``).
         """
         from robovast.common.config_validation import _safe_load
-        config_dir = Path(self._data_dir(campaign_id)) / "_config"
+        config_dir = Path(self._config_dir(campaign_id))
         vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
         workloads: dict = {}
         if vasts:
@@ -2737,7 +2768,7 @@ class LocalTransport(RobovastInterface):
 
     def _node_data_dir(self, campaign_id: str, level: str, config_name: str, run_id):
         """The ``DATA_DIR`` for a selected node — the campaign/config/run directory."""
-        base = Path(self._data_dir(campaign_id))
+        base = Path(self._whole_campaign_dir(campaign_id))
         # A batch is a grouping recorded in the store, not a directory level: a search
         # campaign's configs sit flat under the campaign root whichever round proposed them.
         # So a batch notebook gets the campaign root and is told *which* batch through the

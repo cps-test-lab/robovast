@@ -1742,11 +1742,51 @@ class ClusterService(LocalTransport):
         return Path("/tmp") / "robovast-campaigns" / campaign_id  # noqa: S108 - pod scratch
 
     def _data_dir(self, campaign_id: str):
-        """Whole-campaign dir: pulled from the object store (the durable home) into the
-        local cache, for callers that need arbitrary campaign files — notebook render,
-        panel assets, endpoint plugins via ``resolve_data_dir``. A **query** must not come
-        through here; see :meth:`_query_dir`."""
+        """Refused on this lane: there is no cheap "the campaign's directory" here.
+
+        It used to answer ``fetch_campaign`` — the whole object-store prefix, rosbags
+        included. That made every *inherited* method touching it a whole-campaign
+        download, silently and at the worst possible moment: ``list_campaign_plots``
+        pulled the entire campaign to read one small ``.vast``, once per campaign, every
+        time the Results page loaded.
+
+        The failure mode is what makes this a refusal rather than a comment. Nothing
+        errored, no test failed, the page merely took minutes and the pod moved
+        gigabytes. So a caller must now say what it needs and pay only that:
+
+        * :meth:`_query_dir` — the two databases a SQL query reads.
+        * :meth:`_config_dir` — the frozen ``_config`` snapshot.
+        * :meth:`_whole_campaign_dir` — everything, when that is genuinely the need.
+        """
+        raise NotImplementedError(
+            f"_data_dir is not available on the cluster lane (campaign {campaign_id!r}): "
+            "it would fetch the whole campaign from the object store. Ask for what you "
+            "need instead — _query_dir (the query databases), _config_dir (the frozen "
+            "config snapshot), or _whole_campaign_dir (everything, deliberately).")
+
+    def _whole_campaign_dir(self, campaign_id: str):
+        """Everything, deliberately: the campaign prefix into the local cache.
+
+        Expensive by nature — the callers entitled to it cannot know which files they
+        will read (notebook rendering against run outputs, the ``/results`` address
+        space, endpoint plugins via ``resolve_data_dir``).
+        """
         return self.fetch_campaign(campaign_id)
+
+    def _config_dir(self, campaign_id: str):
+        """Materialise only the frozen ``_config`` snapshot, then answer from the cache.
+
+        A handful of small objects against ``fetch_campaign``'s whole prefix — the same
+        discipline as :meth:`_scene_source_dir` and :meth:`_query_dir`, and the reason
+        the declared-plots and panel-asset readers are cheap again.
+        """
+        storage, bucket, prefix = self._campaign_object_location(
+            campaign_id, interactive=True)
+        objects, _ = storage.list_entries(bucket, f"{prefix}_config")
+        rels = [key[len(prefix):] for key, _size in objects]
+        if rels:
+            self._materialize(campaign_id, rels, "campaign config", interactive=True)
+        return Path(self._cache_dir(campaign_id)) / "_config"
 
     @contextlib.contextmanager
     def _render_progress(self, campaign_id: str, workload: str):
