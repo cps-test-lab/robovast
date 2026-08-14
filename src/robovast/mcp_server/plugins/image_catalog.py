@@ -174,8 +174,9 @@ def _details(group: str, address: str, name: str) -> dict:
 
 
 def list_scenario_actions(address: str, query: str = "") -> dict:
-    """`.osc` action/modifier/actor/struct catalog, one line each. `{items, total,
-    image, cache}`.
+    """`.osc` action/modifier/actor/struct catalog, one line each.
+
+    Returns `{items, total, image, cache}`.
     """
     return _list("scenario_actions", address, query)
 
