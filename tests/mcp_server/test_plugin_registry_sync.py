@@ -431,9 +431,18 @@ def test_a_shared_parameter_name_keeps_one_type():
 #:
 #: The general rule this leaves: **if the wait can outlive a turn, it is not a tool.**
 #:
+#: Raised 13_000 → 13_500 for the image catalog's four tools (``list_scenario_actions``,
+#: ``get_scenario_action_details``, ``list_roqsim_plugins``, ``get_roqsim_plugin_details``
+#: — 245 tokens together). Unlike the raise above, this one was **not** paid for by
+#: compressing anything, which is a deliberate exception and worth recording as such: the
+#: plugin had been written but never registered as an entry point, so its tools were
+#: absent from the surface while ``test_every_plugin_class_is_registered`` failed. Fixing
+#: that registration added all four at once and put the surface 240 over.
+#:
 #: Where the fat is now: ``start_campaign`` (~670), ``exec_in_container`` (~654) and
-#: ``get_campaign_log`` (~578). The next capability should still be paid for out of those.
-_SURFACE_TOKEN_BUDGET = 13_000
+#: ``get_campaign_log`` (~578). The next capability should still be paid for out of those
+#: — this raise bought ~260 of headroom, not a new habit.
+_SURFACE_TOKEN_BUDGET = 13_500
 
 
 def test_the_tool_surface_stays_within_its_token_budget():
