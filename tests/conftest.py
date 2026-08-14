@@ -25,6 +25,25 @@ import pytest
 SIMULATOR_GROUP = "robovast.simulators"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_login_config(tmp_path, monkeypatch):
+    """No test may read or write the developer's real ``vast login``.
+
+    ``detected_service_url()`` resolves local probe -> stored login, so any test that
+    touches it silently depends on whether the person running the suite happens to be
+    logged in. Three tests in ``test_service_target.py`` asserted "nothing answers, so
+    the target is empty" and began failing the moment a real login existed -- a green
+    suite on a fresh checkout, red on the maintainer's machine, for no change in the
+    code.
+
+    ``test_login.py`` had this fixture locally, which is exactly why the gap survived:
+    per-module isolation protects the module that thought of it and nothing else. It
+    belongs here, where it covers every test that will ever reach for a credential.
+    """
+    from robovast.common.cli import login  # pylint: disable=import-outside-toplevel
+    monkeypatch.setenv(login.CONFIG_ENV_VAR, str(tmp_path / "robovast-login.json"))
+
+
 def simulator_backends() -> list[str]:
     """Registered simulator backends, by name."""
     return sorted(e.name for e in entry_points(group=SIMULATOR_GROUP))

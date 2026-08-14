@@ -19,10 +19,9 @@ import pytest
 from robovast.common.cli import login, service_target
 
 
-@pytest.fixture(autouse=True)
-def _isolated_config(tmp_path, monkeypatch):
-    """Never read or write a developer's real login."""
-    monkeypatch.setenv(login.CONFIG_ENV_VAR, str(tmp_path / "config.json"))
+# The login config is isolated for every test by an autouse fixture in tests/conftest.py.
+# It lived here first, which is how test_service_target.py came to read the maintainer's
+# real credentials -- per-module isolation only protects the module that thought of it.
 
 
 def _runner():
