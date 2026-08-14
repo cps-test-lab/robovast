@@ -1204,6 +1204,29 @@ def _mount_ui(app) -> None:
     logger.info("serving web UI from %s", dist)
 
 
+def _proxy_trust(env) -> tuple:
+    """Whether to believe ``X-Forwarded-*``, as ``(proxy_headers, allow_ips)``.
+
+    Behind an Ingress, TLS ends at the controller and the pod is spoken to over plain
+    HTTP. uvicorn trusts ``X-Forwarded-Proto`` only from 127.0.0.1 by default and the
+    controller reaches us from a cluster IP, so ``request.url.scheme`` was ``"http"``
+    and the session cookie silently lost its ``Secure`` flag on every published
+    deployment. That cookie *is* the shared token, so a single request to the http://
+    port would have sent it in clear text -- and the Ingress' 308 to https does not
+    prevent it, because the browser attaches the cookie before it sees the redirect.
+
+    Trusted **only in-pod**, where the port is reachable through the Service alone:
+    forging the header there needs cluster access, which already grants far more than a
+    scheme does. Off cluster, ``vast serve`` keeps uvicorn's default, stays plain http
+    for the developer, and the flag is then correctly absent rather than merely missing.
+
+    Deliberately derived rather than configured: an operator who has to remember a flag
+    to keep a cookie ``Secure`` will one day not remember it, and nothing would say so.
+    """
+    behind_ingress = bool(env.get("KUBERNETES_SERVICE_HOST"))
+    return behind_ingress, "*" if behind_ingress else "127.0.0.1"
+
+
 def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
           log_level: str = "info", mount_mcp: bool = True) -> None:
     """Run the service in the foreground (blocking) via uvicorn.
@@ -1276,8 +1299,11 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection
     # wait) and close their streams instead of hanging it. ``timeout_graceful_
     # shutdown`` is a backstop for any other lingering connection.
+    proxy_headers, forwarded_allow_ips = _proxy_trust(os.environ)
     config = uvicorn.Config(app, host=host, port=port, log_level=log_level,
                             log_config=_quiet_access_log_config(),
+                            proxy_headers=proxy_headers,
+                            forwarded_allow_ips=forwarded_allow_ips,
                             timeout_graceful_shutdown=5)
     server = _Server(config)
     app.state.should_exit = lambda: server.should_exit
