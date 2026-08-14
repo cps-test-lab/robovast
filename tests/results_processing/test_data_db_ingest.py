@@ -274,15 +274,15 @@ def test_behaviour_tree_log_jsonl_becomes_the_behaviors_table(campaign):
     _write_bt_log(campaign / "cfg-a" / "0" / "behaviors.jsonl", [
         _bt_record(),
         _bt_record(behavior_id="id-leaf", parent_id="id-root", child_index=0,
-                   behavior_name="drive", class_name="rst.actions.Drive",
+                   behavior_name="drive", class_name="roqsim.actions.Drive",
                    type="BEHAVIOUR", osc_line=7, osc_column=8),
         _bt_record(timestamp=10.5, status="RUNNING", is_active=True, tip_id="id-leaf"),
         _bt_record(timestamp=10.5, behavior_id="id-leaf", parent_id="id-root",
-                   child_index=0, behavior_name="drive", class_name="rst.actions.Drive",
+                   child_index=0, behavior_name="drive", class_name="roqsim.actions.Drive",
                    type="BEHAVIOUR", status="RUNNING", is_active=True,
                    feedback_message="driving", osc_line=7, osc_column=8),
         _bt_record(timestamp=9.5, behavior_id="id-leaf", parent_id="id-root",
-                   child_index=0, behavior_name="drive", class_name="rst.actions.Drive",
+                   child_index=0, behavior_name="drive", class_name="roqsim.actions.Drive",
                    type="BEHAVIOUR", status="SUCCESS", is_active=True, osc_line=7),
     ])
     _build(campaign)

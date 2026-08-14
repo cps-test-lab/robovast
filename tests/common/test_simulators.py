@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The ``robovast.simulators`` backend API.
 
-Driven by a **stub** backend rather than the real robosito one, which is itself the
+Driven by a **stub** backend rather than the real roqsim one, which is itself the
 property under test: RoboVAST's own suite must never import a simulator. The stub's
 config key is deliberately ``stage``, not ``world`` or ``config``, so anything that
-hard-codes robosito's vocabulary fails here.
+hard-codes roqsim's vocabulary fails here.
 """
 
 import pytest
@@ -240,7 +240,7 @@ def test_backend_env_reaches_the_simulation_sidecar():
 
     scenario_env emits the backend's contribution into the main container, which is only
     correct when the simulator IS the main container. In the ROS shape that sent
-    robosito's ROBOSITO_RECORD / ROBOSITO_CAPTURE_EXPORT_DIR to the scenario container and
+    roqsim's ROQSIM_RECORD / ROQSIM_CAPTURE_EXPORT_DIR to the scenario container and
     nowhere else, so the run produced no capture at all -- while produces_run_capture()
     still said True and validation accepted a scene3d panel with nothing to replay.
     """

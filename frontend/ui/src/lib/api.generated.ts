@@ -2717,7 +2717,7 @@ export interface components {
          * @description What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
          *
          *     The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
-         *     RoboVAST's: a backend answers in its own terms (robosito reports geoms and actuators; a
+         *     RoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a
          *     different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
          *     plain mappings rather than modelled fields — typing them here would make this the second
          *     place a simulator's schema is written down, and the two would disagree.

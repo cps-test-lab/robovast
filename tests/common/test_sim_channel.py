@@ -159,9 +159,9 @@ def test_a_generated_file_is_addressed_where_the_container_will_find_it(backend,
 
 def test_a_value_that_is_not_a_staged_file_is_left_alone(backend, execution):
     merged = S.merge_sim_block(
-        execution, {"plugins.floorplan.mesh": "rst_scenes:depot"},
+        execution, {"plugins.floorplan.mesh": "roqsim_scenes:depot"},
         deploy_paths={"3d-mesh/room.stl"}, config_name="rooms-1")
-    assert merged["overrides"]["plugins"]["floorplan"]["mesh"] == "rst_scenes:depot"
+    assert merged["overrides"]["plugins"]["floorplan"]["mesh"] == "roqsim_scenes:depot"
 
 
 def test_an_unrecognised_key_becomes_an_override_path_when_a_root_exists(backend, execution):
@@ -207,7 +207,7 @@ def test_no_overrides_means_no_document_and_no_flag(backend, execution):
 def test_every_distinct_world_travels(backend, execution):
     """The union, not the campaign default: a world that is not staged cannot be opened."""
     blocks = [S.merge_sim_block(execution, {"config": w})
-              for w in ("worlds/a.yaml", "worlds/b.yaml", "rst_scenes:depot")]
+              for w in ("worlds/a.yaml", "worlds/b.yaml", "roqsim_scenes:depot")]
     staged = {f for b in blocks for f in S.sim_input_files(execution, b)}
     assert staged == {"worlds/a.yaml", "worlds/b.yaml"}  # the package ref needs nothing
 

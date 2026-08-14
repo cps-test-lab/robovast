@@ -618,7 +618,7 @@ class ClusterContainerRunner:
 
         A *file* target is allowed when its DIRECTORY is one of those paths, because that is
         the shape a staged single file has: ``mount_at`` names the exact path the command was
-        written for, filename included (``/aux/rst_scene_overrides.yaml``), and only the
+        written for, filename included (``/aux/roqsim_scene_overrides.yaml``), and only the
         directory around it can be a volume. Without this the scene build failed on the
         cluster, at the one moment it is least diagnosable -- the run view asking for
         geometry -- while working on the local lane, where a bind mount does not care.

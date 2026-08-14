@@ -58,11 +58,11 @@ def test_a_traceback_is_one_event_not_forty():
     """Unstamped continuation lines belong to the event above them. Emitting each as its own
     row would bury the exception under its own stack trace in any severity filter."""
     lines = [
-        "[ERROR] [100.5] [rst]: Traceback (most recent call last):",
+        "[ERROR] [100.5] [roqsim]: Traceback (most recent call last):",
         '  File "/ws/thing.py", line 3, in <module>',
         "    raise ValueError('nope')",
         "ValueError: nope",
-        "[INFO] [100.6] [rst]: carrying on",
+        "[INFO] [100.6] [roqsim]: carrying on",
     ]
     records = run_log.parse_container_log(lines, "main")
     assert len(records) == 2
@@ -75,7 +75,7 @@ def test_lines_before_the_first_stamp_report_no_time_rather_than_borrowing_one()
     """The entrypoint's bash lines come before anything stamped. Giving them the *next*
     line's time would claim the container booted at whatever second ROS came up."""
     records = run_log.parse_container_log(
-        ["Running as UID: 1000, GID: 1000...", "[INFO] [100.5] [rst]: up"], "main")
+        ["Running as UID: 1000, GID: 1000...", "[INFO] [100.5] [roqsim]: up"], "main")
     assert len(records) == 2
     assert records[0].wall_ts is None
     assert records[0].time_source == run_log.TIME_NONE
@@ -300,7 +300,7 @@ def test_the_csv_has_a_header_even_when_a_run_logged_nothing(tmp_path):
 
 
 def test_unstamped_lines_do_not_all_collapse_into_one_row():
-    """An rst run's whole container log is unstamped bash output: 46 lines are 46 things
+    """An roqsim run's whole container log is unstamped bash output: 46 lines are 46 things
     that happened. Folding each into the previous one made the entire log a single row —
     caught by running the merge over a real non-ROS job."""
     lines = ["Running as UID: 1000, GID: 1000...",
@@ -321,7 +321,7 @@ def test_a_continuation_still_folds_under_a_stamped_line():
     """
     records = run_log.parse_container_log(
         ["bare line before anything stamped",
-         "[ERROR] [100.5] [rst]: Traceback (most recent call last):",
+         "[ERROR] [100.5] [roqsim]: Traceback (most recent call last):",
          '  File "/ws/t.py", line 3',
          "ValueError: nope"], "main")
     assert len(records) == 2
@@ -352,7 +352,7 @@ def test_a_wholly_unstamped_log_is_still_every_line():
 def test_an_unstamped_tail_inherits_the_stamp_above_it():
     """A traceback's frames belong to the ERROR line that introduced them: one event."""
     records = run_log.parse_container_log(
-        ["[ERROR] [100.0] [rst]: Traceback (most recent call last):",
+        ["[ERROR] [100.0] [roqsim]: Traceback (most recent call last):",
          '  File "/ws/t.py", line 3',
          "ValueError: nope"], "main")
     assert len(records) == 1
@@ -384,7 +384,7 @@ def _job(tmp_path, logs: dict) -> str:
 def test_a_single_container_campaign_attributes_every_row_to_it(tmp_path):
     """With one container there is only one place the output can have come from, so a rosout row
     with no stdout twin is attributed rather than left as "?"."""
-    job = _job(tmp_path, {"system.log": "[INFO] [100.0] [rst]: only line\n"})
+    job = _job(tmp_path, {"system.log": "[INFO] [100.0] [roqsim]: only line\n"})
     records = run_log.collect_job_records(job, sole_container="robovast")
     assert {r.container for r in records} == {"robovast"}
 

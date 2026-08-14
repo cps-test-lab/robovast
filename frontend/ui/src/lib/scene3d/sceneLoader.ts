@@ -295,7 +295,7 @@ function buildMaterial(
   material.color.setRGB(rgba[0], rgba[1], rgba[2], SRGBColorSpace)
 
   if (mat && mat.texture >= 0) {
-    // MuJoCo's mapping rule (spelled out in rst's textures.py): a mesh with baked UVs is mapped by
+    // MuJoCo's mapping rule (spelled out in roqsim's textures.py): a mesh with baked UVs is mapped by
     // those UVs and *ignores* texrepeat/texuniform; anything else is projected, and texrepeat counts
     // tiles across the object (texuniform=false) or metres per tile (texuniform=true).
     //

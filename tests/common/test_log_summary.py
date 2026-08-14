@@ -137,7 +137,7 @@ def test_a_critical_line_is_an_error():
     """Python's stdlib emits CRITICAL, which rclpy never does -- so it was missing from the
     grammar, and a `logger.critical` line would have lost its timestamp *and* fallen through
     to the keyword scan. The same failure as the launch-tag bug above, by a different route."""
-    line = "[CRITICAL] [1786266112.412529] [rst.engine]: physics diverged"
+    line = "[CRITICAL] [1786266112.412529] [roqsim.engine]: physics diverged"
     assert severity_of(line) == "error"
     assert peel_prefixes(line).wall_ts == 1786266112.412529
 

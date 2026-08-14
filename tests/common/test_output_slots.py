@@ -280,34 +280,37 @@ def test_binding_the_optional_slot_puts_it_on_the_sim_channel():
 
 # -- answers that need the simulator ---------------------------------------------------------
 
+@pytest.mark.requires_simulator
 def test_a_world_with_no_campaign_parent_needs_no_container(tmp_path):
     """The common case must not make composition depend on pulling a simulator image."""
     from robovast.common.simulators import ContainerQuery
-    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     world = tmp_path / "w.yaml"
-    world.write_text("extends: rst_scenes:depot\nplugins: []\n")
-    declared = RobositoBackend().input_files(RobositoConfig(config=str(world)), {})
+    world.write_text("extends: roqsim_scenes:depot\nplugins: []\n")
+    declared = RoqsimBackend().input_files(RoqsimConfig(config=str(world)), {})
     assert not isinstance(declared, ContainerQuery)
     assert declared == [str(world)]
 
 
+@pytest.mark.requires_simulator
 def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
     """That chain is what the backend cannot resolve without importing the simulator."""
     from robovast.common.simulators import ContainerQuery
-    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     world = tmp_path / "w.yaml"
     world.write_text("extends: ./base.yaml\nplugins: []\n")
-    declared = RobositoBackend().input_files(RobositoConfig(config=str(world)), {})
+    declared = RoqsimBackend().input_files(RoqsimConfig(config=str(world)), {})
     assert isinstance(declared, ContainerQuery)
-    assert declared.command[:3] == ["rst", "scenes", "inputs"]
+    assert declared.command[:3] == ["roqsim", "scenes", "inputs"]
 
 
+@pytest.mark.requires_simulator
 def test_a_packaged_world_answers_without_a_container():
-    from robovast_sim_robosito.backend import RobositoBackend, RobositoConfig
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
-    assert RobositoBackend().input_files(RobositoConfig(config="rst_scenes:depot"), {}) == []
+    assert RoqsimBackend().input_files(RoqsimConfig(config="roqsim_scenes:depot"), {}) == []
 
 
 def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
@@ -336,7 +339,7 @@ def test_a_query_that_prints_no_json_fails_loudly(tmp_path):
 
     class _Runner:
         def run(self, _command, emit):
-            emit("bash: rst: command not found")
+            emit("bash: roqsim: command not found")
 
         def close(self):
             pass
@@ -368,7 +371,7 @@ def _check(block, payload, tmp_path, params=None, scenario_parameters=None):
     import robovast.common.config_generation as cg
 
     execution = {"mode": "ros2",
-                 "containers": {"simulation": {"backend": "robosito",
+                 "containers": {"simulation": {"backend": "roqsim",
                                                "config": "w.yaml"}}}
     configs = [{"name": "c", "sim": block, "config": params or {}}]
     original, cg._make_container_runner = cg._make_container_runner, _describing(payload)
@@ -378,23 +381,27 @@ def _check(block, payload, tmp_path, params=None, scenario_parameters=None):
         cg._make_container_runner = original
 
 
+@pytest.mark.requires_simulator
 def test_an_override_targeting_no_plugin_is_refused_before_the_image_pull(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}}
     with pytest.raises(ValueError, match="targets no plugin"):
         _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
 
 
+@pytest.mark.requires_simulator
 def test_the_error_names_what_the_world_does_have(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"nope": {}}}}
     with pytest.raises(ValueError, match="floorplan, lidar"):
         _check(block, {"plugins": [{"key": "lidar"}, {"key": "floorplan"}]}, tmp_path)
 
 
+@pytest.mark.requires_simulator
 def test_a_real_plugin_passes(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}}
     _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
 
 
+@pytest.mark.requires_simulator
 def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
     """`paths` lists what exists; a plugin may accept a key its world never sets."""
     block = {"config": "w.yaml",
@@ -403,6 +410,7 @@ def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
            tmp_path)
 
 
+@pytest.mark.requires_simulator
 def test_a_campaign_with_nothing_to_check_starts_no_container(tmp_path):
     """No overrides and no entity names means nothing a description could settle."""
     import robovast.common.config_generation as cg
@@ -411,7 +419,7 @@ def test_a_campaign_with_nothing_to_check_starts_no_container(tmp_path):
         raise AssertionError("should not have started a container")
 
     execution = {"mode": "ros2",
-                 "containers": {"simulation": {"backend": "robosito", "config": "w.yaml"}}}
+                 "containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}}
     configs = [{"name": "c", "sim": {"config": "w.yaml"}, "config": {}}]
     original, cg._make_container_runner = cg._make_container_runner, _refuse
     try:
@@ -425,6 +433,7 @@ def test_a_campaign_with_nothing_to_check_starts_no_container(tmp_path):
 _SPAWN_PARAMS = [{"name": "static_objects", "type": "listofspawn_entity"}]
 
 
+@pytest.mark.requires_simulator
 def test_an_entity_the_world_never_compiled_is_refused(tmp_path):
     """Nothing can create it at run time, so this is a run that fails on a service call."""
     with pytest.raises(ValueError, match="does not compile: obstacle_9"):
@@ -435,6 +444,7 @@ def test_an_entity_the_world_never_compiled_is_refused(tmp_path):
                scenario_parameters=_SPAWN_PARAMS)
 
 
+@pytest.mark.requires_simulator
 def test_entities_the_world_compiled_pass(tmp_path):
     _check({"config": "w.yaml"},
            {"plugins": [], "entities": ["obstacle_0", "obstacle_1"]},
@@ -444,6 +454,7 @@ def test_entities_the_world_compiled_pass(tmp_path):
            scenario_parameters=_SPAWN_PARAMS)
 
 
+@pytest.mark.requires_simulator
 def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
     """A build that failed costs the entity check, not the plugin-key check -- and says which."""
     with caplog.at_level(logging.WARNING):
@@ -458,6 +469,7 @@ def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
     assert "ros2_bridge" in caplog.text, "the reason has to be in the line, not just the fact"
 
 
+@pytest.mark.requires_simulator
 def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
     """The plugin keys came back, so a misspelt one is refused exactly as it always was."""
     with pytest.raises(ValueError, match="targets no plugin"):
@@ -467,6 +479,7 @@ def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
                tmp_path)
 
 
+@pytest.mark.requires_simulator
 def test_only_entity_typed_parameters_are_read(tmp_path):
     """A pose parameter is not an entity reference, whatever its fields are called."""
     _check({"config": "w.yaml"},

@@ -27,7 +27,7 @@ happily against a **stale or absent** artifact and only the result looks wrong.
 
     execution:
       generate:
-      - rst_scene:
+      - roqsim_scene:
           out: files/scene
           world: ../worlds/depot.yaml
 

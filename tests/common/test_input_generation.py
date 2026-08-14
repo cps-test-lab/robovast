@@ -208,7 +208,7 @@ def test_shell_keeps_a_manifest_the_command_wrote(tmp_path):
     """
     (tmp_path / "world.yaml").write_text("wall: 1\n")
     (tmp_path / "parent.yaml").write_text("floor: 1\n")
-    # A stand-in for a real compiler reporting its transitive sources (rst-export-web
+    # A stand-in for a real compiler reporting its transitive sources (roqsim-export-web
     # --manifest). Written as a script rather than inline JSON because the command string
     # is str.format()-expanded, so literal braces would need doubling.
     (tmp_path / "compile.py").write_text(textwrap.dedent(f"""\

@@ -48,7 +48,7 @@ def client(tmp_path, monkeypatch):
     (results / CAMPAIGN / "_execution" / "execution.yaml").write_text(
         "image: build:x\nimage_revision: harbor/x@sha256:" + "a" * 64 + "\n", encoding="utf-8")
     (run_dir / "capture.json").write_text(
-        json.dumps({"producer": "rst", "world": "pkg:depot", "overrides": {}}), encoding="utf-8")
+        json.dumps({"producer": "roqsim", "world": "pkg:depot", "overrides": {}}), encoding="utf-8")
 
     fake = tmp_path / "fake.sh"
     fake.write_text('#!/bin/sh\nmkdir -p "$1"\n'
@@ -125,7 +125,7 @@ def test_a_run_without_a_capture_reports_a_reason(client):
 def test_an_unrecorded_override_set_is_flagged_not_assumed(client, tmp_path):
     """A capture predating override recording must not be silently treated as 'no overrides'."""
     manifest = tmp_path / "results" / CAMPAIGN / "goal-1" / "0" / "capture" / "capture.json"
-    manifest.write_text(json.dumps({"producer": "rst", "world": "pkg:depot"}), encoding="utf-8")
+    manifest.write_text(json.dumps({"producer": "roqsim", "world": "pkg:depot"}), encoding="utf-8")
     body = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
     assert body["overrides_known"] is False
     assert "predates override recording" in body["note"]

@@ -14,8 +14,8 @@ assembling one:
      mode: ros2
      containers:
        simulation:
-         backend: robosito              # RoboVAST's: which entry point
-         config: worlds/depot.yaml      # robosito's own key
+         backend: roqsim              # RoboVAST's: which entry point
+         config: worlds/depot.yaml      # roqsim's own key
        sut:
          image: ghcr.io/cps-test-lab/robovast:latest
          system_packages: [ros-jazzy-navigation2]
@@ -201,7 +201,7 @@ login`` only records where the service is; the in-cluster service composes in *i
 Three ways to satisfy that, in the order you should reach for them:
 
 1. **Installed in the service environment** — the normal answer, and the only one that
-   costs a campaign nothing. ``robosito`` is there by default (see below).
+   costs a campaign nothing. ``roqsim`` is there by default (see below).
 2. **Shipped with the campaign** in ``plugins:``. Installed into ``.robovast_plugins/``
    and put on ``sys.path`` before the build specs are extracted, so a backend really can
    arrive this way; it just means a wheel per campaign.
@@ -210,33 +210,33 @@ Three ways to satisfy that, in the order you should reach for them:
 Nothing in the ``.vast`` shows which of the three is in play, which is why it is stated
 here.
 
-The robosito backend
+The roqsim backend
 --------------------
 
-Ships as its own distribution (``robovast-sim-robosito``, ``src/robovast_sim_robosito``)
-behind the ``robosito`` extra, rather than as part of RoboVAST: the framework must not
-*require* a simulator, and robosito must not name a campaign runner, so the coupling is a
+Ships as its own distribution (``robovast-sim-roqsim``, ``src/robovast_sim_roqsim``)
+behind the ``roqsim`` extra, rather than as part of RoboVAST: the framework must not
+*require* a simulator, and roqsim must not name a campaign runner, so the coupling is a
 third package that depends on neither. ``pip install robovast`` therefore names no
-simulator; ``pip install 'robovast[robosito]'`` adds this backend's entry point.
+simulator; ``pip install 'robovast[roqsim]'`` adds this backend's entry point.
 
 The **service/controller image installs that extra by default**, which is what lets a
-campaign say ``backend: robosito`` on a cluster without shipping anything in ``plugins:``.
+campaign say ``backend: roqsim`` on a cluster without shipping anything in ``plugins:``.
 It is affordable there precisely because the backend is container specs and strings whose
 only dependency RoboVAST already has — no MuJoCo enters that image. The simulator itself
 lives in the images named below, which the backend only *refers to*.
 
 It serves **both** shapes:
 
-- ``mode: ros2`` — a ``simulation`` container running ``rst sim <config> --ros --headless``
-  from robosito's own published image. Nothing a campaign owns contains robosito, so the
+- ``mode: ros2`` — a ``simulation`` container running ``roqsim sim <config> --ros --headless``
+  from roqsim's own published image. Nothing a campaign owns contains roqsim, so the
   GL packages, the ``mujoco`` pin and the ``rst_*`` package list leave the ``.vast``
   entirely.
-- ``mode: base`` — the combined ``robovast_robosito`` image, because a stepped simulator
-  shares the scenario's process. Built by ``container/robovast/build.sh --image robosito``.
+- ``mode: base`` — the combined ``robovast_roqsim`` image, because a stepped simulator
+  shares the scenario's process. Built by ``container/robovast/build.sh --image roqsim``.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``rst_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
-file is robosito's whole configuration — physics, plugins, robot, sensors and its
+``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
+file is roqsim's whole configuration — physics, plugins, robot, sensors and its
 ``extends`` chain — and "world" understates what a campaign selects.
 
 .. _sim-channel:
@@ -269,14 +269,14 @@ A ``.vast`` reaches those keys through the ``sim:`` channel -- the sibling of ``
          values: [...]
 
 **A bare backend key is that key; anything else is a path into the world.** ``sim: config``
-selects the world file because ``config`` is one of robosito's keys, while
+selects the world file because ``config`` is one of roqsim's keys, while
 ``sim: plugins.floorplan.floor.friction`` lands under the backend's declared ``DOTTED_ROOT``
-(``overrides`` for robosito) -- so the prefix that would say nothing is not written. The
+(``overrides`` for roqsim) -- so the prefix that would say nothing is not written. The
 explicit spelling ``sim: overrides.plugins....`` stays valid, and is how a world key that
 collided with a backend key would be reached.
 
 **Where a factor lands is decided by when the simulator can still act on it.** MuJoCo does
-not recompile mid-run, and robosito's ``simulation_interfaces`` serves no ``SpawnEntity``:
+not recompile mid-run, and roqsim's ``simulation_interfaces`` serves no ``SpawnEntity``:
 *which* entities exist is settled when the model compiles, and a scenario only moves and
 observes them. So the boundary between the two channels is the compile -- not "the world"
 versus "the trial", since a world is not static during a run either.
@@ -299,7 +299,7 @@ Two artifacts, mirroring what the scenario channel already writes:
 
 The world stays on argv, so a job's command names it directly::
 
-   rst sim /config/world/depot_nav2.yaml --headless --pacing realtime \
+   roqsim sim /config/world/depot_nav2.yaml --headless --pacing realtime \
        --override /config/sim.overrides.yaml
 
 The record is not mounted. It is there so that what the simulator was given sits next to the
@@ -351,7 +351,7 @@ model values a run may change while it is running, and their current values -- s
 :ref:`mcp-describe-world`.
 
 **Entities the trial drives must be entities the world compiled.** Nothing creates one at run
-time -- rst does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``
+time -- roqsim does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``
 -- so a scenario naming ``obstacle_9`` against a world with four obstacles fails on a service
 call, mid-trial. Which parameters name entities is not guessed: the scenario file declares it
 (``static_objects: list of spawn_entity``), and the values of those parameters carry
@@ -383,14 +383,14 @@ down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
 
 So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge``, plus
 ``sim_interfaces`` if the scenario touches entities. Opening such a world by hand where no
-bridge is installed is ``rst sim <world> --no-communication``, which strips the transport
+bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
 
 Developing against a working tree
 `````````````````````````````````
 
-The combined image is built from a git pin, which is robosito as *pushed* — not your
-working tree. Set ``ROBOVAST_ROBOSITO_SRC`` to a local checkout and the CLI stages it into
+The combined image is built from a git pin, which is roqsim as *pushed* — not your
+working tree. Set ``ROBOVAST_ROQSIM_SRC`` to a local checkout and the CLI stages it into
 the campaign's own image build, so an edit is picked up on the next run. It works on both
 lanes (the cluster stages the context to its build bucket) and it keeps provenance honest:
 the image digest still describes exactly what ran.

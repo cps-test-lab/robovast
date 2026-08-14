@@ -294,7 +294,7 @@ def _extract_md_title(text: str) -> str | None:
 def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     """Discover documentation sources as ``name -> (path, kind)``.
 
-    Generic and maintenance-free: every ``docs/*.rst`` (kind ``"rst"``) and
+    Generic and maintenance-free: every ``docs/*.rst`` (kind ``"roqsim"``) and
     ``docs/*.md`` page, the repository ``README.md``, and each top-level
     package README under ``src/*/README.md`` (all kind ``"md"``). ``index`` is
     skipped; ``.rst`` wins a name collision with ``.md``.
@@ -302,7 +302,7 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     sources: dict[str, tuple[Path, str]] = {}
     for p in sorted(docs_dir.glob("*.rst")):
         if p.stem != "index":
-            sources[p.stem] = (p, "rst")
+            sources[p.stem] = (p, "roqsim")
     for p in sorted(docs_dir.glob("*.md")):
         sources.setdefault(p.stem, (p, "md"))
 
@@ -329,7 +329,7 @@ if _docs_dir is not None:
     for _name, (_path, _kind) in _collect_doc_sources(_docs_dir).items():
         _text = _path.read_text(encoding="utf-8", errors="replace")
         _doc_files[_name] = _path
-        if _kind == "rst":
+        if _kind == "roqsim":
             _doc_meta[_name] = _extract_title(_text) or _name
             _doc_content[_name] = _resolve_directives(_text, _path.parent)
         else:

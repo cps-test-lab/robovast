@@ -33,7 +33,7 @@ SIM_DIGEST = "harbor.example/robovast/sim@sha256:" + "b" * 64
 #: anywhere but the host that built them.
 LOCAL_ID = "sha256:" + "d" * 64
 #: What a ``build:<tag>`` project records as its declared image on the cluster lane.
-SYMBOLIC = "build:rst-basic-nav-robosito"
+SYMBOLIC = "build:roqsim-basic-nav-roqsim"
 
 
 def _campaign(tmp_path, **meta):

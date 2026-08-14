@@ -125,7 +125,7 @@ _post_run() {
 }
 
 # Run the workload as a child and forward SIGTERM, so it shuts down the way it would have
-# as PID 1 -- `rst sim` traps it to flush its recording, and a hard kill would leave the
+# as PID 1 -- `roqsim sim` traps it to flush its recording, and a hard kill would leave the
 # .npz without its index. `wait` returns >128 when a trapped signal interrupts it, hence
 # the loop: the second wait is the one that reaps.
 _child=""
@@ -160,7 +160,7 @@ run_child() {
 # the resource monitor running. Exec'ing the command directly as the container's
 # entrypoint -- which is what used to happen -- skipped all three. The ROS one is not a
 # nicety: a colcon package like the MuJoCo bridge only reaches PYTHONPATH once
-# /opt/ros and /ws/install are sourced, so `rst sim --ros` died instantly with
+# /opt/ros and /ws/install are sourced, so `roqsim sim --ros` died instantly with
 # "unknown plugin 'ros2_bridge'" while the scenario waited out its /scan timeout with
 # no log anywhere to say why. Any simulator backend would have hit the same wall, so
 # this belongs here and not in one backend's command string.

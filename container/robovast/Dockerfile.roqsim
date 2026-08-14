@@ -1,27 +1,27 @@
 # syntax=docker/dockerfile:1
 #
-# robovast + robosito: the image for a **stepped** simulator run.
+# robovast + roqsim: the image for a **stepped** simulator run.
 #
 # A SimulationInterface is stepped in-process by scenario-execution, so the simulator and
 # the scenario share a process -- and therefore an image. That is what this is for, and
 # the only thing it is for. A ROS campaign does NOT use it: there the simulator runs in
-# its own container from robosito's own published image, and nothing a campaign owns
-# contains robosito at all.
+# its own container from roqsim's own published image, and nothing a campaign owns
+# contains roqsim at all.
 #
 # Neither existing image can do this job alone, which is why a third exists:
 #
 #   robovast_<distro>   carries the RoboVAST contract (/etc/robovast_compat_version,
 #                       scenario-execution, the /out mount) but no simulator.
-#   rst-ros             carries robosito but not that contract, so the runner rejects it
+#   roqsim-ros             carries roqsim but not that contract, so the runner rejects it
 #                       before a scenario starts.
 #
-# Built by ``container/robovast/build.sh --image robosito`` and by CI, on top of a
+# Built by ``container/robovast/build.sh --image roqsim`` and by CI, on top of a
 # *resolved* base tag (BASE_IMAGE) so the two images cannot drift apart. The compat
 # version is inherited from that base rather than restated here -- one file, one source.
 #
-# The pin is a release control, not a development one: it builds robosito as *pushed*,
-# which is not this working tree. Iterating on robosito code goes through
-# ROBOVAST_ROBOSITO_SRC instead, which stages the working tree into the campaign's own
+# The pin is a release control, not a development one: it builds roqsim as *pushed*,
+# which is not this working tree. Iterating on roqsim code goes through
+# ROBOVAST_ROQSIM_SRC instead, which stages the working tree into the campaign's own
 # image build (see docs/simulators.rst) -- the digest then still describes what ran.
 
 ARG BASE_IMAGE=ghcr.io/cps-test-lab/robovast:latest
@@ -34,10 +34,10 @@ USER root
 ####            MuJoCo's runtime GL libraries             ####
 ##############################################################
 # `import mujoco` links against libGL even for a trial that renders nothing, so these are
-# needed by every robosito run and not only by camera worlds. Both offscreen backends are
+# needed by every roqsim run and not only by camera worlds. Both offscreen backends are
 # installed because which one works is a property of the *node*: egl needs a render
-# device, osmesa is the software fallback for a CPU-only one. robosito chooses between
-# them at startup (rst.viewer.select_offscreen_gl) -- it is the only place that can, so
+# device, osmesa is the software fallback for a CPU-only one. roqsim chooses between
+# them at startup (roqsim.viewer.select_offscreen_gl) -- it is the only place that can, so
 # no campaign has to guess.
 # hadolint ignore=DL3008
 RUN apt-get update && \
@@ -51,21 +51,21 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ##############################################################
-####                      robosito                        ####
+####                      roqsim                        ####
 ##############################################################
 # From the build context, always -- ``build.sh`` decides what is in it: a clone at a pin
 # for a release, or the local working tree for development. One COPY here rather than a
 # conditional clone, because a Dockerfile cannot branch and two code paths for "where
 # does the source come from" is how the two drift.
 #
-# The distinction matters more than it looks. A pinned clone builds robosito as *pushed*,
+# The distinction matters more than it looks. A pinned clone builds roqsim as *pushed*,
 # which is routinely not what a developer has in front of them -- and an image built from
 # the wrong source fails in ways that look like the integration is broken rather than
-# stale. ``build.sh --robosito-src`` is the answer; see it for which was used.
-COPY robosito /opt/robosito
+# stale. ``build.sh --roqsim-src`` is the answer; see it for which was used.
+COPY roqsim /opt/roqsim
 
 # Into the ROS **system** interpreter, with --break-system-packages, which is what
-# robosito's own image does (container/Dockerfile.ros) and for the same reason: nodes are
+# roqsim's own image does (container/Dockerfile.ros) and for the same reason: nodes are
 # launched by `ros2 launch` with /usr/bin/python3, and a package it cannot import is not
 # installed as far as a run is concerned.
 #
@@ -79,12 +79,12 @@ COPY robosito /opt/robosito
 # numpy that breaks rclpy's ABI.
 #
 # One pip pass over all of them, so a package's dependency on a sibling resolves against
-# that sibling rather than against PyPI -- where `rst` is an unrelated project. This is
+# that sibling rather than against PyPI -- where `roqsim` is an unrelated project. This is
 # the same reason the campaigns that used to carry a wheel list installed them as one
 # group; the difference is that nobody has to maintain the list any more.
 #
-# `scenario_execution_robosito` is the substrate's OSC action library, and it is in this list for a
-# reason worth knowing: a campaign whose scenario writes `import osc.robosito` fails at scenario PARSE
+# `scenario_execution_roqsim` is the substrate's OSC action library, and it is in this list for a
+# reason worth knowing: a campaign whose scenario writes `import osc.roqsim` fails at scenario PARSE
 # time without it ("No plugins found for action ..."), before a single step runs. Its own
 # scenario-execution dependency is deliberately not declared (see its pyproject) -- this image already
 # carries that as a colcon package under /ws, and a pip'd copy from PyPI would be a different, older
@@ -92,15 +92,15 @@ COPY robosito /opt/robosito
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages \
         "mujoco>=3.0" \
-        /opt/robosito/rst \
-        /opt/robosito/rst_assets \
-        /opt/robosito/rst_sensors \
-        /opt/robosito/rst_mobile \
-        /opt/robosito/rst_manipulation \
-        /opt/robosito/rst_manipulation_assets \
-        /opt/robosito/rst_mobile_manipulation \
-        /opt/robosito/rst_scenes \
-        /opt/robosito/scenario_execution_robosito
+        /opt/roqsim/roqsim \
+        /opt/roqsim/roqsim_assets \
+        /opt/roqsim/roqsim_sensors \
+        /opt/roqsim/roqsim_mobile \
+        /opt/roqsim/roqsim_manipulation \
+        /opt/roqsim/roqsim_manipulation_assets \
+        /opt/roqsim/roqsim_mobile_manipulation \
+        /opt/roqsim/roqsim_scenes \
+        /opt/roqsim/scenario_execution_roqsim
 
 # The ROS bridge and the nav2 example are colcon packages, not pip ones: they register
 # the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks for transport.
@@ -116,10 +116,10 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # --packages-select so only these two build; /ws already holds a built scenario-execution
 # and rebuilding it would cost minutes for nothing.
 # hadolint ignore=DL3003
-RUN ln -s /opt/robosito/ros2_ws/src/rst_ros_bridge /ws/src/rst_ros_bridge && \
-    ln -s /opt/robosito/ros2_ws/src/rst_nav2_example /ws/src/rst_nav2_example && \
+RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge && \
+    ln -s /opt/roqsim/ros2_ws/src/roqsim_nav2_example /ws/src/roqsim_nav2_example && \
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
-    colcon build --packages-select rst_ros_bridge rst_nav2_example
+    colcon build --packages-select roqsim_ros_bridge roqsim_nav2_example
 
 USER ubuntu:ubuntu

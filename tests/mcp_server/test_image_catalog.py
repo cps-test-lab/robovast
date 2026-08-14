@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for the ``list_scenario_actions``/``get_scenario_action_details`` and
-``list_robosito_plugins``/``get_robosito_plugin_details`` MCP tools.
+``list_roqsim_plugins``/``get_roqsim_plugin_details`` MCP tools.
 
 The behavior these guard: an address is resolved to an image via ``resolve_image``
 (no container started), the catalog command runs once via ``exec_in_container``, and a
@@ -32,7 +32,7 @@ _ACTIONS_PAYLOAD = {
 _PLUGINS_PAYLOAD = {
     "items": [{"name": "contact_monitor", "kind": "plugin",
               "doc": "Observation plugin: report when an entity touches something.",
-              "flags": ["parallel_safe"], "package": "rst"}],
+              "flags": ["parallel_safe"], "package": "roqsim"}],
 }
 
 
@@ -113,10 +113,10 @@ def test_scenario_actions_are_flattened_across_all_four_buckets(service):
     assert names == {"differential_drive_robot.nav_to_pose", "timeout"}
 
 
-def test_robosito_plugins_come_from_the_flat_items_key(monkeypatch):
+def test_roqsim_plugins_come_from_the_flat_items_key(monkeypatch):
     fake = _FakeClient(payload=_PLUGINS_PAYLOAD)
     monkeypatch.setattr(service_access, "service_client", lambda: fake)
-    out = image_catalog.list_robosito_plugins(address="/sources/ws-1/w.vast")
+    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/w.vast")
     assert [item["name"] for item in out["items"]] == ["contact_monitor"]
 
 
@@ -139,10 +139,10 @@ def test_get_details_unknown_name_is_error(service):
     assert "error" in out
 
 
-def test_get_robosito_plugin_details_full_shape(monkeypatch):
+def test_get_roqsim_plugin_details_full_shape(monkeypatch):
     fake = _FakeClient(payload=_PLUGINS_PAYLOAD)
     monkeypatch.setattr(service_access, "service_client", lambda: fake)
-    out = image_catalog.get_robosito_plugin_details(
+    out = image_catalog.get_roqsim_plugin_details(
         address="/sources/ws-1/w.vast", name="contact_monitor")
     assert out["kind"] == "plugin"
     assert out["flags"] == ["parallel_safe"]
@@ -157,10 +157,10 @@ def test_a_nonzero_exit_is_reported_as_error_not_raised(monkeypatch):
     class Failing(_FakeClient):
         def exec_in_container(self, request):
             self.exec_calls.append(request)
-            return ExecResult(exit_code=1, stdout="", stderr="ModuleNotFoundError: rst")
+            return ExecResult(exit_code=1, stdout="", stderr="ModuleNotFoundError: roqsim")
 
     monkeypatch.setattr(service_access, "service_client", lambda: Failing())
-    out = image_catalog.list_robosito_plugins(address="/sources/ws-1/w.vast")
+    out = image_catalog.list_roqsim_plugins(address="/sources/ws-1/w.vast")
     assert "error" in out
     assert "ModuleNotFoundError" in out["error"]
 

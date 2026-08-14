@@ -1,7 +1,7 @@
 // runCapture: the file-backed MotionSource -- reads a run capture (`capture.json` + `capture.bin`).
 //
-// The format is specified in robovast/docs/run_capture.rst and this is its normative reader. rst's
-// `rst export capture` is the first producer; a second simulator implements the same two files.
+// The format is specified in robovast/docs/run_capture.rst and this is its normative reader. roqsim's
+// `roqsim export capture` is the first producer; a second simulator implements the same two files.
 //
 // Layout, and why it is shaped this way:
 //   * `capture.json` indexes tracks by byte offset into `capture.bin`; each track is **sample-major**

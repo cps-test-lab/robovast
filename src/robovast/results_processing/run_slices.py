@@ -372,7 +372,7 @@ def iter_run_slices(campaign_path: Path, stats: SliceStats) -> Iterator[RunSlice
                 os.path.join(job_dir, "logs", clock_map.FILENAME))
         clock = clocks[job_dir]
         if not clock:
-            # rst writes its map beside the RUN's own recording, and in a packed job each
+            # roqsim writes its map beside the RUN's own recording, and in a packed job each
             # run has one of its own -- so this is looked up per run, not per job.
             clock = clock_map.find_run_clock_map(str(run_dir))
         if not clock:

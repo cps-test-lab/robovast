@@ -1306,7 +1306,7 @@ def test_scene_geometry_uses_the_campaign_image_for_a_stepped_simulator(tmp_path
 def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
     """The regression: a separate simulation container with no per-role digest must refuse.
 
-    Borrowing ``image_revision`` here ran ``rst-export-web`` in an image that does not
+    Borrowing ``image_revision`` here ran ``roqsim-export-web`` in an image that does not
     contain it, reported as a bare ``exit status 127``.
     """
     import yaml
@@ -1331,17 +1331,18 @@ def _scene_identity_for(tmp_path, world, archive=True):
     if archive:
         f = tmp_path / "_config" / "files" / "depot_nav2.yaml"
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("extends: rst_scenes:depot\n")
+        f.write_text("extends: roqsim_scenes:depot\n")
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
     vast.write_text("version: 2\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
-                    "      backend: robosito\n      config: rst_scenes:depot\n")
+                    "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
         return scene_cache.world_identity(str(tmp_path), {"world": world, "overrides": {}})
 
 
+@pytest.mark.requires_simulator
 def test_a_campaign_owned_world_is_staged_into_the_build_container(tmp_path):
     """A world declared as a path in the .vast is a run_file, mounted at /config only for
     the job. Passing that recorded path to a fresh container asks it to read something
@@ -1364,7 +1365,7 @@ def test_a_campaign_worlds_neighbours_travel_with_it(tmp_path):
     """The mesh a world names is not the world file, and staging the YAML alone failed on it.
 
     Mounting the tree rather than enumerating the world's dependencies is deliberate: an
-    enumeration that under-reports (rst's own walks `extends` and MJCF assets, never a
+    enumeration that under-reports (roqsim's own walks `extends` and MJCF assets, never a
     plugin's config values) reproduces exactly the failure this replaced."""
     from pathlib import Path
 
@@ -1393,16 +1394,17 @@ def test_the_cache_key_covers_a_referenced_file_not_just_the_world(tmp_path):
     assert scene_cache.cache_key(a) != scene_cache.cache_key(b)
 
 
+@pytest.mark.requires_simulator
 def test_a_packaged_world_keeps_its_recorded_path(tmp_path):
     """It lives in the image, so the path is valid there by construction -- nothing to stage."""
     from robovast.service import scene_cache
 
-    ident = _scene_identity_for(tmp_path, "rst_scenes:depot", archive=False)
+    ident = _scene_identity_for(tmp_path, "roqsim_scenes:depot", archive=False)
     assert "world_file" not in ident
     entry = scene_cache._generate_entry(ident, "k", 1024)
     assert "inputs" not in entry["shell"]
     assert "mount_at" not in entry["shell"]
-    assert "rst_scenes:depot" in entry["shell"]["command"]
+    assert "roqsim_scenes:depot" in entry["shell"]["command"]
 
 
 def test_the_cache_key_covers_a_campaign_worlds_contents(tmp_path):
@@ -1413,7 +1415,7 @@ def test_the_cache_key_covers_a_campaign_worlds_contents(tmp_path):
     a = _scene_identity_for(tmp_path / "a", "/config/files/depot_nav2.yaml")
     b_dir = tmp_path / "b"
     (b_dir / "_config" / "files").mkdir(parents=True)
-    (b_dir / "_config" / "files" / "depot_nav2.yaml").write_text("extends: rst_scenes:other\n")
+    (b_dir / "_config" / "files" / "depot_nav2.yaml").write_text("extends: roqsim_scenes:other\n")
     b = _scene_identity_for(b_dir, "/config/files/depot_nav2.yaml", archive=False)
     assert a["world"] == b["world"]
     assert scene_cache.cache_key(a) != scene_cache.cache_key(b)
@@ -1471,7 +1473,7 @@ def test_a_packaged_world_fetches_the_vast_and_nothing_else():
     svc = ClusterService.__new__(ClusterService)
     fetched = []
     svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
-    svc._scene_capture = lambda cid, cn, rid: {"world": "rst_scenes:depot"}
+    svc._scene_capture = lambda cid, cn, rid: {"world": "roqsim_scenes:depot"}
     svc.list_files = lambda address, recursive=False, limit=100: SimpleNamespace(
         entries=["p.vast", "environments/hex/3d-mesh/hex.stl"])
     with patch.object(type(svc).__mro__[1], "_scene_identity",

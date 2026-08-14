@@ -18,8 +18,8 @@ from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import prepare_campaign_configs
 from robovast.common.simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
 
-pytest.importorskip("robovast_sim_robosito",
-                    reason="the robosito backend extra is not installed")
+pytest.importorskip("robovast_sim_roqsim",
+                    reason="the roqsim backend extra is not installed")
 
 _SCENARIO = """\
 import osc.robotics
@@ -32,6 +32,10 @@ scenario nav:
 
 _WORLD = "sim: {pacing: realtime}\n"
 
+
+
+#: Every test here drives a simulator backend end to end.
+pytestmark = pytest.mark.requires_simulator
 
 def _project(tmp_path, configuration):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
@@ -49,7 +53,7 @@ def _project(tmp_path, configuration):
           mode: ros2
           containers:
             simulation:
-              backend: robosito
+              backend: roqsim
               config: worlds/depot.yaml
               image: sim:latest
             scenario: {{image: scen:latest}}

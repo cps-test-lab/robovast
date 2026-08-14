@@ -17,27 +17,36 @@ import pytest
 
 from robovast.common.config_generation import (WorldQueryUnavailable,
                                                describe_world_payload)
-from robovast_sim_robosito.backend import (DEFAULT_COMBINED_IMAGE,
-                                           DEFAULT_SIM_IMAGE, RobositoBackend,
-                                           RobositoConfig)
+
+# This module imports a simulator backend at import time, so the `requires_simulator`
+# marker cannot save it — an absent package is a *collection* error, before any marker
+# is read. robovast is standalone and ships no simulator, so skip the module instead.
+roqsim_backend = pytest.importorskip(
+    "robovast_sim_roqsim.backend",
+    reason="no simulator installed; robovast is standalone (`make venv` installs one)")
+
+DEFAULT_COMBINED_IMAGE = roqsim_backend.DEFAULT_COMBINED_IMAGE
+DEFAULT_SIM_IMAGE = roqsim_backend.DEFAULT_SIM_IMAGE
+RoqsimBackend = roqsim_backend.RoqsimBackend
+RoqsimConfig = roqsim_backend.RoqsimConfig
 
 
-def _cfg(config="rst_scenes:depot", **kw):
-    return RobositoConfig(config=config, **kw)
+def _cfg(config="roqsim_scenes:depot", **kw):
+    return RoqsimConfig(config=config, **kw)
 
 
 # -- which image answers ------------------------------------------------------------------
 def test_the_campaigns_own_image_is_asked_not_a_default():
     """The whole bug: a campaign's world may exist only in the image the campaign runs."""
-    pinned = "harbor.example/robovast_robosito@sha256:abc"
-    query = RobositoBackend().describe_query(
+    pinned = "harbor.example/robovast_roqsim@sha256:abc"
+    query = RoqsimBackend().describe_query(
         _cfg(), {"mode": "base", "containers": {"scenario": {"image": pinned}}})
     assert query.spec.image == pinned
 
 
 def test_a_ros_campaign_is_asked_in_its_simulation_container():
     pinned = "harbor.example/sim:pinned"
-    query = RobositoBackend().describe_query(
+    query = RoqsimBackend().describe_query(
         _cfg(), {"mode": "ros2", "containers": {"simulation": {"image": pinned}}})
     assert query.spec.image == pinned
 
@@ -45,14 +54,14 @@ def test_a_ros_campaign_is_asked_in_its_simulation_container():
 @pytest.mark.parametrize("mode, expected", [("ros2", DEFAULT_SIM_IMAGE),
                                             ("base", DEFAULT_COMBINED_IMAGE)])
 def test_a_campaign_that_pins_nothing_falls_back_to_the_shape_default(mode, expected):
-    query = RobositoBackend().describe_query(_cfg(), {"mode": mode})
+    query = RoqsimBackend().describe_query(_cfg(), {"mode": mode})
     assert query.spec.image == expected
 
 
 def test_input_files_asks_the_same_image():
     """Same reasoning, same bug class: what a world extends is resolved by what is installed."""
     pinned = "harbor.example/sim:pinned"
-    query = RobositoBackend().input_files(
+    query = RoqsimBackend().input_files(
         _cfg(config="/config/world.yaml"),
         {"mode": "ros2", "containers": {"simulation": {"image": pinned}}})
     # A path world that extends a campaign file is the case that needs a container at all.
@@ -61,7 +70,7 @@ def test_input_files_asks_the_same_image():
 
 # -- what is asked for --------------------------------------------------------------------
 def test_targets_and_entities_are_opt_in_because_each_costs_a_model_build():
-    backend = RobositoBackend()
+    backend = RoqsimBackend()
     plain = backend.describe_query(_cfg(), {"mode": "ros2"}).command
     assert "--entities" not in plain and "--overridable" not in plain
 
@@ -77,9 +86,9 @@ def test_an_unbuilt_image_is_reported_rather_than_silently_skipped():
     with pytest.raises(WorldQueryUnavailable, match="does not exist yet"):
         describe_world_payload(
             {"mode": "base",
-             "containers": {"simulation": {"backend": "robosito"},
+             "containers": {"simulation": {"backend": "roqsim"},
                             "scenario": {"image": "build:scenario"}}},
-            {"config": "rst_scenes:depot"}, ".")
+            {"config": "roqsim_scenes:depot"}, ".")
 
 
 def test_no_backend_is_a_reason_not_a_shrug():
@@ -98,7 +107,7 @@ def test_the_pre_check_warns_when_it_could_not_check(caplog, monkeypatch):
     monkeypatch.setattr(config_generation, "describe_world_payload", _unavailable)
     with caplog.at_level(logging.WARNING):
         _check_sim_against_world(
-            {"containers": {"simulation": {"backend": "robosito", "config": "w.yaml"}}},
+            {"containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}},
             [{"sim": {"overrides": {"plugins": {"floorplan": {"size": 3.0}}}}}], ".")
     assert "were not pre-checked" in caplog.text
     assert "could not be described" in caplog.text
@@ -117,8 +126,8 @@ def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
     class _Runner:
         def run(self, command, sink):
             del command
-            sink("docker run --rm image rst scenes describe w --overridable '*'")
-            sink("rst scenes describe: error: unrecognized arguments: --overridable *")
+            sink("docker run --rm image roqsim scenes describe w --overridable '*'")
+            sink("roqsim scenes describe: error: unrecognized arguments: --overridable *")
             raise subprocess.CalledProcessError(2, "docker")
 
         def close(self):
@@ -127,9 +136,9 @@ def test_a_failed_container_is_a_reason_not_a_traceback(monkeypatch):
     monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
     with pytest.raises(WorldQueryUnavailable, match="unrecognized arguments"):
         describe_world_payload(
-            {"mode": "ros2", "containers": {"simulation": {"backend": "robosito",
+            {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
                                                            "image": "img:1"}}},
-            {"config": "rst_scenes:depot"}, ".", targets="*")
+            {"config": "roqsim_scenes:depot"}, ".", targets="*")
 
 
 def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch):
@@ -160,8 +169,8 @@ def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch)
 
     monkeypatch.setattr(config_generation, "_make_container_runner", lambda spec: _Runner())
     payload, image = describe_world_payload(
-        {"mode": "ros2", "containers": {"simulation": {"backend": "robosito",
+        {"mode": "ros2", "containers": {"simulation": {"backend": "roqsim",
                                                        "image": "img:1"}}},
-        {"config": "rst_scenes:depot"}, ".", entities=True)
+        {"config": "roqsim_scenes:depot"}, ".", entities=True)
     assert payload == reply
     assert image == "img:1"

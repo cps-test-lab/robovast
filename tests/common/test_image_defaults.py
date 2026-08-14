@@ -4,7 +4,7 @@
 
 A default that points at a tag no workflow produces is worse than no default: it
 survives review, passes every unit test, and fails only when someone without an
-explicit ``image:`` tries to run something. ``robovast-robosito`` defaulted to
+explicit ``image:`` tries to run something. ``robovast-roqsim`` defaulted to
 ``:jazzy`` for exactly that reason — CI publishes ``:latest``/branch/PR/semver and
 has never produced ``:jazzy``.
 
@@ -32,16 +32,16 @@ DEFAULTS = {
 
 
 def _combined_image():
-    """The robosito default, imported lazily — it lives in a separate distribution.
+    """The roqsim default, imported lazily — it lives in a separate distribution.
 
     Skipped rather than failed when that distribution is not installed: "the environment
     is incomplete" and "the default drifted from CI" are different findings, and
     reporting the first as the second sends the reader to the wrong file.
     """
     try:
-        from robovast_sim_robosito.backend import DEFAULT_COMBINED_IMAGE
+        from robovast_sim_roqsim.backend import DEFAULT_COMBINED_IMAGE
     except ModuleNotFoundError as exc:
-        pytest.skip(f"robovast_sim_robosito is not installed ({exc}); "
+        pytest.skip(f"robovast_sim_roqsim is not installed ({exc}); "
                     "run 'poetry install' to check this default")
     return DEFAULT_COMBINED_IMAGE
 
@@ -65,11 +65,11 @@ def test_defaults_use_a_tag_ci_produces(default):
         f"{default} pins a tag CI does not publish for every default-branch build")
 
 
-def test_robosito_default_matches_its_ci_tag():
+def test_roqsim_default_matches_its_ci_tag():
     """Regression: this default was ``:jazzy``, which no workflow has ever produced."""
     combined = _combined_image()
-    assert combined == "ghcr.io/cps-test-lab/robovast-robosito:latest", combined
-    assert "${{ env.IMAGE_NAME }}-robosito" in WORKFLOW.read_text()
+    assert combined == "ghcr.io/cps-test-lab/robovast-roqsim:latest", combined
+    assert "${{ env.IMAGE_NAME }}-roqsim" in WORKFLOW.read_text()
 
 
 PLATFORMS_ENV = WORKFLOW.parents[2] / "container" / "platforms.env"
@@ -90,7 +90,7 @@ def test_every_build_job_reads_the_shared_platform_policy():
     """No job may hard-code `platforms:`; both builders read one file.
 
     The architecture rule has to hold in CI *and* in container/release_images.sh.
-    Written out twice it drifts, which is how the robosito job ended up with no
+    Written out twice it drifts, which is how the roqsim job ended up with no
     `platforms:` at all while its base image was multi-arch.
     """
     workflow = WORKFLOW.read_text()
@@ -119,7 +119,7 @@ def test_cluster_only_images_are_single_arch():
     for name in ("PLATFORMS_CONTROLLER", "PLATFORMS_SIDECAR"):
         assert policy[name] == policy["CLUSTER_PLATFORM"], (
             f"{name} builds for an architecture no cluster node runs")
-    for name in ("PLATFORMS_ROBOVAST", "PLATFORMS_ROBOSITO"):
+    for name in ("PLATFORMS_ROBOVAST", "PLATFORMS_ROQSIM"):
         assert policy["CLUSTER_PLATFORM"] in policy[name], (
             f"{name} must still cover the cluster's architecture")
 
@@ -146,7 +146,7 @@ def test_no_dockerfile_hardcodes_a_download_architecture():
 def test_no_shipped_example_pins_a_private_registry():
     """A shipped example must be runnable by anyone who clones the repo.
 
-    ``basic_nav_rst.vast`` pinned ``harbor.example.org`` by digest, so the example
+    ``basic_nav_roqsim.vast`` pinned ``harbor.example.org`` by digest, so the example
     only ran at one site.
     """
     examples = Path(__file__).resolve().parents[2] / "configs" / "examples"

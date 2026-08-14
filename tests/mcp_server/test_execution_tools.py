@@ -261,9 +261,9 @@ def test_start_without_description_sends_empty(service):
 def test_start_unescapes_html_escaped_description(service):
     """A client that HTML-escapes prompt text must not leave "&gt;" in the stored
     description, where it would show up verbatim in list_campaigns and the web UI."""
-    execution.start_campaign(description="wheels rebuilt post SIM_SUITE_-&gt;ROBOSITO_")
+    execution.start_campaign(description="wheels rebuilt post SIM_SUITE_-&gt;ROQSIM_")
     _name, req = service.calls[-1]
-    assert req.description == "wheels rebuilt post SIM_SUITE_->ROBOSITO_"
+    assert req.description == "wheels rebuilt post SIM_SUITE_->ROQSIM_"
 
 
 def test_start_description_unescape_is_single_level(service):

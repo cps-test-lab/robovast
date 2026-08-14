@@ -3,7 +3,7 @@ import osc.ros
 import osc.nav2
 
 # Gazebo half: one local ros_launch brings up gz + the TB4 + nav2, then the trial is measured.
-# The measurement half (init_nav2, bag_record, nav_to_pose) is identical to scenario_rst.osc.
+# The measurement half (init_nav2, bag_record, nav_to_pose) is identical to scenario_roqsim.osc.
 
 scenario test_scenario:
     robot: differential_drive_robot

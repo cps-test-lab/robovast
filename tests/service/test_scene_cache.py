@@ -33,7 +33,7 @@ def _isolated_cache(tmp_path, monkeypatch):
     yield
 
 
-def _campaign(tmp_path, image="harbor/x@sha256:" + "a" * 64, backend="robosito"):
+def _campaign(tmp_path, image="harbor/x@sha256:" + "a" * 64, backend="roqsim"):
     root = tmp_path / "campaign-2026-08-06-000000"
     (root / "_execution").mkdir(parents=True)
     (root / "_execution" / "execution.yaml").write_text(
@@ -61,7 +61,7 @@ def _backend_named(name, backend):
 
 
 def _manifest(**over):
-    base = {"producer": "rst", "world": "pkg:depot", "overrides": {}}
+    base = {"producer": "roqsim", "world": "pkg:depot", "overrides": {}}
     base.update(over)
     return base
 
@@ -126,6 +126,7 @@ def test_the_key_separates_exporter_options(tmp_path):
     assert scene_cache.cache_key(ident, 1024) != scene_cache.cache_key(ident, 2048)
 
 
+@pytest.mark.requires_simulator
 def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
     """A campaign's overrides go in through --override, the spelling the RUN already uses.
 
@@ -162,6 +163,7 @@ def test_a_structured_override_survives(tmp_path):
         assert yaml.safe_load(handle)["plugins"]["dynamic_obstacles"]["instances"] == instances
 
 
+@pytest.mark.requires_simulator
 def test_no_overrides_means_no_file_and_no_flag(tmp_path):
     """A world compiled as declared needs neither, and must not be handed an empty document."""
     ident = scene_cache.world_identity(_campaign(tmp_path), _manifest(overrides={}))
@@ -169,6 +171,7 @@ def test_no_overrides_means_no_file_and_no_flag(tmp_path):
     assert "--override" not in shlex.split(scene_cache._command_for(ident, 1024, None))
 
 
+@pytest.mark.requires_simulator
 def test_the_command_is_the_backends_to_give(tmp_path):
     """Which exporter builds geometry is the simulator's business, not the service's.
 
@@ -176,8 +179,8 @@ def test_the_command_is_the_backends_to_give(tmp_path):
     here -- only the descriptor format stays RoboVAST's.
     """
     ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
-    assert ident["backend"] == "robosito"
-    assert "rst-export-web" in scene_cache._command_for(ident, 1024)
+    assert ident["backend"] == "roqsim"
+    assert "roqsim-export-web" in scene_cache._command_for(ident, 1024)
 
 
 def test_a_simulator_that_exports_no_geometry_says_so(tmp_path):

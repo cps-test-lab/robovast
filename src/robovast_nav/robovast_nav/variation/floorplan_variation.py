@@ -101,7 +101,7 @@ class FloorplanVariationConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
 
     #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
-    #: **opposite sides of the compile boundary** whenever the simulator is robosito: nav2
+    #: **opposite sides of the compile boundary** whenever the simulator is roqsim: nav2
     #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
     #: model. So this is the plugin that needs both channels at once:
     #:
@@ -159,7 +159,7 @@ class FloorplanGenerationConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
 
     #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
-    #: **opposite sides of the compile boundary** whenever the simulator is robosito: nav2
+    #: **opposite sides of the compile boundary** whenever the simulator is roqsim: nav2
     #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
     #: model. So this is the plugin that needs both channels at once:
     #:

@@ -25,8 +25,8 @@ container round trip — three reasons this is its own pair, not a mode of the e
 * ``list_scenario_actions``/``get_scenario_action_details`` -- every action/modifier/
   actor/struct a ``.osc`` file can reference in the image (``python -m
   scenario_execution.introspection list-actions``, run inside it).
-* ``list_robosito_plugins``/``get_robosito_plugin_details`` -- every ``rst.plugins`` entry
-  a world YAML's ``plugins:`` list can add in the image (``python -m rst.introspection
+* ``list_roqsim_plugins``/``get_roqsim_plugin_details`` -- every ``roqsim.plugins`` entry
+  a world YAML's ``plugins:`` list can add in the image (``python -m roqsim.introspection
   list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_COMMANDS = {
     "scenario_actions": "python -m scenario_execution.introspection list-actions",
-    "robosito_plugins": "python -m rst.introspection list",
+    "roqsim_plugins": "python -m roqsim.introspection list",
 }
 
 _cache_lock = threading.Lock()
@@ -65,7 +65,7 @@ def _flatten(group: str, payload: dict) -> list:
 
     ``scenario_execution.introspection list-actions`` buckets by kind
     (``{"actions": [...], "modifiers": [...], ...}``); each item already carries its own
-    ``kind``, so flattening loses nothing. ``rst.introspection list`` is already flat
+    ``kind``, so flattening loses nothing. ``roqsim.introspection list`` is already flat
     (``{"items": [...]}``).
     """
     if group == "scenario_actions":
@@ -185,23 +185,23 @@ def get_scenario_action_details(address: str, name: str) -> dict:
     return _details("scenario_actions", address, name)
 
 
-def list_robosito_plugins(address: str, query: str = "") -> dict:
-    """`rst.plugins` catalog, one line each. Same shape as `list_scenario_actions`."""
-    return _list("robosito_plugins", address, query)
+def list_roqsim_plugins(address: str, query: str = "") -> dict:
+    """`roqsim.plugins` catalog, one line each. Same shape as `list_scenario_actions`."""
+    return _list("roqsim_plugins", address, query)
 
 
-def get_robosito_plugin_details(address: str, name: str) -> dict:
+def get_roqsim_plugin_details(address: str, name: str) -> dict:
     """One plugin's detail, parsed from its `Config::` block. Same shape as
     `get_scenario_action_details`.
     """
-    return _details("robosito_plugins", address, name)
+    return _details("roqsim_plugins", address, name)
 
 
 _TOOLS = [
     list_scenario_actions,
     get_scenario_action_details,
-    list_robosito_plugins,
-    get_robosito_plugin_details,
+    list_roqsim_plugins,
+    get_roqsim_plugin_details,
 ]
 
 

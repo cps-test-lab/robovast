@@ -502,14 +502,14 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     right in the stepped shape: there the simulator runs in the scenario's own process, so
     the main container IS the simulator. In the ROS shape the simulator is a sidecar, and
     the same variables have to arrive there instead -- otherwise the simulator never sees
-    them. That is not hypothetical: robosito's ``ROBOSITO_RECORD`` /
-    ``ROBOSITO_CAPTURE_EXPORT_DIR`` went only to the scenario container, so a ROS campaign
+    them. That is not hypothetical: roqsim's ``ROQSIM_RECORD`` /
+    ``ROQSIM_CAPTURE_EXPORT_DIR`` went only to the scenario container, so a ROS campaign
     produced no ``run.npz`` and no ``capture/`` while ``produces_run_capture()`` still
     reported True and validation happily accepted a ``scene3d`` panel with nothing to
     replay. The stepped shape hid it, because there the two containers are one.
 
     Only the ``simulation`` container: a backend describes its own simulator, and handing
-    ``ROBOSITO_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
+    ``ROQSIM_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
 
     A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which both
     lanes already give every sidecar -- so a per-run artifact lands in the run's own

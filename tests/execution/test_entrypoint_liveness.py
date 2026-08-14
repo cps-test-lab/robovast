@@ -31,7 +31,7 @@ def _script(name: str) -> str:
 
 @pytest.mark.parametrize("name", SCRIPTS)
 def test_the_entrypoint_unbuffers_python(name):
-    """Covers `rst sim` and every Python ROS node, whatever image they run in."""
+    """Covers `roqsim sim` and every Python ROS node, whatever image they run in."""
     assert "export PYTHONUNBUFFERED=1" in _script(name)
 
 

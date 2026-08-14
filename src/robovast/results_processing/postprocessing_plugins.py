@@ -1000,7 +1000,7 @@ def _clock_map_info(campaign_path, config_name: str, run_id: int):
             os.path.join(job_dir, "logs", clock_map.FILENAME))
         if found:
             return found.info
-    # Non-ROS: rst streams its own map beside the run's recording.
+    # Non-ROS: roqsim streams its own map beside the run's recording.
     return clock_map.find_run_clock_map(str(run_dir)).info
 
 

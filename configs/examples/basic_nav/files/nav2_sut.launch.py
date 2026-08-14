@@ -3,12 +3,12 @@
 
 """The system under test: robot_state_publisher + nav2, and nothing else.
 
-This is ``rst_nav2_example/nav2_turtlebot_depot.launch.py`` with its simulator half
+This is ``roqsim_nav2_example/nav2_turtlebot_depot.launch.py`` with its simulator half
 removed. There, one launch started the MuJoCo bridge, the description and nav2 in a
 single process tree because a single container ran all three. Here the simulator has a
-container of its own (``containers.simulation``, from the robosito backend), so what is
+container of its own (``containers.simulation``, from the roqsim backend), so what is
 left is exactly the stack being measured -- which is the point of the split: the SUT can
-be any nav2 image, and nothing robosito-specific has to be installed in it.
+be any nav2 image, and nothing roqsim-specific has to be installed in it.
 
 It lives in the CAMPAIGN rather than in a package for the same reason. The SUT is
 vanilla: RoboVAST layers ``scenario_execution_server`` onto whatever image the ``.vast``
@@ -32,14 +32,14 @@ comparable by construction:
   ``tb4_simulation_launch.py`` includes.
 ``autostart`` is where the two backends deliberately DIVERGE, and the default here stays
 false only so that starting this file by hand does not activate nav2 against a simulator
-that is not running yet. scenario_robosito.osc passes ``true``: it gates the *launch* on
+that is not running yet. scenario_roqsim.osc passes ``true``: it gates the *launch* on
 the simulator's first ``/clock`` and ``/scan``, so by the time nav2 starts, the thing it
 would have raced is already publishing. Gating activation instead -- Gazebo's approach,
 with ``autostart=false`` plus two ``service_call``s to the lifecycle managers -- cannot
 work across the container boundary, because ``service_call`` fires ``call_async`` once
 with no ``wait_for_service`` and its client has not finished matching a server in another
 container; the request is dropped and the scenario parks forever. See the gate comment in
-scenario_robosito.osc.
+scenario_roqsim.osc.
 """
 
 import os

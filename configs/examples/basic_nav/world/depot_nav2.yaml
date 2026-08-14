@@ -1,13 +1,13 @@
-# rst TurtleBot 4 in the Depot world, wired for nav2 + AMCL (Gazebo-compatible).
+# roqsim TurtleBot 4 in the Depot world, wired for nav2 + AMCL (Gazebo-compatible).
 #
-# `extends` the bare Depot building (rst_scenes:depot, baked from the Gazebo/Fuel "Depot" model) and
+# `extends` the bare Depot building (roqsim_scenes:depot, baked from the Gazebo/Fuel "Depot" model) and
 # adds the robot, the ROS 2 bridge, a ground-truth pose frame, and the simulation_interfaces control
 # plane. Run standalone with:
 #
-#   ros2 launch rst_nav2_example nav2_turtlebot_depot.launch.py            # headless
-#   ros2 launch rst_nav2_example nav2_turtlebot_depot.launch.py headless:=false
+#   ros2 launch roqsim_nav2_example nav2_turtlebot_depot.launch.py            # headless
+#   ros2 launch roqsim_nav2_example nav2_turtlebot_depot.launch.py headless:=false
 #
-# Frame alignment with Gazebo (so robosito is a drop-in behind the same map + scenario): the Depot
+# Frame alignment with Gazebo (so roqsim is a drop-in behind the same map + scenario): the Depot
 # geometry keeps its native origin, and the robot spawns at world (-8, 0) -- exactly where nav2's
 # tb4_simulation_launch.py spawns it in gz. The nav2 map (maps/depot.yaml, origin [-7.14, -7.83]) is
 # defined about the map frame, and AMCL's initial pose is the map origin (0, 0) (nav2_params_depot.yaml).
@@ -16,7 +16,7 @@
 # likewise the world pose labelled `map`); the offline analysis that shifts gt by +8 m therefore
 # applies unchanged to both simulators.
 
-extends: rst_scenes:depot
+extends: roqsim_scenes:depot
 
 sim:
   pacing: realtime

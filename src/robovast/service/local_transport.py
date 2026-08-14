@@ -2428,7 +2428,7 @@ class LocalTransport(RobovastInterface):
         cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
         viz = (cfg or {}).get("visualization") or {}
         # The simulator backend contributes the panels that replay what it always records
-        # (robosito's `scene3d`), so a campaign never declares one it could not do without.
+        # (roqsim's `scene3d`), so a campaign never declares one it could not do without.
         # Merged here rather than in the UI, so validation and the view agree.
         raw = merge_default_panels(viz.get("panels") or [], (cfg or {}).get("execution") or {})
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``

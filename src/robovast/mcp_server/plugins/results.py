@@ -527,7 +527,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     """Re-render one moment of a run from a viewpoint you choose, as a PNG.
 
     Renders the world again, so the camera is yours. Needs a simulator that can re-render
-    (robosito can; Gazebo cannot) and a run that recorded its state — written on a clean stop
+    (roqsim can; Gazebo cannot) and a run that recorded its state — written on a clean stop
     only. It runs a container in the campaign's simulation image: seconds if that image is on
     the node, minutes if it must be pulled. For a camera *mounted in the world during the run*
     use ``get_camera_frame`` instead — a cheap read of a recorded video, on any backend.

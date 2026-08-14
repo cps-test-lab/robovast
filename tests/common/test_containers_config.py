@@ -50,7 +50,7 @@ def test_the_scenario_container_may_omit_its_image():
 
 def test_only_the_simulation_block_takes_a_backend():
     with pytest.raises(ValueError, match="only the 'simulation' container has"):
-        validate_config(_cfg(scenario={"image": "a", "backend": "robosito"}))
+        validate_config(_cfg(scenario={"image": "a", "backend": "roqsim"}))
 
 
 def test_unknown_keys_are_rejected_on_an_ordinary_container():
@@ -63,7 +63,7 @@ def test_a_backend_owns_the_keys_it_does_not_declare():
     cannot know it, and validating it away would make every backend edit a schema
     change."""
     cfg = _cfg(scenario={"image": "a"},
-               simulation={"backend": "robosito", "config": "worlds/depot.yaml"})
+               simulation={"backend": "roqsim", "config": "worlds/depot.yaml"})
     cfg["execution"]["mode"] = "ros2"
     c = validate_config(cfg)
     assert c.execution.containers["simulation"].model_extra["config"] == "worlds/depot.yaml"
@@ -97,7 +97,7 @@ def test_a_group_is_flat():
 def test_mode_auto_is_refused_with_a_backend():
     """``auto`` is resolved inside the container by testing for ros2 on PATH, so the
     same .vast would get a different topology in a different image — silently."""
-    cfg = _cfg(scenario={"image": "a"}, simulation={"backend": "robosito"})
+    cfg = _cfg(scenario={"image": "a"}, simulation={"backend": "roqsim"})
     with pytest.raises(ValueError, match="must be 'ros2' or 'base'"):
         validate_config(cfg)
     cfg["execution"]["mode"] = "base"
@@ -157,13 +157,13 @@ def test_version_1_is_refused_with_instructions():
 def test_three_containers_when_each_role_is_its_own():
     plan = plan_containers({"containers": {
         "scenario": {"image": "runner"},
-        "simulation": {"image": "rst-ros", "command": ["rst", "sim", "w.yaml", "--ros"]},
+        "simulation": {"image": "roqsim-ros", "command": ["roqsim", "sim", "w.yaml", "--ros"]},
         "sut": {"image": "nav2"},
     }})
     assert plan.names() == ["scenario", "simulation", "sut"]
     assert plan.main.name == "scenario"
     assert [c.name for c in plan.sidecars] == ["simulation", "sut"]
-    assert plan.by_name("simulation").command == ["rst", "sim", "w.yaml", "--ros"]
+    assert plan.by_name("simulation").command == ["roqsim", "sim", "w.yaml", "--ros"]
 
 
 def test_a_stepped_simulator_is_the_scenario_container():

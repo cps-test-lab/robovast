@@ -1,18 +1,18 @@
 [tool.poetry]
-name = "robovast-sim-robosito"
+name = "robovast-sim-roqsim"
 version = "0.1.0"
-description = "The robosito simulator backend for RoboVAST"
+description = "The roqsim simulator backend for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
-packages = [{include = "robovast_sim_robosito"}]
+packages = [{include = "robovast_sim_roqsim"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
-# Deliberately NOT depending on robosito. This is imported in the long-lived RoboVAST
+# Deliberately NOT depending on roqsim. This is imported in the long-lived RoboVAST
 # service process, which has no reason to carry a MuJoCo runtime; everything here is
-# strings and container specs, and the one operation that genuinely needs robosito runs
-# inside robosito's own image.
+# strings and container specs, and the one operation that genuinely needs roqsim runs
+# inside roqsim's own image.
 #
 # Deliberately NOT depending on robovast either, for two reasons. It is installed into
 # an environment that already has it, and pinning would invert which of the two is the
@@ -22,9 +22,9 @@ python = ">=3.10,<3.14"
 pydantic = "^2.0"
 
 # The entry point is named for the *product*, not for the `rst_*` Python packages it
-# wraps, so a .vast reads `backend: robosito`.
+# wraps, so a .vast reads `backend: roqsim`.
 [tool.poetry.plugins."robovast.simulators"]
-robosito = "robovast_sim_robosito.backend:RobositoBackend"
+roqsim = "robovast_sim_roqsim.backend:RoqsimBackend"
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,20 +1,20 @@
 version: 2
 metadata:
   name: basic_nav_rst
-  title: Basic nav2 navigation on the rst/robosito (MuJoCo) TurtleBot 4 (Depot)
+  title: Basic nav2 navigation on the roqsim/roqsim (MuJoCo) TurtleBot 4 (Depot)
   description: |
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
-    robosito (MuJoCo). The rst half of the basic_nav pair: same nav2 params, same map and the same
+    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same nav2 params, same map and the same
     measurement half as basic_nav_gazebo.vast -- only the simulator differs. The bridge publishes
     the same ROS graph Gazebo does (incl. a ground-truth turtlebot4_base_link_gt frame), so
-    robosito is a drop-in replacement.
+    roqsim is a drop-in replacement.
 
-    Three containers, which is what this file is really about. `simulation` is robosito, started by
+    Three containers, which is what this file is really about. `simulation` is roqsim, started by
     the backend from its own image -- nothing here installs a simulator. `sut` is a nav2 image kept
     vanilla: RoboVAST layers scenario_execution_server onto it and the scenario drives its launch
     over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
     no image of its own.
-  keywords: [robotics, navigation, ROS2, mujoco, robosito, nav2, depot]
+  keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
   variations:
@@ -37,17 +37,17 @@ evaluation:
       campaign: analysis/analysis_campaign.ipynb
 execution:
   containers:
-  # robosito in a container of its own. `robosito` is an entry point in the `robovast.simulators`
-  # group shipped by RoboVAST's `robosito` extra, so it resolves wherever the campaign is composed
+  # roqsim in a container of its own. `roqsim` is an entry point in the `robovast.simulators`
+  # group shipped by RoboVAST's `roqsim` extra, so it resolves wherever the campaign is composed
   # -- including the in-cluster service. Nothing about the simulator travels with the campaign.
     simulation:
-      backend: robosito
-  # A path, because rst_nav2_example registers no `rst.worlds` provider. The backend declares it as
+      backend: roqsim
+  # A path, because roqsim_nav2_example registers no `roqsim.worlds` provider. The backend declares it as
   # a run file, so it is mounted at /config/<path> and archived with the campaign; the world
-  # `extends: rst_scenes:depot`, which is packaged and travels with the image, so only this YAML
+  # `extends: roqsim_scenes:depot`, which is packaged and travels with the image, so only this YAML
   # moves -- and the backend can see that from the one `extends:` key without opening anything
   # else. A world extending a CAMPAIGN file instead has a chain only the simulator can resolve, so
-  # the backend asks `rst scenes inputs` in robosito's own image and stages what it names.
+  # the backend asks `roqsim scenes inputs` in roqsim's own image and stages what it names.
   #
   # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
   # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
@@ -60,7 +60,7 @@ execution:
   # the code under test is not a recorded fact. It is also the image the run view's geometry is
   # compiled in, cached by image identity. `make release-images PROJECT=... PUSH=1` prints the
   # `repo@sha256:...` refs to paste here (or into .env).
-      image: ghcr.io/cps-test-lab/robovast-robosito:latest
+      image: ghcr.io/cps-test-lab/robovast-roqsim:latest
       resources:
         cpu: 1
   # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
@@ -81,7 +81,7 @@ execution:
         cpu: 1.25
   mode: ros2
   runs: 5
-  scenario_file: scenario_rst.osc
+  scenario_file: scenario_roqsim.osc
   run_files:
   # Per-extension rather than "files/*": that glob crosses '/', so it also swept
   # files/__pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
@@ -107,7 +107,7 @@ results_processing:
   - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - rosbags_costmap_to_csv:
       topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
-# Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the robosito backend
+# Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the roqsim backend
 # contributes it, because a campaign it runs always records the capture that panel replays.
 visualization:
   panels:

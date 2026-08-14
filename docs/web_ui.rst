@@ -1102,7 +1102,7 @@ campaign shares, as the ``scene3d`` panel does.) See the developer guide for the
 
 **3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** — ``scene.json`` +
 ``scene.bin`` + one PNG per texture, a compact browser-renderable export of the simulated world, defined
-in :ref:`run-capture` and produced for rst by ``rst/export_web.py``. It is a *directory*, not a file: the
+in :ref:`run-capture` and produced for roqsim by ``roqsim/export_web.py``. It is a *directory*, not a file: the
 loader fetches ``scene.bin`` and the textures as **relative siblings** of ``scene.json``.
 
 A campaign does not deliver it. The service resolves it per view:

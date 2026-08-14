@@ -76,15 +76,15 @@ WORKDIR /opt/robovast
 # nav extra (robovast-nav, a path dependency on src/robovast_nav) so the
 # controller can resolve nav-specific variation plugins (FloorplanVariation,
 # PathVariation*, ObstacleVariation*) when composing scenario variations
-# in-cluster, and the robosito extra (robovast-sim-robosito, a path dependency on
-# src/robovast_sim_robosito) for the `backend: robosito` entry point.
+# in-cluster, and the roqsim extra (robovast-sim-roqsim, a path dependency on
+# src/robovast_sim_roqsim) for the `backend: roqsim` entry point.
 #
-# The robosito extra is here because a simulator backend has to be importable
+# The roqsim extra is here because a simulator backend has to be importable
 # wherever a campaign is COMPOSED, and for `vast serve --attach` that is this
 # image — the client side holds only a tunnel. Without it a campaign has to ship
 # the backend itself in `plugins:`, which is a wheel to build per campaign. It
 # costs nothing to carry: the backend is container specs and strings, its only
-# dependency (pydantic) is already here, and it imports nothing from robosito —
+# dependency (pydantic) is already here, and it imports nothing from roqsim —
 # no MuJoCo runtime enters this image. Contrast the nav extra below.
 #
 # The robovast(.gui) Qt extra itself is intentionally omitted (headless); rosbag
@@ -100,22 +100,22 @@ WORKDIR /opt/robovast
 # Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
 # Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
 # touch it. --no-root skips the robovast project and --no-directory skips both
-# path dependencies (src/robovast_nav, src/robovast_sim_robosito); all three are
+# path dependencies (src/robovast_nav, src/robovast_sim_roqsim); all three are
 # installed in layer 2.
 COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
- && poetry install --only main --extras "qd optuna nav robosito" \
+ && poetry install --only main --extras "qd optuna nav roqsim" \
         --no-root --no-directory --no-cache
 
 # Layer 2 (cheap, invalidated by any source edit): copy the source and install
 # the three local packages (robovast root + the robovast-nav and
-# robovast-sim-robosito path deps) on top of the already-present dependencies.
+# robovast-sim-roqsim path deps) on top of the already-present dependencies.
 # Poetry sees the heavy deps as satisfied, so this only builds/installs the three
 # — fast.
 COPY README.md ./
 COPY src ./src
-RUN poetry install --only main --extras "qd optuna nav robosito" --no-cache
+RUN poetry install --only main --extras "qd optuna nav roqsim" --no-cache
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
 # path cannot be derived from the source tree (robovast is installed into

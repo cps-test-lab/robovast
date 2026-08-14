@@ -6,18 +6,18 @@
 #   robovast       the framework image: ROS, nav2, scenario-execution, the RoboVAST
 #                  contract. Simulator-agnostic, and what every campaign without a
 #                  stepped simulator runs.
-#   robosito       that image plus robosito, for a **stepped** run where the simulator
-#                  shares the scenario's process (see Dockerfile.robosito). A ROS
+#   roqsim       that image plus roqsim, for a **stepped** run where the simulator
+#                  shares the scenario's process (see Dockerfile.roqsim). A ROS
 #                  campaign does not need it: there the simulator runs in its own
-#                  container from robosito's own image.
+#                  container from roqsim's own image.
 #
-# Mirrors robosito/container/build.sh, which mirrors this one -- same --image / --project
+# Mirrors roqsim/container/build.sh, which mirrors this one -- same --image / --project
 # / --ros-distro / --push handling, so the two repos' builders stay learnable as one.
 #
 # Usage:
-#   ./container/robovast/build.sh [--image robovast|robosito|all] [--project <prefix>] \
+#   ./container/robovast/build.sh [--image robovast|roqsim|all] [--project <prefix>] \
 #                                 [--ros-distro <distro>] [--push] \
-#                                 [--robosito-src <path>] [--scenario-execution-src <path>] \
+#                                 [--roqsim-src <path>] [--scenario-execution-src <path>] \
 #                                 [-- <extra docker build args>]
 #
 # The two --*-src flags are the development hatch: each repo is otherwise cloned at a pin,
@@ -28,9 +28,9 @@ BASEDIR=$(cd "$(dirname "$0")" && pwd)
 ROS_DISTRO="jazzy"
 PROJECT=""
 IMAGE="robovast"
-ROBOSITO_SRC=""
+ROQSIM_SRC=""
 SCENARIO_EXECUTION_SRC=""
-ROBOSITO_REPO="${ROBOSITO_REPO:-https://github.com/cps-test-lab/robosito.git}"
+ROQSIM_REPO="${ROQSIM_REPO:-https://github.com/cps-test-lab/roqsim.git}"
 PLATFORM=""
 
 # shellcheck source=../platforms.env
@@ -51,8 +51,8 @@ while [[ $# -gt 0 ]]; do
       PROJECT="$2"
       shift 2
       ;;
-    --robosito-src)
-      ROBOSITO_SRC="$2"
+    --roqsim-src)
+      ROQSIM_SRC="$2"
       shift 2
       ;;
     --scenario-execution-src)
@@ -81,8 +81,8 @@ done
 EXTRA_ARGS="$@"
 
 case "$IMAGE" in
-  robovast|robosito|all) ;;
-  *) echo "unknown --image '$IMAGE' (expected robovast, robosito or all)" >&2; exit 2 ;;
+  robovast|roqsim|all) ;;
+  *) echo "unknown --image '$IMAGE' (expected robovast, roqsim or all)" >&2; exit 2 ;;
 esac
 
 # A push from here publishes an *interim* image for the cluster, so it targets
@@ -160,7 +160,7 @@ build_base() {
     "$ctx"
 }
 
-build_robosito() {
+build_roqsim() {
   # FROM the base by its *resolved* tag rather than a floating one, so the derived image
   # is always built on the base that was just built (or the one explicitly named) and
   # the two cannot drift. It inherits /etc/robovast_compat_version from there, which is
@@ -174,8 +174,8 @@ build_robosito() {
   ctx=$(mktemp -d) || return 1
   trap 'rm -rf "$ctx"' RETURN
 
-  if [[ -n "$ROBOSITO_SRC" ]]; then
-    echo "robosito source: $ROBOSITO_SRC (local checkout)"
+  if [[ -n "$ROQSIM_SRC" ]]; then
+    echo "roqsim source: $ROQSIM_SRC (local checkout)"
     # -a to keep symlinks and modes; the excludes are what must never reach an image --
     # a .git of several hundred MB, a host venv whose binaries are wrong for the image,
     # and caches that only invalidate layers.
@@ -185,29 +185,29 @@ build_robosito() {
     rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
           --exclude='*.egg-info' --exclude='build/' --exclude='install/' --exclude='log/' \
           --exclude='external/' --exclude='docs/build/' \
-          "${ROBOSITO_SRC%/}/" "$ctx/robosito/" || return 1
+          "${ROQSIM_SRC%/}/" "$ctx/roqsim/" || return 1
   else
     # main was restructured to a sim_suite_* layout for a different consumer and no longer
     # has the rst_* packages installed below; robovast is the branch that still does.
-    echo "robosito source: ${ROBOSITO_REPO} @ ${ROBOSITO_REF:-robovast} (clone)"
-    git clone --quiet "$ROBOSITO_REPO" "$ctx/robosito" || return 1
-    git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-robovast}" || return 1
+    echo "roqsim source: ${ROQSIM_REPO} @ ${ROQSIM_REF:-robovast} (clone)"
+    git clone --quiet "$ROQSIM_REPO" "$ctx/roqsim" || return 1
+    git -C "$ctx/roqsim" checkout --quiet "${ROQSIM_REF:-robovast}" || return 1
   fi
 
   buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
-    "robovast_robosito_${ROS_DISTRO}:latest" "${PROJECT}robovast_robosito_${ROS_DISTRO}" \
+    "robovast_roqsim_${ROS_DISTRO}:latest" "${PROJECT}robovast_roqsim_${ROS_DISTRO}" \
     || return $?
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
     --build-arg BASE_IMAGE="$base" \
     $EXTRA_ARGS \
-    -f $BASEDIR/Dockerfile.robosito \
+    -f $BASEDIR/Dockerfile.roqsim \
     "$ctx"
 }
 
 case "$IMAGE" in
   robovast) build_base ;;
-  robosito) build_robosito ;;
-  all)      build_base && build_robosito ;;
+  roqsim) build_roqsim ;;
+  all)      build_base && build_roqsim ;;
 esac

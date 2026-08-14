@@ -1,5 +1,5 @@
 # SHARED nav2 params for basic_nav -- passed (params_file:=/config/files/nav2_params.yaml) to BOTH
-# the Gazebo and the robosito bring-up, so the two simulators run byte-identical nav2 configuration.
+# the Gazebo and the roqsim bring-up, so the two simulators run byte-identical nav2 configuration.
 #
 # TurtleBot 4 tuning: base frame 'base_link', odom '/odom', scan '/scan', robot radius ~0.18 m,
 # RegulatedPurePursuit + NavFn, plus AMCL localizing the drifting wheel odometry against the Depot map.
@@ -9,8 +9,8 @@
 # launch argument) only REWRITES keys that already exist -- its add_params inserts a key only for a
 # fully dotted path. With the key absent, every nav2 node silently ran on wall time while TF and the
 # scan carried sim time, and the goal was 'reached' in seconds. The value here is a default; the
-# launch argument overwrites it. (Mirror of robosito's standalone
-# rst_nav2_example/params/nav2_params_depot.yaml -- keep them in sync.)
+# launch argument overwrites it. (Mirror of roqsim's standalone
+# roqsim_nav2_example/params/nav2_params_depot.yaml -- keep them in sync.)
 
 amcl:
   ros__parameters:
@@ -21,7 +21,7 @@ amcl:
     scan_topic: scan
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     laser_model_type: "likelihood_field"
-    # The TurtleBot 4 lidar (rst_mobile turtlebot4 manifest) ranges to 12 m; do not tell AMCL to
+    # The TurtleBot 4 lidar (roqsim_mobile turtlebot4 manifest) ranges to 12 m; do not tell AMCL to
     # trust beams beyond the sensor.
     laser_max_range: 12.0
     laser_min_range: -1.0
@@ -214,7 +214,7 @@ map_server:
 
 # --- nodes the standard nav2 bringup runs, added so BOTH backends run the same stack ---
 # nav2_bringup's navigation_launch.py brings up ten lifecycle nodes; this file originally
-# configured only the six that rst_nav2_example started, so Gazebo's bringup aborted on the
+# configured only the six that roqsim_nav2_example started, so Gazebo's bringup aborted on the
 # first extra node with no parameters (collision_monitor -> 'observation_sources is not
 # initialized' -> 'Failed to bring up all requested nodes').
 #

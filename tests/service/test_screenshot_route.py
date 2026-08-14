@@ -43,14 +43,14 @@ def _env(tmp_path, monkeypatch):
     (results / CAMPAIGN / "_execution" / "execution.yaml").write_text(
         "image: build:x\nimage_revision: harbor/x@sha256:" + "a" * 64 + "\n", encoding="utf-8")
     (run / "capture" / "capture.json").write_text(
-        json.dumps({"producer": "rst", "world": "pkg:hexagon", "overrides": {}}),
+        json.dumps({"producer": "roqsim", "world": "pkg:hexagon", "overrides": {}}),
         encoding="utf-8")
     (run / "run.npz").write_bytes(b"not really a recording")
 
     monkeypatch.setattr(LocalTransport, "_campaigns_root", lambda self: Path(results))
     monkeypatch.setattr(simulators, "run_state_filename", lambda execution, base_dir="": "run.npz")
 
-    # Stands in for the backend's `rst render`: writes the frame the real one would, and logs
+    # Stands in for the backend's `roqsim render`: writes the frame the real one would, and logs
     # its arguments *outside* the render directory — that directory is deleted once the
     # response is sent, which is the behaviour the next test pins.
     writer = tmp_path / "render.sh"

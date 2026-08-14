@@ -7,7 +7,7 @@ from robovast.mcp_server.client_text import unescape_client_text as u
 
 @pytest.mark.parametrize("escaped,expected", [
     # What this exists for: a client escaped the prompt and the entity was stored.
-    ("wheels rebuilt post SIM_SUITE_-&gt;ROBOSITO_", "wheels rebuilt post SIM_SUITE_->ROBOSITO_"),
+    ("wheels rebuilt post SIM_SUITE_-&gt;ROQSIM_", "wheels rebuilt post SIM_SUITE_->ROQSIM_"),
     ("nav2 &lt;-&gt; moveit", "nav2 <-> moveit"),
     ("p&lt;0.05 on 95% CI", "p<0.05 on 95% CI"),
     ("DWB &amp; MPPI", "DWB & MPPI"),

@@ -478,7 +478,7 @@ def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
     """A staged FILE has to land at its exact path, filename included.
 
     `mount_at` names the path the command was written for -- the scene build's
-    `--override /aux/rst_scene_overrides.yaml` -- and only the directory around it can be a
+    `--override /aux/roqsim_scene_overrides.yaml` -- and only the directory around it can be a
     volume. Both halves of this were broken: `expose` refused any path that was not itself
     mountable, and the copy assumed a tree (`cp -R 'file/.'` copies nothing). It failed only
     on the cluster, where a mount is an emptyDir the Pod declares, while the local lane
@@ -489,13 +489,13 @@ def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
     rec = _Recorder()
     monkeypatch.setattr(runner, "_retrying_exec", rec)
     staged = f"{runner.workspace}/in/2/overrides.yaml"
-    runner.expose(staged, "/aux/rst_scene_overrides.yaml")
+    runner.expose(staged, "/aux/roqsim_scene_overrides.yaml")
 
     runner._place_exposed()
 
     (cmd, _payload), = rec.calls
     script = cmd[2]
-    assert f"cp -R '{staged}' '/aux/rst_scene_overrides.yaml'" in script
+    assert f"cp -R '{staged}' '/aux/roqsim_scene_overrides.yaml'" in script
     assert "/.'" not in script, "a file is not a tree; filling a mount with it copies nothing"
     assert "mkdir -p '/aux'" in script
 
@@ -510,7 +510,7 @@ def test_a_runner_still_refuses_a_file_outside_every_mounted_directory():
     runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
     runner._exposed = {}
     with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
-        runner.expose("/somewhere/staged.yaml", "/tmp/rst_scene_overrides.yaml")
+        runner.expose("/somewhere/staged.yaml", "/tmp/roqsim_scene_overrides.yaml")
     with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
         runner.expose("/somewhere/staged.yaml", "/config/nested/deeper/staged.yaml")
 

@@ -706,7 +706,7 @@ Each entry is ``- <generator>: {out: <dir>, ...}`` — the same single-key short
          out: files/scene
          inputs: ["../worlds/depot.yaml"]
          command: >-
-           rst-export-web --world {inputs[0]} --out {out}
+           roqsim-export-web --world {inputs[0]} --out {out}
            --manifest {out}/.generated.json
 
 Generation runs **once per campaign preparation, before ``run_files`` are collected**, and
@@ -815,8 +815,8 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
          image: ghcr.io/cps-test-lab/robovast:latest
          resources: {cpu: 3, memory: 4Gi}
        simulation:
-         image: ghcr.io/cps-test-lab/rst-ros:jazzy
-         command: [rst, sim, worlds/depot.yaml, --ros, --headless]
+         image: ghcr.io/cps-test-lab/roqsim-ros:jazzy
+         command: [roqsim, sim, worlds/depot.yaml, --ros, --headless]
          resources: {cpu: 5, memory: 8Gi, gpu: 1}
 
 **Available fields:**

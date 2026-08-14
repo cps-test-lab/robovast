@@ -87,8 +87,8 @@ def test_apt_order_does_not_affect_hash(tmp_path):
 def test_python_package_order_affects_hash(tmp_path):
     """Order no longer decides whether a build *works*, but it is still what gets
     built — the specs are passed to pip in the order listed — so it stays in the key."""
-    a = BuildSpec(tag="t", python_packages=["rst", "rst_assets"])
-    b = BuildSpec(tag="t", python_packages=["rst_assets", "rst"])
+    a = BuildSpec(tag="t", python_packages=["roqsim", "roqsim_assets"])
+    b = BuildSpec(tag="t", python_packages=["roqsim_assets", "roqsim"])
     assert build_hash(a, tmp_path, BASE) != build_hash(b, tmp_path, BASE)
 
 
@@ -173,27 +173,27 @@ def test_a_flat_list_is_one_resolution_pass(tmp_path):
     """The default has to be the correct one: pip sees every local wheel at once, so a
     wheel's dependency on a sibling resolves against the sibling. Installed one at a
     time, pip went to the index instead and the build died with
-    'No matching distribution found for rst_manipulation'."""
-    rst, manip = _wheels(tmp_path, "rst", "rst_manipulation")
+    'No matching distribution found for roqsim_manipulation'."""
+    roqsim, manip = _wheels(tmp_path, "roqsim", "roqsim_manipulation")
     # Deliberately dependency-hostile order: the dependent wheel first.
-    spec = BuildSpec(tag="t", python_packages=[manip, rst, "shapely>=2.0"])
+    spec = BuildSpec(tag="t", python_packages=[manip, roqsim, "shapely>=2.0"])
 
     installs = _installs(spec, tmp_path)
 
     assert len(installs) == 1
-    assert manip in installs[0] and rst in installs[0] and "'shapely>=2.0'" in installs[0]
+    assert manip in installs[0] and roqsim in installs[0] and "'shapely>=2.0'" in installs[0]
 
 
 def test_nesting_chooses_the_layer_boundaries(tmp_path):
     """One RUN per group, in order — the author's caching lever."""
-    rst, assets, glue = _wheels(tmp_path, "rst", "rst_assets", "glue")
-    spec = BuildSpec(tag="t", python_packages=["mujoco>=3.0", [rst, assets], glue])
+    roqsim, assets, glue = _wheels(tmp_path, "roqsim", "roqsim_assets", "glue")
+    spec = BuildSpec(tag="t", python_packages=["mujoco>=3.0", [roqsim, assets], glue])
 
     installs = _installs(spec, tmp_path)
 
     assert len(installs) == 3
     assert "'mujoco>=3.0'" in installs[0]          # bare string beside a list: group of one
-    assert rst in installs[1] and assets in installs[1]
+    assert roqsim in installs[1] and assets in installs[1]
     assert glue in installs[2]
 
 
@@ -310,8 +310,8 @@ def test_a_missing_distribution_still_names_the_requirement():
     """Installing a group in one pass costs the per-entry attribution, not this: the
     name comes from pip's own message."""
     err = classify_build_error(
-        "ERROR: No matching distribution found for rst_manipulation\n")
-    assert err.phase == "pip" and err.entry == "rst_manipulation"
+        "ERROR: No matching distribution found for roqsim_manipulation\n")
+    assert err.phase == "pip" and err.entry == "roqsim_manipulation"
 
 
 # ---------------------------------------------------------------------------

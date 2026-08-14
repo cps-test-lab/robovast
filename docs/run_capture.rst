@@ -35,7 +35,7 @@ not simply has no ``scene3d`` panel, exactly as a Gazebo campaign has none today
 declared per campaign and fails by *absence* — which is visible — rather than through a fallback that
 renders something misleading.
 
-rst is the first producer of both: ``rst export web`` for the scene, ``rst export capture`` (or its
+roqsim is the first producer of both: ``roqsim export web`` for the scene, ``roqsim export capture`` (or its
 scenario adapter, at shutdown) for the capture. The reference readers are
 ``frontend/ui/src/lib/scene3d/sceneLoader.ts`` and ``frontend/ui/src/lib/scene3d/runCapture.ts``.
 
@@ -53,7 +53,7 @@ The scene descriptor
 fetches the binary and the textures as **relative siblings** of ``scene.json``, which is why the file
 address space preserves path segments.
 
-The format is defined by its producer, ``rst/export_web.py``, and its full field list lives there. Two
+The format is defined by its producer, ``roqsim/export_web.py``, and its full field list lives there. Two
 notes matter to a *second* producer:
 
 * It is a plain scene graph — bodies with rest transforms and a parent index, named joints carrying
@@ -90,11 +90,11 @@ The manifest
     "frame": "world",
     "time": {"base": "sim", "t0": 0.002, "t1": 29.324,
              "off": 0, "dtype": "f8", "samples": 734, "width": 1},
-    "producer": "rst",
+    "producer": "roqsim",
     "producer_version": "0.1.0",
-    "world": "rst_tiago_pick:tiago_pick",
+    "world": "roqsim_tiago_pick:tiago_pick",
     "overrides": {},
-    "packages": {"rst": "0.1.0", "mujoco": "3.11.0", "numpy": "2.5.1"},
+    "packages": {"roqsim": "0.1.0", "mujoco": "3.11.0", "numpy": "2.5.1"},
     "seed": 1869948900,
     "tracks": [
      {"kind": "joint", "name": "arm_1_joint", "unit": "rad",
@@ -108,7 +108,7 @@ The manifest
 name rather than guessing at it. Guessing would render something plausible and wrong, which is the
 failure this whole design exists to avoid.
 
-``frame`` is the frame pose tracks are expressed in. It must match the scene's geometry — for rst that is
+``frame`` is the frame pose tracks are expressed in. It must match the scene's geometry — for roqsim that is
 the simulator's **world** frame. This is not bookkeeping: a nav stack's ``base_link`` lives in a *map*
 frame that can be metres from the world origin, and no reader can tell the two apart from the numbers.
 In ``configs/examples/basic_nav`` the offset is 8 m, so getting it wrong draws the robot in the wrong
@@ -142,7 +142,7 @@ overrides it actually built with.
 ``producer``, ``producer_version``, ``packages`` and ``seed`` are provenance. A reader shows ``world`` and
 ``producer`` when track names fail to resolve, because "this capture was recorded against a different
 world" is the diagnosis in nearly every such case. ``packages`` carries the producer's own library
-versions (for rst: ``rst``/``mujoco``/``numpy``), so a format or geometry mismatch across a version bump
+versions (for roqsim: ``roqsim``/``mujoco``/``numpy``), so a format or geometry mismatch across a version bump
 is legible rather than mysterious. ``seed`` may be ``null`` when the producer had none.
 
 Tracks
@@ -179,7 +179,7 @@ not otherwise place.** A body is placeable when its parent is *and* its own join
 revolute/prismatic ones *and* it is not a mocap body — recursively, from the world body down. So a link
 welded to a moving parent, or hanging off it through joints, needs no pose track: the joint tracks and
 the geometry's rest transforms already determine it. Emitting one anyway is not merely wasteful, it is
-**two writers for one transform**, and which wins is then an accident of ordering. (rst's exporter got
+**two writers for one transform**, and which wins is then an accident of ordering. (roqsim's exporter got
 this wrong first time by testing only whether a body *owns* a joint, which produced 36 pose tracks
 instead of 2 on a real recording.)
 
@@ -240,8 +240,8 @@ for an absent consumer is how formats rot: array tracks (``width > 1``, for a li
 index (for camera video). Both are additive — a reader skips a track ``kind`` it does not know, so an
 older viewer keeps replaying the motion it does understand.
 
-Producing a capture with rst
-============================
+Producing a capture with roqsim
+===============================
 
 Two ways, one implementation, so they cannot drift.
 
@@ -251,12 +251,12 @@ shutdown, against the still-live model — no world rebuild, and no GL backend i
 .. code-block:: yaml
 
    execution:
-     simulation: rst.scenario_adapter:MujocoSim
+     simulation: roqsim.scenario_adapter:MujocoSim
      env:
-     - ROBOSITO_WORLD: "/config/files/depot.yaml"
-     - ROBOSITO_RECORD: "run.npz"              # the recording (the run's ground truth)
-     - ROBOSITO_CAPTURE_EXPORT_DIR: "capture"  # -> <run dir>/capture/capture.json
-     # - ROBOSITO_CAPTURE_FPS: "25"            # optional; samples per *simulated* second
+     - ROQSIM_WORLD: "/config/files/depot.yaml"
+     - ROQSIM_RECORD: "run.npz"              # the recording (the run's ground truth)
+     - ROQSIM_CAPTURE_EXPORT_DIR: "capture"  # -> <run dir>/capture/capture.json
+     # - ROQSIM_CAPTURE_FPS: "25"            # optional; samples per *simulated* second
 
    visualization:
      panels:
@@ -273,10 +273,10 @@ without re-running anything:
 
 .. code-block:: bash
 
-   rst export capture --state run.npz --out capture/
+   roqsim export capture --state run.npz --out capture/
 
-``run.npz`` keeps its own role either way: it is rst's ground truth, feeding ``rst render --state`` and
-``rst state --state``, and everything else is re-derivable from it — the same relationship a ROS
+``run.npz`` keeps its own role either way: it is roqsim's ground truth, feeding ``roqsim render --state`` and
+``roqsim state --state``, and everything else is re-derivable from it — the same relationship a ROS
 campaign has with its rosbags.
 
 .. note::
@@ -290,10 +290,10 @@ campaign has with its rosbags.
 Adding a producer
 =================
 
-For a simulator that is not rst:
+For a simulator that is not roqsim:
 
 #. **Geometry.** Either emit the scene descriptor directly, or compile it offline from the world the
-   simulator ran — for an SDF world, ``rst scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``rst export web``
+   simulator ran — for an SDF world, ``roqsim scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``roqsim export web``
    already does this, and a campaign can run it as an ``execution.generate`` step so the descriptor is a
    frozen campaign input with a freshness manifest (see :ref:`its delivery section <scene-descriptor-delivery>`).
 #. **Motion.** Write ``capture.json`` + ``capture.bin`` per run, holding to the rules above. From ROS

@@ -320,7 +320,7 @@ Two producers, one format:
   ``/clock`` message is an exact (wall receive, sim content) pair. Deliberately not the scenario's
   ``bag_record``: that one is sim-time on both axes, so it cannot carry the mapping, and it starts
   mid-run where the interesting failures are already over.
-* **rst (non-ROS)** — ``rst.capture`` streams ``<recording>.clock_map.csv`` beside the ``.npz``,
+* **roqsim (non-ROS)** — ``roqsim.capture`` streams ``<recording>.clock_map.csv`` beside the ``.npz``,
   flushed per sample so a run killed by a timeout still has one.
 
 The samples are **decimated**: one is dropped only when linear interpolation reproduces it within
@@ -330,7 +330,7 @@ exactly the samples that describe it (12000 ``/clock`` messages → 26 rows, mea
 **Outside the sampled range there is no answer, and none is invented.** The samples begin when the
 simulator started publishing its clock, typically well after the container did, so a line logged
 during image boot has no sim time — a different statement from "we could not compute it".
-``runs.clock_map_source`` (``ros_clock_bag`` / ``rst_run_npz`` / ``none``) says which producer
+``runs.clock_map_source`` (``ros_clock_bag`` / ``roqsim_run_npz`` / ``none``) says which producer
 answered, so a reader can tell a *missing* map from a *quiet* one.
 
 .. _merged-run-log:

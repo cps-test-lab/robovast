@@ -368,7 +368,7 @@ def _run_capture_problems(raw):
     produces one at all, which is the mistake actually made.
 
     Asked of the **backend**, not inferred from the campaign's wheel names. The old check
-    pattern-matched ``rst`` in the simulation ref and the installed packages, which was the
+    pattern-matched ``roqsim`` in the simulation ref and the installed packages, which was the
     only signal available before a simulator was a first-class thing -- and which now finds
     nothing at all in the shape where the simulator runs from its own image and the campaign
     installs no simulator packages whatsoever.

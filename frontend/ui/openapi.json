@@ -2642,7 +2642,7 @@
         "type": "object"
       },
       "WorldDescription": {
-        "description": "What a campaign's world offers \u2014 :meth:`RobovastInterface.describe_world`.\n\nThe vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not\nRoboVAST's: a backend answers in its own terms (robosito reports geoms and actuators; a\ndifferent simulator would report its own objects) and RoboVAST only fixes the shape. Hence\nplain mappings rather than modelled fields \u2014 typing them here would make this the second\nplace a simulator's schema is written down, and the two would disagree.\n\n``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,\nso this answer is only true for that image \u2014 a caller comparing two answers has to know\nwhether it is comparing worlds or images.",
+        "description": "What a campaign's world offers \u2014 :meth:`RobovastInterface.describe_world`.\n\nThe vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not\nRoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a\ndifferent simulator would report its own objects) and RoboVAST only fixes the shape. Hence\nplain mappings rather than modelled fields \u2014 typing them here would make this the second\nplace a simulator's schema is written down, and the two would disagree.\n\n``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,\nso this answer is only true for that image \u2014 a caller comparing two answers has to know\nwhether it is comparing worlds or images.",
         "properties": {
           "backend": {
             "default": "",

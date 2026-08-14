@@ -33,8 +33,8 @@ class _FakeServer:
         pass
 
 
-_IMAGE_VARS = ("ROBOVAST_IMAGE", "ROBOVAST_ROBOSITO_IMAGE",
-               "ROBOVAST_CONTROLLER_IMAGE", "ROBOSITO_IMAGE")
+_IMAGE_VARS = ("ROBOVAST_IMAGE", "ROBOVAST_ROQSIM_IMAGE",
+               "ROBOVAST_CONTROLLER_IMAGE", "ROQSIM_IMAGE")
 
 
 def _run_serve(monkeypatch):
@@ -59,8 +59,8 @@ def test_logs_each_overridden_image_var(monkeypatch, caplog):
     monkeypatch.setenv("ROBOVAST_IMAGE", "docker.io/freeedlabs/robovast_jazzy@sha256:abc")
     monkeypatch.setenv("ROBOVAST_CONTROLLER_IMAGE",
                        "docker.io/freeedlabs/robovast-controller:latest")
-    monkeypatch.delenv("ROBOVAST_ROBOSITO_IMAGE", raising=False)
-    monkeypatch.delenv("ROBOSITO_IMAGE", raising=False)
+    monkeypatch.delenv("ROBOVAST_ROQSIM_IMAGE", raising=False)
+    monkeypatch.delenv("ROQSIM_IMAGE", raising=False)
     with caplog.at_level(logging.INFO, logger="robovast.service.app"):
         _run_serve(monkeypatch)
     assert ("image overrides from environment: "
@@ -72,7 +72,7 @@ def test_logs_each_overridden_image_var(monkeypatch, caplog):
 def test_blank_env_value_is_not_treated_as_set(monkeypatch, caplog):
     for var in _IMAGE_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ROBOSITO_IMAGE", "   ")
+    monkeypatch.setenv("ROQSIM_IMAGE", "   ")
     with caplog.at_level(logging.INFO, logger="robovast.service.app"):
         _run_serve(monkeypatch)
     assert "image overrides" not in caplog.text

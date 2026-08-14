@@ -1,24 +1,24 @@
 # basic_nav
 
-One nav2 navigation trial, run on **two simulators** — Gazebo and robosito (MuJoCo) — so they can be
+One nav2 navigation trial, run on **two simulators** — Gazebo and roqsim (MuJoCo) — so they can be
 compared directly. A TurtleBot 4 navigates the nav2 **Depot** world to a per-configuration goal with
 nav2 + AMCL. Same world, same map, same nav2 params, same ROS graph (down to the ground-truth
-`turtlebot4_base_link_gt` frame), so robosito is a drop-in replacement for Gazebo.
+`turtlebot4_base_link_gt` frame), so roqsim is a drop-in replacement for Gazebo.
 
 ## Files
 
 ```
 basic_nav_gazebo.vast  # one container: the scenario launches gz + TB4 + nav2 itself
-basic_nav_rst.vast     # three containers: robosito, a vanilla nav2 SUT, the scenario
+basic_nav_roqsim.vast     # three containers: roqsim, a vanilla nav2 SUT, the scenario
 scenario_gazebo.osc    # Gazebo bring-up + the measurement half
-scenario_rst.osc       # nav2-only bring-up (remote, into the SUT) + the same measurement half
+scenario_roqsim.osc       # nav2-only bring-up (remote, into the SUT) + the same measurement half
 world/
-  depot_nav2.yaml      # the robosito world: Depot + TB4 + ROS bridge + ground-truth frame
+  depot_nav2.yaml      # the roqsim world: Depot + TB4 + ROS bridge + ground-truth frame
 files/                 # mounted at /config/files, shared by both halves
   nav2_params.yaml     #   nav2 planner/controller/AMCL/BT — pinned via params_file:=
   depot.yaml/.pgm      #   the nav2 Depot occupancy map — pinned via map:=
   nav2_bt.xml          #   behavior tree, for the nav2_bt_tree postprocessing and panel
-  nav2_sut.launch.py   #   nav2 bring-up in the vanilla SUT container   (rst only)
+  nav2_sut.launch.py   #   nav2 bring-up in the vanilla SUT container   (roqsim only)
   gazebo_tb4_launch.py #   gz + TB4 + nav2 bring-up                     (Gazebo only)
   depot_gt.sdf         #   ground-truth pose publisher                  (Gazebo only)
 analysis/              # the three Results-explorer notebooks, shared by both halves
@@ -28,14 +28,14 @@ analysis/              # the three Results-explorer notebooks, shared by both ha
 
 ```bash
 # from the repo root, with the RoboVAST tooling available (`make venv`)
-robovast validate configs/examples/basic_nav/basic_nav_rst.vast
-robovast start    configs/examples/basic_nav/basic_nav_rst.vast     # MuJoCo backend
+robovast validate configs/examples/basic_nav/basic_nav_roqsim.vast
+robovast start    configs/examples/basic_nav/basic_nav_roqsim.vast     # MuJoCo backend
 robovast start    configs/examples/basic_nav/basic_nav_gazebo.vast  # Gazebo backend
 ```
 
-5 goals × 5 runs = 25 trials per half. Nothing is built first: robosito runs from its own published
-image, named by the `backend: robosito` entry point. Campaign runs are headless on both backends —
-the MuJoCo viewer is deliberately not wired in, because rst's viewer loop runs
+5 goals × 5 runs = 25 trials per half. Nothing is built first: roqsim runs from its own published
+image, named by the `backend: roqsim` entry point. Campaign runs are headless on both backends —
+the MuJoCo viewer is deliberately not wired in, because roqsim's viewer loop runs
 `while viewer.is_running()`, so closing the window ends the simulator with exit code 0 and the run
 looks clean while nav2 goes on planning against a dead sim.
 
@@ -54,7 +54,7 @@ simulator.
 
 Gazebo bundles its simulator into the stack it launches, so one local `ros_launch` is the whole
 bring-up, and the scenario gates nav2's **activation** (`autostart:=False`, then two lifecycle
-`service_call`s). In the rst half the simulator is already running in its own container, so only nav2
+`service_call`s). In the roqsim half the simulator is already running in its own container, so only nav2
 is launched, `remote()`-modified into the SUT — and there the activation gate cannot work:
 `service_call` fires `call_async` once with no `wait_for_service`, so across a container boundary the
 request is sent before its client has finished endpoint matching, and is silently dropped. That half

@@ -138,7 +138,7 @@ def test_a_sidecar_with_a_command_runs_it_through_the_entrypoint(monkeypatch):
     the ROS overlay, tees stdout into the job's log dir and starts the resource monitor;
     a command exec'd directly as the entrypoint got none of them. That is not cosmetic --
     a colcon-built plugin only reaches PYTHONPATH once /opt/ros and /ws/install are
-    sourced, so `rst sim --ros` died on an unregistered `ros2_bridge` while the scenario
+    sourced, so `roqsim sim --ros` died on an unregistered `ros2_bridge` while the scenario
     sat out its /scan timeout with no log anywhere explaining why.
 
     The command travels by env so ONE entrypoint serves both kinds of sidecar, and under
@@ -148,14 +148,14 @@ def test_a_sidecar_with_a_command_runs_it_through_the_entrypoint(monkeypatch):
     """
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
-        "simulation": {"image": "rst-ros:jazzy",
-                       "command": ["rst", "sim", "w.yaml", "--ros", "--headless"]}}})
+        "simulation": {"image": "roqsim-ros:jazzy",
+                       "command": ["roqsim", "sim", "w.yaml", "--ros", "--headless"]}}})
     m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
     sim = _sidecar(m, "simulation")
     assert sim["command"] == ["/usr/bin/tini", "--", "/bin/bash",
                               "/config/secondary_entrypoint.sh"]
     env = {e["name"]: e["value"] for e in sim["env"]}
-    assert env["ROBOVAST_CONTAINER_COMMAND"] == "rst sim w.yaml --ros --headless"
+    assert env["ROBOVAST_CONTAINER_COMMAND"] == "roqsim sim w.yaml --ros --headless"
 
 
 def test_a_sidecar_without_a_command_still_runs_the_server(monkeypatch):
@@ -194,7 +194,7 @@ def test_a_sidecar_can_upload_what_it_writes_after_the_scenario_ends(monkeypatch
     """
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
-        "simulation": {"image": "rst-ros:jazzy", "command": ["rst", "sim", "w.yaml"]}}})
+        "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
     m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
     env = _env_dict(_sidecar(m, "simulation"))
     assert env["S3_ENDPOINT"] == "http://s3:9000"

@@ -87,7 +87,7 @@ RUN mkdir -p /ws/src
 # directory empty and the pinned clone below is what lands in the image. ``build.sh
 # --scenario-execution-src <path>`` fills it with a working tree instead.
 #
-# The same shape as Dockerfile.robosito's staged context, and for the same reason: a
+# The same shape as Dockerfile.roqsim's staged context, and for the same reason: a
 # Dockerfile cannot branch on a build arg, so build.sh decides what is *in* the context and
 # there is one COPY rather than two code paths for "where does the source come from".
 #

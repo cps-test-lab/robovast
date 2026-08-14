@@ -10,7 +10,7 @@
 //   * the **run capture** (`capture.json`/`capture.bin`) -- the motion: named joint-value and
 //     body-pose tracks over a time base. Per run, and only the simulator that ran can produce it.
 //
-// Both formats are specified in robovast/docs/run_capture.rst; rst is the first producer of each.
+// Both formats are specified in robovast/docs/run_capture.rst; roqsim is the first producer of each.
 //
 // This replaces reading a `poses` table out of the postprocessed `data.db`. That path needed a rosbag,
 // a `rosbags_tf_to_csv` step and a postprocessing run before anything moved, imposed a naming contract

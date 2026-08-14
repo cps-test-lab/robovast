@@ -1,19 +1,19 @@
 #!/bin/bash -e
-# Build and push all of robovast's own container images (base, robosito, controller)
+# Build and push all of robovast's own container images (base, roqsim, controller)
 # to one registry/project prefix, in one call. The local-dev counterpart of what
 # .github/workflows/image.yml does per-image in CI, collapsed into a single command
 # for deploying to an arbitrary registry (Docker Hub, a fork's GHCR, ...).
 #
 # Orchestrates the two existing per-image scripts rather than reimplementing any
 # docker build/push logic:
-#   container/robovast/build.sh    (base + robosito, via --image all)
+#   container/robovast/build.sh    (base + roqsim, via --image all)
 #   container/controller/build.sh  (controller)
 #
 # sidecar is intentionally excluded: it has no build.sh of its own today (CI-only).
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push] [--ros-distro <distro>] \
-#                                  [--robosito-ref <ref>] [-- <extra docker build args>]
+#                                  [--roqsim-ref <ref>] [-- <extra docker build args>]
 #
 # Example:
 #   ./container/release_images.sh --project docker.io/freeedlabs --push
@@ -23,7 +23,7 @@ BASEDIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT=""
 PUSH=""
 ROS_DISTRO="jazzy"
-ROBOSITO_REF="robovast"
+ROQSIM_REF="robovast"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -39,8 +39,8 @@ while [[ $# -gt 0 ]]; do
       ROS_DISTRO="$2"
       shift 2
       ;;
-    --robosito-ref)
-      ROBOSITO_REF="$2"
+    --roqsim-ref)
+      ROQSIM_REF="$2"
       shift 2
       ;;
     --)
@@ -56,7 +56,7 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--push] [--ros-distro <distro>] [--robosito-ref <ref>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--push] [--ros-distro <distro>] [--roqsim-ref <ref>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project docker.io/freeedlabs --push" >&2
 }
 
@@ -74,11 +74,11 @@ PUSH_FLAG=()
 [[ -n "$PUSH" ]] && PUSH_FLAG=(--push)
 
 BASE_TAG="${PROJECT}robovast_${ROS_DISTRO}:latest"
-ROBOSITO_TAG="${PROJECT}robovast_robosito_${ROS_DISTRO}:latest"
+ROQSIM_TAG="${PROJECT}robovast_roqsim_${ROS_DISTRO}:latest"
 CONTROLLER_TAG="${PROJECT}robovast-controller:latest"
 
-echo "== base + robosito =="
-ROBOSITO_REF="$ROBOSITO_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
+echo "== base + roqsim =="
+ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
   --ros-distro "$ROS_DISTRO" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
 
 echo
@@ -89,8 +89,8 @@ echo "== controller =="
 "$BASEDIR/controller/build.sh" -t "$CONTROLLER_TAG" "${PUSH_FLAG[@]}" $EXTRA_ARGS
 
 # The digest for a repo:tag, as repo@sha256:... -- printed instead of the floating tag
-# below, matching this repo's own pin-by-digest convention (see the robosito image comment
-# in configs/examples/basic_nav/basic_nav_rst.vast).
+# below, matching this repo's own pin-by-digest convention (see the roqsim image comment
+# in configs/examples/basic_nav/basic_nav_roqsim.vast).
 #
 # Two sources, cheapest first:
 #   1. the local image's RepoDigests. Set when this image was pushed to (or pulled from)
@@ -129,10 +129,10 @@ image_ref() {
 resolve_refs() {
   local name tag ref
   MISSING_DIGESTS=()
-  for name in BASE ROBOSITO_IMAGE CONTROLLER_IMAGE; do
+  for name in BASE ROQSIM_IMAGE CONTROLLER_IMAGE; do
     case "$name" in
       BASE)             tag="$BASE_TAG" ;;
-      ROBOSITO_IMAGE)   tag="$ROBOSITO_TAG" ;;
+      ROQSIM_IMAGE)   tag="$ROQSIM_TAG" ;;
       CONTROLLER_IMAGE) tag="$CONTROLLER_TAG" ;;
     esac
     ref=$(image_ref "$tag")
@@ -167,7 +167,7 @@ else
   echo "Built (local only -- re-run with --push to publish to ${PROJECT%/}):"
 fi
 echo "  $BASE_TAG"
-echo "  $ROBOSITO_TAG"
+echo "  $ROQSIM_TAG"
 echo "  $CONTROLLER_TAG"
 echo
 if [[ ${#MISSING_DIGESTS[@]} -eq 0 ]]; then
@@ -182,7 +182,7 @@ else
   echo "them and get repo@sha256:... refs instead:"
 fi
 echo "  ROBOVAST_IMAGE=${BASE_REF}"
-echo "  ROBOVAST_ROBOSITO_IMAGE=${ROBOSITO_IMAGE_REF}"
+echo "  ROBOVAST_ROQSIM_IMAGE=${ROQSIM_IMAGE_REF}"
 echo "  ROBOVAST_CONTROLLER_IMAGE=${CONTROLLER_IMAGE_REF}"
 echo "Note: a .vast file's own 'image:' field overrides .env/env vars -- edit it directly if a"
 echo "campaign pins its image explicitly (as configs/examples/basic_nav/*.vast do)."
@@ -207,7 +207,7 @@ if [[ -t 0 ]]; then
   read -r -p "Update ./.env with these 3 lines now? [y/N] " REPLY || REPLY=""
   if [[ "$REPLY" =~ ^[Yy] ]]; then
     set_env_var ROBOVAST_IMAGE "$BASE_REF"
-    set_env_var ROBOVAST_ROBOSITO_IMAGE "$ROBOSITO_IMAGE_REF"
+    set_env_var ROBOVAST_ROQSIM_IMAGE "$ROQSIM_IMAGE_REF"
     set_env_var ROBOVAST_CONTROLLER_IMAGE "$CONTROLLER_IMAGE_REF"
     echo "Updated ./.env."
   fi

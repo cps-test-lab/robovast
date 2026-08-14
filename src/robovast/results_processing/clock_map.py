@@ -56,7 +56,7 @@ from .data.rosbags_common import (  # noqa: F401
 #: log lines are wall-time only, and every surface that shows them has to say so.
 SOURCE_NONE = "none"
 SOURCE_ROS_CLOCK_BAG = "ros_clock_bag"
-SOURCE_RST_RUN_NPZ = "rst_run_npz"
+SOURCE_RST_RUN_NPZ = "roqsim_run_npz"
 
 
 class ClockMapInfo(NamedTuple):
@@ -113,21 +113,21 @@ class ClockMap:
         return s0 + (s1 - s0) * ((wall - w0) / span)
 
 
-#: The empty map, for a run with no ``/clock`` and no rst samples. Returned rather than
+#: The empty map, for a run with no ``/clock`` and no roqsim samples. Returned rather than
 #: ``None`` so callers do not each re-invent "what if there is no map".
 NO_CLOCK_MAP = ClockMap([], SOURCE_NONE)
 
 
-#: What rst names its streamed clock record: ``run.npz`` -> ``run.clock_map.csv``. Same two
+#: What roqsim names its streamed clock record: ``run.npz`` -> ``run.clock_map.csv``. Same two
 #: columns as the ROS one, and epoch on the wall axis for the same reason — a reader outside the
 #: simulator's process has calendar stamps, not that process's monotonic origin.
-RST_SUFFIX = ".clock_map.csv"
+ROQSIM_SUFFIX = ".clock_map.csv"
 
 
 def find_run_clock_map(run_dir: str) -> ClockMap:
     """The clock map a **non-ROS** run left beside its recording, or :data:`NO_CLOCK_MAP`.
 
-    Written line by line as the run proceeds (``rst.capture``), so unlike the ``.npz`` it
+    Written line by line as the run proceeds (``roqsim.capture``), so unlike the ``.npz`` it
     survives a run killed by a timeout — which is the run whose log most needs placing in time.
     """
     try:
@@ -135,7 +135,7 @@ def find_run_clock_map(run_dir: str) -> ClockMap:
     except OSError:
         return NO_CLOCK_MAP
     for name in names:
-        if name.endswith(RST_SUFFIX):
+        if name.endswith(ROQSIM_SUFFIX):
             found = load_clock_map(os.path.join(run_dir, name), SOURCE_RST_RUN_NPZ)
             if found:
                 return found

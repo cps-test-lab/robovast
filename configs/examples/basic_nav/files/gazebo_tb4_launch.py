@@ -3,12 +3,12 @@
 """The Gazebo half's bring-up: nav2's own tb4_simulation_launch.py + a ground-truth TF.
 
 ``tb4_simulation_launch.py`` is included **unmodified** — it is the reference Gazebo
-bring-up and the thing this campaign compares robosito against, so it is not forked.
+bring-up and the thing this campaign compares roqsim against, so it is not forked.
 This wrapper adds only what the comparison needs on top and cannot get any other way,
 because the campaign cannot edit an upstream launch file.
 
 Why it exists: the campaign's analysis reads a ground-truth trajectory
-(``<robot>_base_link_gt``), and Gazebo publishes no such frame by itself. robosito gets
+(``<robot>_base_link_gt``), and Gazebo publishes no such frame by itself. roqsim gets
 it from the ``ground_truth_pose`` world plugin; here it comes from
 ``gazebo_tf_publisher`` (scenario-execution's gz helper, already installed in the
 RoboVAST base image), which reads gz's own pose feed and republishes ``map -> …_gt``.
@@ -25,16 +25,16 @@ Two values here are load-bearing and were both wrong in the obvious formulation:
 * ``robot_name`` is forced to ``turtlebot4``. The publisher names the frame
   ``<gz model name>_<base_frame_id>_gt``, and tb4_simulation_launch.py's default model
   name is ``nav2_turtlebot4`` — which would emit ``nav2_turtlebot4_base_link_gt`` while
-  robosito emits ``turtlebot4_base_link_gt``, leaving the two backends' trajectories
+  roqsim emits ``turtlebot4_base_link_gt``, leaving the two backends' trajectories
   under different table keys for no reason other than a default.
 
 It also runs the campaign **headless**, which upstream cannot do while publishing ground
 truth: ``headless`` gates the SceneBroadcaster plugin in the world *and* the Gazebo GUI,
 so needing the pose feed forced a GUI into a headless cluster pod — ~480 s per trial
-against robosito's ~107 s, an asymmetry with nothing to do with either simulator
-(robosito's campaign runs with no viewer at all). ``files/depot_gt.sdf`` is upstream's
+against roqsim's ~107 s, an asymmetry with nothing to do with either simulator
+(roqsim's campaign runs with no viewer at all). ``files/depot_gt.sdf`` is upstream's
 world with SceneBroadcaster made unconditional, which decouples the two; ``use_rviz`` is
-off for the same reason, and because the robosito half has no viewer either.
+off for the same reason, and because the roqsim half has no viewer either.
 """
 
 import os
@@ -48,7 +48,7 @@ from launch_ros.actions import Node
 
 # The gz world whose pose feed carries the robot: fixed by the map this campaign runs.
 _WORLD = "depot"
-# Must match the model name robosito's world gives the robot, so both backends publish
+# Must match the model name roqsim's world gives the robot, so both backends publish
 # one frame name and the analysis needs no per-backend special case.
 _ROBOT_NAME = "turtlebot4"
 

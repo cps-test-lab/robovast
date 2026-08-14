@@ -18,8 +18,8 @@ Three things make that work:
 * **A run says which world it needs.** The capture manifest records ``world`` and ``overrides``, so
   nothing has to be declared in the ``.vast`` and a per-config world needs no special handling.
 * **Generation runs in the campaign's own pinned image.** The world is generally not on this host: it is
-  installed into the image from a wheel (``/usr/local/share/rst_nav2_example/worlds/depot_nav2.yaml``).
-  A host that happens to have ``rst`` could be a different version and would render *plausible, wrong*
+  installed into the image from a wheel (``/usr/local/share/roqsim_nav2_example/worlds/depot_nav2.yaml``).
+  A host that happens to have ``roqsim`` could be a different version and would render *plausible, wrong*
   geometry.
 * **The cache key is the world identity**, not a file fingerprint: image identity + world + overrides +
   exporter options. The image digest pins every asset package the geometry is compiled from, so equal
@@ -31,7 +31,7 @@ Why the key is ours rather than the generator framework's
 ``run_input_generators`` has its own staleness cache, and it is deliberately unusable here.
 :func:`~robovast.common.input_generation._run_one` discards a manifest whose recorded inputs are not
 visible on this host — "unverifiable inputs mean regenerate" — and a generator that ran in a container
-reports paths *inside* it. ``rst-export-web --manifest`` lists 55 such paths, none of which exist here,
+reports paths *inside* it. ``roqsim-export-web --manifest`` lists 55 such paths, none of which exist here,
 so that cache would never hit: every viewer would recompile the world. So generation is invoked with
 ``use_cache=False`` and this module decides hits itself, which it can do without running anything.
 
@@ -179,7 +179,7 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
     overrides_known = "overrides" in (capture_manifest or {})
     execution = _campaign_execution(campaign_dir)
     identity = {
-        "producer": str((capture_manifest or {}).get("producer") or "rst"),
+        "producer": str((capture_manifest or {}).get("producer") or "roqsim"),
         "world": str(world),
         "overrides": (capture_manifest or {}).get("overrides") or {},
         "overrides_known": overrides_known,
@@ -493,7 +493,7 @@ def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = 
 #: (the scene build failed with "a new path has to be added to AUX_MOUNTABLE_PATHS") nor a
 #: path worth mounting, since an emptyDir over it would shadow whatever the aux image keeps
 #: there. The local lane bind-mounts the file and never saw the difference.
-_OVERRIDES_MOUNT = "/aux/rst_scene_overrides.yaml"
+_OVERRIDES_MOUNT = "/aux/roqsim_scene_overrides.yaml"
 
 
 def _overrides_file(identity: dict, key: str) -> str | None:

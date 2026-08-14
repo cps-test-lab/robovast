@@ -283,7 +283,7 @@ registered a video (see :ref:`the videos table <videos-table>`). Cheap.
 
 ``get_simulation_screenshot`` renders the world **again**, from a viewpoint the caller picks
 (``lookat`` / ``distance`` / ``azimuth`` / ``elevation``, or ``focus`` on a named entity, or a
-camera the world defines). That needs a simulator that can re-render — robosito can, Gazebo
+camera the world defines). That needs a simulator that can re-render — roqsim can, Gazebo
 cannot — and a run that recorded its state, and it runs a container in the campaign's own
 simulation image: seconds if that image is on the node, minutes if it must be pulled.
 
@@ -765,7 +765,7 @@ cheaper way to ask.
 
 **Two questions, one knob.** ``config_name`` decides which:
 
-* omitted — the bare image: ``python3 -c 'import rst'``, ``ros2 pkg list | grep <pkg>``,
+* omitted — the bare image: ``python3 -c 'import roqsim'``, ``ros2 pkg list | grep <pkg>``,
   ``ls`` of an install tree. This is the loop that diagnoses the ament/``AMENT_PREFIX_PATH``
   pitfalls in :ref:`configuration <config-containers>` in one call each.
 * named — that configuration staged exactly as a campaign stages it, so an empty

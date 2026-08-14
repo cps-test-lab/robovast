@@ -1,13 +1,13 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""The robosito simulator backend for RoboVAST.
+"""The roqsim simulator backend for RoboVAST.
 
 **Its own distribution, deliberately.** RoboVAST must not *require* a simulator: the
 framework is what makes any simulator runnable, and a hard dependency on one would
-invert that. So this ships as the ``robosito`` extra rather than as part of
+invert that. So this ships as the ``roqsim`` extra rather than as part of
 ``robovast`` -- ``pip install robovast`` names no simulator, ``pip install
-robovast[robosito]`` adds this backend's entry point, and a third-party backend arrives
+robovast[roqsim]`` adds this backend's entry point, and a third-party backend arrives
 the same way through its own package.
 
 It is in the default service/controller image because it is cheap enough to be: strings
@@ -21,14 +21,14 @@ simulator and which config, and nothing else::
     execution:
       mode: ros2
       containers:
-        simulation: {backend: robosito, config: worlds/depot.yaml}
+        simulation: {backend: roqsim, config: worlds/depot.yaml}
 
-**This module must import without robosito installed.** It runs in the RoboVAST service
+**This module must import without roqsim installed.** It runs in the RoboVAST service
 process, which has no reason to carry MuJoCo -- so everything here is strings and
-container specs, and the one operation that genuinely needs robosito (working out which
-files a world is made of) runs *in robosito's own image*.
+container specs, and the one operation that genuinely needs roqsim (working out which
+files a world is made of) runs *in roqsim's own image*.
 """
 
-from robovast_sim_robosito.backend import RobositoBackend
+from robovast_sim_roqsim.backend import RoqsimBackend
 
-__all__ = ["RobositoBackend"]
+__all__ = ["RoqsimBackend"]

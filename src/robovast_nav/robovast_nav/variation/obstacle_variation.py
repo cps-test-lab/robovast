@@ -40,7 +40,7 @@ from .nav_base_variation import NavVariation
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
 
 
-#: Shapes a placement plugin can compile. ``box`` is what ``rst_assets``' ``boxes`` takes;
+#: Shapes a placement plugin can compile. ``box`` is what ``roqsim_assets``' ``boxes`` takes;
 #: a world gaining another population plugin adds its shape here.
 _SUPPORTED_SHAPES = ('box',)
 

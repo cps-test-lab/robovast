@@ -1258,14 +1258,14 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
         logger.info("authenticating with the configured %s", auth.TOKEN_ENV_VAR)
 
     # These four vars are the only knobs that move a campaign off the built-in
-    # image defaults (see _resolve_image() / robovast_sim_robosito.backend); a
+    # image defaults (see _resolve_image() / robovast_sim_roqsim.backend); a
     # persistent service running against a non-default image for months is easy
     # to forget, so surface it once at startup rather than only on demand.
     import os  # pylint: disable=import-outside-toplevel
     image_overrides = {
         var: value for var in
-        ("ROBOVAST_IMAGE", "ROBOVAST_ROBOSITO_IMAGE",
-         "ROBOVAST_CONTROLLER_IMAGE", "ROBOSITO_IMAGE")
+        ("ROBOVAST_IMAGE", "ROBOVAST_ROQSIM_IMAGE",
+         "ROBOVAST_CONTROLLER_IMAGE", "ROQSIM_IMAGE")
         if (value := os.environ.get(var, "").strip())
     }
     if image_overrides:

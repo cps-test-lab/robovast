@@ -40,7 +40,14 @@ venv/.robovast_installed:
 	fi
 	
 	@echo "Setting up RoboVAST environment..."
-	. venv/bin/activate && pip install -e .[docs,test,gui] && pip install -e src/robovast_nav
+	# The two sibling packages are installed explicitly, not via extras: they are path
+	# dependencies, and `pip install -e .[roqsim]` would take them from the index.
+	# roqsim was missing here, so every fresh venv lacked the `roqsim` simulator entry
+	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
+	# environment that looked like broken code.
+	. venv/bin/activate && pip install -e .[docs,test,gui] \
+		&& pip install -e src/robovast_nav \
+		&& pip install -e src/robovast_sim_roqsim
 
 	@touch venv/.robovast_installed
 	@echo ""

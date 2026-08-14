@@ -8,9 +8,9 @@
   that needs gz's pose feed (which SceneBroadcaster publishes, and which
   gazebo_tf_publisher turns into the ground-truth TF this campaign measures) was forced
   to also start the GUI. In a headless cluster pod that GUI is pure overhead: it drove
-  the Gazebo trials to ~480 s wall clock against robosito's ~107 s, and made the two
+  the Gazebo trials to ~480 s wall clock against roqsim's ~107 s, and made the two
   backends unequal in a way that has nothing to do with either simulator's physics
-  (robosito's campaign runs with no viewer at all).
+  (roqsim's campaign runs with no viewer at all).
 
   Decoupling them here lets the Gazebo half run `headless:=True` (no GUI, no rviz) and
   still publish ground truth.

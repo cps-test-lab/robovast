@@ -129,7 +129,7 @@ describe('summariseCpu', () => {
   })
 
   it('pairs the measured main container with its declared name', () => {
-    // Real names from experiment-random-recovery-robosito-2026-08-12-13151291: `resource_usage`
+    // Real names from experiment-random-recovery-roqsim-2026-08-12-13151291: `resource_usage`
     // records the MAIN container under the fixed role name `robovast`, while the .vast declares
     // it as `scenario` (see expected_container_files in results_processing/resource_usage.py).
     // A plain name join leaves it undeclared, which nulls the pod total and hides the headline

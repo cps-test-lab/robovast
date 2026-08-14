@@ -1,6 +1,6 @@
-# robovast_sim_robosito
+# robovast_sim_roqsim
 
-The [robosito](https://github.com/cps-test-lab/robosito) (MuJoCo) simulator backend for RoboVAST.
+The [roqsim](https://github.com/cps-test-lab/roqsim) (MuJoCo) simulator backend for RoboVAST.
 
 Registers one `robovast.simulators` entry point, so a campaign selects the simulator by name:
 
@@ -9,7 +9,7 @@ execution:
   mode: ros2
   containers:
     simulation:
-      backend: robosito
+      backend: roqsim
       config: worlds/depot.yaml
 ```
 
@@ -21,12 +21,12 @@ made of — comes from the backend rather than from the `.vast`.
 It ships as a RoboVAST extra:
 
 ```bash
-pip install 'robovast[robosito]'
+pip install 'robovast[roqsim]'
 ```
 
 `pip install robovast` deliberately gets you nothing from here: RoboVAST names no simulator, so a
 backend is always something you add. The default service/controller image installs this extra,
-which is what lets `backend: robosito` resolve on a cluster without the campaign shipping anything.
+which is what lets `backend: roqsim` resolve on a cluster without the campaign shipping anything.
 
 ### From source
 
@@ -36,7 +36,7 @@ pip install -e .
 
 ## Scope
 
-This package must import **without robosito installed** — it runs in the long-lived RoboVAST
+This package must import **without roqsim installed** — it runs in the long-lived RoboVAST
 service process, which has no reason to carry a MuJoCo runtime. It declares strings and container
 specs; anything that genuinely needs the simulator (such as enumerating the files a world is built
-from) runs inside robosito's own image.
+from) runs inside roqsim's own image.

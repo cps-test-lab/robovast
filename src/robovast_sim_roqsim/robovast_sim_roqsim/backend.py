@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""What robosito tells RoboVAST about itself."""
+"""What roqsim tells RoboVAST about itself."""
 
 from __future__ import annotations
 
@@ -21,36 +21,36 @@ from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER,
                                         SimulatorBackend, shape_for,
                                         simulator_image)
 
-#: The image robosito runs in when it has a container of its own -- robosito's **own**
+#: The image roqsim runs in when it has a container of its own -- roqsim's **own**
 #: published image, not something a campaign builds. It carries the GL libraries,
 #: ``mujoco`` and every ``rst_*`` package, which is exactly why the ROS shape needs no
-#: build at all: nothing a campaign owns contains robosito.
+#: build at all: nothing a campaign owns contains roqsim.
 DEFAULT_SIM_IMAGE = os.environ.get(
-    "ROBOSITO_IMAGE", "ghcr.io/cps-test-lab/rst-ros:jazzy")
+    "ROQSIM_IMAGE", "ghcr.io/cps-test-lab/roqsim-ros:jazzy")
 
-#: The image the *scenario* runs in when robosito is stepped in-process. Here the two
+#: The image the *scenario* runs in when roqsim is stepped in-process. Here the two
 #: roles are one container, so it must carry both the RoboVAST contract
 #: (``/etc/robovast_compat_version``, scenario-execution, the ``/out`` mount) and
-#: robosito -- which is the one thing robosito's own image does not have.
+#: roqsim -- which is the one thing roqsim's own image does not have.
 #: The tag is ``:latest`` because that is what ``.github/workflows/image.yml`` publishes
 #: for this image (``type=raw,value=latest`` on the default branch, plus branch/PR/semver
 #: tags). It defaulted to ``:jazzy`` — a tag CI has never produced — so the fallback named
 #: an image that does not exist, and only a campaign setting the image explicitly worked.
 #: ``tests/common/test_image_defaults.py`` keeps the two in agreement.
 DEFAULT_COMBINED_IMAGE = os.environ.get(
-    "ROBOVAST_ROBOSITO_IMAGE", "ghcr.io/cps-test-lab/robovast-robosito:latest")
+    "ROBOVAST_ROQSIM_IMAGE", "ghcr.io/cps-test-lab/robovast-roqsim:latest")
 
 #: The ``SimulationInterface`` scenario-execution steps.
-ADAPTER = "rst.scenario_adapter:MujocoSim"
+ADAPTER = "roqsim.scenario_adapter:MujocoSim"
 
 #: The MuJoCo state recording each run writes, relative to its output directory. Named once
-#: and read twice — :meth:`RobositoBackend.env` asks for it, :meth:`run_state_file` tells the
+#: and read twice — :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the
 #: service where to find it — so the request and the lookup cannot drift apart.
 _RECORD_FILE = "run.npz"
 
 
 def _is_package_ref(config: str) -> bool:
-    """``rst_scenes:depot`` names a packaged world; anything else is a file."""
+    """``roqsim_scenes:depot`` names a packaged world; anything else is a file."""
     return ":" in config and not config.startswith((".", "/"))
 
 
@@ -96,19 +96,19 @@ def _extends_a_campaign_file(config: str) -> bool:
     return isinstance(parent, str) and not _is_package_ref(parent)
 
 
-class RobositoConfig(BaseModel):
-    """robosito's own keys in the ``simulation`` container block."""
+class RoqsimConfig(BaseModel):
+    """roqsim's own keys in the ``simulation`` container block."""
 
     model_config = ConfigDict(extra="forbid")
 
-    #: The robosito config: a world YAML path beside the ``.vast``, or a package ref
-    #: (``rst_scenes:depot``). Called ``config`` rather than ``world`` because the file
-    #: is robosito's whole configuration -- physics, plugins, robot, sensors, and its
+    #: The roqsim config: a world YAML path beside the ``.vast``, or a package ref
+    #: (``roqsim_scenes:depot``). Called ``config`` rather than ``world`` because the file
+    #: is roqsim's whole configuration -- physics, plugins, robot, sensors, and its
     #: ``extends`` chain -- and "world" understates what a campaign is selecting.
     config: str
     #: Parts of the world to change before it is compiled, as a nested mapping mirroring
-    #: the world YAML with plugins addressed by name -- exactly :func:`rst.apply_overrides`'
-    #: input, and exactly what ``rst sim --set`` builds from a dotlist.
+    #: the world YAML with plugins addressed by name -- exactly :func:`roqsim.apply_overrides`'
+    #: input, and exactly what ``roqsim sim --set`` builds from a dotlist.
     #:
     #: This is what makes a world *variable* without one YAML per cell: a campaign sweeping
     #: a floorplan dimension or a prop's mass writes ``sim: plugins.floorplan.size`` and
@@ -121,20 +121,20 @@ class RobositoConfig(BaseModel):
     #: campaign varying one value of one plugin actually means.
     overrides: Optional[dict] = None
     #: The ``SimulationInterface`` scenario-execution steps, as ``module:Class``.
-    #: Defaults to robosito's generic adapter, which is what an ordinary campaign wants.
+    #: Defaults to roqsim's generic adapter, which is what an ordinary campaign wants.
     #:
     #: A campaign overrides it to name its own factors. scenario-execution forwards a
     #: scenario parameter only when the concrete ``reset()`` declares it *by name* --
     #: ``_build_reset_kwargs`` skips ``**kwargs`` outright -- so a sweep over
     #: experiment-specific parameters needs a ``reset()`` that names them. Putting those
-    #: names in the generic adapter would mean robosito learning one experiment's
+    #: names in the generic adapter would mean roqsim learning one experiment's
     #: factors, so the subclass belongs to the experiment, next to the plugins it drives.
     #: Stepped shape only: with the ROS shape there is no in-process interface at all.
     adapter: Optional[str] = None
 
 
-class RobositoBackend(SimulatorBackend):
-    """robosito, in both shapes.
+class RoqsimBackend(SimulatorBackend):
+    """roqsim, in both shapes.
 
     Stepped (``mode: base``) and ROS (``mode: ros2``) differ in exactly two ways: where
     the simulator runs, and how it is told which config to load. Everything else --
@@ -142,7 +142,7 @@ class RobositoBackend(SimulatorBackend):
     value for any campaign.
     """
 
-    CONFIG_CLASS = RobositoConfig
+    CONFIG_CLASS = RoqsimConfig
     SUPPORTED_SHAPES = (SHAPE_STEPPED, SHAPE_ROS)
     #: A bare ``sim:`` path is a path into the world. ``sim: config`` still selects the
     #: world file, because a bare backend key wins; a world key colliding with one is
@@ -151,7 +151,7 @@ class RobositoBackend(SimulatorBackend):
 
     def containers(self, cfg, execution: dict) -> dict:
         if shape_for(execution.get("mode", "auto")) == SHAPE_ROS:
-            # Its own container, running robosito's ordinary CLI. Not a RoboVAST-specific
+            # Its own container, running roqsim's ordinary CLI. Not a RoboVAST-specific
             # entry point: the same command debugs the world by hand, so there is no
             # second way the simulator can be started.
             #
@@ -159,7 +159,7 @@ class RobositoBackend(SimulatorBackend):
             # whether it serves a control plane are the WORLD's to declare. A campaign
             # runner configuring a simulator's middleware would be reaching a layer down,
             # and headless/pacing are the only two the deployment owns.
-            command = ["rst", "sim", _config_in_container(cfg.config),
+            command = ["roqsim", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
             if cfg.overrides:
                 # The file spelling of --set. Not the flags themselves: a campaign's
@@ -190,8 +190,8 @@ class RobositoBackend(SimulatorBackend):
             "ENABLE_X11": "false",
             # The run's ground truth, and the capture the scene3d panel replays. Both
             # are written on a clean stop only; a run killed by a timeout leaves neither.
-            "ROBOSITO_RECORD": _RECORD_FILE,
-            "ROBOSITO_CAPTURE_EXPORT_DIR": "capture",
+            "ROQSIM_RECORD": _RECORD_FILE,
+            "ROQSIM_CAPTURE_EXPORT_DIR": "capture",
             # The pose series, streamed per sample beside the recording as
             # `run.sim_poses.csv` -> the `sim_poses` table. Unlike the two above it
             # survives a kill, because every row is flushed as it is taken.
@@ -202,23 +202,23 @@ class RobositoBackend(SimulatorBackend):
             # is the honest one — world-frame poses on exact sim time, with velocities
             # read from the solver instead of differenced over rosbag arrival times,
             # which are quantised by the /clock grid and jittered by delivery.
-            "ROBOSITO_SIM_POSES": "1",
-            # Timestamp rst's own log lines, so they can be placed on the run's clock like
-            # every other producer's. rst defaults to `INFO rst.engine: msg` because that is
-            # what belongs in a terminal, where `rst sim` is one command a person is
-            # watching -- and robosito is published standalone, so a campaign is no reason
+            "ROQSIM_SIM_POSES": "1",
+            # Timestamp roqsim's own log lines, so they can be placed on the run's clock like
+            # every other producer's. roqsim defaults to `INFO roqsim.engine: msg` because that is
+            # what belongs in a terminal, where `roqsim sim` is one command a person is
+            # watching -- and roqsim is published standalone, so a campaign is no reason
             # to make that worse. Here the reader is the merged run log rather than a
             # person, and a line with no timestamp cannot be ordered against anything.
             #
-            # Measured on a three-container run before this: five rst lines (the drawn seed,
+            # Measured on a three-container run before this: five roqsim lines (the drawn seed,
             # the recording summary) carried no time and folded into the entrypoint line
             # above them instead of standing as their own events.
-            "RST_LOG_FORMAT": "stamped",
+            "ROQSIM_LOG_FORMAT": "stamped",
         }
         # MUJOCO_GL is deliberately absent. Which backend works is a property of the
         # machine the simulator lands on, and this code runs on the *service host* -- a
-        # different machine whenever a campaign is dispatched. robosito picks it at
-        # startup instead (rst.viewer.select_offscreen_gl), which is what finally
+        # different machine whenever a campaign is dispatched. roqsim picks it at
+        # startup instead (roqsim.viewer.select_offscreen_gl), which is what finally
         # retires the 22-line shell script three packages had each copied.
         if shape_for(execution.get("mode", "auto")) == SHAPE_STEPPED:
             # In-process: no command line to put the config on, so the adapter reads it
@@ -229,17 +229,17 @@ class RobositoBackend(SimulatorBackend):
             # so a stepped campaign whose world was a relative path had the simulator look
             # beside its own working directory instead of at the mount -- the exact failure
             # that function exists to prevent, avoided on one path and not the other.
-            env["ROBOSITO_WORLD"] = _config_in_container(cfg.config)
+            env["ROQSIM_WORLD"] = _config_in_container(cfg.config)
             if cfg.overrides:
                 # The same document the ROS shape passes with --override, reached the way
                 # everything else is in this shape: there is no command line here.
-                env["ROBOSITO_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
+                env["ROQSIM_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
         return env
 
     def sim_document(self, cfg, execution: dict):
         """The overrides, which is the half of the config that is a *document*.
 
-        The world itself stays on argv -- it is one token, and ``rst sim <world>`` is how a
+        The world itself stays on argv -- it is one token, and ``roqsim sim <world>`` is how a
         person runs this simulator. What cannot go there is the override tree, so that is
         what gets a file. Written per job by RoboVAST, mounted at
         :data:`~robovast.common.simulators.SIM_OVERRIDES_MOUNT`, and read by ``--override``.
@@ -260,7 +260,7 @@ class RobositoBackend(SimulatorBackend):
         or a walker replays without anyone editing a ``.vast``. The capture path defaults to
         ``capture/capture.json``.
 
-        Since a robosito campaign always records that capture (:meth:`produces_run_capture`),
+        Since a roqsim campaign always records that capture (:meth:`produces_run_capture`),
         every such campaign can replay its runs in 3D -- so the panel is contributed rather
         than declared, and a campaign that wants it elsewhere on screen still says so itself.
         """
@@ -275,12 +275,12 @@ class RobositoBackend(SimulatorBackend):
         else, so a world extending another **campaign** file failed in the container on a
         parent that never travelled -- after the image pull and the pod schedule.
 
-        Enumerating the chain needs robosito, which this module must not import (it is loaded
-        in the long-lived service process). So it returns the question instead: ``rst scenes
-        inputs`` run in robosito's own image, which is also the image that will run the
+        Enumerating the chain needs roqsim, which this module must not import (it is loaded
+        in the long-lived service process). So it returns the question instead: ``roqsim scenes
+        inputs`` run in roqsim's own image, which is also the image that will run the
         campaign, so the answer describes exactly what that run will open.
 
-        A package ref (``rst_scenes:depot``) still needs nothing, and says so without a
+        A package ref (``roqsim_scenes:depot``) still needs nothing, and says so without a
         container: the files arrive installed.
         """
         if _is_package_ref(cfg.config):
@@ -296,18 +296,18 @@ class RobositoBackend(SimulatorBackend):
             # The campaign's own image, for the same reason describe_query uses it: what a
             # world extends is resolved by what is installed.
             ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
-            ["rst", "scenes", "inputs", cfg.config])
+            ["roqsim", "scenes", "inputs", cfg.config])
 
     def describe_query(self, cfg, execution: dict, *, entities: bool = False,
                        targets: str = ""):
-        """``rst scenes describe``, in the image this campaign runs.
+        """``roqsim scenes describe``, in the image this campaign runs.
 
         What makes the ``sim`` channel checkable: a campaign writes
         ``plugins.floorplan.floor.friction`` and nothing here can tell whether that plugin is in
         the world without resolving its ``extends`` chain, which needs the simulator. Asked of
         the image that will run the campaign, so the answer describes the world that will load.
         """
-        command = ["rst", "scenes", "describe", _config_in_container(cfg.config)]
+        command = ["roqsim", "scenes", "describe", _config_in_container(cfg.config)]
         if entities:
             # Costs a model build, so it is asked for only when a campaign names entities.
             command.append("--entities")
@@ -323,7 +323,7 @@ class RobositoBackend(SimulatorBackend):
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> str:
-        """``rst-export-web``, robosito's own exporter, run in robosito's own image.
+        """``roqsim-export-web``, roqsim's own exporter, run in roqsim's own image.
 
         *world* is passed through as the capture recorded it -- a package ref, or the
         ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
@@ -341,7 +341,7 @@ class RobositoBackend(SimulatorBackend):
         recorded overrides travel.
         """
         override_arg = f" --override {overrides_file}" if overrides_file else ""
-        return (f"rst-export-web --world {world}{override_arg} --out {{out}} "
+        return (f"roqsim-export-web --world {world}{override_arg} --out {{out}} "
                 f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
 
     def run_state_file(self, cfg, execution: dict) -> str:
@@ -356,15 +356,15 @@ class RobositoBackend(SimulatorBackend):
     def simulation_screenshot(self, cfg, execution: dict, *, state: str,
                               at=None, view=None, focus=None, camera=None,
                               size: str = "960x720") -> str:
-        """``rst render``, replaying the run's own recording from a chosen viewpoint.
+        """``roqsim render``, replaying the run's own recording from a chosen viewpoint.
 
-        No world argument: ``rst render``'s target is optional with ``--state``, because a
+        No world argument: ``roqsim render``'s target is optional with ``--state``, because a
         recording *names the world it was made from*. That is what makes this work for a
         campaign whose world is a package ref and one whose world is a campaign file alike --
         the recording answers, rather than RoboVAST having to reconstruct the reference.
 
-        RoboVAST's four view keys map one-to-one onto rst's ``sim.view`` names, which is why
-        those four were the ones chosen. So the whole robosito-specific surface here is which
+        RoboVAST's four view keys map one-to-one onto roqsim's ``sim.view`` names, which is why
+        those four were the ones chosen. So the whole roqsim-specific surface here is which
         binary and how it spells its flags; a second simulator implements the same hook and
         the same tool starts answering for it.
 
@@ -372,12 +372,12 @@ class RobositoBackend(SimulatorBackend):
         ``lookat=1,2,0`` has to survive as one word -- the same trap :func:`_set_arg`'s
         docstring records for vector-valued overrides.
         """
-        parts = ["rst", "render", "--state", state,
+        parts = ["roqsim", "render", "--state", state,
                  "--out", "{out}/frame.png", "--size", shlex.quote(str(size))]
         if at is not None:
             parts += ["--at", repr(float(at))]
         if camera:
-            # Owns its own pose, so rst refuses it together with --view/--focus; the caller
+            # Owns its own pose, so roqsim refuses it together with --view/--focus; the caller
             # is refused earlier, with a message about the camera rather than about argv.
             parts += ["--camera", shlex.quote(str(camera))]
         else:
@@ -395,7 +395,7 @@ def _set_arg(key: str, value) -> str:
     runs through ``shlex.split``. A vector-valued override -- ``plugins.parcel.pos: [11.8,
     4.55, 0.762]``, i.e. exactly what a campaign that sweeps a position records -- renders as
     ``[11.8, 4.55, 0.762]`` and was torn into three argv words at those spaces, so
-    ``rst-export-web`` got ``--set plugins.parcel.pos=[11.8,`` plus two stray arguments and
+    ``roqsim-export-web`` got ``--set plugins.parcel.pos=[11.8,`` plus two stray arguments and
     exited 2. The failure surfaces only when somebody opens the run view, and only for a
     world whose overrides contain a list, so it reads as "this campaign has no 3D geometry"
     rather than as a quoting bug.

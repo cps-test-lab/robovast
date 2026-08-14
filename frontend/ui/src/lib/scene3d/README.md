@@ -1,9 +1,9 @@
 # scene3d — the 3D scene viewer core
 
 Renders the browser scene descriptor (`scene.json` + `scene.bin`, plus `tex_<i>.png`) that
-rst exports — via the `rst-export-web` CLI or the `MujocoSim` adapter's
-`ROBOSITO_SCENE_EXPORT_DIR` hook. Any simulator that emits the same descriptor renders here too;
-the format is owned by rst (`rst/export_web.py`), the reference loader is this one.
+roqsim exports — via the `roqsim-export-web` CLI or the `MujocoSim` adapter's
+`ROQSIM_SCENE_EXPORT_DIR` hook. Any simulator that emits the same descriptor renders here too;
+the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is this one.
 
 - `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
   `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame

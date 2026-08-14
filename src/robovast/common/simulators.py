@@ -218,7 +218,7 @@ class SimulatorBackend:
     def produces_run_capture(self, cfg, execution: dict) -> bool:
         """Whether runs write the capture a ``scene3d`` panel replays.
 
-        Replaces sniffing a campaign's wheel names for ``rst``: a capability question
+        Replaces sniffing a campaign's wheel names for ``roqsim``: a capability question
         the simulator can answer, asked of whichever simulator is actually configured.
         """
         return False
@@ -268,7 +268,7 @@ class SimulatorBackend:
     def run_state_file(self, cfg, execution: dict) -> Optional[str]:
         """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
 
-        A backend that sets up a recording (robosito asks for one in :meth:`env`) is the only
+        A backend that sets up a recording (roqsim asks for one in :meth:`env`) is the only
         thing that knows what the file is called, so it says so here rather than the service
         keeping a second copy of that name. ``None`` -- the default -- goes with a backend that
         records nothing, which is also one that cannot re-render.

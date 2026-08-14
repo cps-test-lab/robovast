@@ -383,10 +383,10 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
         container_path = f"/sources/{request.workspace_id}/{world_path}"
         payload = _exec_json(
             client, request,
-            # No `--json`: `rst scenes describe` has no such flag and argparse refuses the whole
+            # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
             # command over it (its answer is JSON either way), so this tool could never once have
             # succeeded against a real image. The stub in its test made the mistake invisible.
-            f"rst scenes describe {container_path} --body-tree {pattern}")
+            f"roqsim scenes describe {container_path} --body-tree {pattern}")
         image = client.resolve_image(request).image
         return {"bodies": payload.get("body_tree") or [], "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client

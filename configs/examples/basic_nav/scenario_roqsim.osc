@@ -3,7 +3,7 @@ import osc.ros
 import osc.nav2
 import osc.remote
 
-# rst/robosito half, three containers. The simulator is already running in `containers.simulation`,
+# roqsim/roqsim half, three containers. The simulator is already running in `containers.simulation`,
 # so only nav2 is launched here -- into the `sut` container, over remote(). The measurement half
 # (init_nav2, bag_record, nav_to_pose) is identical to scenario_gazebo.osc; if it drifts, a
 # difference in results stops being attributable to the simulator.
@@ -13,7 +13,7 @@ scenario test_scenario:
     goal_pose: pose_3d
 
     do serial:
-        # Gate the LAUNCH, not the activation -- the one robosito-specific difference. The Gazebo
+        # Gate the LAUNCH, not the activation -- the one roqsim-specific difference. The Gazebo
         # half's two lifecycle service_calls cannot work across a container boundary: service_call
         # fires call_async once, with no wait_for_service, so the request is sent before its client
         # has finished endpoint matching and is silently dropped. Gating the launch keeps the
