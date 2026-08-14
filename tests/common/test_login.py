@@ -135,7 +135,11 @@ def test_the_login_command_verifies_before_it_stores(monkeypatch):
             cli, ["login", "https://robovast.example.org", "--token", "wrong", "--name", "Fred"])
 
     assert result.exit_code != 0
-    assert "could not authenticate" in result.output
+    assert "could not reach" in result.output
+    # A 401 is the one failure where blaming the token is right; see _login_remedy,
+    # which distinguishes it from an untrusted certificate and an address that never
+    # answered, because those two are not about the token at all.
+    assert "rejected the token" in result.output
     # Nothing was written: a rejected token must not become the stored one.
     assert login.credentials() == ("", "", "")
 

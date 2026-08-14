@@ -91,6 +91,12 @@ release-images:
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
 
+.PHONY: image-digests
+image-digests:
+	@test -n "$(PROJECT)" || { echo "Usage: make image-digests PROJECT=docker.io/<namespace> [ROS_DISTRO=<distro>]"; echo "Prints the registry's current images as ROBOVAST_*_IMAGE=repo@sha256:... lines to paste into .env, so a deployment stops depending on a floating :latest. Builds nothing -- it reads the registry, so it works on a machine that has never built an image."; exit 1; }
+	@./container/image_digests.sh --project "$(PROJECT)" \
+		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
+
 .PHONY: publish-test
 publish-test: build
 	@echo "Publishing robovast to TestPyPI..."
