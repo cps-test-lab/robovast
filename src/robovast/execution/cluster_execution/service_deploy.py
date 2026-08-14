@@ -259,10 +259,24 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
     _load_kube_config(kube_context)
     apps = client.AppsV1Api()
     core = client.CoreV1Api()
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
     deadline = time.monotonic() + timeout_s
     reason = ""
     while time.monotonic() < deadline:
-        status = apps.read_namespaced_deployment_status(SERVICE_NAME, namespace).status
+        try:
+            status = apps.read_namespaced_deployment_status(SERVICE_NAME, namespace).status
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            # Raw, this is a 404 with a page of HTTP headers — the unhelpful failure
+            # this whole path exists to replace. It happens when a caller waits on a
+            # namespace nothing was deployed into, or when the Deployment is removed
+            # mid-wait.
+            raise RuntimeError(
+                f"no {SERVICE_NAME} Deployment in namespace {namespace!r} to wait for. "
+                "Deploy it with 'vast exec cluster setup <flavor>'.") from exc
         if (status.ready_replicas or 0) >= 1:
             return
         pods = core.list_namespaced_pod(namespace,
@@ -286,6 +300,35 @@ class IngressRefused(RuntimeError):
     include_traceback = False
 
 
+def validate_ingress_options(ingress_host="", tls_secret="", issuer="",
+                             insecure_http=False, have_token=True):
+    """Refuse an unpublishable combination **before** anything is changed.
+
+    A pure argument check, so it belongs at the very start of setup. It used to live
+    only inside :func:`_ingress_manifest`, which runs after Kueue has been installed and
+    the cluster's storage deployed — so an operator who forgot ``--issuer`` discovered it
+    only once the cluster had already been modified. The check costs nothing; doing it
+    late costs a half-finished setup.
+
+    Raises:
+        IngressRefused: naming which combination and why.
+    """
+    if not ingress_host:
+        return
+    if not have_token:
+        raise IngressRefused(
+            "refusing to create an Ingress with no access token configured: it would "
+            "publish an unauthenticated RoboVAST, and a campaign names its own "
+            "container image. Set ROBOVAST_AUTH_TOKEN, or let setup generate one.")
+    if not (tls_secret or issuer) and not insecure_http:
+        raise IngressRefused(
+            f"refusing to publish {ingress_host} over plain HTTP: the shared token would "
+            "cross the network in clear text, and the session cookie is Secure so the "
+            "login would not work at all. Pass a TLS secret or a cert-manager issuer "
+            "(tools/setup_ingress_tls.py sets one up), or --insecure-http to accept "
+            "this on a trusted network.")
+
+
 def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
                       issuer="", *, auth_token="", insecure=False):
     """Ingress publishing the service at *host*, or ``None`` when none was asked for.
@@ -303,18 +346,9 @@ def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
     """
     if not host:
         return None
-    if not auth_token:
-        raise IngressRefused(
-            "refusing to create an Ingress with no access token configured: it would "
-            "publish an unauthenticated RoboVAST, and a campaign names its own "
-            "container image. Set ROBOVAST_AUTH_TOKEN, or let setup generate one.")
-    if not (tls_secret or issuer) and not insecure:
-        raise IngressRefused(
-            f"refusing to publish {host} over plain HTTP: the shared token would cross "
-            "the network in clear text, and the session cookie is Secure so the login "
-            "would not work at all. Pass a TLS secret or a cert-manager issuer "
-            "(tools/setup_ingress_tls.py sets one up), or --insecure-http to accept "
-            "this on a trusted network.")
+    # The same check setup runs up front; repeated here so the manifest cannot be built
+    # by a caller that skipped it.
+    validate_ingress_options(host, tls_secret, issuer, insecure, have_token=bool(auth_token))
 
     annotations = {}
     if issuer:
@@ -732,7 +766,8 @@ def service_manifests(namespace="default", image=None, env=None,
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
-                   rotate_token=False):
+                   rotate_token=False, ingress_host="", ingress_class="",
+                   tls_secret="", issuer="", insecure_http=False):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
     ``dry_run=True`` performs a **server-side** dry run (validates against the
@@ -779,7 +814,9 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         namespace=namespace, image=image, env=env,
         config_name=config_name, config_kwargs=config_kwargs,
         kube_context=kube_context, pull_secret=pull_secret,
-        auth_token=auth_token)
+        auth_token=auth_token, ingress_host=ingress_host,
+        ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
+        insecure_http=insecure_http)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]
@@ -831,6 +868,17 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         lambda: apps.patch_namespaced_deployment(SERVICE_NAME, namespace, deployment, dry_run=dr))
     # Service (tolerate existing; spec is stable)
     _create_or_ok(lambda: core.create_namespaced_service(namespace, service, dry_run=dr))
+
+    # Ingress, when one was asked for. Replaced rather than tolerated: unlike the
+    # Service, its spec is exactly what the operator is changing when they re-run
+    # setup with a different host, class or issuer.
+    ingress = by_kind.get("Ingress")
+    if ingress is not None:
+        networking = client.NetworkingV1Api()
+        _create_or_replace(
+            lambda: networking.create_namespaced_ingress(namespace, ingress, dry_run=dr),
+            lambda: networking.replace_namespaced_ingress(
+                ingress["metadata"]["name"], namespace, ingress, dry_run=dr))
 
     logger.info("Deployed robovast-service in namespace %s (dry_run=%s)", namespace, dry_run)
     return manifests

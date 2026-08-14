@@ -343,6 +343,16 @@ def setup_server(config_name=None, list_configs=False, force=False,
             f"Run 'vast execution cluster cleanup' first to clean up the existing setup."
         )
 
+    # Before anything is installed or deployed. A refused Ingress combination is a pure
+    # argument error, and it used to be raised inside deploy_service -- after Kueue was
+    # installed and the flavor's storage deployed, leaving a half-set-up cluster behind
+    # for a mistake that costs nothing to catch here.
+    from robovast.execution.cluster_execution.service_deploy import \
+        validate_ingress_options  # pylint: disable=import-outside-toplevel
+    validate_ingress_options(**{k: v for k, v in (service_kwargs or {}).items()
+                                if k in ("ingress_host", "tls_secret", "issuer",
+                                         "insecure_http")})
+
     cluster_config = get_cluster_config(config_name)
 
     # Node labels are the only thing this deploy reads from a .vast, and it reads them

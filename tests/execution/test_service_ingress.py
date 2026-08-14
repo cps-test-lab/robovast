@@ -79,3 +79,57 @@ def test_the_ingress_routes_everything_to_the_service():
     assert path["backend"]["service"]["name"] == SERVICE_NAME
     assert path["backend"]["service"]["port"]["number"] == SERVICE_PORT
     assert ingress["spec"]["ingressClassName"] == "nginx"
+
+
+def test_deploy_service_forwards_the_ingress_options(monkeypatch):
+    """Regression: the flags reached service_manifests but not deploy_service.
+
+    `service_manifests` was tested directly, so the gap was invisible until
+    `vast exec cluster setup --ingress-host` was run against a real cluster and died on
+    an unexpected-keyword TypeError before it reached the API server.
+    """
+    import inspect
+
+    from robovast.execution.cluster_execution import service_deploy
+
+    accepted = inspect.signature(service_deploy.deploy_service).parameters
+    for option in ("ingress_host", "ingress_class", "tls_secret", "issuer",
+                   "insecure_http"):
+        assert option in accepted, f"deploy_service drops {option}"
+
+
+def test_an_ingress_is_applied_not_just_built(monkeypatch):
+    """The manifest existing is not the same as the cluster being told about it."""
+    import inspect
+
+    from robovast.execution.cluster_execution import service_deploy
+
+    source = inspect.getsource(service_deploy.deploy_service)
+    assert "create_namespaced_ingress" in source, (
+        "deploy_service builds an Ingress manifest but never applies it")
+
+
+def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
+    """A pure argument error must not cost a half-set-up cluster.
+
+    The check used to live only inside the manifest builder, which runs after Kueue is
+    installed and the flavor's storage deployed — so `--ingress-host` without TLS
+    modified the cluster and *then* refused.
+    """
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    installed = []
+    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
+                        lambda *a, **k: installed.append("kueue"))
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+    monkeypatch.setattr(cluster_setup, "get_cluster_config", mock.Mock())
+
+    with pytest.raises(IngressRefused):
+        cluster_setup.setup_server(
+            config_name="rke2",
+            service_kwargs={"ingress_host": "robovast.example.org"})
+
+    assert installed == [], "the cluster was modified before the arguments were checked"

@@ -32,8 +32,17 @@ DEFAULTS = {
 
 
 def _combined_image():
-    """The robosito default, imported lazily — it lives in a separate distribution."""
-    from robovast_sim_robosito.backend import DEFAULT_COMBINED_IMAGE
+    """The robosito default, imported lazily — it lives in a separate distribution.
+
+    Skipped rather than failed when that distribution is not installed: "the environment
+    is incomplete" and "the default drifted from CI" are different findings, and
+    reporting the first as the second sends the reader to the wrong file.
+    """
+    try:
+        from robovast_sim_robosito.backend import DEFAULT_COMBINED_IMAGE
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"robovast_sim_robosito is not installed ({exc}); "
+                    "run 'poetry install' to check this default")
     return DEFAULT_COMBINED_IMAGE
 
 
