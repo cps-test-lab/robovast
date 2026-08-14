@@ -886,6 +886,7 @@ def install_kueue_helm(kube_context=None):
     Args:
         kube_context: Kubernetes context to use. None uses the active context.
     """
+    adopt_orphaned_kueue_crds(kube_context=kube_context)
     ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
     ctx_kubectl = ["--context", kube_context] if kube_context else []
     result = subprocess.run(
@@ -964,8 +965,176 @@ def install_kueue_helm(kube_context=None):
     )
 
 
+def orphaned_kueue_crds(kube_context=None):
+    """Kueue CRDs present but owned by no Helm release: ``[(name, why)]``.
+
+    Helm identifies ownership by the ``meta.helm.sh/release-name`` and
+    ``release-namespace`` **annotations**. A CRD from a chart's ``crds/`` directory
+    never gets them and is never deleted by ``helm uninstall`` — so after a teardown it
+    lingers, carrying Helm's *labels* but none of its ownership, and the next install
+    refuses with "invalid ownership metadata".
+    """
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(context=kube_context)
+    api = client.ApiextensionsV1Api()
+    orphaned = []
+    for crd in api.list_custom_resource_definition().items:
+        if crd.spec.group != KUEUE_WORKLOAD_GROUP:
+            continue
+        annotations = crd.metadata.annotations or {}
+        if not annotations.get("meta.helm.sh/release-name"):
+            orphaned.append((crd.metadata.name, "no Helm release owns it"))
+    return orphaned
+
+
+def adopt_orphaned_kueue_crds(kube_context=None):
+    """Stamp Helm's ownership onto Kueue CRDs that have none, so install can proceed.
+
+    Recovers a cluster torn down by a RoboVAST that did not remove them (see
+    :func:`delete_kueue_crds`), or by a bare ``helm uninstall``. Without this, such a
+    cluster is permanently un-setup-able from RoboVAST: every attempt fails with
+    "invalid ownership metadata" and the remedy — deleting CRDs by hand — is nowhere in
+    the error.
+
+    Adoption rather than deletion, deliberately: deleting a CRD destroys every
+    ClusterQueue and Workload defined by it, which on a cluster someone is still using
+    would be a silent, unrecoverable loss for what is only a bookkeeping problem.
+    """
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    orphans = orphaned_kueue_crds(kube_context=kube_context)
+    if not orphans:
+        return
+
+    api = client.ApiextensionsV1Api()
+    patch = {"metadata": {"annotations": {
+        "meta.helm.sh/release-name": KUEUE_HELM_RELEASE,
+        "meta.helm.sh/release-namespace": KUEUE_NAMESPACE,
+    }}}
+    for name, why in orphans:
+        logger.info("Adopting leftover Kueue CRD %s (%s) into the %s release",
+                    name, why, KUEUE_HELM_RELEASE)
+        try:
+            api.patch_custom_resource_definition(name, patch)
+        except ApiException as exc:
+            raise RuntimeError(
+                f"could not adopt the leftover CRD {name}: {exc.reason}. Helm will "
+                "refuse to install over it; remove it with "
+                f"'kubectl delete crd {name}' (this deletes its objects) and retry."
+            ) from exc
+
+
+def delete_kueue_crds(kube_context=None, timeout_s=120.0):
+    """Delete Kueue's CRDs and confirm they are gone.
+
+    ``helm uninstall`` deliberately never deletes CRDs — a chart's ``crds/`` directory
+    is install-only, because deleting a CRD destroys every object of that kind. The
+    consequence for a *teardown* is a cluster that cannot be set up again: the CRDs
+    remain, un-owned, and the next ``helm upgrade --install`` fails with
+
+        CustomResourceDefinition "clusterqueues.kueue.x-k8s.io" ... cannot be imported
+        into the current release: missing key "meta.helm.sh/release-name"
+
+    which reads as a RoboVAST bug and is really a leftover. So cleanup deletes them
+    itself, and **verifies** — a CRD whose instances still carry finalizers stays
+    ``Terminating`` forever once the controller that would clear them is gone, so a
+    fire-and-forget delete would report success and leave the same trap.
+
+    Raises:
+        RuntimeError: something survived, naming what — a half-cleaned cluster the next
+            setup will trip over is worth failing for.
+    """
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.kube import \
+        load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(context=kube_context)
+    api = client.ApiextensionsV1Api()
+
+    names = [crd.metadata.name
+             for crd in api.list_custom_resource_definition().items
+             if crd.spec.group == KUEUE_WORKLOAD_GROUP]
+    if not names:
+        logger.debug("No %s CRDs to remove", KUEUE_WORKLOAD_GROUP)
+        return
+
+    logger.info("Removing %d %s CRD(s): %s",
+                len(names), KUEUE_WORKLOAD_GROUP, ", ".join(sorted(names)))
+    for name in names:
+        try:
+            api.delete_custom_resource_definition(name)
+        except ApiException as exc:
+            if exc.status != 404:
+                logger.warning("Could not delete CRD %s: %s", name, exc)
+
+    deadline = time.monotonic() + timeout_s
+    remaining = names
+    cleared_finalizers = False
+    while time.monotonic() < deadline:
+        remaining = [crd.metadata.name
+                     for crd in api.list_custom_resource_definition().items
+                     if crd.spec.group == KUEUE_WORKLOAD_GROUP]
+        if not remaining:
+            logger.info("All %s CRDs removed", KUEUE_WORKLOAD_GROUP)
+            return
+        # One pass only: if they are still here after finalizers were cleared, waiting
+        # longer will not help and the error below should say so.
+        if not cleared_finalizers:
+            _clear_finalizers_on_kueue_objects(remaining)
+            cleared_finalizers = True
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"these {KUEUE_WORKLOAD_GROUP} CRDs would not delete: {', '.join(remaining)}. "
+        "The next 'vast exec cluster setup' will fail on them ('invalid ownership "
+        "metadata'). Remove them with "
+        f"'kubectl delete crd {' '.join(remaining)}' and check for instances stuck "
+        "with finalizers.")
+
+
+def _clear_finalizers_on_kueue_objects(crd_names):
+    """Strip finalizers from the instances holding a Terminating CRD open.
+
+    Kueue's own controller normally removes these, but by teardown it is gone — so
+    nothing does, and the CRD waits forever on objects that will never be released.
+    """
+    custom_api = client.CustomObjectsApi()
+    patch = {"metadata": {"finalizers": None}}
+    for crd_name in crd_names:
+        plural = crd_name.split(".", 1)[0]
+        try:
+            listed = custom_api.list_cluster_custom_object(
+                group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+                plural=plural)
+        except Exception:  # noqa: BLE001 - best effort; the CRD may already be gone
+            continue
+        for item in listed.get("items", []):
+            meta = item.get("metadata", {})
+            if not meta.get("finalizers"):
+                continue
+            name, namespace = meta.get("name"), meta.get("namespace")
+            try:
+                if namespace:
+                    custom_api.patch_namespaced_custom_object(
+                        KUEUE_WORKLOAD_GROUP, KUEUE_WORKLOAD_VERSION, namespace,
+                        plural, name, patch)
+                else:
+                    custom_api.patch_cluster_custom_object(
+                        KUEUE_WORKLOAD_GROUP, KUEUE_WORKLOAD_VERSION, plural, name,
+                        patch)
+                logger.debug("Cleared finalizers on %s/%s", plural, name)
+            except Exception as exc:  # noqa: BLE001 - best effort
+                logger.debug("Could not clear finalizers on %s/%s: %s",
+                             plural, name, exc)
+
+
 def uninstall_kueue_helm(kube_context=None):
-    """Uninstall Kueue Helm release from kueue-system namespace.
+    """Uninstall Kueue and remove what Helm leaves behind.
 
     Args:
         kube_context: Kubernetes context to use. None uses the active context.
@@ -984,6 +1153,9 @@ def uninstall_kueue_helm(kube_context=None):
             logger.info("Kueue Helm release not found, skipping uninstall")
         else:
             raise RuntimeError(f"Failed to uninstall Kueue: {err}")
+    # Helm will not do this, by design (see delete_kueue_crds), and leaving them is what
+    # makes the *next* setup fail — so a cleanup that skipped it was not a cleanup.
+    delete_kueue_crds(kube_context=kube_context)
 
 
 def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None,
