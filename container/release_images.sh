@@ -13,10 +13,16 @@
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push] [--ros-distro <distro>] \
-#                                  [--roqsim-ref <ref>] [-- <extra docker build args>]
+#                                  [--roqsim-ref <ref> | --roqsim-src <path>] \
+#                                  [-- <extra docker build args>]
 #
 # Example:
 #   ./container/release_images.sh --project docker.io/freeedlabs --push
+#
+# --roqsim-src builds the simulator image from a checkout on disk instead of cloning, for
+# a caller that already has one -- a superproject holding roqsim as a submodule, or an
+# unpushed commit. It is the same option container/robovast/build.sh takes; this script
+# only forwards it. Mutually exclusive with --roqsim-ref, which names a commit to clone.
 
 BASEDIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -24,6 +30,7 @@ PROJECT=""
 PUSH=""
 ROS_DISTRO="jazzy"
 ROQSIM_REF="robovast"
+ROQSIM_SRC=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -41,6 +48,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --roqsim-ref)
       ROQSIM_REF="$2"
+      ROQSIM_REF_SET=1
+      shift 2
+      ;;
+    --roqsim-src)
+      ROQSIM_SRC="$2"
       shift 2
       ;;
     --)
@@ -56,13 +68,29 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--push] [--ros-distro <distro>] [--roqsim-ref <ref>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project docker.io/freeedlabs --push" >&2
 }
 
 if [[ -z "$PROJECT" ]]; then
   usage
   exit 2
+fi
+
+if [[ -n "$ROQSIM_SRC" && -n "$ROQSIM_REF_SET" ]]; then
+  echo "error: --roqsim-src and --roqsim-ref both given; one checkout, one clone -- pick one." >&2
+  exit 2
+fi
+
+if [[ -n "$ROQSIM_SRC" ]]; then
+  # Resolved here because build.sh runs from its own directory and the caller's relative
+  # path (a plain ./roqsim from a superproject) would otherwise resolve somewhere else.
+  ROQSIM_SRC=$(cd "$ROQSIM_SRC" 2>/dev/null && pwd) || {
+    echo "error: --roqsim-src path does not exist" >&2; exit 2; }
+  # A wrong-but-present directory is the failure worth catching: it would build an image
+  # missing the packages rather than fail, and the image is what campaigns pin.
+  [[ -f "$ROQSIM_SRC/roqsim/pyproject.toml" ]] || {
+    echo "error: $ROQSIM_SRC is not a roqsim checkout (no roqsim/pyproject.toml)" >&2; exit 2; }
 fi
 
 # ensure PROJECT ends with a slash -- matches container/robovast/build.sh's own
@@ -77,9 +105,12 @@ BASE_TAG="${PROJECT}robovast_${ROS_DISTRO}:latest"
 ROQSIM_TAG="${PROJECT}robovast_roqsim_${ROS_DISTRO}:latest"
 CONTROLLER_TAG="${PROJECT}robovast-controller:latest"
 
+SRC_FLAG=()
+[[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
+
 echo "== base + roqsim =="
 ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
-  --ros-distro "$ROS_DISTRO" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
+  --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
 
 echo
 echo "== controller =="

@@ -85,9 +85,10 @@ build:
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1] [ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>]"; echo "PUSH=1 publishes the images and reports them as repo@sha256:... -- without it there is nothing in the registry to pin to."; echo "ROQSIM_REF pins which roqsim commit goes into the simulator image; without it the script's default branch is used."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "PUSH=1 publishes the images and reports them as repo@sha256:... -- without it there is nothing in the registry to pin to."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,) \
 		$(if $(ROQSIM_REF),--roqsim-ref "$(ROQSIM_REF)",) \
+		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
 
 .PHONY: publish-test
