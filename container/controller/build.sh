@@ -45,7 +45,7 @@ done
 # policy rather than the host's architecture. Building on an arm64 Mac otherwise
 # pushes an image no node can run, and the failure surfaces as an exec-format error
 # in a pod rather than here.
-[[ -n "$PUSH" && -z "$PLATFORM" ]] && PLATFORM="$PLATFORMS_CONTROLLER"
+[[ -n "$PUSH" && -z "$PLATFORM" ]] && PLATFORM="$CLUSTER_PLATFORM"
 
 # Pass remaining arguments to docker build
 EXTRA_ARGS="$@"

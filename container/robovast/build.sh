@@ -85,10 +85,13 @@ case "$IMAGE" in
   *) echo "unknown --image '$IMAGE' (expected robovast, robosito or all)" >&2; exit 2 ;;
 esac
 
-# A push publishes for the cluster (linux/amd64), so honour the declared policy rather
-# than the host's architecture -- an arm64 Mac otherwise pushes an image no node can
-# run, failing as an exec-format error in a pod rather than here. Building without
-# --push targets this machine, which is what makes the result runnable locally.
+# A push from here publishes an *interim* image for the cluster, so it targets
+# CLUSTER_PLATFORM -- not the host's architecture (an arm64 Mac would otherwise push
+# an image no node can run, failing as an exec-format error in a pod rather than
+# here), and not the full multi-arch set either: emulating an arm64 ROS build under
+# QEMU takes hours to produce a variant nothing pulls. Publishing every architecture
+# is CI's job, from container/platforms.env. Pass --platform to override.
+# Building without --push targets this machine, so the result is runnable locally.
 # `docker buildx build` replaces `docker build` so local and CI use one builder.
 buildx_args() {
   local platform="$1"
@@ -135,7 +138,7 @@ build_base() {
     echo "scenario-execution source: pinned clone (see Dockerfile)"
   fi
 
-  buildx_args "${PLATFORM:-${PUSH:+$PLATFORMS_ROBOVAST}}" || return $?
+  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" || return $?
 
   # One buildx invocation tagged with both names: a multi-platform build produces no
   # local image for `docker tag` to rename afterwards.
@@ -183,7 +186,7 @@ build_robosito() {
     git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-robovast}" || return 1
   fi
 
-  buildx_args "${PLATFORM:-${PUSH:+$PLATFORMS_ROBOSITO}}" || return $?
+  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" || return $?
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
