@@ -93,18 +93,29 @@ esac
 # is CI's job, from container/platforms.env. Pass --platform to override.
 # Building without --push targets this machine, so the result is runnable locally.
 # `docker buildx build` replaces `docker build` so local and CI use one builder.
+# $1 platform, $2 local tag, $3 published tag. Sets BUILDX_ARGS including the -t flags.
+#
+# The tags differ by mode, and that is the point: `docker buildx build --push` publishes
+# *every* -t it is given, so tagging with the bare local name as well would try to push
+# `library/robovast_jazzy` to Docker Hub and fail with "push access denied". The old
+# `docker build` + `docker tag` + `docker push <prefixed>` sequence pushed only the
+# prefixed one, and that behaviour has to be preserved deliberately here.
 buildx_args() {
-  local platform="$1"
+  local platform="$1" local_tag="$2" published_tag="$3"
   BUILDX_ARGS=()
   [[ -n "$platform" ]] && BUILDX_ARGS+=(--platform "$platform")
   if [[ -n "${PUSH:-}" ]]; then
-    BUILDX_ARGS+=(--push)
+    BUILDX_ARGS+=(--push -t "$published_tag")
   elif [[ "$platform" == *,* ]]; then
     # No single image exists to load for a multi-platform build.
     echo "refusing to build $platform without --push: a multi-platform image cannot be loaded into the local docker daemon" >&2
     return 2
   else
-    BUILDX_ARGS+=(--load)
+    # Local build: the bare name is what a developer runs, and the prefixed one is
+    # what a later --push would publish, so both are useful in the daemon.
+    BUILDX_ARGS+=(--load -t "$local_tag")
+    [[ -n "$published_tag" && "$published_tag" != "$local_tag" ]] \
+      && BUILDX_ARGS+=(-t "$published_tag")
   fi
 }
 
@@ -138,16 +149,13 @@ build_base() {
     echo "scenario-execution source: pinned clone (see Dockerfile)"
   fi
 
-  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" || return $?
+  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
+    "robovast_${ROS_DISTRO}:latest" "${PROJECT}robovast_${ROS_DISTRO}" || return $?
 
-  # One buildx invocation tagged with both names: a multi-platform build produces no
-  # local image for `docker tag` to rename afterwards.
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
-    -t robovast_${ROS_DISTRO}:latest \
-    -t ${PROJECT}robovast_${ROS_DISTRO} \
     -f $BASEDIR/Dockerfile \
     "$ctx"
 }
@@ -186,14 +194,14 @@ build_robosito() {
     git -C "$ctx/robosito" checkout --quiet "${ROBOSITO_REF:-robovast}" || return 1
   fi
 
-  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" || return $?
+  buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
+    "robovast_robosito_${ROS_DISTRO}:latest" "${PROJECT}robovast_robosito_${ROS_DISTRO}" \
+    || return $?
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
     --build-arg BASE_IMAGE="$base" \
     $EXTRA_ARGS \
-    -t robovast_robosito_${ROS_DISTRO}:latest \
-    -t ${PROJECT}robovast_robosito_${ROS_DISTRO} \
     -f $BASEDIR/Dockerfile.robosito \
     "$ctx"
 }

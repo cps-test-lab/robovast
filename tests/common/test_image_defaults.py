@@ -156,3 +156,35 @@ def test_no_shipped_example_pins_a_private_registry():
         if "harbor.example.org" in path.read_text()
     ]
     assert not offenders, f"examples pin an unreachable private registry: {offenders}"
+
+
+def test_a_push_publishes_only_the_prefixed_tag():
+    """`buildx --push` publishes every -t it is given.
+
+    The migration from `docker build` + `docker tag` + `docker push <prefixed>` to a
+    single buildx call quietly changed this: tagging with the bare local name as well
+    made the push try `library/robovast_jazzy` on Docker Hub and fail with "push access
+    denied". Only a real registry could catch it, so pin the shape here.
+    """
+    script = (WORKFLOW.parents[2] / "container" / "robovast" / "build.sh").read_text()
+    helper = script.split("buildx_args() {", 1)[1].split("\n}", 1)[0]
+    push_branch = helper.split('if [[ -n "${PUSH:-}" ]]; then', 1)[1].split("elif", 1)[0]
+    assert "published_tag" in push_branch
+    assert "local_tag" not in push_branch, (
+        "a --push build must not carry the bare local tag: buildx would publish it too")
+
+
+def test_the_scenario_execution_pin_is_a_full_commit_sha():
+    """A pin that is a branch name silently moves; one that is a short sha can collide.
+
+    The stronger property — that the commit is on a *durable* ref — cannot be checked
+    without the network, and it is the one that broke: the pin pointed at a commit that
+    only ever existed on a feature branch, and every build from a clean clone failed
+    once that branch was merged and deleted.
+    """
+    import re
+    dockerfile = (WORKFLOW.parents[2] / "container" / "robovast" / "Dockerfile").read_text()
+    checkouts = re.findall(r"git checkout ([0-9a-f]+)", dockerfile)
+    assert checkouts, "no pinned commits found"
+    for sha in checkouts:
+        assert len(sha) == 40, f"{sha} is not a full commit sha"

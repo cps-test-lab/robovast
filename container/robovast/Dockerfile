@@ -97,15 +97,20 @@ RUN mkdir -p /ws/src
 # shared repo first, which is a release decision made for the wrong reason.
 COPY scenario-execution-src /tmp/scenario-execution-src
 
+# The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a
+# commit that only ever existed on a feature branch; once that branch was merged and
+# deleted the commit became unreachable, and every build of this image from a clean
+# clone failed with "fatal: reference is not a tree". A pin whose commit can disappear
+# is not a pin.
 # hadolint ignore=DL3003
 RUN  if [ -n "$(ls -A /tmp/scenario-execution-src 2>/dev/null)" ]; then \
        echo "scenario-execution: staged working tree (--scenario-execution-src)" && \
        cp -a /tmp/scenario-execution-src /ws/src/scenario-execution; \
      else \
-       echo "scenario-execution: clone @ e2ff74d1cf46c880483230ade5f8131c2671b36f" && \
+       echo "scenario-execution: clone @ bd77cc9b283f1b775240ab8ac65d71c761bd1e8a" && \
        git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
        cd /ws/src/scenario-execution && \
-       git checkout e2ff74d1cf46c880483230ade5f8131c2671b36f; \
+       git checkout bd77cc9b283f1b775240ab8ac65d71c761bd1e8a; \
      fi && \
      rm -rf /tmp/scenario-execution-src && \
      cd /ws && \
