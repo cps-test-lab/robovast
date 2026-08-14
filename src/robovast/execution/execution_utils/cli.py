@@ -1299,9 +1299,8 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
             click.echo(f"  RoboVAST is at {scheme}://{ingress_host}")
-            click.echo("  Give users that URL and the access token "
-                       "(kubectl get secret robovast-auth "
-                       "-o jsonpath='{.data.ROBOVAST_AUTH_TOKEN}' | base64 -d).")
+            click.echo("  Run 'vast exec cluster token' for the URL and access token "
+                       "to hand your users.")
 
     except Exception as e:
         handle_cli_exception(e)
@@ -1470,6 +1469,67 @@ def upgrade(namespace, kube_context, image):
                        config_name=config_name, config_kwargs=config_kwargs)
         wait_for_service_ready(namespace=namespace, kube_context=kube_context)
         click.echo("✓ upgraded and ready")
+    except click.ClickException:
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@cluster.command(name='token')
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Namespace the robovast-service runs in')
+@click.option('--context', '-x', 'kube_context', default=None,
+              help='Kubernetes context to use (default: active context in kubeconfig)')
+@click.option('--quiet', '-q', is_flag=True,
+              help='Print only the token, for piping into something else.')
+def cluster_token(namespace, kube_context, quiet):
+    """Show the access token, and what to hand users along with it.
+
+    Setup deliberately prints the token only once, so reading it back meant a
+    ``kubectl get secret ... | base64 -d`` incantation -- which every operator then
+    keeps in their shell history, and which needs kubectl syntax to answer a RoboVAST
+    question.
+
+    The token is **per cluster**: an instance mints its own, and one instance's token is
+    simply wrong at another. That is the failure this command is most likely to prevent,
+    since the mistake looks identical to a mistyped password.
+
+    \b
+      vast exec cluster token            what to send a user
+      vast exec cluster token -q         the token alone
+      vast exec cluster token -x prod    a specific cluster
+    """
+    from robovast.execution.cluster_execution.service_deploy import (
+        existing_auth_token, published_url)
+
+    try:
+        token = existing_auth_token(namespace, kube_context)
+        if not token:
+            raise click.ClickException(
+                f"no access token in namespace {namespace!r} — either nothing is "
+                "deployed there, or it predates authentication. "
+                "Run 'vast exec cluster setup <flavor>' to create one.")
+        if quiet:
+            click.echo(token)
+            return
+
+        url = published_url(namespace, kube_context)
+        if not url:
+            # Reachable but unpublished is a real state (no --ingress-host), and the
+            # token is still the right answer -- just not one a user can use yet.
+            click.echo("The service has no Ingress, so there is no URL to give out. "
+                       "Re-run setup with --ingress-host to publish it.")
+            click.echo(f"\nAccess token: {token}")
+            return
+
+        click.echo(f"RoboVAST is at {url}")
+        click.echo(f"Access token: {token}")
+        click.echo("")
+        click.echo("Command line:  pip install robovast && "
+                   f"vast login {url}")
+        click.echo(f"Claude Code:   claude mcp add --transport http robovast {url}/mcp \\")
+        click.echo(f"                 --header \"Authorization: Bearer {token}\"")
+        click.echo("Browser:       open the URL and paste the token.")
     except click.ClickException:
         raise
     except Exception as e:

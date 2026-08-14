@@ -163,6 +163,10 @@ Setup prints the access token once, and waits for the pod to be Ready before
 reporting success — so an image that cannot be pulled is reported *here*, with the
 pod's own reason, rather than as a connection failure from the next command.
 
+To read it back later, ``vast exec cluster token`` prints the URL, the token and the
+three ways to connect (``-q`` for the token alone). Each cluster mints its own token, so
+the URL it names is the only one that token opens.
+
 Everybody else, from a machine with no kubeconfig:
 
 .. code-block:: bash

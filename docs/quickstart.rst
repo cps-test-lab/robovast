@@ -99,8 +99,20 @@ image, so reaching the URL is enough to run containers in your cluster), and an 
 over plain HTTP (the token would cross the network in clear text, and the session cookie
 is ``Secure``, so the login would not work at all).
 
-Then hand out the URL and the token. ``tools/setup_ingress_tls.py`` writes a short block
-for exactly that, in ``robovast-users.txt``.
+Then hand out the URL and the token. ``vast exec cluster token`` prints both, together
+with the three ways to connect, so onboarding someone is one copy-paste:
+
+.. code-block:: bash
+
+   vast exec cluster token          # URL + token + how to connect
+   vast exec cluster token -q       # the token alone, for a script
+
+The token is **per cluster** — each instance mints its own. One instance's token at
+another's URL fails with "That token was not accepted", which looks exactly like a typo,
+which is why the command prints the URL the token belongs to next to it.
+
+``tools/setup_ingress_tls.py`` writes the same kind of block to ``robovast-users.txt``
+when it sets up the certificate.
 
 
 User: get access

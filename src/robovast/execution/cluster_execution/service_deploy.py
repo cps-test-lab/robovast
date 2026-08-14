@@ -680,6 +680,35 @@ def existing_auth_token(namespace, kube_context=None):
     return base64.b64decode(encoded).decode() if encoded else ""
 
 
+def published_url(namespace="default", kube_context=None):
+    """The URL the Ingress publishes, or ``""`` when the service is not published.
+
+    Read back from the cluster rather than remembered from setup, so it stays right for
+    an operator who did not run that setup -- which, with one operator per cluster and
+    several clusters, is the normal case rather than the exception.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    try:
+        ingress = client.NetworkingV1Api().read_namespaced_ingress(SERVICE_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    rules = getattr(ingress.spec, "rules", None) or []
+    host = getattr(rules[0], "host", "") if rules else ""
+    if not host:
+        return ""
+    # A tls block naming this host is what makes the session cookie's Secure flag
+    # usable, so it decides the scheme rather than an assumption about the port.
+    tls = getattr(ingress.spec, "tls", None) or []
+    secure = any(host in (getattr(entry, "hosts", None) or []) for entry in tls)
+    return f"{'https' if secure else 'http'}://{host}"
+
+
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
