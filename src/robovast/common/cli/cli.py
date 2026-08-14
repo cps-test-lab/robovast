@@ -455,6 +455,31 @@ def doctor(flavor, context):
     click.echo("\n✓ ready")
 
 
+def _login_remedy(exc):
+    """The next thing to try, chosen by *why* the login failed.
+
+    A single "check the URL and the token" line is actively misleading for the two
+    failures a new user is most likely to hit. A certificate the CLI will not accept has
+    nothing to do with the token -- and it is easy to conclude the opposite, because the
+    same URL opens in a browser once the warning is clicked away, so the CLI looks like
+    the broken part. It is not: the browser offers an exception, ``requests`` does not.
+    """
+    text = str(exc)
+    if "certificate verify failed" in text or "SSLError" in text or "SSLCertVerificationError" in text:
+        return ("The server's TLS certificate is not trusted, so this is not about the "
+                "token — a browser can click past such a warning, this cannot.\n"
+                "Ask the operator for a certificate your machine trusts; a publicly "
+                "issued one (Let's Encrypt DNS-01) needs nothing installed here, while a "
+                "private CA has to be added to this machine's trust store.")
+    if "Connection refused" in text or "Name or service not known" in text \
+            or "Failed to resolve" in text or "NewConnectionError" in text:
+        return ("The address did not answer at all, so the token was never used. Check "
+                "the URL, and that you are on the network the service is reachable from.")
+    if "401" in text or "Unauthorized" in text:
+        return "The service answered, but rejected the token. Ask the operator for the current one."
+    return "Check the URL and the token the operator gave you."
+
+
 @cli.command()
 @click.argument('url', required=False)
 @click.option('--token', default=None,
@@ -511,8 +536,7 @@ def login(url, token, name):
         client.version()
     except Exception as exc:  # noqa: BLE001 - every failure means "not logged in"
         raise click.ClickException(
-            f"could not authenticate against {url}: {exc}\n"
-            "Check the URL and the token the operator gave you.") from exc
+            f"could not reach {url}: {exc}\n{_login_remedy(exc)}") from exc
 
     path = login_config.save(url, token, name)
     click.echo(f"✓ logged in to {url}")
