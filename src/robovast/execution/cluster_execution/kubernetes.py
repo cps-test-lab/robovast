@@ -18,6 +18,7 @@ import logging
 
 from kubernetes import client, config, utils
 from kubernetes.client.rest import ApiException
+from kubernetes.utils import FailToCreateError
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,25 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                 utils.create_from_dict(k8s_client, yaml_object)
                 logger.debug(f"Created {kind}/{name}")
 
-            except ApiException as e:
-                if e.status == 409:  # Already exists
-                    logger.info(f"{kind}/{name} already exists, skipping creation")
-                raise
+            # `create_from_dict` does not let an ApiException out: it collects them and
+            # raises FailToCreateError, so an `except ApiException` here catches nothing.
+            except FailToCreateError as e:
+                if any(a.status != 409 for a in e.api_exceptions):
+                    raise
+                # Setup has to be re-runnable: `setup --force` is the documented way to
+                # move a live cluster to a new version, and it re-applies this manifest
+                # over the MinIO pod it created last time. Every re-run died here on
+                # `pods "robovast" already exists` before it reached the service deploy.
+                #
+                # Kept rather than replaced, because the object is a running MinIO pod
+                # holding the campaign store -- recreating it on every setup would be a
+                # far worse default. That does mean a *changed* manifest does not take
+                # effect, which is worth a warning rather than silence: the setup would
+                # otherwise report success while the cluster kept the old spec.
+                logger.warning(
+                    f"{kind}/{name} already exists and was left as it is; a changed "
+                    f"spec (e.g. new node labels) does not take effect until it is "
+                    f"removed. `vast exec cluster cleanup` deletes it.")
     except ApiException as e:
         raise RuntimeError(f"Failed to apply manifest: {e.reason}") from e
     except Exception as e:
