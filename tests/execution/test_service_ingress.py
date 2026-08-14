@@ -133,3 +133,25 @@ def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
             service_kwargs={"ingress_host": "robovast.example.org"})
 
     assert installed == [], "the cluster was modified before the arguments were checked"
+
+
+def test_a_gce_ingress_gets_container_native_load_balancing():
+    """GKE's built-in controller cannot route to a plain ClusterIP.
+
+    Without the NEG annotation the Ingress is created, never becomes healthy, and the
+    reason surfaces in the load balancer rather than anywhere a RoboVAST user looks.
+    """
+    manifests = service_manifests(auth_token="tok",
+                                  ingress_host="robovast.example.org",
+                                  ingress_class="gce", issuer="ca")
+    service = next(m for m in manifests if m["kind"] == "Service")
+    assert service["metadata"]["annotations"]["cloud.google.com/neg"] == '{"ingress": true}'
+
+
+def test_nginx_needs_no_such_annotation():
+    """The tested path stays exactly as it was."""
+    manifests = service_manifests(auth_token="tok",
+                                  ingress_host="robovast.example.org",
+                                  ingress_class="nginx", issuer="ca")
+    service = next(m for m in manifests if m["kind"] == "Service")
+    assert "annotations" not in service["metadata"]

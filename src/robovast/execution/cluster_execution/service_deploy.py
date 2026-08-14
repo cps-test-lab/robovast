@@ -221,13 +221,30 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     }
 
 
-def _service_manifest(namespace):
-    """ClusterIP Service exposing the Deployment on :data:`SERVICE_PORT`."""
+def _service_manifest(namespace, ingress_class=""):
+    """ClusterIP Service exposing the Deployment on :data:`SERVICE_PORT`.
+
+    *ingress_class* only matters for GKE's built-in ``gce`` controller, which — unlike
+    ingress-nginx — **cannot route to a plain ClusterIP**. It needs either a NodePort
+    backend or container-native load balancing, which is what the ``neg`` annotation
+    below asks for. Without it a GKE Ingress created against this Service simply never
+    becomes healthy, and the reason appears in the load balancer rather than anywhere a
+    RoboVAST user would look.
+
+    ``nginx`` is the tested path (rke2 ships ingress-nginx); ``gce`` is supported here
+    but has not been exercised on a real GKE cluster.
+    """
+    annotations = {}
+    if ingress_class == "gce":
+        annotations["cloud.google.com/neg"] = '{"ingress": true}'
+    metadata = {"name": SERVICE_NAME, "namespace": namespace,
+                "labels": {"app": SERVICE_NAME}}
+    if annotations:
+        metadata["annotations"] = annotations
     return {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": SERVICE_NAME, "namespace": namespace,
-                     "labels": {"app": SERVICE_NAME}},
+        "metadata": metadata,
         "spec": {
             "type": "ClusterIP",
             "selector": {"app": SERVICE_NAME},
@@ -759,7 +776,7 @@ def service_manifests(namespace="default", image=None, env=None,
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret),
-        _service_manifest(namespace),
+        _service_manifest(namespace, ingress_class),
         *([ingress] if ingress else []),
     ]
 
