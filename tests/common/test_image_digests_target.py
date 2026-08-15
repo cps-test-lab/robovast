@@ -55,9 +55,9 @@ def test_one_line_per_image_and_no_silent_gaps():
 def test_the_repository_names_match_what_release_images_publishes():
     """The two scripts must name the same images, or the digests describe nothing.
 
-    ``release_images.sh`` builds ``robovast_<distro>``, ``robovast-controller`` and
-    ``robovast_roqsim_<distro>``; reporting digests for differently-named repositories
-    would report on images nobody publishes.
+    ``release_images.sh`` builds ``robovast_<distro>``, ``robovast_roqsim_<distro>``,
+    ``robovast-controller`` and ``robovast-sidecar``; reporting digests for
+    differently-named repositories would report on images nobody publishes.
     """
     release = (ROOT / "container" / "release_images.sh").read_text()
     for repo in _emitted_repos():

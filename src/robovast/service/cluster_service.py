@@ -2074,14 +2074,22 @@ class ClusterService(LocalTransport):
         Aux images were public when that path was written, so it never needed one, and a node that has
         already cached the campaign image hides the omission (``imagePullPolicy: IfNotPresent``) -- which
         means it first fails on a fresh node, the worst place to discover it.
+
+        It then never returned one at all: the import named ``cluster_execution.cluster_execution``,
+        which does not define this constant, and the bare ``except`` swallowed the ImportError. So the
+        function this docstring describes was a no-op from the day it was written, and the failure mode
+        it exists to prevent was simply unprotected. The import is now module-scope-correct and only
+        the *lookup* is guarded -- an absent Secret is the one thing that legitimately means "no
+        credential", and it is the only thing still caught here.
         """
+        from robovast.execution.cluster_execution.service_deploy import \
+            REGISTRY_PUSH_SECRET_NAME
+        from kubernetes.client.rest import ApiException
         try:
-            from robovast.execution.cluster_execution.cluster_execution import \
-                REGISTRY_PUSH_SECRET_NAME
             self._k8s().read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, self.namespace)
-            return REGISTRY_PUSH_SECRET_NAME
-        except Exception:  # noqa: BLE001 - an optional secret; a public image needs none
+        except ApiException:  # an optional Secret; a public image needs none
             return ""
+        return REGISTRY_PUSH_SECRET_NAME
 
     def _query_dir(self, campaign_id: str):
         """Materialize just the query databases into the campaign's cache dir; return it."""

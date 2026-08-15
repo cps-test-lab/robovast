@@ -1426,9 +1426,7 @@ def run_cleanup(campaign, data, force, namespace, context):
               help='Namespace the robovast-service runs in')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-@click.option('--image', default=None, metavar='REF',
-              help='Image to roll out (default: the configured controller image).')
-def upgrade(namespace, kube_context, image):
+def upgrade(namespace, kube_context):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1447,8 +1445,17 @@ def upgrade(namespace, kube_context, image):
     missed migration.
 
     Reads ``./.env`` from the current directory, like every ``vast`` command, so run it
-    from the checkout whose ``.env`` describes this deployment. Elsewhere the registry
-    and image variables are simply unset and the deployed values are kept.
+    from the checkout whose ``.env`` describes this deployment. That file is also where
+    every image ref comes from -- there is deliberately no ``--image``. A flag would have
+    been one-shot, because nothing reads the deployed image back, so a later bare
+    ``upgrade`` would silently revert a digest pinned that way to whatever the floating
+    tag points at -- the exact failure pinning exists to prevent, arriving through the
+    command that looks safe. For a one-off, a real environment variable already beats a
+    ``.env`` line::
+
+        ROBOVAST_CONTROLLER_IMAGE=repo@sha256:... vast exec cluster upgrade
+
+    and ``make image-digests`` writes the durable form into ``.env``.
 
     Distinct from ``setup --force``, deliberately:
 
@@ -1482,7 +1489,7 @@ def upgrade(namespace, kube_context, image):
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
-        deploy_service(namespace=namespace, kube_context=kube_context, image=image,
+        deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
         wait_for_service_ready(namespace=namespace, kube_context=kube_context)

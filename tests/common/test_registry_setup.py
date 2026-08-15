@@ -95,6 +95,38 @@ def test_host_aliases_still_pass_through(monkeypatch):
     assert sd._registry_env(HOST)["ROBOVAST_EXTRA_HOST_ALIASES"] == "a.example=10.0.0.1"
 
 
+def test_removing_credentials_deletes_the_secret_rather_than_leaving_it_deployed():
+    """Rotation always worked; removal was silently ignored.
+
+    The Secret is discovered *by existence* and wired to the Deployment as an
+    imagePullSecret, so deleting the password from .env and re-running upgrade reported
+    success while the credential stayed deployed and in use -- the opposite of what an
+    operator revoking access has just asked for.
+    """
+    from unittest import mock
+
+    core = mock.Mock()
+    # Nothing configured, so this deploy builds no credential objects at all.
+    sd._delete_unconfigured_credentials(core, "default", secrets=[], configmaps=[])
+
+    deleted = {c.args[0] for c in core.delete_namespaced_secret.call_args_list}
+    assert sd.REGISTRY_PUSH_SECRET_NAME in deleted
+    assert sd.GIT_SECRET_NAME in deleted
+    deleted_cms = {c.args[0] for c in core.delete_namespaced_config_map.call_args_list}
+    assert sd.REGISTRY_CA_CONFIGMAP_NAME in deleted_cms
+
+
+def test_a_credential_this_deploy_built_is_never_deleted():
+    from unittest import mock
+
+    core = mock.Mock()
+    secret = {"metadata": {"name": sd.REGISTRY_PUSH_SECRET_NAME}}
+    sd._delete_unconfigured_credentials(core, "default", secrets=[secret], configmaps=[])
+
+    deleted = {c.args[0] for c in core.delete_namespaced_secret.call_args_list}
+    assert sd.REGISTRY_PUSH_SECRET_NAME not in deleted
+
+
 def test_the_registry_prefix_is_a_bare_host():
     """A registry lives at the root of its host's /v2 namespace, so the ref carries no
     path component -- ``<host>/<tag>:<hash>``."""

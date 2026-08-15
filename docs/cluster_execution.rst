@@ -299,44 +299,66 @@ Experiment image builds (registry)
 
 Agent-built experiment images (a project's :ref:`build section
 <config-containers>`) are built **in-cluster** by a BuildKit Job and pushed to a
-container registry the cluster can pull from. Point the deployment at a registry in
-your ``.env`` before ``setup`` (or a later ``setup --force``) — the values are stored in the
-service pod's environment (like the share/ntfy credentials) and read back by the
-cluster config's ``get_registry_config()``; **no registry detail ever reaches a
-client**.
+container registry the cluster can pull from. **RoboVAST runs that registry itself**, as
+a second container in the service pod, so there is nothing to configure and no site
+prerequisite: a deployment can always build.
+
+The registry is published on ``/v2`` of the host the service already answers on, and the
+image prefix *is* that host — ``robovast.example.org/<tag>:<hash>``. That is not a
+cosmetic choice. An image ref is one string resolved by two different things: BuildKit
+pushes to it from inside a pod (pod network, CoreDNS) and the kubelet pulls it on the
+node (node network, node resolver, node TLS trust). Nothing in a pod spec reaches the
+second one — see :ref:`cluster-registry-dns` — so a ``…svc`` name works for the push and
+fails for the pull, and a plain-HTTP registry needs ``registries.yaml`` plus a runtime
+restart on **every** node. The service's own published hostname already has real DNS and
+a real certificate, so both halves work with no node configuration at all.
+
+The same URL works from a workstation: ``docker pull robovast.example.org/<tag>:<hash>``
+needs no login and no CA import, which is how you reproduce a campaign's exact image
+locally.
+
+.. warning::
+
+   The registry is **unauthenticated**. It shares a hostname with the UI, which *is*
+   token-gated, so it is the more reachable half of that host: anyone who can reach the
+   service can push an image that campaigns then run. That is acceptable while RoboVAST
+   is on a private network and is the first thing to revisit before exposing it to the
+   internet. Adding auth is an htpasswd Secret plus an Ingress annotation.
+
+**A service with no Ingress cannot build.** There is then no address a node could pull a
+built image back from, so there is no prefix, and a ``build:`` project fails at submit
+naming that reason. Re-run ``setup`` with ``--ingress-host``.
+
+Storage defaults to a ``hostPath`` on the node the pod is pinned to, because a stock RKE2
+cluster ships no StorageClass and a PVC there stays ``Pending`` forever. ``emptyDir`` is
+deliberately not offered: every ``upgrade`` restarts the pod, which would discard every
+built image on each version bump while already-submitted Jobs went to
+``ImagePullBackOff``.
+
+Only two things remain configurable, both about *other people's* registries:
 
 .. code-block:: bash
 
-   ROBOVAST_REGISTRY_PREFIX=ghcr.io/cps-test-lab      # required to enable builds
-   # Optional: registry auth → a dockerconfigjson Secret used for push (build Job)
-   # and pull (campaign pods). Omit for an anonymous/insecure registry.
-   ROBOVAST_REGISTRY_SERVER=ghcr.io
+   # Credentials for a private registry a .vast names in its `image:` field. Purely a
+   # PULL credential -- the build registry is in-pod and open, so nothing needs a push
+   # credential. Applied to campaign pods, aux/exec pods and the service's own image.
+   ROBOVAST_REGISTRY_SERVER=harbor.example.org
    ROBOVAST_REGISTRY_USERNAME=<user>
    ROBOVAST_REGISTRY_PASSWORD=<token>
-   # Optional: trust a self-signed / private-CA registry. The CA is stored in a
-   # ConfigMap and mounted into the build Job (BuildKit trusts the registry API AND
-   # its auth/token endpoint). Preferred over INSECURE for anything real.
-   ROBOVAST_REGISTRY_CA_FILE=/path/to/registry-ca.pem
-   # Optional: skip TLS verification instead (plain HTTP / throwaway registry).
-   ROBOVAST_REGISTRY_INSECURE=true
    # Optional: default base image when build.base_image is omitted.
    ROBOVAST_BASE_EXPERIMENT_IMAGE=ghcr.io/cps-test-lab/sim-suite-nav2-eval:latest
 
-The service prepends ``ROBOVAST_REGISTRY_PREFIX`` to the project's bare
-``build.tag`` and pushes ``<prefix>/<tag>:<hash>``; campaign pods pull it via the
-same credentials (added as an ``imagePullSecret``). Without a registry configured,
-in-cluster builds are unavailable and a ``build:<tag>`` project fails at submit
-with an actionable message.
+Removing one of those variables and re-running ``upgrade`` **deletes** the Secret it
+created. Rotation always worked; removal used to be ignored, leaving a revoked credential
+deployed and still attached as an ``imagePullSecret``.
 
-The auth Secret and CA ConfigMap that ``setup`` creates from those values are
-**found by the service itself** — it looks for the fixed names it would have created
-(``robovast-registry-push``, ``robovast-registry-ca``) and uses them when present, so
-nothing has to tell it they exist. This matters for a **local** ``vast serve``:
-``setup`` stores its env in the *service pod*, which an off-cluster service never
-reads, and the previous behaviour was to conclude there were no credentials and no CA
-— pushing anonymously to an untrusted registry. Set
-``ROBOVAST_REGISTRY_PUSH_SECRET`` / ``_PULL_SECRET`` / ``_CA_CONFIGMAP`` only to point
-at **differently named** objects; they are overrides, not requirements.
+The pull Secret that ``setup`` creates from those values is **found by the service
+itself** — it looks for the fixed name it would have created (``robovast-registry-push``)
+and uses it when present, so nothing has to tell it it exists. This matters for a
+**local** ``vast serve``: ``setup`` stores its env in the *service pod*, which an
+off-cluster service never reads, and the previous behaviour was to conclude there were no
+credentials at all. Set ``ROBOVAST_REGISTRY_PULL_SECRET`` only to point at a
+**differently named** object; it is an override, not a requirement.
 
 .. _cluster-registry-dns:
 
@@ -369,10 +391,12 @@ creates (the build Job and campaign Jobs) as ``hostAliases``:
    ``registries.yaml``) — the same node-level scope as registry TLS trust.
 
    A real DNS record is the one change that covers both, and is preferable wherever you
-   can add one. Note also that using the registry's **IP** as
-   ``ROBOVAST_REGISTRY_PREFIX`` is not a substitute when it sits behind an SNI-based
-   proxy: a client dialing a bare IP sends no TLS SNI, so such a proxy serves no
-   certificate at all and the handshake fails before ``INSECURE`` or a CA could apply.
+   can add one. Note also that naming a registry by **IP** is not a substitute when it
+   sits behind an SNI-based proxy: a client dialing a bare IP sends no TLS SNI, so such a
+   proxy serves no certificate at all and the handshake fails before any CA could apply.
+
+   RoboVAST's own registry avoids this entirely by being published on the service's
+   Ingress host, which by construction is a name both the pod and the node resolve.
 
 .. _cluster-build-context-staging:
 

@@ -1,15 +1,18 @@
 #!/bin/bash -e
-# Build and push all of robovast's own container images (base, roqsim, controller)
-# to one registry/project prefix, in one call. The local-dev counterpart of what
+# Build and push all four of robovast's own container images (base, roqsim, controller,
+# sidecar) to one registry/project prefix, in one call. The local-dev counterpart of what
 # .github/workflows/image.yml does per-image in CI, collapsed into a single command
 # for deploying to an arbitrary registry (Docker Hub, a fork's GHCR, ...).
 #
-# Orchestrates the two existing per-image scripts rather than reimplementing any
+# Orchestrates the existing per-image scripts rather than reimplementing any
 # docker build/push logic:
 #   container/robovast/build.sh    (base + roqsim, via --image all)
 #   container/controller/build.sh  (controller)
 #
-# sidecar is intentionally excluded: it has no build.sh of its own today (CI-only).
+# The sidecar has no build.sh, so it is built with buildx directly. It used to be left
+# out for that reason -- which meant a release to a dev registry published three images
+# and silently kept the public sidecar, the same "three of the four" gap that
+# ROBOVAST_SIDECAR_IMAGE was added to close.
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push] [--ros-distro <distro>] \
@@ -104,6 +107,8 @@ PUSH_FLAG=()
 BASE_TAG="${PROJECT}robovast_${ROS_DISTRO}:latest"
 ROQSIM_TAG="${PROJECT}robovast_roqsim_${ROS_DISTRO}:latest"
 CONTROLLER_TAG="${PROJECT}robovast-controller:latest"
+# Not ROS-distro suffixed: alpine + mc + boto3, with nothing a distro could change.
+SIDECAR_TAG="${PROJECT}robovast-sidecar:latest"
 
 SRC_FLAG=()
 [[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
@@ -118,6 +123,18 @@ echo "== controller =="
 # it -- an unrecognized "--" would fall through to its own EXTRA_ARGS and get injected
 # into its docker build call raw, corrupting the argument list.
 "$BASEDIR/controller/build.sh" -t "$CONTROLLER_TAG" "${PUSH_FLAG[@]}" $EXTRA_ARGS
+
+echo
+echo "== sidecar =="
+# Built here rather than only in CI so a dev-registry release is complete. It was the one
+# image release_images.sh did not publish, which meant an operator pointing PROJECT at
+# their own registry got three dev images and silently kept the published sidecar --
+# and, until the service started carrying ROBOVAST_SIDECAR_IMAGE into its pod, had no way
+# to notice. Buildx directly: there is no container/sidecar/build.sh.
+# shellcheck source=container/platforms.env
+. "$BASEDIR/platforms.env"
+docker buildx build --platform "$PLATFORMS_SIDECAR" \
+  -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "$BASEDIR/sidecar" $EXTRA_ARGS
 
 # The digest for a repo:tag, as repo@sha256:... -- printed instead of the floating tag
 # below, matching this repo's own pin-by-digest convention (see the roqsim image comment
@@ -160,11 +177,12 @@ image_ref() {
 resolve_refs() {
   local name tag ref
   MISSING_DIGESTS=()
-  for name in BASE ROQSIM_IMAGE CONTROLLER_IMAGE; do
+  for name in BASE ROQSIM_IMAGE CONTROLLER_IMAGE SIDECAR_IMAGE; do
     case "$name" in
       BASE)             tag="$BASE_TAG" ;;
       ROQSIM_IMAGE)   tag="$ROQSIM_TAG" ;;
       CONTROLLER_IMAGE) tag="$CONTROLLER_TAG" ;;
+      SIDECAR_IMAGE)    tag="$SIDECAR_TAG" ;;
     esac
     ref=$(image_ref "$tag")
     if [[ -z "$ref" ]]; then
@@ -208,19 +226,20 @@ else
   # Only reachable without --push (a --push run with a missing digest exited above). A
   # mixed list is normal there: an image whose rebuild was fully cached still carries the
   # RepoDigest of its earlier push and is pinnable; a rebuilt one is not in the registry.
-  echo "${#MISSING_DIGESTS[@]} of 3 images are not in ${PROJECT%/} under a digest and are named by"
+  echo "${#MISSING_DIGESTS[@]} of 4 images are not in ${PROJECT%/} under a digest and are named by"
   echo ":latest below -- there is nothing pinnable for them yet. Re-run with --push to publish"
   echo "them and get repo@sha256:... refs instead:"
 fi
 echo "  ROBOVAST_IMAGE=${BASE_REF}"
 echo "  ROBOVAST_ROQSIM_IMAGE=${ROQSIM_IMAGE_REF}"
 echo "  ROBOVAST_CONTROLLER_IMAGE=${CONTROLLER_IMAGE_REF}"
+echo "  ROBOVAST_SIDECAR_IMAGE=${SIDECAR_IMAGE_REF}"
 echo "Note: a .vast file's own 'image:' field overrides .env/env vars -- edit it directly if a"
 echo "campaign pins its image explicitly (as configs/examples/basic_nav/*.vast do)."
 
-# Offer to write the three lines above into ./.env -- the file `vast` itself loads (see
+# Offer to write the four lines above into ./.env -- the file `vast` itself loads (see
 # src/robovast/common/env_file.py: current directory only, current directory when `vast`
-# runs). Only ever touches these three keys in place; any other line (e.g. registry
+# runs). Only ever touches these four keys in place; any other line (e.g. registry
 # credentials) is left untouched. Skipped outside an interactive terminal (e.g. CI) rather
 # than hanging on a read that will never come.
 set_env_var() {
@@ -235,11 +254,12 @@ set_env_var() {
 
 if [[ -t 0 ]]; then
   echo
-  read -r -p "Update ./.env with these 3 lines now? [y/N] " REPLY || REPLY=""
+  read -r -p "Update ./.env with these 4 lines now? [y/N] " REPLY || REPLY=""
   if [[ "$REPLY" =~ ^[Yy] ]]; then
     set_env_var ROBOVAST_IMAGE "$BASE_REF"
     set_env_var ROBOVAST_ROQSIM_IMAGE "$ROQSIM_IMAGE_REF"
     set_env_var ROBOVAST_CONTROLLER_IMAGE "$CONTROLLER_IMAGE_REF"
+    set_env_var ROBOVAST_SIDECAR_IMAGE "$SIDECAR_IMAGE_REF"
     echo "Updated ./.env."
   fi
 else

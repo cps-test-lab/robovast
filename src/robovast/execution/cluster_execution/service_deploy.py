@@ -842,6 +842,17 @@ def service_manifests(namespace="default", image=None, env=None,
     # runs, so they are always in step.
     if not any(e["name"] == "ROBOVAST_CONTROLLER_IMAGE" for e in env):
         env = [*env, {"name": "ROBOVAST_CONTROLLER_IMAGE", "value": image}]
+    # The sidecar is resolved *in this pod* -- the s3-init container, the mc-tools aux
+    # container, the postprocessing Job, campaign Jobs and the image-build Job all call
+    # resolve_sidecar_image() from inside the service. So an operator who set
+    # ROBOVAST_SIDECAR_IMAGE for a dev build got it honoured everywhere except the place
+    # it is actually read, and quietly kept the published sidecar: exactly the "three of
+    # the four images" failure that knob was added to end. Carrying it over is the other
+    # half of adding it.
+    import os  # pylint: disable=import-outside-toplevel
+    sidecar = os.environ.get("ROBOVAST_SIDECAR_IMAGE", "").strip()
+    if sidecar and not any(e["name"] == "ROBOVAST_SIDECAR_IMAGE" for e in env):
+        env = [*env, {"name": "ROBOVAST_SIDECAR_IMAGE", "value": sidecar}]
 
     extra = []
     if git_token is None:
@@ -907,6 +918,52 @@ def service_manifests(namespace="default", image=None, env=None,
         _service_manifest(namespace, ingress_class),
         *([ingress] if ingress else []),
     ]
+
+
+#: Credential objects this module owns: present when configured, and — the point of the
+#: list — removed when the configuration that created them is taken away. Names only,
+#: because the check is "did this deploy build one?", not "what is in it".
+_OWNED_SECRETS = (REGISTRY_PUSH_SECRET_NAME, GIT_SECRET_NAME)
+_OWNED_CONFIGMAPS = (REGISTRY_CA_CONFIGMAP_NAME,)
+
+
+def _delete_unconfigured_credentials(core, namespace, secrets, configmaps, *,
+                                     dry_run=False):
+    """Delete an owned credential object this deploy did **not** build.
+
+    Removing a variable from ``.env`` used to leave the Secret it had created in place,
+    and — worse — ``deploy_service`` rediscovers the registry credential *by existence*,
+    so it stayed wired to the Deployment as an imagePullSecret. An operator deleting a
+    password to revoke access got a successful "upgraded" while the credential remained
+    deployed and in use. Rotation worked; only removal was silently ignored.
+
+    Not a general reconciler: it touches exactly the objects this module creates, so a
+    Secret someone else put in the namespace is none of its business.
+    """
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    built = {m["metadata"]["name"] for m in secrets}
+    built_cms = {m["metadata"]["name"] for m in configmaps}
+    dr = "All" if dry_run else None
+    for name in _OWNED_SECRETS:
+        if name in built:
+            continue
+        try:
+            core.delete_namespaced_secret(name, namespace, dry_run=dr)
+            logger.info("Removed %s: its configuration is gone", name)
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+    for name in _OWNED_CONFIGMAPS:
+        if name in built_cms:
+            continue
+        try:
+            core.delete_namespaced_config_map(name, namespace, dry_run=dr)
+            logger.info("Removed %s: its configuration is gone", name)
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
 
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
@@ -980,6 +1037,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     # these from the full list.
     secrets = [m for m in manifests if m["kind"] == "Secret"]
     configmaps = [m for m in manifests if m["kind"] == "ConfigMap"]
+    _delete_unconfigured_credentials(core, namespace, secrets, configmaps, dry_run=dry_run)
 
     # ServiceAccount
     _create_or_ok(lambda: core.create_namespaced_service_account(namespace, sa, dry_run=dr))

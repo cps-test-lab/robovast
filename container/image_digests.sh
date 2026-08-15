@@ -37,8 +37,10 @@ fi
 # The env var each image is read from, paired with its repository name. These variable
 # names are the contract with robovast.common.execution._resolve_image; a test keeps this
 # list and that reader from drifting apart.
-declare -a VARS=(ROBOVAST_IMAGE ROBOVAST_CONTROLLER_IMAGE ROBOVAST_ROQSIM_IMAGE)
-declare -a REPOS=("robovast_${ROS_DISTRO}" "robovast-controller" "robovast_roqsim_${ROS_DISTRO}")
+# The sidecar is not ROS-distro suffixed: it is alpine + mc + boto3, with nothing in it
+# that a distro could change.
+declare -a VARS=(ROBOVAST_IMAGE ROBOVAST_CONTROLLER_IMAGE ROBOVAST_ROQSIM_IMAGE ROBOVAST_SIDECAR_IMAGE)
+declare -a REPOS=("robovast_${ROS_DISTRO}" "robovast-controller" "robovast_roqsim_${ROS_DISTRO}" "robovast-sidecar")
 
 missing=()
 lines=()
