@@ -314,6 +314,82 @@ def test_a_missing_distribution_still_names_the_requirement():
     assert err.phase == "pip" and err.entry == "roqsim_manipulation"
 
 
+# The line a real failure produced. Both parenthesised clauses matter: the first names
+# the distribution that required it, the second is pip's "no candidates" note.
+_TRANSITIVE = (
+    "#14 3.849 ERROR: Could not find a version that satisfies the requirement roqsim "
+    "(from roqsim-mobile-logistics) (from versions: none)\n"
+    "#14 3.850 ERROR: No matching distribution found for roqsim\n")
+
+
+def _spec(**kwargs):
+    from robovast.service.image_build import BuildSpec
+    return BuildSpec(tag="scenario", **kwargs)
+
+
+def test_a_dependency_of_a_local_package_blames_the_base_image_not_the_list():
+    """The regression this exists for.
+
+    ``roqsim`` was never in ``build.python_packages`` -- it is a dependency of the
+    project's own package, and it is missing because the image the container builds on
+    is the wrong one. The classifier used to answer "check build.python_packages",
+    which sends an agent to edit a list that does not contain the name, and cannot.
+    """
+    err = classify_build_error(_TRANSITIVE, _spec(
+        base_image="harbor.example/robovast_roqsim_jazzy@sha256:abc",
+        python_packages=["./", ["./ros2_ws/src/roqsim_mm_bringup"]]))
+
+    assert err.phase == "base-image"
+    assert err.entry == "roqsim"
+    assert "roqsim-mobile-logistics" in err.message, "say what required it"
+    assert "execution.containers" in err.message, "name the field that fixes it"
+    assert "sha256:abc" in err.message, "name the image it actually built on"
+    # The old advice must not survive anywhere in the message.
+    assert "check build.python_packages" not in err.message
+    # Still agent-fixable -- just through a different knob. `infra` would say "give up".
+    assert err.fixable_by == "agent"
+
+
+def test_a_declared_package_that_is_missing_still_points_at_the_list():
+    """The other half: when the name IS one the author asked for, the list is right."""
+    err = classify_build_error(
+        "ERROR: Could not find a version that satisfies the requirement roqsim-sensors "
+        "(from versions: none)\n",
+        _spec(python_packages=["roqsim_sensors>=1.2"]))
+    assert err.phase == "pip"
+    assert "build.python_packages" in err.message
+
+
+def test_a_declared_name_is_matched_however_it_was_spelled():
+    """pip canonicalises; authors do not. Comparing raw strings would call a declared
+    package undeclared over an underscore, and send the agent to the wrong field."""
+    err = classify_build_error(
+        "ERROR: Could not find a version that satisfies the requirement Roqsim.Sensors "
+        "(from versions: none)\n",
+        _spec(python_packages=["roqsim_sensors"]))
+    assert err.phase == "pip"
+
+
+def test_without_a_spec_it_claims_nothing_about_the_package_list():
+    """The cluster lane passed no spec, so every message was a guess stated as fact.
+    With no spec the classifier may still report what pip said -- not where to fix it."""
+    err = classify_build_error(_TRANSITIVE)
+    assert err.entry == "roqsim"
+    assert "is not declared in build.python_packages" not in err.message
+    assert "check build.python_packages" not in err.message
+
+
+def test_the_no_candidates_clause_is_not_read_as_the_requiring_package():
+    """pip prints ``(from versions: none)`` on the same line; taking it as the requiring
+    distribution would invent a package called ``versions:`` and blame the base image
+    for a genuinely undeclared entry."""
+    err = classify_build_error(
+        "ERROR: Could not find a version that satisfies the requirement nope "
+        "(from versions: none)\n", _spec(python_packages=["something-else"]))
+    assert err.phase == "pip"
+    assert "versions" not in err.message
+
+
 # ---------------------------------------------------------------------------
 # .dockerignore — the local context must match what the cluster stages
 # ---------------------------------------------------------------------------

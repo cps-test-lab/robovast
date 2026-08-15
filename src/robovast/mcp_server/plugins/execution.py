@@ -747,11 +747,20 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. On failure, ``error_detail`` says what to change.
 
-    ``error_detail`` names the ``phase`` (apt / pip / source-build / base-pull / push /
-    resource), the offending package ``entry``, a ``message``, and ``fixable_by`` —
-    ``agent`` (edit that container's ``system_packages`` / ``python_packages``) or
-    ``infra`` (a registry/base problem no ``.vast`` edit will fix). Read this before
-    reaching for the builder log.
+    ``error_detail`` names the ``phase`` (apt / pip / base-image / source-build /
+    base-pull / push / resource), the offending package ``entry``, a ``message``, and
+    ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (a registry
+    problem no edit will fix). Read this before reaching for the builder log.
+
+    ``phase`` says *which* field to edit, and it is not always a package list:
+
+    \b
+      pip / apt   the entry is one you declared -- fix that container's
+                  ``python_packages`` / ``system_packages``.
+      base-image  the entry is a dependency of something you install, missing from
+                  the image you build on. Adding it to ``python_packages`` would
+                  paper over the real problem -- re-pin
+                  ``execution.containers.<name>.image`` instead.
 
     Args:
         build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value

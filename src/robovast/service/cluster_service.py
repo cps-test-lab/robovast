@@ -44,6 +44,7 @@ accepted trade for running the driver in-process.
 """
 
 import contextlib
+import dataclasses
 import json
 import time
 import logging
@@ -1016,8 +1017,11 @@ class ClusterService(LocalTransport):
         # whole upload, while its Job does not exist yet.
         status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="pending",
                                   image_ref=symbolic, digest=image_hash)
+        # The spec rides along so a failure can be classified against what was actually
+        # asked for: without it every missing distribution looks like a bad entry in
+        # build.python_packages, including the ones the base image should have carried.
         state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
-                           "hash": image_hash, "status": status}
+                           "hash": image_hash, "status": status, "spec": spec}
 
         # Everything up to a created Job is undone on failure: the in-flight record
         # holds the sweep back, so a submit that dies here (staging error, rejected
@@ -1026,6 +1030,14 @@ class ClusterService(LocalTransport):
             # Stage the context (project dir + generated Dockerfile) to S3.
             base_ref = (spec.base_image or registry.base_experiment_image
                         or resolve_build_base_image())
+            # Record the *resolved* base, not the declared one: spec.base_image is often
+            # empty (the cluster default or the framework image supplied it), and an
+            # error that cannot name the image it built on is the harder one to act on.
+            # Guarded because this only sharpens a future error message -- failing the
+            # submit itself over it would trade something that matters for something
+            # that does not.
+            if dataclasses.is_dataclass(spec):
+                state[build_id]["spec"] = dataclasses.replace(spec, base_image=base_ref)
             dockerfile = generate_dockerfile(spec, project_dir, base_ref)
             build_prefix = context_prefix(build_id)
             storage = in_pod_storage.storage_client_for(cfg)
@@ -1284,7 +1296,7 @@ class ClusterService(LocalTransport):
         elif phase == "failed":
             status.phase = "failed"
             status.done = True
-            status.error = self._build_error(build_id, record["tag"])
+            status.error = self._build_error(build_id, record.get("spec"))
         if status.done:
             # This transition is the one moment we know the context is dead, for both
             # outcomes. Cheap (a prefix delete) and it runs once, since a done record
@@ -1305,10 +1317,16 @@ class ClusterService(LocalTransport):
             return
         self._discard_build_context(cfg, bucket, build_id)
 
-    def _build_error(self, build_id: str, tag: str):
+    def _build_error(self, build_id: str, spec=None):
+        """Classify a failed build. *spec* is what the build was asked to install.
+
+        Took a ``tag`` it never used; that slot now carries the spec, which the
+        classifier does use -- without it a dependency missing from the base image is
+        indistinguishable from a bad ``build.python_packages`` entry.
+        """
         from robovast.service.image_build import classify_build_error
         log = self._build_log_text(build_id)
-        return classify_build_error(log)
+        return classify_build_error(log, spec)
 
     def _build_log_text(self, build_id: str) -> str:
         from kubernetes import client

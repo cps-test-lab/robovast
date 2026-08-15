@@ -367,7 +367,39 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
 
 _APT_MISS = re.compile(r"Unable to locate package (\S+)")
 _PIP_MISS = re.compile(r"No matching distribution found for (\S+)")
-_PIP_NAME = re.compile(r"Could not find a version that satisfies the requirement (\S+)")
+#: ``(from <dist>)`` is optional but decisive: pip prints it when the requirement was
+#: pulled in by another distribution rather than asked for directly. Dropping it is what
+#: made every missing dependency look like a mistake in ``build.python_packages``.
+#: The ``(?!versions:)`` matters: pip puts two parenthesised clauses on this line --
+#: ``requirement roqsim (from roqsim-mobile-logistics) (from versions: none)`` -- and
+#: without it the "no candidates" clause would be read as the requiring package.
+_PIP_NAME = re.compile(
+    r"Could not find a version that satisfies the requirement (\S+)"
+    r"(?: \(from (?!versions:)([^)\s]+)\))?")
+
+
+def _canonical_name(spec: str) -> str:
+    """The PEP 503 name of a requirement spec, for comparing declared against missing.
+
+    Entries are authored as ``roqsim_sensors``, ``roqsim-sensors>=1.2``, ``pkg[extra]``
+    or a local path; pip reports the canonical form. Comparing raw strings would call a
+    declared package undeclared over a hyphen.
+    """
+    name = re.split(r"[<>=!~\[;]", spec.strip(), maxsplit=1)[0]
+    name = name.strip().rstrip("/")
+    # A local path entry (``./``, ``pkgs/foo.whl``) contributes no comparable name.
+    if name in ("", ".", "..") or "/" in name or name.endswith(".whl"):
+        return ""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _declares(spec: Optional[BuildSpec], requirement: str) -> bool:
+    """Whether *requirement* is something this build was actually asked to install."""
+    if spec is None:
+        return False
+    wanted = _canonical_name(requirement)
+    return bool(wanted) and wanted in {
+        _canonical_name(entry) for entry in spec.python_specs}
 
 
 def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBuildError:
@@ -376,6 +408,12 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     Distinguishes agent-fixable failures (apt/pip/source-build → points at the
     ``build:`` entry) from infra failures (base pull / registry push), so the agent
     knows whether editing the ``.vast`` can help.
+
+    *spec* is what makes the pip advice trustworthy. Without it a missing distribution
+    can only be reported as such; with it, the classifier can tell a package the build
+    asked for (fix the list) from a dependency of one it installed (the base image is
+    missing it, and adding the name to the list would paper over that). Pass it wherever
+    it is available.
     """
     tail = "\n".join(log.splitlines()[-40:])
 
@@ -397,12 +435,40 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
                     "venv (needs pip >= 22.3); pick a newer build.base_image",
             log_tail=tail)
 
-    m = _PIP_MISS.search(log) or _PIP_NAME.search(log)
+    named = _PIP_NAME.search(log)
+    m = named or _PIP_MISS.search(log)
     if m:
+        missing = m.group(1)
+        required_by = named.group(2) if named and named.lastindex and named.lastindex > 1 else ""
+        if _declares(spec, missing):
+            # Asked for by name and not found: the entry itself is wrong (typo, wrong
+            # index, no such version). Pointing at the package list is right.
+            return ImageBuildError(
+                phase="pip", fixable_by="agent", entry=missing,
+                message=f"pip found no matching distribution for '{missing}' "
+                        "(check build.python_packages)",
+                log_tail=tail)
+        if required_by:
+            # Nobody asked for it -- it is a dependency of something that was installed,
+            # so it was expected to come from the image already. Editing the package list
+            # cannot fix that, and adding the name there would only paper over a base
+            # image that is missing what this project builds on.
+            where = f" (base image: {spec.base_image})" if spec and spec.base_image else ""
+            # Only claim it is undeclared when a spec was actually checked; without one
+            # that would be the same unfounded certainty this branch exists to remove.
+            undeclared = (", and is not declared in build.python_packages"
+                          if spec is not None else "")
+            return ImageBuildError(
+                phase="base-image", fixable_by="agent", entry=missing,
+                message=f"'{missing}' is required by '{required_by}' but is not in the "
+                        f"image this container builds on{where}{undeclared}. Re-pin "
+                        "execution.containers.<name>.image to one that carries it",
+                log_tail=tail)
+        # No spec to check against, or pip named no requiring distribution: say what
+        # happened without asserting where the fix is.
         return ImageBuildError(
-            phase="pip", fixable_by="agent", entry=m.group(1),
-            message=f"pip found no matching distribution for '{m.group(1)}' "
-                    "(check build.python_packages)",
+            phase="pip", fixable_by="agent", entry=missing,
+            message=f"pip found no matching distribution for '{missing}'",
             log_tail=tail)
 
     low = log.lower()

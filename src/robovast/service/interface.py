@@ -150,10 +150,17 @@ class ImageBuildError(BaseModel):
     registry-qualified ref (see the zero-registry-knowledge invariant).
     """
 
-    #: base-pull | apt | pip | source-build | push | resource | validate
+    #: base-pull | base-image | apt | pip | source-build | push | resource | validate
+    #:
+    #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
+    #: simply does not contain something the project's own packages depend on.
     phase: str = ""
-    #: ``agent`` — the failure maps to a ``build:`` entry the agent can change;
+    #: ``agent`` — the failure maps to a field in the ``.vast`` the agent can change;
     #: ``infra`` — server-side (base pull / registry push), not agent-fixable.
+    #:
+    #: Which field is named by ``phase`` + ``message``, and it is not always under
+    #: ``build:`` — a ``base-image`` failure is fixed by re-pinning
+    #: ``execution.containers.<name>.image``.
     fixable_by: str = "agent"
     entry: str = ""                  # the offending build: entry, when identifiable
     message: str = ""                # one-line summary
