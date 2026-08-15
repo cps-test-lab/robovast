@@ -1216,9 +1216,22 @@ def log(campaign, follow, namespace, context):
 @click.option('--rotate-token', is_flag=True,
               help='Issue a new access token, logging everyone out. Without this an '
                    'already-deployed token is preserved across re-runs.')
+@click.option('--registry-storage-class', default='', metavar='NAME',
+              help='Back the built-in container registry with a PVC from this '
+                   'StorageClass instead of a hostPath. Preferred where the cluster can '
+                   'provision volumes; stock RKE2 cannot, which is why hostPath is the '
+                   'default.')
+@click.option('--registry-storage-path', default='', metavar='PATH',
+              help='Host directory backing the registry when using hostPath '
+                   '(default: /var/lib/robovast-registry).')
+@click.option('--registry-node', default='', metavar='NODE',
+              help='Pin the service pod to this node. Needed with hostPath storage on a '
+                   'multi-node cluster: the registry blobs live on one node\'s disk, so '
+                   'a pod rescheduled elsewhere comes up with an empty registry.')
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, kube_context, ingress_host,
           ingress_class, issuer, tls_secret, insecure_http, rotate_token,
+          registry_storage_class, registry_storage_path, registry_node,
           cluster_config):
     """Set up the Kubernetes cluster for execution.
 
@@ -1291,6 +1304,9 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
         'ingress_host': ingress_host, 'ingress_class': ingress_class,
         'issuer': issuer, 'tls_secret': tls_secret,
         'insecure_http': insecure_http, 'rotate_token': rotate_token,
+        'registry_storage_class': registry_storage_class,
+        'registry_storage_path': registry_storage_path,
+        'registry_node': registry_node,
     }
     try:
         setup_server(config_name=cluster_config, list_configs=False, force=force,
