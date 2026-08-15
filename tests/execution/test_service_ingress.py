@@ -66,7 +66,10 @@ def test_a_cert_manager_issuer_is_annotated_and_names_a_tls_secret():
 def test_an_existing_tls_secret_is_used_as_given():
     ingress = _ingress(tls_secret="my-cert")
     assert ingress["spec"]["tls"][0]["secretName"] == "my-cert"
-    assert "annotations" not in ingress["metadata"]
+    # No issuer, so cert-manager must not be asked to manage this cert -- it would try to
+    # replace a certificate the operator supplied. Checked by key rather than by "no
+    # annotations at all", since the registry's upload limits live here too.
+    assert "cert-manager.io/cluster-issuer" not in ingress["metadata"]["annotations"]
 
 
 def test_the_ingress_routes_everything_to_the_service():
@@ -79,6 +82,25 @@ def test_the_ingress_routes_everything_to_the_service():
     assert path["backend"]["service"]["name"] == SERVICE_NAME
     assert path["backend"]["service"]["port"]["number"] == SERVICE_PORT
     assert ingress["spec"]["ingressClassName"] == "nginx"
+
+
+def test_the_ingress_raises_nginx_upload_limits_for_the_registry():
+    """Reachable is not the same as usable.
+
+    ingress-nginx caps a request body at 1m by default, and an image layer is far larger,
+    so a push died on a 413 from the proxy -- after the build had been paid for, and
+    naming nothing RoboVAST owns. Found by pushing to the deployed registry, not by any
+    test, which is why it is pinned here.
+    """
+    from robovast.execution.cluster_execution import registry_deploy
+
+    ingress = _ingress(issuer="ca", ingress_class="nginx")
+    annotations = ingress["metadata"]["annotations"]
+    for key, value in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items():
+        assert annotations[key] == value
+    assert annotations["nginx.ingress.kubernetes.io/proxy-body-size"] == "0"
+    # The issuer annotation must survive alongside them, or cert-manager stops renewing.
+    assert annotations["cert-manager.io/cluster-issuer"] == "ca"
 
 
 def test_the_registry_is_published_ahead_of_the_catch_all():

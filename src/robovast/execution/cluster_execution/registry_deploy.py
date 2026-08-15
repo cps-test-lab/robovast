@@ -167,6 +167,27 @@ def registry_node_selector(node_name):
     return {"kubernetes.io/hostname": node_name}
 
 
+#: Ingress annotations the registry needs to be usable, not merely reachable.
+#:
+#: ingress-nginx defaults ``proxy-body-size`` to 1m, and an image layer is far larger, so
+#: without this a push dies on ``413 Request Entity Too Large`` from nginx -- after the
+#: build has been paid for, and pointing at the proxy rather than at anything RoboVAST
+#: owns. ``0`` disables the limit, which is what a registry needs; the upload is streamed
+#: to the container, not buffered whole.
+#:
+#: The read/send timeouts matter for the same reason: a multi-GB layer over a slow link
+#: outlives nginx's 60s default and the push fails partway.
+#:
+#: Applied unconditionally. They are ingress-nginx keys and other controllers ignore
+#: annotations they do not know, which is cheaper than getting the class detection wrong
+#: and shipping a registry that 413s.
+REGISTRY_INGRESS_ANNOTATIONS = {
+    "nginx.ingress.kubernetes.io/proxy-body-size": "0",
+    "nginx.ingress.kubernetes.io/proxy-read-timeout": "900",
+    "nginx.ingress.kubernetes.io/proxy-send-timeout": "900",
+}
+
+
 def registry_ingress_path():
     """The ``/v2`` rule routing the registry half of the service's hostname.
 

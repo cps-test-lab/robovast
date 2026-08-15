@@ -413,10 +413,13 @@ def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
     # by a caller that skipped it.
     validate_ingress_options(host, tls_secret, issuer, insecure, have_token=bool(auth_token))
 
-    annotations = {}
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    # The registry's upload limits ride on this Ingress: it publishes /v2, and nginx's
+    # 1m default body size would 413 every image layer.
+    annotations = dict(registry_deploy.REGISTRY_INGRESS_ANNOTATIONS)
     if issuer:
         annotations["cert-manager.io/cluster-issuer"] = issuer
-    from . import registry_deploy  # pylint: disable=import-outside-toplevel
 
     spec = {
         "rules": [{
@@ -775,6 +778,70 @@ def published_url(namespace="default", kube_context=None):
     return f"{'https' if secure else 'http'}://{host}"
 
 
+def reconcile_registry_ingress_path(namespace="default", kube_context=None):
+    """Add the registry's ``/v2`` rule to an Ingress that predates it. Returns True if added.
+
+    An ``upgrade`` deliberately does not rebuild the Ingress -- it has none of the TLS
+    arguments that Ingress was created with, so recreating it would refuse. But a
+    deployment upgraded across the version that introduced the in-pod registry would
+    otherwise get the registry container and no route to it: a registry that exists,
+    accepts pushes from inside the pod, and cannot be reached by the node that has to pull
+    from it. Silently, because nothing about the pod looks wrong.
+
+    So the path is reconciled in place, for the same reason RBAC is: a version needing
+    something the previous one did not is a migration, and an upgrade that skips it turns
+    into a runtime failure that reads like a bug.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import \
+        ApiException  # pylint: disable=import-outside-toplevel
+
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    networking = client.NetworkingV1Api()
+    try:
+        ingress = networking.read_namespaced_ingress(SERVICE_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return False  # not published; nothing to route
+        raise
+    rules = getattr(ingress.spec, "rules", None) or []
+    if not rules:
+        return False
+    paths = getattr(rules[0].http, "paths", None) or []
+    have = getattr(ingress.metadata, "annotations", None) or {}
+    missing_annotations = {k: v for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
+                           if have.get(k) != v}
+    if any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH
+           for p in paths) and not missing_annotations:
+        return False
+    if missing_annotations:
+        # Without proxy-body-size a push dies on nginx's 1m default with a 413, so an
+        # Ingress that has the route but not the annotations is still a broken registry.
+        networking.patch_namespaced_ingress(
+            SERVICE_NAME, namespace, {"metadata": {"annotations": missing_annotations}})
+    if any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH for p in paths):
+        logger.info("Updated the %s Ingress annotations for registry uploads", SERVICE_NAME)
+        return True
+
+    # Rebuild the path list as plain dicts and put /v2 first: "/" is a Prefix rule that
+    # matches everything, so the registry rule has to be the more specific one.
+    existing = [{"path": p.path, "pathType": p.path_type,
+                 "backend": {"service": {
+                     "name": p.backend.service.name,
+                     "port": {"number": p.backend.service.port.number}}}}
+                for p in paths]
+    patch = {"spec": {"rules": [{
+        "host": rules[0].host,
+        "http": {"paths": [registry_deploy.registry_ingress_path(), *existing]},
+    }]}}
+    networking.patch_namespaced_ingress(SERVICE_NAME, namespace, patch)
+    logger.info("Added %s to the %s Ingress", registry_deploy.REGISTRY_INGRESS_PATH,
+                SERVICE_NAME)
+    return True
+
+
 def published_host(namespace="default", kube_context=None):
     """The bare hostname the Ingress publishes, or ``""``.
 
@@ -1074,8 +1141,17 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     _create_or_replace(
         lambda: apps.create_namespaced_deployment(namespace, deployment, dry_run=dr),
         lambda: apps.patch_namespaced_deployment(SERVICE_NAME, namespace, deployment, dry_run=dr))
-    # Service (tolerate existing; spec is stable)
-    _create_or_ok(lambda: core.create_namespaced_service(namespace, service, dry_run=dr))
+    # Service. Patched on conflict, not tolerated: its spec stopped being stable when the
+    # registry added a second port, and an untouched Service meant the Ingress' /v2 rule
+    # pointed at a port the Service did not publish -- nginx answered 503 while the
+    # registry itself was healthy inside the pod, which looks like a broken registry
+    # rather than a missing port. Only `ports` is patched, because clusterIP is immutable
+    # and a full replace would be rejected.
+    _create_or_replace(
+        lambda: core.create_namespaced_service(namespace, service, dry_run=dr),
+        lambda: core.patch_namespaced_service(
+            SERVICE_NAME, namespace, {"spec": {"ports": service["spec"]["ports"]}},
+            dry_run=dr))
 
     # Ingress, when one was asked for. Replaced rather than tolerated: unlike the
     # Service, its spec is exactly what the operator is changing when they re-run

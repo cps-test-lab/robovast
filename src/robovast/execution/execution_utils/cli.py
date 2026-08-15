@@ -1472,7 +1472,7 @@ def upgrade(namespace, kube_context):
         apply_controller_rbac
     from robovast.execution.cluster_execution.service_deploy import (
         deploy_service, published_host, read_service_config_from_cluster,
-        wait_for_service_ready)
+        reconcile_registry_ingress_path, wait_for_service_ready)
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1489,6 +1489,8 @@ def upgrade(namespace, kube_context):
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+        if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
+            click.echo("  added the registry's /v2 route to the existing Ingress")
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
