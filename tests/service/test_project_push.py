@@ -155,6 +155,34 @@ def test_prune_keeps_files_still_present_locally(client, project):
     assert stats["pruned"] == 0
 
 
+def test_a_directory_that_is_not_there_is_refused(client, project, tmp_path):
+    """``rglob`` yields nothing for a missing path rather than raising, so the sync
+    reported a contented ``{"written": 0, "uploaded": 0}`` for a push that pushed
+    nothing at all."""
+    wid = _wid(client)
+    with pytest.raises(FileNotFoundError, match="no such directory"):
+        sync_directory_to_workspace(client, wid, tmp_path / "typo")
+
+
+def test_prune_against_a_missing_directory_deletes_nothing(client, project, tmp_path):
+    """The reason the check above is worth having.
+
+    "No local files" and "the path is wrong" were the same state, so prune concluded
+    the workspace should be empty and deleted every file in it. A mistyped path was
+    enough -- and against a remote service the directory is read on the service host,
+    where a path from the caller's machine is *expected* to be absent.
+    """
+    wid = _wid(client)
+    sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+    before = _paths(client, wid)
+    assert before, "fixture must have uploaded something for this to mean anything"
+
+    with pytest.raises(FileNotFoundError):
+        sync_directory_to_workspace(client, wid, tmp_path / "typo", prune=True)
+
+    assert _paths(client, wid) == before
+
+
 # -- id-or-name resolution --------------------------------------------------
 #
 # The resolver only calls ``client.list_workspaces()``, so a tiny stub exercises

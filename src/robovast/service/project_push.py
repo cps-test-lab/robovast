@@ -137,8 +137,23 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     files absent from *directory* are deleted (full mirror). *echo* (e.g.
     ``click.echo``) receives one ``+``/``-`` line per change. Returns
     ``{"written", "uploaded", "pruned"}`` counts.
+
+    Raises:
+        FileNotFoundError: *directory* does not exist. Checked rather than left to
+            ``rglob``, which yields nothing for a missing path: the sync then reported a
+            cheerful ``{"written": 0, "uploaded": 0}`` for a push that pushed nothing,
+            and with *prune* it went further and deleted every file in the workspace,
+            because "no local files" and "the path is wrong" were indistinguishable. A
+            typo was enough. This is the likeliest mistake of all against a remote
+            service, where the directory is read on the service host and a path from the
+            caller's machine is *expected* to be absent.
     """
     root = Path(directory).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"no such directory on the service host: {root}. This path is read where "
+            "the service runs, not where you are -- if the service is remote, put the "
+            "project in a workspace instead (vast workspace init <dir>).")
     stats = {"written": 0, "uploaded": 0, "pruned": 0}
     local_rels: set[str] = set()
     for path in sorted(root.rglob("*")):
