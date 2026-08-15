@@ -2,21 +2,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """Registry config wiring in `vast exec cluster setup` (service_deploy).
 
-Registry details are delivered to the in-cluster service via the same envFrom
-credential-Secret pattern as share/ntfy; auth (when given) becomes a
-dockerconfigjson Secret used for push (build Job) and pull (campaign pods).
+Two registries meet in this config and used to be one, which is what these tests pin
+apart:
+
+* the **build target** is the registry running in the service pod, so its prefix is
+  *derived* from the service's own Ingress host and cannot be configured to somewhere the
+  cluster could not pull from;
+* the **pull credential** is configured, because only the operator knows the credentials
+  for a private registry a ``.vast`` happens to name.
+
+Delivered to the in-cluster service through the same envFrom credential-Secret pattern as
+share/ntfy.
 """
 
 import json
 
 import pytest
 
+from robovast.execution.cluster_execution import registry_deploy
 from robovast.execution.cluster_execution import service_deploy as sd
 
 _REG_VARS = ["ROBOVAST_REGISTRY_PREFIX", "ROBOVAST_REGISTRY_SERVER",
              "ROBOVAST_REGISTRY_USERNAME", "ROBOVAST_REGISTRY_PASSWORD",
              "ROBOVAST_BASE_EXPERIMENT_IMAGE", "ROBOVAST_REGISTRY_CA_FILE",
-             "ROBOVAST_REGISTRY_INSECURE"]
+             "ROBOVAST_REGISTRY_INSECURE", "ROBOVAST_EXTRA_HOST_ALIASES"]
+
+HOST = "robovast.example.org"
 
 
 @pytest.fixture(autouse=True)
@@ -25,53 +36,68 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(v, raising=False)
 
 
-def test_disabled_by_default():
-    assert sd._registry_env_from_host() is None
+def test_nothing_configured_and_no_ingress_means_no_registry_config():
+    assert sd._registry_env() is None
     assert sd._registry_dockerconfig_manifest("default") is None
     assert sd.REGISTRY_CONFIG_SECRET_NAME in [n for n, _ in sd.ENV_SECRET_SOURCES]
 
 
-def test_insecure_registry_prefix_only(monkeypatch):
-    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "registry.default.svc:5000/rv")
-    env = sd._registry_env_from_host()
-    assert env == {"ROBOVAST_REGISTRY_PREFIX": "registry.default.svc:5000/rv"}
-    # No auth → no push secret referenced, no dockerconfigjson Secret.
-    assert "ROBOVAST_REGISTRY_PUSH_SECRET" not in env
-    assert sd._registry_dockerconfig_manifest("default") is None
+def test_the_build_prefix_is_the_ingress_host():
+    """No ``ROBOVAST_REGISTRY_PREFIX`` anywhere -- the published host *is* the prefix."""
+    env = sd._registry_env(HOST)
+    assert env == {"ROBOVAST_REGISTRY_PREFIX": HOST}
 
 
-def test_external_registry_with_auth(monkeypatch):
-    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "ghcr.io/org")
-    monkeypatch.setenv("ROBOVAST_REGISTRY_SERVER", "ghcr.io")
+def test_a_configured_prefix_cannot_override_the_in_pod_registry(monkeypatch):
+    """The old escape hatch is gone on purpose.
+
+    Pointing builds at an external registry is what required push credentials and made a
+    registry a site prerequisite. The prefix now follows the Ingress, so a stale
+    ``ROBOVAST_REGISTRY_PREFIX`` in someone's .env cannot quietly redirect pushes.
+    """
+    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "ghcr.io/someone-else")
+    assert sd._registry_env(HOST)["ROBOVAST_REGISTRY_PREFIX"] == HOST
+
+
+def test_without_an_ingress_there_is_no_build_prefix():
+    """An unpublished service has no registry the node could pull from.
+
+    Better to have no prefix -- builds then refuse -- than one that produces refs which
+    fail at pull time, after the build has already been paid for.
+    """
+    monkeypatch_free = sd._registry_env("")
+    assert monkeypatch_free is None or "ROBOVAST_REGISTRY_PREFIX" not in monkeypatch_free
+
+
+def test_credentials_wire_a_pull_secret_but_never_a_push_one(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_REGISTRY_SERVER", "harbor.example.org")
     monkeypatch.setenv("ROBOVAST_REGISTRY_USERNAME", "u")
     monkeypatch.setenv("ROBOVAST_REGISTRY_PASSWORD", "p")
-    env = sd._registry_env_from_host()
-    assert env["ROBOVAST_REGISTRY_PUSH_SECRET"] == sd.REGISTRY_PUSH_SECRET_NAME
+    env = sd._registry_env(HOST)
     assert env["ROBOVAST_REGISTRY_PULL_SECRET"] == sd.REGISTRY_PUSH_SECRET_NAME
+    assert "ROBOVAST_REGISTRY_PUSH_SECRET" not in env, (
+        "the in-pod registry is open; a push credential would be a leftover")
 
     secret = sd._registry_dockerconfig_manifest("default")
     assert secret["type"] == "kubernetes.io/dockerconfigjson"
-    assert secret["metadata"]["name"] == sd.REGISTRY_PUSH_SECRET_NAME
     auths = json.loads(secret["stringData"][".dockerconfigjson"])["auths"]
-    assert "ghcr.io" in auths
+    assert "harbor.example.org" in auths
 
 
-def test_registry_ca_configmap(monkeypatch, tmp_path):
-    ca = tmp_path / "ca.pem"
-    ca.write_text("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n")
-    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "harbor.example/robovast")
-    monkeypatch.setenv("ROBOVAST_REGISTRY_CA_FILE", str(ca))
-    # env references the CA ConfigMap so the service's get_registry_config picks it up
-    env = sd._registry_env_from_host()
-    assert env["ROBOVAST_REGISTRY_CA_CONFIGMAP"] == sd.REGISTRY_CA_CONFIGMAP_NAME
-    # and the ConfigMap carries the CA under key ca.pem
-    cm = sd._registry_ca_manifest("default")
-    assert cm["kind"] == "ConfigMap"
-    assert cm["metadata"]["name"] == sd.REGISTRY_CA_CONFIGMAP_NAME
-    assert "BEGIN CERTIFICATE" in cm["data"]["ca.pem"]
+def test_a_base_experiment_image_still_passes_through(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_BASE_EXPERIMENT_IMAGE", "ghcr.io/org/base:latest")
+    assert sd._registry_env(HOST)["ROBOVAST_BASE_EXPERIMENT_IMAGE"] == \
+        "ghcr.io/org/base:latest"
 
 
-def test_registry_insecure_passthrough(monkeypatch):
-    monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "reg.local:5000/rv")
-    monkeypatch.setenv("ROBOVAST_REGISTRY_INSECURE", "true")
-    assert sd._registry_env_from_host()["ROBOVAST_REGISTRY_INSECURE"] == "true"
+def test_host_aliases_still_pass_through(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_EXTRA_HOST_ALIASES", "a.example=10.0.0.1")
+    assert sd._registry_env(HOST)["ROBOVAST_EXTRA_HOST_ALIASES"] == "a.example=10.0.0.1"
+
+
+def test_the_registry_prefix_is_a_bare_host():
+    """A registry lives at the root of its host's /v2 namespace, so the ref carries no
+    path component -- ``<host>/<tag>:<hash>``."""
+    assert registry_deploy.registry_prefix("robovast.example.org") == "robovast.example.org"
+    assert registry_deploy.registry_prefix("") == ""
+    assert registry_deploy.registry_prefix(None) == ""

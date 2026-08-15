@@ -227,7 +227,11 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
     """The worker prints a stack trace for every exception it does not recognize, so a
     plain ValueError here made an unconfigured deployment read as a RoboVAST bug. It is
     bad input with an actionable message: the campaign fails carrying that message
-    alone."""
+    alone.
+
+    Reachable for one reason now that RoboVAST ships its own registry: that registry is
+    published on the service's Ingress, so a service with no Ingress still has nowhere a
+    node could pull a built image back from."""
     from robovast.common.errors import CampaignConfigError
     from robovast.execution.cluster_config.base_config import RegistryConfig
 
@@ -239,7 +243,7 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
                         lambda registry: RegistryConfig(registry_prefix=""))
     project, campaign_config = _project_needing_a_build(tmp_path)
 
-    with pytest.raises(CampaignConfigError, match="no container registry"):
+    with pytest.raises(CampaignConfigError, match="nowhere to push it"):
         cs._start_build_images(project, campaign_config)
     assert CampaignConfigError.include_traceback is False
 

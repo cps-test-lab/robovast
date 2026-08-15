@@ -1464,7 +1464,8 @@ def upgrade(namespace, kube_context, image):
     from robovast.execution.cluster_execution.cluster_setup import \
         apply_controller_rbac
     from robovast.execution.cluster_execution.service_deploy import (
-        deploy_service, read_service_config_from_cluster, wait_for_service_ready)
+        deploy_service, published_host, read_service_config_from_cluster,
+        wait_for_service_ready)
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1473,11 +1474,17 @@ def upgrade(namespace, kube_context, image):
             raise click.ClickException(
                 f"no robovast-service found in namespace {namespace!r}. "
                 "Run 'vast exec cluster setup <flavor>' first.")
+        # Recovered from the live Ingress, not remembered: an upgrade is run by whoever
+        # is upgrading, not necessarily by whoever set the cluster up. It doubles as the
+        # registry prefix, so passing it is what stops an upgrade from rebuilding the
+        # registry config without one and silently disabling in-cluster builds.
+        ingress_host = published_host(namespace, kube_context)
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         deploy_service(namespace=namespace, kube_context=kube_context, image=image,
-                       config_name=config_name, config_kwargs=config_kwargs)
+                       config_name=config_name, config_kwargs=config_kwargs,
+                       registry_host=ingress_host)
         wait_for_service_ready(namespace=namespace, kube_context=kube_context)
         click.echo("✓ upgraded and ready")
     except click.ClickException:

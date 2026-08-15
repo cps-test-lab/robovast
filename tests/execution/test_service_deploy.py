@@ -154,11 +154,18 @@ def test_share_and_ntfy_both_configured_carry_both_secretrefs(monkeypatch):
 
 
 def test_no_git_token_means_no_volume_or_mount():
+    """The registry's own volume is always there; the git one must not be.
+
+    Checked by name rather than by counting: the pod gained a second container and its
+    storage volume when the registry moved in, so "the pod has no volumes" stopped being
+    the way to say "no git token was configured".
+    """
     ms = sd.service_manifests(namespace="default", image="x")  # env cleared by fixture
     dep = next(m for m in ms if m["kind"] == "Deployment")
     pod = dep["spec"]["template"]["spec"]
-    assert "volumes" not in pod
-    assert "volumeMounts" not in pod["containers"][0]
+    assert "git-credentials" not in [v["name"] for v in pod.get("volumes", [])]
+    service_container = pod["containers"][0]
+    assert "volumeMounts" not in service_container
 
 
 def test_deployment_runs_vast_serve_on_service_port():

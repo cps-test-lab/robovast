@@ -67,3 +67,33 @@ def test_service_manifests_stamps_the_deployment_it_builds():
     manifests = service_deploy.service_manifests(namespace="default", image="img:latest")
     deployment = next(m for m in manifests if m["kind"] == "Deployment")
     assert _annotations(deployment).get(service_deploy.RESTART_ANNOTATION)
+
+
+def test_an_upgrade_keeps_the_build_registry_without_recreating_the_ingress():
+    """``registry_host`` and ``ingress_host`` are separate on purpose.
+
+    The registry's prefix is the published host, so an upgrade has to supply it or it
+    would rebuild the registry config without one and quietly leave the deployment unable
+    to build. But it cannot supply ``ingress_host``: that also *creates* the Ingress, and
+    an upgrade has none of the TLS arguments the Ingress was made with, so
+    ``validate_ingress_options`` would refuse and the upgrade would fail outright.
+    """
+    manifests = service_deploy.service_manifests(
+        namespace="default", image="img:latest", auth_token="t",
+        registry_host="robovast.example.org")
+
+    assert not [m for m in manifests if m["kind"] == "Ingress"], (
+        "an upgrade must leave the existing Ingress alone")
+    config = next(m for m in manifests if m["kind"] == "Secret"
+                  and m["metadata"]["name"] == service_deploy.REGISTRY_CONFIG_SECRET_NAME)
+    assert config["stringData"]["ROBOVAST_REGISTRY_PREFIX"] == "robovast.example.org"
+
+
+def test_setup_still_gets_the_prefix_from_ingress_host():
+    """registry_host defaults to ingress_host, so setup passes one thing, not two."""
+    manifests = service_deploy.service_manifests(
+        namespace="default", image="img:latest", auth_token="t",
+        ingress_host="robovast.example.org", issuer="ca")
+    config = next(m for m in manifests if m["kind"] == "Secret"
+                  and m["metadata"]["name"] == service_deploy.REGISTRY_CONFIG_SECRET_NAME)
+    assert config["stringData"]["ROBOVAST_REGISTRY_PREFIX"] == "robovast.example.org"

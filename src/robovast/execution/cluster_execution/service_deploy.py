@@ -167,7 +167,9 @@ def _service_rbac_manifests(namespace):
 
 
 def _deployment_manifest(namespace, image, env=None, git_secret=False,
-                         env_secret_names=(), pull_secret="", restarted_at=None):
+                         env_secret_names=(), pull_secret="", restarted_at=None,
+                         registry_storage_path="", registry_storage_class="",
+                         registry_node=""):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -194,7 +196,14 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     *restarted_at* is the :data:`RESTART_ANNOTATION` value; it defaults to now, which is
     what makes every deploy roll. Pass a fixed value to compare two manifests without the
     timestamp being the difference.
+
+    The ``registry_*`` arguments configure the container registry that runs beside the
+    service (see :mod:`.registry_deploy`) — it is a second container in this pod rather
+    than its own Deployment, so that one restart covers both and the Ingress can reach it
+    on the same Service.
     """
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
     if restarted_at is None:
         restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     container = {
@@ -216,17 +225,22 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         container["envFrom"] = [{"secretRef": {"name": n}} for n in env_secret_names]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
-        "containers": [container],
+        "containers": [container, registry_deploy.registry_container()],
+        "volumes": [registry_deploy.registry_volume(
+            registry_storage_path, registry_storage_class)],
     }
+    node_selector = registry_deploy.registry_node_selector(registry_node)
+    if node_selector:
+        pod_spec["nodeSelector"] = node_selector
     if pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": pull_secret}]
     if git_secret:
         container["volumeMounts"] = [{
             "name": "git-credentials", "mountPath": GIT_TOKEN_MOUNT_DIR,
             "readOnly": True}]
-        pod_spec["volumes"] = [{
+        pod_spec["volumes"].append({
             "name": "git-credentials",
-            "secret": {"secretName": GIT_SECRET_NAME, "defaultMode": 0o400}}]
+            "secret": {"secretName": GIT_SECRET_NAME, "defaultMode": 0o400}})
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -257,6 +271,8 @@ def _service_manifest(namespace, ingress_class=""):
     ``nginx`` is the tested path (rke2 ships ingress-nginx); ``gce`` is supported here
     but has not been exercised on a real GKE cluster.
     """
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
     annotations = {}
     if ingress_class == "gce":
         annotations["cloud.google.com/neg"] = '{"ingress": true}'
@@ -271,7 +287,14 @@ def _service_manifest(namespace, ingress_class=""):
         "spec": {
             "type": "ClusterIP",
             "selector": {"app": SERVICE_NAME},
-            "ports": [{"port": SERVICE_PORT, "targetPort": SERVICE_PORT, "name": "http"}],
+            # Two ports on one Service because the registry is a container in the same
+            # pod: the Ingress routes "/" to http and "/v2" to registry, so both halves
+            # answer on one hostname with one certificate.
+            "ports": [
+                {"port": SERVICE_PORT, "targetPort": SERVICE_PORT, "name": "http"},
+                {"port": registry_deploy.REGISTRY_PORT,
+                 "targetPort": registry_deploy.REGISTRY_PORT, "name": "registry"},
+            ],
         },
     }
 
@@ -393,15 +416,24 @@ def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
     annotations = {}
     if issuer:
         annotations["cert-manager.io/cluster-issuer"] = issuer
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
     spec = {
         "rules": [{
             "host": host,
-            "http": {"paths": [{
-                "path": "/",
-                "pathType": "Prefix",
-                "backend": {"service": {"name": SERVICE_NAME,
-                                        "port": {"number": SERVICE_PORT}}},
-            }]},
+            # `/v2` first: the service's own UI is mounted at `/`, which matches
+            # everything, so the registry rule has to be the more specific one. nginx
+            # picks by path before either backend sees the request, and the service
+            # registers no `/v2` route of its own, so the two do not collide.
+            "http": {"paths": [
+                registry_deploy.registry_ingress_path(),
+                {
+                    "path": "/",
+                    "pathType": "Prefix",
+                    "backend": {"service": {"name": SERVICE_NAME,
+                                            "port": {"number": SERVICE_PORT}}},
+                },
+            ]},
         }],
     }
     if ingress_class:
@@ -541,48 +573,55 @@ def _ntfy_env_from_host():
 #: default base image. Read back by ``BaseConfig.get_registry_config()``.
 REGISTRY_CONFIG_SECRET_NAME = "robovast-registry-config"
 
-#: dockerconfigjson Secret holding registry push/pull credentials, created only
+#: dockerconfigjson Secret holding credentials for an **external** registry, created
 #: when ``ROBOVAST_REGISTRY_SERVER``/``_USERNAME``/``_PASSWORD`` are set at setup.
-#: Mounted into the build Job (``docker push``) and referenced as an
-#: ``imagePullSecret`` on campaign pods. An anonymous/insecure registry (e.g. a
-#: cluster-internal one) needs no such Secret — the config Secret then names none.
+#:
+#: Purely a *pull* credential now. Experiment images are built into the registry that
+#: runs in this pod (:mod:`.registry_deploy`), which is open, so nothing needs a push
+#: credential any more. What still needs one is a ``.vast`` naming an image in a private
+#: registry — the campaign pods, the aux/exec pods and the service's own image all pull
+#: through this Secret. The old name is kept so an existing deployment's Secret is
+#: replaced rather than orphaned beside a new one.
 REGISTRY_PUSH_SECRET_NAME = "robovast-registry-push"
 
 
-def _registry_env_from_host():
-    """Resolve the registry config env from the host, or ``None`` when unset.
+def _registry_env(ingress_host=""):
+    """The registry config the in-pod service reads back from its own env.
 
-    Reads ``ROBOVAST_REGISTRY_PREFIX`` (required to enable in-cluster builds) plus
-    the optional default base image. When registry auth is also provided (see
-    :func:`_registry_dockerconfig_manifest`) the push/pull Secret names are wired so
-    the build Job and campaign pods use it.
+    Two unrelated registries meet here, and conflating them was the old bug:
+
+    * the **build target** — the registry in this pod. Its prefix is just the service's
+      own Ingress host (see :func:`registry_deploy.registry_prefix`), so it is derived,
+      never configured; a site does not get to point builds somewhere the cluster cannot
+      pull from. Without an Ingress there is no reachable registry and no prefix, which
+      is the honest answer rather than a ref that fails at pull time.
+    * the **pull credential** — for images a ``.vast`` names in someone else's private
+      registry. Configured, because only the operator knows those credentials.
+
+    Returns ``None`` when neither applies, which drops the Secret from the manifest set.
     """
     import os
-    prefix = os.environ.get("ROBOVAST_REGISTRY_PREFIX", "").strip()
-    if not prefix:
-        return None
-    env = {"ROBOVAST_REGISTRY_PREFIX": prefix}
+
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    env = {}
+    prefix = registry_deploy.registry_prefix(ingress_host)
+    if prefix:
+        env["ROBOVAST_REGISTRY_PREFIX"] = prefix
     base = os.environ.get("ROBOVAST_BASE_EXPERIMENT_IMAGE", "").strip()
     if base:
         env["ROBOVAST_BASE_EXPERIMENT_IMAGE"] = base
     if (os.environ.get("ROBOVAST_REGISTRY_USERNAME", "").strip()
             and os.environ.get("ROBOVAST_REGISTRY_PASSWORD", "").strip()):
-        env["ROBOVAST_REGISTRY_PUSH_SECRET"] = REGISTRY_PUSH_SECRET_NAME
         env["ROBOVAST_REGISTRY_PULL_SECRET"] = REGISTRY_PUSH_SECRET_NAME
-    insecure = os.environ.get("ROBOVAST_REGISTRY_INSECURE", "").strip()
-    if insecure:
-        env["ROBOVAST_REGISTRY_INSECURE"] = insecure
-    # A registry CA file → a ConfigMap the build Job mounts so BuildKit trusts a
-    # self-signed / private-CA registry (see _registry_ca_manifest).
-    if os.environ.get("ROBOVAST_REGISTRY_CA_FILE", "").strip():
-        env["ROBOVAST_REGISTRY_CA_CONFIGMAP"] = REGISTRY_CA_CONFIGMAP_NAME
-    # Carried through so a deployed (in-pod) service resolves an unresolvable registry
-    # the same way a local one does — the aliases are read from the service's env when
-    # it builds a Job spec (BaseConfig.get_host_aliases).
+    # Carried through so a deployed (in-pod) service resolves an unresolvable host the
+    # same way a local one does — read from the service's env when it builds a Job spec
+    # (BaseConfig.get_host_aliases). Note this never affects an image *pull*, which the
+    # node's runtime performs.
     aliases = os.environ.get("ROBOVAST_EXTRA_HOST_ALIASES", "").strip()
     if aliases:
         env["ROBOVAST_EXTRA_HOST_ALIASES"] = aliases
-    return env
+    return env or None
 
 
 #: ConfigMap (key ``ca.pem``) holding the registry CA, created when
@@ -654,15 +693,19 @@ def _env_secret_manifest(namespace, name, env):
 
 #: Env-based credential sources injected into the service pod as Secrets pulled in via
 #: ``envFrom`` (see :func:`_deployment_manifest`). Each is ``(secret_name, resolver)``
-#: where the resolver reads the host env / ``.env`` and returns the pod env dict, or
-#: ``None`` when that credential is not configured. Adding another env-based credential
-#: is a one-line registration here — the deploy, redeploy and teardown paths all iterate
-#: this list. (The git token is deliberately NOT here: it is a read-only file mount, not
-#: env, so it is never inherited by child processes.)
+#: where the resolver returns the pod env dict, or ``None`` when that credential is not
+#: configured. Adding another env-based credential is a one-line registration here — the
+#: deploy, redeploy and teardown paths all iterate this list. (The git token is
+#: deliberately NOT here: it is a read-only file mount, not env, so it is never inherited
+#: by child processes.)
+#:
+#: Resolvers take ``ingress_host``. Only the registry one uses it — the build registry's
+#: prefix *is* the service's published host — but they share a signature so the deploy
+#: loop stays a loop rather than a special case per entry.
 ENV_SECRET_SOURCES = (
-    (SHARE_SECRET_NAME, _share_env_from_host),
-    (NTFY_SECRET_NAME, _ntfy_env_from_host),
-    (REGISTRY_CONFIG_SECRET_NAME, _registry_env_from_host),
+    (SHARE_SECRET_NAME, lambda ingress_host="": _share_env_from_host()),
+    (NTFY_SECRET_NAME, lambda ingress_host="": _ntfy_env_from_host()),
+    (REGISTRY_CONFIG_SECRET_NAME, _registry_env),
 )
 
 #: The shared secret every client authenticates with. Deliberately **not** in
@@ -732,6 +775,18 @@ def published_url(namespace="default", kube_context=None):
     return f"{'https' if secure else 'http'}://{host}"
 
 
+def published_host(namespace="default", kube_context=None):
+    """The bare hostname the Ingress publishes, or ``""``.
+
+    Read back from the cluster for the same reason as :func:`published_url`, and needed
+    separately because it doubles as the container registry's prefix: an ``upgrade``
+    knows nothing about the host it was originally set up with, and rebuilding the
+    registry config without it would quietly leave the deployment unable to build.
+    """
+    url = published_url(namespace, kube_context)
+    return url.split("://", 1)[-1] if url else ""
+
+
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
@@ -757,13 +812,26 @@ def service_manifests(namespace="default", image=None, env=None,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
-                      tls_secret="", issuer="", insecure_http=False):
+                      tls_secret="", issuer="", insecure_http=False,
+                      registry_host="", registry_storage_path="",
+                      registry_storage_class="", registry_node=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
     resolved by :func:`deploy_service`, which can see whether that Secret already exists
     in the namespace. Passing it in keeps this function pure.
+
+    The ``registry_*`` arguments configure the in-pod container registry
+    (:mod:`.registry_deploy`).
+
+    *registry_host* is the published host the registry answers on — the build prefix.
+    Separate from *ingress_host*, which additionally *creates* the Ingress and so refuses
+    a combination without TLS. An ``upgrade`` has to supply the first without triggering
+    the second: it knows the host only by reading it back from the live Ingress, and has
+    none of the TLS arguments that Ingress was created with. Defaults to *ingress_host*,
+    which is what setup passes.
     """
+    registry_host = registry_host or ingress_host
     from robovast.common.execution import resolve_controller_image
     image = image or resolve_controller_image()
     if env is None:
@@ -793,7 +861,7 @@ def service_manifests(namespace="default", image=None, env=None,
     env_secret_names = []
     for name, resolver in ENV_SECRET_SOURCES:
         resolved = share_env if (name == SHARE_SECRET_NAME and share_env is not None) \
-            else resolver()
+            else resolver(registry_host)
         if resolved:
             extra.append(_env_secret_manifest(namespace, name, resolved))
             env_secret_names.append(name)
@@ -819,6 +887,11 @@ def service_manifests(namespace="default", image=None, env=None,
     if registry_ca:
         extra.append(registry_ca)
 
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+    registry_pvc = registry_deploy.registry_pvc_manifest(namespace, registry_storage_class)
+    if registry_pvc:
+        extra.append(registry_pvc)
+
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
                                 insecure=insecure_http)
@@ -827,7 +900,10 @@ def service_manifests(namespace="default", image=None, env=None,
         *extra,
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
                              env_secret_names=env_secret_names,
-                             pull_secret=pull_secret),
+                             pull_secret=pull_secret,
+                             registry_storage_path=registry_storage_path,
+                             registry_storage_class=registry_storage_class,
+                             registry_node=registry_node),
         _service_manifest(namespace, ingress_class),
         *([ingress] if ingress else []),
     ]
@@ -836,7 +912,9 @@ def service_manifests(namespace="default", image=None, env=None,
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
-                   tls_secret="", issuer="", insecure_http=False):
+                   tls_secret="", issuer="", insecure_http=False,
+                   registry_host="", registry_storage_path="",
+                   registry_storage_class="", registry_node=""):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
     ``dry_run=True`` performs a **server-side** dry run (validates against the
@@ -885,7 +963,10 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         kube_context=kube_context, pull_secret=pull_secret,
         auth_token=auth_token, ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
-        insecure_http=insecure_http)
+        insecure_http=insecure_http, registry_host=registry_host,
+        registry_storage_path=registry_storage_path,
+        registry_storage_class=registry_storage_class,
+        registry_node=registry_node)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]

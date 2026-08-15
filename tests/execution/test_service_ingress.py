@@ -70,15 +70,32 @@ def test_an_existing_tls_secret_is_used_as_given():
 
 
 def test_the_ingress_routes_everything_to_the_service():
-    """One backend: the SPA, the REST API and /mcp are all on the same port."""
+    """One backend for the app: the SPA, the REST API and /mcp share a port."""
     ingress = _ingress(issuer="ca", ingress_class="nginx")
     rule = ingress["spec"]["rules"][0]
     assert rule["host"] == "robovast.example.org"
-    path = rule["http"]["paths"][0]
-    assert (path["path"], path["pathType"]) == ("/", "Prefix")
+    path = next(p for p in rule["http"]["paths"] if p["path"] == "/")
+    assert path["pathType"] == "Prefix"
     assert path["backend"]["service"]["name"] == SERVICE_NAME
     assert path["backend"]["service"]["port"]["number"] == SERVICE_PORT
     assert ingress["spec"]["ingressClassName"] == "nginx"
+
+
+def test_the_registry_is_published_ahead_of_the_catch_all():
+    """``/v2`` must win over ``/``, which matches everything.
+
+    The service mounts its SPA at ``/``, so if the registry rule came second a
+    ``docker pull`` would be answered with the web UI. Order is the whole guarantee
+    here -- both rules are Prefix, and nginx resolves by specificity, but relying on
+    that silently is what this pins.
+    """
+    from robovast.execution.cluster_execution import registry_deploy
+
+    paths = _ingress(issuer="ca", ingress_class="nginx")["spec"]["rules"][0]["http"]["paths"]
+    assert [p["path"] for p in paths] == [registry_deploy.REGISTRY_INGRESS_PATH, "/"]
+    registry = paths[0]
+    assert registry["backend"]["service"]["name"] == SERVICE_NAME
+    assert registry["backend"]["service"]["port"]["number"] == registry_deploy.REGISTRY_PORT
 
 
 def test_deploy_service_forwards_the_ingress_options(monkeypatch):
