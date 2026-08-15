@@ -193,8 +193,24 @@ updated deliberately.
    vast exec cluster upgrade
 
 That rolls the Deployment onto the resolved image, reconciles RBAC, and waits for
-the pod to be Ready before saying anything. **Secrets are untouched**, so nobody is
-logged out by a version bump.
+the pod to be Ready before saying anything. **The access token is preserved**, so
+nobody is logged out by a version bump.
+
+Run it from the checkout whose ``.env`` describes this deployment: like every ``vast``
+command it reads ``./.env`` from the current directory only. That ``.env`` is also how
+the image is chosen — there is no ``--image`` flag, because a one-shot override is just
+``ROBOVAST_CONTROLLER_IMAGE=repo@sha256:… vast exec cluster upgrade`` (a real environment
+variable beats a ``.env`` line), and a pin that should last belongs in the file.
+
+**It always restarts the pod**, even when nothing looks different, and that is
+deliberate. An image ref that is a floating tag, or a change confined to the Secrets,
+leaves the Deployment spec byte-identical; Kubernetes then creates no new ReplicaSet,
+the readiness wait passes immediately against the *old* pod, and the command reports
+success while nothing rolled. ``imagePullPolicy: Always`` does not rescue that — it
+governs a container that is starting, and none was. The restart is also the only thing
+that makes a changed Secret take effect: the pod reads them through ``envFrom`` once, at
+container start. The cost is a few seconds of API downtime, during which open MCP
+connections and log streams are dropped; campaigns run as their own Jobs and keep going.
 
 RBAC reconciliation is not decoration. The ``/usage`` endpoint (cluster CPU/memory,
 shown in the web UI top bar and by the ``resource_usage`` MCP tool) once needed a new
@@ -212,12 +228,14 @@ The three lifecycle verbs are deliberately distinct:
    * - Command
      - What it changes
    * - ``vast exec cluster upgrade``
-     - The image and RBAC. Secrets, including the access token, are left alone.
+     - The image, RBAC, and the credential Secrets it can rebuild from ``.env``
+       (git, share, ntfy, registry) — which is how a registry move or a rotated
+       password reaches the cluster. The **access token is preserved**, so nobody is
+       logged out.
    * - ``vast exec cluster setup --force``
-     - Additionally re-reads ``.env`` and **replaces every Secret**. This is how
-       credentials are rotated — and how everyone is logged out, so it is not what
-       you want for a version bump. ``--rotate-token`` issues a new access token
-       specifically.
+     - The same, plus it will re-mint the access token when asked
+       (``--rotate-token``) — which does log everyone out, so it is not what you
+       want for a version bump.
    * - ``vast exec cluster cleanup``
      - Removes the deployment entirely.
 

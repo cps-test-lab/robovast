@@ -36,6 +36,7 @@ service image (or layer the current wheel) before a real rollout — override wi
 ``ROBOVAST_CONTROLLER_IMAGE`` to point at a dev image.
 """
 
+import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,21 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "robovast-service"
 SERVICE_ACCOUNT = "robovast-service"
 SERVICE_PORT = 8800
+
+#: Pod-template annotation stamped on every deploy, so the Deployment spec this run
+#: submits always differs from the one already in the cluster and Kubernetes has to roll.
+#:
+#: Without it an upgrade that does not change the image *string* is a silent no-op: a
+#: re-pushed floating ``:latest``, or a change confined to the Secrets, patches a
+#: byte-identical spec, no new ReplicaSet is created, and ``wait_for_service_ready``
+#: then sees the OLD pod — still Ready — and reports "upgraded and ready" while nothing
+#: rolled. ``imagePullPolicy: Always`` does not save it: that governs a container that is
+#: *starting*, and no container starts. It matters most for the env Secrets, which the
+#: pod reads through ``envFrom`` exactly once, at container start.
+#:
+#: kubectl's own key rather than a private one: a hand-run ``kubectl rollout restart`` and
+#: an upgrade are the same kind of event, and nothing here needs to tell them apart.
+RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 
 
 def _service_rbac_manifests(namespace):
@@ -151,7 +167,7 @@ def _service_rbac_manifests(namespace):
 
 
 def _deployment_manifest(namespace, image, env=None, git_secret=False,
-                         env_secret_names=(), pull_secret=""):
+                         env_secret_names=(), pull_secret="", restarted_at=None):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -174,7 +190,13 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     controller image sits in a private registry deployed a service that could pull
     images for everyone except itself, and setup reported success while the pod sat in
     ImagePullBackOff.
+
+    *restarted_at* is the :data:`RESTART_ANNOTATION` value; it defaults to now, which is
+    what makes every deploy roll. Pass a fixed value to compare two manifests without the
+    timestamp being the difference.
     """
+    if restarted_at is None:
+        restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     container = {
         "name": SERVICE_NAME,
         "image": image,
@@ -214,7 +236,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
             "replicas": 1,
             "selector": {"matchLabels": {"app": SERVICE_NAME}},
             "template": {
-                "metadata": {"labels": {"app": SERVICE_NAME}},
+                "metadata": {"labels": {"app": SERVICE_NAME},
+                             "annotations": {RESTART_ANNOTATION: restarted_at}},
                 "spec": pod_spec,
             },
         },

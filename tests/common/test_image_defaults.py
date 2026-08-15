@@ -12,6 +12,7 @@ So these tests read ``.github/workflows/image.yml`` and check the two against ea
 other, rather than asserting a string against itself.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,14 @@ def test_no_dockerfile_hardcodes_a_download_architecture():
         f"Dockerfiles hard-code linux-amd64 downloads: {offenders} — use $TARGETARCH")
 
 
+#: Registry hosts a shipped example must never name. Matched as a pattern rather than a
+#: literal: the first offender was ``harbor.example.org``, and when that host was retired
+#: for ``harbor.example.org`` this test still passed while pointing at a dead name — it
+#: guarded one spelling instead of the property. Anything under the site's private domain
+#: is unreachable to someone who cloned the repo, whatever it is called this year.
+PRIVATE_REGISTRY_RE = re.compile(r"\bharbor\.example\.[a-z0-9.-]+", re.IGNORECASE)
+
+
 def test_no_shipped_example_pins_a_private_registry():
     """A shipped example must be runnable by anyone who clones the repo.
 
@@ -150,11 +159,11 @@ def test_no_shipped_example_pins_a_private_registry():
     only ran at one site.
     """
     examples = Path(__file__).resolve().parents[2] / "configs" / "examples"
-    offenders = [
-        path.relative_to(examples)
+    offenders = {
+        str(path.relative_to(examples)): sorted(set(found))
         for path in examples.rglob("*.vast")
-        if "harbor.example.org" in path.read_text()
-    ]
+        if (found := PRIVATE_REGISTRY_RE.findall(path.read_text()))
+    }
     assert not offenders, f"examples pin an unreachable private registry: {offenders}"
 
 

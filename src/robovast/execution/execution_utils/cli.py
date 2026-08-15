@@ -1434,19 +1434,30 @@ def upgrade(namespace, kube_context, image):
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
     pod to be Ready before reporting anything.
 
+    Always restarts the pod, even when nothing appears to have changed. That is the
+    point: an image ref that is a floating tag, or a change confined to the Secrets,
+    leaves the Deployment spec byte-identical, and Kubernetes then rolls nothing while
+    this command reports success. It also makes the restart the *only* way the env
+    Secrets are re-read -- the pod loads them through ``envFrom`` at container start and
+    never again. The cost is a few seconds during which the API is unavailable.
+
     RBAC reconciliation is not decoration: a version needing a permission the last one
     did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
+    Reads ``./.env`` from the current directory, like every ``vast`` command, so run it
+    from the checkout whose ``.env`` describes this deployment. Elsewhere the registry
+    and image variables are simply unset and the deployed values are kept.
+
     Distinct from ``setup --force``, deliberately:
 
     \b
-      upgrade        the image and RBAC. Secrets, including the access token,
-                     are left exactly as they are.
-      setup --force  additionally re-reads .env and replaces every Secret. That is
-                     how credentials are rotated -- and how everyone gets logged
-                     out, so it is not what you want for a version bump.
+      upgrade        the image, RBAC, and the credential Secrets it can rebuild
+                     from the environment (git, share, ntfy, registry). The access
+                     token is preserved, so nobody is logged out.
+      setup --force  additionally re-mints the access token when asked
+                     (--rotate-token), which does log everyone out.
 
     Campaign data lives in the object store and survives both.
     """
