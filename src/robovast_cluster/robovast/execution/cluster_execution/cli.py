@@ -1071,7 +1071,7 @@ def upgrade(namespace, kube_context):
         apply_controller_rbac
     from .service_deploy import (
         deploy_service, published_host, read_service_config_from_cluster,
-        reconcile_registry_ingress_path, running_image_digest,
+        reconcile_registry_ingress_path, running_image_digest, wait_for_rollout,
         wait_for_service_ready)
 
     try:
@@ -1099,11 +1099,19 @@ def upgrade(namespace, kube_context):
         # With a floating tag the Deployment spec is byte-identical either way, so this
         # is the only thing distinguishing "rolled onto new code" from "restarted the
         # same image" -- the question every upgrade actually asks.
-        after = running_image_digest(namespace, kube_context)
-        if before and after and before != after:
-            click.echo(f"  image {before[:19]} -> {after[:19]}")
-        elif after:
-            click.echo(f"  image unchanged: {after[:19]}")
+        #
+        # Only once the rollout has converged, though: readiness is satisfied by the
+        # *old* pod for the whole of a rolling update, and reading there reported
+        # "unchanged" across a real image change.
+        if wait_for_rollout(namespace=namespace, kube_context=kube_context):
+            after = running_image_digest(namespace, kube_context)
+            if before and after and before != after:
+                click.echo(f"  image {before[:19]} -> {after[:19]}")
+            elif after:
+                click.echo(f"  image unchanged: {after[:19]}")
+        else:
+            click.echo("  (the rollout had not settled; check "
+                       f"'kubectl -n {namespace} rollout status deploy/robovast-service')")
         click.echo("✓ upgraded and ready")
     except click.ClickException:
         raise

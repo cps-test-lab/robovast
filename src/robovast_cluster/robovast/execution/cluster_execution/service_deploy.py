@@ -361,6 +361,42 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
         f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
 
 
+def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0) -> bool:
+    """Block until the Deployment's *new* pods are the ones running, or give up quietly.
+
+    ``wait_for_service_ready`` returns as soon as one replica is Ready -- which the
+    **old** pod satisfies for the whole of a rolling update. Anything reading the cluster
+    right after it can therefore be looking at the generation being replaced. That is
+    exactly what made ``upgrade`` report "image unchanged" across a genuine image change:
+    it read the outgoing pod both times.
+
+    Convergence is the Deployment's own account of it: the controller has observed this
+    spec (``observedGeneration``), every replica is on the new template
+    (``updatedReplicas``), and none of the old ones are left (``replicas``).
+
+    Returns True if it converged, False on timeout -- the caller is reporting, and a
+    report that has not settled should be silent rather than wrong.
+    """
+    import time  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    apps = client.AppsV1Api()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        dep = apps.read_namespaced_deployment_status(SERVICE_NAME, namespace)
+        want = dep.spec.replicas or 1
+        st = dep.status
+        if ((st.observed_generation or 0) >= (dep.metadata.generation or 0)
+                and (st.updated_replicas or 0) == want
+                and (st.replicas or 0) == want
+                and (st.available_replicas or 0) == want):
+            return True
+        time.sleep(1)
+    return False
+
+
 def running_image_digest(namespace="default", kube_context=None,
                          container=SERVICE_NAME) -> str:
     """The digest of the image the service pod is *running*, or "" if there is none.

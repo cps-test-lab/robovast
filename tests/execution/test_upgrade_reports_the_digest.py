@@ -81,12 +81,7 @@ def test_a_digestless_image_id_is_passed_through(pods):
     assert service_deploy.running_image_digest() == "docker://0123456789ab"
 
 
-@pytest.mark.parametrize("before,after,expected", [
-    ("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:bbbbbbbbbbbbbbbbbbbb", "->"),
-    ("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:aaaaaaaaaaaaaaaaaaaa", "unchanged"),
-])
-def test_upgrade_says_whether_the_bytes_changed(before, after, expected):
-    """The whole point: `:latest` in .env, and the output still distinguishes the two."""
+def _run_upgrade(before, after, converged=True):
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution.cli import cluster
@@ -99,11 +94,41 @@ def test_upgrade_says_whether_the_bytes_changed(before, after, expected):
             reconcile_registry_ingress_path=MagicMock(return_value=False),
             deploy_service=MagicMock(),
             wait_for_service_ready=MagicMock(),
+            wait_for_rollout=MagicMock(return_value=converged),
             running_image_digest=MagicMock(side_effect=lambda *a, **k: next(digests))), \
             patch("robovast.execution.cluster_execution.cluster_setup."
                   "apply_controller_rbac", MagicMock()):
-        result = CliRunner().invoke(cluster, ["upgrade", "-n", "default"])
+        return CliRunner().invoke(cluster, ["upgrade", "-n", "default"])
+
+
+@pytest.mark.parametrize("before,after,expected", [
+    ("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:bbbbbbbbbbbbbbbbbbbb", "->"),
+    ("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:aaaaaaaaaaaaaaaaaaaa", "unchanged"),
+])
+def test_upgrade_says_whether_the_bytes_changed(before, after, expected):
+    """The whole point: `:latest` in .env, and the output still distinguishes the two."""
+    result = _run_upgrade(before, after)
 
     assert result.exit_code == 0, result.output
     assert expected in result.output, result.output
+    assert "✓ upgraded and ready" in result.output
+
+
+def test_the_digest_is_read_only_after_the_rollout_converges():
+    """The bug this shipped with.
+
+    `wait_for_service_ready` returns as soon as one replica is Ready -- which the *old*
+    pod satisfies for the whole of a rolling update. Reading the digest there read the
+    outgoing pod both times, so a genuine image change reported "image unchanged", and
+    the operator had to exec into the pod to find out otherwise. A report that has not
+    settled must say so rather than assert something false.
+    """
+    result = _run_upgrade("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:bbbbbbbbbbbbbbbbbbbb",
+                          converged=False)
+
+    assert result.exit_code == 0, result.output
+    assert "unchanged" not in result.output
+    assert "->" not in result.output
+    assert "not settled" in result.output
+    assert "rollout status" in result.output, "must name how to check"
     assert "✓ upgraded and ready" in result.output
