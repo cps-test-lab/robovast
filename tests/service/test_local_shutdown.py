@@ -8,6 +8,9 @@ lifespan calls :meth:`LocalTransport.shutdown`, which requests a cooperative
 stop of every still-running campaign and joins the workers.
 """
 
+# pylint: disable=protected-access  # the tests seed _campaigns directly: the point is to
+# exercise shutdown against a campaign already in flight, which no public API can stage.
+
 import threading
 from unittest import mock
 
@@ -109,8 +112,16 @@ def test_web_ui_stop_route_requests_stop_and_kills_container():
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     assert entry.state.stopped.is_set()
-    run.assert_called_once()
-    assert run.call_args[0][0] == ["docker", "rm", "-f", "robovast"]
+    # Count the *docker* calls, not every subprocess the patch happens to see. Unlike the
+    # shutdown() tests above, this one wraps a whole application build, so anything
+    # constructing the app is inside the window -- and an unrelated import-time
+    # subprocess once made this fail, but only when nothing had imported that module
+    # earlier in the process. The claim here is "the container is removed exactly once",
+    # which is what this measures and a total call count does not.
+    removals = [c for c in run.call_args_list
+                if c.args and c.args[0][:1] == ["docker"]]
+    assert removals == [mock.call(["docker", "rm", "-f", "robovast"],
+                                  check=False, capture_output=True)], run.call_args_list
     entry.state.stopped.set()  # let the fake worker exit
 
 

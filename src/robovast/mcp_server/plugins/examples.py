@@ -36,6 +36,7 @@ The examples directory is resolved in this order:
    folder is found (works in development / editable installs).
 """
 
+import functools
 import logging
 import os
 import subprocess
@@ -122,32 +123,44 @@ def _extract_description(example_dir: Path, files: list[str]) -> str:
     return example_dir.name
 
 
-# -- Module-level example loading --------------------------------------------
+# -- Example loading, on first use --------------------------------------------
+#
+# Deliberately not at import time. Building the catalogue shells out to git and then
+# opens every example's README and .vast, and this module is imported whenever the MCP
+# is mounted -- so a `vast serve` paid for a catalogue nobody had asked for. It also made
+# the work observable from outside: a test that patched `subprocess.run` around anything
+# that mounts the app caught this module's `git ls-files` and failed on the extra call,
+# but only when nothing had imported the plugin earlier in the process. An import that
+# does I/O turns test outcomes into a function of import order.
 
-_examples_dir: Path | None = _find_examples_dir()
 
-#: name -> {"description": str, "files": [relpath, ...]}
-_examples: dict[str, dict] = {}
+@functools.lru_cache(maxsize=1)
+def _load_examples() -> tuple[Path | None, dict]:
+    """``(examples_dir, {name: {"description", "files"}})``, computed once per process."""
+    examples_dir = _find_examples_dir()
+    examples: dict[str, dict] = {}
+    if examples_dir is None:
+        return None, examples
 
-if _examples_dir is not None:
-    _grouped: dict[str, list[str]] = {}
-    for _rel in _git_tracked_files(_examples_dir):
-        _name = _rel.split("/", 1)[0]
-        if _name.startswith("_"):
+    grouped: dict[str, list[str]] = {}
+    for rel in _git_tracked_files(examples_dir):
+        name = rel.split("/", 1)[0]
+        if name.startswith("_"):
             continue
         # relpath within the example dir
-        _inner = _rel[len(_name) + 1 :]
-        if _inner:
-            _grouped.setdefault(_name, []).append(_inner)
+        inner = rel[len(name) + 1:]
+        if inner:
+            grouped.setdefault(name, []).append(inner)
 
-    for _name, _files in _grouped.items():
-        if not any(f.endswith(".vast") for f in _files):
+    for name, files in grouped.items():
+        if not any(f.endswith(".vast") for f in files):
             continue  # not an example (helper/support dir)
-        _files.sort()
-        _examples[_name] = {
-            "description": _extract_description(_examples_dir / _name, _files),
-            "files": _files,
+        files.sort()
+        examples[name] = {
+            "description": _extract_description(examples_dir / name, files),
+            "files": files,
         }
+    return examples_dir, examples
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -168,6 +181,7 @@ def get_example(name: str = "") -> dict:
         ``{path, content}`` — capped per file, with ``truncated``/``total_lines`` when
         it was cut, and a ``note`` instead of bytes for a binary. Or ``{error}``.
     """
+    _examples_dir, _examples = _load_examples()
     if not _examples:
         return {"error": "no examples found; set ROBOVAST_EXAMPLES_DIR to a "
                          "configs/examples path inside a git checkout."}
