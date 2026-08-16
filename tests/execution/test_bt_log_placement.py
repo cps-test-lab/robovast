@@ -26,6 +26,7 @@ import pytest
 from robovast.common.execution import (build_job_parameter_documents,
                                        dump_multi_document_yaml, scenario_env)
 from robovast.execution.packer import JobSpec, WorkItem
+from robovast.results_processing.postprocessing_plugins import _JSONL_READERS
 
 pytest.importorskip("scenario_execution",
                     reason="the placement assertion needs the real runner")
@@ -120,7 +121,15 @@ def test_behaviors_jsonl_lands_beside_test_xml_in_a_packed_job(tmp_path):
         assert (run_dir / "test.xml").is_file()
 
         meta = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
-        assert meta["format"] == "behaviour_tree_log"
+        # Not a literal spelling: scenario-execution renamed this format from
+        # "behaviour_tree_log" to "behavior_tree_log", so which one arrives depends on
+        # the image the run used, and pinning either makes this test fail on half the
+        # images for no reason. What actually matters is that the ingest dispatches on
+        # whatever was written -- an unrecognised format yields no rows and a silently
+        # empty `behaviors` table, which is the failure worth catching.
+        assert meta["format"] in _JSONL_READERS, (
+            f"{meta['format']!r} is not a format postprocessing can read; "
+            f"the behaviors table would come out empty")
         # The two files in this directory must describe the *same* run. Multi-document
         # runs suffix the scenario name per document (demo-0, demo-1, …), so this also
         # catches a log written into the wrong sibling directory — which merely
