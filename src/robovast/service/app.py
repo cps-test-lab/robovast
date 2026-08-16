@@ -69,7 +69,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PORT = 8800
+from robovast.service.interface import \
+    DEFAULT_PORT  # noqa: F401  (re-exported: callers import it from here)
 
 
 def _sse_pull_limiter():

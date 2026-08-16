@@ -1098,6 +1098,13 @@ class ServiceError(OSError):
 
 API_VERSION = "0"
 
+#: The port a robovast-service listens on unless told otherwise, and the one every
+#: client probes to find a local one. Here rather than beside either the server or
+#: the deployment because both need it and so does a client that has neither: it was
+#: declared twice, in ``service/app.py`` and in the cluster deploy manifests, which
+#: is one edit away from a client probing a port nothing listens on.
+DEFAULT_PORT = 8800
+
 
 class Routes:
     """Canonical HTTP paths — shared by the service app and the HTTP client so

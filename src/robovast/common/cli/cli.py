@@ -533,7 +533,7 @@ def ui(port, no_browser):
     import webbrowser  # pylint: disable=import-outside-toplevel
 
     from robovast.common.cli.service_target import detected_service_url
-    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
+    from robovast.service.interface import DEFAULT_PORT as SERVICE_PORT
 
     if port:
         url = f'http://127.0.0.1:{port}'

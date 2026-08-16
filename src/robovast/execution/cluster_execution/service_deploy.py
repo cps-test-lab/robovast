@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "robovast-service"
 SERVICE_ACCOUNT = "robovast-service"
-SERVICE_PORT = 8800
+#: Re-exported under the deployment's own name; the value lives with the
+#: address space in ``service/interface.py``.
+from robovast.service.interface import DEFAULT_PORT as SERVICE_PORT
 
 #: Pod-template annotation stamped on every deploy, so the Deployment spec this run
 #: submits always differs from the one already in the cluster and Kubernetes has to roll.

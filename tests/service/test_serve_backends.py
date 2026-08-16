@@ -77,3 +77,25 @@ def test_choosing_the_cluster_lane_does_not_load_the_local_transport():
     mods = _imports_after("from robovast.service.serve_backends import resolve;"
                           " resolve('cluster')")
     assert "robovast.service.local_transport" not in mods
+
+
+def test_the_conventional_port_has_one_definition():
+    """8800 was declared twice -- in `service/app.py` and in the cluster deploy
+    manifests -- and a client probing for a local service read the *cluster* one. One
+    edit to either would have had clients probing a port nothing listens on, and the
+    client reaching into an operator module for an integer is what made that possible.
+    """
+    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
+    from robovast.service.app import DEFAULT_PORT as served
+    from robovast.service.interface import DEFAULT_PORT as canonical
+
+    assert canonical is served is SERVICE_PORT
+
+
+def test_finding_a_local_service_does_not_touch_the_cluster_package():
+    """`detected_service_url` is the first thing any client does. It used to import the
+    cluster deploy module to learn which port to probe."""
+    mods = _imports_after(
+        "from robovast.common.cli.service_target import detected_service_url;"
+        " detected_service_url()")
+    assert not [m for m in mods if "cluster" in m], "the client pulled cluster code"

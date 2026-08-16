@@ -73,8 +73,8 @@ def detected_service_url():
     preserved where it mattered — there is still no ambient env var naming a service,
     and ``echo_target`` still prints what was resolved, so the choice is never silent.
     """
-    from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
-    probe = f'http://127.0.0.1:{SERVICE_PORT}'
+    from robovast.service.interface import DEFAULT_PORT
+    probe = f'http://127.0.0.1:{DEFAULT_PORT}'
     if _service_alive(probe):
         return probe
     from robovast.common.cli.login import credentials
