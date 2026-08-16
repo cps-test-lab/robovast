@@ -103,3 +103,42 @@ looks right is worse than an error, because nothing downstream can detect it.
   succeeding operation into a client timeout, i.e. a false failure.
 - **One source of truth per fact.** Derive or reference it; a second copy will
   disagree eventually. Prefer answering a narrower question over duplicating state.
+
+## 5. Which distribution owns what
+
+RoboVAST ships as several distributions so each audience installs what it needs and — the part
+that matters — can decline what it does not.
+
+| Distribution | Contains | Adds |
+|---|---|---|
+| `robovast` | interface, service core, config/variation, results, MCP, controller, the local Docker lane | no kubernetes |
+| `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the deploy/operator commands | `kubernetes`, `boto3`, `google-cloud-storage` |
+| `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
+| `robovast-sim-roqsim` | the roqsim simulator backend | `pydantic` only |
+
+Three rules keep this working:
+
+- **`robovast` must never depend on a lane.** The siblings depend on `robovast`; the edge back is
+  what would make the graph cyclic. An innocent-looking `robovast[cluster]` extra recreates exactly
+  the cycle `src/robovast_sim_roqsim/pyproject.toml` warns about. A lane is therefore **not
+  installable via `--extras`** — anywhere that installs one (the controller Dockerfile, `make
+  venv`, `make build`) needs its own step, and a test guards the Dockerfile because that omission
+  cannot fail before deployment.
+- **A plugin must import without the thing it drives.** Entry points are resolved to *list* what is
+  available, in processes that may have no Docker and no kubeconfig; reaching for either belongs in
+  the factory that runs once a caller has asked for that plugin by name. Stated for simulators in
+  `common/simulators.py` and for execution lanes in `service/serve_backends.py`.
+- **Missing means missing, not broken.** With a lane absent, `vast` must still start, `vast exec`
+  must list only what is installed, `vast doctor` must warn rather than fail, and asking for the
+  absent lane must name the lanes that exist — never a `ModuleNotFoundError` for a module the
+  caller never mentioned. Core degrading correctly is covered by
+  `tests/execution/test_core_without_cluster_package.py`; keep it that way.
+
+`robovast-cluster` ships into the **same import namespace** as the core: `robovast/` and
+`robovast/execution/` deliberately carry no `__init__.py` in either distribution, which makes them
+PEP 420 namespace packages so the two source trees merge at import time. Adding an `__init__.py` to
+either directory silently breaks the merge — do not.
+
+A corollary for tests: a guard that scans a source tree by path must scan **both** trees. One that
+scanned only `src/robovast` kept passing after the cluster code moved out from under it, which is
+the worst failure a guard has — a green tick over an unchecked tree.

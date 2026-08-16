@@ -20,14 +20,33 @@ Clone the RoboVAST repository:
    git clone https://github.com/cps-test-lab/robovast.git
    cd robovast
 
-Install RoboVAST and the navigation extension in editable mode:
+Install RoboVAST and its sibling packages in editable mode:
 
 .. code-block:: bash
 
    pip install -e .
    pip install -e src/robovast_nav
+   pip install -e src/robovast_sim_roqsim
+   pip install -e src/robovast_cluster     # only if you will drive a Kubernetes cluster
+
+Order matters: each sibling depends on ``robovast``, never the other way round, which is what
+keeps the dependency graph acyclic. ``poetry install`` at the root will **not** pull them in for
+the same reason — they are separate distributions built on this one, not extras of it.
+
+``pip install -e .`` alone gives you a working ``vast`` and a service that can run **local Docker
+campaigns**, with no Kubernetes client anywhere in the environment. That is the point of the split,
+so declining the cluster package is a supported setup rather than a broken one: ``vast exec`` simply
+lists ``local`` and not ``cluster``, and ``vast doctor`` reports ``cluster support: not installed``
+as a warning. Add ``robovast-cluster`` when you need the Kubernetes lane, and ``vast serve
+--backend cluster`` starts working.
 
 This will install the ``vast`` command and all its plugins.
+
+.. note::
+
+   ``make venv`` from a checkout does all of the above in the right order. Prefer it — a missing
+   sibling shows up as an *entry point* that is absent rather than an import error, which reads as
+   broken code rather than an incomplete environment.
 
 The web UI is not built by ``pip``. For a source checkout, build it once with
 ``cd frontend/ui && npm ci && npm run build`` — ``vast serve`` then finds it there and

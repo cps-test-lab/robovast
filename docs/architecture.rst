@@ -259,6 +259,26 @@ As with simulators, **a lane must import without the thing it drives** — it is
 in a process that may have neither a kubeconfig nor a Docker socket. Reaching for either
 belongs inside ``build()``.
 
+That indirection is what lets the Kubernetes lane ship as its own distribution,
+``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
+install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
+all, and still serves, validates, stores workspaces and runs local Docker campaigns.
+Declining a lane is a supported configuration, not a degraded one — and where an agent is
+involved, it is the strongest available guard: a lane that is not installed cannot be
+silently substituted for the one you asked for.
+
+The lane ships into the **same import namespace** as the core rather than under a name of
+its own, so no import path changes: ``robovast/`` and ``robovast/execution/`` carry no
+``__init__.py`` in either distribution, making them PEP 420 namespace packages whose two
+source trees merge at import time. In a deployed pod the core is installed editable from
+``/opt/robovast/src`` while the lane's files land in ``site-packages`` — one namespace,
+two origins, no shadowing. Adding an ``__init__.py`` to either directory would break the
+merge silently, so neither has one.
+
+The direction of the dependency is load-bearing: ``robovast-cluster`` depends on
+``robovast``, never the reverse. See ``AGENTS.md`` §5 for the packaging rules that follow
+from it, including why a lane cannot be offered as an extra.
+
 .. _container-exec-architecture:
 
 Container exec: a diagnostic that cannot become a run

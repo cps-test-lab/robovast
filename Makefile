@@ -33,7 +33,13 @@ fix: check-tools
 .PHONY: venv
 venv: venv/.robovast_installed
 
-venv/.robovast_installed: 
+# Re-run when any distribution's manifest changes, not only when venv/ is absent. The
+# sentinel alone meant an existing venv silently kept whatever was installed the day it
+# was made: adding robovast-cluster stranded every developer's environment without a lane
+# and without a word, and `make venv` cheerfully reported nothing to do.
+venv/.robovast_installed: pyproject.toml src/robovast_nav/pyproject.toml \
+                          src/robovast_sim_roqsim/pyproject.toml \
+                          src/robovast_cluster/pyproject.toml
 	@if [ ! -d venv ]; then \
 		echo "Creating virtual environment..."; \
 		python3 -m venv venv; \
