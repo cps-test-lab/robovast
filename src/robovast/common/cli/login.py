@@ -106,6 +106,31 @@ def credentials() -> tuple[str, str, str]:
             str(data.get("name") or ""))
 
 
+def mcp_add_command(url: str, token: str, name: str = "") -> list[str]:
+    """The ``claude mcp add`` invocation registering this service with an agent, as lines.
+
+    Rendered here because it is printed from two places — after ``vast login`` and by
+    ``vast exec cluster token`` — and a header that drifts out of one copy is a whole
+    class of confusing failure: a missing ``Authorization`` 401s loudly, but a missing
+    name silently records every campaign that agent starts as unattributed.
+
+    Returned as one line per argument so each caller can indent the continuations to fit
+    its own output; join with ``" \\\\\\n<indent>"``. Every argument is shell-quoted, so a
+    name with a space or a quote in it stays one argument.
+    """
+    import shlex
+
+    from robovast.service.auth import USER_HEADER
+
+    lines = [f"claude mcp add --transport http robovast {url.rstrip('/')}/mcp",
+             "--header " + shlex.quote(f"Authorization: Bearer {token}")]
+    if name:
+        # ``x-robovast-user`` on the wire; title-cased here because that is how a header
+        # is written by hand, and HTTP header names are case-insensitive anyway.
+        lines.append("--header " + shlex.quote(f"{USER_HEADER.title()}: {name}"))
+    return lines
+
+
 def default_name() -> str:
     """A sensible name to offer at the prompt, so the common case is one keypress.
 

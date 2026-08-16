@@ -132,7 +132,8 @@ unattributed rather than as somebody invented.
 
 It stores the URL, token and name in ``~/.config/robovast/config.json`` (mode ``0600``) and
 verifies them before saving, so a typo fails here rather than as a 401 from some later
-command. Every ``vast`` command then targets that service.
+command. Every ``vast`` command then targets that service. It also prints the ready-made
+registration below, with your token and name already in it.
 
 **As an MCP server**, for an agent:
 
@@ -140,10 +141,16 @@ command. Every ``vast`` command then targets that service.
 
    claude mcp add --transport http robovast \
        https://robovast.example.org/mcp \
-       --header "Authorization: Bearer <token>"
+       --header "Authorization: Bearer <token>" \
+       --header "X-Robovast-User: <your name>"
+
+The name header is the HTTP equivalent of the one ``vast login`` stores: an agent reads no
+config file, so without it every campaign the agent starts is unattributed while your own
+CLI runs are labelled. Drop the line to stay unattributed on purpose.
 
 Nothing to install: ``vast serve`` mounts MCP on the same port the UI is on. (A local
-``vast mcp serve`` over stdio also works and picks up ``vast login``'s credentials.)
+``vast mcp serve`` over stdio also works and picks up ``vast login``'s credentials,
+name included.)
 
 
 Keeping it running

@@ -161,6 +161,44 @@ def test_the_login_command_stores_verified_credentials(monkeypatch):
     assert login.credentials() == ("https://robovast.example.org", "tok", "Fred")
 
 
+def test_the_login_command_prints_the_mcp_registration(monkeypatch):
+    """An agent over HTTP reads no config file, so login has to spell out all three facts.
+
+    The name especially: without that header the agent's campaigns arrive unattributed
+    while the same person's CLI runs are labelled, and nothing anywhere says why.
+    """
+    from robovast.common.cli.cli import cli
+
+    class _Accepts:
+        def version(self):
+            return object()
+
+    monkeypatch.setattr("robovast.service.client.RobovastClient",
+                        lambda *a, **kw: _Accepts())
+    runner = _runner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["login", "https://robovast.example.org", "--token", "tok",
+                  "--name", "Fred Pasch"])
+
+    assert result.exit_code == 0, result.output
+    command = " ".join(result.output.replace("\\\n", " ").split())
+    assert ("claude mcp add --transport http robovast "
+            "https://robovast.example.org/mcp") in command
+    assert "--header 'Authorization: Bearer tok'" in command
+    # Quoted as one argument: a name with a space in it is the common case, not an edge.
+    assert "--header 'X-Robovast-User: Fred Pasch'" in command
+
+
+def test_the_mcp_registration_omits_a_name_nobody_gave():
+    """Empty means unattributed; an empty header would claim someone called themselves ''."""
+    lines = login.mcp_add_command("https://robovast.example.org", "tok", "")
+    assert not any("X-Robovast-User" in line for line in lines)
+    assert lines == ["claude mcp add --transport http robovast "
+                     "https://robovast.example.org/mcp",
+                     "--header 'Authorization: Bearer tok'"]
+
+
 def test_logout_forgets_them(monkeypatch):
     from robovast.common.cli.cli import cli
 

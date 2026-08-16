@@ -543,6 +543,15 @@ def login(url, token, name):
     click.echo(f"  as {name}" if name else "  without a name (campaigns stay unattributed)")
     click.echo(f"  stored in {path}")
 
+    # An agent over HTTP does not read this config, so it needs the same three facts
+    # spelled out -- the name included, or its campaigns arrive unattributed while the
+    # same person's CLI runs are labelled.
+    click.echo("\nTo give an agent the same access over HTTP:")
+    click.echo("  " + " \\\n      ".join(
+        login_config.mcp_add_command(url, token, name)))
+    click.echo("\n(A local 'vast mcp serve' over stdio needs none of that — it reads "
+               "this login.)")
+
 
 @cli.command()
 def logout():

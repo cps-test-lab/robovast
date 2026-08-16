@@ -175,7 +175,12 @@ Everybody else, from a machine with no kubeconfig:
    vast login https://robovast.example.org          # CLI and stdio MCP
    claude mcp add --transport http robovast \
        https://robovast.example.org/mcp \
-       --header "Authorization: Bearer <token>"     # MCP over HTTP
+       --header "Authorization: Bearer <token>" \
+       --header "X-Robovast-User: <name>"           # MCP over HTTP
+
+``vast login`` prints that second command filled in with the token and the name it just
+stored, so nobody has to assemble it by hand — and campaigns an agent starts carry the
+same name as the ones its owner starts.
 
 ``vast ui`` opens whichever service this machine talks to. When the Ingress itself is
 broken, ``kubectl port-forward svc/robovast-service 8800:8800`` puts one back on the

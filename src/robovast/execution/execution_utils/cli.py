@@ -1570,8 +1570,11 @@ def cluster_token(namespace, kube_context, quiet):
         click.echo("")
         click.echo("Command line:  pip install robovast && "
                    f"vast login {url}")
-        click.echo(f"Claude Code:   claude mcp add --transport http robovast {url}/mcp \\")
-        click.echo(f"                 --header \"Authorization: Bearer {token}\"")
+        # No name here: the operator prints this for somebody else, and only that person
+        # can declare theirs -- 'vast login' prints the same command with it filled in.
+        from robovast.common.cli.login import mcp_add_command
+        click.echo("Claude Code:   " + " \\\n                 ".join(
+            mcp_add_command(url, token)))
         click.echo("Browser:       open the URL and paste the token.")
     except click.ClickException:
         raise
