@@ -146,3 +146,82 @@ def default_name() -> str:
     except (OSError, subprocess.SubprocessError):
         pass
     return os.environ.get("USER", "")
+
+
+def _path_dirs() -> list[Path]:
+    """Directories on a **fresh login shell's** PATH, not this process's.
+
+    They differ, and the difference is the whole problem: a venv that was activated to
+    run ``vast login`` puts its ``bin`` on *this* PATH and on no other, so linking into
+    it would look like success and change nothing for the next shell.
+    """
+    import subprocess  # pylint: disable=import-outside-toplevel
+    try:
+        out = subprocess.run(["bash", "-lc", "printf %s \"$PATH\""],  # noqa: S603,S607
+                             capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [Path(p) for p in out.stdout.split(os.pathsep) if p]
+
+
+def cli_path() -> Path:
+    """Where the ``vast`` console script this process is running lives."""
+    import shutil  # pylint: disable=import-outside-toplevel
+    import sys  # pylint: disable=import-outside-toplevel
+    argv0 = Path(sys.argv[0])
+    if argv0.name == "vast" and argv0.exists():
+        return argv0.resolve()
+    beside = Path(sys.executable).parent / "vast"
+    if beside.exists():
+        return beside.resolve()
+    found = shutil.which("vast")
+    return Path(found).resolve() if found else beside
+
+
+def link_cli() -> tuple[bool, str]:
+    """Make ``vast`` resolvable from any shell; return ``(linked, message)``.
+
+    A venv's console script has an absolute interpreter in its shebang, so a symlink to
+    it runs with nothing activated, from any directory. The only thing a later shell has
+    to supply is the link's directory on PATH -- which is why the target is chosen from
+    a login shell's PATH rather than assumed.
+
+    Never reports success it cannot demonstrate: if the command still does not resolve
+    in a fresh login shell afterwards, that is a failure with the export line to fix it,
+    not a cheerful message and a command that is still missing when an agent needs it.
+    """
+    import subprocess  # pylint: disable=import-outside-toplevel
+    source = cli_path()
+    if not source.exists():
+        return False, (f"could not find the 'vast' command to link (looked at {source}). "
+                       "Install robovast, or add its venv's bin/ to PATH yourself.")
+
+    dirs = _path_dirs()
+    home = Path.home()
+    preferred = home / ".local" / "bin"
+    candidates = ([preferred] if preferred in dirs else []) + [
+        d for d in dirs if d != preferred and home in d.parents]
+    for target_dir in candidates:
+        link = target_dir / "vast"
+        try:
+            if link.resolve() == source:
+                return True, f"'vast' already resolves via {link}"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            tmp = link.with_name(f".vast.{os.getpid()}")
+            tmp.symlink_to(source)
+            os.replace(tmp, link)
+        except OSError:
+            continue
+        check = subprocess.run(["bash", "-lc", "command -v vast"],  # noqa: S603,S607
+                               capture_output=True, text=True, timeout=15, check=False)
+        if check.returncode == 0:
+            return True, f"linked 'vast' into {target_dir} (resolves in a new shell)"
+        return False, (
+            f"linked {link}, but 'vast' still does not resolve in a login shell. Add "
+            f"this to your shell profile and start a new one:\n"
+            f"    export PATH=\"{target_dir}:$PATH\"")
+
+    return False, (
+        "no directory on your login shell's PATH is writable, so 'vast' cannot be made "
+        "available outside this venv. Add its bin/ to your profile and start a new "
+        f"shell:\n    export PATH=\"{source.parent}:$PATH\"")

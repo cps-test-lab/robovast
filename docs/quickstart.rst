@@ -145,6 +145,11 @@ verifies them before saving, so a typo fails here rather than as a 401 from some
 command. Every ``vast`` command then targets that service. It also prints the ready-made
 registration below, with your token and name already in it.
 
+It then symlinks ``vast`` into a directory already on your login shell's PATH, so a shell
+that activated no venv — a new terminal, or an agent's — can run it. That is what makes
+the wait command in :ref:`mcp` reachable; pass ``--no-link`` to manage PATH yourself.
+``vast doctor`` reports whether it resolves, and says how to fix it if not.
+
 **As an MCP server**, for an agent:
 
 .. code-block:: bash

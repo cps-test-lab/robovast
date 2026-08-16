@@ -35,7 +35,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 #: Python this codebase requires (``pyproject.toml``: ``>=3.12,<3.14``).
 MIN_PYTHON = (3, 12)
@@ -210,6 +210,70 @@ def _check_capacity() -> Check:
         "ever be admitted. Use a larger node.")
 
 
+def check_client() -> list[Check]:
+    """What a *user* needs: a service to talk to, and a command that reaches it.
+
+    These come first because they are the only ones a person who will never deploy
+    anything cares about, and because a green result here changes what the cluster
+    prerequisites below *mean* — see :func:`run_checks`.
+    """
+    from robovast.common.cli import login as login_config  # pylint: disable=import-outside-toplevel
+    from robovast.common.cli.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+
+    checks = []
+    url, token, _name = login_config.credentials()
+    if url and token:
+        checks.append(Check("login", True, url))
+    else:
+        checks.append(Check(
+            "login", False, "no stored credentials",
+            "Run 'vast login <url>' with the URL and token your operator gave you. "
+            "A local service prints both when it starts."))
+
+    target = detected_service_url()
+    if target:
+        checks.append(Check("service", True, target))
+    else:
+        checks.append(Check(
+            "service", False, "none answering",
+            "Nothing is listening on the conventional local port and no stored login "
+            "answers either. Start one with 'vast serve', or 'vast login <url>' to "
+            "point at a running one."))
+
+    # Not `shutil.which`: this process may have a venv active that no other shell does,
+    # which is exactly the case where the answer differs and the wrong one is reassuring.
+    import subprocess  # pylint: disable=import-outside-toplevel
+    try:
+        found = subprocess.run(["bash", "-lc", "command -v vast"],  # noqa: S603,S607
+                               capture_output=True, text=True, timeout=15, check=False)
+        resolved = found.stdout.strip() if found.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        resolved = ""
+    if resolved:
+        checks.append(Check("vast on PATH", True, resolved))
+    else:
+        checks.append(Check(
+            "vast on PATH", False, "only inside this venv",
+            "A new shell — an agent's, or your next terminal — cannot run 'vast'. "
+            "Run 'vast login --link' to symlink it somewhere already on PATH."))
+    return checks
+
+
 def run_checks(flavor: str = "", context: str | None = None) -> list[Check]:
-    """Every check, in the order an operator hits them."""
-    return [check_python(), *check_tools(flavor), *check_cluster(context)]
+    """Every check, in the order the two roles hit them.
+
+    The cluster prerequisites are **advisory when the client checks pass**. They are what
+    you need to *deploy* RoboVAST, not to use one, and a user with a working login and no
+    kubectl is not broken — reporting them as failures told exactly the person who had
+    nothing left to do that four things were wrong, and exited non-zero saying so.
+
+    When the client half is not working, they stay fatal: then deploying is the likely
+    intent, and a missing ``helm`` really does stop it.
+    """
+    client = check_client()
+    usable = all(c.ok for c in client)
+    operator = [check_python(), *check_tools(flavor), *check_cluster(context)]
+    if usable:
+        operator = [replace(c, optional=True) for c in operator]
+    return client + operator

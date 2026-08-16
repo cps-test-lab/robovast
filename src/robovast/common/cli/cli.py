@@ -461,7 +461,12 @@ def _login_remedy(exc):
               help='The access token. Prompted for (hidden) when omitted.')
 @click.option('--name', default=None,
               help='Display name shown on campaigns you start. Pass "" for none.')
-def login(url, token, name):
+@click.option('--link/--no-link', 'link', default=True, show_default=True,
+              help='Also make the "vast" command resolvable outside this venv, by '
+                   'symlinking it into a directory already on your login shell\'s PATH. '
+                   'This is what lets an agent (or any new terminal) run it without '
+                   'activating anything.')
+def login(url, token, name, link):
     """Store the credentials for a robovast-service, so every command can reach it.
 
     \b
@@ -524,6 +529,13 @@ def login(url, token, name):
     click.echo("\nTo give an agent the same access over HTTP:")
     click.echo("  " + " \\\n      ".join(
         login_config.mcp_add_command(url, token, name)))
+
+    # An agent's shell is not the one you ran this in: it is started from your profile,
+    # with no venv activated. Storing credentials it can use, while leaving the command
+    # it must run unreachable, gets it exactly halfway.
+    if link:
+        linked, message = login_config.link_cli()
+        click.echo(f"\n{'✓' if linked else '✗'} {message}", err=not linked)
 
 
 @cli.command()
