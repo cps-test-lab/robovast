@@ -105,7 +105,7 @@ WORKDIR /opt/robovast
 COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
- && poetry install --only main --extras "qd optuna nav roqsim analysis" \
+ && poetry install --only main --extras "qd optuna nav roqsim analysis notebooks fair sftp" \
         --no-root --no-directory --no-cache
 
 # Layer 2 (cheap, invalidated by any source edit): copy the source and install
@@ -115,7 +115,7 @@ RUN pip install --no-cache-dir poetry==1.8.2 \
 # — fast.
 COPY README.md ./
 COPY src ./src
-RUN poetry install --only main --extras "qd optuna nav roqsim analysis" --no-cache
+RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks fair sftp" --no-cache
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
 # path cannot be derived from the source tree (robovast is installed into

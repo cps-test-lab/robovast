@@ -35,7 +35,6 @@ from robovast.results_processing.merge_results import merge_results
 from robovast.execution.cluster_execution.share_providers import \
     load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
-from robovast.results_processing.fair_metadata import generate_prov_metadata
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing import \
     load_postprocessing_plugins
@@ -330,6 +329,11 @@ def generate_metadata_cmd(results_dir, dot_pdf):
 
         click.echo(f"  Processing {campaign_dir.name}...")
         try:
+            # Deferred: `rdflib`/`pyld` are the `fair` extra, and this module is a CLI
+            # plugin loaded on every `vast` invocation -- importing them at module level
+            # would make the whole `results` group vanish wherever they are not installed.
+            from robovast.results_processing.fair_metadata import \
+                generate_prov_metadata  # pylint: disable=import-outside-toplevel
             success, message = generate_prov_metadata(
                 campaign_dir, metadata, generate_visualization=dot_pdf
             )

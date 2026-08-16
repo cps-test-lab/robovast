@@ -24,9 +24,13 @@ pyside6-addons = {version = "^6.6", optional = true}
 # client -- skips them. The controller image installs the ``analysis`` extra because
 # `render_campaign_notebook` executes notebooks in-process.
 matplotlib = {version = "^3.10", optional = true}
-nbformat = "^5.9"
-nbconvert = "^7.16"
-lxml-html-clean = "^0.1"
+# The notebook toolchain: only `notebook_render` imports it, and only when a campaign
+# notebook is actually rendered. `ipykernel` and `lxml-html-clean` have no importer at
+# all -- they are the kernel nbconvert executes with and the sanitizer it renders HTML
+# through, so they are runtime requirements of the same extra.
+nbformat = {version = "^5.9", optional = true}
+nbconvert = {version = "^7.16", optional = true}
+lxml-html-clean = {version = "^0.1", optional = true}
 kubernetes = "^34.1"
 boto3 = "^1.35"
 google-cloud-storage = "^2.0"
@@ -35,12 +39,15 @@ pydantic = "^2.12"
 # Read by the Qt config editor only, so it follows the ``gui`` extra.
 ruamel-yaml = {version = "^0.18", optional = true}
 scenario-execution = "^1.3.0"
-rdflib = "^7.0"
-pyld = "^2.0"
-ipykernel = "^7.1.0"
+# FAIR/PROV metadata generation, one module. Both call sites defer the import.
+rdflib = {version = "^7.0", optional = true}
+pyld = {version = "^2.0", optional = true}
+ipykernel = {version = "^7.1.0", optional = true}
 python-dotenv = "^1.0"
 fastmcp = "3.4.4"
-paramiko = "^4.0"
+# The SFTP share provider only. A provider whose import fails is skipped with a
+# warning by `load_share_provider_plugins`, so the others keep working without it.
+paramiko = {version = "^4.0", optional = true}
 psutil = "^7.0"
 requests = "^2.32"
 # fastmcp 3.4.4 pulls in starlette>=1.0; only fastapi>=0.139 dropped its starlette<0.49 cap.
@@ -86,6 +93,9 @@ nav = ["robovast-nav"]
 roqsim = ["robovast-sim-roqsim"]
 gui = ["pyside6-essentials", "pyside6-addons", "ruamel-yaml"]
 analysis = ["matplotlib", "scipy"]
+notebooks = ["nbformat", "nbconvert", "ipykernel", "lxml-html-clean"]
+fair = ["rdflib", "pyld"]
+sftp = ["paramiko"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
 optuna = ["optuna"]
