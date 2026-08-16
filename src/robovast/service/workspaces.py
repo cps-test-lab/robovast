@@ -378,12 +378,12 @@ class WorkspaceStore:
     def _safe_join(self, workspace_id: str, rel_path: str) -> Path:
         """Resolve *rel_path* inside this workspace, refusing any escape.
 
-        The confinement itself is :func:`~robovast.common.safe_path.safe_join`, shared
+        The confinement itself is :func:`~robovast.client.safe_path.safe_join`, shared
         with the campaign results tree; this only supplies the workspace root and
         re-labels the failure as a :class:`WorkspaceError` so callers keep mapping it
         the way they always have.
         """
-        from robovast.common.safe_path import UnsafePathError, safe_join
+        from robovast.client.safe_path import UnsafePathError, safe_join
         try:
             return safe_join(self.registry.project_dir(workspace_id), rel_path)
         except UnsafePathError as e:

@@ -16,7 +16,7 @@
 
 """How a file or directory is *rendered* to a caller, once its address is resolved.
 
-Separate from :mod:`robovast.common.file_address` (which decides *where* a path points
+Separate from :mod:`robovast.client.file_address` (which decides *where* a path points
 and whether it may be written) because these are substrate concerns: paging text,
 refusing binary, and turning a directory into a bounded listing. The service applies
 them, not the client — a caller asking for 100 lines of a cluster log must transfer 100

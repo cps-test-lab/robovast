@@ -13,7 +13,7 @@ import pytest
 
 from robovast.common import check_campaign_inputs
 from robovast.common.errors import CampaignConfigError
-from robovast.common.status import failure_detail
+from robovast.client.status import failure_detail
 
 
 def _campaign_data(tmp_path, *, scenario_exists=True, run_files=()):

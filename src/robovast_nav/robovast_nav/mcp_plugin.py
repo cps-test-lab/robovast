@@ -49,7 +49,7 @@ from matplotlib import patches as mpatches
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
-from robovast.common.file_address import RESULTS, format_address
+from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import data_access, service_access
 
 matplotlib.use("Agg")

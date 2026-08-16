@@ -67,7 +67,7 @@ from robovast.execution.control_server import Phase, Status, is_terminal
 
 
 def _runs_from_verdicts(counts: dict, total: int) -> dict:
-    """A :class:`~robovast.common.status.RunProgress` payload from verdict tallies.
+    """A :class:`~robovast.client.status.RunProgress` payload from verdict tallies.
 
     *counts* carries the ``num_runs`` / ``num_passed`` / ``num_failed`` /
     ``num_errors`` / ``num_killed`` keys that both :func:`read_run_counts` (the store's

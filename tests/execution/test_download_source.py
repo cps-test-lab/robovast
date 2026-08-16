@@ -18,13 +18,13 @@ from robovast.results_processing import cli as rcli
 def _isolate(monkeypatch):
     # Default: no service, no share. Individual tests opt in.
     monkeypatch.setattr(rcli, "_share_configured", lambda: False)
-    import robovast.common.cli.service_target as st
+    import robovast.client.service_target as st
     monkeypatch.setattr(st, "detected_service_url", lambda: None)
     yield
 
 
 def _set(monkeypatch, service, share):
-    import robovast.common.cli.service_target as st
+    import robovast.client.service_target as st
     monkeypatch.setattr(st, "detected_service_url", lambda: "http://svc" if service else None)
     monkeypatch.setattr(rcli, "_share_configured", lambda: share)
 

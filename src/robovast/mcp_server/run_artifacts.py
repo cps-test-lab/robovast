@@ -32,7 +32,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from robovast.common.file_address import RESULTS, format_address
+from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import service_access
 
 logger = logging.getLogger(__name__)

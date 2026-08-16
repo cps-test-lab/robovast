@@ -17,27 +17,17 @@
 
 """CLI plugin for execution management."""
 
-import datetime
-import logging
 import os
 import sys
 import tempfile
-import time
 
 import click
-import yaml
 
-from robovast.common import prepare_campaign_configs
+from robovast.client.service_target import echo_target as _echo_target
+from robovast.client.service_target import service_client, target_options
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.common.cli.project_config import get_vast_file_override
-from robovast.common.cli.service_target import echo_target as _echo_target
-from robovast.common.cli.service_target import (detected_service_url,
-                                                service_client, target_options)
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
-from robovast.common.status import Status, stall_report
-from robovast.execution.share_providers import \
-    load_share_provider_plugins
 from robovast.common.host_display import gui_by_default
 
 from .execute_local import initialize_local_execution
@@ -483,7 +473,7 @@ def wait(campaign, interval, timeout, namespace, context):  # noqa: F811
         # Not a failure of the campaign, which is still running: the caller asked to stop
         # waiting. A distinct exit code keeps the two apart for a script branching on it.
         click.echo(str(e), err=True)
-        raise SystemExit(2)
+        raise SystemExit(2) from e
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return

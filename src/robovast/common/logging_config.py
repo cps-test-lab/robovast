@@ -153,7 +153,7 @@ def setup_logging_from_project_config() -> None:
     If no project configuration is found, defaults to INFO level.
     """
     try:
-        from .cli.project_config import \
+        from robovast.client.project_config import \
             ProjectConfig  # pylint: disable=import-outside-toplevel
 
         config = ProjectConfig.load()

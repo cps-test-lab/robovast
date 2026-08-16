@@ -37,7 +37,7 @@ evaluation:
 @pytest.fixture
 def transport(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "robovast.common.cli.project_config.ProjectConfig.load",
+        "robovast.client.project_config.ProjectConfig.load",
         staticmethod(lambda *a, **k: None))
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
     return LocalTransport(store=store)

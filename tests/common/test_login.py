@@ -16,7 +16,7 @@ import stat
 
 import pytest
 
-from robovast.common.cli import login, service_target
+from robovast.client import login, service_target
 
 
 # The login config is isolated for every test by an autouse fixture in tests/conftest.py.

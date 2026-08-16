@@ -17,7 +17,7 @@ announced rather than silent.
 import click
 import pytest
 
-from robovast.common.cli import service_target as st
+from robovast.client import service_target as st
 from robovast.service.client import HTTPTransport, LocalTransport
 
 

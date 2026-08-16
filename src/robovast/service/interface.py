@@ -45,7 +45,7 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from robovast.common import file_address
+from robovast.client import file_address
 
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
@@ -1138,7 +1138,7 @@ class Routes:
     #: The two **content** namespaces. Everything else in this table is a *control*
     #: namespace: a fixed vocabulary of service-owned verbs. File content lives apart
     #: from it so that no user-chosen name can ever be shadowed by a route — including
-    #: routes added later. See :mod:`robovast.common.file_address`.
+    #: routes added later. See :mod:`robovast.client.file_address`.
     RESULTS = f"/{file_address.RESULTS}"
     SOURCES = f"/{file_address.SOURCES}"
 
@@ -1317,7 +1317,7 @@ class Routes:
     @staticmethod
     def campaign_data_status(campaign_id: str) -> str:
         # A **control** route, not a ``/results`` path: every segment under ``/results`` is
-        # a user-chosen file name (see :mod:`robovast.common.file_address`), so a literal
+        # a user-chosen file name (see :mod:`robovast.client.file_address`), so a literal
         # ``status`` there would shadow a campaign file actually called that.
         return f"/campaigns/{campaign_id}/data-status"
 
@@ -1395,7 +1395,7 @@ class RobovastInterface(ABC):
     # ``/sources/<workspace_id>/<path>`` — which is also the URL that serves it. The
     # namespace carries the permission: only ``/sources`` is writable, and the write
     # operations below refuse ``/results`` rather than each caller remembering to.
-    # See :mod:`robovast.common.file_address`.
+    # See :mod:`robovast.client.file_address`.
 
     @abstractmethod
     def list_files(self, address: str, recursive: bool = False, detail: bool = False,

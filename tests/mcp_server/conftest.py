@@ -18,7 +18,7 @@ def _no_stray_service(monkeypatch):
     ``_service`` directly and are unaffected.
     """
     monkeypatch.setattr(
-        "robovast.common.cli.service_target.detected_service_url",
+        "robovast.client.service_target.detected_service_url",
         lambda *a, **k: "", raising=False)
 
 

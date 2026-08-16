@@ -137,7 +137,7 @@ def require_context_for_multi_cluster(kube_context: Optional[str],
     to find a ``.robovast_project`` by walking up to the filesystem root, so a project
     far above the CWD could demand ``--context`` from a command that was never told
     about it. Cluster-wide commands therefore pass only an explicitly named config
-    (:func:`~robovast.common.cli.project_config.get_vast_file_override`), while
+    (:func:`~robovast.client.project_config.get_vast_file_override`), while
     campaign commands pass the config they are about to run.
 
     This is a no-op when:

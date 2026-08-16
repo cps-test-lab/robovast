@@ -115,13 +115,13 @@ def test_no_service_falls_back_to_an_explicit_local_transport(monkeypatch):
     fallback is constructed deliberately — not obtained by handing an empty URL to
     ``RobovastClient`` and letting it substitute one."""
     monkeypatch.setattr(
-        "robovast.common.cli.service_target.detected_service_url", lambda *a, **k: "")
+        "robovast.client.service_target.detected_service_url", lambda *a, **k: "")
     assert isinstance(files._client(), LocalTransport)
 
 
 def test_a_reachable_service_is_preferred(monkeypatch):
     from robovast.service.http_client import HTTPTransport
     monkeypatch.setattr(
-        "robovast.common.cli.service_target.detected_service_url",
+        "robovast.client.service_target.detected_service_url",
         lambda *a, **k: "http://127.0.0.1:8800")
     assert isinstance(files._client(), HTTPTransport)

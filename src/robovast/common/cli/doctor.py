@@ -228,8 +228,8 @@ def check_client() -> list[Check]:
     anything cares about, and because a green result here changes what the cluster
     prerequisites below *mean* — see :func:`run_checks`.
     """
-    from robovast.common.cli import login as login_config  # pylint: disable=import-outside-toplevel
-    from robovast.common.cli.service_target import \
+    from robovast.client import login as login_config# pylint: disable=import-outside-toplevel
+    from robovast.client.service_target import \
         detected_service_url  # pylint: disable=import-outside-toplevel
 
     checks = []

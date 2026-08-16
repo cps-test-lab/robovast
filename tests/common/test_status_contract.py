@@ -10,7 +10,7 @@ import pytest
 
 def test_status_reexported_identically_from_control_server():
     """`control_server` must re-export the very same objects (no divergent copy)."""
-    from robovast.common import status as common_status
+    from robovast.client import status as common_status
     from robovast.execution import control_server
     for name in ("Status", "Phase", "RunProgress", "BudgetItem", "TERMINAL_PHASES",
                  "RUNNING_PHASES", "is_terminal", "is_running", "failure_detail"):
@@ -20,12 +20,12 @@ def test_status_reexported_identically_from_control_server():
 def test_common_status_does_not_import_upper_layers():
     """Importing the contract must not drag in service/execution/etc.
 
-    A fresh interpreter imports only ``robovast.common.status``; none of the upper
+    A fresh interpreter imports only ``robovast.client.status``; none of the upper
     layers may appear in ``sys.modules`` afterwards. This is the guard that keeps
     the foundational contract from silently re-acquiring an upward dependency.
     """
     code = (
-        "import robovast.common.status\n"
+        "import robovast.client.status\n"
         "import sys\n"
         "bad = [m for m in sys.modules if m.startswith(('robovast.service', "
         "'robovast.execution', 'robovast.search', 'robovast.results_processing', "
@@ -60,14 +60,14 @@ def test_campaign_data_module_does_not_import_execution_at_load():
 
 
 def _live(**kw):
-    from robovast.common.status import Status
+    from robovast.client.status import Status
     return Status(phase="running", **kw)
 
 
 def test_progress_age_is_reported_for_a_live_campaign():
     import time
 
-    from robovast.common.status import stall_report
+    from robovast.client.status import stall_report
     report = stall_report(_live(progress_since=time.time() - 120))
     assert 119 <= report["progress_age_s"] <= 122
 
@@ -78,7 +78,7 @@ def test_no_declared_budget_yields_null_never_false():
     may already be dead — which is why the verdict is tri-state."""
     import time
 
-    from robovast.common.status import NO_STALL_VERDICT, stall_report
+    from robovast.client.status import NO_STALL_VERDICT, stall_report
     report = stall_report(_live(progress_since=time.time() - 99999))
     assert report["progress_age_s"] > 0
     assert report["stalled"] is None
@@ -103,7 +103,7 @@ def test_the_enforcement_backstop_is_never_substituted_for_a_verdict():
 def test_stalled_once_the_age_passes_the_declared_budget():
     import time
 
-    from robovast.common.status import STALL_NEXT_STEP, stall_report
+    from robovast.client.status import STALL_NEXT_STEP, stall_report
     report = stall_report(_live(progress_since=time.time() - 700,
                                 progress_deadline_s=600))
     assert report["stalled"] is True
@@ -116,7 +116,7 @@ def test_stalled_once_the_age_passes_the_declared_budget():
 def test_not_stalled_while_inside_the_declared_budget():
     import time
 
-    from robovast.common.status import stall_report
+    from robovast.client.status import stall_report
     report = stall_report(_live(progress_since=time.time() - 60,
                                 progress_deadline_s=600))
     assert report["stalled"] is False and "stall_reason" not in report
@@ -126,7 +126,7 @@ def test_a_terminal_campaign_is_never_stalled():
     """Its progress stopped advancing because it is over, which is not a stall."""
     import time
 
-    from robovast.common.status import Status, stall_report
+    from robovast.client.status import Status, stall_report
     for phase in ("finished", "failed", "stopped", "crashed"):
         st = Status(phase=phase, progress_since=time.time() - 99999,
                     progress_deadline_s=600)
@@ -140,7 +140,7 @@ def test_the_durable_outcome_round_trips_the_stall_fields(tmp_path):
 
     from robovast.common.campaign_data import (read_execution_outcome,
                                                write_execution_outcome)
-    from robovast.common.status import Status
+    from robovast.client.status import Status
     stamp = time.time() - 30
     write_execution_outcome(tmp_path, Status(phase="running", progress_since=stamp,
                                              progress_deadline_s=900))

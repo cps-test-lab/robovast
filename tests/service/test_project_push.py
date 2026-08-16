@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from robovast.common.file_address import SOURCES, format_address
+from robovast.client.file_address import SOURCES, format_address
 from robovast.service.client import LocalTransport
 from robovast.service.interface import CreateWorkspaceRequest
 from robovast.service.project_push import (_resolve_workspace_id, push_file,
@@ -250,7 +250,7 @@ def _names(client):
 
 def _live_campaign(campaign_id, workspace_id, done=False):
     """A campaign entry as the service holds one while it drives the run."""
-    from robovast.common.status import Phase
+    from robovast.client.status import Phase
     from robovast.execution.control_server import ControllerState
     from robovast.service.local_transport import _LocalCampaign
 

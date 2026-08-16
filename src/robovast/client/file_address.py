@@ -27,7 +27,7 @@ string a caller passes is the string it can ``GET``:
 
 The namespace *is* the permission, dispatched once instead of enforced per operation,
 and each confines against its own root — never the other's (see
-:mod:`robovast.common.safe_path`).
+:mod:`robovast.client.safe_path`).
 
 These are separate top-level namespaces from ``/campaigns/{id}/`` and
 ``/workspaces/{id}/`` on purpose. Those are **control** namespaces whose literal
@@ -41,7 +41,7 @@ The path after the namespace is the **real on-disk relative path**: a run artifa
 directory.
 """
 
-from robovast.common.safe_path import UnsafePathError, check_relative
+from robovast.client.safe_path import UnsafePathError, check_relative
 
 #: The read-only namespace: campaign outputs, addressed by campaign id.
 RESULTS = "results"

@@ -5,7 +5,7 @@ These names are the convenient spelling for the campaign-composition core, and c
 have used ``from robovast.common import load_config`` for a long time. Importing them
 eagerly here, though, made the package ``__init__`` reach ``.common`` -> ``numpy`` and
 ``scenario_execution``, and Python runs a parent ``__init__`` before *any* submodule. So
-``import robovast.common.status`` -- a pydantic model with no other dependency -- cost 528
+``import robovast.client.status`` -- a pydantic model with no other dependency -- cost 528
 modules and half a second, and every module under ``robovast.common`` inherited the
 simulator stack whether it touched it or not.
 

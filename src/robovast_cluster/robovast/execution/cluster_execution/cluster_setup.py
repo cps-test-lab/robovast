@@ -20,7 +20,7 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.common.cli.project_config import get_vast_file_override
+from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,

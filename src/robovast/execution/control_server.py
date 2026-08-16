@@ -24,7 +24,7 @@ directly to answer ``GET /campaigns/{id}/status`` (no separate control server, n
 pod-IP hop — those existed only when the controller lived in its own pod).
 
 The status *contract* it carries (``Phase``, ``Status`` and the phase-group
-predicates) now lives in :mod:`robovast.common.status`, so foundational ``common``
+predicates) now lives in :mod:`robovast.client.status`, so foundational ``common``
 modules can depend on it downward instead of ``common`` reaching up into
 ``execution``. It is **re-exported here verbatim**, so ``from
 robovast.execution.control_server import Status`` (and ``Phase`` etc.) keeps
@@ -36,9 +36,12 @@ import threading
 import time
 from typing import Optional
 
-# The status contract lives in common now; re-export it so existing
-# ``control_server`` importers are unaffected (see module docstring).
-from robovast.common.status import (  # noqa: F401  (re-exported)
+# The status contract lives in robovast.client -- it is what a client reads a campaign's
+# state through, and it must survive an install with no simulator. Re-exported here so
+# existing ``control_server`` importers are unaffected (see module docstring).
+from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-import
+    # Re-exported on purpose: see this module's docstring. flake8 needs the noqa,
+    # pylint needs the disable, and neither implies the other.
     RUNNING_PHASES, TERMINAL_PHASES, BudgetItem, Phase, RunProgress, Status,
     failure_detail, is_running, is_terminal)
 

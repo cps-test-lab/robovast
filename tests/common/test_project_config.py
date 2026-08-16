@@ -11,7 +11,7 @@ import json
 
 import click
 
-from robovast.common.cli.project_config import resolve_vast_file
+from robovast.client.project_config import resolve_vast_file
 
 _VAST = "version: 2\nexecution:\n  image: i\n  runs: 1\n"
 

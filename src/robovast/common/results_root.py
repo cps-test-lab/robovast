@@ -42,7 +42,7 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
 
     This is the **last** thing ``.robovast_project`` decides. It no longer selects what the
     service *runs* — that is ``workspace_id`` — only where results land; the file otherwise
-    remains a CLI concept (see :class:`robovast.common.cli.project_config.ProjectConfig`).
+    remains a CLI concept (see :class:`robovast.client.project_config.ProjectConfig`).
 
     Pure path resolution: the directory need not exist, and asking never creates it, so a
     caller whose campaigns live in an object store (the cluster lane) does not leave a
@@ -52,7 +52,7 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
         workspaces_root: The workspaces store root, when the caller already knows it.
             Omitted, the default location is used.
     """
-    from robovast.common.cli.project_config import ProjectConfig
+    from robovast.client.project_config import ProjectConfig
     project = ProjectConfig.load()
     if project is not None and project.results_dir:
         return Path(project.results_dir)

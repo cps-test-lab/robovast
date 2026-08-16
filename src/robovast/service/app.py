@@ -36,7 +36,7 @@ import logging
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from robovast.common import file_address
+from robovast.client import file_address
 from robovast.service import auth
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         ExecRequest, ExecResult, ExecStopResult,
@@ -694,7 +694,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #
     # ``/results/<campaign>/<path>`` and ``/sources/<workspace>/<path>``: the address a
     # caller passes to ``read_file`` is literally the URL that serves it (see
-    # :mod:`robovast.common.file_address`). Content lives in its own namespaces rather
+    # :mod:`robovast.client.file_address`). Content lives in its own namespaces rather
     # than under ``/campaigns/{id}/`` or ``/workspaces/{id}/`` because those are control
     # namespaces whose literal segments would shadow user-chosen file names.
     #
@@ -1260,7 +1260,7 @@ def startup_banner(base_url: str, token: str, *, ephemeral: bool,
     if ephemeral:
         lines.append(f"  RoboVAST: {base_url}{Routes.LOGIN}?token={token}")
     if mount_mcp:
-        from robovast.common.cli.login import \
+        from robovast.client.login import \
             mcp_add_command  # pylint: disable=import-outside-toplevel
         lines.append("  For an agent:\n    "
                      + " \\\n      ".join(mcp_add_command(base_url, token)))

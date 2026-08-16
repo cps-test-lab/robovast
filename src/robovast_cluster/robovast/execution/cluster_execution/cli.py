@@ -23,11 +23,11 @@ import time
 import click
 
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.common.cli.project_config import get_vast_file_override
-from robovast.common.cli.service_target import echo_target as _echo_target
-from robovast.common.cli.service_target import (detected_service_url,
-                                                service_client, target_options)
-from robovast.common.status import Status, stall_report
+from robovast.client.project_config import get_vast_file_override
+from robovast.client.service_target import echo_target as _echo_target
+from robovast.client.service_target import (detected_service_url,
+                                            service_client, target_options)
+from robovast.client.status import Status, stall_report
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +434,7 @@ def monitor(interval, once, kube_context, namespace):
             # Use contexts referenced in the .vast config file
             # --vast-file, else the project's .vast if run inside one; monitoring a
             # cluster works without either (it then watches the active context).
-            from robovast.common.cli.project_config import \
+            from robovast.client.project_config import \
                 resolve_vast_file  # pylint: disable=import-outside-toplevel
             config_path = resolve_vast_file()
 
@@ -739,7 +739,7 @@ def log(campaign, follow, namespace, context):
             if os.path.isabs(campaign):
                 campaign_dir = campaign
             else:
-                from robovast.common.cli.project_config import ProjectConfig
+                from robovast.client.project_config import ProjectConfig
                 cfg = ProjectConfig.load()
                 if cfg is None or not cfg.results_dir:
                     raise ValueError(
@@ -1164,7 +1164,7 @@ def cluster_token(namespace, kube_context, quiet):
                    f"vast login {url}")
         # No name here: the operator prints this for somebody else, and only that person
         # can declare theirs -- 'vast login' prints the same command with it filled in.
-        from robovast.common.cli.login import mcp_add_command
+        from robovast.client.login import mcp_add_command
         click.echo("Claude Code:   " + " \\\n                 ".join(
             mcp_add_command(url, token)))
         click.echo("Browser:       open the URL and paste the token.")

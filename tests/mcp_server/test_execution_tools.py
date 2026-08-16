@@ -581,7 +581,7 @@ def test_the_status_reports_a_stall_and_names_the_next_call():
     to learn it was to know which log to grep."""
     import time
 
-    from robovast.common.status import Status
+    from robovast.client.status import Status
     from robovast.mcp_server.plugins import execution
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
@@ -598,7 +598,7 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
     not moved in a day."""
     import time
 
-    from robovast.common.status import Status
+    from robovast.client.status import Status
     from robovast.mcp_server.plugins import execution
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},

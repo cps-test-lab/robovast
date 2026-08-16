@@ -16,7 +16,7 @@ import contextlib
 import pytest
 from click.testing import CliRunner
 
-from robovast.common.status import Phase, Status
+from robovast.client.status import Phase, Status
 from robovast.execution.execution_utils import cli as exec_cli
 
 

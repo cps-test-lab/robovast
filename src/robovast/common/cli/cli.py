@@ -34,10 +34,10 @@ import click
 from ..logging_config import (get_logger, setup_logging,
                               setup_logging_from_project_config)
 from .checks import check_docker_access
-from .project_config import ProjectConfig, get_project_config
-from .service_target import _service_alive
-from .service_target import echo_target as _echo_target
-from .service_target import service_client, target_options
+from robovast.client.project_config import ProjectConfig, get_project_config
+from robovast.client.service_target import _service_alive
+from robovast.client.service_target import echo_target as _echo_target
+from robovast.client.service_target import service_client, target_options
 
 logger = get_logger(__name__)
 
@@ -454,7 +454,7 @@ def login(url, token, name, link):
 
     Run it again to change any of the three. ``vast logout`` forgets them.
     """
-    from robovast.common.cli import login as login_config
+    from robovast.client import login as login_config
 
     stored_url, stored_token, stored_name = login_config.credentials()
 
@@ -511,7 +511,7 @@ def login(url, token, name, link):
 @cli.command()
 def logout():
     """Forget the stored robovast-service credentials."""
-    from robovast.common.cli import login as login_config
+    from robovast.client import login as login_config
     if login_config.clear():
         click.echo("✓ logged out")
     else:
@@ -536,7 +536,7 @@ def ui(port, no_browser):
     """
     import webbrowser  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.cli.service_target import detected_service_url
+    from robovast.client.service_target import detected_service_url
     from robovast.service.interface import DEFAULT_PORT as SERVICE_PORT
 
     if port:

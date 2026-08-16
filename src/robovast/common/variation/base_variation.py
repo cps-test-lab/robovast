@@ -41,7 +41,7 @@ class VariationInfeasibleError(RuntimeError):
     config block it is running for) so a reporting layer can name it in its own
     structured field rather than only inside the message.
 
-    ``include_traceback = False`` (see :func:`robovast.common.status.failure_detail`):
+    ``include_traceback = False`` (see :func:`robovast.client.status.failure_detail`):
     the message names the plugin, the config and the reason, which is the whole of
     what a reader can act on. A stack trace through the composition internals only
     makes an unrealizable parameter combination look like a RoboVAST crash.

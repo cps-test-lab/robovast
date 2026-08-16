@@ -77,7 +77,7 @@ def detected_service_url():
     probe = f'http://127.0.0.1:{DEFAULT_PORT}'
     if _service_alive(probe):
         return probe
-    from robovast.common.cli.login import credentials
+    from robovast.client.login import credentials
     url, _token, _name = credentials()
     return url or ''
 

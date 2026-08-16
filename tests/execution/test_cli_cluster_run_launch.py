@@ -35,7 +35,7 @@ def launch(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.cli.service_client",
         lambda *a, **k: _yield_client())
-    monkeypatch.setattr("robovast.common.cli.project_config.ProjectConfig.load",
+    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
                         classmethod(lambda cls, start_dir=None: None))
     captured["_vast"] = str(vast)
     return captured

@@ -60,7 +60,7 @@ def test_nothing_to_say_prints_nothing():
 def test_the_agent_command_comes_from_the_shared_helper():
     """Three surfaces hand out access; a header set that drifts between them is the bug
     `mcp_add_command` exists to prevent, so this asserts the banner routes through it."""
-    from robovast.common.cli.login import mcp_add_command
+    from robovast.client.login import mcp_add_command
     banner = startup_banner(URL, "tok-1", ephemeral=False, mount_mcp=True)
     for line in mcp_add_command(URL, "tok-1"):
         assert line in banner

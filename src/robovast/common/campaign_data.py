@@ -358,7 +358,7 @@ def read_execution_outcome(campaign_dir: Path):
 
     Returns a :class:`robovast.execution.control_server.Status`.
     """
-    from robovast.common.status import Status
+    from robovast.client.status import Status
     path = Path(campaign_dir) / "_execution" / _OUTCOME_FILENAME
     if not path.exists():
         return None

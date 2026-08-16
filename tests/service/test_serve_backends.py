@@ -97,6 +97,6 @@ def test_finding_a_local_service_does_not_touch_the_cluster_package():
     """`detected_service_url` is the first thing any client does. It used to import the
     cluster deploy module to learn which port to probe."""
     mods = _imports_after(
-        "from robovast.common.cli.service_target import detected_service_url;"
+        "from robovast.client.service_target import detected_service_url;"
         " detected_service_url()")
     assert not [m for m in mods if "cluster" in m], "the client pulled cluster code"

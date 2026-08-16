@@ -13,7 +13,7 @@ relative path, a stale ``run-files/`` habit, an unknown namespace) cannot fix it
 
 import pytest
 
-from robovast.common.file_address import (RESULTS, SOURCES, AddressError,
+from robovast.client.file_address import (RESULTS, SOURCES, AddressError,
                                           as_directory, format_address,
                                           is_directory, is_writable,
                                           parse_address, require_writable)

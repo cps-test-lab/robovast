@@ -126,7 +126,7 @@ def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
         and no content. ``url`` is absent when the service is in-process and there is no
         URL to hand out.
     """
-    from robovast.common.file_address import AddressError
+    from robovast.client.file_address import AddressError
     from robovast.mcp_server import service_access
     from robovast.service.interface import Routes
     client = _client()

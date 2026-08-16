@@ -6,7 +6,7 @@ import traceback
 
 import click
 
-from .project_config import get_project_config
+from robovast.client.project_config import get_project_config
 
 
 def handle_cli_exception(e: Exception) -> None:

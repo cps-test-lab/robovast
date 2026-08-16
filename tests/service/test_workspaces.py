@@ -8,7 +8,7 @@
 
 import pytest
 
-from robovast.common.file_address import SOURCES, format_address
+from robovast.client.file_address import SOURCES, format_address
 from robovast.service.client import LocalTransport
 from robovast.service.workspaces import (INLINE_EXTENSIONS, WorkspaceError,
                                          WorkspaceRegistry, WorkspaceStore,
@@ -19,7 +19,7 @@ def _listing(store, workspace_id):
     """The workspace's files as the ``/sources`` address space reports them.
 
     Listing is not a store method any more: it is one operation over both namespaces
-    (see :mod:`robovast.common.file_address`), so it is exercised through the transport
+    (see :mod:`robovast.client.file_address`), so it is exercised through the transport
     that resolves an address — which is also what applies this store's pinned-dir skip
     rule via :meth:`WorkspaceStore.skip_entry`.
     """

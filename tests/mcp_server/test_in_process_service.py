@@ -12,14 +12,14 @@ from robovast.mcp_server import service_access
 
 
 def test_without_mounting_the_client_is_resolved_over_http(monkeypatch):
-    monkeypatch.setattr("robovast.common.cli.service_target.detected_service_url",
+    monkeypatch.setattr("robovast.client.service_target.detected_service_url",
                         lambda: "https://robovast.example.org")
     client = service_access.service_client()
     assert getattr(client, "base_url", None) == "https://robovast.example.org"
 
 
 def test_no_service_and_no_mount_is_none(monkeypatch):
-    monkeypatch.setattr("robovast.common.cli.service_target.detected_service_url",
+    monkeypatch.setattr("robovast.client.service_target.detected_service_url",
                         lambda: "")
     assert service_access.service_client() is None
 
@@ -31,7 +31,7 @@ def test_a_mounted_mcp_gets_the_implementation_itself(monkeypatch):
     def _must_not_be_called():
         raise AssertionError("a mounted MCP must not resolve a URL to reach itself")
 
-    monkeypatch.setattr("robovast.common.cli.service_target.detected_service_url",
+    monkeypatch.setattr("robovast.client.service_target.detected_service_url",
                         _must_not_be_called)
     assert service_access.service_client() is sentinel
 

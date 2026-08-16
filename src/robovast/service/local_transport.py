@@ -41,8 +41,9 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Callable, Optional
 
-from robovast.common import file_address, file_view
-from robovast.common.safe_path import safe_join
+from robovast.client import file_address
+from robovast.common import file_view
+from robovast.client.safe_path import safe_join
 from robovast.common.store import (read_campaign_created_at,
                                    read_campaign_description)
 from robovast.execution.control_server import (ControllerState, Phase, Status,
@@ -1736,7 +1737,7 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.campaign_data import read_test_result
         from robovast.common.execution import job_artifact_dir
-        from robovast.common.safe_path import UnsafePathError, safe_join
+        from robovast.client.safe_path import UnsafePathError, safe_join
         campaign_dir = self._campaigns_root() / campaign_id
         # job_name comes from a client, so confine it to the campaign (shared check).
         try:

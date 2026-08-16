@@ -40,7 +40,7 @@ def _isolated_login_config(tmp_path, monkeypatch):
     per-module isolation protects the module that thought of it and nothing else. It
     belongs here, where it covers every test that will ever reach for a credential.
     """
-    from robovast.common.cli import login  # pylint: disable=import-outside-toplevel
+    from robovast.client import login# pylint: disable=import-outside-toplevel
     monkeypatch.setenv(login.CONFIG_ENV_VAR, str(tmp_path / "robovast-login.json"))
 
 

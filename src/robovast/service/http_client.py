@@ -29,7 +29,7 @@ so existing imports keep working.
 import logging
 from typing import Optional
 
-from robovast.common import file_address
+from robovast.client import file_address
 from robovast.execution.control_server import Status
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef, CreateCampaignRequest,
@@ -56,7 +56,7 @@ class HTTPTransport(RobovastInterface):
 
     The base URL is either the service on this machine (``http://127.0.0.1:<port>``)
     or the deployed one behind its Ingress (``https://robovast.<domain>``) — see
-    ``robovast.common.cli.service_target`` for how a command chooses.
+    ``robovast.client.service_target`` for how a command chooses.
 
     Every request goes through one :class:`requests.Session`, which is what carries the
     credentials to the *eight* places that talk HTTP here: the four verb helpers and the
@@ -550,7 +550,7 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
       use for, and an install that ships only the client does not have it at all.
 
     Callers resolve *service_url* explicitly (see
-    :func:`robovast.common.cli.service_target.detected_service_url`); there is no
+    :func:`robovast.client.service_target.detected_service_url`); there is no
     ambient environment-variable selection of *which service*.
 
     Credentials, by contrast, **are** ambient when not given: ``token``/``user`` default
@@ -569,7 +569,7 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
                 "one with 'vast serve'.") from e
         return LocalTransport()
     if token is None or user is None:
-        from robovast.common.cli.login import credentials
+        from robovast.client.login import credentials
         _url, stored_token, stored_name = credentials()
         token = stored_token if token is None else token
         user = stored_name if user is None else user

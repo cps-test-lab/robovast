@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.common.cli import login as login_config
+from robovast.client import login as login_config
 
 
 @pytest.fixture

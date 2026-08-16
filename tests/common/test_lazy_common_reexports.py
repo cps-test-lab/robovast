@@ -3,7 +3,7 @@
 """``robovast.common`` re-exports lazily, and both halves of that must stay true.
 
 Python runs a package ``__init__`` before any submodule, so eager re-exports here were
-paid by every module underneath: ``import robovast.common.status`` -- a pydantic model
+paid by every module underneath: ``import robovast.client.status`` -- a pydantic model
 with no other dependency -- pulled ``numpy`` and ``scenario_execution`` and cost 528
 modules. That is what makes a light client impossible, and it is invisible until someone
 measures.
@@ -59,18 +59,18 @@ def test_an_unknown_name_still_raises_attribute_error():
 
 @pytest.mark.parametrize("heavy", HEAVY)
 def test_importing_a_light_submodule_stays_light(heavy):
-    result = _import_in_subprocess("import robovast.common.status")
+    result = _import_in_subprocess("import robovast.client.status")
     assert heavy not in result["mods"], (
-        f"`import robovast.common.status` pulled `{heavy}`. Something in "
+        f"`import robovast.client.status` pulled `{heavy}`. Something in "
         f"robovast/common/__init__.py imports eagerly again; the re-exports have to go "
         f"through `_LAZY` and `__getattr__`.")
 
 
 def test_the_light_submodule_import_stays_small():
     """A ceiling, not a target: it was 528 before the re-exports went lazy."""
-    result = _import_in_subprocess("import robovast.common.status")
+    result = _import_in_subprocess("import robovast.client.status")
     assert result["count"] < 400, (
-        f"`import robovast.common.status` now costs {result['count']} modules (was 262 "
+        f"`import robovast.client.status` now costs {result['count']} modules (was 262 "
         f"after the untangling, 528 before it).")
 
 
@@ -89,8 +89,8 @@ def test_the_client_closure_does_not_import_the_in_process_server():
     the whole local Docker lane. A client distribution would not even have that module.
     """
     result = _import_in_subprocess(
-        "import robovast.execution.campaign_wait, robovast.common.cli.service_target, "
-        "robovast.common.cli.login")
+        "import robovast.execution.campaign_wait, robovast.client.service_target, "
+        "robovast.client.login")
     for heavy in HEAVY:
         assert heavy not in result["mods"], f"the client closure pulled {heavy}"
     assert result["count"] < 400, (

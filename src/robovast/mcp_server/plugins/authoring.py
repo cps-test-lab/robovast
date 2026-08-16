@@ -134,7 +134,7 @@ def _address_lane(address: str):
     address in a known namespace — never by a prefix test that would send
     ``/home/me/x.vast`` to the service as workspace ``home``.
     """
-    from robovast.common.file_address import (RESULTS, SOURCES, AddressError,
+    from robovast.client.file_address import (RESULTS, SOURCES, AddressError,
                                               parse_address)
     try:
         namespace, owner, rel_path = parse_address(address)

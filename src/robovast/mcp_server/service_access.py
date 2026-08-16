@@ -66,7 +66,7 @@ def service_client():
     """
     if _IN_PROCESS is not None:
         return _IN_PROCESS
-    from robovast.common.cli.service_target import detected_service_url
+    from robovast.client.service_target import detected_service_url
     url = detected_service_url()
     if not url:
         return None

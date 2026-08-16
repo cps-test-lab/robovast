@@ -27,7 +27,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 @pytest.fixture
 def svc(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "robovast.common.cli.project_config.ProjectConfig.load",
+        "robovast.client.project_config.ProjectConfig.load",
         staticmethod(lambda *a, **k: None))
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
     transport = LocalTransport(store=store)

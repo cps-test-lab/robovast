@@ -412,7 +412,7 @@ there is no ``PUT``/``POST``/``DELETE`` route under ``/results`` at all, so a wr
 is a 405 from the router. Results are immutable — on the cluster the local tree is a
 cache of object-store objects, so a write would be a cache edit that silently vanishes.
 Each namespace is confined against **its own** root via
-``robovast.common.safe_path.safe_join``; a results address must never resolve inside a
+``robovast.client.safe_path.safe_join``; a results address must never resolve inside a
 workspace, or the read-only tree would inherit the writable one's permissions. The
 cluster's results lane has no filesystem to resolve against, so it uses ``check_relative``
 — the substrate-independent half of the same check — before composing an object key.

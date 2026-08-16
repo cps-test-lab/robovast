@@ -16,12 +16,12 @@
 
 """The one way to block until a campaign is over.
 
-Polling the service's ``get_status`` until :func:`~robovast.common.status.is_terminal`
+Polling the service's ``get_status`` until :func:`~robovast.client.status.is_terminal`
 is not lane-specific: the service drives every campaign, so its phase *is* the
 campaign's, whether the runs execute in local Docker or as Kubernetes Jobs. This lived
 in ``execution_utils/cluster_run`` under a cluster-flavoured name, which is why the MCP
 was about to grow a fourth hand-rolled poll loop beside the CLI's monitor and this one.
-:data:`~robovast.common.status.TERMINAL_PHASES` records what that costs: the terminal
+:data:`~robovast.client.status.TERMINAL_PHASES` records what that costs: the terminal
 test itself was previously re-inlined, with divergent membership, across the CLI, the
 service and the MCP plugins.
 
@@ -39,7 +39,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-from robovast.common.status import Status, is_terminal
+from robovast.client.status import Status, is_terminal
 
 logger = logging.getLogger(__name__)
 

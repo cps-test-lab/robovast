@@ -24,7 +24,7 @@ import click
 
 from robovast.common.campaign_index import build_campaign_store
 from robovast.common.cli import handle_cli_exception
-from robovast.common.cli.project_config import ProjectConfig
+from robovast.client.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.results_processing import is_postprocessing_needed, run_postprocessing

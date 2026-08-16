@@ -13,7 +13,7 @@ frames the tail exists to show.
 import pytest
 
 from robovast.common.errors import CampaignConfigError
-from robovast.common.status import failure_detail
+from robovast.client.status import failure_detail
 
 
 def _raise(exc):

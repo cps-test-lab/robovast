@@ -53,7 +53,8 @@ import threading
 from pathlib import Path
 
 from robovast.execution.control_server import Phase, is_running
-from robovast.common import file_address, file_view
+from robovast.client import file_address
+from robovast.common import file_view
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText,
                                         JobCounts, JobSummary,
@@ -2239,7 +2240,7 @@ class ClusterService(LocalTransport):
         the half of that check which is about the path's *shape*, and it is the half
         that applies to a key.
         """
-        from robovast.common.safe_path import check_relative
+        from robovast.client.safe_path import check_relative
         if rel_path:
             check_relative(rel_path)
         storage, bucket, prefix = self._campaign_object_location(campaign_id)
@@ -2400,7 +2401,7 @@ class ClusterService(LocalTransport):
         the outcome (clear/set ``share_error``) is recorded and published. Adjusting the
         share env and re-triggering re-uploads to the new provider.
         """
-        from robovast.common.status import failure_detail
+        from robovast.client.status import failure_detail
         from robovast.execution.backends import RunOptions
         from robovast.execution.control_server import ControllerState
         from robovast.execution.status_recovery import record_step_outcome

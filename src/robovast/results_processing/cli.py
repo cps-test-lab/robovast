@@ -29,7 +29,7 @@ import yaml
 
 from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
 from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.common.cli.project_config import ProjectConfig
+from robovast.client.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.merge_results import merge_results
 from robovast.execution.share_providers import \
@@ -463,7 +463,7 @@ def resolve_download_source(variant: str) -> str:
     when no share is available. An explicit variant forces that source and errors if it
     is not reachable. Returns the resolved variant (``postprocessed`` or ``raw``).
     """
-    from robovast.common.cli.service_target import \
+    from robovast.client.service_target import \
         detected_service_url  # pylint: disable=import-outside-toplevel
 
     has_service = bool(detected_service_url())
@@ -543,11 +543,11 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
     source = resolve_download_source(variant)
 
     if source == "postprocessed":
-        from robovast.common.cli.service_target import \
+        from robovast.client.service_target import \
             detected_service_url  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import \
             download_campaign_via_service  # pylint: disable=import-outside-toplevel
-        from robovast.common.cli.project_config import \
+        from robovast.client.project_config import \
             get_project_config  # pylint: disable=import-outside-toplevel
         from robovast.service.client import \
             RobovastClient  # pylint: disable=import-outside-toplevel
@@ -828,7 +828,7 @@ def list_downloads_cmd(campaigns):
     share). The sources are auto-detected from the connection and the ``.env`` share
     config — the same resolution ``vast results download`` uses.
     """
-    from robovast.common.cli.service_target import \
+    from robovast.client.service_target import \
         detected_service_url  # pylint: disable=import-outside-toplevel
 
     requested = set(campaigns)
@@ -1036,7 +1036,7 @@ def _require_service_client():
     it owns the backend (local Docker / cluster + object store), so the CLI needs
     no kubeconfig or object-store credentials of its own.
     """
-    from robovast.common.cli.service_target import \
+    from robovast.client.service_target import \
         detected_service_url  # pylint: disable=import-outside-toplevel
     url = detected_service_url()
     if not url:
