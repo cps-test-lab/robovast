@@ -89,3 +89,17 @@ def test_a_finished_campaign_whose_postprocessing_failed_says_so(service):
     result = _run()
     assert result.exit_code == 0
     assert "postprocessing failed" in result.output
+
+
+def test_no_phase_at_all_is_its_own_exit_code(service):
+    """``unknown`` is terminal but it is not failure, and conflating them misleads.
+
+    The service reports it for two things: an id that names no campaign, and a campaign
+    that died before it ever wrote to the store. Neither is "the campaign ran and failed",
+    which is what exit 1 told a caller — sending them to hunt for a failure that never
+    happened, or worse, to believe a typo'd id had really run and broken.
+    """
+    service([Phase.UNKNOWN])
+    result = _run()
+    assert result.exit_code == 3
+    assert "knows no phase" in result.output

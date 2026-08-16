@@ -416,7 +416,7 @@ def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
 def wait(campaign, interval, timeout, namespace, context):  # noqa: F811
-    """Block until CAMPAIGN is over, then exit 0 (finished) or 1 (failed/stopped).
+    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 3 (no phase).
 
     The lane-agnostic wait: the service drives every campaign, so its phase *is* the
     campaign's whichever backend the runs execute on. Prints each phase change as it
@@ -447,6 +447,17 @@ def wait(campaign, interval, timeout, namespace, context):  # noqa: F811
         handle_cli_exception(e)
         return
     click.echo(f"{campaign}: {status.phase}")
+    if status.phase == Phase.UNKNOWN:
+        # `unknown` is terminal, so the wait ends -- but it does not mean the campaign
+        # failed. The service has no phase for this id at all: either it is a typo, or the
+        # campaign died before it ever wrote to the store. Exiting 1 made both read as "the
+        # campaign ran and failed", sending the caller to look for a failure that never
+        # happened. A distinct code, because 0/1/2 are taken and a script branches on it.
+        click.echo(
+            f"{campaign}: the service knows no phase for this campaign — check the id, "
+            f"or see 'vast exec cluster log {campaign}' if it died before recording one.",
+            err=True)
+        raise SystemExit(3)
     if status.error:
         click.echo(f"{campaign}: {status.error}", err=True)
     if status.postprocessing_error:
