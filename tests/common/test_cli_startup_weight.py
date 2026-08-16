@@ -13,9 +13,20 @@ and the test runs in a **subprocess**: by the time the rest of the suite has run
 ``sys.modules`` in this process says nothing about what a fresh CLI start would import.
 
 Deferring is the fix, not removing: the operator commands still need these, they just
-import them in the command body. ``numpy`` and ``scenario_execution`` are absent from the
-list on purpose -- they come from ``robovast.common``'s eager re-exports, which is a
-separate (and larger) untangling.
+import them in the command body.
+
+``numpy`` and ``scenario_execution`` were once excluded here, as coming from
+``robovast.common`` and needing a larger untangling. That untangling is done -- the CLI
+root imported ``load_config`` for one call site, ``common/common.py`` imported both at
+module level for three ``isinstance`` branches and one function, and
+``variation/parameter_variation.py`` imported numpy for two seeding calls -- so they are
+now held to the same rule as the rest. 1777 modules originally, 624 after the cluster
+lane was deferred, 383 now, and nothing heavy at all.
+
+``convert_dataclasses_to_dict`` shows the trick worth reusing: it consults numpy only
+when ``sys.modules`` already has it. If nothing imported numpy, no object in the process
+can be a numpy value, so the branches cannot match and importing it to discover that is
+precisely the cost being avoided.
 """
 
 import subprocess
@@ -24,8 +35,10 @@ import textwrap
 
 import pytest
 
-#: Imported by the cluster lane and nothing a client command needs.
-FORBIDDEN = ("kubernetes", "boto3", "google", "paramiko", "docker")
+#: Nothing a plain ``vast`` invocation needs: the first five belong to the cluster lane
+#: and the local Docker lane, the last two to config generation and scenario parsing.
+FORBIDDEN = ("kubernetes", "boto3", "google", "paramiko", "docker",
+             "numpy", "scenario_execution")
 
 
 def _startup_modules() -> tuple[set, int]:
@@ -57,6 +70,6 @@ def test_a_plain_vast_start_does_not_import(forbidden):
 def test_the_startup_module_count_stays_in_the_hundreds():
     """A ceiling, not a target. It caught a 3x regression once and would again."""
     _, count = _startup_modules()
-    assert count < 1000, (
-        f"the CLI now imports {count} modules at startup (was ~625). Something gained a "
+    assert count < 500, (
+        f"the CLI now imports {count} modules at startup (was 383). Something gained a "
         f"module-level import of a heavy subsystem; see this module's docstring.")

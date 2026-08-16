@@ -17,12 +17,15 @@
 import logging
 import os
 import pickle
+import sys
 from dataclasses import asdict, is_dataclass
 
-import numpy as np
 import yaml
-from scenario_execution import \
-    get_scenario_parameters as _external_get_scenario_parameters
+
+# numpy and scenario_execution are deliberately NOT imported here. This module is what
+# `from robovast.common import <name>` resolves to, so a module-level import of either
+# is paid by every `vast` invocation -- `vast wait` and `vast --help` included -- for a
+# simulator stack and an array library they never touch. See the two use sites below.
 
 from .config import validate_config
 from .file_cache import FileCache
@@ -126,17 +129,21 @@ def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-stateme
     elif isinstance(obj, tuple):
         # Convert tuples to lists and recursively process elements
         return [convert_dataclasses_to_dict(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        # Convert numpy arrays to lists and recursively process elements
-        return [convert_dataclasses_to_dict(item) for item in obj.tolist()]
-    elif isinstance(obj, (np.integer, np.floating)):
-        # Convert numpy scalars to Python native types
-        return obj.item()
-    elif isinstance(obj, np.bool_):
-        # Convert numpy bool to Python bool
-        return bool(obj)
-    else:
-        return obj
+    # Consult numpy only if something already imported it. If it is not in sys.modules,
+    # no object in this process can be a numpy value, so the branches below cannot match
+    # -- and importing it to find that out is exactly the cost being avoided.
+    np = sys.modules.get("numpy")
+    if np is not None:
+        if isinstance(obj, np.ndarray):
+            # Convert numpy arrays to lists and recursively process elements
+            return [convert_dataclasses_to_dict(item) for item in obj.tolist()]
+        if isinstance(obj, (np.integer, np.floating)):
+            # Convert numpy scalars to Python native types
+            return obj.item()
+        if isinstance(obj, np.bool_):
+            # Convert numpy bool to Python bool
+            return bool(obj)
+    return obj
 
 
 def filter_configs(configs):
@@ -183,6 +190,8 @@ def get_scenario_parameters(scenario_file):
     if cached_params:
         return pickle.loads(cached_params)
     else:
+        from scenario_execution import \
+            get_scenario_parameters as _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
         params = _external_get_scenario_parameters(scenario_file)
         file_cache.save_file_to_cache([scenario_file], pickle.dumps(params), content=True, binary=True)
         return params

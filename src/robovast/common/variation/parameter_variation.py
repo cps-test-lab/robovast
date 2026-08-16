@@ -17,7 +17,11 @@
 
 import random
 
-import numpy as np
+
+# numpy is imported inside `variation()` rather than here. This module is reachable from
+# `robovast.common`, so a module-level import put an array library into every `vast`
+# invocation for the sake of two seeding calls and one `normal()` draw -- work that only
+# happens when a campaign's configurations are actually being generated.
 
 from .base_variation import DestinationConfig, Variation
 
@@ -59,6 +63,8 @@ class ParameterVariationDistributionUniform(Variation):
         # Validate required parameters
         if min_val is None or max_val is None:
             raise ValueError("Parameters 'min' and 'max' are required for ParameterVariationDistributionUniform")
+
+        import numpy as np  # pylint: disable=import-outside-toplevel
 
         # Set random seed for reproducibility when one is provided
         if seed is not None:
@@ -146,6 +152,8 @@ class ParameterVariationDistributionGaussian(Variation):
             raise ValueError("Parameter 'std' is required for ParameterVariationDistributionGaussian")
         if seed is None:
             raise ValueError("Parameter 'seed' is required for ParameterVariationDistributionGaussian")
+
+        import numpy as np  # pylint: disable=import-outside-toplevel
 
         # Set random seed
         random.seed(seed)

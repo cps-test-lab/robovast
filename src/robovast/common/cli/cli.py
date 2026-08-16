@@ -27,8 +27,10 @@ from importlib.metadata import entry_points
 
 import click
 
-from ..common import load_config
-from ..execution import is_campaign_dir
+# `load_config` and `is_campaign_dir` are NOT imported here. Their modules import numpy
+# and scenario_execution at module level, and each is used exactly once, inside a command
+# body -- so importing them at the top made *every* `vast` invocation pay for a simulator
+# stack and an array library, including `vast wait`, `vast login` and `vast --help`.
 from ..logging_config import (get_logger, setup_logging,
                               setup_logging_from_project_config)
 from .checks import check_docker_access
@@ -139,6 +141,8 @@ def init(config, results_dir, project_log_level, force):
 
     # check integrity of config file
     try:
+        from ..common import \
+            load_config  # pylint: disable=import-outside-toplevel
         load_config(config)
     except Exception as e:
         click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
@@ -630,7 +634,7 @@ def workspace_init(directory, name, excludes, namespace, context):
               help='Also delete workspace files that are absent from DIRECTORY '
                    '(full mirror). Off by default: update only adds/overwrites.')
 @target_options
-def workspace_update(workspace, directory, excludes, prune, namespace, context):
+def workspace_update(workspace, directory, excludes, prune, namespace, context):  # pylint: disable=redefined-outer-name
     """Re-sync DIRECTORY into an EXISTING workspace (id or name).
 
     Uploads every file from DIRECTORY, overwriting in place — ``.vast``/``.osc``
@@ -684,7 +688,7 @@ def workspace_list(namespace, context):
               help='Also list the entities the world compiles. Costs a model build.')
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
 @target_options
-def workspace_world(workspace, path, targets, entities, as_json, namespace, context):
+def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
     """Describe the world this campaign's simulator will load.
 
     The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
@@ -729,7 +733,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 @workspace.command('delete')
 @click.argument('workspace', metavar='WORKSPACE')
 @target_options
-def workspace_delete(workspace, namespace, context):
+def workspace_delete(workspace, namespace, context):  # pylint: disable=redefined-outer-name
     """Delete a workspace and its inputs (existing campaigns are unaffected).
 
     WORKSPACE may be a ``ws-…`` id or a workspace name (unique names resolve;
@@ -1009,6 +1013,8 @@ def import_results(archive, output, force):
                     click.echo(f"Warning: Archive contains multiple top-level directories: {top_level_dirs}")
 
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
+                from ..execution import \
+                    is_campaign_dir  # pylint: disable=import-outside-toplevel
                 if campaign and not is_campaign_dir(campaign):
                     click.echo(
                         f"Warning: Archive does not contain a recognized campaign directory "
