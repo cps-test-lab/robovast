@@ -4,23 +4,38 @@
 Quickstart
 ==========
 
-There are two roles, and only one of them touches Kubernetes.
+There are three ways to work with RoboVAST, and only one of them touches Kubernetes.
+Find yours before installing anything — they differ in what you install, not just in what
+you do.
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 30 50
+   :widths: 22 24 54
 
-   * - Role
-     - Needs
-     - Does
-   * - **Operator**
-     - a kubeconfig, once
-     - Deploys and publishes RoboVAST. Three commands.
-   * - **User**
-     - a URL and an access token
-     - Opens it. No kubeconfig, no kubectl, no venv for the web UI.
+   * - Way of working
+     - Installs
+     - For
+   * - **User** — a client against a service
+     - ``robovast-client``
+     - Driving a service someone else runs, or your own. Push a project, launch a
+       campaign, wait for it, fetch results. No simulator, no Docker, no kubeconfig.
+       See :ref:`client`.
+   * - **Agent** — MCP, no install
+     - nothing
+     - An LLM authoring, validating, launching and querying campaigns over the service's
+       own ``/mcp`` endpoint. Three steps still need a shell, and the client provides
+       them. See :ref:`mcp`.
+   * - **Operator / developer**
+     - the whole product
+     - Running a service — locally over Docker, or deployed on a cluster for a team — and
+       changing RoboVAST itself. The only role that needs a kubeconfig, and only for the
+       cluster half. See :ref:`setup`.
 
-If you are evaluating RoboVAST on your own machine, you are both — but you can stop
+The service is the same in every case, and so is the contract: the web UI, the REST API,
+the ``vast`` CLI and the MCP tools are four clients of one interface. What changes is
+which of them you use and what you had to install to get there.
+
+If you are evaluating RoboVAST on your own machine, you are all three — but you can stop
 after :ref:`quickstart-local` and ignore the cluster entirely.
 
 
@@ -58,6 +73,22 @@ makes both the login and the registration durable.
 
 The web UI, the REST API and the MCP server are all on that one port.
 
+**A local service needs no hostname, no domain and no certificate.** It binds
+``127.0.0.1:8800`` over plain HTTP, and every part of RoboVAST that would demand
+otherwise is confined to the cluster half: the session cookie sets ``Secure`` only when
+the request arrived over HTTPS, so a browser login works on ``http://127.0.0.1``, and the
+refusals that reject an unencrypted or tokenless deployment live in ``vast exec cluster
+setup``, which a local service never runs. There is nothing to register, nothing to put in
+``/etc/hosts``, and no certificate to trust — a DNS name and TLS become necessary only
+when you publish the service to other machines, which is :ref:`the operator's step
+<quickstart-operator>`.
+
+Bind somewhere other than ``127.0.0.1`` only behind a tunnel or a TLS-terminating proxy.
+The service always requires its access token, and over plain HTTP on a shared interface
+that token crosses the network in clear text.
+
+
+.. _quickstart-operator:
 
 Operator: deploy it for a team
 ==============================
@@ -137,7 +168,7 @@ unattributed rather than as somebody invented.
 
 .. code-block:: bash
 
-   pip install robovast
+   pip install robovast-client
    vast login https://robovast.example.org
 
 It stores the URL, token and name in ``~/.config/robovast/config.json`` (mode ``0600``) and

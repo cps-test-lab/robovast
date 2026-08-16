@@ -1163,7 +1163,11 @@ def cluster_token(namespace, kube_context, quiet):
         click.echo(f"RoboVAST is at {url}")
         click.echo(f"Access token: {token}")
         click.echo("")
-        click.echo("Command line:  pip install robovast && "
+        # robovast-client, not robovast: this is handed to somebody who will *drive* the
+        # service, and the full distribution is 88 packages and ~290 MB of simulator and
+        # dataframe machinery they have no use for. Telling them to install it is exactly
+        # what the split exists to stop.
+        click.echo("Command line:  pip install robovast-client && "
                    f"vast login {url}")
         # No name here: the operator prints this for somebody else, and only that person
         # can declare theirs -- 'vast login' prints the same command with it filled in.

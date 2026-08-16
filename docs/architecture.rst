@@ -22,9 +22,58 @@ bindings:
 * the **client** :class:`robovast.service.client.RobovastClient`;
 * the **MCP tools** and **``vast`` CLI** commands, which wrap the client.
 
-Campaign status reuses :class:`robovast.execution.control_server.Status`
-verbatim — the live state the campaign driver publishes — so every client reads
-one status vocabulary regardless of where the campaign runs.
+Campaign status reuses :class:`robovast.client.status.Status` verbatim — the live state
+the campaign driver publishes — so every client reads one status vocabulary regardless of
+where the campaign runs.
+
+.. _architecture-distributions:
+
+Four distributions, layered by audience
+---------------------------------------
+
+The contract above is one thing; what you have to install to use it is another. RoboVAST
+ships as separate distributions so each audience installs what it needs and — the part
+that matters — can decline what it does not.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 46 30
+
+   * - Distribution
+     - Contains
+     - Adds
+   * - ``robovast-client``
+     - the ``vast`` root command group and every verb that only *drives* a service, the
+       interface models, the HTTP client, the credential store
+     - ``pydantic``, ``click``, ``requests``
+   * - ``robovast``
+     - service core, config and variation, results, the MCP server, the campaign
+       controller, the local Docker lane
+     - no Kubernetes client
+   * - ``robovast-cluster``
+     - the Kubernetes execution lane, its cluster-config plugins, the deploy and operator
+       commands
+     - ``kubernetes``, ``boto3``, ``google-cloud-storage``
+   * - ``robovast-nav`` / ``robovast-sim-roqsim``
+     - navigation variation types and panels; the roqsim simulator backend
+     - per package
+
+**The dependency direction is the design.** ``robovast-client`` depends on nothing of
+ours, ``robovast`` depends on it, and the lanes depend on ``robovast``. ``robovast`` must
+never depend on a lane — that edge back is what would make the graph cyclic, and it is why
+a lane cannot be offered as an extra. Anywhere that installs one needs its own step.
+
+They share **one import namespace**: ``robovast/``, ``robovast/service/`` and
+``robovast/execution/`` carry no ``__init__.py`` in any distribution, so they are PEP 420
+namespace packages and the trees merge at import time. No import path depends on which
+distribution a module ships in. In a deployed pod the core is installed editable from
+``/opt/robovast/src`` while the cluster lane's files land in ``site-packages`` — one
+namespace, two origins, no shadowing.
+
+The practical consequence, and the reason it is worth the packaging: ``pip install
+robovast-client`` is 13 packages and ~30 MB against the core's 88 and ~290 MB, and a
+``vast`` assembled from it lists exactly the verbs it can run. See :ref:`client`, and
+``AGENTS.md`` §5 for the rules a change here must hold.
 
 Where the driver runs
 ----------------------

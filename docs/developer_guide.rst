@@ -203,6 +203,52 @@ Afterwards you can start the GUI:
    :ref:`campaign-store` for the schema and internals.
 
 
+.. _devguide-distributions:
+
+Working across the distributions
+--------------------------------
+
+RoboVAST is four packages in one checkout (see :ref:`architecture-distributions`), which
+changes two things about the development loop. Both have bitten; both are silent.
+
+**Install the client last.** ``robovast-client`` is a *non-optional path dependency* of
+``robovast``, so ``pip install -e .`` resolves it and installs a plain **copy** into
+``site-packages`` — silently replacing an editable install done earlier. Editing
+``src/robovast_client/`` then has no effect, and nothing says so. ``make venv`` installs it
+after everything that depends on it for exactly this reason; if you install by hand, do
+the same, and check with:
+
+.. code-block:: bash
+
+   python -c "import robovast.client.cli as m; print(m.__file__)"
+
+A path under ``src/robovast_client/`` is editable; one under ``site-packages`` is not.
+
+**Entry points live in installed metadata, not in ``pyproject.toml``.** Adding, moving or
+removing one does nothing until the owning distribution is reinstalled, and an editable
+checkout looks entirely normal in the meantime. The failure mode depends on which group:
+
+* ``robovast.cli_plugins`` degrades **loudly** — ``load_plugins()`` prints
+  ``Warning: Failed to load plugin '<name>'`` and carries on.
+* ``robovast.cli_startup`` used to degrade **silently**, and cost real damage: with the
+  core installed but its ``.env`` hook unregistered, no ``./.env`` was read, and
+  ``vast exec cluster upgrade`` — which reconciles Secrets from the environment —
+  concluded the registry and git credentials were gone and deleted both. It now refuses
+  rather than running on, naming the reinstall.
+
+The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
+before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
+the Makefile* changes, so it is the safe way to do it.
+
+**A client install must stay a working install.** ``robovast-client`` ships without the
+core, and every leak found so far has been a *deferred* import of it — the module imports
+perfectly and the command dies at call time, in exactly the install the distribution
+advertises. An import check cannot see that;
+``tests/service/test_client_needs_no_core.py`` drives the commands with the core made
+un-importable. Anything the client needs must live in the client: a wire constant like
+``COMMAND_LIMIT_S`` belongs in ``interface.py``, not in the server module that enforces it.
+
+
 Container Image Compatibility Version
 -------------------------------------
 

@@ -50,6 +50,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    :caption: Contents:
 
    quickstart
+   client
    setup
    how_to_run
    configuration

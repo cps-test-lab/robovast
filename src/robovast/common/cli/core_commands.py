@@ -39,6 +39,7 @@ from robovast.client.logging_config import get_logger
 from robovast.client.project_config import ProjectConfig, get_project_config
 from robovast.client.service_target import _service_alive
 from robovast.client.service_target import echo_target as _echo_target
+from robovast.service.interface import DEFAULT_PORT
 
 from .checks import check_docker_access
 
@@ -186,10 +187,12 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
 
 @click.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
-              help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel/proxy: '
-                   'the service is unauthenticated in v1.')
-@click.option('--port', default=8800, show_default=True, type=int,
-              help='Port to listen on.')
+              help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel or a proxy '
+                   'that terminates TLS: a local service is plain HTTP by design, so the '
+                   'access token would otherwise cross the network in clear text.')
+@click.option('--port', default=DEFAULT_PORT, show_default=True, type=int,
+              help='Port to listen on. The conventional one, which every client probes '
+                   'before falling back to a stored login.')
 @click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
@@ -322,7 +325,6 @@ def ui(port, no_browser):
     import webbrowser  # pylint: disable=import-outside-toplevel
 
     from robovast.client.service_target import detected_service_url
-    from robovast.service.interface import DEFAULT_PORT as SERVICE_PORT
 
     if port:
         url = f'http://127.0.0.1:{port}'
@@ -333,7 +335,7 @@ def ui(port, no_browser):
         if not url:
             raise click.ClickException(
                 "no robovast-service found. Either run one on this machine (it "
-                f"answers on :{SERVICE_PORT}), or point at the deployed one with "
+                f"answers on :{DEFAULT_PORT}), or point at the deployed one with "
                 "'vast login https://robovast.<domain>'.")
     click.echo(f"✓ robovast-service: {url}   (web UI + REST API + /docs)")
     if not no_browser:

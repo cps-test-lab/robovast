@@ -160,16 +160,23 @@ Everybody else, from a machine with no kubeconfig:
 
 .. code-block:: bash
 
-   # a browser: open https://robovast.example.org and log in
-   vast login https://robovast.example.org          # CLI and stdio MCP
+   # a browser: open https://robovast.example.org and log in — nothing to install
+
+   pip install robovast-client                      # the CLI, 13 packages, ~30 MB
+   vast login https://robovast.example.org
+
    claude mcp add --transport http robovast \
        https://robovast.example.org/mcp \
        --header "Authorization: Bearer <token>" \
-       --header "X-Robovast-User: <name>"           # MCP over HTTP
+       --header "X-Robovast-User: <name>"           # an agent: MCP over HTTP
 
-``vast login`` prints that second command filled in with the token and the name it just
+``vast login`` prints that last command filled in with the token and the name it just
 stored, so nobody has to assemble it by hand — and campaigns an agent starts carry the
 same name as the ones its owner starts.
+
+``robovast-client``, not ``robovast``: a user of a deployed service drives it over HTTP and
+needs no simulator, no Docker and no Kubernetes client. The full distribution is 88
+packages against the client's 13. See :ref:`client`.
 
 ``vast ui`` opens whichever service this machine talks to. When the Ingress itself is
 broken, ``kubectl port-forward svc/robovast-service 8800:8800`` puts one back on the
