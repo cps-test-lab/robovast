@@ -1190,13 +1190,19 @@ def _mount_ui(app) -> None:
 
     The RobovastInterface routes are registered first and win; this mounts the SPA at
     ``/`` for everything else (``html=True`` serves ``index.html`` at the root). Served
-    same-origin with the API, so no CORS. Silently no-ops when the UI isn't built —
-    the service then runs API-only.
+    same-origin with the API, so no CORS.
+
+    A missing build degrades to API-only rather than refusing to start — a service with no
+    UI is still a working service. But it **warns**, because the failure is otherwise
+    invisible: the UI is the half of the product most people meet first, and "I opened the
+    URL and got JSON" is a confusing way to discover it was never built.
     """
     dist = _ui_dist()
     if dist is None:
-        logger.info("web UI build not found — serving API only "
-                    "(build it with `cd frontend/ui && npm run build`)")
+        logger.warning(
+            "web UI build not found — serving API only. Build it with "
+            "`cd frontend/ui && npm run build`, or point ROBOVAST_UI_DIST at a built "
+            "copy (an image bakes it in and sets that variable).")
         return
     from fastapi.staticfiles import \
         StaticFiles  # pylint: disable=import-outside-toplevel
