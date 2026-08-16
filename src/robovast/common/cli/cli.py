@@ -227,43 +227,6 @@ def _ensure_ui_built(rebuild: bool = False) -> None:
     subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
 
 
-def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
-    """Build the cluster-lane service for ``vast serve``.
-
-    In-pod the config/cluster come from the pod env; off-cluster the config is read
-    from the deployed robovast-service (the authoritative record), so no local setup
-    is needed.
-    """
-    from robovast.service.cluster_service import ClusterService
-    if in_pod:
-        return ClusterService(kube_context=context, store=store)
-    from robovast.execution.cluster_execution.service_deploy import \
-        read_service_config_from_cluster
-    name, kwargs = read_service_config_from_cluster(k8s_namespace, context)
-    if not name:
-        for_ctx = f" in context {context!r}" if context else ""
-        raise click.ClickException(
-            f"no robovast-service found{for_ctx} (namespace "
-            f"{k8s_namespace!r}) to read the cluster config from — deploy "
-            "one with 'vast exec cluster setup <cluster-config>"
-            f"{f' -x {context}' if context else ''}', or check "
-            "--context/--namespace.")
-    # Off-cluster the driver reaches the cluster's object store through a kubectl
-    # port-forward, which is fragile under the large per-file result transfers a big
-    # campaign produces. This mode is a dev convenience; the deployed in-cluster
-    # service reads the store directly (no tunnel).
-    click.secho(
-        "WARNING: running the cluster backend off-cluster — campaigns are "
-        "driven from this host through a kubectl port-forward to the cluster "
-        "object store, which is fragile under large result transfers. This "
-        "mode is a dev convenience; run large campaigns via the deployed "
-        "in-cluster robovast-service.",
-        fg="yellow")
-    return ClusterService(namespace=k8s_namespace, cluster_config_name=name,
-                          cluster_config_kwargs=kwargs, kube_context=context,
-                          store=store)
-
-
 def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback signature
     """Collapse ``--workspace-dir`` to a single directory, refusing more than one.
 
@@ -378,15 +341,18 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
             "pod has no such directory. Upload the project instead with "
             "'vast workspace init <dir>'.")
 
+    from robovast.service.serve_backends import resolve as resolve_backend
+    try:
+        lane = resolve_backend(backend)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    store = None
     if backend == 'cluster':
         from robovast.service.workspaces import WorkspaceStore
         store = WorkspaceStore(workspace_dir=workspace_dir)
-        impl = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
-        storage = "object store"
-    else:
-        from robovast.service.client import LocalTransport
-        impl = LocalTransport(workspace_dir=workspace_dir)
-        storage = "local filesystem"
+    impl = lane.build(in_pod=in_pod, context=context, namespace=k8s_namespace,
+                      store=store, workspace_dir=workspace_dir)
+    storage = lane.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     click.echo(f"Starting robovast-service on http://{host}:{port} "

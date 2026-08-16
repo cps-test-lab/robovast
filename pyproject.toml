@@ -115,6 +115,12 @@ execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
 evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
 
+# Execution lanes `vast serve` can run. Resolved by name so the core never has to
+# import the cluster package to start a service -- see service/serve_backends.py.
+[tool.poetry.plugins."robovast.execution_backends"]
+local = "robovast.service.local_serve_backend:LocalServeBackend"
+cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"
+
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
 rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"

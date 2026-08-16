@@ -240,6 +240,25 @@ availability by deployment rather than by backend:
      - **no**
      - upload with ``vast workspace init``; edits need a re-push
 
+Execution lanes are resolved, not imported
+------------------------------------------
+
+``vast serve`` runs one lane, fixed when it starts, and finds it through the
+``robovast.execution_backends`` entry-point group — the same mechanism as simulators,
+variation types and panel types, through the same resolver
+(``robovast.common.plugin_ref.load_ref``). ``local`` and ``cluster`` each register a
+class with a ``build()``; the core never names ``ClusterService``.
+
+Two properties this exists for. Listing the lanes must not import them, so a caller can
+report "the cluster lane is not installed" rather than raising ``ModuleNotFoundError``
+from a module nobody asked for. And choosing one must not load the other: an in-pod
+service has no Docker and should not import the local lane to discover that. Both are
+pinned by ``tests/service/test_serve_backends.py``.
+
+As with simulators, **a lane must import without the thing it drives** — it is imported
+in a process that may have neither a kubeconfig nor a Docker socket. Reaching for either
+belongs inside ``build()``.
+
 .. _container-exec-architecture:
 
 Container exec: a diagnostic that cannot become a run
