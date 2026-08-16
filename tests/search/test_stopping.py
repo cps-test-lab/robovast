@@ -6,10 +6,9 @@
 
 import pytest
 
-from robovast.common.config import (BatchesBudget, MetricStop, NoImprovementStop,
-                                    SearchConfig, TargetObjectiveStop, TimeBudget)
-from robovast.search.stopping import (StopConditions, StopSnapshot,
-                                      build_stop_conditions)
+from robovast.common.config import (BatchesBudget, MetricStop, NoImprovementStop, SearchConfig,
+                                    TargetObjectiveStop, TimeBudget)
+from robovast.search.stopping import StopConditions, StopSnapshot, build_stop_conditions
 
 
 def _sc(budget=(), stopping=(), name='failure_rate', direction='maximize'):

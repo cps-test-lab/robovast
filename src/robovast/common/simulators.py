@@ -44,8 +44,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
-                                    SUT_CONTAINER)
+from robovast.common.config import SCENARIO_CONTAINER, SIMULATION_CONTAINER, SUT_CONTAINER
 
 #: Entry-point group backends register in.
 SIMULATOR_GROUP = "robovast.simulators"

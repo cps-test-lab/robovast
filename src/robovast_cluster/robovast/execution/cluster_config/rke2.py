@@ -22,8 +22,7 @@ from kubernetes import client
 
 from robovast.execution.cluster_execution.kube_client import load_kube_config
 
-from ..cluster_execution.kubernetes import (apply_manifests, check_pod_running,
-                                            delete_manifests)
+from ..cluster_execution.kubernetes import apply_manifests, check_pod_running, delete_manifests
 from .base_config import BaseConfig
 
 MINIO_MANIFEST_RKE2 = """---

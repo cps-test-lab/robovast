@@ -280,8 +280,7 @@ def expected_container_files(plan) -> Optional[Dict[str, str]]:
     """
     if plan is None:
         return None
-    from robovast.common.log_tail import \
-        MAIN_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.log_tail import MAIN_CONTAINER  # pylint: disable=import-outside-toplevel
     files = {MAIN_CONTAINER: f"{_CSV_PREFIX}main.csv"}
     for container in plan.sidecars:
         files[container.name] = f"{_CSV_PREFIX}{container.name}.csv"

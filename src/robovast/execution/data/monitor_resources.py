@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Resource monitoring daemon - records per-process CPU/memory at 1s intervals to a CSV file."""
 import csv
+import os
 import signal
 import sys
 import time
-import os
+
 import psutil
 
 _shutdown = False  # pylint: disable=invalid-name

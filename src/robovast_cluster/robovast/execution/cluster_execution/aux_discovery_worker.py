@@ -51,8 +51,7 @@ def main(argv) -> int:
 
     # Imported lazily; this is also where the plugin gets pulled onto sys.path
     # (inside _discover_specs via ensure_workspace_plugins).
-    from .container_runner import (  # pylint: disable=import-outside-toplevel
-        _discover_specs)
+    from .container_runner import _discover_specs  # pylint: disable=import-outside-toplevel
 
     specs = _discover_specs(job["config_path"])
 

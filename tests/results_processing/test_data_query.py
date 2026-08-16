@@ -6,9 +6,7 @@ import statistics
 
 import pytest
 
-from robovast.results_processing.data_query import (DataQueryError,
-                                                    describe_data_db, query_data_db)
-
+from robovast.results_processing.data_query import DataQueryError, describe_data_db, query_data_db
 
 # -- json_each survives the authorizer (Phase 0.2, gates search_metadata delete) --
 

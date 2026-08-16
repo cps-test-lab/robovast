@@ -132,8 +132,7 @@ def test_a_verb_that_talks_to_a_service_gets_that_far(without_core, monkeypatch)
 def test_waiting_builds_its_own_client(without_core, monkeypatch):
     """`campaign_wait` had the same import, so `vast wait` -- the verb a client install
     exists to run -- failed the same way."""
-    from robovast.execution import \
-        campaign_wait  # pylint: disable=import-outside-toplevel
+    from robovast.execution import campaign_wait  # pylint: disable=import-outside-toplevel
 
     class _Done:
         phase, stage, error, postprocessing_error = "finished", "", "", ""

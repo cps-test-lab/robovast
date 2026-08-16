@@ -27,8 +27,7 @@ import math
 import random
 from typing import Any
 
-from robovast.common.config import (BoolDim, ChoiceDim, FloatDim, IntDim,
-                                     SearchDim)
+from robovast.common.config import BoolDim, ChoiceDim, FloatDim, IntDim, SearchDim
 
 from ..strategy import SearchStrategy
 from ..types import Evaluation, ParamSet, SearchReport

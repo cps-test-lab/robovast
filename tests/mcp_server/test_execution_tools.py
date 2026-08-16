@@ -61,8 +61,7 @@ class _FakeAuthoringClient:
         self.calls = []
 
     def list_workspaces(self):
-        from robovast.service.interface import (ListWorkspacesResponse,
-                                                WorkspaceInfo)
+        from robovast.service.interface import ListWorkspacesResponse, WorkspaceInfo
         return ListWorkspacesResponse(
             workspaces=[WorkspaceInfo(workspace_id="ws-ab12", name="demo")])
 
@@ -73,8 +72,7 @@ class _FakeAuthoringClient:
                                 total_trials=6)
 
     def preview_configurations(self, workspace_id, max_configs=0, path=""):
-        from robovast.service.interface import (PreviewConfiguration,
-                                                PreviewResponse)
+        from robovast.service.interface import PreviewConfiguration, PreviewResponse
         self.calls.append(("preview_configurations", workspace_id, max_configs, path))
         return PreviewResponse(
             configs=1, runs_per_config=2, total_trials=2,
@@ -166,8 +164,7 @@ class _FakeClient:
         return ActionResult(ok=True, message=f"killed job {job_name}")
 
     def list_campaigns(self, request=None):
-        from robovast.service.interface import (CampaignSummary,
-                                                ListCampaignsResponse)
+        from robovast.service.interface import CampaignSummary, ListCampaignsResponse
         self.calls.append(("list_campaigns", request))
         return ListCampaignsResponse(total=2, campaigns=[
             CampaignSummary(campaign_id="svc-running", phase="running"),
@@ -351,6 +348,7 @@ def dual_lane(monkeypatch):
 
         def version(self):
             from robovast.service.interface import VersionInfo
+
             # The service reports its *current* lane. Asking it which lane a past
             # campaign used gives the wrong answer, which is the point of this fixture.
             return VersionInfo(robovast_version="x", backend="docker",
@@ -619,6 +617,7 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
 
 def _log_with_build(build_lines=400):
     from robovast.common.campaign_logs import phase_banner
+
     # Shaped like real BuildKit output: one repeated step whose only variation is
     # standalone numbers, so the summarizer collapses it the way it collapses a run's
     # flood. (A trailing token like ``pkg7`` would not normalize — numbers glued to a

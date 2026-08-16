@@ -21,8 +21,7 @@ That is why it is path + size, not mtime and not content.
 import json
 import os
 
-from robovast.results_processing.notebook_render import (_data_fingerprint,
-                                                         render_notebook_html)
+from robovast.results_processing.notebook_render import _data_fingerprint, render_notebook_html
 
 
 def _touch(path, text="x"):

@@ -7,8 +7,7 @@
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.config import (ChoiceDim, ConfigV1, FloatDim, IntDim,
-                                    validate_config)
+from robovast.common.config import ChoiceDim, ConfigV1, FloatDim, IntDim, validate_config
 
 BASE = {"version": 2, "execution": {"containers": {"scenario": {"image": "img"}}, "runs": 2}}
 

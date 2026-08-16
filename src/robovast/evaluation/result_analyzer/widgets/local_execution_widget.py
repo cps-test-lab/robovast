@@ -18,8 +18,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QThread, Signal
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLineEdit,
-                               QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from .terminal_output_widget import TerminalOutputWidget
 

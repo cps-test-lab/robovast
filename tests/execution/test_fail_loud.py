@@ -10,14 +10,12 @@ from unittest import mock
 
 import pytest
 
-
 # -- A1: aux-container discovery ---------------------------------------------
 
 def test_aux_discovery_subprocess_failure_raises():
     """A plugin-discovery subprocess that exits non-zero must abort, not yield []."""
     from robovast.execution.cluster_execution import container_runner
-    from robovast.execution.cluster_execution.container_runner import \
-        AuxDiscoveryError
+    from robovast.execution.cluster_execution.container_runner import AuxDiscoveryError
 
     completed = mock.Mock(returncode=1, stdout="boom", stderr="traceback here")
     with mock.patch.object(container_runner.subprocess, "run", return_value=completed):
@@ -28,8 +26,7 @@ def test_aux_discovery_subprocess_failure_raises():
 def test_aux_discovery_subprocess_no_result_raises():
     """A worker that exits 0 but writes no result file must abort, not yield []."""
     from robovast.execution.cluster_execution import container_runner
-    from robovast.execution.cluster_execution.container_runner import \
-        AuxDiscoveryError
+    from robovast.execution.cluster_execution.container_runner import AuxDiscoveryError
 
     completed = mock.Mock(returncode=0, stdout="", stderr="")
     with mock.patch.object(container_runner.subprocess, "run", return_value=completed):
@@ -243,8 +240,7 @@ def test_queue_with_no_status_yet_passes():
 def test_forbidden_read_is_not_reported_as_missing():
     """A missing RBAC grant must never masquerade as a broken queue — the two demand
     opposite responses, and refusing to run on a 403 would be worse than the hang."""
-    from robovast.execution.cluster_execution.kubernetes_kueue import \
-        KueueCheckUnavailable
+    from robovast.execution.cluster_execution.kubernetes_kueue import KueueCheckUnavailable
 
     api = _kueue_api(local_queue=_LQ, forbidden=("robovast",))
     with pytest.raises(KueueCheckUnavailable):

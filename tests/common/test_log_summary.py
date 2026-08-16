@@ -3,9 +3,9 @@
 """The log summarizer: a flood collapses to one counted pattern, and severity is
 classified from the producer's own marker rather than a keyword guess."""
 
-from robovast.common.log_summary import (DEFAULT_TOP, SEVERITIES, normalize,
-                                         peel_prefixes, severity_of, severity_rank,
-                                         summarize)
+from robovast.common.log_summary import (DEFAULT_TOP, SEVERITIES, normalize, peel_prefixes,
+                                         severity_of, severity_rank, summarize)
+
 
 #: The incident this module exists for: a bridge rejecting TF wholesale, one warning
 #: per tick, each carrying a different timestamp and stamp.

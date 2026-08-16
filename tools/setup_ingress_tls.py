@@ -50,8 +50,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from robovast.common.kube import load_kube_config  # noqa: E402
-from robovast.execution.cluster_execution.service_deploy import (  # noqa: E402
-    SERVICE_NAME, AUTH_SECRET_NAME)
+from robovast.execution.cluster_execution.service_deploy import AUTH_SECRET_NAME  # noqa: E402
+from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME
 
 #: The cert-manager release this installs when it is missing.
 CERT_MANAGER_VERSION = "v1.16.2"

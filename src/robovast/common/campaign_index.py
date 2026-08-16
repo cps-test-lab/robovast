@@ -31,12 +31,10 @@ from typing import Optional
 
 import yaml
 
-from .campaign_data import (aggregate_run_status, list_config_dirs,
-                            list_run_dirs, read_execution_metadata,
-                            read_run_outcomes, read_scenario_config)
+from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dirs,
+                            read_execution_metadata, read_run_outcomes, read_scenario_config)
 from .common import load_config
-from .store import (STORE_FILENAME, CampaignStore,
-                    read_campaign_description)
+from .store import STORE_FILENAME, CampaignStore, read_campaign_description
 
 logger = logging.getLogger(__name__)
 

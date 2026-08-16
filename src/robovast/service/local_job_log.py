@@ -29,8 +29,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from robovast.common.log_tail import (MAIN_CONTAINER, MergedLogBuffer,  # noqa: F401
-                                      tag_width)
+from robovast.common.log_tail import MAIN_CONTAINER, MergedLogBuffer, tag_width  # noqa: F401
 
 #: The main container's log. The name its lines are tagged with is
 #: :data:`~robovast.common.log_tail.MAIN_CONTAINER`, shared with the merged ``run_log`` so the

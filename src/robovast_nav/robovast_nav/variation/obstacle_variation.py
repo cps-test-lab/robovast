@@ -26,13 +26,11 @@ from rdflib import Namespace
 
 from robovast.common import convert_dataclasses_to_dict
 from robovast.common.variation import VariationGuiRenderer
-from robovast.common.variation.base_variation import (DestinationConfig,
-                                                      ProvContribution,
+from robovast.common.variation.base_variation import (DestinationConfig, ProvContribution,
                                                       VariationInfeasibleError)
 
 from ..gui.navigation_gui import NavigationGui
-from ..object_shapes import (get_object_type_from_model_path,
-                             get_obstacle_dimensions)
+from ..object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 from ..obstacle_placer import ObstaclePlacer
 from ..path_generator import PathGenerator
 from .nav_base_variation import NavVariation

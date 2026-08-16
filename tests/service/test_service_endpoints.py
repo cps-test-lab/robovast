@@ -15,10 +15,8 @@ from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
 from robovast.service.client import LocalTransport
-from robovast.service.endpoint_plugin import (RESERVED_CAMPAIGN_ENDPOINTS,
-                                              RunDataContext,
+from robovast.service.endpoint_plugin import (RESERVED_CAMPAIGN_ENDPOINTS, RunDataContext,
                                               load_service_endpoints)
-
 
 # -- loader ----------------------------------------------------------------
 

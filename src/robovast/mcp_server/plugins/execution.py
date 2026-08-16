@@ -33,8 +33,8 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
-from robovast.common.log_summary import DEFAULT_TOP
 from robovast.client.status import Phase, is_terminal, stall_report
+from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE
 from robovast.service.interface import Routes
@@ -186,12 +186,11 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         client = service_access.service_client()
         if client is None:
             return {"error": NO_SERVICE}
-        from robovast.service.interface import (DESCRIPTION_MAX_LEN,
-                                                CreateCampaignRequest)
         # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
         # Decoded before the length check so the description is measured as the text that
         # will actually be stored.
         from robovast.mcp_server.client_text import unescape_client_text
+        from robovast.service.interface import DESCRIPTION_MAX_LEN, CreateCampaignRequest
         description = unescape_client_text(description)
         # Checked here rather than left to the request model's validator: this returns
         # the actionable "shorten it and call again" instead of a pydantic traceback
@@ -384,8 +383,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
         except Exception as e:  # noqa: BLE001
             return {"error": str(e)}
     else:
-        from robovast.common.campaign_logs import \
-            assemble_log_from_dir  # noqa: PLC0415
+        from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
         try:
             campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
             text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
@@ -453,8 +451,8 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
         ValueError: *phase* is not a known phase — a silently ignored selector would
             read as "that phase produced nothing".
     """
-    from robovast.common.campaign_logs import (  # noqa: PLC0415
-        INFRA_PHASES, phase_banner, split_phases)
+    from robovast.common.campaign_logs import (INFRA_PHASES, phase_banner,  # noqa: PLC0415
+                                               split_phases)
 
     known = {name.lower(): name for name, _ in INFRA_PHASES}
     wanted = phase.strip().lower()

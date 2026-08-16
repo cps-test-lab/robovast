@@ -18,8 +18,7 @@ from importlib.metadata import entry_points
 
 import pytest
 
-from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED,
-                                        SIMULATOR_GROUP, SimulatorBackend,
+from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED, SIMULATOR_GROUP, SimulatorBackend,
                                         resolve_backend)
 
 pytestmark = pytest.mark.skipif(

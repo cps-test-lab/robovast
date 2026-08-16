@@ -15,8 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (QColor, QFont, QKeyEvent, QPainter, QTextCursor,
-                           QTextOption)
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QTextCursor, QTextOption
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
 from robovast.configuration.gui.yaml_highlighter import YamlHighlighter

@@ -20,8 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from robovast.execution.cluster_execution.cluster_service import ClusterService
-from robovast.service.interface import (ActionResult, RunPostprocessingRequest,
-                                        RunShareRequest)
+from robovast.service.interface import ActionResult, RunPostprocessingRequest, RunShareRequest
 
 
 @pytest.fixture
@@ -76,8 +75,7 @@ def test_admission_check_uses_the_given_context(monkeypatch):
     needs no cluster.
     """
     from robovast.common.errors import ClusterUnreachableError
-    from robovast.execution.cluster_execution import (in_pod_storage,
-                                                      kubernetes_kueue,
+    from robovast.execution.cluster_execution import (in_pod_storage, kubernetes_kueue,
                                                       postprocess_job)
 
     seen = {}

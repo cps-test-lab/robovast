@@ -21,7 +21,6 @@ import pytest
 
 from robovast.execution.cluster_execution import kubernetes_kueue as kk
 
-
 # -- the recovery reports why it failed --------------------------------------
 
 

@@ -20,9 +20,8 @@ from unittest import mock
 import pytest
 from kubernetes.client.rest import ApiException
 
-from robovast.execution.cluster_execution.service_deploy import \
-    REGISTRY_PUSH_SECRET_NAME
 from robovast.execution.cluster_execution.cluster_service import ClusterService
+from robovast.execution.cluster_execution.service_deploy import REGISTRY_PUSH_SECRET_NAME
 
 
 def _service(k8s):

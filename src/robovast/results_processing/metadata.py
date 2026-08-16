@@ -38,12 +38,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (
-    read_execution_metadata,
-    read_launch_record,
-    read_sysinfo,
-    read_test_result,
-)
+from robovast.common.campaign_data import (read_execution_metadata, read_launch_record,
+                                           read_sysinfo, read_test_result)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
@@ -407,7 +403,8 @@ def generate_campaign_metadata(
 
             # Generate PROV-O provenance graph (metadata.prov.json)
             try:
-                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+                from .fair_metadata import \
+                    generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
                 prov_success, prov_msg = generate_prov_metadata(
                     campaign_dir, metadata, generate_visualization=False
                 )

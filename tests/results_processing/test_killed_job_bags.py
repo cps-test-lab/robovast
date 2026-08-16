@@ -14,8 +14,8 @@ between bags leaves readable ones behind, and their data is worth having.
 
 import json
 
-from robovast.results_processing.data.rosbags_common import (
-    is_under_tolerated_root, resolve_tolerated_roots)
+from robovast.results_processing.data.rosbags_common import (is_under_tolerated_root,
+                                                             resolve_tolerated_roots)
 from robovast.results_processing.postprocessing_plugins import _killed_job_dirs
 
 

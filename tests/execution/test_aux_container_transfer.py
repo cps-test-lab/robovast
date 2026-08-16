@@ -23,9 +23,11 @@ import os
 import pytest
 
 from robovast.common.variation.container_runner import ContainerSpec
-from robovast.execution.cluster_execution.container_runner import (
-    AuxPodSession, ClusterContainerRunner, aux_owner_prefix, build_aux_pod_manifest,
-    mc_host_env)
+from robovast.execution.cluster_execution.container_runner import (AuxPodSession,
+                                                                   ClusterContainerRunner,
+                                                                   aux_owner_prefix,
+                                                                   build_aux_pod_manifest,
+                                                                   mc_host_env)
 
 _S3 = ("http://robovast:9000", "minioadmin", "minioadmin")
 
@@ -421,6 +423,7 @@ def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
 def test_the_cluster_service_passes_its_own_context(method):
     """Both AuxPodSession call sites, because only one of them having it is the bug."""
     import inspect
+
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     source = inspect.getsource(getattr(ClusterService, method))
     assert "kube_context=self.kube_context" in source
@@ -432,8 +435,7 @@ def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at():
     So the mountable paths are declared up front and world-writable: an emptyDir belongs to
     root, and the aux container may be running as nobody in particular.
     """
-    from robovast.execution.cluster_execution.container_runner import \
-        AUX_MOUNTABLE_PATHS
+    from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
     spec = ContainerSpec(image="example/img:1")
     m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
     mounted = {v["mountPath"] for v in m["containers"][0]["volumeMounts"]}
@@ -446,8 +448,7 @@ def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at():
 
 def test_a_runner_refuses_a_path_the_pod_never_mounted():
     """Discovering it inside the tool would look like the tool's own failure."""
-    from robovast.execution.cluster_execution.container_runner import \
-        ClusterContainerRunner
+    from robovast.execution.cluster_execution.container_runner import ClusterContainerRunner
     runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
     runner._exposed = {}
     with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):
@@ -522,8 +523,7 @@ def test_the_scene_builds_overrides_mount_is_one_the_cluster_can_declare():
     cluster only. This is that connection, in the direction that matters -- whoever moves
     `_OVERRIDES_MOUNT` next has to move it somewhere the Pod mounts.
     """
-    from robovast.execution.cluster_execution.container_runner import \
-        AUX_MOUNTABLE_PATHS
+    from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
     from robovast.service.scene_cache import _OVERRIDES_MOUNT
     assert os.path.dirname(_OVERRIDES_MOUNT) in AUX_MOUNTABLE_PATHS, (
         f"the scene build stages its overrides at {_OVERRIDES_MOUNT}, whose directory no aux "

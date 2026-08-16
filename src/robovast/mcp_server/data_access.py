@@ -30,10 +30,8 @@ by postprocessing, while ``campaign.db`` is written as the campaign runs.
 import logging
 
 from robovast.common.progress import fmt_size
-from robovast.mcp_server import results_resolver
-from robovast.mcp_server import service_access
-from robovast.results_processing.data_query import (DataQueryError,
-                                                   describe_data_db, query_data_db)
+from robovast.mcp_server import results_resolver, service_access
+from robovast.results_processing.data_query import DataQueryError, describe_data_db, query_data_db
 
 logger = logging.getLogger(__name__)
 

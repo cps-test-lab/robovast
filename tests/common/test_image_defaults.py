@@ -17,8 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.common.execution import (DEFAULT_ROBOVAST_CONTROLLER_IMAGE,
-                                       DEFAULT_ROBOVAST_IMAGE,
+from robovast.common.execution import (DEFAULT_ROBOVAST_CONTROLLER_IMAGE, DEFAULT_ROBOVAST_IMAGE,
                                        DEFAULT_ROBOVAST_SIDECAR_IMAGE)
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "image.yml"

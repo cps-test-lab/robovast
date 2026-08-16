@@ -379,8 +379,7 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
     Values only, never :meth:`CacheKey.add_file`: none of the world's files exist on this host, which
     is the entire reason generation happens in a container.
     """
-    from robovast.common.file_cache2 import \
-        CacheKey  # pylint: disable=import-outside-toplevel
+    from robovast.common.file_cache2 import CacheKey  # pylint: disable=import-outside-toplevel
 
     key = CacheKey()
     # For a campaign-file world the image digest says nothing about the bytes -- of the
@@ -564,6 +563,7 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
     which is exactly right there.
     """
     import contextlib
+
     from robovast.common.input_generation import \
         run_input_generators  # pylint: disable=import-outside-toplevel
 

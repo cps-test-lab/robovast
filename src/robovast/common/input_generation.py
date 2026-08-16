@@ -313,8 +313,7 @@ def _output_fingerprint(out_dir, vast_dir):
 
 def _cache_key(name, generator_cls, params, out, inputs, vast_dir):
     """Cache key over the generator's identity, its parameters and what it read."""
-    from robovast.common.file_cache2 import \
-        CacheKey  # pylint: disable=import-outside-toplevel
+    from robovast.common.file_cache2 import CacheKey  # pylint: disable=import-outside-toplevel
 
     key = CacheKey()
     key.add("input_generation_version", 1)
@@ -393,8 +392,7 @@ def run_input_generators(vast_dir, entries, progress_update_callback=None,
 def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progress,
              container_runner_factory, use_cache):
     """Generate one entry, honouring the cache, and return its provenance record."""
-    from robovast.common.file_cache2 import \
-        FileCache2  # pylint: disable=import-outside-toplevel
+    from robovast.common.file_cache2 import FileCache2  # pylint: disable=import-outside-toplevel
 
     started = time.monotonic()
     stamps = FileCache2(vast_dir, "input_generation_", suffix=".json") if use_cache else None

@@ -196,8 +196,8 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                     campaign_id)
     import os  # noqa: PLC0415
 
-    from robovast.client.logging_config import (  # noqa: PLC0415
-        add_campaign_log_handler, remove_campaign_log_handler)
+    from robovast.client.logging_config import add_campaign_log_handler  # noqa: PLC0415
+    from robovast.client.logging_config import remove_campaign_log_handler
 
     # Append the pure-Python host stage's narrative to the same postprocessing.log
     # the conversion Job produced (mode "a"), so both stages form one ordered
@@ -227,8 +227,8 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     conversion Job already did those — so there is no second implementation of the
     postprocessing sequence. Returns ``(ok, message)``.
     """
-    from robovast.results_processing.postprocessing import (  # noqa: PLC0415
-        ROSBAG_BATCH_NAMES, run_postprocessing)
+    from robovast.results_processing.postprocessing import ROSBAG_BATCH_NAMES  # noqa: PLC0415
+    from robovast.results_processing.postprocessing import run_postprocessing
 
     return run_postprocessing(
         results_dir=results_dir, campaign=campaign_id, force=force,
@@ -333,8 +333,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
     """
     from importlib.resources import files  # noqa: PLC0415
 
-    from .cluster_execution import (  # noqa: PLC0415
-        _label_safe_campaign)
+    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
 
     data_dir = files("robovast.results_processing.data")
     payload = {}
@@ -377,8 +376,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
     ``results_processing/data`` — the K8s analog of ``docker_exec.sh``'s
     ``-v <scripts>:/scripts`` — so the script version always matches the driver.
     """
-    from .cluster_execution import (  # noqa: PLC0415
-        _label_safe_campaign)
+    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
 
     endpoint, access_key, secret_key, bucket, campaign_prefix = s3
     safe = _label_safe_campaign(campaign_id)
@@ -485,11 +483,11 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     # This Job carries the Kueue queue label too, so a broken admission path suspends it
     # and the wait below would report a misleading "timed out" after _DEFAULT_TIMEOUT
     # instead of the actual cause.
-    from robovast.common.errors import (CampaignConfigError,  # noqa: PLC0415
-                                        ClusterUnreachableError)
+    from robovast.common.errors import CampaignConfigError  # noqa: PLC0415
+    from robovast.common.errors import ClusterUnreachableError
 
-    from .kubernetes_kueue import (KueueCheckUnavailable,  # noqa: PLC0415
-                                   verify_kueue_admission_ready)
+    from .kubernetes_kueue import KueueCheckUnavailable  # noqa: PLC0415
+    from .kubernetes_kueue import verify_kueue_admission_ready
     try:
         # The service's --context, not the ambient kubeconfig one. Omitting it made this
         # check dial whatever kubectl happened to point at while the campaign's Jobs went

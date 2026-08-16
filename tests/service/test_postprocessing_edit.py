@@ -11,10 +11,8 @@ preserved.
 import pytest
 import yaml
 
-from robovast.service.postprocessing_edit import (campaign_vast,
-                                                  get_postprocessing,
-                                                  get_postprocessing_source,
-                                                  get_visualization,
+from robovast.service.postprocessing_edit import (campaign_vast, get_postprocessing,
+                                                  get_postprocessing_source, get_visualization,
                                                   update_postprocessing,
                                                   update_postprocessing_source,
                                                   update_visualization)

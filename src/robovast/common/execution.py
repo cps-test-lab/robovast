@@ -30,9 +30,8 @@ from pprint import pformat
 import yaml
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config_identifier import (compute_config_identifier, hash_file_content,
-                                hash_run_files)
 from .config import SIMULATION_CONTAINER
+from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
 from .errors import CampaignConfigError, missing_input_error
 from .simulators import SIM_CONFIG_FILE
 
@@ -300,8 +299,8 @@ def _get_cluster_info(context=None):
     node_labels = {}
     cpu_manager_policies = {}
     try:
-        from kubernetes import \
-            client as k8s_client_lib  # pylint: disable=import-outside-toplevel
+        from kubernetes import client as k8s_client_lib  # pylint: disable=import-outside-toplevel
+
         from robovast.execution.cluster_execution.kube_client import \
             load_kube_config  # pylint: disable=import-outside-toplevel
         load_kube_config(context=context)
@@ -1463,8 +1462,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # Imported here, not at module scope: this module is kept free of ``config``
     # imports to avoid a cycle (see BUILD_IMAGE_PREFIX above, duplicated for the same
     # reason). One name is not worth duplicating a third time.
-    from robovast.common.config import \
-        SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
     containers = execution_params.get('containers') or {}
     images = {name: (block or {}).get('image')
               for name, block in containers.items() if (block or {}).get('image')}

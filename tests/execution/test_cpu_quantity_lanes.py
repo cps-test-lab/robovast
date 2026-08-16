@@ -13,9 +13,7 @@ they guard against is invisible until the other lane is used.
 import pytest
 
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
-from robovast.execution.execution_utils.execute_local import (_compose_cpus,
-                                                              _compose_resources_block)
-
+from robovast.execution.execution_utils.execute_local import _compose_cpus, _compose_resources_block
 
 # -- the local lane: Compose's decimal core count ------------------------------------
 

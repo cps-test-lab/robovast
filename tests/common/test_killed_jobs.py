@@ -19,9 +19,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from robovast.common.campaign_data import (killed_runs, read_killed_jobs,
-                                           read_run_outcome, read_run_outcomes,
-                                           record_killed_job)
+from robovast.common.campaign_data import (killed_runs, read_killed_jobs, read_run_outcome,
+                                           read_run_outcomes, record_killed_job)
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
 
 _PASS_XML = ('<testsuite errors="0" failures="0" tests="1">'

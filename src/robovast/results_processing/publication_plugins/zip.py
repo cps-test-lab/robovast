@@ -50,8 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common.execution import get_campaign_timestamp, is_campaign_dir
-from robovast.results_processing.publication_plugins.base import \
-    BasePublicationPlugin
+from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
 
 # Internal robovast flag/cache files that are never meaningful outside the
 # execution environment and should always be excluded from zip archives.

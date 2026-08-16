@@ -16,8 +16,7 @@ import sqlite3
 
 import pytest
 
-from robovast.common.store import (SCHEMA_VERSION, CampaignStore,
-                                   read_campaign_created_by)
+from robovast.common.store import SCHEMA_VERSION, CampaignStore, read_campaign_created_by
 
 
 @pytest.fixture(name="store_path")

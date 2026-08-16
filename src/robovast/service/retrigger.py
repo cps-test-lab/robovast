@@ -120,10 +120,8 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
         RetriggerRefused: the campaign froze no config, or runs a built image it never
             recorded.
     """
-    from robovast.common.campaign_data import (CampaignImageUnpinnable,
-                                               campaign_pinned_images,
-                                               read_execution_metadata,
-                                               read_launch_record)
+    from robovast.common.campaign_data import (CampaignImageUnpinnable, campaign_pinned_images,
+                                               read_execution_metadata, read_launch_record)
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
     from robovast.common.results_utils import campaign_vast

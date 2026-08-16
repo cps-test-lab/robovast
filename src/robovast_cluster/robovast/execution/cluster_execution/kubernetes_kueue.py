@@ -249,6 +249,7 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
             queue that has been up for a while, so a real breakage fails immediately.
     """
     from robovast.common.errors import CampaignConfigError
+
     from .kube_client import api_transport_errors, load_kube_config
     load_kube_config(context=kube_context)
     deadline = time.monotonic() + settle_timeout
@@ -974,8 +975,7 @@ def orphaned_kueue_crds(kube_context=None):
     lingers, carrying Helm's *labels* but none of its ownership, and the next install
     refuses with "invalid ownership metadata".
     """
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
     api = client.ApiextensionsV1Api()
@@ -1002,8 +1002,7 @@ def adopt_orphaned_kueue_crds(kube_context=None):
     ClusterQueue and Workload defined by it, which on a cluster someone is still using
     would be a silent, unrecoverable loss for what is only a bookkeeping problem.
     """
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     orphans = orphaned_kueue_crds(kube_context=kube_context)
     if not orphans:
@@ -1047,11 +1046,9 @@ def delete_kueue_crds(kube_context=None, timeout_s=120.0):
         RuntimeError: something survived, naming what — a half-cleaned cluster the next
             setup will trip over is worth failing for.
     """
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
     api = client.ApiextensionsV1Api()

@@ -197,6 +197,7 @@ class KubeExecLane:
     def exec_in_held(self, spec: ExecSpec, limit_s: int,
                      detach: bool) -> tuple[int, str, str, bool]:
         from .kube_client import exec_stream
+
         # Both forms come from the spec, so the liveness check a detached start needs
         # cannot be present on one lane and missing on the other — which is exactly how
         # it was, until a scenario silently failed to start.
@@ -316,8 +317,9 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
     ``activeDeadlineSeconds`` is the manager's own deadline, so the pod cannot outlive
     the service's intent even if the reaper never runs.
     """
-    from .cluster_image_build import s3_init_env
     from robovast.common.execution import resolve_sidecar_image
+
+    from .cluster_image_build import s3_init_env
 
     metadata = {"name": _pod_name(), "namespace": namespace, "labels": dict(_labels())}
     if owner_ref:

@@ -16,8 +16,7 @@ import pytest
 import requests
 
 from robovast.service.http_client import HTTPTransport
-from robovast.service.interface import (EditFileRequest, ServiceError,
-                                        WriteFileRequest)
+from robovast.service.interface import EditFileRequest, ServiceError, WriteFileRequest
 
 
 class _Resp:

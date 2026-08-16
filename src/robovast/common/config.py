@@ -19,8 +19,7 @@ import math
 import re
 from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
-                      field_validator, model_validator)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from robovast.common.quantity import to_cores
 

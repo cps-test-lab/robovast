@@ -45,31 +45,27 @@ import hashlib
 import io
 import json
 import math
-import zlib
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
-import yaml
+import zlib
 from abc import ABC, abstractmethod
 from multiprocessing import Pool, cpu_count
 from typing import Any, Dict, List, Optional, Tuple
 
-import rosbag2_py
-from tf2_ros import Buffer
-from rclpy.serialization import deserialize_message
-from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 import numpy as np
-
-from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME,
-                            DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator,
-                            find_rosbags, gen_msg_values, is_under_tolerated_root,
-                            register_video, resolve_tolerated_roots,
-                            write_provenance_entry)
+import rosbag2_py
+import yaml
+from rclpy.serialization import deserialize_message
+from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, DEFAULT_CLOCK_TOLERANCE_S,
+                            ClockDecimator, find_rosbags, gen_msg_values, is_under_tolerated_root,
+                            register_video, resolve_tolerated_roots, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
-
+from tf2_py import ConnectivityException, ExtrapolationException, LookupException
+from tf2_ros import Buffer
 
 # ---------------------------------------------------------------------------
 # Base handler class

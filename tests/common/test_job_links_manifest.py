@@ -14,8 +14,7 @@ hazard here. A four-batch campaign was found holding entries for its last two ba
 import pytest
 import yaml
 
-from robovast.common.execution import (JOB_LINKS_MANIFEST, read_job_links,
-                                       write_job_links_manifest)
+from robovast.common.execution import JOB_LINKS_MANIFEST, read_job_links, write_job_links_manifest
 
 
 class _Item:

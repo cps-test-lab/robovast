@@ -19,8 +19,8 @@
 import os
 from pathlib import Path
 
-from robovast.common.results_root import local_results_root
 from robovast.common.execution import is_campaign_dir
+from robovast.common.results_root import local_results_root
 
 # The campaign layout (which dirs are reserved vs. configurations) is defined once
 # in robovast.common.campaign_data — see list_config_dirs() below.
@@ -158,8 +158,7 @@ def list_config_dirs(campaign: str) -> list[Path]:
     Returns:
         Sorted list of paths to configuration directories.
     """
-    from robovast.common.campaign_data import \
-        list_config_dirs as _list_config_dirs  # noqa: PLC0415
+    from robovast.common.campaign_data import list_config_dirs as _list_config_dirs  # noqa: PLC0415
     return _list_config_dirs(resolve_campaign_path(campaign))
 
 

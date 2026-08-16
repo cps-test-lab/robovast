@@ -446,8 +446,7 @@ class _S3StorageClient(StorageClient):
         ``EndpointConnectionError`` only, still 500'd on a connection reset.
         """
         from botocore.exceptions import (  # pylint: disable=import-outside-toplevel
-            ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
-            ReadTimeoutError)
+            ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError, ReadTimeoutError)
 
         from robovast.common.errors import \
             ObjectStoreUnreachableError  # pylint: disable=import-outside-toplevel
@@ -671,8 +670,7 @@ class _GcsStorageClient(StorageClient):
         import json  # pylint: disable=import-outside-toplevel
 
         from google.cloud import storage  # pylint: disable=import-outside-toplevel
-        from google.oauth2 import \
-            service_account  # pylint: disable=import-outside-toplevel
+        from google.oauth2 import service_account  # pylint: disable=import-outside-toplevel
 
         info = json.loads(key_json)
         creds = service_account.Credentials.from_service_account_info(info)

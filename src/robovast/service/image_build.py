@@ -41,14 +41,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from robovast.common.build_context import BUILD_CONTEXT_IGNORE, render_dockerignore
 from robovast.common.containers import plan_containers
-from robovast.common.build_context import (BUILD_CONTEXT_IGNORE,
-                                           render_dockerignore)
-from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
-                                       build_image_tag, is_build_image_ref,
-                                       resolve_build_base_image)
-from robovast.service.interface import (ImageBuildError, ImageBuildRef,
-                                        ImageBuildStatus, LogChunk)
+from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER, build_image_tag,
+                                       is_build_image_ref, resolve_build_base_image)
+from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus, LogChunk
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +176,7 @@ def extract_build_specs(campaign_config, base_dir=None) -> dict:
             for name, block in containers.items()
         },
     }
-    from robovast.common.simulators import \
-        apply_backend  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_dict = apply_backend(execution_dict, base_dir)
     specs = {}
     plan = plan_containers(execution_dict)

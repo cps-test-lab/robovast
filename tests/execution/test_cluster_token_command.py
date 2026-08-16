@@ -70,6 +70,7 @@ def test_setup_points_at_this_command_rather_than_kubectl():
     import inspect
 
     from robovast.execution.cluster_execution import cli as cli_module
+
     # `setup` is a click Command; the body lives on its callback.
     source = inspect.getsource(cli_module.setup.callback)
     assert "vast exec cluster token" in source

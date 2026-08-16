@@ -32,11 +32,9 @@ import threading
 import time
 from typing import Optional, Protocol
 
-from robovast.common.execution import (prepare_campaign_configs,
-                                       render_entrypoint, scenario_env)
+from robovast.common.execution import prepare_campaign_configs, render_entrypoint, scenario_env
 from robovast.common.host_display import host_display
-from robovast.service.interface import (ExecContainerState, ExecRequest,
-                                        ExecResult, ExecStopResult)
+from robovast.service.interface import ExecContainerState, ExecRequest, ExecResult, ExecStopResult
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +54,7 @@ OUTPUT_DIR = "/tmp/robovast-exec"
 #: address space in ``service/interface.py``, because a client sizes its read timeout by
 #: the same number and must not import the server to learn it.
 from robovast.service.interface import COMMAND_LIMIT_S
+
 #: Used when a scenario is asked for but the project sets no ``execution.timeout``. The
 #: cluster's 1-hour campaign fallback is deliberately not inherited: an hour of life for
 #: a diagnostic container is a leak, not a limit.

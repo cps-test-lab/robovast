@@ -10,9 +10,8 @@ import pytest
 
 from robovast.client.file_address import SOURCES, format_address
 from robovast.service.client import LocalTransport
-from robovast.service.workspaces import (INLINE_EXTENSIONS, WorkspaceError,
-                                         WorkspaceRegistry, WorkspaceStore,
-                                         _UploadTokens)
+from robovast.service.workspaces import (INLINE_EXTENSIONS, WorkspaceError, WorkspaceRegistry,
+                                         WorkspaceStore, _UploadTokens)
 
 
 def _listing(store, workspace_id):

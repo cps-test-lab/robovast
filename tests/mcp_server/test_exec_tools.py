@@ -14,8 +14,7 @@ import pytest
 
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import execution
-from robovast.service.interface import (ExecContainerState, ExecResult,
-                                        ExecStopResult, ResourceUsage)
+from robovast.service.interface import ExecContainerState, ExecResult, ExecStopResult, ResourceUsage
 
 
 class _FakeClient:

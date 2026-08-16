@@ -104,8 +104,7 @@ def _real_command_paths() -> set:
     really provides -- the point being that a denylist can only catch a command somebody
     remembered to add to it.
     """
-    from robovast.client.cli import (  # pylint: disable=import-outside-toplevel
-        cli, load_plugins)
+    from robovast.client.cli import cli, load_plugins  # pylint: disable=import-outside-toplevel
     load_plugins()
 
     import click  # pylint: disable=import-outside-toplevel

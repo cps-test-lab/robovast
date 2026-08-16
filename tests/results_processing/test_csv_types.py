@@ -4,9 +4,8 @@
 
 import pytest
 
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
-                                                   cast_expr, coerce, column_def,
-                                                   infer_column_types, sql_value,
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr, coerce,
+                                                   column_def, infer_column_types, sql_value,
                                                    value_type, widest)
 
 

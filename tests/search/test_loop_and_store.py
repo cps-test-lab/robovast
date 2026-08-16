@@ -335,7 +335,7 @@ def test_fresh_store_stamps_schema_version(tmp_path):
 def test_pre_versioning_store_migrates_forward(tmp_path):
     """A store created before schema versioning (tables present, user_version 0)
     is adopted at the current version and stays readable."""
-    from robovast.common.store import SCHEMA_VERSION, _MIGRATION_INITIAL
+    from robovast.common.store import _MIGRATION_INITIAL, SCHEMA_VERSION
     db = tmp_path / "legacy.db"
     conn = sqlite3.connect(db)
     # The v1 layout as it shipped — a pre-versioning store cannot have today's columns.
@@ -377,8 +377,7 @@ def test_fresh_and_migrated_schemas_match(tmp_path, start_version):
 
     ``start_version`` 0 covers the pre-versioning store (tables present, no stamp).
     """
-    from robovast.common.store import (SCHEMA_VERSION, _MIGRATIONS,
-                                       _MIGRATION_INITIAL)
+    from robovast.common.store import _MIGRATION_INITIAL, _MIGRATIONS, SCHEMA_VERSION
 
     with CampaignStore(tmp_path / "fresh.db") as store:
         fresh = _schema_fingerprint(store._conn)
@@ -401,7 +400,7 @@ def test_fresh_and_migrated_schemas_match(tmp_path, start_version):
 def test_newer_store_is_read_best_effort(tmp_path):
     """A store written by a newer robovast (higher user_version, extra column) is
     not downgraded and remains readable through existing columns."""
-    from robovast.common.store import SCHEMA_VERSION, _SCHEMA
+    from robovast.common.store import _SCHEMA, SCHEMA_VERSION
     db = tmp_path / "future.db"
     conn = sqlite3.connect(db)
     conn.executescript(_SCHEMA)

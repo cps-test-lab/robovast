@@ -23,9 +23,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QBrush, QColor, QIcon, QPalette
-from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMenu, QProgressBar,
-                               QSplitter, QStatusBar, QTabWidget, QTreeWidget,
+from PySide6.QtWidgets import (QApplication, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                               QMenu, QProgressBar, QSplitter, QStatusBar, QTabWidget, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from robovast.common import load_config

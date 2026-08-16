@@ -24,8 +24,7 @@ from rdflib import Namespace
 
 from robovast.common import FileCache
 from robovast.common.variation import VariationGuiRenderer
-from robovast.common.variation.base_variation import (SIM_CHANNEL,
-                                                      DestinationConfig,
+from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
                                                       ProvContribution)
 
 from ..data_model import Orientation, Pose, Position

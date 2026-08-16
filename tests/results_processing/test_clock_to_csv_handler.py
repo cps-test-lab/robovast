@@ -17,8 +17,8 @@ import csv
 
 import pytest
 
-from robovast.results_processing.clock_map import (DEFAULT_TOLERANCE_S, FIELDNAMES,
-                                                  Decimator, load_clock_map)
+from robovast.results_processing.clock_map import (DEFAULT_TOLERANCE_S, FIELDNAMES, Decimator,
+                                                   load_clock_map)
 
 DEFAULT = DEFAULT_TOLERANCE_S
 

@@ -21,20 +21,14 @@ from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
+from rdflib import FOAF, PROV, Namespace
 
-from rdflib import Namespace, PROV, FOAF
-
-from robovast.common.variation.base_variation import (DestinationConfig,
-                                                      ProvContribution)
-
+from robovast.common.variation.base_variation import DestinationConfig, ProvContribution
 from robovast.common.variation.container_runner import ContainerSpec
 
-from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT,
-                                    SCENERY_BUILDER_IMAGE,
-                                    _create_config_for_floorplan,
-                                    generate_floorplan_artifacts,
-                                    generate_floorplan_variations,
-                                    get_scenery_builder_version)
+from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT, SCENERY_BUILDER_IMAGE,
+                                    _create_config_for_floorplan, generate_floorplan_artifacts,
+                                    generate_floorplan_variations, get_scenery_builder_version)
 from .nav_base_variation import NavVariation
 
 

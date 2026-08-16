@@ -137,8 +137,7 @@ def aux_workspace_prefix(owner_id: str, workspace_name: str) -> str:
 
 def aux_owner_prefix(owner_id: str) -> str:
     """Everything mirrored on behalf of one campaign (or scene build), for the sweep."""
-    from .cluster_execution import \
-        _label_safe_campaign
+    from .cluster_execution import _label_safe_campaign
     return f"{AUX_WORKSPACE_PREFIX}/{_label_safe_campaign(owner_id)}"
 
 
@@ -158,8 +157,7 @@ def mc_host_env(endpoint: str, access_key: str, secret_key: str) -> dict:
 
 def aux_pod_name(campaign_id: str) -> str:
     """Deterministic aux-pod name for *campaign_id*."""
-    from .cluster_execution import \
-        _label_safe_campaign
+    from .cluster_execution import _label_safe_campaign
     return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
 
 
@@ -298,8 +296,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     """
     from kubernetes import client
 
-    from .cluster_execution import \
-        _label_safe_campaign
+    from .cluster_execution import _label_safe_campaign
 
     selector = AUX_LABEL
     if campaign is not None:
@@ -348,9 +345,9 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     not ours to add tools to — the same trick the rosbag postprocess Job uses to run
     ``mc`` inside the system-under-test's own image.
     """
-    from .cluster_execution import \
-        _label_safe_campaign
     from robovast.common.execution import resolve_sidecar_image
+
+    from .cluster_execution import _label_safe_campaign
 
     tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
     # One emptyDir per mountable path, on every aux container. Empty unless a runner stages

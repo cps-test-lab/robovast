@@ -21,12 +21,9 @@ import pytest
 from robovast.client.file_address import SOURCES, format_address
 from robovast.service.client import LocalTransport
 from robovast.service.interface import CreateWorkspaceRequest
-from robovast.service.project_push import (_resolve_workspace_id, push_file,
-                                           push_project_files,
-                                           push_project_to_workspace,
-                                           run_project_via_service,
-                                           sync_directory_to_workspace,
-                                           workspace_for_project)
+from robovast.service.project_push import (_resolve_workspace_id, push_file, push_project_files,
+                                           push_project_to_workspace, run_project_via_service,
+                                           sync_directory_to_workspace, workspace_for_project)
 from robovast.service.workspaces import WorkspaceError, WorkspaceRegistry, WorkspaceStore
 
 

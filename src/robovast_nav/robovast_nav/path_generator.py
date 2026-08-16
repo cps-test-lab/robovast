@@ -31,8 +31,7 @@ import scipy.ndimage  # Add this import for distance transform
 
 from .data_model import Pose, Position, StaticObject
 from .map_loader import Map, load_map
-from .object_shapes import (ObjectShapeRenderer,
-                            get_object_type_from_model_path,
+from .object_shapes import (ObjectShapeRenderer, get_object_type_from_model_path,
                             get_obstacle_dimensions)
 
 

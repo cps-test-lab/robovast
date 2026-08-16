@@ -321,14 +321,12 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
 
     from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        pod_pending_reason  # pylint: disable=import-outside-toplevel
+    from .kube_client import pod_pending_reason  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
     apps = client.AppsV1Api()
     core = client.CoreV1Api()
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     deadline = time.monotonic() + timeout_s
     reason = ""
@@ -600,6 +598,7 @@ def _share_env_from_host():
     silently mid-campaign.
     """
     import os
+
     from robovast.execution.share_providers import \
         load_share_provider_plugins  # pylint: disable=import-outside-toplevel
 
@@ -812,8 +811,7 @@ def existing_auth_token(namespace, kube_context=None):
     import base64  # pylint: disable=import-outside-toplevel
 
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
     try:
@@ -834,8 +832,7 @@ def published_url(namespace="default", kube_context=None):
     several clusters, is the normal case rather than the exception.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
     try:
@@ -870,8 +867,7 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
     into a runtime failure that reads like a bug.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     from . import registry_deploy  # pylint: disable=import-outside-toplevel
 
@@ -1084,8 +1080,7 @@ def _delete_unconfigured_credentials(core, namespace, secrets, configmaps, *,
     Not a general reconciler: it touches exactly the objects this module creates, so a
     Secret someone else put in the namespace is none of its business.
     """
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     built = {m["metadata"]["name"] for m in secrets}
     built_cms = {m["metadata"]["name"] for m in configmaps}
@@ -1128,11 +1123,9 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     here, so there is no deployment without authentication.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
     core = client.CoreV1Api()
@@ -1153,8 +1146,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         pull_secret = ""
 
     # Reuse the deployed token unless asked for a new one; mint one the first time.
-    from robovast.service.auth import \
-        generate_token  # pylint: disable=import-outside-toplevel
+    from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel
     auth_token = "" if rotate_token else existing_auth_token(namespace, kube_context)
     auth_token = auth_token or generate_token()
 
@@ -1265,8 +1257,7 @@ def _load_kube_config(kube_context=None):
     from kubernetes.config.config_exception import \
         ConfigException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     try:
         load_kube_config(context=kube_context)
@@ -1289,16 +1280,12 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
     """
     import json  # pylint: disable=import-outside-toplevel
 
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
-
     import click  # pylint: disable=import-outside-toplevel
-    from urllib3.exceptions import \
-        HTTPError  # pylint: disable=import-outside-toplevel
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+    from urllib3.exceptions import HTTPError  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        CONNECT_TIMEOUT_SECONDS  # pylint: disable=import-outside-toplevel
+    from .kube_client import CONNECT_TIMEOUT_SECONDS  # pylint: disable=import-outside-toplevel
     _load_kube_config(kube_context)
     # One attempt, explicitly bounded. The process-wide policy sets a connect timeout per
     # *attempt*, and urllib3 retries a failed connect three more times — so an
@@ -1351,11 +1338,9 @@ def delete_service(namespace="default", kube_context=None):
     keeps the campaign data it left behind.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     try:
         load_kube_config(context=kube_context)
@@ -1391,8 +1376,7 @@ def delete_service(namespace="default", kube_context=None):
 
 def _create_or_ok(create):
     """Run *create*, tolerating an already-exists (409)."""
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
     try:
         create()
     except ApiException as exc:
@@ -1402,8 +1386,7 @@ def _create_or_ok(create):
 
 def _create_or_replace(create, patch):
     """Run *create*; on 409 run *patch* so spec/rule changes take effect."""
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
     try:
         create()
     except ApiException as exc:

@@ -27,20 +27,17 @@ from pathlib import Path
 import click
 import yaml
 
-from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import get_project_config
-from robovast.client.project_config import ProjectConfig
+from robovast.client.project_config import ProjectConfig, get_project_config
+from robovast.common import fmt_size as _fmt_size
+from robovast.common import make_download_progress_callback
 from robovast.common.execution import is_campaign_dir
-from robovast.results_processing.merge_results import merge_results
-from robovast.execution.share_providers import \
-    load_share_provider_plugins
+from robovast.execution.share_providers import load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
+from robovast.results_processing.merge_results import merge_results
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing import \
-    load_postprocessing_plugins
-from robovast.results_processing.publication import (load_publication_plugins,
-                                                     run_publication)
+from robovast.results_processing.postprocessing import load_postprocessing_plugins
+from robovast.results_processing.publication import load_publication_plugins, run_publication
 
 
 @click.group()
@@ -544,14 +541,14 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
     source = resolve_download_source(variant)
 
     if source == "postprocessed":
-        from robovast.client.service_target import \
-            detected_service_url  # pylint: disable=import-outside-toplevel
-        from robovast.service.project_push import \
-            download_campaign_via_service  # pylint: disable=import-outside-toplevel
         from robovast.client.project_config import \
             get_project_config  # pylint: disable=import-outside-toplevel
+        from robovast.client.service_target import \
+            detected_service_url  # pylint: disable=import-outside-toplevel
         from robovast.service.client import \
             RobovastClient  # pylint: disable=import-outside-toplevel
+        from robovast.service.project_push import \
+            download_campaign_via_service  # pylint: disable=import-outside-toplevel
         results_dir = output or get_project_config().results_dir
         if not campaigns:
             raise click.ClickException(
@@ -568,8 +565,8 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
     click.echo("Downloading raw archive(s) from the share...")
 
     if debug:
-        import logging  # pylint: disable=import-outside-toplevel
         import http.client as http_client  # pylint: disable=import-outside-toplevel
+        import logging  # pylint: disable=import-outside-toplevel
         http_client.HTTPConnection.debuglevel = 1
         logging.basicConfig()
         logging.getLogger().setLevel(logging.DEBUG)
@@ -839,10 +836,10 @@ def list_downloads_cmd(campaigns):
     service_url = detected_service_url()
     if service_url:
         try:
-            from robovast.service.client import \
-                RobovastClient  # pylint: disable=import-outside-toplevel
             from robovast.execution.control_server import \
                 is_terminal  # pylint: disable=import-outside-toplevel
+            from robovast.service.client import \
+                RobovastClient  # pylint: disable=import-outside-toplevel
             from robovast.service.interface import \
                 ListCampaignsRequest  # pylint: disable=import-outside-toplevel
             resp = RobovastClient(service_url).list_campaigns(
@@ -1044,8 +1041,7 @@ def _require_service_client():
         raise click.UsageError(
             "No robovast-service is reachable. Start one with 'vast serve' (local) "
             "or tunnel to a cluster service first.")
-    from robovast.service.client import \
-        RobovastClient  # pylint: disable=import-outside-toplevel
+    from robovast.service.client import RobovastClient  # pylint: disable=import-outside-toplevel
     return RobovastClient(url)
 
 

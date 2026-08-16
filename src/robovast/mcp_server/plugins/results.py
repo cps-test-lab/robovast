@@ -546,8 +546,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     Raises:
         RunArtifactError: no such capability, no recorded state, or the render failed.
     """
-    from robovast.common.simulators import \
-        parse_view  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
     from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
 
     client = service_access.service_client()

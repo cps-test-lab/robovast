@@ -17,12 +17,9 @@ import textwrap
 import pytest
 
 from robovast.common.errors import CampaignConfigError
-from robovast.common.input_generation import (MANIFEST_NAME, Shell,
-                                              collect_output_files,
-                                              parse_generate_entry,
-                                              read_manifest,
-                                              resolve_input_generator,
-                                              run_input_generators,
+from robovast.common.input_generation import (MANIFEST_NAME, Shell, collect_output_files,
+                                              parse_generate_entry, read_manifest,
+                                              resolve_input_generator, run_input_generators,
                                               write_manifest)
 
 GENERATOR_SRC = textwrap.dedent("""\

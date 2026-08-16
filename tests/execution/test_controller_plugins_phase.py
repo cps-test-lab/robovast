@@ -4,9 +4,9 @@
 
 import types
 
-from robovast.execution import controller
-from robovast.common import config_plugins
 from robovast.client.status import Phase
+from robovast.common import config_plugins
+from robovast.execution import controller
 
 
 class _State:

@@ -10,8 +10,7 @@ progress at all, and nothing recorded when progress last changed.
 
 from pathlib import Path
 
-from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS,
-                                    declared_per_run_seconds,
+from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS, declared_per_run_seconds,
                                     per_run_deadline_seconds)
 from robovast.execution.backends import DockerBackend, ExecutionBackend
 from robovast.execution.control_server import ControllerState

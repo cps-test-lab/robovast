@@ -37,8 +37,8 @@ from .config_identifier import collect_paths_from_config, hash_variation_entrypo
 from .config_plugins import ensure_workspace_plugins
 from .errors import missing_input_error
 from .file_cache2 import CacheKey, FileCache2
-from .input_generation import (collect_output_files, parse_generate_entry,
-                               resolve_out_dir, run_input_generators)
+from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
+                               run_input_generators)
 from .plugin_ref import is_file_ref, load_ref
 from .variation.base_variation import VariationInfeasibleError
 from .variation.loader import _validate_variation_class
@@ -382,8 +382,8 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
     """
     from robovast.common.execution import \
         is_build_image_ref  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        backend_name, resolve_backend)
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend
 
     name = backend_name(execution or {})
     if not name:
@@ -473,8 +473,8 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     entity check needs a compiled model, the plugin-key check does not, so a world that fails to
     build still gets the cheaper one. Each half that goes unchecked says so.
     """
-    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        backend_name, resolve_backend, sim_override_keys)
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend, sim_override_keys
 
     name = backend_name(execution or {})
     if not name:
@@ -542,8 +542,7 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
 
 def _validated_block(backend, block, name):
     """The backend's validated view of a resolved ``sim`` block."""
-    from robovast.common.simulators import \
-        _validated_cfg  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import _validated_cfg  # pylint: disable=import-outside-toplevel
     return _validated_cfg(backend, dict(block or {}), name)
 
 
@@ -566,8 +565,8 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     while a backend that merely cannot be imported here must not break a campaign that never
     mentions it (validation reports that properly elsewhere).
     """
-    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        backend_name, flatten_sim_block, merge_sim_block, sim_input_files)
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import flatten_sim_block, merge_sim_block, sim_input_files
 
     execution = parameters.get("execution", {}) or {}
     if not backend_name(execution):
@@ -625,8 +624,7 @@ def _backend_cfg(backend, execution, name):
     """The backend's own validated config block."""
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import \
-        _validated_cfg  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import _validated_cfg  # pylint: disable=import-outside-toplevel
     block = (execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {}
     return _validated_cfg(backend, dict(block), name)
 
@@ -1599,8 +1597,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # downstream -- the container plan, the image builds, the run environment -- reads
     # one already-complete picture instead of each re-asking the backend and risking a
     # different answer. The campaign always wins; a backend fills in what was left out.
-    from robovast.common.simulators import \
-        apply_backend  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_section = apply_backend(parameters.get('execution', {}) or {},
                                       base_dir=os.path.dirname(variation_file))
     execution_params = {

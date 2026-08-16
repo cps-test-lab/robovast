@@ -37,37 +37,29 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Callable, Optional
 
 from robovast.client import file_address
-from robovast.common import file_view
 from robovast.client.safe_path import safe_join
-from robovast.common.store import (read_campaign_created_at,
-                                   read_campaign_description)
-from robovast.execution.control_server import (ControllerState, Phase, Status,
-                                               failure_detail, is_terminal)
+from robovast.common import file_view
 from robovast.common.host_display import require_host_display
-from robovast.service.interface import (ActionResult, BuildImageRequest,
-                                        CampaignRef,
-                                        CampaignSummary, CreateCampaignRequest,
-                                        CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest,
-                                        FileEntry, FileListing, FileMeta,
-                                        FileText, ImageBuildRef,
-                                        ImageBuildStatus, JobCounts,
-                                        JobSummary, ListCampaignsRequest,
-                                        ListCampaignsResponse, ListJobsResponse,
-                                        ListWorkspacesResponse,
-                                        LogChunk,
-                                        PreviewConfiguration, PreviewResponse,
-                                        ResourceUsage,
-                                        RobovastInterface, Routes, UploadGrant,
-                                        ValidationProblem, ValidationReport,
-                                        VariationTypeInfo,
-                                        VariationTypeParam, VariationTypesResponse,
-                                        VersionInfo, WorkspaceInfo,
+from robovast.common.store import read_campaign_created_at, read_campaign_description
+from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
+                                               is_terminal)
+from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
+                                        CampaignSummary, CreateCampaignRequest, CreateUploadRequest,
+                                        CreateWorkspaceRequest, EditFileRequest, FileEntry,
+                                        FileListing, FileMeta, FileText, ImageBuildRef,
+                                        ImageBuildStatus, JobCounts, JobSummary,
+                                        ListCampaignsRequest, ListCampaignsResponse,
+                                        ListJobsResponse, ListWorkspacesResponse, LogChunk,
+                                        PreviewConfiguration, PreviewResponse, ResourceUsage,
+                                        RobovastInterface, Routes, UploadGrant, ValidationProblem,
+                                        ValidationReport, VariationTypeInfo, VariationTypeParam,
+                                        VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
@@ -833,6 +825,7 @@ class LocalTransport(RobovastInterface):
 
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
         from robovast.execution.backends import RunOptions
+
         # Local backend: upload_to_share just writes a tar.gz to _archives/ (no
         # external provider). Honour the toggle so it works for a local run too.
         # ``show_gui`` -> ``gui`` is the one place the request's outward name meets the
@@ -913,8 +906,7 @@ class LocalTransport(RobovastInterface):
         """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
-        from robovast.execution.controller import (campaign_id_for,
-                                                   run_batch_campaign,
+        from robovast.execution.controller import (campaign_id_for, run_batch_campaign,
                                                    run_search_campaign)
 
         # The raw mapping as well as the validated model: ``execution.local`` is read
@@ -1273,9 +1265,8 @@ class LocalTransport(RobovastInterface):
 
     def build_image(self, request) -> "ImageBuildRef":  # noqa: F821
         from robovast.common.common import load_config
-        from robovast.common.config import validate_config
+        from robovast.common.config import SCENARIO_CONTAINER, validate_config
         from robovast.service.image_build import validate_build_spec
-        from robovast.common.config import SCENARIO_CONTAINER
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
         specs, project_dir = self._build_specs_for(project, campaign_config)
@@ -1325,6 +1316,7 @@ class LocalTransport(RobovastInterface):
         capability is first used rather than on every import.
         """
         from robovast.service.container_exec import ContainerExecManager
+
         # The reap stays *inside* this lock so a second caller cannot start a container
         # that the reap is about to remove — but it is deliberately not the campaign lock.
         with self._exec_lock:
@@ -1471,9 +1463,10 @@ class LocalTransport(RobovastInterface):
         Advances the phase ``... → postprocessing → finished`` and generates the
         campaign's ``data.db``; a failure surfaces via status (phase ``failed``).
         """
-        from robovast.client.logging_config import (
-            add_campaign_log_handler, remove_campaign_log_handler)
+        from robovast.client.logging_config import (add_campaign_log_handler,
+                                                    remove_campaign_log_handler)
         from robovast.results_processing.postprocessing import run_postprocessing
+
         # Capture the postprocessing narrative into its own phase file, which the
         # unified campaign log serves under the POSTPROCESSING divider. Thread-
         # isolated (same worker thread), so concurrent campaigns stay separate.
@@ -1636,8 +1629,8 @@ class LocalTransport(RobovastInterface):
         it the job stayed ``running`` for the rest of the campaign's life, keeping a row in
         the live Jobs list and a Stop button on a job that was already dead.
         """
-        from robovast.common.campaign_data import (killed_failure_message,
-                                                   killed_runs, read_test_result)
+        from robovast.common.campaign_data import (killed_failure_message, killed_runs,
+                                                   read_test_result)
         campaign_dir = self._campaigns_root() / campaign_id
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -1735,9 +1728,9 @@ class LocalTransport(RobovastInterface):
         the stream on ``test.xml`` alone would close the panel on exactly the shutdown
         output that says whether the simulator saved its recording.
         """
+        from robovast.client.safe_path import UnsafePathError, safe_join
         from robovast.common.campaign_data import read_test_result
         from robovast.common.execution import job_artifact_dir
-        from robovast.client.safe_path import UnsafePathError, safe_join
         campaign_dir = self._campaigns_root() / campaign_id
         # job_name comes from a client, so confine it to the campaign (shared check).
         try:
@@ -1944,6 +1937,7 @@ class LocalTransport(RobovastInterface):
         request = request or ListCampaignsRequest()
         results_dir = self._campaigns_root()
         from robovast.common.execution import is_campaign_dir
+
         # Which campaigns exist = those persisted on disk ∪ those stored in a durable home
         # that is not this disk ∪ those being driven now (registered in-memory, perhaps
         # without a directory yet — a just-launched one is still building/starting). Not
@@ -2155,6 +2149,7 @@ class LocalTransport(RobovastInterface):
                                                         remove_campaign_log_handler)
             from robovast.execution.backends import RunOptions
             from robovast.execution.status_recovery import record_step_outcome
+
             # Its own phase file, so the campaign log shows what an upload did under a SHARE
             # divider. Previously this wrote nowhere the campaign log reads: a share that failed
             # left a one-line `share_error` and no account of how it got there, which is the
@@ -2242,8 +2237,8 @@ class LocalTransport(RobovastInterface):
                        entities: bool = False, backend: str = "") -> WorldDescription:
         del backend  # one lane here; a multi-backend service overrides this to select
         import yaml
-        from robovast.common.config_generation import (WorldQueryUnavailable,
-                                                       describe_world_payload)
+
+        from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
         from robovast.common.simulators import backend_name, campaign_sim_block
         project = self._resolve_project(workspace_id, path)
         with open(project.config_path, encoding="utf-8") as handle:
@@ -2281,6 +2276,7 @@ class LocalTransport(RobovastInterface):
 
     def list_variation_types(self) -> VariationTypesResponse:
         from importlib.metadata import entry_points
+
         from robovast.common.plugin_schema import schema_from_object
         types = []
         for ep in entry_points(group="robovast.variation_types"):
@@ -2422,11 +2418,11 @@ class LocalTransport(RobovastInterface):
         # Raw-load (not full validation) — reading declared panels must not depend on
         # the rest of the snapshot config being re-validatable. Reads the *effective*
         # .vast so in-place run-view visualization edits are reflected.
+        from robovast.common.config import CUSTOM_PANEL_TYPE
         from robovast.common.config_validation import _safe_load
+        from robovast.common.simulators import merge_default_panels
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import campaign_vast
-        from robovast.common.config import CUSTOM_PANEL_TYPE
-        from robovast.common.simulators import merge_default_panels
         cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
         viz = (cfg or {}).get("visualization") or {}
         # The simulator backend contributes the panels that replay what it always records
@@ -2732,8 +2728,7 @@ class LocalTransport(RobovastInterface):
     def list_campaign_visualizations(
         self, campaign_id: str
     ) -> "CampaignVisualizationsResponse":
-        from robovast.service.interface import (CampaignVisualization,
-                                                CampaignVisualizationsResponse)
+        from robovast.service.interface import CampaignVisualization, CampaignVisualizationsResponse
         workloads, _ = self._visualization_workloads(campaign_id)
         return CampaignVisualizationsResponse(
             campaign_id=campaign_id,
@@ -2820,8 +2815,7 @@ class LocalTransport(RobovastInterface):
 
     def _summary_for(self, cid: str) -> CampaignSummary:
         from robovast.common.store import read_campaign_mode
-        from robovast.execution.status_recovery import \
-            reconstruct_status_from_disk
+        from robovast.execution.status_recovery import reconstruct_status_from_disk
         campaign_dir = self._record_dir(cid)
         with self._lock:
             entry = self._campaigns.get(cid)
@@ -2983,7 +2977,6 @@ class LocalTransport(RobovastInterface):
         return created_by
 
     def _status_from_disk(self, campaign_id: str) -> Status:
-        from robovast.execution.status_recovery import \
-            reconstruct_status_from_disk
+        from robovast.execution.status_recovery import reconstruct_status_from_disk
         return reconstruct_status_from_disk(self._record_dir(campaign_id))
 

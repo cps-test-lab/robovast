@@ -22,11 +22,9 @@ import tempfile
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPalette
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QProgressBar,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QProgressBar, QVBoxLayout, QWidget
 
-from robovast.results_processing.notebook_render import (render_notebook_html,
-                                                         scrollbar_css)
+from robovast.results_processing.notebook_render import render_notebook_html, scrollbar_css
 
 from .common import RunType
 from .worker_thread import CancellableWorkload

@@ -17,8 +17,7 @@ import sys
 import pytest
 
 from robovast.common import config_plugins as cp
-from robovast.common.config_plugins import (MARKER_NAME, PLUGIN_DIRNAME,
-                                            ensure_workspace_plugins)
+from robovast.common.config_plugins import MARKER_NAME, PLUGIN_DIRNAME, ensure_workspace_plugins
 
 
 @pytest.fixture(autouse=True)

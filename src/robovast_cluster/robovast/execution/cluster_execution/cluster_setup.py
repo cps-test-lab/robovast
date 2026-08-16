@@ -23,8 +23,7 @@ from importlib.metadata import entry_points
 from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
-from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm,
-                               uninstall_kueue_helm,
+from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm,
                                verify_kueue_admission_ready)
 
 logger = logging.getLogger(__name__)
@@ -53,8 +52,7 @@ def _controller_rbac_manifests(namespace):
     The legacy ``robovast-controller`` ServiceAccount/Role are no longer created;
     :func:`delete_controller_rbac` removes them from clusters set up earlier.
     """
-    from .service_deploy import \
-        SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
+    from .service_deploy import SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
     cluster_role_name = _controller_cluster_role_name(namespace)
     return [
         {
@@ -90,13 +88,10 @@ def apply_controller_rbac(namespace="default", kube_context=None):
     the cluster-scoped node access is applied here.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
-    from .service_deploy import \
-        SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+    from .service_deploy import SERVICE_ACCOUNT  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
     rbac = client.RbacAuthorizationV1Api()
@@ -128,11 +123,9 @@ def apply_controller_rbac(namespace="default", kube_context=None):
 def delete_controller_rbac(namespace="default", kube_context=None):
     """Remove the service's node-read ClusterRole and its binding. Best-effort."""
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import \
-        ApiException  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
-    from .kube_client import \
-        load_kube_config  # pylint: disable=import-outside-toplevel
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
     try:
         load_kube_config(context=kube_context)
@@ -284,8 +277,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
     Raises:
         ValueError: If the stored config name is not found in the available plugins.
     """
-    from .service_deploy import \
-        read_service_config_from_cluster
+    from .service_deploy import read_service_config_from_cluster
     name, setup_kwargs = read_service_config_from_cluster(namespace, context_key)
     if name is None:
         return None
@@ -332,8 +324,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     context_key = kube_context
     namespace = cluster_kwargs.get("namespace", "default")
 
-    from .service_deploy import \
-        read_service_config_from_cluster
+    from .service_deploy import read_service_config_from_cluster
     existing_config, _ = read_service_config_from_cluster(namespace, kube_context)
     if existing_config and not force:
         key_label = f" for context '{context_key}'" if context_key else ""
@@ -346,8 +337,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # argument error, and it used to be raised inside deploy_service -- after Kueue was
     # installed and the flavor's storage deployed, leaving a half-set-up cluster behind
     # for a mistake that costs nothing to catch here.
-    from .service_deploy import \
-        validate_ingress_options  # pylint: disable=import-outside-toplevel
+    from .service_deploy import validate_ingress_options  # pylint: disable=import-outside-toplevel
     validate_ingress_options(**{k: v for k, v in (service_kwargs or {}).items()
                                 if k in ("ingress_host", "tls_secret", "issuer",
                                          "insecure_http")})
@@ -394,8 +384,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
-    from .service_deploy import (
-        deploy_service, wait_for_service_ready)
+    from .service_deploy import deploy_service, wait_for_service_ready
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
                    **(service_kwargs or {}))
@@ -426,8 +415,7 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     kube_context = cluster_kwargs_override.get('kube_context')
 
     if config_name is None:
-        from .service_deploy import \
-            read_service_config_from_cluster
+        from .service_deploy import read_service_config_from_cluster
         ns = cluster_kwargs_override.get("namespace", "default")
         name, stored_kwargs = read_service_config_from_cluster(ns, kube_context)
         config_name = name

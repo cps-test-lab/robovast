@@ -11,8 +11,7 @@ neither considered a symlink planted inside the root.
 
 import pytest
 
-from robovast.client.safe_path import (UnsafePathError, check_relative,
-                                       safe_join)
+from robovast.client.safe_path import UnsafePathError, check_relative, safe_join
 
 
 @pytest.fixture

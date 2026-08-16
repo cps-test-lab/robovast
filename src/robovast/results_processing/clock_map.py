@@ -45,12 +45,10 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 # ``rosbags_process.py`` is copied into the container as a standalone script and can import
 # nothing from this package. Re-exported here so host-side callers have one import site and
 # there is still only one definition of the tolerance and the column names.
-from .data.rosbags_common import (  # noqa: F401
-    CLOCK_MAP_FIELDNAMES as FIELDNAMES,
-    CLOCK_MAP_FILENAME as FILENAME,
-    DEFAULT_CLOCK_TOLERANCE_S as DEFAULT_TOLERANCE_S,
-    ClockDecimator as Decimator,
-)
+from .data.rosbags_common import CLOCK_MAP_FIELDNAMES as FIELDNAMES  # noqa: F401
+from .data.rosbags_common import CLOCK_MAP_FILENAME as FILENAME
+from .data.rosbags_common import DEFAULT_CLOCK_TOLERANCE_S as DEFAULT_TOLERANCE_S
+from .data.rosbags_common import ClockDecimator as Decimator
 
 #: ``clock_map_source`` values. ``none`` is a finding, not a default: it says this run's
 #: log lines are wall-time only, and every surface that shows them has to say so.

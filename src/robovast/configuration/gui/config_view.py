@@ -16,8 +16,7 @@
 
 import yaml
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QLabel, QSplitter, QTabWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from robovast.common import convert_dataclasses_to_dict, filter_configs
 from robovast.configuration.gui.yaml_editor import YamlEditor

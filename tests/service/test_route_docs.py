@@ -14,8 +14,7 @@ import sys
 
 import pytest
 
-from robovast.service.app import (ROUTE_TAG_ORDER, api_routes, build_app,
-                                 route_description)
+from robovast.service.app import ROUTE_TAG_ORDER, api_routes, build_app, route_description
 
 # ``tools/`` is a sibling of ``src/``, not a package on the path.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -175,8 +174,9 @@ def test_the_generated_ui_client_is_up_to_date():
     if not committed.is_file():
         pytest.skip("frontend/ui/openapi.json not present (no web UI checkout)")
 
-    from robovast.service.app import build_app
     from tools.dump_openapi import _mark_response_fields_required  # noqa: PLC0415
+
+    from robovast.service.app import build_app
 
     current = build_app(_Stub()).openapi()
     _mark_response_fields_required(current)

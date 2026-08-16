@@ -21,8 +21,8 @@ import time
 
 import pytest
 
-from robovast.common.errors import ImageBuildFailed
 from robovast.client.status import Phase, failure_detail, is_running
+from robovast.common.errors import ImageBuildFailed
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import ControllerState
 from robovast.service.interface import ImageBuildRef, ImageBuildStatus, LogChunk

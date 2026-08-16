@@ -37,8 +37,8 @@ the container that runs the scenario, and every campaign has one.
 from dataclasses import dataclass, field
 from typing import Optional
 
-from robovast.common.config import (CONTAINER_ROLES, SCENARIO_CONTAINER,
-                                    SIMULATION_CONTAINER, SUT_CONTAINER)
+from robovast.common.config import (CONTAINER_ROLES, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+                                    SUT_CONTAINER)
 
 __all__ = [
     'ContainerPlan',

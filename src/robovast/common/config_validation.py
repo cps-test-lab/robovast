@@ -134,8 +134,7 @@ def _schema_problems(raw):
         # Report what moved where, not just the version number. There is no migration
         # tool and no v1 reader, so this text is the migration path -- and this is the
         # collect-all validator, the surface an agent or the web editor hits first.
-        from robovast.common.config import \
-            _V1_MIGRATION  # pylint: disable=import-outside-toplevel
+        from robovast.common.config import _V1_MIGRATION  # pylint: disable=import-outside-toplevel
         problems.append(_problem(
             "version",
             "config version 1 is no longer supported. Version 2 replaces "
@@ -214,8 +213,7 @@ def _generator_problems(raw, vast_dir):
     otherwise discovered after the user has already committed to a run.
     """
     from robovast.common.input_generation import (  # pylint: disable=import-outside-toplevel
-        load_input_generators, parse_generate_entry, resolve_input_generator,
-        resolve_out_dir)
+        load_input_generators, parse_generate_entry, resolve_input_generator, resolve_out_dir)
 
     problems = []
     entries = ((raw.get("execution") or {}).get("generate")) or []
@@ -385,8 +383,8 @@ def _run_capture_problems(raw):
     if not panels:
         return problems
 
-    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
-        backend_name, resolve_backend)
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend
     execution = raw.get("execution") or {}
     name = backend_name(execution)
     if not name:
@@ -632,10 +630,9 @@ def _search_problems(search, vast_dir):
     from robovast.common.config import \
         get_validated_config  # pylint: disable=import-outside-toplevel
     from robovast.search.extractor import Extractor  # pylint: disable=import-outside-toplevel
-    from robovast.search.plugins import (  # pylint: disable=import-outside-toplevel
-        EXTRACTOR_GROUP, STRATEGY_GROUP, load_ref)
-    from robovast.search.strategy import \
-        SearchStrategy  # pylint: disable=import-outside-toplevel
+    from robovast.search.plugins import EXTRACTOR_GROUP  # pylint: disable=import-outside-toplevel
+    from robovast.search.plugins import STRATEGY_GROUP, load_ref
+    from robovast.search.strategy import SearchStrategy  # pylint: disable=import-outside-toplevel
 
     problems = []
 

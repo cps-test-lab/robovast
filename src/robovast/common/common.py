@@ -22,13 +22,14 @@ from dataclasses import asdict, is_dataclass
 
 import yaml
 
+from .config import validate_config
+from .file_cache import FileCache
+
 # numpy and scenario_execution are deliberately NOT imported here. This module is what
 # `from robovast.common import <name>` resolves to, so a module-level import of either
 # is paid by every `vast` invocation -- `vast wait` and `vast --help` included -- for a
 # simulator stack and an array library they never touch. See the two use sites below.
 
-from .config import validate_config
-from .file_cache import FileCache
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,8 @@ def get_scenario_parameters(scenario_file):
         return pickle.loads(cached_params)
     else:
         from scenario_execution import \
-            get_scenario_parameters as _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
+            get_scenario_parameters as \
+            _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
         params = _external_get_scenario_parameters(scenario_file)
         file_cache.save_file_to_cache([scenario_file], pickle.dumps(params), content=True, binary=True)
         return params

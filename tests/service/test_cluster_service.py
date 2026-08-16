@@ -13,11 +13,12 @@ import time
 
 import pytest
 
-from robovast.execution.cluster_execution.container_runner import (
-    AUX_LABEL, DEFAULT_AUX_DEADLINE_SECONDS, aux_pod_name,
-    build_aux_pod_manifest)
 from robovast.common.variation.container_runner import ContainerSpec
 from robovast.execution.cluster_execution.cluster_service import ClusterService
+from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
+                                                                   DEFAULT_AUX_DEADLINE_SECONDS,
+                                                                   aux_pod_name,
+                                                                   build_aux_pod_manifest)
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -89,8 +90,7 @@ def test_cleanup_campaign_data_runs_server_side(cs, monkeypatch):
 
 def test_cleanup_campaign_data_skips_live_campaigns(cs, monkeypatch):
     """A bulk delete must never remove a campaign the service is still driving."""
-    from robovast.service.interface import (CampaignSummary,
-                                            ListCampaignsResponse)
+    from robovast.service.interface import CampaignSummary, ListCampaignsResponse
 
     monkeypatch.setattr(cs, "list_campaigns", lambda *a, **k: ListCampaignsResponse(
         total=2, campaigns=[
@@ -232,10 +232,10 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
     Reachable for one reason now that RoboVAST ships its own registry: that registry is
     published on the service's Ingress, so a service with no Ingress still has nowhere a
     node could pull a built image back from."""
+    import types
+
     from robovast.common.errors import CampaignConfigError
     from robovast.execution.cluster_config.base_config import RegistryConfig
-
-    import types
     monkeypatch.setattr(
         cs, "_cluster_config",
         lambda: types.SimpleNamespace(get_registry_config=RegistryConfig))
@@ -1331,6 +1331,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
 
 def _scene_identity_for(tmp_path, world, archive=True):
     from unittest.mock import patch
+
     from robovast.service import scene_cache
     if archive:
         f = tmp_path / "_config" / "files" / "depot_nav2.yaml"
@@ -1428,6 +1429,7 @@ def test_the_cache_key_covers_a_campaign_worlds_contents(tmp_path):
 def test_a_missing_archived_world_says_so(tmp_path):
     """Rather than failing later inside the container with a path nobody can place."""
     import pytest as _pytest
+
     from robovast.service import scene_cache
 
     with _pytest.raises(scene_cache.SceneUnavailable, match="not archived with the campaign"):

@@ -59,8 +59,7 @@ readers and the results store); nothing here reaches back up into ``service`` or
 from pathlib import Path
 from typing import Optional
 
-from robovast.common.campaign_data import (get_vast_configuration_info,
-                                           read_execution_outcome,
+from robovast.common.campaign_data import (get_vast_configuration_info, read_execution_outcome,
                                            write_execution_outcome)
 from robovast.common.store import read_campaign_mode, read_run_counts
 from robovast.execution.control_server import Phase, Status, is_terminal

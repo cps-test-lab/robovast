@@ -36,9 +36,10 @@ import numpy as np
 from pydantic import ConfigDict, field_validator, model_validator
 
 from robovast.common import convert_dataclasses_to_dict
-from ..data_model import Orientation, Pose, Position
-from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig, ObstacleVariationGuiRenderer
 
+from ..data_model import Orientation, Pose, Position
+from .obstacle_variation import (ObstacleVariation, ObstacleVariationConfig,
+                                 ObstacleVariationGuiRenderer)
 
 # ---------------------------------------------------------------------------
 # Config model

@@ -5,8 +5,7 @@
 from pathlib import Path
 
 from robovast.common.campaign_data import write_execution_outcome
-from robovast.execution.control_server import (TERMINAL_PHASES, Phase, Status,
-                                               is_terminal)
+from robovast.execution.control_server import TERMINAL_PHASES, Phase, Status, is_terminal
 from robovast.execution.status_recovery import reconstruct_status_from_disk
 
 

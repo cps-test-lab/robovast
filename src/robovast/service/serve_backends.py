@@ -54,8 +54,7 @@ def available() -> dict[str, str]:
     Listing must stay cheap and safe: this is what a caller uses to say "cluster is not
     installed" rather than raising an ImportError from inside a lane it never chose.
     """
-    from importlib.metadata import \
-        entry_points  # pylint: disable=import-outside-toplevel
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
     return {ep.name: ep.value for ep in entry_points(group=SERVE_BACKEND_GROUP)}
 
 
@@ -66,8 +65,7 @@ def resolve(name: str) -> ServeBackend:
     with no cluster package raises ``ModuleNotFoundError`` naming a module the caller
     never mentioned — which reads as a broken install rather than a missing one.
     """
-    from robovast.common.plugin_ref import \
-        load_ref  # pylint: disable=import-outside-toplevel
+    from robovast.common.plugin_ref import load_ref  # pylint: disable=import-outside-toplevel
     have = available()
     if name not in have:
         listed = ", ".join(sorted(have)) or "(none)"

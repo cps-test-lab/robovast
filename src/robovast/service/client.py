@@ -56,5 +56,4 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # for type checkers and IDEs only
-    from robovast.service.local_transport import (  # noqa: F401
-        LocalTransport, _LocalCampaign)
+    from robovast.service.local_transport import LocalTransport, _LocalCampaign  # noqa: F401

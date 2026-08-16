@@ -8,18 +8,15 @@ from __future__ import annotations
 import json
 import os
 import shlex
-
-import yaml
 from typing import Optional
 
+import yaml
 from pydantic import BaseModel, ConfigDict
+
+from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
+                                        SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, ContainerQuery,
+                                        SimulatorBackend, shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
-from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER,
-                                        SHAPE_ROS, SHAPE_STEPPED,
-                                        SIM_OVERRIDES_MOUNT,
-                                        SIMULATION_CONTAINER, ContainerQuery,
-                                        SimulatorBackend, shape_for,
-                                        simulator_image)
 
 #: The image roqsim runs in when it has a container of its own -- roqsim's **own**
 #: published image, not something a campaign builds. It carries the GL libraries,

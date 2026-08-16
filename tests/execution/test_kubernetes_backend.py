@@ -15,8 +15,8 @@ import pytest
 
 from robovast.execution.backends import RunOptions
 from robovast.execution.cluster_execution import in_pod_storage
-from robovast.execution.cluster_execution.kubernetes_backend import (
-    BatchJobRunner, KubernetesBackend)
+from robovast.execution.cluster_execution.kubernetes_backend import (BatchJobRunner,
+                                                                     KubernetesBackend)
 
 
 class _FakeStorage:

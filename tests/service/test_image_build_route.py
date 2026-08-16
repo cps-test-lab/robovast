@@ -10,8 +10,8 @@ The routes bind to the interface's ``build_image`` / ``get_image_build_status`` 
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.interface import (BuildImageRequest, ImageBuildError,
-                                        ImageBuildRef, ImageBuildStatus, LogChunk)
+from robovast.service.interface import (BuildImageRequest, ImageBuildError, ImageBuildRef,
+                                        ImageBuildStatus, LogChunk)
 
 
 class _FakeImpl:

@@ -13,10 +13,8 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.variation.base_variation import (SCENARIO_CHANNEL,
-                                                      SIM_CHANNEL,
-                                                      DestinationConfig,
-                                                      Variation)
+from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
+                                                      DestinationConfig, Variation)
 
 
 class OneOutput(DestinationConfig):

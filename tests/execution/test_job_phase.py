@@ -19,9 +19,10 @@
 import types
 from unittest import mock
 
-from robovast.execution.cluster_execution.cluster_execution import (
-    blocked_job_reasons, job_phase, list_jobs_with_phase,
-    pod_termination_reason, running_scenario_job_names)
+from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
+                                                                    list_jobs_with_phase,
+                                                                    pod_termination_reason,
+                                                                    running_scenario_job_names)
 
 
 def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):

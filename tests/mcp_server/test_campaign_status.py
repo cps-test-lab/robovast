@@ -83,8 +83,7 @@ def test_batch_mode_omits_search_only_fields():
 def test_finished_local_search_reads_rich_state_from_outcome(tmp_path):
     """A finished campaign's outcome.json is the durable full Status; the local
     branch must surface its search state (not just a bare 'finished')."""
-    from robovast.common.campaign_data import (read_execution_outcome,
-                                               write_execution_outcome)
+    from robovast.common.campaign_data import read_execution_outcome, write_execution_outcome
     st = _status(phase="finished", mode="search", batches_done=5,
                  best_objective=0.13, runs={"completed": 4, "total": 4},
                  budget=[{"label": "batches", "current": 5, "limit": 5, "done": True}],

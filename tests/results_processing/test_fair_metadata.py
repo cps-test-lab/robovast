@@ -12,8 +12,7 @@ import json
 
 import pytest
 
-from robovast.results_processing.fair_metadata import (_as_list,
-                                                       generate_prov_metadata)
+from robovast.results_processing.fair_metadata import _as_list, generate_prov_metadata
 
 
 def _metadata(agents):

@@ -25,9 +25,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QIcon, QKeyEvent
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QPushButton,
-                               QSplitter, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
+                               QMessageBox, QPushButton, QSplitter, QTextEdit, QVBoxLayout, QWidget)
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 

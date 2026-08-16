@@ -7,8 +7,7 @@
 import textwrap
 
 from robovast.common.campaign_index import build_campaign_store
-from robovast.common.store import (STORE_FILENAME, CampaignStore,
-                                   read_campaign_created_at,
+from robovast.common.store import (STORE_FILENAME, CampaignStore, read_campaign_created_at,
                                    read_campaign_description)
 
 VAST = textwrap.dedent("""\

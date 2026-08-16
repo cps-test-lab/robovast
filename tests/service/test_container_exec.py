@@ -216,8 +216,8 @@ def test_the_entrypoint_is_always_invoked_through_bash():
 
 def test_a_detached_scenario_that_dies_immediately_is_reported_as_a_failure():
     """Starting is not the same as running, and the difference must not be silent."""
-    from robovast.service.docker_exec_lane import DockerExecLane
     import robovast.service.docker_exec_lane as mod
+    from robovast.service.docker_exec_lane import DockerExecLane
     captured = []
 
     def fake_capture(cmd, limit_s):
@@ -246,8 +246,8 @@ def test_both_lanes_start_a_detached_scenario_the_same_way():
     """
     import inspect
 
-    from robovast.service.docker_exec_lane import DockerExecLane
     from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane
+    from robovast.service.docker_exec_lane import DockerExecLane
     for lane in (DockerExecLane, KubeExecLane):
         source = inspect.getsource(lane.exec_in_held)
         assert "detached_start_script()" in source, f"{lane.__name__} rolls its own"

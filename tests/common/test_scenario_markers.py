@@ -4,8 +4,8 @@
 
 import pytest
 
-from robovast.common.scenario_markers import (FAILURE_MESSAGES, is_scenario_start,
-                                              split_shutdown, verdict_of)
+from robovast.common.scenario_markers import (FAILURE_MESSAGES, is_scenario_start, split_shutdown,
+                                              verdict_of)
 
 # -- the verdict -------------------------------------------------------------
 

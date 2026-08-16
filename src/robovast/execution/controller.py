@@ -47,16 +47,14 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
 from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
-                                           read_execution_metadata,
-                                           read_run_outcomes)
+                                           read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_per_run_seconds
-from robovast.client.logging_config import (add_campaign_log_handler,
-                                            remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
 
-from .backends import (CampaignConfigError, CampaignStopped, DockerBackend,
-                       ExecutionBackend, RunOptions)
+from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
+                       RunOptions)
 from .control_server import Phase, failure_detail, is_terminal
 from .notify import Notifier
 
@@ -655,8 +653,7 @@ class CampaignController:
         ensure_postprocessing_plugins(self.vast_dir)
         # Imported lazily to avoid importing the results_processing stack (and its
         # heavier deps) unless a search actually configures postprocessing.
-        from robovast.results_processing.postprocessing import \
-            run_postprocessing_commands
+        from robovast.results_processing.postprocessing import run_postprocessing_commands
         run_postprocessing_commands(
             self.postprocessing, results_dir=self.campaign_root,
             config_dir=self.vast_dir, output=logger.info)
@@ -687,8 +684,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
     try:
-        from robovast.execution.cluster_execution.postprocess_job import \
-            postprocess_campaign
+        from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
         if state is not None:
             state.set_phase(Phase.POSTPROCESSING)
         ok, message = postprocess_campaign(

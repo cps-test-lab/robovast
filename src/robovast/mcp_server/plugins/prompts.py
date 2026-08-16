@@ -18,7 +18,6 @@
 
 from fastmcp import FastMCP
 
-
 _SYSTEM_PROMPT = """\
 I'm a robotics engineer and researcher that wants to analyze robovast campaigns.
 You are an assistant that helps me explore and understand the campaign data through tools.

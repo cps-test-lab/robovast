@@ -47,8 +47,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from robovast.results_processing.postprocessing_plugins import \
-    BasePostprocessingPlugin
+from robovast.results_processing.postprocessing_plugins import BasePostprocessingPlugin
 
 # BT.CPP status string -> (py_trees-style numeric code, panel status_name). The panel only
 # colors RUNNING/SUCCESS/FAILURE; IDLE and SKIPPED map to INVALID (grey = "not ticked").

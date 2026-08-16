@@ -10,14 +10,12 @@ The same helper backs the ``get_plugin_details`` MCP tool and the
 
 from click.testing import CliRunner
 
-from robovast.common.plugin_schema import (describe_pydantic_model,
-                                           plugin_parameter_schema)
+from robovast.common.plugin_schema import describe_pydantic_model, plugin_parameter_schema
 from robovast.configuration.configuration_utils.cli import configuration
 
 
 def test_describe_model_renders_types_and_required():
-    from robovast.common.variation.parameter_variation import \
-        ParameterVariationListConfig
+    from robovast.common.variation.parameter_variation import ParameterVariationListConfig
 
     fields = {f["name"]: f for f in describe_pydantic_model(ParameterVariationListConfig)}
     # The two destination keys are optional individually -- exactly one is required, which

@@ -23,16 +23,15 @@ import tempfile
 
 import click
 
-from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
 from robovast.client.errors import handle_cli_exception
 from robovast.client.project_config import get_project_config
+from robovast.client.service_target import echo_target as _echo_target
+from robovast.client.service_target import service_client, target_options
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
 from robovast.common.host_display import gui_by_default
 
 from .execute_local import initialize_local_execution
-
 
 #: Entry-point group for subcommands that attach to ``vast exec``.
 EXEC_PLUGIN_GROUP = "robovast.exec_plugins"
@@ -54,8 +53,7 @@ class _LazyExecGroup(click.Group):
     """
 
     def _plugins(self):
-        from importlib.metadata import \
-            entry_points  # pylint: disable=import-outside-toplevel
+        from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
         return {ep.name: ep for ep in entry_points(group=EXEC_PLUGIN_GROUP)}
 
     def list_commands(self, ctx):
@@ -152,8 +150,7 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
     """
     try:
         from robovast.execution.backends import RunOptions
-        from robovast.execution.controller import (campaign_id_for,
-                                                   run_batch_campaign,
+        from robovast.execution.controller import (campaign_id_for, run_batch_campaign,
                                                    run_search_campaign)
 
         project_config = get_project_config()

@@ -88,8 +88,7 @@ def campaign_container_plan(campaign_dir: Path):
         plan_containers  # pylint: disable=import-outside-toplevel
     from robovast.common.results_utils import \
         campaign_vast  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import \
-        apply_backend  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
 
     try:
         vast_path = campaign_vast(campaign_dir)
@@ -272,8 +271,7 @@ def campaign_pinned_images(campaign_dir) -> dict[str, str]:
     """
     # Inline, like every other import in this module: it stays dependency-light so it loads
     # cleanly in the pod, the driver and the service alike.
-    from robovast.common.config import \
-        SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
 
     try:
         meta = read_execution_metadata(Path(campaign_dir))

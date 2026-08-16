@@ -114,7 +114,8 @@ def _install_warning_forwarding(mcp: FastMCP) -> None:
     middleware captures them generically for *every* tool and appends them to the
     result as an extra text block plus a ``meta.warnings`` list — no per-tool code.
     """
-    from fastmcp.server.middleware import Middleware, MiddlewareContext  # pylint: disable=import-outside-toplevel
+    from fastmcp.server.middleware import Middleware  # pylint: disable=import-outside-toplevel
+    from fastmcp.server.middleware import MiddlewareContext
     from mcp.types import TextContent  # pylint: disable=import-outside-toplevel
 
     logging.getLogger(_CAPTURED_LOGGER).addHandler(_WarningCaptureHandler())
@@ -146,7 +147,8 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
     ``level`` >= 1 logs each tool call with its arguments; ``level`` >= 2 also
     logs the (successful) result. Errors are always logged when any level is on.
     """
-    from fastmcp.server.middleware import Middleware, MiddlewareContext  # pylint: disable=import-outside-toplevel
+    from fastmcp.server.middleware import Middleware  # pylint: disable=import-outside-toplevel
+    from fastmcp.server.middleware import MiddlewareContext
 
     class _DebugLoggingMiddleware(Middleware):
         async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]

@@ -84,7 +84,7 @@ def test_started_at_comes_from_the_store(transport):
     """list_campaigns reports the real recorded start time (campaign.created_at)."""
     from datetime import datetime, timezone
 
-    from robovast.common.store import CampaignStore, STORE_FILENAME
+    from robovast.common.store import STORE_FILENAME, CampaignStore
 
     root = transport._campaigns_root()
     cid = "campaign-2026-07-16-131415"

@@ -18,7 +18,6 @@ from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import image_catalog
 from robovast.service.interface import ExecResult, ImageResolution
 
-
 _ACTIONS_PAYLOAD = {
     "actions": [{"name": "differential_drive_robot.nav_to_pose", "kind": "action",
                 "source_lib": "nav2", "doc": "Nav to a pose.", "parameters": [],

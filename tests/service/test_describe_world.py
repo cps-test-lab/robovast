@@ -15,8 +15,7 @@ import logging
 
 import pytest
 
-from robovast.common.config_generation import (WorldQueryUnavailable,
-                                               describe_world_payload)
+from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
 
 # This module imports a simulator backend at import time, so the `requires_simulator`
 # marker cannot save it — an absent package is a *collection* error, before any marker

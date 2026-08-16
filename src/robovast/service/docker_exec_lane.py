@@ -10,8 +10,8 @@ import logging
 import os
 import subprocess
 
-from robovast.service.container_exec import CONTAINER_NAME, ExecSpec
 from robovast.common.host_display import grant_local_access
+from robovast.service.container_exec import CONTAINER_NAME, ExecSpec
 
 logger = logging.getLogger(__name__)
 

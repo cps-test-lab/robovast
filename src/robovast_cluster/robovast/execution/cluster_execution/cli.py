@@ -23,11 +23,10 @@ import time
 import click
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import get_project_config
-from robovast.client.project_config import get_vast_file_override
+from robovast.client.project_config import get_project_config, get_vast_file_override
+from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import (detected_service_url,
-                                            service_client, target_options)
+from robovast.client.service_target import service_client, target_options
 from robovast.client.status import Status, stall_report
 
 logger = logging.getLogger(__name__)
@@ -843,8 +842,7 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
     # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from .cluster_setup import \
-        setup_server  # pylint: disable=import-outside-toplevel
+    from .cluster_setup import setup_server  # pylint: disable=import-outside-toplevel
     if list_configs:
         try:
             setup_server(config_name=None, list_configs=True)
@@ -959,11 +957,10 @@ def run_cleanup(campaign, data, force, namespace, context):
     # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from .cluster_execution import (  # pylint: disable=import-outside-toplevel
-        _label_safe_campaign, cleanup_cluster_campaign,
-        get_cluster_job_counts_per_campaign)
-    from .kubernetes import (  # pylint: disable=import-outside-toplevel
-        check_kubernetes_access, get_kubernetes_client)
+    from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
+    from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
+    from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
+    from .kubernetes import get_kubernetes_client
     try:
         require_context_for_multi_cluster(context, get_vast_file_override())
         k8s_client = get_kubernetes_client(context=context)
@@ -1067,12 +1064,10 @@ def upgrade(namespace, kube_context):
 
     Campaign data lives in the object store and survives both.
     """
-    from .cluster_setup import \
-        apply_controller_rbac
-    from .service_deploy import (
-        deploy_service, published_host, read_service_config_from_cluster,
-        reconcile_registry_ingress_path, running_image_digest, wait_for_rollout,
-        wait_for_service_ready)
+    from .cluster_setup import apply_controller_rbac
+    from .service_deploy import (deploy_service, published_host, read_service_config_from_cluster,
+                                 reconcile_registry_ingress_path, running_image_digest,
+                                 wait_for_rollout, wait_for_service_ready)
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1143,8 +1138,7 @@ def cluster_token(namespace, kube_context, quiet):
       vast exec cluster token -q         the token alone
       vast exec cluster token -x prod    a specific cluster
     """
-    from .service_deploy import (
-        existing_auth_token, published_url)
+    from .service_deploy import existing_auth_token, published_url
 
     try:
         token = existing_auth_token(namespace, kube_context)
@@ -1213,8 +1207,7 @@ def cleanup(config_name, namespace, options, kube_context):
     # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from .cluster_setup import \
-        delete_server  # pylint: disable=import-outside-toplevel
+    from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
         require_context_for_multi_cluster(kube_context, get_vast_file_override())
         cluster_kwargs = {}

@@ -13,9 +13,8 @@ import json
 import os
 import shlex
 
-import yaml
-
 import pytest
+import yaml
 
 from robovast.service import scene_cache
 

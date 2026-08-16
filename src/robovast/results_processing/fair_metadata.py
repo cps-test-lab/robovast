@@ -31,7 +31,6 @@ Requires: ``rdflib`` and ``pyld``.
 """
 import datetime as dt
 import json
-import yaml
 import logging
 import os
 import subprocess
@@ -40,8 +39,9 @@ from pathlib import Path
 from typing import List, Tuple
 
 import rdflib
+import yaml
 from pyld import jsonld
-from rdflib import Namespace, PROV, DCAT, DCTERMS, FOAF
+from rdflib import DCAT, DCTERMS, FOAF, PROV, Namespace
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes

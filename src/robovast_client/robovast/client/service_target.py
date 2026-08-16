@@ -45,6 +45,7 @@ import contextlib
 
 import click
 
+
 def _service_alive(url):
     import urllib.error  # pylint: disable=import-outside-toplevel
     import urllib.request  # pylint: disable=import-outside-toplevel

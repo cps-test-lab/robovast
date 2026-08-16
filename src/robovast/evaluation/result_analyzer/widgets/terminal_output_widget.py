@@ -18,10 +18,8 @@
 import html as _html
 import re
 
-from PySide6.QtGui import (QColor, QFont, QTextCharFormat,  # noqa: F401
-                           QTextCursor)
-from PySide6.QtWidgets import (QHBoxLayout, QPushButton, QTextEdit,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor  # noqa: F401
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 # Compiled once at module level
 _ROS_PREFIX = re.compile(

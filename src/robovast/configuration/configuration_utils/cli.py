@@ -25,11 +25,11 @@ from importlib.metadata import entry_points
 import click
 import yaml
 
-from robovast.common import (convert_dataclasses_to_dict, filter_configs,
-                             generate_scenario_variations,
-                             get_scenario_parameters, prepare_campaign_configs)
 from robovast.client.errors import handle_cli_exception
 from robovast.client.project_config import get_project_config
+from robovast.common import (convert_dataclasses_to_dict, filter_configs,
+                             generate_scenario_variations, get_scenario_parameters,
+                             prepare_campaign_configs)
 
 
 @click.group()
@@ -45,8 +45,7 @@ def gui(debug):
 
     Opens a GUI for editing and validating RoboVAST configuration files.
     """
-    from PySide6.QtWidgets import \
-        QApplication  # pylint: disable=import-outside-toplevel
+    from PySide6.QtWidgets import QApplication  # pylint: disable=import-outside-toplevel
 
     from robovast.configuration.gui.config_editor import \
         ConfigEditor  # pylint: disable=import-outside-toplevel

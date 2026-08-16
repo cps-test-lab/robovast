@@ -27,7 +27,6 @@ The lanes differ only in how they get that delta, which is why the fetching is N
 
 from __future__ import annotations
 
-
 #: What the main container is called. The runtime container is ``robovast`` on both lanes (the
 #: compose service, and the pod's container in ``manifests.py``) -- NOT ``scenario``, which is the
 #: container plan's *role* name. Defined here, beside :func:`tag_line`, because two readers depend

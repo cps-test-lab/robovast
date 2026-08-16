@@ -13,10 +13,11 @@ import json
 
 import pytest
 
-from robovast.execution.cluster_execution.cluster_image_build import (
-    build_job_manifest, cache_image_ref, concrete_image_ref)
-from robovast.execution.cluster_execution.registry_client import (
-    credentials_for, manifest_exists, split_image_ref)
+from robovast.execution.cluster_execution.cluster_image_build import (build_job_manifest,
+                                                                      cache_image_ref,
+                                                                      concrete_image_ref)
+from robovast.execution.cluster_execution.registry_client import (credentials_for, manifest_exists,
+                                                                  split_image_ref)
 
 
 def _buildctl(**over):

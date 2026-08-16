@@ -9,8 +9,8 @@ Panel ``type`` is a core built-in, an installed ``robovast.panel_types`` entry p
 import pytest
 from pydantic import ValidationError
 
-from robovast.common.config import (DATA_QUERY_ROW_CAP, ConfigV1, PanelConfig,
-                                    PanelPosition, VisualizationConfig)
+from robovast.common.config import (DATA_QUERY_ROW_CAP, ConfigV1, PanelConfig, PanelPosition,
+                                    VisualizationConfig)
 from robovast.common.config_validation import _panel_problems
 
 

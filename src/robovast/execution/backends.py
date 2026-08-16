@@ -44,10 +44,8 @@ from robovast.common import prepare_campaign_configs
 # type, and they live in ``common`` (which the execution layer imports), so the
 # class itself has to live there too. Every caller keeps importing it from here.
 from robovast.common.errors import CampaignConfigError
-from robovast.common.execution import (DEFAULT_ROBOVAST_IMAGE,
-                                       resolve_robovast_image)
-from robovast.execution.execution_utils.execute_local import \
-    generate_compose_run_script
+from robovast.common.execution import DEFAULT_ROBOVAST_IMAGE, resolve_robovast_image
+from robovast.execution.execution_utils.execute_local import generate_compose_run_script
 
 logger = logging.getLogger(__name__)
 

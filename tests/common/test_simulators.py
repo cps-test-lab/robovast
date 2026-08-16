@@ -13,8 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from robovast.common.containers import plan_containers
 from robovast.common.execution import scenario_env
-from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED,
-                                        SimulatorBackend, apply_backend,
+from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED, SimulatorBackend, apply_backend,
                                         shape_for)
 
 

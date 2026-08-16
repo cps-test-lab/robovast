@@ -20,8 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]
                        / "src" / "robovast" / "results_processing" / "data"))
 
-from rosbags_common import (VIDEO_FIELDNAMES, VIDEOS_CSV,  # noqa: E402
-                            register_video)
+from rosbags_common import VIDEO_FIELDNAMES, VIDEOS_CSV, register_video  # noqa: E402
 
 ROW = {"topic": "/static_camera/image/compressed",
        "file": "rosbag2_static_camera_image_compressed.webm",

@@ -22,9 +22,9 @@ from pathlib import Path
 
 import click
 
-from robovast.common.campaign_index import build_campaign_store
 from robovast.client.errors import handle_cli_exception
 from robovast.client.project_config import ProjectConfig
+from robovast.common.campaign_index import build_campaign_store
 from robovast.common.execution import is_campaign_dir
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.results_processing import is_postprocessing_needed, run_postprocessing
@@ -171,11 +171,9 @@ def result_analyzer_cmd(ctx, results_dir, force, skip_postprocessing):
     _index_campaigns(results_dir, force=force, feedback=click.echo)
 
     try:
-        from PySide6.QtWidgets import \
-            QApplication  # pylint: disable=import-outside-toplevel
+        from PySide6.QtWidgets import QApplication  # pylint: disable=import-outside-toplevel
 
-        from .result_analyzer import \
-            RunResultsAnalyzer  # pylint: disable=import-outside-toplevel
+        from .result_analyzer import RunResultsAnalyzer  # pylint: disable=import-outside-toplevel
     except ImportError as e:
         click.echo(
             f"Error: Required dependencies not available: {e}\n"

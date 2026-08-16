@@ -81,8 +81,7 @@ class _FakeListingClient:
     """A service stand-in that knows campaigns this host's disk does not."""
 
     def list_campaigns(self, request=None):
-        from robovast.service.interface import (CampaignSummary,
-                                                ListCampaignsResponse)
+        from robovast.service.interface import CampaignSummary, ListCampaignsResponse
         return ListCampaignsResponse(total=2, campaigns=[
             CampaignSummary(campaign_id="svc-running", phase="running",
                             description="the pilot"),

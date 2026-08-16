@@ -16,9 +16,10 @@ import types
 import pytest
 
 from robovast.execution.cluster_execution import in_pod_storage
-from robovast.execution.cluster_execution.cluster_image_build import (
-    BUILD_CONTEXT_BUCKET, context_prefix, discard_context,
-    staged_context_build_ids)
+from robovast.execution.cluster_execution.cluster_image_build import (BUILD_CONTEXT_BUCKET,
+                                                                      context_prefix,
+                                                                      discard_context,
+                                                                      staged_context_build_ids)
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore

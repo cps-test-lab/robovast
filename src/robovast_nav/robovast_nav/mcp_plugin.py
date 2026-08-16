@@ -45,9 +45,9 @@ from typing import Any
 import matplotlib
 import numpy as np
 import yaml
-from matplotlib import patches as mpatches
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
+from matplotlib import patches as mpatches
 
 from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import data_access, service_access
@@ -736,7 +736,8 @@ def draw_map(
         NavDataError: The configuration has no map (an image tool has no result dict to
             carry an ``{"error": …}`` in, so it raises instead).
     """
-    from robovast_nav.gui.map_visualizer import MapVisualizer  # pylint: disable=import-outside-toplevel
+    from robovast_nav.gui.map_visualizer import \
+        MapVisualizer  # pylint: disable=import-outside-toplevel
 
     # Straight from the configuration's own resolved scenario parameters, rather than the
     # campaign metadata.yaml this used to read: that file is written by postprocessing, so

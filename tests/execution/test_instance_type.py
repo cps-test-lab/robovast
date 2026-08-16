@@ -16,8 +16,7 @@ import pytest
 
 from robovast.common.execution import prepare_campaign_configs
 from robovast.execution.cluster_execution.cluster_setup import get_cluster_config
-from robovast.execution.cluster_execution.kubernetes_backend import \
-    _instance_type_command
+from robovast.execution.cluster_execution.kubernetes_backend import _instance_type_command
 
 
 @pytest.fixture

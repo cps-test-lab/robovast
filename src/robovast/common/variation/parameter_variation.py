@@ -17,13 +17,13 @@
 
 import random
 
+from .base_variation import DestinationConfig, Variation
 
 # numpy is imported inside `variation()` rather than here. This module is reachable from
 # `robovast.common`, so a module-level import put an array library into every `vast`
 # invocation for the sake of two seeding calls and one `normal()` draw -- work that only
 # happens when a campaign's configurations are actually being generated.
 
-from .base_variation import DestinationConfig, Variation
 
 
 class ParameterVariationDistributionUniformConfig(DestinationConfig):

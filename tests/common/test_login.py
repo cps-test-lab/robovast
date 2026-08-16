@@ -18,7 +18,6 @@ import pytest
 
 from robovast.client import login, service_target
 
-
 # The login config is isolated for every test by an autouse fixture in tests/conftest.py.
 # It lived here first, which is how test_service_target.py came to read the maintainer's
 # real credentials -- per-module isolation only protects the module that thought of it.

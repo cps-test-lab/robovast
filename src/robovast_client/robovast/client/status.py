@@ -37,7 +37,6 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # -- phase vocabulary -------------------------------------------------------
 
 class Phase(StrEnum):

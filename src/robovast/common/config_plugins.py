@@ -148,8 +148,7 @@ def _spec_hash(specs) -> str:
 def _requirement_name(spec: str) -> str:
     """Best-effort distribution name for a pip requirement *spec*."""
     try:
-        from packaging.requirements import \
-            Requirement  # pylint: disable=import-outside-toplevel
+        from packaging.requirements import Requirement  # pylint: disable=import-outside-toplevel
         return Requirement(spec).name
     except Exception:  # pylint: disable=broad-except
         head = spec.split("@", 1)[0].strip()

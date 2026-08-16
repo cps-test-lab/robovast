@@ -20,11 +20,10 @@ import time
 
 import pytest
 
-from robovast.common.shutdown import (begin_shutdown, is_shutting_down,
-                                      reset_shutdown)
+from robovast.common.shutdown import begin_shutdown, is_shutting_down, reset_shutdown
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.app import build_app
 from robovast.service.client import LocalTransport
-from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 

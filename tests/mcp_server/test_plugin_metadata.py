@@ -4,8 +4,7 @@
 
 """Unit tests for the plugin_metadata MCP tools."""
 
-from robovast.mcp_server.plugins.plugin_metadata import (get_plugin_details,
-                                                         list_plugins)
+from robovast.mcp_server.plugins.plugin_metadata import get_plugin_details, list_plugins
 
 
 def test_no_arguments_lists_the_group_catalogue():

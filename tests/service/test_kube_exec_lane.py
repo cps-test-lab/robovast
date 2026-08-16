@@ -22,8 +22,8 @@ No cluster is needed here: these check the manifests, the argv and the call sequ
 
 import pytest
 
-from robovast.service import container_exec as ce
 from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane, exec_prefix
+from robovast.service import container_exec as ce
 
 _S3 = ("http://robovast:9000", "minioadmin", "minioadmin")
 
@@ -97,6 +97,7 @@ def test_the_service_kube_context_is_honoured(monkeypatch):
 
 def test_the_cluster_service_passes_its_own_context():
     import inspect
+
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     source = inspect.getsource(ClusterService._exec_lane)
     assert "kube_context=self.kube_context" in source

@@ -13,8 +13,8 @@ import textwrap
 
 import pytest
 
-from robovast.results_processing.postprocessing import (
-    resolve_postprocessing_plugin, run_postprocessing_commands)
+from robovast.results_processing.postprocessing import (resolve_postprocessing_plugin,
+                                                        run_postprocessing_commands)
 
 PLUGIN_SRC = textwrap.dedent("""\
     from pathlib import Path

@@ -32,9 +32,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
 
-from .kube_client import pod_workload_containers
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
+from .kube_client import pod_workload_containers
 from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
 
 logger = logging.getLogger(__name__)
@@ -621,8 +621,7 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     # None) reap every aux pod; for a single campaign reap only its pod (label
     # ``campaign-id=<campaign>``) so concurrent campaigns are left untouched.
     try:
-        from .container_runner import \
-            cleanup_aux_pods  # pylint: disable=import-outside-toplevel
+        from .container_runner import cleanup_aux_pods  # pylint: disable=import-outside-toplevel
         cleanup_aux_pods(namespace=namespace, kube_context=context, campaign=campaign)
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Failed to clean up aux pods: %s", exc)

@@ -56,10 +56,9 @@ import yaml
 
 from robovast.common import log_summary, scenario_markers
 from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
-                                                  cast_expr, column_def,
-                                                  infer_column_types, sql_value, widen,
-                                                  widest)
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr,
+                                                   column_def, infer_column_types, sql_value, widen,
+                                                   widest)
 
 logger = logging.getLogger(__name__)
 
@@ -593,6 +592,7 @@ class ResourceUsage(BasePostprocessingPlugin):
         """
         from robovast.common.campaign_data import \
             campaign_container_plan  # pylint: disable=import-outside-toplevel
+
         from . import resource_usage, run_slices  # pylint: disable=import-outside-toplevel
 
         campaign_path = Path(results_dir)
@@ -1020,8 +1020,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
 
     from robovast.common.campaign_data import \
         read_run_outcome  # pylint: disable=import-outside-toplevel
-    from robovast.common.quantity import \
-        to_bytes  # pylint: disable=import-outside-toplevel
+    from robovast.common.quantity import to_bytes  # pylint: disable=import-outside-toplevel
 
     def _end_time(start_iso, duration_sec):
         """ISO end time = start + duration, or None when either is unavailable."""

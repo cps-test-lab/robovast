@@ -9,8 +9,7 @@ process (the old ``load_config`` did ``sys.exit(1)`` on a YAML error), and it
 must report *all* problems at once with locations.
 """
 
-from robovast.common.config_validation import (_postprocessing_problems,
-                                               validate_project_file)
+from robovast.common.config_validation import _postprocessing_problems, validate_project_file
 
 
 def test_rosbags_compat_names_validate_clean(tmp_path):
@@ -153,9 +152,9 @@ def test_scene3d_without_a_capture_producing_simulator_is_refused():
     in the shape where the simulator runs from its own image, a campaign installs no
     simulator packages at all, so the old signal would have found nothing.
     """
+    import robovast.common.simulators as sim_mod
     from robovast.common.config_validation import _run_capture_problems
     from robovast.common.simulators import SimulatorBackend
-    import robovast.common.simulators as sim_mod
 
     class _NoCapture(SimulatorBackend):
         pass

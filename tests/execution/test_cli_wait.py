@@ -16,8 +16,8 @@ import contextlib
 import pytest
 from click.testing import CliRunner
 
-from robovast.client.status import Phase, Status
 from robovast.client import cli as client_cli
+from robovast.client.status import Phase, Status
 
 
 @pytest.fixture

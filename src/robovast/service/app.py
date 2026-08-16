@@ -38,34 +38,22 @@ from typing import List, Literal, Optional
 
 from robovast.client import file_address
 from robovast.service import auth
-from robovast.service.interface import (ActionResult, BuildImageRequest,
-                                        ExecRequest, ExecResult, ExecStopResult,
-                                        CampaignRef,
-                                        CreateCampaignRequest,
-                                        CleanupDataRequest,
-                                        CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest,
-                                        FileMeta,
-                                        ImageBuildRef, ImageBuildStatus, ImageResolution,
-                                        ListCampaignsResponse,
-                                        ListJobsResponse,
-                                        ListWorkspacesResponse, LogChunk,
-                                        PreviewResponse,
-                                        ResourceUsage,
-                                        RobovastInterface, Routes,
-                                        RunPostprocessingRequest, RunShareRequest,
-                                        Status,
-                                        UpdatePostprocessingRequest, UploadGrant,
-                                        ValidationReport, VariationTypesResponse,
-                                        VersionInfo, WorkspaceInfo, WorldDescription, WriteFileRequest,
-                                        CampaignDataStatus,
-                                        DataDescribe, DataQueryResult,
-                                        CampaignPlotsResponse,
-                                        CampaignPanelsResponse, SceneStatus,
-                                        PanelsSource, UpdatePanelsSourceRequest,
-                                        PostprocessingSource,
-                                        UpdatePostprocessingSourceRequest,
-                                        CampaignVisualizationsResponse)
+from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
+                                        CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
+                                        CampaignVisualizationsResponse, CleanupDataRequest,
+                                        CreateCampaignRequest, CreateUploadRequest,
+                                        CreateWorkspaceRequest, DataDescribe, DataQueryResult,
+                                        EditFileRequest, ExecRequest, ExecResult, ExecStopResult,
+                                        FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
+                                        ListCampaignsResponse, ListJobsResponse,
+                                        ListWorkspacesResponse, LogChunk, PanelsSource,
+                                        PostprocessingSource, PreviewResponse, ResourceUsage,
+                                        RobovastInterface, Routes, RunPostprocessingRequest,
+                                        RunShareRequest, SceneStatus, Status,
+                                        UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
+                                        UpdatePostprocessingSourceRequest, UploadGrant,
+                                        ValidationReport, VariationTypesResponse, VersionInfo,
+                                        WorkspaceInfo, WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
 
@@ -202,12 +190,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     by forgetting something. The resolved value is on ``app.state.auth_token`` so
     ``serve()`` can print a login URL for an ephemeral one.
     """
-    from contextlib import AsyncExitStack, \
-        asynccontextmanager  # pylint: disable=import-outside-toplevel
+    from contextlib import asynccontextmanager  # pylint: disable=import-outside-toplevel
+    from contextlib import AsyncExitStack
 
     import anyio  # pylint: disable=import-outside-toplevel
-    from fastapi import (Body, FastAPI,  # pylint: disable=import-outside-toplevel
-                         HTTPException, Query, Request)
+    from fastapi import (Body, FastAPI, HTTPException,  # pylint: disable=import-outside-toplevel
+                         Query, Request)
 
     mcp_app = _build_mcp_app(impl) if mount_mcp else None
 
@@ -248,8 +236,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # such requirement: ``methods=None`` delegates every method straight to
         # ``mcp_app`` (itself, middleware included — nothing is unwrapped) at the exact
         # path FastMCP already anchored it to.
-        from starlette.routing import \
-            Route  # pylint: disable=import-outside-toplevel
+        from starlette.routing import Route  # pylint: disable=import-outside-toplevel
         app.router.routes.append(Route(MCP_PATH, mcp_app, methods=None))
 
     # Whether the service has begun shutting down. The SSE generators below loop
@@ -290,8 +277,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # there is no second implementation of assembly/offset to drift.
     import json as _json  # pylint: disable=import-outside-toplevel
 
-    from fastapi.responses import \
-        StreamingResponse  # pylint: disable=import-outside-toplevel
+    from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
     #: Poll cadence of the server-side tail loop. Sub-second, so lines reach the
     #: browser far faster than the old 1.5 s client poll, without N clients issuing
@@ -530,8 +516,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         package data under their ``WEB_PREVIEW`` dir; the config editor loads them
         at runtime. Built-in types have no assets (they render host-native).
         """
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(lambda: _resolve_variation_asset(name, path))))
 
     @app.get(Routes.panel_types_asset("{name}", "{path:path}"), tags=["authoring"])
@@ -541,8 +526,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         A panel plugin (entry-point group ``robovast.panel_types``) ships a built
         ``remoteEntry.js`` + chunks as package data under its ``WEB_PANEL`` dir; the run
         view loads them at runtime. Core built-in panels have no assets (host-native)."""
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(
             lambda: _resolve_plugin_asset("robovast.panel_types", name, path, "WEB_PANEL"))))
 
@@ -579,13 +563,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         has to be pulled first.
 
         ``view`` is repeated ``key=value`` (``?view=azimuth=90&view=distance=12``)."""
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
-        from starlette.background import \
-            BackgroundTask  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
+        from starlette.background import BackgroundTask  # pylint: disable=import-outside-toplevel
 
-        from robovast.common.simulators import \
-            parse_view  # pylint: disable=import-outside-toplevel
+        from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
         from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
 
         frame = _guard(lambda: impl.campaign_screenshot(
@@ -602,8 +583,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
         Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
         results at all, it is in the service's shared cache."""
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(
             lambda: impl.resolve_campaign_scene_asset(campaign_id, path))))
 
@@ -611,8 +591,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def campaign_panel_asset(campaign_id: str, path: str):
         """Serve a user-authored ``custom`` panel's bundle, staged into the campaign's
         immutable ``_config/`` snapshot (Module Federation remoteEntry + chunks)."""
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(
             lambda: impl.resolve_campaign_panel_asset(campaign_id, path))))
 
@@ -723,8 +702,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             return _guard(lambda: impl.read_file(address, lines, offset))
         import mimetypes  # pylint: disable=import-outside-toplevel
 
-        from fastapi.responses import \
-            FileResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         media_type = mimetypes.guess_type(address)[0] or "application/octet-stream"
 
         # Always a path, never a buffer. A campaign's rosbag runs to tens of megabytes and
@@ -941,8 +919,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         A **local** service refuses: its results already live on the same filesystem,
         so there is nothing to download.
         """
-        from fastapi.responses import \
-            StreamingResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
         if not hasattr(impl, "campaign_tar_stream"):  # local service
             results_dir = getattr(getattr(impl, "store", None), "root", None)
@@ -1022,8 +999,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         of the result lives. Streamed, so a result larger than memory is fine at both
         ends, and an MCP tool can hand over this URL instead of spending context on rows.
         """
-        from fastapi.responses import \
-            StreamingResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
         extras = [c for c in extra_campaign_ids.split(",") if c]
         # Called inside _guard so a rejected (non-read) query is a 400 with the same
         # message the JSON path gives, rather than a 500 mid-stream.
@@ -1069,10 +1045,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         config_name: str = "", run_id: int | None = None, theme: str = "light",
         batch: int | None = None,
     ):
-        from fastapi.responses import \
-            HTMLResponse  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import HTMLResponse  # pylint: disable=import-outside-toplevel
         from nbclient.exceptions import \
             CellExecutionError  # pylint: disable=import-outside-toplevel
+
         from robovast.results_processing.notebook_render import \
             message_page_html  # pylint: disable=import-outside-toplevel
 
@@ -1138,8 +1114,7 @@ def _resolve_plugin_asset(group: str, name: str, rel_path: str, asset_attr: str)
     """
     import inspect  # pylint: disable=import-outside-toplevel
     import os  # pylint: disable=import-outside-toplevel
-    from importlib.metadata import \
-        entry_points  # pylint: disable=import-outside-toplevel
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
 
     cls = next((ep.load() for ep in entry_points(group=group)
@@ -1173,8 +1148,7 @@ def _build_mcp_app(impl: RobovastInterface):
     process — which was a wasted round trip per tool call and, once a token was
     required, a process authenticating to itself.
     """
-    from robovast.mcp_server.server import \
-        create_server  # pylint: disable=import-outside-toplevel
+    from robovast.mcp_server.server import create_server  # pylint: disable=import-outside-toplevel
     from robovast.mcp_server.service_access import \
         use_in_process_service  # pylint: disable=import-outside-toplevel
     use_in_process_service(impl)
@@ -1231,8 +1205,7 @@ def _mount_ui(app) -> None:
             "`cd frontend/ui && npm run build`, or point ROBOVAST_UI_DIST at a built "
             "copy (an image bakes it in and sets that variable).")
         return
-    from fastapi.staticfiles import \
-        StaticFiles  # pylint: disable=import-outside-toplevel
+    from fastapi.staticfiles import StaticFiles  # pylint: disable=import-outside-toplevel
     app.mount("/", StaticFiles(directory=str(dist), html=True), name="ui")
     logger.info("serving web UI from %s", dist)
 
@@ -1260,8 +1233,7 @@ def startup_banner(base_url: str, token: str, *, ephemeral: bool,
     if ephemeral:
         lines.append(f"  RoboVAST: {base_url}{Routes.LOGIN}?token={token}")
     if mount_mcp:
-        from robovast.client.login import \
-            mcp_add_command  # pylint: disable=import-outside-toplevel
+        from robovast.client.login import mcp_add_command  # pylint: disable=import-outside-toplevel
         lines.append("  For an agent:\n    "
                      + " \\\n      ".join(mcp_add_command(base_url, token)))
     if not lines:
@@ -1333,8 +1305,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.shutdown import \
-        begin_shutdown  # pylint: disable=import-outside-toplevel
+    from robovast.common.shutdown import begin_shutdown  # pylint: disable=import-outside-toplevel
 
     class _Server(uvicorn.Server):
         """uvicorn server that announces the shutdown before it starts winding down.
@@ -1435,6 +1406,7 @@ def _quiet_access_log_config() -> dict:
     at the default level but reappear when serving at ``--log-level debug``.
     """
     import copy  # pylint: disable=import-outside-toplevel
+
     from uvicorn.config import LOGGING_CONFIG  # pylint: disable=import-outside-toplevel
 
     config = copy.deepcopy(LOGGING_CONFIG)

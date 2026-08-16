@@ -303,6 +303,7 @@ def workspace_init(directory, name, excludes, namespace, context):
       vast workspace init configs/examples/growth_sim   # into the resolved service
     """
     from pathlib import Path
+
     from robovast.service.interface import CreateWorkspaceRequest
     from robovast.service.project_push import sync_directory_to_workspace
     root = Path(directory).resolve()
@@ -354,8 +355,8 @@ def workspace_update(workspace, directory, excludes, prune, namespace, context):
       vast workspace update growth_sim configs/examples/growth_sim --prune
     """
     from pathlib import Path
-    from robovast.service.project_push import (_resolve_workspace_id,
-                                               sync_directory_to_workspace)
+
+    from robovast.service.project_push import _resolve_workspace_id, sync_directory_to_workspace
     root = Path(directory).resolve()
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
     with service_client(namespace, context) as (client, target):
@@ -684,8 +685,8 @@ def wait(campaign, interval, timeout, namespace, context):
     The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
     shared with every other surface that waits.
     """
-    from robovast.execution.campaign_wait import wait_for_campaign_status
     from robovast.client.status import Phase
+    from robovast.execution.campaign_wait import wait_for_campaign_status
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
@@ -856,8 +857,8 @@ def run_startup_hooks():
 
 def _core_installed() -> bool:
     """Whether the ``robovast`` distribution is present, as opposed to the client alone."""
-    from importlib.metadata import (  # pylint: disable=import-outside-toplevel
-        PackageNotFoundError, distribution)
+    from importlib.metadata import PackageNotFoundError  # pylint: disable=import-outside-toplevel
+    from importlib.metadata import distribution
     try:
         distribution("robovast")
         return True

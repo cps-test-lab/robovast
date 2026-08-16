@@ -17,8 +17,8 @@
 """Postprocessing functionality for run result data."""
 import inspect
 import json
-import re
 import os
+import re
 import tempfile
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -28,9 +28,9 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.plugin_ref import is_file_ref, load_ref
+from robovast.common.results_utils import find_campaign_vast_file
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
-from robovast.common.results_utils import find_campaign_vast_file
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 

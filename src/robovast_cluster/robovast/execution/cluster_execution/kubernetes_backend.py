@@ -56,34 +56,29 @@ import copy
 import hashlib
 import logging
 import os
-import shlex
 import re
+import shlex
 import tempfile
 import time
 
 import yaml
 from kubernetes import client
 
-from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
-                             plan_containers, scenario_env)
-from .cluster_context import resolve_resources
+from robovast.common import (COMPAT_VERSION, get_execution_env_variables, plan_containers,
+                             prepare_campaign_configs, scenario_env)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
-from robovast.common.execution import (build_job_parameter_documents,
-                                       create_job_links,
-                                       dump_multi_document_yaml,
-                                       job_artifact_rel,
-                                       read_job_links,
-                                       resolve_sidecar_image,
-                                       write_job_links_manifest, sidecar_backend_env)
-from robovast.common import prepare_campaign_configs
-from robovast.execution.backends import (CampaignConfigError, CampaignStopped,
-                                          ExecutionBackend, RunOptions)
-from robovast.common.simulators import (SIMULATION_CONTAINER,
-                                        SIM_OVERRIDES_MOUNT, sim_job_overlay)
+from robovast.common.execution import (build_job_parameter_documents, create_job_links,
+                                       dump_multi_document_yaml, job_artifact_rel, read_job_links,
+                                       resolve_sidecar_image, sidecar_backend_env,
+                                       write_job_links_manifest)
+from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
+from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
+                                         RunOptions)
 from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
+from .cluster_context import resolve_resources
 from .cluster_execution import _label_safe_campaign, blocked_job_reasons
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
@@ -346,6 +341,7 @@ class BatchJobRunner:
         if self._k8s_initialized:
             return
         from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+
         # In-cluster in the service pod; host kubeconfig for host-side dry-runs / tests.
         load_kube_config(context=self.kube_context)
         self.k8s_client = client.CoreV1Api()
@@ -429,8 +425,7 @@ class BatchJobRunner:
         try:
             pull_secret = self.cluster_config.get_registry_config().pull_secret_name
             if not pull_secret:
-                from .service_deploy import \
-                    REGISTRY_PUSH_SECRET_NAME
+                from .service_deploy import REGISTRY_PUSH_SECRET_NAME
                 try:
                     self.k8s_client.read_namespaced_secret(
                         REGISTRY_PUSH_SECRET_NAME, self.namespace)
@@ -939,8 +934,7 @@ class BatchJobRunner:
         :class:`KueueCheckUnavailable` is downgraded to a warning naming what could not
         be read. Only a queue that is provably broken raises.
         """
-        from .kubernetes_kueue import (KueueCheckUnavailable,
-                                       verify_kueue_admission_ready)
+        from .kubernetes_kueue import KueueCheckUnavailable, verify_kueue_admission_ready
         try:
             verify_kueue_admission_ready(namespace=self.namespace,
                                          kube_context=self.kube_context)
@@ -1262,8 +1256,7 @@ class KubernetesBackend(ExecutionBackend):
         now — before the campaign runs — turns what used to be a silent, end-of-run
         skip into an up-front, actionable error.
         """
-        from . import \
-            in_pod_upload  # pylint: disable=import-outside-toplevel
+        from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 
         if not in_pod_upload.share_type_configured():
             raise CampaignConfigError(
@@ -1287,6 +1280,7 @@ class KubernetesBackend(ExecutionBackend):
         controller wraps this call).
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+
         from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 
 

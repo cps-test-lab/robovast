@@ -13,8 +13,7 @@ import zipfile
 import pytest
 
 from robovast.common.build_context import render_dockerignore
-from robovast.service.image_build import (BuildSpec, build_hash,
-                                          classify_build_error,
+from robovast.service.image_build import (BuildSpec, build_hash, classify_build_error,
                                           generate_dockerfile)
 
 BASE = "ghcr.io/x/robovast:latest"

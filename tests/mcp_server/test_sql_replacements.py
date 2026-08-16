@@ -20,8 +20,7 @@ import yaml
 
 from robovast.common.campaign_data import read_run_outcome
 from robovast.common.store import STORE_FILENAME, CampaignStore
-from robovast.results_processing.data_query import (_MAX_CELL_BYTES, describe_data_db,
-                                                    query_data_db)
+from robovast.results_processing.data_query import _MAX_CELL_BYTES, describe_data_db, query_data_db
 
 _SYSINFO = {"cpu_name": "Intel Xeon", "available_cpus": 4, "instance_type": "n1"}
 

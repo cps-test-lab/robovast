@@ -8,10 +8,9 @@ import sqlite3
 
 import pytest
 
-from robovast.common.analysis import (DATA_DB_SCHEMA_VERSION, CampaignDataError,
-                                      attach_params, campaign_root, config_file,
-                                      get_behavior_info, list_tables, read_runs,
-                                      read_table, run_scope, table_info)
+from robovast.common.analysis import (DATA_DB_SCHEMA_VERSION, CampaignDataError, attach_params,
+                                      campaign_root, config_file, get_behavior_info, list_tables,
+                                      read_runs, read_table, run_scope, table_info)
 
 BEHAVIOURS = [
     # (config_name, run_id, timestamp, behavior_name, behavior_id, status_name)

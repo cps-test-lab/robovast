@@ -30,8 +30,7 @@ import numpy as np
 from matplotlib import patches
 
 from ..map_loader import Map, load_map
-from ..object_shapes import (get_object_type_from_model_path,
-                             get_obstacle_dimensions)
+from ..object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 
 
 class MapVisualizer:

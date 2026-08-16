@@ -9,9 +9,8 @@ The numbers come from a real recording, campaign
 
 import pytest
 
-from robovast.results_processing.clock_map import (FIELDNAMES, NO_CLOCK_MAP,
-                                                  SOURCE_NONE, ClockMap,
-                                                  load_clock_map)
+from robovast.results_processing.clock_map import (FIELDNAMES, NO_CLOCK_MAP, SOURCE_NONE, ClockMap,
+                                                   load_clock_map)
 
 
 def _at_rate(rate: float, n: int = 11, wall0: float = 1786224804.0) -> ClockMap:

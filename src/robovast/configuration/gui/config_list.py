@@ -16,8 +16,7 @@
 
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
-from PySide6.QtWidgets import (QHeaderView, QLabel, QTableView, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import QHeaderView, QLabel, QTableView, QVBoxLayout, QWidget
 
 
 class ConfigTableModel(QAbstractTableModel):

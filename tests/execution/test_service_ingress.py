@@ -14,10 +14,8 @@ they are refusals in code rather than warnings in documentation:
 
 import pytest
 
-from robovast.execution.cluster_execution.service_deploy import (SERVICE_NAME,
-                                                                 SERVICE_PORT,
-                                                                 IngressRefused,
-                                                                 service_manifests)
+from robovast.execution.cluster_execution.service_deploy import (SERVICE_NAME, SERVICE_PORT,
+                                                                 IngressRefused, service_manifests)
 
 
 def _kinds(manifests):

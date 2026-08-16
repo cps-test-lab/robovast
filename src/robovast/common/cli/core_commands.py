@@ -79,8 +79,7 @@ def init(config, results_dir, project_log_level, force):
 
     # check integrity of config file
     try:
-        from ..common import \
-            load_config  # pylint: disable=import-outside-toplevel
+        from ..common import load_config  # pylint: disable=import-outside-toplevel
         load_config(config)
     except Exception as e:
         click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
@@ -259,7 +258,6 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     # the ./.env the group callback loaded: share credentials for '--upload-to-share',
     # the registry, ROBOVAST_IMAGE / ROBOVAST_CONTROLLER_IMAGE. In-pod there is no
     # project .env, so the deployment env is the whole environment.
-
     # Build the SPA the service serves, so a source checkout needs one command
     # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
     _ensure_ui_built(rebuild=rebuild_ui)
@@ -407,8 +405,7 @@ def import_results(archive, output, force):
                     click.echo(f"Warning: Archive contains multiple top-level directories: {top_level_dirs}")
 
                 campaign = list(top_level_dirs)[0] if top_level_dirs else None
-                from ..execution import \
-                    is_campaign_dir  # pylint: disable=import-outside-toplevel
+                from ..execution import is_campaign_dir  # pylint: disable=import-outside-toplevel
                 if campaign and not is_campaign_dir(campaign):
                     click.echo(
                         f"Warning: Archive does not contain a recognized campaign directory "

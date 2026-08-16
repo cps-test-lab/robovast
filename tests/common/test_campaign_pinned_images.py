@@ -24,8 +24,7 @@ Two traps these tests pin down:
 import pytest
 import yaml
 
-from robovast.common.campaign_data import (CampaignImageUnpinnable,
-                                           campaign_pinned_images)
+from robovast.common.campaign_data import CampaignImageUnpinnable, campaign_pinned_images
 
 CLUSTER_DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 SIM_DIGEST = "harbor.example/robovast/sim@sha256:" + "b" * 64

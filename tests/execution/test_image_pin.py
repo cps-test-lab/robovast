@@ -6,10 +6,9 @@ import types
 
 import pytest
 
-from robovast.execution.cluster_execution.kubernetes_backend import (
-    pullable_digest, resolve_image_digest)
-from robovast.execution.cluster_execution.postprocess_job import \
-    campaign_execution_image
+from robovast.execution.cluster_execution.kubernetes_backend import (pullable_digest,
+                                                                     resolve_image_digest)
+from robovast.execution.cluster_execution.postprocess_job import campaign_execution_image
 
 
 @pytest.mark.parametrize("image_id, expected", [

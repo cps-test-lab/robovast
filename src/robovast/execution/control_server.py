@@ -39,11 +39,9 @@ from typing import Optional
 # The status contract lives in robovast.client -- it is what a client reads a campaign's
 # state through, and it must survive an install with no simulator. Re-exported here so
 # existing ``control_server`` importers are unaffected (see module docstring).
-from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-import
-    # Re-exported on purpose: see this module's docstring. flake8 needs the noqa,
-    # pylint needs the disable, and neither implies the other.
-    RUNNING_PHASES, TERMINAL_PHASES, BudgetItem, Phase, RunProgress, Status,
-    failure_detail, is_running, is_terminal)
+from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-import; Re-exported on purpose: see this module's docstring. flake8 needs the noqa,; pylint needs the disable, and neither implies the other.
+    RUNNING_PHASES, TERMINAL_PHASES, BudgetItem, Phase, RunProgress, Status, failure_detail,
+    is_running, is_terminal)
 
 logger = logging.getLogger(__name__)
 

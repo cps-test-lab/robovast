@@ -14,9 +14,8 @@ difference directly, because reading it out of two similar functions is how it g
 
 import math
 
-from robovast.results_processing.run_slices import (_claims_for_job,
-                                                   _log_claims_for_job,
-                                                   log_claims_from_markers)
+from robovast.results_processing.run_slices import (_claims_for_job, _log_claims_for_job,
+                                                    log_claims_from_markers)
 
 #: Two runs of one job: run 0 executes 100..105, run 1 executes 110..115. The gap 105..110 is
 #: run 0's verdict and teardown, and run 1's bring-up.
