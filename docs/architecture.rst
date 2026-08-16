@@ -238,8 +238,7 @@ availability by deployment rather than by backend:
      - ``--workspace-dir``; the driver reads inputs from this filesystem
    * - the deployed service (in-pod), reached over its Ingress
      - **no**
-     - upload with ``vast workspace init`` / ``create_workspace`` +
-       ``update_workspace``; edits need a re-push
+     - upload with ``vast workspace init``; edits need a re-push
 
 .. _container-exec-architecture:
 
@@ -803,9 +802,9 @@ lives in the ``run_data`` MCP plugin):
   (in ``robovast.service.project_push``) walks a local directory and drives
   ``write_file`` for ``.vast``/``.osc`` and ``create_upload`` for everything
   else, with an optional ``prune`` that deletes workspace files absent locally. It is
-  the single implementation behind three callers — the
-  ``vast workspace init`` / ``vast workspace update`` CLI commands, the
-  ``update_workspace`` MCP tool, and the web UI's drag-a-folder upload — so all three
+  the single implementation behind two callers — the
+  ``vast workspace init`` / ``vast workspace update`` CLI commands and the web UI's
+  drag-a-folder upload — so both
   stay transport-agnostic (in-process ``LocalTransport`` or HTTP client) and can
   never drift.
 * **Campaigns** — ``create_campaign`` (backend implicit in the deployment;

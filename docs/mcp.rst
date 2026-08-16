@@ -33,9 +33,11 @@ binding the service accepts, and ``config_path`` selects among several
 ``vast exec local run``, ``vast results``, ``vast eval``) and never select what
 the service runs. Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
-only for a service running on that host) or by uploading one with
-``create_workspace`` + ``update_workspace`` (required for a remote service
-and in-pod services, where the directory does not exist locally).
+only for a service running on that host), or by uploading one from the machine
+that holds the project: ``vast workspace init <dir>``. That is the only route for
+a remote or in-pod service, because this interface can reach the service but not
+your filesystem — ``create_workspace`` + ``write_file`` covers ``.vast``/``.osc``,
+and ``create_upload`` covers a single file of any other kind.
 
 The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
 runs a *previous campaign's* frozen configuration and the image its runs actually used,

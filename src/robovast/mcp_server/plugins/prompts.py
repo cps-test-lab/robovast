@@ -108,9 +108,11 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
 
 ## The loop
 
-1. **Author.** `create_workspace`, then `write_file` (`.vast`/`.osc` inline) or
-   `update_workspace` (a whole directory at once — cheaper, and the bytes stay out of
-   context). `get_example` has worked projects to start from; `get_config_schema` and
+1. **Author.** `create_workspace`, then `write_file` (`.vast`/`.osc` inline) and
+   `create_upload` for everything else — its bytes stay out of context. A whole directory
+   at once is `vast workspace init <dir>`, run where the files are: this interface reaches
+   the service, not your disk. `get_example` has worked projects to start from;
+   `get_config_schema` and
    `get_plugin_details` describe the `.vast` and each variation's parameters.
 2. **Check before spending compute.** `validate_project` returns *every* problem at once;
    fix them in one pass. `preview_configurations` shows what the sweep expands to — read

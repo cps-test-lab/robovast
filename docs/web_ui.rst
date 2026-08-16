@@ -268,11 +268,10 @@ run files, and author the ``.vast`` in the Monaco editor.
    side-channel split and skip rules as ``init``. By default it only adds and
    overwrites; ``--prune`` also deletes workspace files that no longer exist under
    the directory, so the workspace mirrors it exactly. Read-only pinned workspaces
-   (``--workspace-dir``) refuse the update — edit their files on disk instead. The
-   MCP tool ``update_workspace`` does the same for an LLM/agent client (see
-   :ref:`architecture`), refreshing a whole project in one call rather than looping
-   per-file writes. In the browser, dragging a project folder onto the **Config →
-   Files** tab performs the same add/overwrite sync.
+   (``--workspace-dir``) refuse the update — edit their files on disk instead. In the
+   browser, dragging a project folder onto the **Config → Files** tab performs the
+   same add/overwrite sync. An agent has no third route: the MCP interface reaches the
+   service, not the caller's disk, so a whole directory goes through this command.
 
 .. tip::
 

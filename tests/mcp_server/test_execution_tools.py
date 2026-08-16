@@ -98,7 +98,7 @@ def test_validate_routes_a_sources_address_to_the_service(authoring_service):
 
 
 def test_validate_resolves_a_workspace_name(authoring_service):
-    """A name works where an id does, as it already does for ``update_workspace``."""
+    """A name works where an id does, as it does for every workspace-taking tool."""
     authoring.validate_project("/sources/demo/demo.vast")
     assert ("validate_project", "ws-ab12", "demo.vast") in authoring_service.calls
 

@@ -37,7 +37,9 @@ def create_workspace(name: str = "", from_campaign: str = "") -> dict:
 
     Holds editable inputs only, and is independent of campaigns: a started campaign is
     self-contained, so editing or deleting the workspace never affects its results.
-    Put files in it with ``write_file`` / ``update_workspace`` / ``create_upload``.
+    Put ``.vast``/``.osc`` in it with ``write_file``, anything else with
+    ``create_upload``. A whole directory at once is ``vast workspace init <dir>`` from
+    the machine that holds it -- this interface cannot reach your filesystem.
 
     Args:
         name: Optional human-friendly label.
@@ -82,34 +84,6 @@ def delete_workspace(workspace_id: str) -> dict:
     """Delete a workspace and its inputs. Existing campaigns are unaffected."""
     try:
         return service_access.client_or_local().delete_workspace(workspace_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def update_workspace(workspace_id: str, directory: str, prune: bool = False) -> dict:
-    """Push a whole local DIRECTORY into an existing workspace — the cheap bulk write.
-
-    Reads *directory* on the **MCP-server host** and sends it to the service
-    (``.vast``/``.osc`` inline, the rest via the upload side channel), so the bytes never
-    enter your context. Prefer this over looping ``write_file``/``create_upload``. Hidden
-    files and ``results/`` are skipped; existing files are overwritten in place.
-
-    Args:
-        workspace_id: Target ``ws-…`` id, or a unique workspace name.
-        directory: Local project directory on the MCP-server host.
-        prune: Also delete workspace files absent from *directory* (full mirror).
-
-    Returns:
-        ``{workspace_id, written, uploaded, pruned}`` counts.
-    """
-    from robovast.service.project_push import (_resolve_workspace_id,
-                                               sync_directory_to_workspace)
-    try:
-        client = service_access.client_or_local()
-        wid = _resolve_workspace_id(client, workspace_id)
-        stats = sync_directory_to_workspace(
-            client, wid, directory, skip_dirs={"results"}, prune=prune)
-        return {"workspace_id": wid, **stats}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -408,7 +382,6 @@ _TOOLS = [
     create_workspace,
     list_workspaces,
     delete_workspace,
-    update_workspace,
     create_upload,
     validate_project,
     preview_configurations,

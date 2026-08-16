@@ -186,7 +186,7 @@ question and its output cannot be compared with a campaign's. If a task needs a
 simulation run, a sweep, or a repeated trial, that is `start_campaign`.
 
 The loop:
-1. `create_workspace`, then `write_file` / `update_workspace` to put a `.vast` in it.
+1. `create_workspace`, then `write_file` to put a `.vast` in it.
 2. `validate_project` — reports every problem at once, before any compute is spent.
 3. `build_experiment_image` when the project declares a `build:` section, then
    `wait_for_image_build`, then `exec_in_container` to check that image — an import,
