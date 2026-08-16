@@ -142,9 +142,8 @@ class HTTPTransport(RobovastInterface):
     def version(self) -> VersionInfo:
         return VersionInfo.model_validate(self._get(Routes.VERSION))
 
-    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
-        params = {"backend": backend} if backend else {}
-        return ResourceUsage.model_validate(self._get(Routes.USAGE, **params))
+    def resource_usage(self) -> ResourceUsage:
+        return ResourceUsage.model_validate(self._get(Routes.USAGE))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).
@@ -303,10 +302,9 @@ class HTTPTransport(RobovastInterface):
             self._post(Routes.EXEC, json=request.model_dump(),
                        timeout=COMMAND_LIMIT_S + 30))
 
-    def stop_exec_container(self, backend=None):
+    def stop_exec_container(self):
         from robovast.service.interface import ExecStopResult
-        return ExecStopResult.model_validate(
-            self._delete(Routes.EXEC, backend=backend or ""))
+        return ExecStopResult.model_validate(self._delete(Routes.EXEC))
 
     def resolve_image(self, request):
         from robovast.service.interface import ImageResolution

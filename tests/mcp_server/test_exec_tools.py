@@ -27,11 +27,11 @@ class _FakeClient:
         self.calls.append(("exec", request))
         return self._result
 
-    def stop_exec_container(self, backend=None):
-        self.calls.append(("stop", backend))
+    def stop_exec_container(self):
+        self.calls.append(("stop",))
         return ExecStopResult(stopped=True, target="robovast-exec")
 
-    def resource_usage(self, backend=None):
+    def resource_usage(self):
         return ResourceUsage(
             backend="docker", cpu_capacity=8, cpu_used=1,
             memory_capacity_bytes=16, memory_used_bytes=2, parallel_runs=False,
@@ -104,12 +104,12 @@ def test_the_surface_offers_no_way_to_reach_a_campaigns_container():
 def test_the_request_is_passed_through_verbatim(service):
     execution.exec_in_container(command="ros2 pkg list", workspace_id="ws1",
                                config_path="a.vast", config_name="c1",
-                               keep_alive=True, backend="local")
+                               keep_alive=True)
     name, req = service.calls[-1]
     assert name == "exec"
     assert req.command == "ros2 pkg list"
     assert (req.workspace_id, req.config_path, req.config_name) == ("ws1", "a.vast", "c1")
-    assert req.keep_alive is True and req.backend == "local"
+    assert req.keep_alive is True
 
 
 def test_no_timeout_can_be_passed_from_here(service):
@@ -119,12 +119,6 @@ def test_no_timeout_can_be_passed_from_here(service):
     execution.exec_in_container(command="ls", workspace_id="w")
     _name, req = service.calls[-1]
     assert not hasattr(req, "timeout_s")
-
-
-def test_an_unknown_backend_is_refused_rather_than_ignored(service):
-    out = execution.exec_in_container(command="ls", workspace_id="w", backend="nope")
-    assert "unknown backend" in out["error"]
-    assert not service.calls, "nothing should have been dispatched"
 
 
 def test_a_validation_failure_is_returned_as_an_error_dict(monkeypatch):

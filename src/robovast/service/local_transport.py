@@ -682,11 +682,10 @@ class LocalTransport(RobovastInterface):
         # relaying every byte through the interface. ``app.py`` blanks them again for a
         # non-loopback request — the same-host precondition is the caller's, not ours.
         return VersionInfo(robovast_version=_robovast_version(), backend="docker",
-                           backends=["local"],
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root))
 
-    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
+    def resource_usage(self) -> ResourceUsage:
         """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.
 
         The cache (and its lock) live here so both the local and cluster services
@@ -1446,7 +1445,7 @@ class LocalTransport(RobovastInterface):
                 "quick check cannot silently become a full image build.")
         return ref
 
-    def stop_exec_container(self, backend: "str | None" = None) -> "ExecStopResult":  # noqa: F821
+    def stop_exec_container(self) -> "ExecStopResult":  # noqa: F821
         del backend            # single-lane service; a multi-backend one overrides
         return self._exec_manager.stop()
 

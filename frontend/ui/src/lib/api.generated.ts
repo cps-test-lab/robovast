@@ -1215,8 +1215,6 @@ export interface components {
          *     an image for the same inputs already exists it is reused (no build runs).
          */
         BuildImageRequest: {
-            /** Backend */
-            backend?: string | null;
             /**
              * Config Path
              * @default
@@ -1327,8 +1325,6 @@ export interface components {
          *     Campaigns are workspace-independent, so this carries no ``workspace_id``.
          */
         CampaignSummary: {
-            /** Backend */
-            backend: string | null;
             /** Campaign Id */
             campaign_id: string;
             /**
@@ -1447,8 +1443,6 @@ export interface components {
          *     parses; ``None`` is the only meaningful value.
          */
         CreateCampaignRequest: {
-            /** Backend */
-            backend?: string | null;
             /**
              * Campaign Name
              * @default
@@ -1644,8 +1638,6 @@ export interface components {
          *     and reported back in :class:`ExecResult`.
          */
         ExecRequest: {
-            /** Backend */
-            backend?: string | null;
             /**
              * Campaign Id
              * @default
@@ -2618,11 +2610,6 @@ export interface components {
             api_version: string;
             /** Backend */
             backend: string | null;
-            /**
-             * Backends
-             * @default []
-             */
-            backends: string[];
             /** In Pod */
             in_pod: boolean | null;
             /** Kube Context */
@@ -4038,9 +4025,7 @@ export interface operations {
     };
     stop_exec_container_exec_delete: {
         parameters: {
-            query?: {
-                backend?: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -4054,15 +4039,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecStopResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4571,9 +4547,7 @@ export interface operations {
     };
     resource_usage_usage_get: {
         parameters: {
-            query?: {
-                backend?: string | null;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -4587,15 +4561,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResourceUsage"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

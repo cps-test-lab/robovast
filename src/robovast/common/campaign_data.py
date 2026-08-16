@@ -507,7 +507,7 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: campaigns are workspace-independent (see ``service/workspaces.py``), so recording them
 #: would preserve a binding that means nothing once the campaign exists.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
-                  "upload_to_share", "show_gui", "backend")
+                  "upload_to_share", "show_gui")
 
 
 def write_launch_record(campaign_root: Path, request) -> None:

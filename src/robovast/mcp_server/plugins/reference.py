@@ -135,12 +135,11 @@ def get_service_info() -> dict:
     tree, and restart it if they differ.
 
     Returns:
-        ``{code_version, api_version, backend, backends, results_address,
-        sources_address}``, or ``{error}``.
+        ``{code_version, api_version, backend, results_address, sources_address}``,
+        or ``{error}``.
 
-        ``backends`` is what the service is *configured* with, not what is reachable —
-        use ``get_resource_usage(backend=…)`` to actually touch a lane before committing
-        a long campaign to it.
+        ``backend`` is the lane this service runs, fixed when it started. Use
+        ``get_resource_usage()`` to actually touch it before committing a long campaign.
 
         ``results_root``/``sources_root`` appear only when **you** can open them (a
         local-filesystem service on loopback); then read files directly instead of
@@ -164,7 +163,6 @@ def get_service_info() -> dict:
         "code_version": v.robovast_version,
         "api_version": v.api_version,
         "backend": v.backend,
-        "backends": v.backends,
         "results_address": v.results_address,
         "sources_address": v.sources_address,
     }
@@ -176,7 +174,7 @@ def get_service_info() -> dict:
         info["sources_root"] = v.sources_root
     # Only when there is a cluster lane: on a local-only service these would all be
     # None, and five null fields read as "unknown" rather than "not applicable".
-    if "cluster" in (v.backends or []):
+    if v.backend == "kubernetes":
         info.update({
             "kube_context": v.kube_context,
             "kube_context_source": v.kube_context_source,

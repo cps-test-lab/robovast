@@ -139,7 +139,7 @@ def _wait_next_step(campaign_id: str) -> str:
             f"(exit 0 finished, 1 failed/stopped)")
 
 
-def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
+def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    show_gui: bool = False, description: str = "",
@@ -165,8 +165,6 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
-        backend: ``"local"`` (Docker on the serve host) or ``"cluster"`` (Kubernetes), on a
-            service offering both. Empty uses its default lane.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
         show_gui: Watch **one** run in the simulator's window (never a sweep). Local
@@ -178,7 +176,7 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             open_space, new inflation radius".
 
     Returns:
-        ``{campaign_id, backend, next_step}``, or ``{campaign_id, retriggered_from}`` for a
+        ``{campaign_id, next_step}``, or ``{campaign_id, retriggered_from}`` for a
         ``from_campaign`` launch (``campaign_id`` is the NEW one). Plus ``note`` when the
         launch was accepted but will not do what was asked, or ``{error}`` — including no
         service reachable, which means **stop and say so**, not run it another way.
@@ -187,8 +185,6 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
         client = service_access.service_client()
         if client is None:
             return {"error": NO_SERVICE}
-        if backend and backend not in ("local", "cluster"):
-            return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
         from robovast.service.interface import (DESCRIPTION_MAX_LEN,
                                                 CreateCampaignRequest)
         # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
@@ -210,8 +206,7 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
                 ("workspace_id", workspace_id), ("config_path", config_path),
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("show_gui", show_gui), ("description", description),
-                ("backend", backend)) if value]
+                ("show_gui", show_gui), ("description", description)) if value]
             if supplied:
                 return {"error":
                         f"from_campaign={from_campaign!r} replays what that campaign "
@@ -234,9 +229,8 @@ def start_campaign(config_filter: str = "", runs: int = 0, backend: str = "",
             # campaign started without an explicit count to one run per configuration — a
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
-            upload_to_share=upload_to_share, show_gui=show_gui,
-            backend=backend or None))
-        out = {"campaign_id": ref.campaign_id, "backend": backend or "service-default",
+            upload_to_share=upload_to_share, show_gui=show_gui))
+        out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
             out["note"] = ref.note
@@ -657,25 +651,21 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
         return {"error": str(e)}
 
 
-def get_resource_usage(backend: str = "") -> dict:
+def get_resource_usage() -> dict:
     """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
     Capacity **now** — what an executed run consumed is a table in its campaign's data
     (``describe_campaign_data``), not here.
 
-    Also the way to confirm a lane is actually reachable — it reads the cluster's nodes,
-    so it fails when the cluster does, which ``get_service_info``'s configured
-    ``backends`` list cannot tell you.
+    Also the way to confirm the lane is actually reachable — it reads the cluster's
+    nodes, so it fails when the cluster does, which ``get_service_info``'s reported
+    ``backend`` cannot tell you.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
     per-run reservations. Then ``wall_time ≈ ⌈num_runs / concurrency⌉ × per_run_time``.
 
-    Args:
-        backend: ``"local"`` or ``"cluster"`` on a service offering both; empty uses its
-            default lane.
-
-    Returns:
+        Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
         parallel_runs, jobs_running, jobs_pending}`` — cores and bytes — or ``{error}``.
         ``jobs_running``/``jobs_pending`` are what the lane is *already* busy with across
@@ -684,19 +674,17 @@ def get_resource_usage(backend: str = "") -> dict:
         appears while an ``exec_in_container`` container is held: it can hold a stack's
         worth of memory, so a full lane names it rather than leaving you to guess.
     """
-    if backend and backend not in ("local", "cluster"):
-        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = service_access.service_client()
     if client is None:
         return {"error": NO_SERVICE}
     try:
-        return client.resource_usage(backend or None).model_dump()
+        return client.resource_usage().model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
-                           backend: str = "", container: str = "") -> dict:
+                           container: str = "") -> dict:
     """Bake new code or system packages into a container's image.
 
     Needed only when a container needs something *inside* it. Files shipped to
@@ -721,15 +709,12 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     Args:
         workspace_id: **Required** — whose project to build (as ``start_campaign``).
         config_path: Which ``.vast``, when the workspace holds several.
-        backend: Build for the lane you will run on — ``"local"`` or ``"cluster"``.
         container: Build only this one's image. Omit to build every one that needs it.
 
     Returns:
         ``{build_id, tag, cached, builds}`` or ``{error}``. ``builds`` maps each container
         to its build id; ``build_id`` names only one, so poll the rest through there.
     """
-    if backend and backend not in ("local", "cluster"):
-        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = service_access.service_client()
     if client is None:
         return {"error": NO_SERVICE}
@@ -737,7 +722,7 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     try:
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path,
-            backend=backend or None, container=container or None))
+            container=container or None))
         return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
                 "builds": ref.builds}
     except Exception as e:  # noqa: BLE001
@@ -830,7 +815,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
                       keep_alive: bool = False, show_gui: bool = False,
-                      tail: int = 200, backend: str = "", container: str = "") -> dict:
+                      tail: int = 200, container: str = "") -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
     **Produces no campaign data** — nothing durable, no provenance, no repetitions, no
@@ -865,7 +850,6 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             it between calls **replaces** the container, so ``reused`` is false and whatever
             the old one was running is gone.
         tail: Lines kept per stream.
-        backend: ``"local"`` or ``"cluster"`` on a service offering both.
 
     Returns:
         ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
@@ -875,8 +859,6 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415
-    if backend and backend not in ("local", "cluster"):
-        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = service_access.service_client()
     if client is None:
         return {"error": NO_SERVICE}
@@ -884,7 +866,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         result = client.exec_in_container(ExecRequest(
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive, show_gui=show_gui, backend=backend or None,
+            keep_alive=keep_alive, show_gui=show_gui,
             container=container))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -905,23 +887,18 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     return out
 
 
-def stop_container(backend: str = "") -> dict:
+def stop_container() -> dict:
     """Stop the held ``exec_in_container`` container. Frees the memory it holds.
-
-    Args:
-        backend: ``"local"`` or ``"cluster"`` on a service offering both.
 
     Returns:
         ``{stopped, target}`` — ``stopped: false`` when there was nothing to stop, which
         is an empty result, not an error. Or ``{error}``.
     """
-    if backend and backend not in ("local", "cluster"):
-        return {"error": f"unknown backend {backend!r}; use 'local' or 'cluster'"}
     client = service_access.service_client()
     if client is None:
         return {"error": NO_SERVICE}
     try:
-        return client.stop_exec_container(backend or None).model_dump()
+        return client.stop_exec_container().model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

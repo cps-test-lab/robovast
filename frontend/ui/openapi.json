@@ -195,17 +195,6 @@
       "BuildImageRequest": {
         "description": "Build the experiment image declared by a workspace project's ``build:`` section.\n\nThe declarative content (base image, apt/pip packages, tag) lives in the\n``.vast`` ``build:`` section \u2014 this request only names the project, so the\nclient stays free of any registry knowledge. Idempotent/content-addressed: if\nan image for the same inputs already exists it is reused (no build runs).",
         "properties": {
-          "backend": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Backend"
-          },
           "config_path": {
             "default": "",
             "title": "Config Path",
@@ -408,17 +397,6 @@
       "CampaignSummary": {
         "description": "One row of :meth:`RobovastInterface.list_campaigns`.\n\nCampaigns are workspace-independent, so this carries no ``workspace_id``.",
         "properties": {
-          "backend": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Backend"
-          },
           "campaign_id": {
             "title": "Campaign Id",
             "type": "string"
@@ -502,7 +480,6 @@
           }
         },
         "required": [
-          "backend",
           "campaign_id",
           "created_by",
           "description",
@@ -591,17 +568,6 @@
       "CreateCampaignRequest": {
         "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
         "properties": {
-          "backend": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Backend"
-          },
           "campaign_name": {
             "default": "",
             "title": "Campaign Name",
@@ -891,17 +857,6 @@
       "ExecRequest": {
         "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, or an existing campaign whose ``_config/`` is\nitself a project. A running campaign's container is deliberately not addressable;\nsee :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
         "properties": {
-          "backend": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Backend"
-          },
           "campaign_id": {
             "default": "",
             "title": "Campaign Id",
@@ -2419,14 +2374,6 @@
             ],
             "title": "Backend"
           },
-          "backends": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Backends",
-            "type": "array"
-          },
           "in_pod": {
             "anyOf": [
               {
@@ -2512,7 +2459,6 @@
           "api_server",
           "api_version",
           "backend",
-          "backends",
           "in_pod",
           "kube_context",
           "kube_context_source",
@@ -4657,18 +4603,6 @@
     "/exec": {
       "delete": {
         "operationId": "stop_exec_container_exec_delete",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "backend",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Backend",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -4679,16 +4613,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "Stop Exec Container",
@@ -5632,24 +5556,6 @@
     "/usage": {
       "get": {
         "operationId": "resource_usage_usage_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "backend",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Backend"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -5660,16 +5566,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "Resource Usage",

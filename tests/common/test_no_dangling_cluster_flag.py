@@ -42,9 +42,10 @@ class _Recorder:
         self.calls["exec_in_container"] = request
         raise AssertionError("stop here: the request was built, which is what we assert")
 
-    # -- used by `vast exec stop-container`
-    def stop_exec_container(self, backend):
-        self.calls["stop_exec_container"] = backend
+    # -- used by `vast exec stop-container`. No parameter, matching the interface: a
+    # fake that accepts more than the real transport hides a stale call site.
+    def stop_exec_container(self):
+        self.calls["stop_exec_container"] = True
         raise AssertionError("stop here: the request was built, which is what we assert")
 
 
@@ -72,16 +73,22 @@ def test_workspace_world_does_not_raise_name_error(recorder):
 
 
 def test_exec_command_does_not_pin_the_cluster_lane(recorder):
-    """``backend`` must be unset so the service picks its own lane."""
+    """The request carries no lane at all now, so it cannot carry the wrong one.
+
+    Originally this asserted ``backend is None``: the leftover ``cluster`` name was
+    always truthy and pinned every call to the cluster. The field itself has since gone
+    with the dual-lane service, which resolves the bug structurally -- so what is worth
+    holding is that it does not come back.
+    """
     CliRunner().invoke(exec_cli.execution, ["command", "true"])
     request = recorder.calls.get("exec_in_container")
     assert request is not None, "the command never reached the client"
-    assert request.backend is None, (
-        f"backend was pinned to {request.backend!r}; the deleted --cluster flag used to "
-        "select it, and a truthy leftover forced 'cluster' on every call")
+    assert not hasattr(request, "backend"), (
+        "ExecRequest grew a lane selector again; a service runs one lane, chosen at "
+        "`vast serve` time, so a per-request one can only ever be wrong or ignored")
 
 
 def test_stop_container_does_not_pin_the_cluster_lane(recorder):
     CliRunner().invoke(exec_cli.execution, ["stop-container"])
-    assert "stop_exec_container" in recorder.calls, "never reached the client"
-    assert recorder.calls["stop_exec_container"] is None
+    assert recorder.calls.get("stop_exec_container"), (
+        "never reached the client -- or was called with a lane it no longer takes")

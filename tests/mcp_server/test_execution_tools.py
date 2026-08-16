@@ -6,7 +6,7 @@
 
 The control tools are a **strict client** of a running ``robovast-service``: there
 is no local subprocess path. These tests cover the read-only preview tool, routing
-through a fake service client (including per-campaign ``backend`` selection), and
+through a fake service client, and
 that every control tool fails loudly when no service is reachable.
 """
 
@@ -173,9 +173,9 @@ class _FakeClient:
             CampaignSummary(campaign_id="svc-running", phase="running"),
             CampaignSummary(campaign_id="svc-done", phase="finished")])
 
-    def resource_usage(self, backend=None):
+    def resource_usage(self):
         from robovast.service.interface import ResourceUsage
-        self.calls.append(("resource_usage", backend))
+        self.calls.append(("resource_usage",))
         return ResourceUsage(backend="docker", cpu_capacity=8, cpu_used=1,
                              memory_capacity_bytes=16, memory_used_bytes=2,
                              parallel_runs=False)
@@ -196,7 +196,7 @@ def service(monkeypatch):
 
 def test_service_start_routes_to_client(service):
     started = execution.start_campaign(config_filter="hospital*", runs=5)
-    assert started == {"campaign_id": "svc-campaign-1", "backend": "service-default",
+    assert started == {"campaign_id": "svc-campaign-1",
                        # The launch hands back the command that waits for it, id
                        # filled in. Left to the tool description alone it was simply not
                        # run — the whole reason a campaign's end went unnoticed. Its exact
@@ -205,7 +205,6 @@ def test_service_start_routes_to_client(service):
     name, req = service.calls[-1]
     assert name == "create_campaign"
     assert req.config_filter == "hospital*" and req.runs == 5
-    assert req.backend is None  # unset -> service default (cluster when available)
 
 
 def test_from_campaign_retriggers_instead_of_creating(service):
@@ -226,7 +225,6 @@ def test_from_campaign_retriggers_instead_of_creating(service):
     {"upload_to_share": True},
     {"show_gui": True},
     {"description": "retrying the flake"},
-    {"backend": "local"},
 ])
 def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs):
     """A retrigger takes these from the record, so accepting them would answer a different
@@ -238,12 +236,6 @@ def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs
     assert next(iter(kwargs)) in out["error"]
     # Refused before anything was launched.
     assert not any(name == "retrigger_campaign" for name, _ in service.calls)
-
-
-def test_service_start_passes_backend(service):
-    execution.start_campaign(backend="local")
-    _name, req = service.calls[-1]
-    assert req.backend == "local"
 
 
 def test_service_start_passes_description(service):
@@ -278,12 +270,6 @@ def test_start_rejects_overlong_description(service):
     from robovast.service.interface import DESCRIPTION_MAX_LEN
     res = execution.start_campaign(description="x" * (DESCRIPTION_MAX_LEN + 1))
     assert "error" in res and str(DESCRIPTION_MAX_LEN) in res["error"]
-    assert not service.calls  # never reached the service
-
-
-def test_start_rejects_unknown_backend(service):
-    res = execution.start_campaign(backend="gpu")
-    assert "error" in res and "unknown backend" in res["error"]
     assert not service.calls  # never reached the service
 
 
@@ -329,19 +315,6 @@ def test_stop_job_reports_a_refusal_as_an_error(monkeypatch):
 def test_stop_job_without_a_service_says_so(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
-
-
-def test_resource_usage_passes_backend(service):
-    execution.get_resource_usage(backend="cluster")
-    assert ("resource_usage", "cluster") in service.calls
-    execution.get_resource_usage()  # unset -> None (service default)
-    assert ("resource_usage", None) in service.calls
-
-
-def test_build_image_passes_backend(service):
-    execution.build_experiment_image(backend="cluster")
-    name, req = service.calls[-1]
-    assert name == "build_image" and req.backend == "cluster"
 
 
 # -- fail loudly when no service is reachable (no local fallback) ------------

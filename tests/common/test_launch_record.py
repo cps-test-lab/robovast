@@ -23,14 +23,13 @@ def test_the_request_round_trips(tmp_path):
     request = CreateCampaignRequest(
         workspace_id="ws-abc", config_path="p.vast", config_filter="nav-open-space*",
         campaign_name="pilot", runs=1, postprocess=True, upload_to_share=False,
-        show_gui=False, backend="cluster", description="ignored here")
+        show_gui=False, description="ignored here")
     write_launch_record(tmp_path, request)
 
     record = read_launch_record(tmp_path)
     assert record["config_filter"] == "nav-open-space*"
     assert record["runs"] == 1
     assert record["campaign_name"] == "pilot"
-    assert record["backend"] == "cluster"
 
 
 def test_the_workspace_binding_is_not_recorded(tmp_path):

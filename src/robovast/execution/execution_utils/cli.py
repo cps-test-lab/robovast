@@ -400,7 +400,7 @@ def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            result = client.stop_exec_container(None)
+            result = client.stop_exec_container()
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return

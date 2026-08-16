@@ -161,7 +161,6 @@ class ClusterService(LocalTransport):
     def version(self) -> VersionInfo:
         v = super().version()
         v.backend = "kubernetes"
-        v.backends = ["cluster"]
         v.kube_context = self.kube_context
         v.kube_context_source = self._kube_context_source
         v.namespace = self.namespace

@@ -497,8 +497,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return _guard(impl.version)
 
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
-    def resource_usage(backend: str | None = None) -> ResourceUsage:
-        return _guard(lambda: impl.resource_usage(backend))
+    def resource_usage() -> ResourceUsage:
+        return _guard(impl.resource_usage)
 
     # -- authoring help (static; config editor) -----------------------------
 
@@ -908,8 +908,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return _guard(lambda: impl.exec_in_container(request))
 
     @app.delete(Routes.EXEC, response_model=ExecStopResult, tags=["exec"])
-    def stop_exec_container(backend: str = "") -> ExecStopResult:
-        return _guard(lambda: impl.stop_exec_container(backend or None))
+    def stop_exec_container() -> ExecStopResult:
+        return _guard(impl.stop_exec_container)
 
     @app.post(Routes.EXEC_RESOLVE_IMAGE, response_model=ImageResolution, tags=["exec"])
     def resolve_image(request: ExecRequest) -> ImageResolution:

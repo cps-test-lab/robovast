@@ -100,11 +100,10 @@ def test_a_piloted_campaign_is_retriggered_as_a_pilot(svc, tmp_path):
     """The reason ``launch.yaml`` exists: without it this filter is unrecoverable and the
     retrigger silently runs every configuration instead of the one that was piloted."""
     _source_campaign(tmp_path / "results", launch=CreateCampaignRequest(
-        workspace_id="ws-gone", config_filter="config1*", runs=1, backend="cluster"))
+        workspace_id="ws-gone", config_filter="config1*", runs=1))
     plan = _prepare(svc, "pilot-2026-08-08-120000")
     assert plan.request.config_filter == "config1*"
     assert plan.request.runs == 1
-    assert plan.request.backend == "cluster"
 
 
 def test_the_new_campaign_names_the_one_it_came_from(svc, tmp_path):

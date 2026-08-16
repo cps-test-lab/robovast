@@ -264,7 +264,6 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
         show_gui=False,
         postprocess=bool(launch.get("postprocess", True)),
         upload_to_share=bool(launch.get("upload_to_share", False)),
-        backend=launch.get("backend") or None,
         description=description,
     )
 

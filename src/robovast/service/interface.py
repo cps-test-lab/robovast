@@ -96,7 +96,6 @@ class CreateCampaignRequest(BaseModel):
     #: effect rather than after the internal ``RunOptions.gui`` it sets, because a client
     #: reads this field without the run machinery in front of it.
     show_gui: bool = False
-    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
 
 
 class CampaignRef(BaseModel):
@@ -123,7 +122,6 @@ class BuildImageRequest(BaseModel):
 
     workspace_id: str
     config_path: str = ""            # which .vast (workspace-relative); "" = the sole .vast
-    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
     #: Which container's image to build, when more than one adds packages
     #: (``scenario`` / ``simulation`` / ``sut``, or an ad-hoc container's name).
     #: Omit to build every one of them.
@@ -219,7 +217,6 @@ class ExecRequest(BaseModel):
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.
-    backend: Optional[str] = None    # "local" | "cluster"; honoured only by a multi-backend service
 
 
 class ExecContainerState(BaseModel):
@@ -325,10 +322,6 @@ class CampaignSummary(BaseModel):
     # The web UI already tries to read these off a summary and falls back to nothing.
     postprocessing_error: str = ""
     share_error: str = ""
-    #: Which lane ran it ("local" | "cluster"), set only by a **multi-backend** service.
-    #: A single-lane service leaves it unset: there is no second lane to tell it apart
-    #: from, so naming one would be noise a client then has to suppress.
-    backend: Optional[str] = None
 
 
 class ListCampaignsRequest(BaseModel):
@@ -487,14 +480,6 @@ class VersionInfo(BaseModel):
     robovast_version: str
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
-    #: Execution lanes this service offers, e.g. ``["local"]``, ``["cluster"]`` or
-    #: ``["local", "cluster"]`` for a multi-backend serve. Lets clients (web UI, MCP)
-    #: show a backend picker only when >1 and default the selection to cluster.
-    #:
-    #: This is what the service is **configured** with, not what is reachable right
-    #: now: a listed cluster lane whose API server has gone away still appears here.
-    #: ``resource_usage(backend=...)`` is the call that actually touches a lane.
-    backends: List[str] = []
 
     # -- cluster lane, when there is one ------------------------------------
     # Which cluster a campaign would land in. Reported because the defaults are
@@ -1364,7 +1349,7 @@ class RobovastInterface(ABC):
         """Report the implementation's RoboVAST + API version (handshake)."""
 
     @abstractmethod
-    def resource_usage(self, backend: Optional[str] = None) -> ResourceUsage:
+    def resource_usage(self) -> ResourceUsage:
         """Report the execution backend's CPU/memory capacity + current usage.
 
         ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
@@ -1684,7 +1669,7 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def stop_exec_container(self, backend: Optional[str] = None) -> ExecStopResult:
+    def stop_exec_container(self) -> ExecStopResult:
         """Stop the held exec container, if there is one.
 
         Idempotent: with nothing held this reports ``stopped=False`` rather than
