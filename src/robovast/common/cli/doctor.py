@@ -114,21 +114,32 @@ def check_tools(flavor: str = "") -> list[Check]:
 
 
 def check_cluster(context: str | None = None) -> list[Check]:
-    """Reachability, identity, and the permissions setup actually needs."""
-    from robovast.common.kube import load_kube_config
+    """Reachability, identity, and the permissions setup actually needs.
 
+    Reports rather than raises, in every direction -- including "this install has no
+    cluster support at all". The import is inside the ``try`` for that reason: it is the
+    thing most likely to fail once the cluster lane ships as its own package, and a
+    diagnostic command that dies while diagnosing is the one failure it cannot have.
+    """
     try:
+        from robovast.common.kube import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
         loaded = load_kube_config(context=context)
-    except Exception as exc:  # noqa: BLE001 - every failure means "no cluster"
+    except ImportError:
+        return [Check("cluster support", False, "not installed",
+                      "This install has no cluster lane. Install it to deploy or drive "
+                      "a cluster; nothing else here needs it.", optional=True)]
+    except Exception as exc:  # noqa: BLE001 - every other failure means "no cluster"
         return [Check("kubeconfig", False, str(exc)[:120],
                       "Point kubectl at a cluster (`kubectl config use-context …`), or "
                       "pass -x/--context.")]
 
     checks = [Check("kubeconfig", True, loaded)]
 
-    from kubernetes import client
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import quiet_urllib3_retries
+    from robovast.common.kube import \
+        quiet_urllib3_retries  # pylint: disable=import-outside-toplevel
 
     # urllib3 prints a warning per retry attempt while it is still deciding whether the
     # call fails. Three of those ahead of a one-line verdict is exactly the noise this
