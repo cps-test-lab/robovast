@@ -17,6 +17,7 @@
 """Postprocessing functionality for run result data."""
 import inspect
 import json
+import logging
 import os
 import re
 import tempfile
@@ -446,6 +447,34 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
+#: Written by a conversion that ran elsewhere -- the cluster lane's postprocessing Job --
+#: and carried back with its outputs. Named here and in
+#: ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
+#: half.
+STAGED_PROVENANCE = "_execution/rosbags_provenance.json"
+
+
+def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
+    """Provenance recorded by a stage that ran outside this process, or ``[]``.
+
+    Absent is the normal case -- the local lane records everything inline -- so a missing
+    file is not a problem. A malformed one is logged rather than raised: provenance is a
+    description of work that already succeeded, and failing the campaign because its
+    description could not be read would turn a complete result into a failed one.
+    """
+    path = Path(campaign_dir) / STAGED_PROVENANCE
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) or {}
+    except (OSError, json.JSONDecodeError) as e:
+        logging.getLogger(__name__).warning(
+            "Could not read staged provenance %s: %s", path, e)
+        return []
+    entries = data.get("entries")
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
 def _write_postprocessing_provenance_yaml(
     campaign_dir: str,
     entries: List[dict],
@@ -780,6 +809,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 continue
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
+
+    # Entries from work this process did not run. On the cluster lane the rosbag
+    # conversions happen in a Job, and this pass runs with those steps skipped -- so
+    # without merging its record, a cluster campaign's provenance would describe only
+    # the steps that happened to run here, and silently omit the rest.
+    all_provenance_entries = (_staged_provenance_entries(campaign_dir)
+                              + all_provenance_entries)
 
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)

@@ -1409,7 +1409,14 @@ def main() -> int:
             if output_files and args.provenance_file:
                 cfg = plugin_configs[j]
                 for output_file in output_files:
-                    output_rel = os.path.relpath(output_file, input_root)
+                    # Relative to wherever the outputs actually went. With
+                    # ``--output-root`` (the cluster Job writes to /out while reading
+                    # /bags) measuring against the input root yields "../out/..." --
+                    # a path that resolves to nothing in the campaign the entry
+                    # describes.
+                    out_base = (os.path.abspath(args.output_root)
+                                if args.output_root else input_root)
+                    output_rel = os.path.relpath(output_file, out_base)
                     write_provenance_entry(
                         args.provenance_file,
                         output_rel,

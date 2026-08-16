@@ -244,6 +244,19 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
 #: the unified campaign log (the host stage then appends to the same file).
 _POSTPROC_LOG = "/out/_execution/postprocessing.log"
 
+#: Where the conversion records what it produced from what. Under ``/out`` for the same
+#: reason the log is: the wholesale mirror below carries it into the object store, and
+#: ``sync_outputs`` lands it beside the campaign's other ``_execution`` artifacts, where
+#: the host stage picks it up.
+#:
+#: Without this the Job passed no ``--provenance-file`` at all, so every ``rosbags_*``
+#: step produced its tables and recorded nothing -- and the host stage runs with those
+#: steps *skipped*, so it had nothing to record either. A cluster campaign's
+#: ``postprocessing_steps`` table therefore held one row (``resource_usage``, from the
+#: host stage) while four steps had run. The local lane, which does pass one, was
+#: unaffected -- so the provenance a campaign carries depended on the lane it ran on.
+_ROSBAG_PROVENANCE = "/out/_execution/rosbags_provenance.json"
+
 
 def _conversion_script(rosbag_cmds: list, force: bool) -> str:
     """The main container's shell: convert each batch, then mirror /out up.
@@ -261,6 +274,7 @@ def _conversion_script(rosbag_cmds: list, force: bool) -> str:
             # Outputs go to their own tree (never beside the bags), so the upload
             # below carries only what this Job produced.
             "--output-root", "/out",
+            "--provenance-file", _ROSBAG_PROVENANCE,
         ]
         if params.get("bag_dir") is not None:
             args += ["--bag-dir", _shquote(str(params["bag_dir"]))]
