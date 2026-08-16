@@ -36,9 +36,6 @@ matplotlib = {version = "^3.10", optional = true}
 nbformat = {version = "^5.9", optional = true}
 nbconvert = {version = "^7.16", optional = true}
 lxml-html-clean = {version = "^0.1", optional = true}
-kubernetes = "^34.1"
-boto3 = "^1.35"
-google-cloud-storage = "^2.0"
 scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
 # Read by the Qt config editor only, so it follows the ``gui`` extra.
@@ -117,20 +114,8 @@ evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to
 # import the cluster package to start a service -- see service/serve_backends.py.
-# Subcommands that attach to `vast exec`. Loaded on use, not on import, so the
-# cluster group does not put the Kubernetes client back on every invocation.
-[tool.poetry.plugins."robovast.exec_plugins"]
-cluster = "robovast.execution.cluster_execution.cli:cluster"
-
 [tool.poetry.plugins."robovast.execution_backends"]
 local = "robovast.service.local_serve_backend:LocalServeBackend"
-cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"
-
-[tool.poetry.plugins."robovast.cluster_configs"]
-minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
-rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
-gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"
-azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
 
 [tool.poetry.plugins."robovast.share_providers"]
 nextcloud = "robovast.execution.share_providers.nextcloud:NextcloudShareProvider"

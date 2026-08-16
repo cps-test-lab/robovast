@@ -45,9 +45,13 @@ venv/.robovast_installed:
 	# roqsim was missing here, so every fresh venv lacked the `roqsim` simulator entry
 	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
 	# environment that looked like broken code.
+	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
+	# with no execution lane but `local`, so `vast exec cluster` disappears and the
+	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
 	. venv/bin/activate && pip install -e .[docs,test,gui] \
 		&& pip install -e src/robovast_nav \
-		&& pip install -e src/robovast_sim_roqsim
+		&& pip install -e src/robovast_sim_roqsim \
+		&& pip install -e src/robovast_cluster
 
 	@touch venv/.robovast_installed
 	@echo ""
@@ -89,6 +93,7 @@ ui-stage: ## Copy the built web UI into the package so the wheel carries it
 build: ui-stage
 	poetry build
 	cd src/robovast_nav && poetry build
+	cd src/robovast_cluster && poetry build
 
 .PHONY: release-images
 release-images:

@@ -39,13 +39,16 @@ service image (or layer the current wheel) before a real rollout — override wi
 import datetime
 import logging
 
+from robovast.common.config_plugins import GIT_TOKEN_ENVS
+from robovast.service.interface import DEFAULT_PORT
+
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "robovast-service"
 SERVICE_ACCOUNT = "robovast-service"
 #: Re-exported under the deployment's own name; the value lives with the
 #: address space in ``service/interface.py``.
-from robovast.service.interface import DEFAULT_PORT as SERVICE_PORT
+SERVICE_PORT = DEFAULT_PORT
 
 #: Pod-template annotation stamped on every deploy, so the Deployment spec this run
 #: submits always differs from the one already in the cluster and Kubernetes has to roll.
@@ -469,8 +472,7 @@ GIT_TOKEN_MOUNT_DIR = "/var/run/secrets/robovast-git"
 # Host env vars a GitHub token may come from at setup. Shared with the
 # compose-time reader (``config_plugins.GIT_TOKEN_ENVS``) so the cluster and a
 # local run accept the *same* names — one source of truth, no drift.
-from robovast.common.config_plugins import \
-    GIT_TOKEN_ENVS as _GIT_TOKEN_HOST_ENVS  # noqa: E402
+_GIT_TOKEN_HOST_ENVS = GIT_TOKEN_ENVS
 
 
 def _git_token_from_host_env():

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Client-wide policy applied when Kubernetes configuration is loaded."""
 
+# pylint: disable=redefined-outer-name  # the pytest fixture idiom
+
 from unittest import mock
 
 import pytest
@@ -21,7 +23,7 @@ def installed(monkeypatch):
     seen = []
     monkeypatch.setattr(rest.RESTClientObject, "request",
                         lambda self, *a, **kw: seen.append(kw.get("_request_timeout")))
-    monkeypatch.setattr(kube, "_connect_timeout_installed", False)
+    monkeypatch.setattr(kube, "_CONNECT_TIMEOUT_INSTALLED", False)
     kube._install_default_connect_timeout()
     return rest.RESTClientObject.request, seen
 
@@ -51,7 +53,7 @@ def test_explicit_request_timeout_is_not_overridden(installed):
 def test_loading_config_installs_the_timeout(monkeypatch):
     """load_kube_config is the one entry point every cluster path goes through, so the
     policy is installed there rather than at each call site."""
-    monkeypatch.setattr(kube, "_connect_timeout_installed", False)
+    monkeypatch.setattr(kube, "_CONNECT_TIMEOUT_INSTALLED", False)
     install = mock.Mock()
     monkeypatch.setattr(kube, "_install_default_connect_timeout", install)
     with mock.patch("kubernetes.config.load_incluster_config"):

@@ -14,7 +14,10 @@ import subprocess
 import sys
 
 # The engine: dispatch, lifecycle, packing, status recovery, and the whole
-# cluster backend. NOT execution_utils (CLI/host-side orchestration).
+# cluster backend. NOT execution_utils (CLI/host-side orchestration), and NOT
+# `cluster_execution.cluster_service` -- it now lives under `execution/` because that is
+# where the cluster lane is packaged, but it *is* a service binding and imports the
+# service layer by design. Membership here is about the role, not the directory.
 _ENGINE_MODULES = [
     "robovast.execution.backends",
     "robovast.execution.controller",
@@ -40,6 +43,7 @@ def test_execution_engine_does_not_import_service_at_load():
         "assert not bad, bad\n"
         "print('clean')\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, check=False)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "clean" in out.stdout

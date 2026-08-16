@@ -387,14 +387,14 @@ def delete_campaign(
                 "Deleted prefix '%s/' from shared S3 bucket '%s'", campaign_id, shared_bucket
             )
         else:
-            bucket_name = bucket_name(campaign_id)
+            campaign_bucket = bucket_name(campaign_id)
             paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=bucket_name):
+            for page in paginator.paginate(Bucket=campaign_bucket):
                 objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
                 if objects:
-                    s3.delete_objects(Bucket=bucket_name, Delete={"Objects": objects})
-            s3.delete_bucket(Bucket=bucket_name)
-            logger.debug("Deleted S3 bucket '%s'", bucket_name)
+                    s3.delete_objects(Bucket=campaign_bucket, Delete={"Objects": objects})
+            s3.delete_bucket(Bucket=campaign_bucket)
+            logger.debug("Deleted S3 bucket '%s'", campaign_bucket)
 
 
 def cleanup_campaigns(

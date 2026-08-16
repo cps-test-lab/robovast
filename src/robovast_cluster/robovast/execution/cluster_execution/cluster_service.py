@@ -752,7 +752,6 @@ class ClusterService(LocalTransport):
         from robovast.common.campaign_logs import (EXECUTION_DIR,
                                                     assemble_log,
                                                     assemble_log_from_dir)
-        from robovast.service.interface import LogChunk
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is not None:
@@ -1343,7 +1342,6 @@ class ClusterService(LocalTransport):
             return ""
 
     def get_image_build_log(self, build_id: str, offset: int = 0):
-        from robovast.service.interface import LogChunk
         raw = self._build_log_text(build_id).encode("utf-8", "replace")
         record = self._image_build_state().get(build_id)
         done = bool(record and record["status"].done)
@@ -1928,7 +1926,7 @@ class ClusterService(LocalTransport):
 
     # -- on-demand 3D geometry ---------------------------------------------
 
-    def _resolve_image_digest(self, ref: str):
+    def _resolve_image_digest(self, ref: str):  # pylint: disable=useless-return
         """No tag→digest resolution on this lane. Refusing beats answering with the wrong bytes.
 
         Inherited, this would be ``docker inspect`` **on the service host**, which is either absent
@@ -1941,7 +1939,7 @@ class ClusterService(LocalTransport):
         # Explicit, not incidental: None *is* the answer on this lane, and the
         # docstring above is about that. Falling off the end would read as an
         # unfinished function.
-        return None  # pylint: disable=useless-return
+        return None
 
     def _scene_source_dir(self, campaign_id: str) -> str:
         """Materialise only what resolving geometry reads, then answer from that.

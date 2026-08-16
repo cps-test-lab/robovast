@@ -1228,4 +1228,3 @@ def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None,
         KUEUE_QUEUE_NAME,
         namespace,
     )
-

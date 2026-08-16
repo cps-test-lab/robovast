@@ -1,0 +1,42 @@
+[tool.poetry]
+name = "robovast-cluster"
+version = "2.0.0"
+description = "The Kubernetes execution lane for RoboVAST: cluster campaigns, deployment, and the operator commands."
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+# Ships into the `robovast` namespace rather than a name of its own, so the import paths
+# do not change: `robovast/` and `robovast/execution/` carry no `__init__.py` in either
+# distribution, which makes them PEP 420 namespace packages and lets the two trees merge.
+packages = [{include = "robovast"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+# The lane is built on the core, and the edge is safe to declare: `robovast` names
+# `robovast-nav` and `robovast-sim-roqsim` as path dependencies but never this package, so
+# there is no cycle to avoid -- which is why `robovast_sim_roqsim` cannot state its
+# equivalent and this can. It has to be stated rather than assumed: the controller image
+# installs `robovast-cluster` into the pod, and every module here imports `robovast`.
+robovast = "^2.0.0"
+kubernetes = "^34.1"
+boto3 = "^1.35"
+google-cloud-storage = "^2.0"
+
+# `vast serve --backend cluster`. Resolved by name, so the core never imports this package
+# to start a service -- see robovast/service/serve_backends.py.
+[tool.poetry.plugins."robovast.execution_backends"]
+cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"
+
+# `vast exec cluster`. Attached lazily, so a plain `vast` invocation does not pay for it.
+[tool.poetry.plugins."robovast.exec_plugins"]
+cluster = "robovast.execution.cluster_execution.cli:cluster"
+
+[tool.poetry.plugins."robovast.cluster_configs"]
+minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
+rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
+gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"
+azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

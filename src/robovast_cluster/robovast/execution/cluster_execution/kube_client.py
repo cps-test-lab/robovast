@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #: a slow answer is still an answer, and pod-log reads are legitimately long.
 CONNECT_TIMEOUT_SECONDS = float(os.environ.get("ROBOVAST_KUBE_CONNECT_TIMEOUT", "10"))
 
-_connect_timeout_installed = False
+_CONNECT_TIMEOUT_INSTALLED = False
 
 
 def _install_default_connect_timeout() -> None:
@@ -75,8 +75,10 @@ def _install_default_connect_timeout() -> None:
     websocket path (``kubernetes.stream``, which replaces ``ApiClient.request`` a layer
     above this one) is untouched.
     """
-    global _connect_timeout_installed  # noqa: PLW0603 - process-wide client policy
-    if _connect_timeout_installed:
+    global _CONNECT_TIMEOUT_INSTALLED  # pylint: disable=global-statement
+    # Process-wide client policy: the patch is on the generated client's own
+    # request method, so 'once per process' is the only correct scope.
+    if _CONNECT_TIMEOUT_INSTALLED:
         return
     from kubernetes.client import rest
 
@@ -89,7 +91,7 @@ def _install_default_connect_timeout() -> None:
         return original(self, *args, _request_timeout=_request_timeout, **kwargs)
 
     rest.RESTClientObject.request = request
-    _connect_timeout_installed = True
+    _CONNECT_TIMEOUT_INSTALLED = True
 
 
 def load_kube_config(context: str | None = None) -> str:

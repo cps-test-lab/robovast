@@ -17,21 +17,28 @@ that nothing checks is a comment; this makes it a test.
 import pathlib
 import re
 
-SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "robovast"
+_REPO = pathlib.Path(__file__).resolve().parents[2] / "src"
+#: Both trees. The cluster lane is its own distribution, and scanning only the core one
+#: made this pass by scanning nothing that could fail -- a guard that stops guarding is
+#: worse than no guard, because the green tick says otherwise.
+SRC_TREES = (_REPO / "robovast", _REPO / "robovast_cluster" / "robovast")
+SRC = SRC_TREES[0]  # what offender paths are reported relative to
 #: The one module allowed to call the generated client's loader.
-CANONICAL = SRC / "execution" / "cluster_execution" / "kube_client.py"
+CANONICAL = (_REPO / "robovast_cluster" / "robovast" / "execution"
+             / "cluster_execution" / "kube_client.py")
 _DIRECT_CALL = re.compile(r"^[^#]*\bconfig\.load_kube_config\s*\(")
 _DIRECT_INCLUSTER = re.compile(r"^[^#]*\bconfig\.load_incluster_config\s*\(")
 
 
 def _offenders(pattern):
     hits = []
-    for path in SRC.rglob("*.py"):
-        if path == CANONICAL:
-            continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if pattern.search(line):
-                hits.append(f"{path.relative_to(SRC)}:{lineno}: {line.strip()}")
+    for tree in SRC_TREES:
+        for path in tree.rglob("*.py"):
+            if path == CANONICAL:
+                continue
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                if pattern.search(line):
+                    hits.append(f"{path.relative_to(tree)}:{lineno}: {line.strip()}")
     return hits
 
 

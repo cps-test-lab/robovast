@@ -10,10 +10,13 @@
 # It does NOT contain the ROS runtime: scenario execution and rosbag postprocessing
 # run in the ROS robovast image (job pods / a ROS-enabled container), not here.
 #
-# robovast and robovast-nav (deps + a baseline copy of the code) are installed at
-# build time. For fast dev iteration, `vast exec cluster run` builds wheels of the
-# current robovast + robovast_nav source and `pip install --no-deps`'s them into
-# the controller pod on top of this baseline.
+# Four distributions are installed at build time: robovast, its robovast-nav and
+# robovast-sim-roqsim path dependencies, and robovast-cluster (the execution lane, added
+# separately below). There is no wheel-injection shortcut -- an earlier comment here
+# described one that `vast exec cluster run` no longer does -- so changing any of them
+# means rebuilding this image and rolling the Deployment with `vast exec cluster upgrade`.
+# The cheaper loops are local `vast serve`, or `vast serve --backend cluster -x <ctx>`
+# driving a real cluster from an editable checkout.
 #
 # Build context is the repository root (so pyproject + src are available):
 #   docker build -f container/controller/Dockerfile -t <you>/robovast-controller:dev .
@@ -116,6 +119,14 @@ RUN pip install --no-cache-dir poetry==1.8.2 \
 COPY README.md ./
 COPY src ./src
 RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks fair sftp" --no-cache
+
+# The Kubernetes execution lane. It is a separate distribution that depends on robovast --
+# not an extra of it -- so it cannot join the --extras string above and needs its own step.
+# Without it the pod starts, serves, and then fails every create_campaign for want of a
+# lane: the service comes up looking healthy and can run nothing. Its three dependencies
+# (kubernetes, boto3, google-cloud-storage) resolve here rather than in layer 1, which
+# costs a little cache; they are small next to PySide6, which is what layer 1 protects.
+RUN pip install --no-cache-dir ./src/robovast_cluster
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image
 # path cannot be derived from the source tree (robovast is installed into
