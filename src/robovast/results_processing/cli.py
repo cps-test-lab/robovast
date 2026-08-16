@@ -541,8 +541,6 @@ def download_from_share_cmd(output, campaigns, force, keep_archive, variant, deb
     source = resolve_download_source(variant)
 
     if source == "postprocessed":
-        from robovast.client.project_config import \
-            get_project_config  # pylint: disable=import-outside-toplevel
         from robovast.client.service_target import \
             detected_service_url  # pylint: disable=import-outside-toplevel
         from robovast.service.client import \

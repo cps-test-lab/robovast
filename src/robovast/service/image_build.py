@@ -43,8 +43,8 @@ from typing import Optional
 
 from robovast.common.build_context import BUILD_CONTEXT_IGNORE, render_dockerignore
 from robovast.common.containers import plan_containers
-from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER, build_image_tag,
-                                       is_build_image_ref, resolve_build_base_image)
+from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
+                                       resolve_build_base_image)
 from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus, LogChunk
 
 logger = logging.getLogger(__name__)

@@ -54,7 +54,10 @@ from dataclasses import dataclass, field, fields
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from robovast.common import log_summary
-from robovast.common.log_tail import MAIN_CONTAINER
+# Re-exported: ``container_of`` returns this, so a caller comparing against it reads one
+# name from one module. It is unused *in* this file, which is why removing it looked safe
+# -- and broke a test that imports it from here.
+from robovast.common.log_tail import MAIN_CONTAINER  # noqa: F401  # pylint: disable=unused-import
 
 from . import run_slices
 

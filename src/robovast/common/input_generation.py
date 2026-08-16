@@ -647,7 +647,6 @@ def _resolve_command(name):
     between a campaign that composes and one that does not, for a reason invisible in the
     ``.vast``. An explicit path is passed through untouched.
     """
-    import shutil  # pylint: disable=import-outside-toplevel,redefined-outer-name
     import sys  # pylint: disable=import-outside-toplevel
 
     if os.sep in name or (os.altsep and os.altsep in name):

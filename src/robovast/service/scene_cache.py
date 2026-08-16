@@ -506,7 +506,6 @@ def _overrides_file(identity: dict, key: str) -> str | None:
     Written beside the cache rather than into the entry, which is the generator's output.
     Keyed like the entry, so two configurations of one campaign cannot share one.
     """
-    import yaml  # pylint: disable=import-outside-toplevel
     overrides = identity.get("overrides") or {}
     if not overrides:
         return None

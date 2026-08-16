@@ -49,12 +49,11 @@ from robovast.common.host_display import require_host_display
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
-from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
-                                        CampaignSummary, CreateCampaignRequest, CreateUploadRequest,
+from robovast.service.interface import (ActionResult, CampaignRef, CampaignSummary,
+                                        CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileEntry,
-                                        FileListing, FileMeta, FileText, ImageBuildRef,
-                                        ImageBuildStatus, JobCounts, JobSummary,
-                                        ListCampaignsRequest, ListCampaignsResponse,
+                                        FileListing, FileMeta, FileText, ImageBuildRef, JobCounts,
+                                        JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
                                         RobovastInterface, Routes, UploadGrant, ValidationProblem,
@@ -1127,11 +1126,10 @@ class LocalTransport(RobovastInterface):
         """Lazily-created local image-build manager (docker buildx --load)."""
         mgr = getattr(self, "_image_build_mgr", None)
         if mgr is None:
-            from pathlib import Path as _Path
 
             from robovast.service.image_build import LocalImageBuildManager
             root = os.environ.get("ROBOVAST_BUILDS_ROOT")
-            log_root = _Path(root) if root else _Path.home() / ".robovast" / "builds"
+            log_root = Path(root) if root else Path.home() / ".robovast" / "builds"
             mgr = LocalImageBuildManager(log_root)
             self._image_build_mgr = mgr
         return mgr
@@ -1143,11 +1141,10 @@ class LocalTransport(RobovastInterface):
         simulation container carrying the experiment's own plugins — so this is a map.
         Empty when no container adds packages.
         """
-        from pathlib import Path as _Path
 
         from robovast.common.config_plugins import ensure_workspace_plugins
         from robovast.service.image_build import extract_build_specs
-        project_dir = _Path(project.config_path).resolve().parent
+        project_dir = Path(project.config_path).resolve().parent
         # Which containers build depends on the simulator backend (a stepped simulator
         # folds `simulation` into `scenario`), and the backend can live in the campaign's
         # own `plugins:` -- root-level glue is not in the service image by design. So the
@@ -1602,7 +1599,6 @@ class LocalTransport(RobovastInterface):
         finished campaign; ``eof`` is set once the campaign is no longer driven here.
         """
         from robovast.common.campaign_logs import assemble_log_from_dir
-        from robovast.service.interface import LogChunk
         campaign_dir = self._campaigns_root() / campaign_id
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -1728,7 +1724,7 @@ class LocalTransport(RobovastInterface):
         the stream on ``test.xml`` alone would close the panel on exactly the shutdown
         output that says whether the simulator saved its recording.
         """
-        from robovast.client.safe_path import UnsafePathError, safe_join
+        from robovast.client.safe_path import UnsafePathError
         from robovast.common.campaign_data import read_test_result
         from robovast.common.execution import job_artifact_dir
         campaign_dir = self._campaigns_root() / campaign_id

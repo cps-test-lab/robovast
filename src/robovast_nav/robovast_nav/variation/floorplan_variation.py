@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import ConfigDict, field_validator
 from rdflib import FOAF, PROV, Namespace
 
 from robovast.common.variation.base_variation import DestinationConfig, ProvContribution

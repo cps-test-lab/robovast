@@ -45,10 +45,11 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 # ``rosbags_process.py`` is copied into the container as a standalone script and can import
 # nothing from this package. Re-exported here so host-side callers have one import site and
 # there is still only one definition of the tolerance and the column names.
+# pylint: disable=unused-import  # the four below are the documented re-export
 from .data.rosbags_common import CLOCK_MAP_FIELDNAMES as FIELDNAMES  # noqa: F401
-from .data.rosbags_common import CLOCK_MAP_FILENAME as FILENAME
-from .data.rosbags_common import DEFAULT_CLOCK_TOLERANCE_S as DEFAULT_TOLERANCE_S
-from .data.rosbags_common import ClockDecimator as Decimator
+from .data.rosbags_common import CLOCK_MAP_FILENAME as FILENAME  # noqa: F401
+from .data.rosbags_common import DEFAULT_CLOCK_TOLERANCE_S as DEFAULT_TOLERANCE_S  # noqa: F401
+from .data.rosbags_common import ClockDecimator as Decimator  # noqa: F401
 
 #: ``clock_map_source`` values. ``none`` is a finding, not a default: it says this run's
 #: log lines are wall-time only, and every surface that shows them has to say so.

@@ -29,11 +29,10 @@ serve.
 import logging
 import os
 import time
-from typing import Optional
 
 from fastmcp import FastMCP
 
-from robovast.client.status import Phase, is_terminal, stall_report
+from robovast.client.status import stall_report
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE

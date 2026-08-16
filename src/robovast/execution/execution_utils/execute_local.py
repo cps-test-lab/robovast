@@ -15,7 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import fnmatch
-import json
 import logging
 import os
 import shlex

@@ -41,7 +41,6 @@ and the ``vast configuration validate`` CLI command.
 import inspect
 import logging
 import os
-import re
 from contextlib import contextmanager
 
 import yaml

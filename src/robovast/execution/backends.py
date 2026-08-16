@@ -43,7 +43,8 @@ from robovast.common import prepare_campaign_configs
 # Re-exported: config generation and campaign staging raise the same user-error
 # type, and they live in ``common`` (which the execution layer imports), so the
 # class itself has to live there too. Every caller keeps importing it from here.
-from robovast.common.errors import CampaignConfigError
+from robovast.common.errors import \
+    CampaignConfigError  # noqa: F401  # pylint: disable=unused-import
 from robovast.common.execution import DEFAULT_ROBOVAST_IMAGE, resolve_robovast_image
 from robovast.execution.execution_utils.execute_local import generate_compose_run_script
 

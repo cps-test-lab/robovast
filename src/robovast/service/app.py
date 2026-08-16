@@ -1115,7 +1115,6 @@ def _resolve_plugin_asset(group: str, name: str, rel_path: str, asset_attr: str)
     import inspect  # pylint: disable=import-outside-toplevel
     import os  # pylint: disable=import-outside-toplevel
     from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
-    from pathlib import Path  # pylint: disable=import-outside-toplevel
 
     cls = next((ep.load() for ep in entry_points(group=group)
                 if ep.name == name), None)
@@ -1172,7 +1171,6 @@ def _ui_dist() -> Optional[Path]:
        say nothing about it.
     """
     import os  # pylint: disable=import-outside-toplevel
-    from pathlib import Path  # pylint: disable=import-outside-toplevel
 
     candidates = []
     env = os.environ.get("ROBOVAST_UI_DIST")
