@@ -97,3 +97,98 @@ def test_setup_still_gets_the_prefix_from_ingress_host():
     config = next(m for m in manifests if m["kind"] == "Secret"
                   and m["metadata"]["name"] == service_deploy.REGISTRY_CONFIG_SECRET_NAME)
     assert config["stringData"]["ROBOVAST_REGISTRY_PREFIX"] == "robovast.example.org"
+
+
+def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypatch):
+    """A `setup` re-run without --ingress-host must not silently disable builds.
+
+    The prefix is baked from the Ingress host, so `_registry_env` returns None without
+    one: the Secret goes unlisted from the Deployment's envFrom and the pod loses the
+    prefix. The Ingress itself is untouched, so nothing looks wrong -- until a campaign
+    is submitted and refused with "nowhere to push it", after a project push, a
+    workspace create and a launch.
+
+    `deploy_service` separates registry_host from ingress_host precisely so a caller can
+    re-bake the prefix without rebuilding the Ingress. `upgrade` used that; `setup` did
+    not.
+    """
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    deploy = mock.Mock()
+    monkeypatch.setattr(service_deploy, "deploy_service", deploy)
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+    monkeypatch.setattr(service_deploy, "published_host",
+                        lambda *a, **k: "robovast.example.org")
+    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
+                 "apply_controller_rbac", "apply_kueue_queues"):
+        monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    monkeypatch.setattr(cluster_setup, "get_cluster_config",
+                        lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
+
+    cluster_setup.setup_server(config_name="rke2", namespace="default")
+
+    assert deploy.call_args.kwargs.get("registry_host") == "robovast.example.org", (
+        "setup dropped the registry prefix of a published deployment")
+
+
+def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
+    """The lookup is a convenience, not a requirement. Setup must not die -- or wait out
+    a connection timeout -- because it could not read something it is only preserving."""
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    deploy = mock.Mock()
+    monkeypatch.setattr(service_deploy, "deploy_service", deploy)
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+
+    def _unreachable(*_a, **_k):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(service_deploy, "published_host", _unreachable)
+    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
+                 "apply_controller_rbac", "apply_kueue_queues"):
+        monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    monkeypatch.setattr(cluster_setup, "get_cluster_config",
+                        lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
+
+    cluster_setup.setup_server(config_name="rke2", namespace="default")
+
+    assert "registry_host" not in deploy.call_args.kwargs, (
+        "an unreachable API server must leave registry_host unset, not guessed")
+
+
+def test_an_explicit_ingress_host_still_wins(monkeypatch):
+    """The lookup exists for the case where none was given. Passing one must not trigger
+    an API call at all."""
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    deploy = mock.Mock()
+    monkeypatch.setattr(service_deploy, "deploy_service", deploy)
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+
+    def _must_not_be_called(*_a, **_k):
+        raise AssertionError("published_host was called despite an explicit ingress_host")
+
+    monkeypatch.setattr(service_deploy, "published_host", _must_not_be_called)
+    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
+                 "apply_controller_rbac", "apply_kueue_queues"):
+        monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    monkeypatch.setattr(cluster_setup, "get_cluster_config",
+                        lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
+
+    cluster_setup.setup_server(config_name="rke2", namespace="default",
+                               service_kwargs={"ingress_host": "given.example.org",
+                                               "insecure_http": True})
+
+    assert deploy.call_args.kwargs.get("registry_host") == "given.example.org"

@@ -384,10 +384,32 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
-    from .service_deploy import deploy_service, wait_for_service_ready
+    from .service_deploy import deploy_service, published_host, wait_for_service_ready
+    service_kwargs = dict(service_kwargs or {})
+    # Keep the registry prefix a re-run cannot drop. It is baked from the Ingress host,
+    # so a `setup` without --ingress-host used to make `_registry_env` return None: the
+    # Secret went unlisted from the Deployment's envFrom, the pod lost the prefix, and
+    # in-cluster builds became impossible -- while the Ingress itself was untouched, so
+    # nothing looked wrong until a campaign was submitted and refused.
+    #
+    # `deploy_service` separates registry_host from ingress_host precisely so a caller
+    # can re-bake the prefix without rebuilding the Ingress; `upgrade` already used that
+    # and `setup` did not. Recovering the host from the live Ingress makes the two agree.
+    if "registry_host" not in service_kwargs:
+        host = service_kwargs.get("ingress_host")
+        if not host:
+            # Only now, and only tolerantly: this dials the API server, and setup must
+            # not hang or die because it could not *look up* something it is merely
+            # trying to preserve. No answer means there is nothing to preserve.
+            try:
+                host = published_host(namespace, kube_context)
+            except Exception:  # noqa: BLE001 - unreachable, unpublished, or no RBAC
+                host = ""
+        if host:
+            service_kwargs["registry_host"] = host
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   **(service_kwargs or {}))
+                   **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # Only now is the cluster actually set up. Returning at "Deployment created"

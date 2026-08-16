@@ -50,6 +50,10 @@ def _deploy_stubs(monkeypatch):
     # Setup now waits for the pod to be Ready before reporting success; with the
     # deploy stubbed there is no pod to wait for.
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    # Setup now recovers the registry prefix from the live Ingress when no
+    # --ingress-host was given, so it reaches the API server where it did not before.
+    # Unstubbed, these tests wait out a connection timeout apiece.
+    monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
                  "apply_controller_rbac"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())

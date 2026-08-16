@@ -282,7 +282,12 @@ def run_checks(flavor: str = "", context: str | None = None) -> list[Check]:
     intent, and a missing ``helm`` really does stop it.
     """
     client = check_client()
-    usable = all(c.ok for c in client)
+    # Optional checks are advisory by definition (`Check.optional`), so one failing must
+    # not decide this. It decides whether the *operator* half is reported as advisory or
+    # fatal, so counting an optional client failure here would turn "no registry
+    # configured" into four red ✗ for kubectl, helm and a kubeconfig the user will never
+    # need -- the exact confusion the client/operator split exists to prevent.
+    usable = all(c.ok for c in client if not c.optional)
     operator = [check_python(), *check_tools(flavor), *check_cluster(context)]
     if usable:
         operator = [replace(c, optional=True) for c in operator]
