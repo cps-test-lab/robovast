@@ -31,6 +31,7 @@ join in one query. The ``vast eval gui`` notebook path reads the same ``data.db`
 directly and is unaffected.
 """
 
+import json
 import logging
 import math
 import re
@@ -45,6 +46,19 @@ logger = logging.getLogger(__name__)
 #: dump megabytes of bytes into an LLM's context. Rows are already capped by
 #: ``max_rows``; this bounds width, which rows alone do not.
 _MAX_CELL_BYTES = 2048
+
+#: Ceiling on the whole JSON reply, not one cell of it. ``max_rows`` and
+#: :data:`_MAX_CELL_BYTES` bound the two axes separately and neither bounds their product:
+#: 500 rows of a real campaign's ``poses`` -- the *default*, well inside every documented
+#: cap -- serializes to ~270 KB, about 67,000 tokens, and the 5000-row clamp to roughly ten
+#: times that. A reply nothing can read is not a reply, and an agent that spends its whole
+#: context on one ``SELECT *`` cannot then do anything with the answer. Measured against
+#: campaign basic-nav-gazebo-2026-08-16-20153470.
+#:
+#: 64 KB is ~16,000 tokens: bigger than any answer worth reading inline, and still larger
+#: than the entire MCP tool surface's own budget. A caller who wants the data rather than
+#: the answer has :func:`stream_query_csv`, which has no row cap at all.
+_MAX_RESULT_BYTES = 64 * 1024
 
 
 class DataQueryError(ValueError):
@@ -743,6 +757,24 @@ def _empty_result_note(conn: sqlite3.Connection) -> str:
     )
 
 
+def _cap_result_size(rows: list) -> tuple:
+    """Trim *rows* until the reply fits :data:`_MAX_RESULT_BYTES`; say whether it was.
+
+    Measured cumulatively rather than by serializing the whole list and bisecting: the
+    payload being bounded is the one that would otherwise be built in full first, and
+    building it to discover it is too big spends exactly the memory the cap exists to
+    avoid.
+    """
+    total = 0
+    for i, row in enumerate(rows):
+        total += len(json.dumps(row, default=str).encode("utf-8", "replace"))
+        if total > _MAX_RESULT_BYTES:
+            # At least one row, always: an empty result would read as "no data" rather
+            # than "your query was too wide", which are different answers.
+            return rows[:max(1, i)], True
+    return rows, False
+
+
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
                   extra_dirs: dict | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
@@ -771,8 +803,16 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         truncated = len(fetched) > max_rows
         rows = [{c: _cap_cell(v) for c, v in zip(columns, r)}
                 for r in fetched[:max_rows]]
+        rows, size_capped = _cap_result_size(rows)
         result = {"columns": columns, "row_count": len(rows),
-                  "truncated": truncated, "rows": rows}
+                  "truncated": truncated or size_capped, "rows": rows}
+        if size_capped:
+            result["note"] = (
+                f"stopped at {len(rows)} rows: the reply reached the "
+                f"{_MAX_RESULT_BYTES // 1024} KB ceiling. Rows are capped separately from "
+                f"size, and a wide table reaches this long before max_rows. Aggregate in "
+                f"SQL (COUNT/AVG/MIN/MAX, GROUP BY) or select the columns you need — or "
+                f"export the whole result as CSV instead of reading it here.")
         if not rows:
             conn.set_authorizer(None)  # _empty_result_note runs its own COUNT(*)s
             result["note"] = _empty_result_note(conn)
