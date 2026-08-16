@@ -493,8 +493,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return response
 
     @app.get(Routes.VERSION, response_model=VersionInfo, tags=["meta"])
-    def version() -> VersionInfo:
-        return _guard(impl.version)
+    def version(request: Request) -> VersionInfo:
+        info = _guard(impl.version)
+        # ``results_root``/``sources_root`` are documented as non-null *only when the
+        # caller can actually open them* -- a local-filesystem service AND a same-host
+        # request. The transport can only answer the first half, and this is the second.
+        # It was asserted rather than enforced (``local_transport`` even said "app.py
+        # blanks them again for a non-loopback request", of code that did not exist), so
+        # a `vast serve` reached through a tunnel handed a remote caller absolute paths
+        # on the *service's* disk -- which it would then try, and fail, to open.
+        if not _from_loopback(request):
+            info.results_root = None
+            info.sources_root = None
+        return info
 
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
     def resource_usage() -> ResourceUsage:
@@ -1245,6 +1256,28 @@ def startup_banner(base_url: str, token: str, *, ephemeral: bool,
             f"changes on restart;\n   set it in .env to keep a browser login and an "
             f"agent registration working across restarts)")
     return "\n" + "\n\n".join(lines) + "\n"
+
+
+def _from_loopback(request) -> bool:
+    """Did this request come from the same machine?
+
+    Conservative on purpose: anything unparseable, absent (a Unix socket has no peer
+    address) or forwarded counts as *not* loopback, because the field this gates is only
+    useful to a caller that can open the service host's filesystem, and being wrong in
+    that direction merely costs a caller two fields it could not have used.
+    """
+    import ipaddress  # pylint: disable=import-outside-toplevel
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None)
+    if not host:
+        return False
+    # Behind a proxy the peer is the proxy, so a forwarded request is never same-host.
+    if request.headers.get("x-forwarded-for"):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _proxy_trust(env) -> tuple:

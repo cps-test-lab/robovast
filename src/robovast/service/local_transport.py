@@ -679,8 +679,10 @@ class LocalTransport(RobovastInterface):
     def version(self) -> VersionInfo:
         # The filesystem roots are advertised because this lane *is* local disk, so a
         # caller on the same host can read results with its own tools instead of
-        # relaying every byte through the interface. ``app.py`` blanks them again for a
-        # non-loopback request — the same-host precondition is the caller's, not ours.
+        # relaying every byte through the interface. This answers only half the
+        # contract -- whether the *service* has openable paths. ``app.py``'s version
+        # route answers the other half and blanks them for a non-loopback caller,
+        # which a transport cannot see.
         return VersionInfo(robovast_version=_robovast_version(), backend="docker",
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root))

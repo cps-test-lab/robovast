@@ -19,14 +19,17 @@ the conventions the route table assumes.
 Who may call it
 ===============
 
-The service binds ``127.0.0.1`` by default and assumes a trusted caller: there is no
-authentication. Reaching a remote one is an SSH tunnel, not a public bind — see
+**Every request needs the shared access token** — there is no unauthenticated mode.
+A browser exchanges it for a session cookie at ``/login``; the CLI and MCP send
+``Authorization: Bearer``. A local ``vast serve`` binds ``127.0.0.1`` and mints a token
+if none is configured; a deployed one is published over an Ingress with TLS. See
 :doc:`deployment` for the boundary and ``vast login``.
 
 Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
-``sources_root`` for a non-loopback client, because those are filesystem paths that are
-only useful — and only safe — to a caller on the same machine. And the file routes serve
-real paths on the service host, which is the point of the address space below.
+``sources_root`` for any caller that is not on the same machine, because those are
+filesystem paths only useful — and only safe — to one that is; a forwarded request
+counts as remote, since behind a proxy the peer address is the proxy. And the file routes
+serve real paths on the service host, which is the point of the address space below.
 
 Addressing files
 ================
