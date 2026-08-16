@@ -98,7 +98,7 @@ trio = ["trio (>=0.32.0)"]
 name = "appnope"
 version = "0.1.4"
 description = "Disable App Nap on macOS >= 10.9"
-optional = false
+optional = true
 python-versions = ">=3.6"
 files = [
     {file = "appnope-0.1.4-py2.py3-none-any.whl", hash = "sha256:502575ee11cd7a28c0205f379b525beefebab9d161b7c964670864014ed7213c"},
@@ -109,7 +109,7 @@ files = [
 name = "asttokens"
 version = "3.0.2"
 description = "Annotate AST trees with source code positions"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "asttokens-3.0.2-py3-none-any.whl", hash = "sha256:9da13157f5b28becde0bd374fc677dcd3c290614264eff096f167c469cd9f933"},
@@ -164,7 +164,7 @@ dev = ["backports.zoneinfo", "freezegun (>=1.0,<2.0)", "jinja2 (>=3.0)", "pytest
 name = "bcrypt"
 version = "5.0.0"
 description = "Modern password hashing for your software and your servers"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "bcrypt-5.0.0-cp313-cp313t-macosx_10_12_universal2.whl", hash = "sha256:f3c08197f3039bec79cee59a606d62b96b16669cff3949f21e74796b6e3cd2be"},
@@ -259,7 +259,7 @@ test-tox-coverage = ["coverage (>=5.5)"]
 name = "beautifulsoup4"
 version = "4.15.0"
 description = "Screen-scraping library"
-optional = false
+optional = true
 python-versions = ">=3.7.0"
 files = [
     {file = "beautifulsoup4-4.15.0-py3-none-any.whl", hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9"},
@@ -281,7 +281,7 @@ lxml = ["lxml"]
 name = "bleach"
 version = "6.4.0"
 description = "An easy safelist-based HTML-sanitizing tool."
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "bleach-6.4.0-py3-none-any.whl", hash = "sha256:4b6b6a54fff2e69a3dde9d21cc6301220bee3c3cb792187d11403fd795031081"},
@@ -294,44 +294,6 @@ webencodings = "*"
 
 [package.extras]
 css = ["tinycss2 (>=1.1.0)"]
-
-[[package]]
-name = "boto3"
-version = "1.43.49"
-description = "The AWS SDK for Python"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "boto3-1.43.49-py3-none-any.whl", hash = "sha256:2b31ab1a0eb1cee01d0363b8ee5e68b45dff2c8f99e7b53aca11c9f7b591a794"},
-    {file = "boto3-1.43.49.tar.gz", hash = "sha256:e58e0704805f720b94e40a56588eadd6da05d3693bde78b573116b11ae56710f"},
-]
-
-[package.dependencies]
-botocore = ">=1.43.49,<1.44.0"
-jmespath = ">=0.7.1,<2.0.0"
-s3transfer = ">=0.19.0,<0.20.0"
-
-[package.extras]
-crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
-
-[[package]]
-name = "botocore"
-version = "1.43.49"
-description = "Low-level, data-driven core of boto 3."
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "botocore-1.43.49-py3-none-any.whl", hash = "sha256:16b6838ac2fbbab85fb265c1f2e37906527aca07f461b1d293d3f8ab82f992dc"},
-    {file = "botocore-1.43.49.tar.gz", hash = "sha256:7de02863c95b8008b1400c92a1a00996f25ad38944c07f7b620949f8798d1fdf"},
-]
-
-[package.dependencies]
-jmespath = ">=0.7.1,<2.0.0"
-python-dateutil = ">=2.1,<3.0.0"
-urllib3 = ">=1.25.4,<2.2.0 || >2.2.0,<3"
-
-[package.extras]
-crt = ["awscrt (==0.32.2)"]
 
 [[package]]
 name = "cachetools"
@@ -649,7 +611,7 @@ development = ["black", "flake8", "mypy", "pytest", "types-colorama"]
 name = "comm"
 version = "0.2.3"
 description = "Jupyter Python Comm implementation, for usage in ipykernel, xeus-python etc."
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "comm-0.2.3-py3-none-any.whl", hash = "sha256:c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417"},
@@ -663,7 +625,7 @@ test = ["pytest"]
 name = "contourpy"
 version = "1.3.3"
 description = "Python library for calculating contours of 2D quadrilateral grids"
-optional = false
+optional = true
 python-versions = ">=3.11"
 files = [
     {file = "contourpy-1.3.3-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:709a48ef9a690e1343202916450bc48b9e51c049b089c7f79a267b46cffcdaa1"},
@@ -815,7 +777,7 @@ ssh = ["bcrypt (>=3.1.5)"]
 name = "cycler"
 version = "0.12.1"
 description = "Composable style cycles"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30"},
@@ -856,7 +818,7 @@ yaml = ["pyyaml (>=6.0.1)"]
 name = "debugpy"
 version = "1.8.21"
 description = "An implementation of the Debug Adapter Protocol for Python"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "debugpy-1.8.21-cp310-cp310-macosx_15_0_x86_64.whl", hash = "sha256:8eeab7b5462f683452c57c0126aaa5ec4e974ddb705f39ba87dff8818c8e08f9"},
@@ -895,7 +857,7 @@ files = [
 name = "decorator"
 version = "5.3.1"
 description = "Decorators for Humans"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "decorator-5.3.1-py3-none-any.whl", hash = "sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c"},
@@ -906,7 +868,7 @@ files = [
 name = "defusedxml"
 version = "0.7.1"
 description = "XML bomb protection for Python stdlib modules"
-optional = false
+optional = true
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*"
 files = [
     {file = "defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"},
@@ -934,28 +896,6 @@ trio = ["trio (>=0.30)"]
 wmi = ["wmi (>=1.5.1)"]
 
 [[package]]
-name = "docker"
-version = "7.2.0"
-description = "A Python library for the Docker Engine API."
-optional = false
-python-versions = ">=3.8"
-files = [
-    {file = "docker-7.2.0-py3-none-any.whl", hash = "sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558c22caf29b71f"},
-    {file = "docker-7.2.0.tar.gz", hash = "sha256:cebb93773d334f778e023a7ee352a8d6e13ab1bd3b863a4d4a59dec897df43ac"},
-]
-
-[package.dependencies]
-pywin32 = {version = ">=304", markers = "sys_platform == \"win32\""}
-requests = ">=2.26.0"
-urllib3 = ">=1.26.0"
-
-[package.extras]
-dev = ["coverage (==7.2.7)", "pytest (==7.4.2)", "pytest-cov (==4.1.0)", "pytest-timeout (==2.1.0)", "ruff (==0.1.8)"]
-docs = ["myst-parser (==0.18.0)", "sphinx (==5.1.1)"]
-ssh = ["paramiko (>=2.4.3)"]
-websockets = ["websocket-client (>=1.3.0)"]
-
-[[package]]
 name = "docstring-parser"
 version = "0.18.0"
 description = "Parse Python docstrings in reST, Google and Numpydoc format"
@@ -980,17 +920,6 @@ python-versions = ">=3.9"
 files = [
     {file = "docutils-0.21.2-py3-none-any.whl", hash = "sha256:dafca5b9e384f0e419294eb4d2ff9fa826435bf15f15b7bd45723e8ad76811b2"},
     {file = "docutils-0.21.2.tar.gz", hash = "sha256:3a6b18732edf182daa3cd12775bbb338cf5691468f91eeeb109deff6ebfa986f"},
-]
-
-[[package]]
-name = "durationpy"
-version = "0.10"
-description = "Module for converting between datetime.timedelta and Go's Duration strings."
-optional = false
-python-versions = "*"
-files = [
-    {file = "durationpy-0.10-py3-none-any.whl", hash = "sha256:3b41e1b601234296b4fb368338fdcd3e13e0b4fb5b67345948f4f2bf9868b286"},
-    {file = "durationpy-0.10.tar.gz", hash = "sha256:1fa6893409a6e739c9c72334fc65cca1f355dbdd93405d30f726deb5bde42fba"},
 ]
 
 [[package]]
@@ -1029,7 +958,7 @@ test = ["pytest (>=6)"]
 name = "executing"
 version = "2.2.1"
 description = "Get the currently executing AST node of a frame, and other information"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "executing-2.2.1-py2.py3-none-any.whl", hash = "sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017"},
@@ -1066,7 +995,7 @@ standard-no-fastapi-cloud-cli = ["email-validator (>=2.0.0)", "fastapi-cli[stand
 name = "fastjsonschema"
 version = "2.21.2"
 description = "Fastest Python implementation of JSON schema"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "fastjsonschema-2.21.2-py3-none-any.whl", hash = "sha256:1c797122d0a86c5cace2e54bf4e819c36223b552017172f32c5c024a6b77e463"},
@@ -1155,7 +1084,7 @@ tasks = ["pydocket (>=0.20.0)"]
 name = "fonttools"
 version = "4.63.0"
 description = "Tools to manipulate font files"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "fonttools-4.63.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:e3297a6a4059b4acc3a1e9a8b04741f240a80044eef08ebd32e8b5bcdddce75b"},
@@ -1227,7 +1156,7 @@ woff = ["brotli (>=1.0.1)", "brotlicffi (>=0.8.0)", "zopfli (>=0.1.4)"]
 name = "frozendict"
 version = "2.4.7"
 description = "A simple immutable dictionary"
-optional = false
+optional = true
 python-versions = ">=3.6"
 files = [
     {file = "frozendict-2.4.7-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:bd37c087a538944652363cfd77fb7abe8100cc1f48afea0b88b38bf0f469c3d2"},
@@ -1322,177 +1251,6 @@ files = [
     {file = "frozendict-2.4.7-py3-none-any.whl", hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550"},
     {file = "frozendict-2.4.7.tar.gz", hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd"},
 ]
-
-[[package]]
-name = "google-api-core"
-version = "2.31.0"
-description = "Google API client core library"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "google_api_core-2.31.0-py3-none-any.whl", hash = "sha256:ef79fb3784c71cbac89cbd03301ba0c8fb8ad2aa95d7f9204dd9628f7adf59ab"},
-    {file = "google_api_core-2.31.0.tar.gz", hash = "sha256:2be84ee0f584c48e6bde1b36766e23348b361fb7e55e56135fc76ce1c397f9c2"},
-]
-
-[package.dependencies]
-google-auth = ">=2.14.1,<3.0.0"
-googleapis-common-protos = ">=1.63.2,<2.0.0"
-proto-plus = [
-    {version = ">=1.25.0,<2.0.0", markers = "python_version >= \"3.13\""},
-    {version = ">=1.24.0,<2.0.0", markers = "python_version < \"3.13\""},
-]
-protobuf = ">=5.29.6,<8.0.0"
-requests = ">=2.33.0,<3.0.0"
-
-[package.extras]
-async-rest = ["aiohttp (>=3.13.4)", "google-auth[aiohttp] (>=2.14.1,<3.0.0)"]
-grpc = ["grpcio (>=1.41.0,<2.0.0)", "grpcio (>=1.49.1,<2.0.0)", "grpcio (>=1.75.1,<2.0.0)", "grpcio-status (>=1.41.0,<2.0.0)", "grpcio-status (>=1.49.1,<2.0.0)", "grpcio-status (>=1.75.1,<2.0.0)"]
-
-[[package]]
-name = "google-auth"
-version = "2.56.0"
-description = "Google Authentication Library"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "google_auth-2.56.0-py3-none-any.whl", hash = "sha256:6e88c10217e07a92bfd01cac8ee99e32ccfb08414c3102e6c5b8d58f37a0d1e0"},
-    {file = "google_auth-2.56.0.tar.gz", hash = "sha256:f90fa030b569a92654b9d690665a073841df33d57487be53db583a9a0867a553"},
-]
-
-[package.dependencies]
-cryptography = {version = ">=38.0.3", markers = "python_version < \"3.14\""}
-pyasn1-modules = ">=0.2.1"
-
-[package.extras]
-aiohttp = ["aiohttp (>=3.8.0,<4.0.0)", "aiohttp (>=3.9.0,<4.0.0)", "requests (>=2.30.0,<3.0.0)"]
-cryptography = ["cryptography (>=38.0.3)", "cryptography (>=41.0.5)"]
-enterprise-cert = ["cryptography (>=38.0.3)", "cryptography (>=41.0.5)"]
-grpc = ["grpcio (>=1.59.0,<2.0.0)", "grpcio (>=1.75.1,<2.0.0)"]
-pyjwt = ["pyjwt (>=2.0)"]
-pyopenssl = ["cryptography (>=38.0.3)", "cryptography (>=41.0.5)"]
-reauth = ["pyu2f (>=0.1.5)"]
-requests = ["requests (>=2.30.0,<3.0.0)"]
-rsa = ["rsa (>=4.0.0,<5)"]
-testing = ["aiohttp (>=3.8.0,<4.0.0)", "aiohttp (>=3.9.0,<4.0.0)", "aioresponses", "flask", "freezegun", "grpcio (>=1.59.0,<2.0.0)", "grpcio (>=1.75.1,<2.0.0)", "packaging (>=20.0)", "pyjwt (>=2.0)", "pytest", "pytest-asyncio", "pytest-cov", "pytest-localserver", "pyu2f (>=0.1.5)", "requests (>=2.30.0,<3.0.0)", "responses", "urllib3 (>=1.26.15,<3.0.0)"]
-urllib3 = ["packaging (>=20.0)", "urllib3 (>=1.26.15,<3.0.0)"]
-
-[[package]]
-name = "google-cloud-core"
-version = "2.6.0"
-description = "Google Cloud API client core library"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "google_cloud_core-2.6.0-py3-none-any.whl", hash = "sha256:6d63ac8e5eca6d9e4319d0a1e2265fadcd7f1049904378caecfa01cf52dd869e"},
-    {file = "google_cloud_core-2.6.0.tar.gz", hash = "sha256:e76149739f90fac1fc6757c09f47eaccb3145b54adbd7759b0f7c4b235f46c83"},
-]
-
-[package.dependencies]
-google-api-core = ">=2.11.0,<3.0.0"
-google-auth = ">=2.14.1,<2.24.0 || >2.24.0,<2.25.0 || >2.25.0,<3.0.0"
-
-[package.extras]
-grpc = ["grpcio (>=1.47.0,<2.0.0)", "grpcio (>=1.75.1,<2.0.0)", "grpcio-status (>=1.47.0,<2.0.0)"]
-
-[[package]]
-name = "google-cloud-storage"
-version = "2.19.0"
-description = "Google Cloud Storage API client library"
-optional = false
-python-versions = ">=3.7"
-files = [
-    {file = "google_cloud_storage-2.19.0-py2.py3-none-any.whl", hash = "sha256:aeb971b5c29cf8ab98445082cbfe7b161a1f48ed275822f59ed3f1524ea54fba"},
-    {file = "google_cloud_storage-2.19.0.tar.gz", hash = "sha256:cd05e9e7191ba6cb68934d8eb76054d9be4562aa89dbc4236feee4d7d51342b2"},
-]
-
-[package.dependencies]
-google-api-core = ">=2.15.0,<3.0.0dev"
-google-auth = ">=2.26.1,<3.0dev"
-google-cloud-core = ">=2.3.0,<3.0dev"
-google-crc32c = ">=1.0,<2.0dev"
-google-resumable-media = ">=2.7.2"
-requests = ">=2.18.0,<3.0.0dev"
-
-[package.extras]
-protobuf = ["protobuf (<6.0.0dev)"]
-tracing = ["opentelemetry-api (>=1.1.0)"]
-
-[[package]]
-name = "google-crc32c"
-version = "1.8.0"
-description = "A python wrapper of the C library 'Google CRC32C'"
-optional = false
-python-versions = ">=3.9"
-files = [
-    {file = "google_crc32c-1.8.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:0470b8c3d73b5f4e3300165498e4cf25221c7eb37f1159e221d1825b6df8a7ff"},
-    {file = "google_crc32c-1.8.0-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:119fcd90c57c89f30040b47c211acee231b25a45d225e3225294386f5d258288"},
-    {file = "google_crc32c-1.8.0-cp310-cp310-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:6f35aaffc8ccd81ba3162443fabb920e65b1f20ab1952a31b13173a67811467d"},
-    {file = "google_crc32c-1.8.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:864abafe7d6e2c4c66395c1eb0fe12dc891879769b52a3d56499612ca93b6092"},
-    {file = "google_crc32c-1.8.0-cp310-cp310-win_amd64.whl", hash = "sha256:db3fe8eaf0612fc8b20fa21a5f25bd785bc3cd5be69f8f3412b0ac2ffd49e733"},
-    {file = "google_crc32c-1.8.0-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:014a7e68d623e9a4222d663931febc3033c5c7c9730785727de2a81f87d5bab8"},
-    {file = "google_crc32c-1.8.0-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:86cfc00fe45a0ac7359e5214a1704e51a99e757d0272554874f419f79838c5f7"},
-    {file = "google_crc32c-1.8.0-cp311-cp311-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:19b40d637a54cb71e0829179f6cb41835f0fbd9e8eb60552152a8b52c36cbe15"},
-    {file = "google_crc32c-1.8.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:17446feb05abddc187e5441a45971b8394ea4c1b6efd88ab0af393fd9e0a156a"},
-    {file = "google_crc32c-1.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:71734788a88f551fbd6a97be9668a0020698e07b2bf5b3aa26a36c10cdfb27b2"},
-    {file = "google_crc32c-1.8.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:4b8286b659c1335172e39563ab0a768b8015e88e08329fa5321f774275fc3113"},
-    {file = "google_crc32c-1.8.0-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:2a3dc3318507de089c5384cc74d54318401410f82aa65b2d9cdde9d297aca7cb"},
-    {file = "google_crc32c-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:14f87e04d613dfa218d6135e81b78272c3b904e2a7053b841481b38a7d901411"},
-    {file = "google_crc32c-1.8.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb5c869c2923d56cb0c8e6bcdd73c009c36ae39b652dbe46a05eb4ef0ad01454"},
-    {file = "google_crc32c-1.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:3cc0c8912038065eafa603b238abf252e204accab2a704c63b9e14837a854962"},
-    {file = "google_crc32c-1.8.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:3ebb04528e83b2634857f43f9bb8ef5b2bbe7f10f140daeb01b58f972d04736b"},
-    {file = "google_crc32c-1.8.0-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:450dc98429d3e33ed2926fc99ee81001928d63460f8538f21a5d6060912a8e27"},
-    {file = "google_crc32c-1.8.0-cp313-cp313-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:3b9776774b24ba76831609ffbabce8cdf6fa2bd5e9df37b594221c7e333a81fa"},
-    {file = "google_crc32c-1.8.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:89c17d53d75562edfff86679244830599ee0a48efc216200691de8b02ab6b2b8"},
-    {file = "google_crc32c-1.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:57a50a9035b75643996fbf224d6661e386c7162d1dfdab9bc4ca790947d1007f"},
-    {file = "google_crc32c-1.8.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:e6584b12cb06796d285d09e33f63309a09368b9d806a551d8036a4207ea43697"},
-    {file = "google_crc32c-1.8.0-cp314-cp314-macosx_12_0_x86_64.whl", hash = "sha256:f4b51844ef67d6cf2e9425983274da75f18b1597bb2c998e1c0a0e8d46f8f651"},
-    {file = "google_crc32c-1.8.0-cp314-cp314-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:b0d1a7afc6e8e4635564ba8aa5c0548e3173e41b6384d7711a9123165f582de2"},
-    {file = "google_crc32c-1.8.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:8b3f68782f3cbd1bce027e48768293072813469af6a61a86f6bb4977a4380f21"},
-    {file = "google_crc32c-1.8.0-cp314-cp314-win_amd64.whl", hash = "sha256:d511b3153e7011a27ab6ee6bb3a5404a55b994dc1a7322c0b87b29606d9790e2"},
-    {file = "google_crc32c-1.8.0-cp39-cp39-macosx_12_0_arm64.whl", hash = "sha256:ba6aba18daf4d36ad4412feede6221414692f44d17e5428bdd81ad3fc1eee5dc"},
-    {file = "google_crc32c-1.8.0-cp39-cp39-macosx_12_0_x86_64.whl", hash = "sha256:87b0072c4ecc9505cfa16ee734b00cd7721d20a0f595be4d40d3d21b41f65ae2"},
-    {file = "google_crc32c-1.8.0-cp39-cp39-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:3d488e98b18809f5e322978d4506373599c0c13e6c5ad13e53bb44758e18d215"},
-    {file = "google_crc32c-1.8.0-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:01f126a5cfddc378290de52095e2c7052be2ba7656a9f0caf4bcd1bfb1833f8a"},
-    {file = "google_crc32c-1.8.0-cp39-cp39-win_amd64.whl", hash = "sha256:61f58b28e0b21fcb249a8247ad0db2e64114e201e2e9b4200af020f3b6242c9f"},
-    {file = "google_crc32c-1.8.0-pp311-pypy311_pp73-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:87fa445064e7db928226b2e6f0d5304ab4cd0339e664a4e9a25029f384d9bb93"},
-    {file = "google_crc32c-1.8.0-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f639065ea2042d5c034bf258a9f085eaa7af0cd250667c0635a3118e8f92c69c"},
-    {file = "google_crc32c-1.8.0.tar.gz", hash = "sha256:a428e25fb7691024de47fecfbff7ff957214da51eddded0da0ae0e0f03a2cf79"},
-]
-
-[[package]]
-name = "google-resumable-media"
-version = "2.10.0"
-description = "Utilities for Google Media Downloads and Resumable Uploads"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "google_resumable_media-2.10.0-py3-none-any.whl", hash = "sha256:88152884bee37b2bf36a0ab81ad8c7fd12212c9803dd981d77c1b35b02d34e7c"},
-    {file = "google_resumable_media-2.10.0.tar.gz", hash = "sha256:e324bc9d0fdae4c52a08ae90456edc4e71ece858399e1217ac0eb3a51d6bc6ee"},
-]
-
-[package.dependencies]
-google-crc32c = ">=1.0.0,<2.0.0"
-
-[package.extras]
-aiohttp = ["aiohttp (>=3.6.2,<4.0.0)", "google-auth (>=1.22.0,<2.0.0)"]
-requests = ["requests (>=2.18.0,<3.0.0)"]
-
-[[package]]
-name = "googleapis-common-protos"
-version = "1.75.0"
-description = "Common protobufs used in Google APIs"
-optional = false
-python-versions = ">=3.9"
-files = [
-    {file = "googleapis_common_protos-1.75.0-py3-none-any.whl", hash = "sha256:961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"},
-    {file = "googleapis_common_protos-1.75.0.tar.gz", hash = "sha256:53a062ff3c32552fbd62c11fe23768b78e4ddf0494d5e5fd97d3f4689c75fbbd"},
-]
-
-[package.dependencies]
-protobuf = ">=4.25.8,<8.0.0"
-
-[package.extras]
-grpc = ["grpcio (>=1.44.0,<2.0.0)"]
 
 [[package]]
 name = "greenlet"
@@ -1707,7 +1465,7 @@ files = [
 name = "invoke"
 version = "3.0.3"
 description = "Pythonic task execution"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "invoke-3.0.3-py3-none-any.whl", hash = "sha256:f11327165e5cbb89b2ad1d88d3292b5113332c43b8553b494da435d6ec6f5053"},
@@ -1718,7 +1476,7 @@ files = [
 name = "ipykernel"
 version = "7.3.0"
 description = "IPython Kernel for Jupyter"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "ipykernel-7.3.0-py3-none-any.whl", hash = "sha256:897eb64da762549ef610698fca5e9675195ec6ac8ec7f19d81ce1ca20c876057"},
@@ -1751,7 +1509,7 @@ test = ["flaky", "ipyparallel", "pre-commit", "pytest (>=7.0,<10)", "pytest-asyn
 name = "ipython"
 version = "9.15.0"
 description = "IPython: Productive Interactive Computing"
-optional = false
+optional = true
 python-versions = ">=3.11"
 files = [
     {file = "ipython-9.15.0-py3-none-any.whl", hash = "sha256:515ad9c3cdf0c932a5a9f6245419e8aba706b7bd03c3e1d3a1c83d9351d6aa6e"},
@@ -1783,7 +1541,7 @@ test-extra = ["curio", "ipykernel (>6.30)", "ipython[matplotlib]", "ipython[test
 name = "ipython-pygments-lexers"
 version = "1.1.1"
 description = "Defines a variety of Pygments lexers for highlighting IPython code."
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "ipython_pygments_lexers-1.1.1-py3-none-any.whl", hash = "sha256:a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c"},
@@ -1856,7 +1614,7 @@ type = ["pytest-mypy (>=1.0.1)"]
 name = "jedi"
 version = "0.20.0"
 description = "An autocompletion tool for Python that can be used for text editors."
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "jedi-0.20.0-py2.py3-none-any.whl", hash = "sha256:7bdd9c2634f56713299976f4cbd59cb3fa92165cc5e05ea811fb253480728b67"},
@@ -1901,17 +1659,6 @@ MarkupSafe = ">=2.0"
 
 [package.extras]
 i18n = ["Babel (>=2.7)"]
-
-[[package]]
-name = "jmespath"
-version = "1.1.0"
-description = "JSON Matching Expressions"
-optional = false
-python-versions = ">=3.9"
-files = [
-    {file = "jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64"},
-    {file = "jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d"},
-]
 
 [[package]]
 name = "joblib"
@@ -2011,7 +1758,7 @@ referencing = ">=0.31.0"
 name = "jupyter-client"
 version = "8.9.1"
 description = "Jupyter protocol implementation and client libraries"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "jupyter_client-8.9.1-py3-none-any.whl", hash = "sha256:0b7a295bc46e8751e9adae84781f726c851c1d911bd793edc4a3bde942e3da81"},
@@ -2035,7 +1782,7 @@ test = ["anyio", "coverage", "ipykernel (>=6.14)", "msgpack", "mypy", "paramiko"
 name = "jupyter-core"
 version = "5.9.1"
 description = "Jupyter core package. A base package on which Jupyter projects rely."
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "jupyter_core-5.9.1-py3-none-any.whl", hash = "sha256:ebf87fdc6073d142e114c72c9e29a9d7ca03fad818c5d300ce2adc1fb0743407"},
@@ -2054,7 +1801,7 @@ test = ["ipykernel", "pre-commit", "pytest (<9)", "pytest-cov", "pytest-timeout"
 name = "jupyterlab-pygments"
 version = "0.3.0"
 description = "Pygments theme using JupyterLab CSS variables"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "jupyterlab_pygments-0.3.0-py3-none-any.whl", hash = "sha256:841a89020971da1d8693f1a99997aefc5dc424bb1b251fd6322462a1b8842780"},
@@ -2093,7 +1840,7 @@ type = ["pygobject-stubs", "pytest-mypy (>=1.0.1)", "shtab", "types-pywin32"]
 name = "kiwisolver"
 version = "1.5.0"
 description = "A fast implementation of the Cassowary constraint solver"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "kiwisolver-1.5.0-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:32cc0a5365239a6ea0c6ed461e8838d053b57e397443c0ca894dcc8e388d4374"},
@@ -2216,32 +1963,6 @@ files = [
 ]
 
 [[package]]
-name = "kubernetes"
-version = "34.1.0"
-description = "Kubernetes python client"
-optional = false
-python-versions = ">=3.6"
-files = [
-    {file = "kubernetes-34.1.0-py2.py3-none-any.whl", hash = "sha256:bffba2272534e224e6a7a74d582deb0b545b7c9879d2cd9e4aae9481d1f2cc2a"},
-    {file = "kubernetes-34.1.0.tar.gz", hash = "sha256:8fe8edb0b5d290a2f3ac06596b23f87c658977d46b5f8df9d0f4ea83d0003912"},
-]
-
-[package.dependencies]
-certifi = ">=14.05.14"
-durationpy = ">=0.7"
-google-auth = ">=1.0.1"
-python-dateutil = ">=2.5.3"
-pyyaml = ">=5.4.1"
-requests = "*"
-requests-oauthlib = "*"
-six = ">=1.9.0"
-urllib3 = ">=1.24.2,<2.4.0"
-websocket-client = ">=0.32.0,<0.40.0 || >0.40.0,<0.41.dev0 || >=0.43.dev0"
-
-[package.extras]
-adal = ["adal (>=1.0.2)"]
-
-[[package]]
 name = "llvmlite"
 version = "0.48.0"
 description = "lightweight wrapper around basic LLVM functionality"
@@ -2279,7 +2000,7 @@ files = [
 name = "lxml"
 version = "6.1.1"
 description = "Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API."
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "lxml-6.1.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:09dd5b7075dc2f7709654a46543ba1ea3c2e217b2ed8fbd413a8a945a0f40f60"},
@@ -2428,7 +2149,7 @@ htmlsoup = ["BeautifulSoup4"]
 name = "lxml-html-clean"
 version = "0.1.1"
 description = "HTML cleaner from lxml project"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "lxml_html_clean-0.1.1-py3-none-any.whl", hash = "sha256:58c04176593c9caf72ec92e033d2f38859e918b3eff0cc0f8051ad27dc2ab8ef"},
@@ -2582,7 +2303,7 @@ files = [
 name = "matplotlib"
 version = "3.11.0"
 description = "Python plotting package"
-optional = false
+optional = true
 python-versions = ">=3.11"
 files = [
     {file = "matplotlib-3.11.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:f857524b442f0f36e641868ce2171aafa88cb0bc0644f4e1d8a5df9b32649fef"},
@@ -2648,7 +2369,7 @@ python-dateutil = ">=2.7"
 name = "matplotlib-inline"
 version = "0.2.2"
 description = "Inline Matplotlib backend for Jupyter"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "matplotlib_inline-0.2.2-py3-none-any.whl", hash = "sha256:3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6"},
@@ -2708,7 +2429,7 @@ files = [
 name = "mistune"
 version = "3.3.3"
 description = "A sane and fast Markdown parser with useful plugins and renderers"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "mistune-3.3.3-py3-none-any.whl", hash = "sha256:99de1585e42dcbd826faa9e11a202727a5e202e4e4722a4c69ac1ff615793dd7"},
@@ -2755,7 +2476,7 @@ sqlframe = ["sqlframe (>=3.22.0,!=3.39.3)"]
 name = "nbclient"
 version = "0.11.0"
 description = "A client library for executing notebooks. Formerly nbconvert's ExecutePreprocessor."
-optional = false
+optional = true
 python-versions = ">=3.10.0"
 files = [
     {file = "nbclient-0.11.0-py3-none-any.whl", hash = "sha256:ef7fa0d59d6e1d41103933d8a445a18d5de860ca6b613b87b8574accdb3c2895"},
@@ -2777,7 +2498,7 @@ test = ["flaky", "ipykernel (>=6.19.3)", "ipython", "ipywidgets", "nbconvert (>=
 name = "nbconvert"
 version = "7.17.1"
 description = "Convert Jupyter Notebooks (.ipynb files) to other formats."
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "nbconvert-7.17.1-py3-none-any.whl", hash = "sha256:aa85c087b435e7bf1ffd03319f658e285f2b89eccab33bc1ba7025495ab3e7c8"},
@@ -2813,7 +2534,7 @@ webpdf = ["playwright"]
 name = "nbformat"
 version = "5.10.4"
 description = "The Jupyter Notebook format"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "nbformat-5.10.4-py3-none-any.whl", hash = "sha256:3b48d6c8fbca4b299bf3982ea7db1af21580e4fec269ad087b9e81588891200b"},
@@ -2834,7 +2555,7 @@ test = ["pep440", "pre-commit", "pytest", "testpath"]
 name = "nest-asyncio2"
 version = "1.7.2"
 description = "Patch asyncio to allow nested event loops"
-optional = false
+optional = true
 python-versions = ">=3.5"
 files = [
     {file = "nest_asyncio2-1.7.2-py3-none-any.whl", hash = "sha256:f5dfa702f3f81f6a03857e9a19e2ba578c0946a4ad417b4c50a24d7ba641fe01"},
@@ -2941,22 +2662,6 @@ numpy = "*"
 [package.extras]
 dev = ["numba", "pandas", "pytest"]
 fast = ["numba"]
-
-[[package]]
-name = "oauthlib"
-version = "3.3.1"
-description = "A generic, spec-compliant, thorough implementation of the OAuth request-signing logic"
-optional = false
-python-versions = ">=3.8"
-files = [
-    {file = "oauthlib-3.3.1-py3-none-any.whl", hash = "sha256:88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
-    {file = "oauthlib-3.3.1.tar.gz", hash = "sha256:0f0f8aa759826a193cf66c12ea1af1637f87b9b4622d46e866952bb022e538c9"},
-]
-
-[package.extras]
-rsa = ["cryptography (>=3.0.0)"]
-signals = ["blinker (>=1.4.0)"]
-signedtoken = ["cryptography (>=3.0.0)", "pyjwt (>=2.0.0,<3)"]
 
 [[package]]
 name = "openapi-pydantic"
@@ -3120,7 +2825,7 @@ xml = ["lxml (>=4.9.2)"]
 name = "pandocfilters"
 version = "1.5.1"
 description = "Utilities for writing pandoc filters in python"
-optional = false
+optional = true
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
 files = [
     {file = "pandocfilters-1.5.1-py2.py3-none-any.whl", hash = "sha256:93be382804a9cdb0a7267585f157e5d1731bbe5545a85b268d6f5fe6232de2bc"},
@@ -3131,7 +2836,7 @@ files = [
 name = "paramiko"
 version = "4.0.0"
 description = "SSH2 protocol library"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "paramiko-4.0.0-py3-none-any.whl", hash = "sha256:0e20e00ac666503bf0b4eda3b6d833465a2b7aff2e2b3d79a8bba5ef144ee3b9"},
@@ -3151,7 +2856,7 @@ gssapi = ["gssapi (>=1.4.1)", "pyasn1 (>=0.1.7)", "pywin32 (>=2.1.8)"]
 name = "parso"
 version = "0.8.7"
 description = "A Python Parser"
-optional = false
+optional = true
 python-versions = ">=3.6"
 files = [
     {file = "parso-0.8.7-py2.py3-none-any.whl", hash = "sha256:a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c"},
@@ -3177,7 +2882,7 @@ files = [
 name = "pexpect"
 version = "4.9.0"
 description = "Pexpect allows easy control of interactive console applications."
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523"},
@@ -3191,7 +2896,7 @@ ptyprocess = ">=0.5"
 name = "pillow"
 version = "12.3.0"
 description = "Python Imaging Library (fork)"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "pillow-12.3.0-cp310-cp310-macosx_10_10_x86_64.whl", hash = "sha256:6c0016e7b354317c4e9e525b937ac8596c38d2d232b419529b9cd7a1cd46e39a"},
@@ -3321,7 +3026,7 @@ testing = ["coverage", "pytest", "pytest-benchmark"]
 name = "prompt-toolkit"
 version = "3.0.52"
 description = "Library for building powerful interactive command lines in Python"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "prompt_toolkit-3.0.52-py3-none-any.whl", hash = "sha256:9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955"},
@@ -3330,40 +3035,6 @@ files = [
 
 [package.dependencies]
 wcwidth = "*"
-
-[[package]]
-name = "proto-plus"
-version = "1.28.1"
-description = "Beautiful, Pythonic protocol buffers"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "proto_plus-1.28.1-py3-none-any.whl", hash = "sha256:6660f5f1970874bdcfc3088b435188a36a37bd3596668f7d726417c4ae8cfbed"},
-    {file = "proto_plus-1.28.1.tar.gz", hash = "sha256:832e68e7fe064cf90ab153b6e5eb935b27891bb89aaeb68b115e9b702f6cb168"},
-]
-
-[package.dependencies]
-protobuf = ">=4.25.8,<8.0.0"
-
-[package.extras]
-testing = ["google-api-core (>=1.31.5)"]
-
-[[package]]
-name = "protobuf"
-version = "7.35.1"
-description = ""
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl", hash = "sha256:24f857477359a85c0c235261b8ba905fd51b2562f4a64ca1df5473f29850cbf6"},
-    {file = "protobuf-7.35.1-cp310-abi3-manylinux2014_aarch64.whl", hash = "sha256:11d6b0ec246892d85215b0a13ca6e0233cf5284b68f0ac02646427f4ff88a799"},
-    {file = "protobuf-7.35.1-cp310-abi3-manylinux2014_s390x.whl", hash = "sha256:b73f9489a4b8b1c9cb1f8ed951c736392592edb24b9d6819f36d2e10b171d5b4"},
-    {file = "protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl", hash = "sha256:74758715c53d7158fb76caf4f0cfdacc5329a4b1bb994f865d6cf302d413a1c4"},
-    {file = "protobuf-7.35.1-cp310-abi3-win32.whl", hash = "sha256:353652e4efd0bca5b5fc2656abf8307ef351f0cf938c9eba09f0e09c20a25c30"},
-    {file = "protobuf-7.35.1-cp310-abi3-win_amd64.whl", hash = "sha256:230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87"},
-    {file = "protobuf-7.35.1-py3-none-any.whl", hash = "sha256:4bc97768d8fe4ad6743c8a19403e314511ed9f6d13205b687e52421c023ac1b9"},
-    {file = "protobuf-7.35.1.tar.gz", hash = "sha256:ce115a26fe0c39a2c29973d914d327e516a6455464489fe3cd1e51a1b354f81a"},
-]
 
 [[package]]
 name = "psutil"
@@ -3403,7 +3074,7 @@ test = ["psleak", "pytest", "pytest-instafail", "pytest-xdist", "pywin32", "setu
 name = "ptyprocess"
 version = "0.7.0"
 description = "Run a subprocess in a pseudo terminal"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "ptyprocess-0.7.0-py2.py3-none-any.whl", hash = "sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35"},
@@ -3414,7 +3085,7 @@ files = [
 name = "pure-eval"
 version = "0.2.3"
 description = "Safely evaluate AST nodes without side effects"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "pure_eval-0.2.3-py3-none-any.whl", hash = "sha256:1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0"},
@@ -3482,31 +3153,6 @@ files = [
 
 [package.dependencies]
 pydot = ">=1.4"
-
-[[package]]
-name = "pyasn1"
-version = "0.6.4"
-description = "Pure-Python implementation of ASN.1 types and DER/BER/CER codecs (X.208)"
-optional = false
-python-versions = ">=3.8"
-files = [
-    {file = "pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b"},
-    {file = "pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81"},
-]
-
-[[package]]
-name = "pyasn1-modules"
-version = "0.4.2"
-description = "A collection of ASN.1-based protocols modules"
-optional = false
-python-versions = ">=3.8"
-files = [
-    {file = "pyasn1_modules-0.4.2-py3-none-any.whl", hash = "sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a"},
-    {file = "pyasn1_modules-0.4.2.tar.gz", hash = "sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6"},
-]
-
-[package.dependencies]
-pyasn1 = ">=0.6.1,<0.7.0"
 
 [[package]]
 name = "pycparser"
@@ -3765,7 +3411,7 @@ crypto = ["cryptography (>=3.4.0)"]
 name = "pyld"
 version = "2.0.4"
 description = "Python implementation of the JSON-LD API"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "PyLD-2.0.4-py3-none-any.whl", hash = "sha256:6dab9905644616df33f8755489fc9b354ed7d832d387b7d1974b4fbd3b8d2a89"},
@@ -3787,7 +3433,7 @@ requests = ["requests"]
 name = "pynacl"
 version = "1.6.2"
 description = "Python binding to the Networking and Cryptography (NaCl) library"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "pynacl-1.6.2-cp314-cp314t-macosx_10_10_universal2.whl", hash = "sha256:622d7b07cc5c02c666795792931b50c91f3ce3c2649762efb1ef0d5684c81594"},
@@ -4060,7 +3706,7 @@ files = [
 name = "pyzmq"
 version = "27.1.0"
 description = "Python bindings for 0MQ"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "pyzmq-27.1.0-cp310-cp310-macosx_10_15_universal2.whl", hash = "sha256:508e23ec9bc44c0005c4946ea013d9317ae00ac67778bd47519fdf5a0e930ff4"},
@@ -4164,7 +3810,7 @@ cffi = {version = "*", markers = "implementation_name == \"pypy\""}
 name = "rdflib"
 version = "7.6.0"
 description = "RDFLib is a Python library for working with RDF, a simple yet powerful language for representing information."
-optional = false
+optional = true
 python-versions = ">=3.8.1"
 files = [
     {file = "rdflib-7.6.0-py3-none-any.whl", hash = "sha256:30c0a3ebf4c0e09215f066be7246794b6492e054e782d7ac2a34c9f70a15e0dd"},
@@ -4219,24 +3865,6 @@ urllib3 = ">=1.26,<3"
 [package.extras]
 socks = ["PySocks (>=1.5.6,!=1.5.7)"]
 use-chardet-on-py3 = ["chardet (>=3.0.2,<8)"]
-
-[[package]]
-name = "requests-oauthlib"
-version = "2.0.0"
-description = "OAuthlib authentication support for Requests."
-optional = false
-python-versions = ">=3.4"
-files = [
-    {file = "requests-oauthlib-2.0.0.tar.gz", hash = "sha256:b3dffaebd884d8cd778494369603a9e7b58d29111bf6b41bdc2dcd87203af4e9"},
-    {file = "requests_oauthlib-2.0.0-py2.py3-none-any.whl", hash = "sha256:7dd8a5c40426b779b0868c404bdef9768deccf22749cde15852df527e6269b36"},
-]
-
-[package.dependencies]
-oauthlib = ">=3.0.0"
-requests = ">=2.0.0"
-
-[package.extras]
-rsa = ["oauthlib[signedtoken] (>=3.0.0)"]
 
 [[package]]
 name = "ribs"
@@ -4313,6 +3941,7 @@ files = []
 develop = false
 
 [package.dependencies]
+matplotlib = "^3.10"
 numpy = "^1.26"
 Pillow = "^12.0"
 pyside6-essentials = "^6.6"
@@ -4469,7 +4098,7 @@ files = [
 name = "ruamel-yaml"
 version = "0.18.17"
 description = "ruamel.yaml is a YAML parser/emitter that supports roundtrip preservation of comments, seq/map flow style, and map key order"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "ruamel_yaml-0.18.17-py3-none-any.whl", hash = "sha256:9c8ba9eb3e793efdf924b60d521820869d5bf0cb9c6f1b82d82de8295e290b9d"},
@@ -4487,7 +4116,7 @@ jinja2 = ["ruamel.yaml.jinja2 (>=0.2)"]
 name = "ruamel-yaml-clib"
 version = "0.2.15"
 description = "C version of reader, parser and emitter for ruamel.yaml derived from libyaml"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "ruamel_yaml_clib-0.2.15-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:88eea8baf72f0ccf232c22124d122a7f26e8a24110a0273d9bcddcb0f7e1fa03"},
@@ -4552,23 +4181,6 @@ files = [
     {file = "ruamel_yaml_clib-0.2.15-cp39-cp39-win_amd64.whl", hash = "sha256:27dc656e84396e6d687f97c6e65fb284d100483628f02d95464fd731743a4afe"},
     {file = "ruamel_yaml_clib-0.2.15.tar.gz", hash = "sha256:46e4cc8c43ef6a94885f72512094e482114a8a706d3c555a34ed4b0d20200600"},
 ]
-
-[[package]]
-name = "s3transfer"
-version = "0.19.1"
-description = "An Amazon S3 Transfer Manager"
-optional = false
-python-versions = ">=3.10"
-files = [
-    {file = "s3transfer-0.19.1-py3-none-any.whl", hash = "sha256:d5fd7005ee39307455ad5f310b5ea67f4b1960d7fed5b3671ee50c249de675de"},
-    {file = "s3transfer-0.19.1.tar.gz", hash = "sha256:d3d6371dc3f1e5c5427b2b457bcf13bcf87bec334c95aed18642eae61f6926f3"},
-]
-
-[package.dependencies]
-botocore = ">=1.37.4,<2.0a.0"
-
-[package.extras]
-crt = ["botocore[crt] (>=1.37.4,<2.0a.0)"]
 
 [[package]]
 name = "scenario-execution"
@@ -4647,7 +4259,7 @@ tests = ["matplotlib (>=3.6.1)", "mypy (>=1.15)", "numpydoc (>=1.2.0)", "pandas 
 name = "scipy"
 version = "1.17.1"
 description = "Fundamental algorithms for scientific computing in Python"
-optional = false
+optional = true
 python-versions = ">=3.11"
 files = [
     {file = "scipy-1.17.1-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:1f95b894f13729334fb990162e911c9e5dc1ab390c58aa6cbecb389c5b5e28ec"},
@@ -4880,7 +4492,7 @@ files = [
 name = "soupsieve"
 version = "2.8.4"
 description = "A modern CSS selector implementation for Beautiful Soup."
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "soupsieve-2.8.4-py3-none-any.whl", hash = "sha256:e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65"},
@@ -5205,7 +4817,7 @@ uvicorn = ["uvicorn (>=0.34.0)"]
 name = "stack-data"
 version = "0.6.3"
 description = "Extract data from python stack frames and tracebacks for informative displays"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695"},
@@ -5253,7 +4865,7 @@ files = [
 name = "tinycss2"
 version = "1.5.1"
 description = "A tiny CSS parser"
-optional = false
+optional = true
 python-versions = ">=3.10"
 files = [
     {file = "tinycss2-1.5.1-py3-none-any.whl", hash = "sha256:3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661"},
@@ -5271,7 +4883,7 @@ test = ["pytest", "ruff"]
 name = "tornado"
 version = "6.5.7"
 description = "Tornado is a Python web framework and asynchronous networking library, originally developed at FriendFeed."
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "tornado-6.5.7-cp39-abi3-macosx_10_9_universal2.whl", hash = "sha256:148b2eb15c2c765a50796172c1e499649b35f30d2e3c3d3e15913cfa56bfb163"},
@@ -5310,7 +4922,7 @@ telegram = ["envwrap", "requests"]
 name = "traitlets"
 version = "5.15.1"
 description = "Traitlets Python configuration system"
-optional = false
+optional = true
 python-versions = ">=3.9"
 files = [
     {file = "traitlets-5.15.1-py3-none-any.whl", hash = "sha256:770a53705f84b81ac107e83a1b3328ff2dae16094d8fc3cfc004e4b22dfd8e92"},
@@ -5526,7 +5138,7 @@ anyio = ">=3.0.0"
 name = "wcwidth"
 version = "0.8.2"
 description = "Measures the displayed width of unicode strings in a terminal"
-optional = false
+optional = true
 python-versions = ">=3.8"
 files = [
     {file = "wcwidth-0.8.2-py3-none-any.whl", hash = "sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85"},
@@ -5537,28 +5149,12 @@ files = [
 name = "webencodings"
 version = "0.5.1"
 description = "Character encoding aliases for legacy web content"
-optional = false
+optional = true
 python-versions = "*"
 files = [
     {file = "webencodings-0.5.1-py2.py3-none-any.whl", hash = "sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78"},
     {file = "webencodings-0.5.1.tar.gz", hash = "sha256:b36a1c245f2d304965eb4e0a82848379241dc04b865afcc4aab16748587e1923"},
 ]
-
-[[package]]
-name = "websocket-client"
-version = "1.9.0"
-description = "WebSocket client for Python with low level API options"
-optional = false
-python-versions = ">=3.9"
-files = [
-    {file = "websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef"},
-    {file = "websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98"},
-]
-
-[package.extras]
-docs = ["Sphinx (>=6.0)", "myst-parser (>=2.0.0)", "sphinx_rtd_theme (>=1.1.0)"]
-optional = ["python-socks", "wsaccel"]
-test = ["pytest", "websockets"]
 
 [[package]]
 name = "websockets"
@@ -5679,15 +5275,19 @@ files = [
 ]
 
 [extras]
+analysis = ["matplotlib", "scipy"]
 docs = ["sphinx", "sphinx-click", "sphinx-rtd-theme", "sphinxcontrib-spelling"]
-gui = ["pyside6-addons", "pyside6-essentials"]
+fair = ["pyld", "rdflib"]
+gui = ["pyside6-addons", "pyside6-essentials", "ruamel-yaml"]
 nav = ["robovast-nav"]
+notebooks = ["ipykernel", "lxml-html-clean", "nbconvert", "nbformat"]
 optuna = ["optuna"]
 qd = ["ribs", "shapely"]
 roqsim = ["robovast-sim-roqsim"]
+sftp = ["paramiko"]
 test = ["optuna", "pytest", "ribs", "shapely"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "401bf6bbc086d2eb6dec275f423402bac5eb20d6f18f9d620b0d1f313f51d151"
+content-hash = "5363b7f8acb9bee2cbbc4f7ef776c2a645690b05b6739b5ebe7252102604de1a"
