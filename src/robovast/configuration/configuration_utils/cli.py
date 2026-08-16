@@ -28,7 +28,8 @@ import yaml
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations,
                              get_scenario_parameters, prepare_campaign_configs)
-from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import get_project_config
 
 
 @click.group()

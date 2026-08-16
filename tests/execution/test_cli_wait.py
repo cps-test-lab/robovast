@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from robovast.client.status import Phase, Status
-from robovast.execution.execution_utils import cli as exec_cli
+from robovast.client import cli as client_cli
 
 
 @pytest.fixture
@@ -36,13 +36,13 @@ def service(monkeypatch):
         def _client(*_a, **_k):
             yield _Client(), "fake service"
 
-        monkeypatch.setattr(exec_cli, "service_client", _client)
+        monkeypatch.setattr(client_cli, "service_client", _client)
         return seen
     return _install
 
 
 def _run(campaign="c1", *args):
-    return CliRunner().invoke(exec_cli.execution,
+    return CliRunner().invoke(client_cli.cli,
                               ["wait", campaign, "--interval", "0.01", *args])
 
 

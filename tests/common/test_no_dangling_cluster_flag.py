@@ -22,7 +22,7 @@ import contextlib
 import pytest
 from click.testing import CliRunner
 
-from robovast.common.cli import cli as root_cli
+from robovast.client import cli as root_cli
 from robovast.execution.execution_utils import cli as exec_cli
 
 

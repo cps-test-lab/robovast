@@ -14,7 +14,7 @@ half is *not* working, deploying is the likely intent and they stay fatal.
 
 import pytest
 
-from robovast.common.cli import doctor as doc
+from robovast.client import doctor as doc
 
 
 @pytest.fixture

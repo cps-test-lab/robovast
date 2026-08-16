@@ -17,7 +17,7 @@
 """Loading the project ``.env``.
 
 Read **once per ``vast`` invocation**, by the CLI group callback before any command runs
-(:func:`robovast.common.cli.cli.cli`), so every variable in the file is simply part of
+(:func:`robovast.client.cli.cli`), so every variable in the file is simply part of
 the environment — no command needs to know that a value came from a ``.env``, and none
 can forget to look. Per-command loaders drifted: a value resolved *before* the load
 ignored the file.

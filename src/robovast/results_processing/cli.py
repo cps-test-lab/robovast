@@ -28,7 +28,8 @@ import click
 import yaml
 
 from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
-from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import get_project_config
 from robovast.client.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.merge_results import merge_results

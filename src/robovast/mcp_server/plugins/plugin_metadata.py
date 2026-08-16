@@ -53,7 +53,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
             "CLI sub-commands exposed under the ``vast`` entry point "
             "(e.g. ``vast execution``, ``vast results``)."
         ),
-        "loader_module": "robovast.common.cli.cli",
+        "loader_module": "robovast.client.cli",
     },
     "robovast.cluster_configs": {
         "description": (

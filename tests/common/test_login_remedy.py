@@ -17,7 +17,7 @@ Observed live against ``https://robovast.example.org`` before its certificate ex
 import pytest
 import requests
 
-from robovast.common.cli.cli import _login_remedy
+from robovast.client.cli import _login_remedy
 
 #: The real exception `requests` raises, reproduced verbatim from the live run.
 TLS_FAILURE = requests.exceptions.SSLError(

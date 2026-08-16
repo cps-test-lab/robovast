@@ -9,7 +9,7 @@ end its turn mid-campaign.
 They are answered differently on purpose. A build takes minutes and always has work
 behind it in the same turn, so blocking inside the tool costs nothing. A campaign can run
 for days, and blocking there would occupy the caller for the whole of it — so the campaign
-wait is a shell command (``vast exec wait``, tested in ``tests/execution/test_cli_wait``)
+wait is a shell command (``vast wait``, tested in ``tests/execution/test_cli_wait``)
 that a harness can background and be notified about. Same poll loop underneath; only who
 holds the wait differs.
 """
@@ -51,5 +51,5 @@ def test_starting_a_campaign_hands_back_the_command_that_waits_for_it(monkeypatc
     tool call would occupy the caller for as long as the campaign runs.
     """
     step = execution._wait_next_step("camp-1")
-    assert "vast exec wait camp-1" in step
+    assert "vast wait camp-1" in step
     assert "background" in step

@@ -1105,6 +1105,12 @@ API_VERSION = "0"
 #: is one edit away from a client probing a port nothing listens on.
 DEFAULT_PORT = 8800
 
+#: The wall-clock cap on one ``exec_in_container`` command; anything needing longer wants
+#: a campaign. Part of the wire contract, not an implementation detail of either side: the
+#: server enforces it and the client sizes its read timeout by it, so a client install --
+#: which has no server -- still has to know the number.
+COMMAND_LIMIT_S = 300
+
 
 class Routes:
     """Canonical HTTP paths — shared by the service app and the HTTP client so

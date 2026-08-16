@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from robovast.common.cli import doctor
+from robovast.client import doctor
 
 
 def test_a_current_python_passes():

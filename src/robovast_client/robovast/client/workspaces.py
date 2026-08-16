@@ -4,17 +4,18 @@
 """The half of the workspace vocabulary a client needs.
 
 :mod:`robovast.service.workspaces` is the server side -- the registry, the store, the
-upload tokens -- and it is not something a client ever constructs. These two are, and
-they are why the module had to be split rather than moved: a client pushing a directory
-must agree with the service about which files are part of a project, and must know where
-a local service keeps its workspaces.
+upload tokens -- and it is not something a client ever constructs. ``is_skipped`` is, and
+it is why the module had to be split rather than moved: a client pushing a directory must
+agree with the service about which files are part of a project.
 
-Both are **one definition, deliberately**. ``is_skipped`` in particular is shared by the
-listing and the push, because a listing and a push that disagree make ``prune`` delete
-files it would not restore.
+Where a *local service* keeps its workspaces is deliberately **not** here. That is
+``ROBOVAST_WORKSPACES_ROOT``, it describes a service this install does not have, and a
+client that knows it has learned something it cannot use.
+
+**One definition, deliberately**: it is shared by the listing and the push, because a
+listing and a push that disagree make ``prune`` delete files it would not restore.
 """
 
-import os
 from pathlib import Path
 
 #: Dir names hidden from a *pinned* (read-only) workspace listing / .vast lookup --
@@ -31,11 +32,3 @@ def is_skipped(rel_path, skip_dirs=frozenset()) -> bool:
     """
     parts = rel_path.split("/") if isinstance(rel_path, str) else Path(rel_path).parts
     return any(p.startswith(".") or p in skip_dirs for p in parts)
-
-
-def default_workspaces_root() -> Path:
-    """Root for workspace storage (``ROBOVAST_WORKSPACES_ROOT`` or ``~/.robovast``)."""
-    env = os.environ.get("ROBOVAST_WORKSPACES_ROOT")
-    if env:
-        return Path(env)
-    return Path.home() / ".robovast" / "workspaces"

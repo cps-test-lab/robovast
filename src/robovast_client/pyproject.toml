@@ -25,6 +25,12 @@ pydantic = "^2.12"
 click = "^8.1"
 requests = "^2.31"
 
+# The `vast` command itself. It lives here because every audience has one: the core, the
+# execution lanes and the operator commands all attach their verbs to this group through
+# `robovast.cli_plugins`.
+[tool.poetry.scripts]
+vast = "robovast.client.cli:main"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

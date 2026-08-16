@@ -2407,7 +2407,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
-            from robovast.common.logging_config import (add_campaign_log_handler,
+            from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             campaign_root = self.fetch_campaign(request.campaign_id, force=True)
             # A SHARE phase file, same as the local lane, and written *before*

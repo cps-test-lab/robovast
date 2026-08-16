@@ -52,8 +52,10 @@ POD_LABEL = "app=robovast-exec"
 #: ``set -e`` before anything else — and that somewhere must not be ``/out``.
 OUTPUT_DIR = "/tmp/robovast-exec"
 
-#: A command gets a fixed cap; anything needing longer wants a campaign.
-COMMAND_LIMIT_S = 300
+#: A command gets a fixed cap; anything needing longer wants a campaign. Defined with the
+#: address space in ``service/interface.py``, because a client sizes its read timeout by
+#: the same number and must not import the server to learn it.
+from robovast.service.interface import COMMAND_LIMIT_S
 #: Used when a scenario is asked for but the project sets no ``execution.timeout``. The
 #: cluster's 1-hour campaign fallback is deliberately not inherited: an hour of life for
 #: a diagnostic container is a leak, not a limit.

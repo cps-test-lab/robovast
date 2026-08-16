@@ -293,10 +293,9 @@ class HTTPTransport(RobovastInterface):
     # -- container exec -----------------------------------------------------
 
     def exec_in_container(self, request):
-        from robovast.service.interface import ExecResult
         # The read timeout must outlast the command's own limit, or a legitimately
         # long-running exec would surface as a transport failure rather than its result.
-        from robovast.service.container_exec import COMMAND_LIMIT_S
+        from robovast.service.interface import COMMAND_LIMIT_S, ExecResult
         return ExecResult.model_validate(
             self._post(Routes.EXEC, json=request.model_dump(),
                        timeout=COMMAND_LIMIT_S + 30))

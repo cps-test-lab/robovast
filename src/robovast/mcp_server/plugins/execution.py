@@ -135,7 +135,7 @@ def _wait_next_step(campaign_id: str) -> str:
     and be notified when it exits. Same poll loop either way (``execution.campaign_wait``);
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
-    return (f"run in the background: vast exec wait {campaign_id} --interval 10 "
+    return (f"run in the background: vast wait {campaign_id} --interval 10 "
             f"(exit 0 finished, 1 failed/stopped)")
 
 
@@ -242,7 +242,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
 def get_campaign_status(campaign_id: str) -> dict:
     """Is it progressing, is it wedged, and are there results? One read, no waiting.
 
-    To *wait* for a campaign, background ``vast exec wait <campaign_id>`` — it exits when
+    To *wait* for a campaign, background ``vast wait <campaign_id>`` — it exits when
     the campaign is genuinely over. This is a single look at one you are not waiting on.
 
     Two fields decide what to do next, and ``status`` is neither of them.

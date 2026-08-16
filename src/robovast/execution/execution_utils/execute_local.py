@@ -28,7 +28,7 @@ from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
                              get_execution_env_variables, load_config,
                              plan_containers, prepare_campaign_configs,
                              scenario_env)
-from robovast.common.cli import get_project_config
+from robovast.client.project_config import get_project_config
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
                                     declared_per_run_seconds)

@@ -196,7 +196,7 @@ The loop:
 5. `get_resource_usage` — does this lane have room, and is it reachable?
 6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
    then the full sweep. Always pass `description`.
-7. **Wait for it** — background `vast exec wait <campaign_id>`, the shell command
+7. **Wait for it** — background `vast wait <campaign_id>`, the shell command
    `start_campaign` hands back in `next_step`. It exits when the campaign is genuinely
    over (past postprocessing), so you stay free meanwhile instead of holding a tool call
    open for a run that may take days. `get_campaign_status` is the single-read version.

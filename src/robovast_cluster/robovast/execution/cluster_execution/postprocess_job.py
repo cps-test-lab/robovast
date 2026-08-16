@@ -196,7 +196,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                     campaign_id)
     import os  # noqa: PLC0415
 
-    from robovast.common.logging_config import (  # noqa: PLC0415
+    from robovast.client.logging_config import (  # noqa: PLC0415
         add_campaign_log_handler, remove_campaign_log_handler)
 
     # Append the pure-Python host stage's narrative to the same postprocessing.log

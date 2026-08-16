@@ -56,7 +56,7 @@ _cli_loaded = False
 def _root_group():
     """Return the root ``vast`` click group with plugin subcommands attached."""
     global _cli_loaded
-    from robovast.common.cli import cli as cli_module  # pylint: disable=import-outside-toplevel
+    from robovast.client import cli as cli_module  # pylint: disable=import-outside-toplevel
 
     if not _cli_loaded:
         try:

@@ -74,7 +74,7 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
             wait safe to retry rather than a partial failure to recover from.
     """
     if client is None:
-        from robovast.service.client import RobovastClient
+        from robovast.service.http_client import RobovastClient
         client = RobovastClient(service_url)
     deadline = None if timeout is None else (time.monotonic() + timeout)
     say = feedback or (lambda _msg: None)

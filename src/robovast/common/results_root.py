@@ -57,6 +57,6 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
     if project is not None and project.results_dir:
         return Path(project.results_dir)
     if workspaces_root is None:
-        from robovast.client.workspaces import default_workspaces_root
+        from robovast.service.workspaces import default_workspaces_root
         workspaces_root = default_workspaces_root()
     return Path(workspaces_root).parent / "results"

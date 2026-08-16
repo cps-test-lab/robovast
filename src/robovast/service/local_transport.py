@@ -1471,7 +1471,7 @@ class LocalTransport(RobovastInterface):
         Advances the phase ``... → postprocessing → finished`` and generates the
         campaign's ``data.db``; a failure surfaces via status (phase ``failed``).
         """
-        from robovast.common.logging_config import (
+        from robovast.client.logging_config import (
             add_campaign_log_handler, remove_campaign_log_handler)
         from robovast.results_processing.postprocessing import run_postprocessing
         # Capture the postprocessing narrative into its own phase file, which the
@@ -2107,7 +2107,7 @@ class LocalTransport(RobovastInterface):
         campaign_dir = self._campaign_dir(request.campaign_id)
 
         def work(state):
-            from robovast.common.logging_config import (add_campaign_log_handler,
+            from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             from robovast.execution.status_recovery import record_step_outcome
             from robovast.results_processing.postprocessing import run_postprocessing
@@ -2151,7 +2151,7 @@ class LocalTransport(RobovastInterface):
         campaign_dir = self._campaign_dir(request.campaign_id)
 
         def work(state):
-            from robovast.common.logging_config import (add_campaign_log_handler,
+            from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             from robovast.execution.backends import RunOptions
             from robovast.execution.status_recovery import record_step_outcome

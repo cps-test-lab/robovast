@@ -22,7 +22,8 @@ import time
 
 import click
 
-from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import get_project_config
 from robovast.client.project_config import get_vast_file_override
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import (detected_service_url,

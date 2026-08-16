@@ -25,7 +25,8 @@ import click
 
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.common.cli import get_project_config, handle_cli_exception
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import get_project_config
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
 from robovast.common.host_display import gui_by_default
@@ -437,64 +438,3 @@ def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
         return
     click.echo(f"stopped {result.target}" if result.stopped
                else "no exec container was running")
-
-
-@execution.command('wait')
-@click.argument('campaign')
-@click.option('--interval', default=5.0, show_default=True,
-              help='Seconds between status polls.')
-@click.option('--timeout', type=float, default=None,
-              help='Give up after this many seconds (default: wait indefinitely).')
-@target_options
-def wait(campaign, interval, timeout, namespace, context):  # noqa: F811
-    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 3 (no phase).
-
-    The lane-agnostic wait: the service drives every campaign, so its phase *is* the
-    campaign's whichever backend the runs execute on. Prints each phase change as it
-    happens and exits when the campaign reaches a terminal one — which now means past
-    postprocessing, not merely past the last run.
-
-    Exists so a *caller* can wait without holding a request open, and is why the MCP
-    offers no campaign-wait tool: an agent harness can background this command and be
-    notified when it exits, hours or days later, where a blocking tool call would occupy
-    the conversation for as long as the campaign ran — and still not outlive the session.
-    The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
-    shared with every other surface that waits.
-    """
-    from robovast.execution.campaign_wait import wait_for_campaign_status
-    from robovast.execution.control_server import Phase
-    try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            status = wait_for_campaign_status(
-                campaign, client=client, interval=interval, timeout=timeout,
-                feedback=click.echo)
-    except TimeoutError as e:
-        # Not a failure of the campaign, which is still running: the caller asked to stop
-        # waiting. A distinct exit code keeps the two apart for a script branching on it.
-        click.echo(str(e), err=True)
-        raise SystemExit(2) from e
-    except Exception as e:  # noqa: BLE001
-        handle_cli_exception(e)
-        return
-    click.echo(f"{campaign}: {status.phase}")
-    if status.phase == Phase.UNKNOWN:
-        # `unknown` is terminal, so the wait ends -- but it does not mean the campaign
-        # failed. The service has no phase for this id at all: either it is a typo, or the
-        # campaign died before it ever wrote to the store. Exiting 1 made both read as "the
-        # campaign ran and failed", sending the caller to look for a failure that never
-        # happened. A distinct code, because 0/1/2 are taken and a script branches on it.
-        click.echo(
-            f"{campaign}: the service knows no phase for this campaign — check the id, "
-            f"or see 'vast exec cluster log {campaign}' if it died before recording one.",
-            err=True)
-        raise SystemExit(3)
-    if status.error:
-        click.echo(f"{campaign}: {status.error}", err=True)
-    if status.postprocessing_error:
-        # A campaign whose runs passed but whose postprocessing failed still *finished*;
-        # saying only "finished" here would send the caller looking for CSVs that a
-        # successful exit code promised and nothing produced.
-        click.echo(f"{campaign}: postprocessing failed: {status.postprocessing_error}",
-                   err=True)
-    raise SystemExit(0 if status.phase == Phase.FINISHED else 1)

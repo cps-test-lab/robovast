@@ -81,7 +81,7 @@ def run_postprocessing(campaign_id: str, force: bool = False,
 
     **Dispatched in the background** — returns as soon as the run is started (it can take
     minutes to hours). The campaign enters the ``postprocessing`` phase; background
-    ``vast exec wait <campaign_id>`` until it is over, then read the outcome
+    ``vast wait <campaign_id>`` until it is over, then read the outcome
     (``postprocessed`` / ``postprocessing_error``). Reprocesses just this campaign (not its siblings), reading
     its own ``_config/<name>.vast``. Returns ``{ok, message}`` where *message* confirms
     the dispatch, or ``ok=false`` if an operation is already running for the campaign.
@@ -104,7 +104,7 @@ def run_share(campaign_id: str) -> dict:
     """(Re)trigger the upload-to-share of one finished campaign's raw archive.
 
     **Dispatched in the background** — returns as soon as the upload is started; the
-    campaign enters the ``sharing`` phase, so background ``vast exec wait <campaign_id>``
+    campaign enters the ``sharing`` phase, so background ``vast wait <campaign_id>``
     until it is over, then read the outcome (``share_error`` on failure). Works from disk with no
     live campaign (usable
     after a `vast serve` restart). The target provider comes from the service environment

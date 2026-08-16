@@ -50,9 +50,13 @@ def test_the_cluster_subgroup_is_listed():
 
 
 def test_a_sibling_command_does_not_load_the_cluster_subgroup(cluster_absent):
-    """The property that matters: `vast exec wait` must not pay for the cluster lane.
-    With the cluster module unimportable, this still has to work."""
-    result = CliRunner().invoke(exec_cli.execution, ["wait", "--help"])
+    """The property that matters: a sibling of `cluster` must not pay for the cluster
+    lane. With the cluster module unimportable, this still has to work.
+
+    `wait` used to be the example here; it is now the client's top-level `vast wait`, so
+    it is no longer a sibling and could not test this if it tried.
+    """
+    result = CliRunner().invoke(exec_cli.execution, ["stop-container", "--help"])
     assert result.exit_code == 0, result.output
 
 

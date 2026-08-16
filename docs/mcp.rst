@@ -84,7 +84,7 @@ soon as the campaign is *named*, so an agent that reads one status and stops has
 user a campaign finished when it had barely begun.
 
 Its hook blocks the first attempt to end a turn on a campaign nobody is waiting for, once,
-and then allows. Three things settle a campaign: backgrounding ``vast exec wait``, saying
+and then allows. Three things settle a campaign: backgrounding ``vast wait``, saying
 plainly that you are not waiting and that ntfy announces the end, or ``stop_campaign``.
 Blocking until done would hold a three-day sweep's session hostage, which is a worse
 failure than the one being fixed.

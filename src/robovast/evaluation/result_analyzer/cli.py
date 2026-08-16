@@ -23,7 +23,7 @@ from pathlib import Path
 import click
 
 from robovast.common.campaign_index import build_campaign_store
-from robovast.common.cli import handle_cli_exception
+from robovast.client.errors import handle_cli_exception
 from robovast.client.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 from robovast.common.store import STORE_FILENAME, CampaignStore

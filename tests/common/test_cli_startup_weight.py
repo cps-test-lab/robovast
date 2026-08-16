@@ -45,7 +45,7 @@ def _startup_modules() -> tuple[set, int]:
     """Import the CLI the way ``vast`` does, in a fresh interpreter."""
     script = textwrap.dedent("""
         import json, sys
-        from robovast.common.cli.cli import load_plugins
+        from robovast.client.cli import load_plugins
         load_plugins()
         print(json.dumps({"mods": sorted(m for m in sys.modules if "." not in m),
                           "count": len(sys.modules)}))

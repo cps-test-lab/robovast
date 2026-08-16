@@ -76,7 +76,7 @@ def test_every_pending_campaign_is_named_not_just_the_first(hook, capsys):
         _start(hook, cid)
     reason = _check(hook, capsys)["reason"]
     assert all(cid in reason for cid in ("camp-a", "camp-b", "camp-c"))
-    assert reason.count("vast exec wait") == 3, "each needs its own runnable command"
+    assert reason.count("vast wait") == 3, "each needs its own runnable command"
 
 
 @pytest.mark.parametrize("command", [

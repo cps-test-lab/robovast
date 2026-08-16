@@ -337,7 +337,7 @@ def test_only_one_pinned_dir_is_accepted():
     """``--workspace-dir`` collapses to one directory and reports a second."""
     import click
 
-    from robovast.common.cli.cli import _one_workspace_dir
+    from robovast.common.cli.core_commands import _one_workspace_dir
 
     assert _one_workspace_dir(None, None, ()) is None
     assert _one_workspace_dir(None, None, ("/tmp",)) == "/tmp"

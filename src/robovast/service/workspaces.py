@@ -72,8 +72,19 @@ UPLOAD_TTL_SECONDS = 600
 # with this module about which files belong to a project, but must not have to install
 # the registry and the store to find out -- so those two live in robovast.client and this
 # module is one of their callers, not their home.
-from robovast.client.workspaces import (PINNED_SKIP_DIRS,
-                                        default_workspaces_root, is_skipped)
+from robovast.client.workspaces import PINNED_SKIP_DIRS, is_skipped
+
+
+def default_workspaces_root() -> Path:
+    """Root for workspace storage (``ROBOVAST_WORKSPACES_ROOT`` or ``~/.robovast``).
+
+    Server-side: it is where *this* process keeps workspaces. A client install has no
+    such store, which is why this stayed here when ``is_skipped`` moved to the client.
+    """
+    env = os.environ.get("ROBOVAST_WORKSPACES_ROOT")
+    if env:
+        return Path(env)
+    return Path.home() / ".robovast" / "workspaces"
 
 
 class WorkspaceError(ValueError):

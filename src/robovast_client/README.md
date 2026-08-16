@@ -20,10 +20,7 @@ dataframe library — 88 packages, around 290 MB — because it can execute camp
 This one is three dependencies (`pydantic`, `click`, `requests`) and about 30 MB, because
 it only talks to something that can.
 
-> **Not yet on PyPI, and not yet complete.** The library layer below is done and installs
-> standalone; the `vast` console script still lives in the `robovast` distribution, so a
-> client-only install has the modules but not yet the command. Moving the root command
-> group here is the remaining step.
+> **Not yet on PyPI.** Install it from a checkout with `pip install src/robovast_client`.
 
 ## What you get
 
@@ -34,7 +31,7 @@ it only talks to something that can.
 | `vast login <url>` / `vast logout` | store or forget the service credentials |
 | `vast workspace init/update/list/delete` | push a project directory to the service |
 | `vast files get/put` | move a single file by address |
-| `vast exec wait <campaign-id>` | block until a campaign is genuinely over |
+| `vast wait <campaign-id>` | block until a campaign is genuinely over |
 | `vast results download -i <id>` | fetch a finished campaign's results |
 | `vast doctor` | check the login, the service and your PATH |
 
@@ -44,12 +41,12 @@ LLM agent through the service's MCP endpoint, which needs nothing installed at a
 
 ## Waiting for a campaign
 
-A campaign can run for days, so nothing blocks a request on one. `vast exec wait` polls
+A campaign can run for days, so nothing blocks a request on one. `vast wait` polls
 the service and exits when the campaign is genuinely finished — past postprocessing, not
 merely past its last run:
 
 ```bash
-vast exec wait basic-nav-2026-08-16-101500 --interval 10
+vast wait basic-nav-2026-08-16-101500 --interval 10
 ```
 
 Its **exit code is the answer**: `0` finished, `1` failed, `2` you interrupted the wait,

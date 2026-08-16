@@ -113,8 +113,11 @@ def service_client(namespace='default', context=None, *, require_service=False):
     the Kubernetes operations they perform themselves.
     """
     del namespace, context
-    from robovast.service.client import RobovastClient
-    from robovast.client.workspaces import default_workspaces_root
+    # The factory lives in http_client, which is part of this distribution.
+    # `robovast.service.client` is core's re-export of it, and importing through there
+    # made every client command need the core installed -- while still failing only at
+    # call time, so an import check could not see it.
+    from robovast.service.http_client import RobovastClient
 
     url = detected_service_url()
 
@@ -124,11 +127,17 @@ def service_client(namespace='default', context=None, *, require_service=False):
             "Either start one here ('vast serve --backend cluster'), or point at the "
             "deployed one ('vast login https://robovast.<domain>').")
 
+    client = RobovastClient(url)
     if url:
         label = f"service ({url}) [detected]"
     else:
+        # Only a full install reaches here -- with no URL, `RobovastClient` returns the
+        # in-process transport, and refuses outright when there is none. So the store
+        # path, which describes that transport and not this layer, is read *after* the
+        # client exists rather than imported by a distribution that has no store.
+        from robovast.service.workspaces import default_workspaces_root
         label = f"this machine, in-process (store: {default_workspaces_root()})"
-    yield RobovastClient(url), label
+    yield client, label
 
 
 def echo_target(label):

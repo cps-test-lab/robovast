@@ -51,7 +51,7 @@ from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
                                            read_execution_metadata,
                                            read_run_outcomes)
 from robovast.common.config import declared_per_run_seconds
-from robovast.common.logging_config import (add_campaign_log_handler,
+from robovast.client.logging_config import (add_campaign_log_handler,
                                             remove_campaign_log_handler)
 from robovast.common.store import STORE_FILENAME, CampaignStore
 

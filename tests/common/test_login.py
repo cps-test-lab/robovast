@@ -120,13 +120,13 @@ def test_explicit_credentials_override_the_stored_ones():
 
 def test_the_login_command_verifies_before_it_stores(monkeypatch):
     """A typo must fail at ``vast login``, not as a 401 from the next unrelated command."""
-    from robovast.common.cli.cli import cli
+    from robovast.client.cli import cli
 
     class _Refuses:
         def version(self):
             raise RuntimeError("401 Unauthorized")
 
-    monkeypatch.setattr("robovast.service.client.RobovastClient",
+    monkeypatch.setattr("robovast.service.http_client.RobovastClient",
                         lambda *a, **kw: _Refuses())
     runner = _runner()
     with runner.isolated_filesystem():
@@ -144,13 +144,13 @@ def test_the_login_command_verifies_before_it_stores(monkeypatch):
 
 
 def test_the_login_command_stores_verified_credentials(monkeypatch):
-    from robovast.common.cli.cli import cli
+    from robovast.client.cli import cli
 
     class _Accepts:
         def version(self):
             return object()
 
-    monkeypatch.setattr("robovast.service.client.RobovastClient",
+    monkeypatch.setattr("robovast.service.http_client.RobovastClient",
                         lambda *a, **kw: _Accepts())
     runner = _runner()
     with runner.isolated_filesystem():
@@ -167,13 +167,13 @@ def test_the_login_command_prints_the_mcp_registration(monkeypatch):
     The name especially: without that header the agent's campaigns arrive unattributed
     while the same person's CLI runs are labelled, and nothing anywhere says why.
     """
-    from robovast.common.cli.cli import cli
+    from robovast.client.cli import cli
 
     class _Accepts:
         def version(self):
             return object()
 
-    monkeypatch.setattr("robovast.service.client.RobovastClient",
+    monkeypatch.setattr("robovast.service.http_client.RobovastClient",
                         lambda *a, **kw: _Accepts())
     runner = _runner()
     with runner.isolated_filesystem():
@@ -200,7 +200,7 @@ def test_the_mcp_registration_omits_a_name_nobody_gave():
 
 
 def test_logout_forgets_them(monkeypatch):
-    from robovast.common.cli.cli import cli
+    from robovast.client.cli import cli
 
     login.save("https://robovast.example.org", "tok", "Fred")
     runner = _runner()

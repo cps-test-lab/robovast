@@ -111,10 +111,25 @@ qd = ["ribs", "shapely"]
 optuna = ["optuna"]
 test = ["pytest", "ribs", "shapely", "optuna"]
 
-[tool.poetry.scripts]
-vast = "robovast.common.cli.cli:main"
+# No [tool.poetry.scripts] here: the `vast` entry point belongs to robovast-client, which
+# owns the root command group. Declaring it in both would have two distributions racing to
+# install the same console script.
+
+# Work the root command group must do before any command runs, but that belongs to this
+# distribution. The `.env` read is core's because everything a `.env` carries -- share
+# credentials, ntfy, registry, image pins -- is consumed here and by the lanes.
+[tool.poetry.plugins."robovast.cli_startup"]
+env-file = "robovast.common.env_file:load_env_file"
 
 [tool.poetry.plugins."robovast.cli_plugins"]
+# The verbs that need the core -- a service implementation, Docker, the UI build, the
+# results reader. They attach to the client's root group like any other plugin, so a
+# client-only install simply does not have them rather than having them and failing.
+init = "robovast.common.cli.core_commands:init"
+serve = "robovast.common.cli.core_commands:serve"
+ui = "robovast.common.cli.core_commands:ui"
+"import-results" = "robovast.common.cli.core_commands:import_results"
+image = "robovast.common.cli.core_commands:image"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"

@@ -20,7 +20,7 @@ import logging
 
 from robovast.common.campaign_logs import (assemble_log, assemble_log_from_dir,
                                            phase_banner)
-from robovast.common.logging_config import (add_campaign_log_handler,
+from robovast.client.logging_config import (add_campaign_log_handler,
                                              remove_campaign_log_handler)
 
 
