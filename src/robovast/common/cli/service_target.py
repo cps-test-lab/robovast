@@ -142,5 +142,3 @@ def echo_target(label):
     if label.startswith('this machine'):
         click.echo("  (no service found; point at the deployed one with "
                    "'vast login <url>' — that is the store its web UI reads)")
-
-

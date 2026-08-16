@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from robovast.service.cluster_service import ClusterService
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import (ActionResult, RunPostprocessingRequest,
                                         RunShareRequest)
 

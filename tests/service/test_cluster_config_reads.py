@@ -23,7 +23,7 @@ import threading
 
 import pytest
 
-from robovast.service.cluster_service import ClusterService
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 
 
 class _FakeStorage:

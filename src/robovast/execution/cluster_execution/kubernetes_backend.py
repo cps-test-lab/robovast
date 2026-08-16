@@ -74,7 +74,6 @@ from robovast.common.execution import (build_job_parameter_documents,
                                        dump_multi_document_yaml,
                                        job_artifact_rel,
                                        read_job_links,
-                                       resolve_robovast_image,
                                        resolve_sidecar_image,
                                        write_job_links_manifest, sidecar_backend_env)
 from robovast.common import prepare_campaign_configs
@@ -432,12 +431,11 @@ class BatchJobRunner:
             if not pull_secret:
                 from .service_deploy import \
                     REGISTRY_PUSH_SECRET_NAME
-                from kubernetes import client as _k8s_client
                 try:
                     self.k8s_client.read_namespaced_secret(
                         REGISTRY_PUSH_SECRET_NAME, self.namespace)
                     pull_secret = REGISTRY_PUSH_SECRET_NAME
-                except _k8s_client.exceptions.ApiException:
+                except client.exceptions.ApiException:
                     pull_secret = ""
         except Exception:  # noqa: BLE001 - registry config is optional
             pull_secret = ""
@@ -1264,8 +1262,6 @@ class KubernetesBackend(ExecutionBackend):
         now — before the campaign runs — turns what used to be a silent, end-of-run
         skip into an up-front, actionable error.
         """
-        from robovast.execution.backends import \
-            CampaignConfigError  # pylint: disable=import-outside-toplevel
         from . import \
             in_pod_upload  # pylint: disable=import-outside-toplevel
 
@@ -1293,8 +1289,6 @@ class KubernetesBackend(ExecutionBackend):
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 
-        from robovast.execution.backends import \
-            CampaignConfigError  # pylint: disable=import-outside-toplevel
 
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         provider = in_pod_upload.load_provider_from_env()

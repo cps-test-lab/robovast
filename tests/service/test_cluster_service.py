@@ -17,7 +17,7 @@ from robovast.execution.cluster_execution.container_runner import (
     AUX_LABEL, DEFAULT_AUX_DEADLINE_SECONDS, aux_pod_name,
     build_aux_pod_manifest)
 from robovast.common.variation.container_runner import ContainerSpec
-from robovast.service.cluster_service import ClusterService
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 

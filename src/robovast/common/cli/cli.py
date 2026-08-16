@@ -939,8 +939,9 @@ def install_completion():
         click.echo("Restart your shell or run:")
         click.echo(f"  source {config_file}")
     except Exception as e:
-        click.echo(f"✗ Failed to install completion: {e}", err=True)
-        raise click.Exit(1)
+        # `click.Exit` does not exist -- raising it turned any completion-install
+        # failure into an AttributeError that hid the failure it was reporting.
+        raise click.ClickException(f"Failed to install completion: {e}") from e
 
 
 @cli.command()

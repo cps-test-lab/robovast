@@ -21,7 +21,6 @@ import sys
 import time
 
 import click
-import yaml
 
 from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import get_vast_file_override
@@ -144,10 +143,6 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
     one workspace per run — ``--workspace`` picks a different name.
     """
     try:
-        from robovast.common.cli.project_config import \
-            get_project_config  # pylint: disable=import-outside-toplevel
-        from robovast.common.cli.service_target import \
-            service_client  # pylint: disable=import-outside-toplevel
         from robovast.execution.execution_utils.cluster_run import \
             wait_for_cluster_campaign  # pylint: disable=import-outside-toplevel
         from robovast.service.interface import \
@@ -428,8 +423,6 @@ def monitor(interval, once, kube_context, namespace):
     # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_context import (  # pylint: disable=import-outside-toplevel
         get_active_kube_context, get_config_context_names)
-    from .cluster_execution import \
-        get_cluster_job_counts_per_campaign  # pylint: disable=import-outside-toplevel
     try:
         cursor_up = "\033[A"
         clear_line = "\033[2K"
@@ -1221,4 +1214,3 @@ def cleanup(config_name, namespace, options, kube_context):
 
     except Exception as e:
         handle_cli_exception(e)
-

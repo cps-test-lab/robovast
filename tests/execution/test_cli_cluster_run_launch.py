@@ -30,8 +30,10 @@ def launch(monkeypatch, tmp_path):
         return "camp-1"
 
     monkeypatch.setattr("robovast.service.project_push.run_project_via_service", fake_run)
+    # Patch where the name is *bound*, not where it is defined: the cluster CLI
+    # imports it at module level, so rebinding the source module would not be seen.
     monkeypatch.setattr(
-        "robovast.common.cli.service_target.service_client",
+        "robovast.execution.cluster_execution.cli.service_client",
         lambda *a, **k: _yield_client())
     monkeypatch.setattr("robovast.common.cli.project_config.ProjectConfig.load",
                         classmethod(lambda cls, start_dir=None: None))

@@ -25,7 +25,7 @@ class ClusterServeBackend:
         """
         import click  # pylint: disable=import-outside-toplevel
 
-        from robovast.service.cluster_service import \
+        from .cluster_service import \
             ClusterService  # pylint: disable=import-outside-toplevel
         if in_pod:
             return ClusterService(kube_context=context, store=store)

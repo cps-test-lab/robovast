@@ -21,7 +21,8 @@ Executes local Docker campaigns by driving
 serving live status from the same
 :class:`~robovast.execution.control_server.ControllerState` the cluster controller
 uses. This backs ``vast exec local run`` (mode 1); campaigns die with the process.
-:class:`~robovast.service.cluster_service.ClusterService` subclasses this, reusing
+:class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
+        subclasses this, reusing
 its driver-hosting shape and overriding only the launch hooks.
 
 Split out of the former single ``client`` module; ``client`` now re-exports
@@ -730,7 +731,7 @@ class LocalTransport(RobovastInterface):
         the previous call rather than sleeping per request. The first reading after
         the process starts is ``0.0`` (no prior sample); the TTL cache means that is
         replaced by a real value on the next window. Overridden by
-        :class:`~robovast.service.cluster_service.ClusterService`.
+        :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`.
         """
         import psutil  # pylint: disable=import-outside-toplevel
         vm = psutil.virtual_memory()

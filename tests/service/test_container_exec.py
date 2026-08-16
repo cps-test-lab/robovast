@@ -247,7 +247,7 @@ def test_both_lanes_start_a_detached_scenario_the_same_way():
     import inspect
 
     from robovast.service.docker_exec_lane import DockerExecLane
-    from robovast.service.kube_exec_lane import KubeExecLane
+    from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane
     for lane in (DockerExecLane, KubeExecLane):
         source = inspect.getsource(lane.exec_in_held)
         assert "detached_start_script()" in source, f"{lane.__name__} rolls its own"

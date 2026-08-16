@@ -3,10 +3,10 @@
 
 """Which execution lane ``vast serve`` runs, resolved rather than imported.
 
-A service runs one lane, fixed when it starts. Until now ``vast serve`` reached into
-``robovast.service.cluster_service`` to build the cluster one, so the core could not be
-installed without the cluster code: an install that legitimately has no Kubernetes at all
-would have failed on an import, from a module the user never named.
+A service runs one lane, fixed when it starts. ``vast serve`` used to reach into the
+cluster service directly to build that one, so the core could not be installed without the
+cluster code: an install that legitimately has no Kubernetes at all would have failed on an
+import, from a module the user never named.
 
 Lanes register in the ``robovast.execution_backends`` entry-point group instead, exactly
 as simulators, variation types and panel types already do — and through the same resolver

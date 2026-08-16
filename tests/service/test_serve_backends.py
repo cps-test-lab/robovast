@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """``vast serve`` resolves its execution lane instead of importing one.
 
-Reaching directly into ``robovast.service.cluster_service`` meant the core could not be
+Reaching directly into the cluster service meant the core could not be
 installed without the cluster code: an install with no Kubernetes at all would have died
 on an import of a module the user never named, which reads as broken rather than absent.
 
@@ -59,7 +59,8 @@ def test_an_absent_lane_names_the_ones_that_exist():
 def test_listing_the_lanes_imports_none_of_them():
     mods = _imports_after("from robovast.service.serve_backends import available;"
                           " available()")
-    for forbidden in ("kubernetes", "docker", "robovast.service.cluster_service",
+    for forbidden in ("kubernetes", "docker",
+                      "robovast.execution.cluster_execution.cluster_service",
                       "robovast.service.local_transport"):
         assert forbidden not in mods, f"listing pulled {forbidden}"
 
@@ -67,7 +68,7 @@ def test_listing_the_lanes_imports_none_of_them():
 def test_choosing_the_local_lane_does_not_load_the_cluster_one():
     mods = _imports_after("from robovast.service.serve_backends import resolve;"
                           " resolve('local')")
-    assert "robovast.service.cluster_service" not in mods
+    assert "robovast.execution.cluster_execution.cluster_service" not in mods
     assert "kubernetes" not in mods
 
 

@@ -421,7 +421,7 @@ def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
 def test_the_cluster_service_passes_its_own_context(method):
     """Both AuxPodSession call sites, because only one of them having it is the bug."""
     import inspect
-    from robovast.service.cluster_service import ClusterService
+    from robovast.execution.cluster_execution.cluster_service import ClusterService
     source = inspect.getsource(getattr(ClusterService, method))
     assert "kube_context=self.kube_context" in source
 

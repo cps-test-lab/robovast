@@ -1996,7 +1996,7 @@ Two entry points share that one implementation (``postprocess_campaign``):
   one service process stay distinct). It runs **after ``store.close()``** (``campaign.db`` must be
   flushed — ``data.db``'s ``runs`` table reads it) and **before ``_finalize``**, so the results ride
   the campaign's existing upload rather than needing one of their own.
-* **explicit re-run** — :class:`~robovast.service.cluster_service.ClusterService.run_postprocessing`,
+* **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
   which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
   results root and no ROS runtime. It fetches the campaign, runs the same two stages, and publishes
   ``_execution/`` back. This backs the web **Retrigger postprocessing** dialog, the MCP
@@ -2009,7 +2009,7 @@ Two entry points share that one implementation (``postprocess_campaign``):
   campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 
 The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
-being swallowed, and :meth:`~robovast.service.cluster_service.ClusterService.run_share` re-triggers it
+being swallowed, and :meth:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_share` re-triggers it
 (web *Retrigger upload-to-share*, MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via
 ``_dispatch_background`` (``sharing`` phase). Both re-triggers need no live in-memory campaign entry,
 so they work after a service restart.

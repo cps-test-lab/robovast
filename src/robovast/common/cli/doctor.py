@@ -254,7 +254,6 @@ def check_client() -> list[Check]:
 
     # Not `shutil.which`: this process may have a venv active that no other shell does,
     # which is exactly the case where the answer differs and the wrong one is reassuring.
-    import subprocess  # pylint: disable=import-outside-toplevel
     try:
         found = subprocess.run(["bash", "-lc", "command -v vast"],  # noqa: S603,S607
                                capture_output=True, text=True, timeout=15, check=False)

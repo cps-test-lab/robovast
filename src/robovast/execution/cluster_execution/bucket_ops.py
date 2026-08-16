@@ -210,7 +210,7 @@ def _is_gcs(cluster_config) -> bool:
     return cluster_config.get_storage_backend() == "gcs"
 
 
-def _bucket_name(campaign_id: str) -> str:
+def bucket_name(campaign_id: str) -> str:
     """Sanitize a campaign ID into a valid S3 bucket name.
 
     Per-bucket mode (embedded MinIO) names the bucket after the campaign, but
@@ -327,7 +327,7 @@ def campaign_exists(
             return response.get("KeyCount", 0) > 0
         else:
             try:
-                s3.head_bucket(Bucket=_bucket_name(campaign_id))
+                s3.head_bucket(Bucket=bucket_name(campaign_id))
                 return True
             except ClientError as exc:
                 code = exc.response["Error"]["Code"]
@@ -387,7 +387,7 @@ def delete_campaign(
                 "Deleted prefix '%s/' from shared S3 bucket '%s'", campaign_id, shared_bucket
             )
         else:
-            bucket_name = _bucket_name(campaign_id)
+            bucket_name = bucket_name(campaign_id)
             paginator = s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket_name):
                 objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
@@ -427,7 +427,7 @@ def cleanup_campaigns(
         caller has to retire each removed campaign's index marker, and one that survived
         a failed delete must keep its marker or its data becomes invisible. In
         per-campaign-bucket mode these are sanitized *bucket* names; map an id to one
-        with :func:`_bucket_name` rather than trying to invert it.
+        with :func:`bucket_name` rather than trying to invert it.
     """
     if running_campaigns is None:
         running_campaigns = set()
@@ -436,7 +436,7 @@ def cleanup_campaigns(
     if campaign_id:
         # In per-bucket mode list_campaigns returns sanitized bucket names, so
         # match either the raw ID (shared-bucket/GCS) or its sanitized form.
-        wanted = {campaign_id, _bucket_name(campaign_id)}
+        wanted = {campaign_id, bucket_name(campaign_id)}
         to_remove = [c for c in all_campaigns if c in wanted]
         if not to_remove:
             logger.info("No campaign matching '%s' found in storage.", campaign_id)

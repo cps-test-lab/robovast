@@ -23,7 +23,7 @@ No cluster is needed here: these check the manifests, the argv and the call sequ
 import pytest
 
 from robovast.service import container_exec as ce
-from robovast.service.kube_exec_lane import KubeExecLane, exec_prefix
+from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane, exec_prefix
 
 _S3 = ("http://robovast:9000", "minioadmin", "minioadmin")
 
@@ -69,7 +69,7 @@ def _lane(store=None, namespace="ns"):
 
 
 def _manifest(spec, deadline=300, namespace="ns", owner=None, prefix=None):
-    from robovast.service.kube_exec_lane import _pod_manifest
+    from robovast.execution.cluster_execution.kube_exec_lane import _pod_manifest
     return _pod_manifest(spec, deadline, namespace, owner, _S3,
                          "robovast-image-builds", prefix or exec_prefix(namespace))
 
@@ -97,7 +97,7 @@ def test_the_service_kube_context_is_honoured(monkeypatch):
 
 def test_the_cluster_service_passes_its_own_context():
     import inspect
-    from robovast.service.cluster_service import ClusterService
+    from robovast.execution.cluster_execution.cluster_service import ClusterService
     source = inspect.getsource(ClusterService._exec_lane)
     assert "kube_context=self.kube_context" in source
 

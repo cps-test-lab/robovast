@@ -12,7 +12,7 @@ non-recursive **at the store** — a delimited call, not an enumerate-and-fold.
 
 import pytest
 
-from robovast.service.cluster_service import ClusterService
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 
 
 class _FakeStorage:

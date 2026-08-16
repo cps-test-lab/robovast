@@ -186,7 +186,7 @@ class ClusterService(LocalTransport):
         try:
             from kubernetes import client as k8s_client
 
-            from robovast.execution.cluster_execution.kube_client import load_kube_config
+            from .kube_client import load_kube_config
             load_kube_config(context=self.kube_context)
             return k8s_client.Configuration.get_default_copy().host
         except Exception:  # noqa: BLE001 - informational field, never fatal
@@ -213,9 +213,9 @@ class ClusterService(LocalTransport):
         Requires the service's ClusterRole (nodes/pods get,list — see
         ``service_deploy._service_rbac_manifests``).
         """
-        from robovast.execution.cluster_execution.kube_client import \
+        from .kube_client import \
             pod_workload_containers  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution.kubernetes_kueue import \
+        from .kubernetes_kueue import \
             _parse_resource  # pylint: disable=import-outside-toplevel
         v1 = self._k8s()
 
@@ -281,7 +281,7 @@ class ClusterService(LocalTransport):
         campaign. A read failure propagates — a silently zero tally is the bug this
         method exists to fix.
         """
-        from robovast.execution.cluster_execution.cluster_execution import \
+        from .cluster_execution import \
             list_jobs_with_phase  # pylint: disable=import-outside-toplevel
         phases = [phase for _job, phase, _detail in list_jobs_with_phase(
             self._k8s_batch(), self._k8s(), self.namespace, "jobgroup=scenario-runs")]
@@ -291,7 +291,7 @@ class ClusterService(LocalTransport):
     # -- helpers ------------------------------------------------------------
 
     def _cluster_config(self):
-        from robovast.execution.cluster_execution.cluster_setup import \
+        from .cluster_setup import \
             get_cluster_config
         if not self._config_name:
             raise ValueError(
@@ -336,7 +336,7 @@ class ClusterService(LocalTransport):
         return the fresh endpoint untouched instead of tearing it down again.
         """
         from robovast.common.shutdown import is_shutting_down
-        from robovast.execution.cluster_execution.bucket_ops import \
+        from .bucket_ops import \
             open_minio_port_forward
         with self._pf_lock:
             if force_restart:
@@ -396,7 +396,7 @@ class ClusterService(LocalTransport):
         ``_pf_generation`` to move and re-resolve.
         """
         from robovast.common.shutdown import is_shutting_down
-        from robovast.execution.cluster_execution.bucket_ops import forward_is_serving
+        from .bucket_ops import forward_is_serving
         failures = 0
         while not self._pf_monitor_stop.wait(self._PF_PROBE_INTERVAL_S):
             if is_shutting_down():
@@ -444,7 +444,7 @@ class ClusterService(LocalTransport):
 
 
     def _load_kube(self):
-        from robovast.execution.cluster_execution.kube_client import load_kube_config
+        from .kube_client import load_kube_config
         load_kube_config(context=self.kube_context)
 
     def _k8s(self):
@@ -471,7 +471,7 @@ class ClusterService(LocalTransport):
         return None
 
     def _build_backend(self, state):
-        from robovast.execution.cluster_execution.kubernetes_backend import \
+        from .kubernetes_backend import \
             KubernetesBackend
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,
@@ -509,7 +509,7 @@ class ClusterService(LocalTransport):
         never reached in-cluster because nothing asks for a runner).
         """
         from robovast.common.config_generation import set_container_runner_factory
-        from robovast.execution.cluster_execution.container_runner import (
+        from .container_runner import (
             AuxPodSession, required_container_specs)
 
         specs = required_container_specs(project.config_path)
@@ -552,7 +552,7 @@ class ClusterService(LocalTransport):
         client (which off-cluster reaches the store through a port-forward).
         """
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             build_context_bucket
         cfg = self._cluster_config()
         access_key, secret_key = cfg.get_s3_credentials()
@@ -797,7 +797,7 @@ class ClusterService(LocalTransport):
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
         """
-        from robovast.execution.cluster_execution.cluster_execution import (
+        from .cluster_execution import (
             _label_safe_campaign, list_jobs_with_phase)
         label = (f"jobgroup=scenario-runs,"
                  f"campaign-id={_label_safe_campaign(campaign_id)}")
@@ -832,7 +832,7 @@ class ClusterService(LocalTransport):
 
     def _new_job_log_tail(self, campaign_id: str, job_name: str):
         """This lane's tail reads a pod's containers, not a job dir's files."""
-        from robovast.execution.cluster_execution.cluster_execution import PodLogTail
+        from .cluster_execution import PodLogTail
         return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
@@ -854,7 +854,7 @@ class ClusterService(LocalTransport):
         swallows the API's 400/404 and contributes nothing.
         """
         from kubernetes import client
-        from robovast.execution.cluster_execution.cluster_execution import \
+        from .cluster_execution import \
             _label_safe_campaign
         core = self._k8s()
         label = (f"jobgroup=scenario-runs,"
@@ -926,7 +926,7 @@ class ClusterService(LocalTransport):
                 "Ingress -- an unpublished service has no address the cluster's nodes "
                 "could pull an image back from. Re-run 'vast exec cluster setup' with "
                 "--ingress-host.")
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             build_context_bucket
         bucket = build_context_bucket(cfg)
         return project, campaign_config, specs, project_dir, cfg, registry, bucket
@@ -934,7 +934,7 @@ class ClusterService(LocalTransport):
     def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
         """Return (concrete_registry_ref, image_hash) for a project's build image."""
         from robovast.common.execution import resolve_build_base_image
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             concrete_image_ref
         from robovast.service.image_build import build_hash
         base_ref = (spec.base_image or registry.base_experiment_image
@@ -957,7 +957,7 @@ class ClusterService(LocalTransport):
 
     def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
-        from robovast.execution.cluster_execution.cluster_image_build import (
+        from .cluster_image_build import (
             build_id_for, build_job_manifest, cache_image_ref, context_prefix,
             s3_init_env, stage_context_to_s3)
         from robovast.execution.cluster_execution import in_pod_storage
@@ -1065,7 +1065,7 @@ class ClusterService(LocalTransport):
         project dir is not worth failing a finished build over, but it is worth a
         warning, since the next sweep is the only thing that will retry it."""
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             discard_context
         try:
             storage = in_pod_storage.storage_client_for(cfg)
@@ -1089,7 +1089,7 @@ class ClusterService(LocalTransport):
         request's init container.
         """
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             staged_context_build_ids
         try:
             storage = in_pod_storage.storage_client_for(cfg)
@@ -1109,7 +1109,7 @@ class ClusterService(LocalTransport):
 
     def _registry_has_image(self, image_ref: str, registry) -> bool:
         """Is *image_ref* already pushed? Fails closed (see ``registry_client``)."""
-        from robovast.execution.cluster_execution.registry_client import \
+        from .registry_client import \
             manifest_exists
         dockerconfig = self._push_dockerconfig(registry.push_secret_name)
         ca_path = self._registry_ca_path(registry.ca_configmap_name)
@@ -1156,7 +1156,7 @@ class ClusterService(LocalTransport):
         still wins, for a deployment that named its objects differently.
         """
         from kubernetes import client
-        from robovast.execution.cluster_execution.service_deploy import (
+        from .service_deploy import (
             REGISTRY_CA_CONFIGMAP_NAME, REGISTRY_PUSH_SECRET_NAME)
 
         def exists(read, name):
@@ -1305,7 +1305,7 @@ class ClusterService(LocalTransport):
 
     def _retire_build_context(self, build_id: str) -> None:
         """Discard a just-finished build's staged context, resolving the bucket."""
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             build_context_bucket
         try:
             cfg = self._cluster_config()
@@ -1399,7 +1399,7 @@ class ClusterService(LocalTransport):
         if resolved is None:
             return []
         specs, project_dir, cfg, registry = resolved
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             build_context_bucket
         bucket = build_context_bucket(cfg)
         return [self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
@@ -1551,7 +1551,7 @@ class ClusterService(LocalTransport):
         and it leaves the shared ClusterQueue alone, so a concurrent campaign keeps
         being admitted while this one is torn down.
         """
-        from robovast.execution.cluster_execution.cluster_execution import \
+        from .cluster_execution import \
             cleanup_cluster_campaign
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context)
@@ -1582,11 +1582,11 @@ class ClusterService(LocalTransport):
         than whatever this process is using to reach the store.
         """
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.cluster_execution.cluster_image_build import \
+        from .cluster_image_build import \
             build_context_bucket
-        from robovast.execution.cluster_execution.container_runner import \
+        from .container_runner import \
             service_pod_owner_reference
-        from robovast.service.kube_exec_lane import KubeExecLane
+        from .kube_exec_lane import KubeExecLane
         owner = None
         try:
             owner = service_pod_owner_reference(self._k8s(), self.namespace)
@@ -1680,7 +1680,7 @@ class ClusterService(LocalTransport):
                     # Match both the raw id and its sanitised bucket name, since
                     # ``cleanup_campaigns`` compares against object-store names.
                     running.add(c.campaign_id)
-                    running.add(bucket_ops._bucket_name(c.campaign_id))
+                    running.add(bucket_ops.bucket_name(c.campaign_id))
         removed = bucket_ops.cleanup_campaigns(
             self._cluster_config(), namespace=self.namespace,
             context=self.kube_context, campaign_id=request.campaign_id,
@@ -1706,7 +1706,7 @@ class ClusterService(LocalTransport):
         from robovast.execution.cluster_execution import bucket_ops
         gone = set(removed)
         for cid in self._campaign_index():
-            if cid in gone or bucket_ops._bucket_name(cid) in gone:
+            if cid in gone or bucket_ops.bucket_name(cid) in gone:
                 self._unmark_campaign(cid)
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
@@ -1722,7 +1722,7 @@ class ClusterService(LocalTransport):
         from botocore.exceptions import ClientError
 
         from robovast.execution.cluster_execution import bucket_ops
-        from robovast.execution.cluster_execution.cluster_execution import \
+        from .cluster_execution import \
             cleanup_cluster_campaign
 
         self._ensure_deletable(campaign_id)  # refuse while this service still drives it
@@ -1938,7 +1938,10 @@ class ClusterService(LocalTransport):
         that recorded no per-role digest is therefore refused with the resolver's message.
         """
         del ref
-        return None
+        # Explicit, not incidental: None *is* the answer on this lane, and the
+        # docstring above is about that. Falling off the end would read as an
+        # unfinished function.
+        return None  # pylint: disable=useless-return
 
     def _scene_source_dir(self, campaign_id: str) -> str:
         """Materialise only what resolving geometry reads, then answer from that.
@@ -1963,7 +1966,6 @@ class ClusterService(LocalTransport):
         ``list_files``, which is exactly the "this campaign froze no config" refusal — so it is
         left to propagate.
         """
-        from robovast.common import file_address
         address = file_address.format_address(
             file_address.RESULTS, campaign_id, "_config/")
         # limit=0 is "no window" (see file_view.paginate), so this is the whole listing in one
@@ -2019,7 +2021,6 @@ class ClusterService(LocalTransport):
         key is computed over, so a partial fetch would key geometry on a partial tree.
         Listed rather than assumed, for the reason ``_retrigger_source_dir`` gives.
         """
-        from robovast.common import file_address
         from robovast.service import \
             scene_cache  # pylint: disable=import-outside-toplevel
 
@@ -2064,7 +2065,7 @@ class ClusterService(LocalTransport):
         import hashlib
 
         from robovast.common.variation.container_runner import ContainerSpec
-        from robovast.execution.cluster_execution.container_runner import AuxPodSession
+        from .container_runner import AuxPodSession
 
         del campaign_id
         image = identity["image"]
@@ -2099,7 +2100,7 @@ class ClusterService(LocalTransport):
         the *lookup* is guarded -- an absent Secret is the one thing that legitimately means "no
         credential", and it is the only thing still caught here.
         """
-        from robovast.execution.cluster_execution.service_deploy import \
+        from .service_deploy import \
             REGISTRY_PUSH_SECRET_NAME
         from kubernetes.client.rest import ApiException
         try:
@@ -2373,7 +2374,7 @@ class ClusterService(LocalTransport):
         which is published to the object store so the Monitor and a later restart see it.
         """
         from robovast.execution.status_recovery import record_step_outcome
-        from robovast.execution.cluster_execution.postprocess_job import \
+        from .postprocess_job import \
             postprocess_campaign
 
         def work(state):

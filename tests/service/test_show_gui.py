@@ -20,7 +20,7 @@ import pytest
 from robovast.common.execution import local_parameter_overrides
 from robovast.common.host_display import host_display, require_host_display
 from robovast.service.client import LocalTransport
-from robovast.service.cluster_service import ClusterService
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.container_exec import ExecSpec
 from robovast.service.docker_exec_lane import DockerExecLane
 from robovast.service.interface import CreateCampaignRequest, ExecRequest

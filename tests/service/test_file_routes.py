@@ -287,7 +287,7 @@ def test_a_cluster_binary_read_fetches_only_that_object(tmp_path):
     every rosbag included, to hand back one file. A ``<video>`` tag paid for gigabytes on
     first play and nothing in the request said so.
     """
-    from robovast.service.cluster_service import ClusterService
+    from robovast.execution.cluster_execution.cluster_service import ClusterService
 
     cache = tmp_path / "cache"
     fetched: list[tuple] = []
