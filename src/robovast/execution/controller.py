@@ -1094,11 +1094,16 @@ def _record_controller_outcome(campaign_root, campaign_id, state, backend):
 
     # Upload just the control-plane artifacts (outcome + log) to the object store,
     # so the stateless service resolves the reason after the pod is gone.
+    cfg = getattr(backend, "cluster_config", None)
+    if cfg is None:
+        return  # local lane: the artifacts are already on the disk the caller reads
     try:
+        # After the guard, not before it. The upload is a cluster-lane concern, and
+        # importing it first meant every *local* teardown loaded cluster code to
+        # discover it had nothing to do -- which, once that code ships separately,
+        # becomes an ImportError caught below and logged as a failed upload that was
+        # never going to happen.
         from robovast.execution.cluster_execution import in_pod_storage
-        cfg = getattr(backend, "cluster_config", None)
-        if cfg is None:
-            return
         storage = in_pod_storage.storage_client_for(cfg)
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         exec_dir = os.path.join(campaign_root, "_execution")
