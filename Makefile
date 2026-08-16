@@ -120,6 +120,59 @@ image-digests:
 	@./container/image_digests.sh --project "$(PROJECT)" \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
 
+.PHONY: build-client
+build-client:
+	cd src/robovast_client && poetry build
+
+.PHONY: publish-client-test
+publish-client-test: build-client
+	@echo "Publishing robovast-client to TestPyPI..."
+	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
+	cd src/robovast_client && poetry publish --repository testpypi
+
+# Where the packaging claim gets tested, from a real wheel rather than a source tree.
+# `--help` exiting 0 is not enough: the distribution's whole point is what it does NOT
+# drag in, and a stray module-level import would reintroduce the weight silently.
+.PHONY: publish-client-test-venv
+publish-client-test-venv:
+	@echo "Installing ONLY robovast-client from TestPyPI, in a fresh venv..."
+	rm -rf /tmp/robovast-client-test-venv
+	python3 -m venv /tmp/robovast-client-test-venv
+	/tmp/robovast-client-test-venv/bin/pip install \
+		--index-url https://test.pypi.org/simple/ \
+		--extra-index-url https://pypi.org/simple/ \
+		robovast-client
+	@echo "The surface is the client's, and nothing else..."
+	@/tmp/robovast-client-test-venv/bin/vast --help > /tmp/robovast-client-help.txt
+	@for verb in login logout workspace files wait doctor; do \
+		grep -q "^  $$verb" /tmp/robovast-client-help.txt \
+			|| { echo "❌ '$$verb' missing from vast --help"; exit 1; }; \
+	done
+	@for verb in serve exec image init; do \
+		grep -q "^  $$verb" /tmp/robovast-client-help.txt \
+			&& { echo "❌ '$$verb' present in a client-only install"; exit 1; }; \
+	done
+	@echo "...and none of the weight it exists to avoid."
+	@/tmp/robovast-client-test-venv/bin/python -c "import importlib.util as u, sys; \
+		heavy = [m for m in ('numpy','pandas','fastapi','kubernetes','docker', \
+		'scenario_execution','matplotlib') if u.find_spec(m)]; \
+		sys.exit(f'❌ client install pulled {heavy}') if heavy else None"
+	@echo "✅ robovast-client installs clean from TestPyPI."
+
+# A PyPI upload cannot be replaced -- a version can be yanked, never re-uploaded -- so
+# this refuses unless asked twice, and refuses a dirty tree outright: the artifact would
+# correspond to no commit.
+.PHONY: publish-client
+publish-client: build-client
+	@test -z "$$(git status --porcelain)" \
+		|| { echo "❌ working tree is dirty; the wheel would match no commit"; exit 1; }
+	@test "$(CONFIRM)" = "1" || { \
+		echo "This publishes robovast-client $$(cd src/robovast_client && poetry version -s) to PyPI, permanently."; \
+		echo "A version can be yanked but never re-uploaded. Re-run with CONFIRM=1 when you mean it."; \
+		echo "Nothing should reach here that has not been through 'make publish-client-test-venv'."; \
+		exit 1; }
+	cd src/robovast_client && poetry publish
+
 .PHONY: publish-test
 publish-test: build
 	@echo "Publishing robovast to TestPyPI..."

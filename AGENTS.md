@@ -111,14 +111,17 @@ that matters — can decline what it does not.
 
 | Distribution | Contains | Adds |
 |---|---|---|
-| `robovast` | interface, service core, config/variation, results, MCP, controller, the local Docker lane | no kubernetes |
+| `robovast-client` | the `vast` root command group, the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
+| `robovast` | service core, config/variation, results, MCP, controller, the local Docker lane | no kubernetes |
 | `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the deploy/operator commands | `kubernetes`, `boto3`, `google-cloud-storage` |
 | `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
 | `robovast-sim-roqsim` | the roqsim simulator backend | `pydantic` only |
 
-Three rules keep this working:
+Four rules keep this working:
 
-- **`robovast` must never depend on a lane.** The siblings depend on `robovast`; the edge back is
+- **The dependency direction is the whole design.** `robovast-client` depends on nothing of
+  ours; `robovast` depends on it; the lanes and `robovast-nav` depend on `robovast`. So
+  **`robovast` must never depend on a lane** -- the edge back is
   what would make the graph cyclic. An innocent-looking `robovast[cluster]` extra recreates exactly
   the cycle `src/robovast_sim_roqsim/pyproject.toml` warns about. A lane is therefore **not
   installable via `--extras`** — anywhere that installs one (the controller Dockerfile, `make
@@ -134,7 +137,15 @@ Three rules keep this working:
   caller never mentioned. Core degrading correctly is covered by
   `tests/execution/test_core_without_cluster_package.py`; keep it that way.
 
-`robovast-cluster` ships into the **same import namespace** as the core: `robovast/` and
+**A client install must stay a working install.** `robovast-client` ships without the core,
+and every leak found so far has been a *deferred* import of it -- the module imports fine and
+the command dies at call time, in exactly the install the distribution advertises. An import
+check cannot see that; `tests/service/test_client_needs_no_core.py` drives the commands with
+the core made un-importable. Anything the client needs must live in the client: a wire
+constant like `COMMAND_LIMIT_S` belongs in `interface.py`, not in the server module that
+enforces it.
+
+`robovast-cluster` and `robovast-client` ship into the **same import namespace** as the core: `robovast/` and
 `robovast/execution/` deliberately carry no `__init__.py` in either distribution, which makes them
 PEP 420 namespace packages so the two source trees merge at import time. Adding an `__init__.py` to
 either directory silently breaks the merge — do not.
