@@ -32,7 +32,7 @@ from robovast.common.cli import get_project_config, handle_cli_exception
 from robovast.common.cli.project_config import ProjectConfig
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing.merge_results import merge_results
-from robovast.execution.cluster_execution.share_providers import \
+from robovast.execution.share_providers import \
     load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.metadata import generate_campaign_metadata

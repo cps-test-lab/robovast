@@ -45,7 +45,7 @@ def test_webdav_stream_sends_chunked_no_content_length(monkeypatch):
     monkeypatch.setenv("ROBOVAST_WEBDAV_URL", "https://dav.example/col/")
     monkeypatch.setenv("ROBOVAST_WEBDAV_USER", "u")
     monkeypatch.setenv("ROBOVAST_WEBDAV_PASSWORD", "p")
-    from robovast.execution.cluster_execution.share_providers.webdav import \
+    from robovast.execution.share_providers.webdav import \
         WebDavShareProvider
 
     provider = WebDavShareProvider()
@@ -72,8 +72,8 @@ def test_webdav_stream_sends_chunked_no_content_length(monkeypatch):
 def test_gcs_stream_chunks_ranges_and_final_total(monkeypatch):
     monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "gcs")
     monkeypatch.setenv("ROBOVAST_GCS_BUCKET", "bucket")
-    from robovast.execution.cluster_execution.share_providers import gcs as gcs_mod
-    from robovast.execution.cluster_execution.share_providers.gcs import \
+    from robovast.execution.share_providers import gcs as gcs_mod
+    from robovast.execution.share_providers.gcs import \
         GcsShareProvider
 
     provider = GcsShareProvider()
@@ -104,7 +104,7 @@ def test_gcs_stream_chunks_ranges_and_final_total(monkeypatch):
 def test_gcs_stream_empty_finalizes_zero_object(monkeypatch):
     monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "gcs")
     monkeypatch.setenv("ROBOVAST_GCS_BUCKET", "bucket")
-    from robovast.execution.cluster_execution.share_providers.gcs import \
+    from robovast.execution.share_providers.gcs import \
         GcsShareProvider
 
     provider = GcsShareProvider()

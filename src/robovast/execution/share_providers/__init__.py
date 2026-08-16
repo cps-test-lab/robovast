@@ -29,7 +29,7 @@ def load_share_provider_plugins() -> dict[str, type[BaseShareProvider]]:
 
     Discovers plugins registered under the ``robovast.share_providers``
     entry-point group.  Each plugin must be a subclass of
-    :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`.
+    :class:`~robovast.execution.share_providers.base.BaseShareProvider`.
 
     Returns:
         dict mapping share-type name (e.g. ``"nextcloud"`` ) to

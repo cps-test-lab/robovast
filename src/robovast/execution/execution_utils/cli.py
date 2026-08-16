@@ -36,7 +36,7 @@ from robovast.common.cli.service_target import (detected_service_url,
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
 from robovast.common.status import Status, stall_report
-from robovast.execution.cluster_execution.share_providers import \
+from robovast.execution.share_providers import \
     load_share_provider_plugins
 from robovast.common.host_display import gui_by_default
 

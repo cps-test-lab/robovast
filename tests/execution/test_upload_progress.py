@@ -14,7 +14,7 @@ controller callback that publishes ``(sent, total, rate)`` into
 
 import io
 
-from robovast.execution.cluster_execution.share_providers.base import (
+from robovast.execution.share_providers.base import (
     StreamProgressReader, UploadProgressReader)
 
 

@@ -512,7 +512,7 @@ def _share_env_from_host():
     Reads ``ROBOVAST_SHARE_TYPE`` (and the provider's own vars) from the host
     environment / project ``.env`` — the same source ``vast serve`` uses locally
     — and asks the provider to materialise its **pod** environment via
-    :meth:`~...share_providers.base.BaseShareProvider.build_pod_env`, which
+    :meth:`~robovast.execution.share_providers.base.BaseShareProvider.build_pod_env`, which
     resolves host credential *files* (a GCS key file, an SFTP key file) into the
     inline values a pod can carry. ``ROBOVAST_SHARE_TYPE`` is included so the
     service picks the same provider back up.
@@ -523,7 +523,7 @@ def _share_env_from_host():
     silently mid-campaign.
     """
     import os
-    from .share_providers import \
+    from robovast.execution.share_providers import \
         load_share_provider_plugins  # pylint: disable=import-outside-toplevel
 
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()

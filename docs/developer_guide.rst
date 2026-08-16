@@ -924,14 +924,14 @@ Share providers are discovered as **entry-point plugins** under the
 uploaded (see :ref:`cluster-sharing`).  To add a new provider:
 
 1. **Create a provider class** that inherits from
-   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`
+   :class:`~robovast.execution.share_providers.base.BaseShareProvider`
    and implements the three abstract methods:
 
    .. code-block:: python
 
       import os
 
-      from robovast.execution.cluster_execution.share_providers.base import (
+      from robovast.execution.share_providers.base import (
           BaseShareProvider,
           StreamProgressReader,
           UploadProgressReader,
@@ -968,23 +968,23 @@ uploaded (see :ref:`cluster-sharing`).  To add a new provider:
               ...  # stream `reader` to the share with chunked transfer, raising on failure
 
 2. **Implement** both upload methods on
-   :class:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider`.
+   :class:`~robovast.execution.share_providers.base.BaseShareProvider`.
    They run **in-process** in the driver (no sidecar, no subprocess) and read
    credentials from ``os.environ`` (populated by ``build_pod_env()``):
 
-   * :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive`
+   * :meth:`~robovast.execution.share_providers.base.BaseShareProvider.upload_archive`
      uploads a local ``archive_path`` (the ``download_archive`` counterpart; known
      size, resumable). Wrap the body in
-     :class:`~robovast.execution.cluster_execution.share_providers.base.UploadProgressReader`.
-   * :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.upload_archive_stream`
+     :class:`~robovast.execution.share_providers.base.UploadProgressReader`.
+   * :meth:`~robovast.execution.share_providers.base.BaseShareProvider.upload_archive_stream`
      uploads a **streamed** archive of unknown length (the launch-time
      upload-to-share, which never writes a ``tar.gz`` to disk — decisive for ~1TB
      campaigns). Use chunked transfer (no ``Content-Length``; resume is not
      available) and wrap the body in
-     :class:`~robovast.execution.cluster_execution.share_providers.base.StreamProgressReader`.
+     :class:`~robovast.execution.share_providers.base.StreamProgressReader`.
 
    Optionally override
-   :meth:`~robovast.execution.cluster_execution.share_providers.base.BaseShareProvider.verify_access`
+   :meth:`~robovast.execution.share_providers.base.BaseShareProvider.verify_access`
    with a cheap authenticated check so a bad configuration fails the pre-flight
    credential check before any batches run.
 
@@ -1004,14 +1004,14 @@ provider automatically.
 Share provider API reference
 """"""""""""""""""""""""""""
 
-.. autoclass:: robovast.execution.cluster_execution.share_providers.base.BaseShareProvider
+.. autoclass:: robovast.execution.share_providers.base.BaseShareProvider
    :members:
    :undoc-members:
 
-.. autoclass:: robovast.execution.cluster_execution.share_providers.nextcloud.NextcloudShareProvider
+.. autoclass:: robovast.execution.share_providers.nextcloud.NextcloudShareProvider
    :members:
 
-.. autoclass:: robovast.execution.cluster_execution.share_providers.gcs.GcsShareProvider
+.. autoclass:: robovast.execution.share_providers.gcs.GcsShareProvider
    :members:
 
 .. automodule:: robovast.execution.cluster_execution.in_pod_upload

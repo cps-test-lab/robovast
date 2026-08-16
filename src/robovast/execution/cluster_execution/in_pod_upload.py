@@ -46,7 +46,7 @@ def load_provider_from_env(overrides: dict | None = None):
             corrected credentials without relaunching the controller.
 
     Returns:
-        An instantiated :class:`~.share_providers.base.BaseShareProvider`, or
+        An instantiated :class:`~robovast.execution.share_providers.base.BaseShareProvider`, or
         ``None`` when ``ROBOVAST_SHARE_TYPE`` is unset.
 
     Raises:
@@ -54,7 +54,7 @@ def load_provider_from_env(overrides: dict | None = None):
         click.UsageError: when required provider env vars are missing (raised by
             the provider constructor).
     """
-    from .share_providers import \
+    from robovast.execution.share_providers import \
         load_share_provider_plugins  # pylint: disable=import-outside-toplevel
 
     if overrides:

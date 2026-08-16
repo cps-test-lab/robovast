@@ -66,7 +66,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
         "description": (
             "File-share backends for uploading campaign output (e.g. Nextcloud)."
         ),
-        "loader_module": "robovast.execution.cluster_execution.share_providers",
+        "loader_module": "robovast.execution.share_providers",
     },
     "robovast.variation_types": {
         "description": (
