@@ -1,4 +1,10 @@
 build/
+# `poetry build` output at the repo root. Not ignored until now, so a build left a
+# multi-megabyte untracked wheel in the tree, one `git add -A` away from being committed.
+# Deliberately NOT `src/*/dist/`: src/robovast_nav/dist/ holds wheels that are *tracked*
+# (robovast_nav 1.0.0, committed at some point and now stale), and a rule claiming to
+# ignore tracked files misleads without changing anything.
+/dist/
 install/
 log/
 **/__pycache__
