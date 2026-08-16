@@ -19,11 +19,6 @@ It provides four views, one per desktop GUI:
   immediately — with its true live phase and its **start time** (shown in your
   browser's locale and timezone) — and every phase change is pushed within a second.
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
-  On a **multi-backend** serve (``vast serve --backend local+cluster``) a row that ran on
-  the Docker lane is marked with a small ``local`` chip. Only that lane is marked: the
-  default is the cluster, so a ``cluster`` chip would sit on nearly every row saying "as
-  usual" — what is worth a glance is the pilot that did *not* go to the cluster. A
-  single-backend service has one lane to run on and marks nothing.
   The phase reflects the whole lifecycle, including the two pre-run steps that used to
   be invisible: ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign

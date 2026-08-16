@@ -589,7 +589,7 @@
         "type": "object"
       },
       "CreateCampaignRequest": {
-        "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), and such\nservices ignore the field. It is honoured only by a **multi-backend** service\n(``vast serve --backend local+cluster``), which offers both lanes and routes\nper campaign; there ``None`` means \"the service's default lane\" (cluster when\navailable, else local).",
+        "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
         "properties": {
           "backend": {
             "anyOf": [

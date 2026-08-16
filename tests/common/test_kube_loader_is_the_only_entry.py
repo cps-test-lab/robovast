@@ -8,9 +8,9 @@ cluster-touching path already goes through, so the policy cannot be missed". It 
 missed, in ten places: they called ``kubernetes.config.load_kube_config`` directly, so
 every API call on those paths ran with ``timeout=None``.
 
-The visible cost: ``vast serve --backend local+cluster`` against an unreachable cluster
-sat on a TCP connect for over two minutes and then died in a urllib3 traceback — while a
-perfectly usable *local* lane was what the user actually needed. A documented invariant
+The visible cost: an off-cluster ``vast serve --backend cluster`` against an unreachable
+cluster sat on a TCP connect for over two minutes and then died in a urllib3 traceback,
+rather than saying in seconds which cluster it could not reach. A documented invariant
 that nothing checks is a comment; this makes it a test.
 """
 

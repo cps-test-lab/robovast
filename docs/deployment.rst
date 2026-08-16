@@ -30,12 +30,6 @@ as its own separate process/port instead; see :ref:`mcp`).
   In-pod, the Deployment runs ``vast serve --backend cluster``; run ``vast serve
   --backend cluster -x <context>`` off-cluster to debug the driver locally against a
   real cluster.
-* **Dual-lane dev service** — ``vast serve --backend local+cluster`` offers
-  *both* a local Docker lane and a cluster lane in one service and chooses per
-  campaign (``start_campaign`` ``backend``; default cluster). A dev-host mode
-  (needs Docker **and** kubeconfig, off-cluster only): pilot a campaign locally
-  and scale the same session to the cluster without re-pointing serve. The
-  deployed in-cluster service stays single-backend.
 * **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
   <host>`` or ``kubectl port-forward svc/robovast-service 8800:8800`` puts a service
   on the conventional port, and every client finds it there. That is the break-glass

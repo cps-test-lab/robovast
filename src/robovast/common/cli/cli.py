@@ -232,8 +232,7 @@ def _build_cluster_impl(in_pod, context, k8s_namespace, store=None):
 
     In-pod the config/cluster come from the pod env; off-cluster the config is read
     from the deployed robovast-service (the authoritative record), so no local setup
-    is needed. Shared by ``--backend cluster`` and the cluster lane of
-    ``--backend local+cluster`` (``store`` lets the latter pass its shared store).
+    is needed.
     """
     from robovast.service.cluster_service import ClusterService
     if in_pod:
@@ -287,13 +286,10 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'the service is unauthenticated in v1.')
 @click.option('--port', default=8800, show_default=True, type=int,
               help='Port to listen on.')
-@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster',
-                                              'local+cluster']),
+@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
-                   "a Kubernetes pod, else 'local' Docker. 'local+cluster' offers "
-                   "BOTH lanes in one serve and chooses per campaign (dev-host only "
-                   "— needs Docker AND kubeconfig; the default lane is cluster).")
+                   "a Kubernetes pod, else 'local' Docker.")
 @click.option('--context', '-x', default=None, metavar='NAME',
               help='With --backend cluster (run off-cluster): which '
                    'Kubernetes context (default: the active one). For --backend '
@@ -343,12 +339,6 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
       scenarios execute in that cluster — the cluster config is read from the
       deployed robovast-service in that cluster, so it works from any host with
       kubeconfig access (no local setup needed).
-    * **local+cluster** — offers *both* lanes in one service and chooses per
-      campaign (``start_campaign``/``CreateCampaignRequest`` ``backend``; the
-      default lane is cluster). A **dev-host mode**: it needs both Docker and
-      kubeconfig, so it is off-cluster only (refused in a pod — the deployed
-      service is cluster-only). Lets an agent pilot a campaign locally and scale
-      the same session to the cluster without re-pointing serve.
 
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
@@ -373,16 +363,10 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     if backend == 'auto':
         backend = 'cluster' if in_pod else 'local'
 
-    if context is not None and backend not in ('cluster', 'local+cluster'):
+    if context is not None and backend != 'cluster':
         raise click.ClickException(
-            "--context/-x only applies to '--backend cluster' / 'local+cluster' — "
-            "it selects which Kubernetes context to dispatch campaigns into.")
-
-    if backend == 'local+cluster' and in_pod:
-        raise click.ClickException(
-            "--backend local+cluster is a dev-host mode (both lanes in one serve) "
-            "and needs local Docker, which a Kubernetes pod does not have; the "
-            "in-cluster service is cluster-only.")
+            "--context/-x only applies to '--backend cluster' — it selects which "
+            "Kubernetes context to dispatch campaigns into.")
 
     # Pinning uses the directory in place, so it needs the service to run on the host
     # that holds it. That rules out a pod (no such directory) but NOT an off-cluster
@@ -399,15 +383,6 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
         store = WorkspaceStore(workspace_dir=workspace_dir)
         impl = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
         storage = "object store"
-    elif backend == 'local+cluster':
-        # Dev-host dual lane: one shared store so both lanes see the same results dir
-        # and workspaces; the cluster lane is built exactly as '--backend cluster'.
-        from robovast.service.multi_backend import MultiBackendService
-        from robovast.service.workspaces import WorkspaceStore
-        store = WorkspaceStore(workspace_dir=workspace_dir)
-        cluster = _build_cluster_impl(in_pod, context, k8s_namespace, store=store)
-        impl = MultiBackendService(cluster, store=store)
-        storage = "local filesystem + object store"
     else:
         from robovast.service.client import LocalTransport
         impl = LocalTransport(workspace_dir=workspace_dir)

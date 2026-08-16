@@ -168,11 +168,11 @@ def delete_campaign(campaign_id: str = "", data_only: bool = False,
 def _campaign_lane(campaign_id: str, client) -> str:
     """``"cluster"`` or ``"local"`` — the lane **this campaign** ran on.
 
-    Read from the campaign's own record rather than from the service's default backend.
-    A ``vast serve --backend local+cluster`` reports ``version().backend == "docker"``
-    while offering both lanes, so asking the service told every cluster campaign on a
-    dev host that its results were on the local filesystem — a capability denied, and a
-    place to look that holds nothing.
+    Read from the campaign's own record rather than from the service's current backend.
+    A service can be restarted onto the other lane, and past campaigns keep the lane they
+    actually ran on; asking the service instead would tell a cluster campaign that its
+    results were on the local filesystem — a capability denied, and a place to look that
+    holds nothing.
 
     Falls back to the service's backend for a campaign with no record yet (it has not
     reached execution), which is the only case where there is nothing better to ask.

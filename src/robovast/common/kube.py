@@ -103,7 +103,7 @@ def load_kube_config(context: str | None = None) -> str:
     That used to be asserted rather than checked, and it was false in ten places: the
     cluster-config providers, the service deploy/cleanup paths and the RBAC setup all
     loaded config directly, so their API calls ran with ``timeout=None``. The visible
-    cost was ``vast serve --backend local+cluster`` hanging for minutes on an
+    cost was an off-cluster ``vast serve --backend cluster`` hanging for minutes on an
     unreachable cluster and then dying in a urllib3 traceback. A test now enforces it
     (``tests/common/test_kube_loader_is_the_only_entry.py``).
 

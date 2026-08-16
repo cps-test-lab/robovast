@@ -62,10 +62,9 @@ export function LaunchBar() {
     queryFn: () => robovast.listWorkspaces(),
   })
 
-  // The lanes this service offers. A backend picker is shown only when there is
-  // more than one (a `vast serve --backend local+cluster`); it defaults to
-  // cluster (the scaled lane) and is omitted from the request otherwise, so a
-  // single-backend service is unaffected.
+  // The lanes this service offers. A service runs one lane, fixed at `vast serve`
+  // time, so this list has a single entry and the picker below does not render.
+  // Kept until `VersionInfo.backends` and the request's `backend` field go with it.
   const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
   const backends = version.data?.backends ?? []
   const multiBackend = backends.length > 1

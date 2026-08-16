@@ -264,16 +264,3 @@ and deletes code, so it is worth an afternoon's trial before deciding.
 
 If it holds, the port-forward path in ``bucket_ops`` and the reconnect machinery above can
 go with it.
-
-.. _future-dual-lane:
-
-Whether ``--backend local+cluster`` earns its keep
-==================================================
-
-``vast serve --backend local+cluster`` offers both lanes in one service and picks per
-campaign. It costs 549 lines in ``multi_backend.py`` plus a backend choice on the campaign
-API, for a mode that needs Docker **and** a kubeconfig and therefore runs off-cluster only.
-
-The question is simply whether anyone uses it. Removing it would make "pilot locally, then
-scale to the cluster" two commands instead of one session — a real loss, if that is a
-workflow people actually follow. Worth answering before the next person extends it.

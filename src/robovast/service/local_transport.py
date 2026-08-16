@@ -619,8 +619,7 @@ class LocalTransport(RobovastInterface):
         ``.webm`` rather than download it before playing.
 
         **Every transport implements this**, which is why callers must not test for its
-        presence: ``ClusterService`` and ``MultiBackendService`` both subclass this one, so
-        the attribute is never absent and a ``getattr(impl, "local_file", None) is None``
+        presence: ``ClusterService`` subclasses this one, so the attribute is never absent and a ``getattr(impl, "local_file", None) is None``
         check can only ever be False. What differs between the lanes is the *cost* of
         answering, and each says so: here the file is already on disk, and the cluster
         fetches the one object behind the address.

@@ -370,7 +370,7 @@ def test_stop_without_service_fails_loudly(no_service):
 
 @pytest.fixture
 def dual_lane(monkeypatch):
-    """A ``--backend local+cluster`` service: two lanes, ``version().backend`` docker."""
+    """A service whose reported default lane is not the lane a campaign ran on."""
     from robovast.mcp_server import data_access
 
     class _Dual:
@@ -378,8 +378,8 @@ def dual_lane(monkeypatch):
 
         def version(self):
             from robovast.service.interface import VersionInfo
-            # What a MultiBackendService actually reports: the *default* lane, while
-            # offering both. Asking it which lane a campaign used gives the wrong answer.
+            # The service reports its *current* lane. Asking it which lane a past
+            # campaign used gives the wrong answer, which is the point of this fixture.
             return VersionInfo(robovast_version="x", backend="docker",
                                backends=["local", "cluster"])
 

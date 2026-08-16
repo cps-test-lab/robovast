@@ -230,7 +230,7 @@ availability by deployment rather than by backend:
    * - Deployment
      - Pinning
      - How to bind a project
-   * - ``--backend local``, ``local+cluster``
+   * - ``--backend local``
      - yes
      - ``--workspace-dir``; edits on disk are live
    * - ``--backend cluster`` (off-cluster driver)

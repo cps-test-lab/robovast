@@ -137,19 +137,6 @@ def test_the_scene_names_are_reserved_against_plugin_endpoints():
     assert {"scene", "scene_assets"} <= RESERVED_CAMPAIGN_ENDPOINTS
 
 
-def test_the_multi_backend_service_routes_all_three_by_campaign():
-    """A scene request landing on the wrong lane would not find the campaign at all.
-
-    `exec_in_container` was the cautionary case this was written against: it documented a
-    `backend` field MultiBackendService did not route, so `backend="cluster"` was answered
-    by Docker on the serve host. It routes now (see `test_multi_backend`), but the reason
-    the check exists is unchanged — an interface method the cluster lane specializes needs
-    an override here, and nothing but a test says so."""
-    from robovast.service.multi_backend import MultiBackendService
-    for name in ("campaign_scene_status", "run_campaign_scene", "resolve_campaign_scene_asset"):
-        assert name in vars(MultiBackendService), f"{name} is not routed per campaign"
-
-
 def test_a_failed_build_reports_its_reason_instead_of_looking_unbuilt(client, monkeypatch, tmp_path):
     """A failure must reach the panel, not just the service log.
 

@@ -422,21 +422,10 @@ results and is shown by ``list_campaigns`` and on the campaign card in the web
 UI — where it is the only thing telling two same-day ``campaign-<timestamp>``
 ids apart. The launcher in the web UI has the same field.
 
-**Choosing a lane on a dual-backend serve.** A ``vast serve --backend
-local+cluster`` (a dev host with both Docker and kubeconfig) offers *both* lanes
-in one service and routes per campaign. There, three tools take an optional
-``backend`` argument:
-
-* ``start_campaign(backend=…)`` — ``"local"`` pilots on the serve host's Docker;
-  ``"cluster"`` dispatches Kubernetes Jobs. Empty uses the service's **default
-  lane (cluster when available)**.
-* ``build_experiment_image(backend=…)`` — build for the lane you will run on.
-* ``get_resource_usage(backend=…)`` — size the lane you target.
-
-Every other tool is scoped to an existing ``campaign_id`` (or ``build_id``), so
-the service resolves the lane itself and no ``backend`` argument is needed.
-Single-backend services (a plain local or in-cluster ``vast serve``, or
-``--attach``) offer one lane and ignore ``backend``.
+**A service runs one lane.** Which one is fixed when it starts
+(``vast serve --backend local|cluster``, ``auto`` picking cluster in a pod), so no
+tool takes a lane argument: the service resolves it, and every tool scoped to an
+existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ran on.
 
 .. note::
 

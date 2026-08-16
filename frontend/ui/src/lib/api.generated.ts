@@ -1441,11 +1441,10 @@ export interface components {
          *
          *     ``backend`` is normally **absent**: for a single-backend service it is
          *     implicit in *which* service the client is talking to (an in-process/local
-         *     ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), and such
-         *     services ignore the field. It is honoured only by a **multi-backend** service
-         *     (``vast serve --backend local+cluster``), which offers both lanes and routes
-         *     per campaign; there ``None`` means "the service's default lane" (cluster when
-         *     available, else local).
+         *     ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every
+         *     service ignores the field: one service runs one lane, chosen by
+         *     ``vast serve --backend``. Retained only so an older client's request still
+         *     parses; ``None`` is the only meaningful value.
          */
         CreateCampaignRequest: {
             /** Backend */

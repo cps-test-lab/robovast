@@ -1174,9 +1174,9 @@ def _load_kube_config(kube_context=None):
     Goes through :func:`robovast.common.kube.load_kube_config` rather than calling
     ``kubernetes.config`` directly — that is what installs the process-wide **connect
     timeout**. Calling the generated client's loader here instead left every API call on
-    this path with ``timeout=None``, so ``vast serve --backend local+cluster`` against an
-    unreachable cluster hung on a TCP connect for minutes and then died in a urllib3
-    traceback, rather than failing in seconds saying which cluster it could not reach.
+    this path with ``timeout=None``, so an off-cluster driver against an unreachable
+    cluster hung on a TCP connect for minutes and then died in a urllib3 traceback,
+    rather than failing in seconds saying which cluster it could not reach.
 
     The wrapping remains: the underlying loaders raise low-level exceptions
     (``ConfigException``/``FileNotFoundError``/``RuntimeError``) when ``KUBECONFIG`` is

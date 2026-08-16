@@ -2,19 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every implementation of an interface op must accept every parameter the op declares.
 
-``RobovastInterface`` is bound four times over — ``LocalTransport``, ``ClusterService``,
-``MultiBackendService`` and ``HTTPTransport`` — and two of those are *delegators* that
-forward positionally. So adding a parameter to an op and its local implementation leaves a
-trap: the abstract method and the one implementation agree, every type check passes, and the
+``RobovastInterface`` is bound three times over — ``LocalTransport``, ``ClusterService``
+and ``HTTPTransport`` — and ``HTTPTransport`` forwards positionally. So adding a parameter
+to an op and its local implementation leaves a trap: the abstract method and the one implementation agree, every type check passes, and the
 route explodes at runtime with ``takes from 4 to 7 positional arguments but 8 were given``
 the first time a user clicks the thing. That is exactly how ``render_campaign_notebook``'s
 ``batch`` shipped broken.
 
 Nothing else catches it. The parameters are not part of the pydantic models, so the OpenAPI
-schema check does not see them; the delegators forward ``*args`` shaped by hand rather than
-by signature; and no test exercised all four bindings of any single op.
+schema check does not see them; the delegator forwards ``*args`` shaped by hand rather than
+by signature; and no test exercised every binding of any single op.
 
-Parameter *names*, not types or defaults: the delegators pass positionally, so what has to
+Parameter *names*, not types or defaults: the delegator passes positionally, so what has to
 line up is the order and the count, and a name is how you tell whether the right value
 landed in the right slot.
 """
@@ -26,12 +25,11 @@ import pytest
 from robovast.service.http_client import HTTPTransport
 from robovast.service.interface import RobovastInterface
 from robovast.service.local_transport import LocalTransport
-from robovast.service.multi_backend import MultiBackendService
 
 #: Every concrete binding of the interface. ``ClusterService`` is deliberately absent: it
 #: subclasses ``LocalTransport`` and overriding is optional, so an op it does not override
 #: resolves to the parent's and is already covered.
-_IMPLEMENTATIONS = (LocalTransport, MultiBackendService, HTTPTransport)
+_IMPLEMENTATIONS = (LocalTransport, HTTPTransport)
 
 
 def _abstract_ops():
