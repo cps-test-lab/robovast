@@ -37,7 +37,11 @@ venv: venv/.robovast_installed
 # sentinel alone meant an existing venv silently kept whatever was installed the day it
 # was made: adding robovast-cluster stranded every developer's environment without a lane
 # and without a word, and `make venv` cheerfully reported nothing to do.
-venv/.robovast_installed: pyproject.toml src/robovast_nav/pyproject.toml \
+# Makefile itself is a prerequisite: the recipe lives here, so changing *how* the venv is
+# built must re-run it too. Listing only the manifests meant a fix to the install order
+# was a no-op for everyone who already had a venv -- the same silence the sentinel alone
+# used to cause.
+venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.toml \
                           src/robovast_sim_roqsim/pyproject.toml \
                           src/robovast_cluster/pyproject.toml \
                           src/robovast_client/pyproject.toml
@@ -55,13 +59,17 @@ venv/.robovast_installed: pyproject.toml src/robovast_nav/pyproject.toml \
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
 	# with no execution lane but `local`, so `vast exec cluster` disappears and the
 	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
-	# robovast-client goes FIRST and editable: everything else is built on it, and a
-	# non-editable copy pulled in as a dependency would shadow the source tree.
-	. venv/bin/activate && pip install -e src/robovast_client \
-		&& pip install -e .[docs,test,gui] \
+	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
+	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
+	# *copy* into site-packages -- silently replacing an editable install done earlier.
+	# The result is a developer editing src/robovast_client and seeing no effect, with
+	# nothing said. Installing it after everything that depends on it is what makes the
+	# editable install the one that survives.
+	. venv/bin/activate && pip install -e .[docs,test,gui] \
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
-		&& pip install -e src/robovast_cluster
+		&& pip install -e src/robovast_cluster \
+		&& pip install -e src/robovast_client
 
 	@touch venv/.robovast_installed
 	@echo ""

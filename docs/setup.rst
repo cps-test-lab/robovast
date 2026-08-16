@@ -24,17 +24,21 @@ Install RoboVAST and its sibling packages in editable mode:
 
 .. code-block:: bash
 
-   pip install -e src/robovast_client     # the layer everything else is built on
    pip install -e .
    pip install -e src/robovast_nav
    pip install -e src/robovast_sim_roqsim
    pip install -e src/robovast_cluster     # only if you will drive a Kubernetes cluster
+   pip install -e src/robovast_client      # LAST -- see below
 
-Order matters, and it runs both ways. ``robovast-client`` goes **first**: it is the layer the
-core is built on, and it must be editable before anything pulls it in as a dependency. The
-others go after, because each depends on ``robovast`` and never the reverse — which is what
-keeps the dependency graph acyclic. ``poetry install`` at the root will **not** give you the
-lanes: they are separate distributions built on this one, not extras of it.
+Order matters, and ``robovast-client`` last is the part that surprises. It is a
+**non-optional path dependency** of ``robovast``, so ``pip install -e .`` resolves it and
+installs a plain *copy* into ``site-packages`` — silently replacing an editable install done
+earlier. Editing ``src/robovast_client`` then has no effect, with nothing said. Installing it
+after everything that depends on it is what makes the editable install the one that survives.
+
+The others go in the order shown because each depends on ``robovast`` and never the reverse —
+which is what keeps the dependency graph acyclic. ``poetry install`` at the root will **not**
+give you the lanes: they are separate distributions built on this one, not extras of it.
 
 ``pip install -e src/robovast_client`` alone is a complete, supported install — a ``vast`` that
 can log in, push workspaces, have the service build their images, wait for campaigns and fetch

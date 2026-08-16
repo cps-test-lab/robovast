@@ -463,12 +463,20 @@ def _file_errors(func):
     a read-only namespace, a malformed address, a binary file, a missing campaign. The
     interface raises ``ValueError``/``KeyError`` so the HTTP layer can map them to
     400/404; on the CLI the same information belongs on one line.
+
+    ``ServiceError`` is in the list for the same refusals arriving over HTTP. Catching only
+    the in-process types meant a local ``vast files cat`` on a missing path printed one
+    clean line while the identical command against a remote service printed a 40-frame
+    traceback ending in ``ServiceError: Not Found`` — the same refusal, told two ways,
+    decided by where the service happened to be.
     """
     @functools.wraps(func)
     def _wrapped(*args, **kwargs):
+        from robovast.service.interface import \
+            ServiceError  # pylint: disable=import-outside-toplevel
         try:
             return func(*args, **kwargs)
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, ServiceError) as e:
             # ``str(KeyError("x"))`` is ``"'x'"`` — take the argument itself, or the
             # message would be shown wrapped in stray quotes.
             message = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
