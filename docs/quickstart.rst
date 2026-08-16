@@ -35,16 +35,26 @@ On this machine
    make venv && source venv/bin/activate
    vast serve
 
-``vast serve`` prints a URL carrying a temporary access token:
+``vast serve`` prints what each of its two clients needs:
 
 .. code-block:: text
 
      RoboVAST: http://127.0.0.1:8800/login?token=a7f3…
 
-Click it. That token is generated because none was configured, and it changes on every
-restart — set ``ROBOVAST_AUTH_TOKEN`` in ``.env`` to fix it. There is no unauthenticated
-mode: the service always requires the token, so a development instance and a deployed one
-behave the same way.
+     For an agent:
+       claude mcp add --transport http robovast http://127.0.0.1:8800/mcp \
+         --header 'Authorization: Bearer a7f3…'
+
+     (no ROBOVAST_AUTH_TOKEN configured, so this token is temporary and changes on restart;
+      set it in .env to keep a browser login and an agent registration working across restarts)
+
+Click the first; paste the second. There is no unauthenticated mode: the service always
+requires the token, so a development instance and a deployed one behave the same way.
+
+Heed the last line if you are using an agent. A registration carrying a temporary token
+authenticates nothing after the next restart, and the failure looks like the service being
+down rather than the token having changed. Setting ``ROBOVAST_AUTH_TOKEN`` in ``.env``
+makes both the login and the registration durable.
 
 The web UI, the REST API and the MCP server are all on that one port.
 

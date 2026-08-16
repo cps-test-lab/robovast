@@ -1210,6 +1210,43 @@ def _mount_ui(app) -> None:
     logger.info("serving web UI from %s", dist)
 
 
+def startup_banner(base_url: str, token: str, *, ephemeral: bool,
+                   mount_mcp: bool) -> str:
+    """What ``vast serve`` prints for the two clients a person is about to point here.
+
+    Printed rather than logged: these are the lines the person starting the service has
+    to act on, and a log level could hide them.
+
+    A **browser** gets a link with the token in it, so "no token was configured" is
+    answered by something to click rather than a secret to hunt for -- the shape Jupyter
+    has used for years. An **agent** cannot click, so it gets the registration command
+    instead, rendered by the same helper ``vast login`` and ``vast exec cluster token``
+    use: three places hand out access to this service and the header set must not drift
+    between them.
+
+    The ephemeral note comes last because it qualifies both, and because it is the whole
+    difference between a registration that survives a restart and one that silently stops
+    authenticating the next time the service comes up. A configured token needs no note:
+    whoever set it can reuse it.
+    """
+    lines = []
+    if ephemeral:
+        lines.append(f"  RoboVAST: {base_url}{Routes.LOGIN}?token={token}")
+    if mount_mcp:
+        from robovast.common.cli.login import \
+            mcp_add_command  # pylint: disable=import-outside-toplevel
+        lines.append("  For an agent:\n    "
+                     + " \\\n      ".join(mcp_add_command(base_url, token)))
+    if not lines:
+        return ""
+    if ephemeral:
+        lines.append(
+            f"  (no {auth.TOKEN_ENV_VAR} configured, so this token is temporary and "
+            f"changes on restart;\n   set it in .env to keep a browser login and an "
+            f"agent registration working across restarts)")
+    return "\n" + "\n\n".join(lines) + "\n"
+
+
 def _proxy_trust(env) -> tuple:
     """Whether to believe ``X-Forwarded-*``, as ``(proxy_headers, allow_ips)``.
 
@@ -1272,18 +1309,12 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     logger.info("robovast-service listening on %s:%d (OpenAPI at /docs%s)",
                 host, port, mcp_note)
 
-    if ephemeral:
-        # Printed, not logged: it is the one line the person starting the service has to
-        # act on, and a log level could hide it. The URL carries the token so the answer
-        # to "no token was configured" is a link to click rather than a secret to hunt
-        # for -- the shape Jupyter has used for years.
-        scheme = "http"
-        display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104
-        print(f"\n  RoboVAST: {scheme}://{display_host}:{port}"
-              f"{Routes.LOGIN}?token={token}\n"
-              f"  (no {auth.TOKEN_ENV_VAR} configured, so this one is temporary and "
-              f"changes on restart)\n", flush=True)
-    else:
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104
+    banner = startup_banner(f"http://{display_host}:{port}", token,
+                            ephemeral=ephemeral, mount_mcp=mount_mcp)
+    if banner:
+        print(banner, flush=True)
+    if not ephemeral:
         logger.info("authenticating with the configured %s", auth.TOKEN_ENV_VAR)
 
     # These four vars are the only knobs that move a campaign off the built-in
