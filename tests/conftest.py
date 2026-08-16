@@ -44,6 +44,32 @@ def _isolated_login_config(tmp_path, monkeypatch):
     monkeypatch.setenv(login.CONFIG_ENV_VAR, str(tmp_path / "robovast-login.json"))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_environment():
+    """No test may leak the developer's ``./.env`` into another.
+
+    Same shape as the login isolation above, and found the same way. The CLI reads
+    ``./.env`` once per invocation, so any test that invokes a command loads the
+    maintainer's real registry, share and ntfy settings into ``os.environ`` -- where they
+    stay, for every test that runs afterwards in the same process.
+
+    That is not hypothetical: with a ``ROBOVAST_REGISTRY_*`` block in the checkout's
+    ``.env``, seven ``test_service_deploy`` assertions failed in a full run and passed in
+    isolation, because ``deploy_service`` had built registry Secrets they never asked for.
+    The suite had been green only because a stale entry point meant ``.env`` was silently
+    never read at all.
+
+    Snapshot-and-restore rather than stripping ``ROBOVAST_*``: tests that set these
+    deliberately must keep working, and the leak is the *persistence*, not the value.
+    """
+    import os  # pylint: disable=import-outside-toplevel
+    before = dict(os.environ)
+    yield
+    if os.environ != before:
+        os.environ.clear()
+        os.environ.update(before)
+
+
 def simulator_backends() -> list[str]:
     """Registered simulator backends, by name."""
     return sorted(e.name for e in entry_points(group=SIMULATOR_GROUP))

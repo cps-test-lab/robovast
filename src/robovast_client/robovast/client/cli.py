@@ -729,12 +729,38 @@ def run_startup_hooks():
     unusable ``.env`` -- and is reported as such. Anything else propagates: a hook is
     installed capability, not an optional extra, so a broken one is a broken install and
     must not be swallowed into a CLI that then behaves subtly differently.
+
+    **A missing hook is checked for, not assumed absent.** Entry points are baked into a
+    distribution's installed metadata, so adding one to `pyproject.toml` does nothing
+    until the package is reinstalled -- and an editable checkout looks completely normal
+    in the meantime. That silence cost real damage once: with the core installed but its
+    hook unregistered, no `.env` was read, and `vast exec cluster upgrade` concluded the
+    registry and git credentials "configuration is gone" and deleted both Secrets. So if
+    the core is installed and contributed nothing, say so instead of running on.
     """
-    for ep in entry_points(group=STARTUP_HOOK_GROUP):
+    hooks = list(entry_points(group=STARTUP_HOOK_GROUP))
+    if not hooks and _core_installed():
+        raise click.ClickException(
+            "robovast is installed but registered no startup hooks, so ./.env was not "
+            "read -- every image pin and credential in it is invisible to this command. "
+            "The entry points are stale: re-run 'pip install -e .' (or 'make venv') in "
+            "the robovast checkout.")
+    for ep in hooks:
         try:
             ep.load()()
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
+
+
+def _core_installed() -> bool:
+    """Whether the ``robovast`` distribution is present, as opposed to the client alone."""
+    from importlib.metadata import (  # pylint: disable=import-outside-toplevel
+        PackageNotFoundError, distribution)
+    try:
+        distribution("robovast")
+        return True
+    except PackageNotFoundError:
+        return False
 
 
 def load_plugins():

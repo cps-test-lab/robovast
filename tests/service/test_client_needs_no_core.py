@@ -63,6 +63,16 @@ def without_core(monkeypatch):
     for loaded in [m for m in sys.modules
                    if any(m == n or m.startswith(n + ".") for n in CORE_ONLY)]:
         monkeypatch.delitem(sys.modules, loaded, raising=False)
+
+    # A real client-only install has no `robovast` *distribution* either, so it
+    # contributes no startup hooks and none are expected. Blocking only the modules left
+    # the metadata behind, so the CLI correctly concluded the core was installed and then
+    # failed loading its hook -- which is the right behaviour for a genuinely stale
+    # install, and the wrong simulation of this one.
+    from robovast.client import cli as client_cli  # pylint: disable=import-outside-toplevel
+    monkeypatch.setattr(client_cli, "_core_installed", lambda: False)
+    monkeypatch.setattr(client_cli, "entry_points", lambda group: [])
+
     yield
     if finder in sys.meta_path:
         sys.meta_path.remove(finder)
