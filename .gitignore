@@ -5,12 +5,10 @@ build/
 # (robovast_nav 1.0.0, committed at some point and now stale), and a rule claiming to
 # ignore tracked files misleads without changing anything.
 /dist/
-# The sibling distributions' build output. Named individually rather than as
-# `src/*/dist/`, because src/robovast_nav/dist/ holds wheels that are *tracked* and a
-# rule claiming to ignore them would mislead without changing anything.
-src/robovast_client/dist/
-src/robovast_cluster/dist/
-src/robovast_sim_roqsim/dist/
+# The sibling distributions' build output. `src/robovast_nav/dist/` once held *tracked*
+# wheels (robovast_nav 1.0.0, committed in an early cluster commit and stale ever since
+# against the package's 2.0.0); they are gone, so the glob is honest now.
+src/*/dist/
 install/
 log/
 **/__pycache__
