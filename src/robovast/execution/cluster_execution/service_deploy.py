@@ -318,7 +318,7 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
 
     from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         pod_pending_reason  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
@@ -1056,7 +1056,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
@@ -1173,7 +1173,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
 def _load_kube_config(kube_context=None):
     """Load kube config through the shared loader, with a CLI-friendly error.
 
-    Goes through :func:`robovast.common.kube.load_kube_config` rather than calling
+    Goes through :func:`~robovast.execution.cluster_execution.kube_client.load_kube_config`
+    rather than calling
     ``kubernetes.config`` directly — that is what installs the process-wide **connect
     timeout**. Calling the generated client's loader here instead left every API call on
     this path with ``timeout=None``, so an off-cluster driver against an unreachable
@@ -1189,7 +1190,7 @@ def _load_kube_config(kube_context=None):
     from kubernetes.config.config_exception import \
         ConfigException  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         load_kube_config  # pylint: disable=import-outside-toplevel
 
     try:
@@ -1221,7 +1222,7 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
     from urllib3.exceptions import \
         HTTPError  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         CONNECT_TIMEOUT_SECONDS  # pylint: disable=import-outside-toplevel
     _load_kube_config(kube_context)
     # One attempt, explicitly bounded. The process-wide policy sets a connect timeout per
@@ -1278,7 +1279,7 @@ def delete_service(namespace="default", kube_context=None):
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         load_kube_config  # pylint: disable=import-outside-toplevel
 
     try:

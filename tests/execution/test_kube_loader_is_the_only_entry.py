@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every cluster-touching path must load kube config through the shared loader.
 
-:func:`robovast.common.kube.load_kube_config` is where the process-wide **connect
-timeout** is installed, and its docstring called itself "the one entry point every
+:func:`robovast.execution.cluster_execution.kube_client.load_kube_config` is where the
+process-wide **connect timeout** is installed, and its docstring called itself "the one entry point every
 cluster-touching path already goes through, so the policy cannot be missed". It was
 missed, in ten places: they called ``kubernetes.config.load_kube_config`` directly, so
 every API call on those paths ran with ``timeout=None``.
@@ -19,7 +19,7 @@ import re
 
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "robovast"
 #: The one module allowed to call the generated client's loader.
-CANONICAL = SRC / "common" / "kube.py"
+CANONICAL = SRC / "execution" / "cluster_execution" / "kube_client.py"
 _DIRECT_CALL = re.compile(r"^[^#]*\bconfig\.load_kube_config\s*\(")
 _DIRECT_INCLUSTER = re.compile(r"^[^#]*\bconfig\.load_incluster_config\s*\(")
 
@@ -40,19 +40,21 @@ def test_nothing_bypasses_the_shared_kube_loader():
     assert not offenders, (
         "these call kubernetes.config.load_kube_config directly, so their API calls get "
         "no connect timeout and can hang for minutes against an unreachable cluster. "
-        "Use robovast.common.kube.load_kube_config instead:\n  " + "\n  ".join(offenders))
+        "Use cluster_execution.kube_client.load_kube_config instead:\n  "
+        + "\n  ".join(offenders))
 
 
 def test_nothing_bypasses_the_shared_loader_for_in_cluster_config():
     offenders = _offenders(_DIRECT_INCLUSTER)
     assert not offenders, (
         "these load in-cluster config directly and so skip the connect-timeout policy; "
-        "robovast.common.kube.load_kube_config already tries in-cluster first:\n  "
+        "cluster_execution.kube_client.load_kube_config already tries in-cluster "
+        "first:\n  "
         + "\n  ".join(offenders))
 
 
 def test_the_loader_installs_a_bounded_connect_timeout():
-    from robovast.common import kube
+    from robovast.execution.cluster_execution import kube_client as kube
     assert kube.CONNECT_TIMEOUT_SECONDS > 0
     # Overridable, because "the cluster is simply slow" and "the cluster is down" want
     # different limits, and the error message points at this knob.

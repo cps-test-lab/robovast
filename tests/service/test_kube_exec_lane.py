@@ -88,7 +88,8 @@ def test_the_service_kube_context_is_honoured(monkeypatch):
     def fake_load(context=None):
         seen["context"] = context
 
-    monkeypatch.setattr("robovast.common.kube.load_kube_config", fake_load)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.load_kube_config", fake_load)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
     KubeExecLane("ns", kube_context="local")._client()
     assert seen["context"] == "local"
@@ -111,7 +112,7 @@ def test_stopping_waits_for_the_pod_to_actually_be_gone():
     source = inspect.getsource(KubeExecLane.stop_held)
     assert "wait_pod_gone" in source
     wait = inspect.getsource(__import__(
-        "robovast.common.kube", fromlist=["x"]).wait_pod_gone)
+        "robovast.execution.cluster_execution.kube_client", fromlist=["x"]).wait_pod_gone)
     assert "read_namespaced_pod" in wait
     assert "404" in wait, "absence is how it knows deletion finished"
 

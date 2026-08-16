@@ -186,7 +186,7 @@ class ClusterService(LocalTransport):
         try:
             from kubernetes import client as k8s_client
 
-            from robovast.common.kube import load_kube_config
+            from robovast.execution.cluster_execution.kube_client import load_kube_config
             load_kube_config(context=self.kube_context)
             return k8s_client.Configuration.get_default_copy().host
         except Exception:  # noqa: BLE001 - informational field, never fatal
@@ -213,7 +213,7 @@ class ClusterService(LocalTransport):
         Requires the service's ClusterRole (nodes/pods get,list — see
         ``service_deploy._service_rbac_manifests``).
         """
-        from robovast.common.kube import \
+        from robovast.execution.cluster_execution.kube_client import \
             pod_workload_containers  # pylint: disable=import-outside-toplevel
         from robovast.execution.cluster_execution.kubernetes_kueue import \
             _parse_resource  # pylint: disable=import-outside-toplevel
@@ -444,7 +444,7 @@ class ClusterService(LocalTransport):
 
 
     def _load_kube(self):
-        from robovast.common.kube import load_kube_config
+        from robovast.execution.cluster_execution.kube_client import load_kube_config
         load_kube_config(context=self.kube_context)
 
     def _k8s(self):

@@ -302,7 +302,7 @@ def _get_cluster_info(context=None):
     try:
         from kubernetes import \
             client as k8s_client_lib  # pylint: disable=import-outside-toplevel
-        from robovast.common.kube import \
+        from robovast.execution.cluster_execution.kube_client import \
             load_kube_config  # pylint: disable=import-outside-toplevel
         load_kube_config(context=context)
 

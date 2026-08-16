@@ -426,9 +426,9 @@ def monitor(interval, once, kube_context, namespace):
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they made `vast login` and `vast wait` pay for the cluster stack.
-    from robovast.common.cluster_context import (  # pylint: disable=import-outside-toplevel
+    from .cluster_context import (  # pylint: disable=import-outside-toplevel
         get_active_kube_context, get_config_context_names)
-    from robovast.execution.cluster_execution.cluster_execution import \
+    from .cluster_execution import \
         get_cluster_job_counts_per_campaign  # pylint: disable=import-outside-toplevel
     try:
         cursor_up = "\033[A"
@@ -556,7 +556,7 @@ def monitor(interval, once, kube_context, namespace):
             return lines, all_done
 
         def _print_status_lines():
-            from robovast.execution.cluster_execution.cluster_execution import \
+            from .cluster_execution import \
                 get_cluster_job_counts_per_campaign  # pylint: disable=import-outside-toplevel
             all_lines = []
             everything_done = True
@@ -565,7 +565,7 @@ def monitor(interval, once, kube_context, namespace):
                 try:
                     # Suppress urllib3 retry warnings for unreachable contexts — this
                     # display reports reachability itself, one line below.
-                    from robovast.common.kube import quiet_urllib3_retries
+                    from .kube_client import quiet_urllib3_retries
                     with quiet_urllib3_retries():
                         per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
                 except Exception as exc:
@@ -847,9 +847,9 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they made `vast login` and `vast wait` pay for the cluster stack.
-    from robovast.common.cluster_context import \
+    from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from robovast.execution.cluster_execution.cluster_setup import \
+    from .cluster_setup import \
         setup_server  # pylint: disable=import-outside-toplevel
     if list_configs:
         try:
@@ -963,12 +963,12 @@ def run_cleanup(campaign, data, force, namespace, context):
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they made `vast login` and `vast wait` pay for the cluster stack.
-    from robovast.common.cluster_context import \
+    from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from robovast.execution.cluster_execution.cluster_execution import (  # pylint: disable=import-outside-toplevel
+    from .cluster_execution import (  # pylint: disable=import-outside-toplevel
         _label_safe_campaign, cleanup_cluster_campaign,
         get_cluster_job_counts_per_campaign)
-    from robovast.execution.cluster_execution.kubernetes import (  # pylint: disable=import-outside-toplevel
+    from .kubernetes import (  # pylint: disable=import-outside-toplevel
         check_kubernetes_access, get_kubernetes_client)
     try:
         require_context_for_multi_cluster(context, get_vast_file_override())
@@ -1073,9 +1073,9 @@ def upgrade(namespace, kube_context):
 
     Campaign data lives in the object store and survives both.
     """
-    from robovast.execution.cluster_execution.cluster_setup import \
+    from .cluster_setup import \
         apply_controller_rbac
-    from robovast.execution.cluster_execution.service_deploy import (
+    from .service_deploy import (
         deploy_service, published_host, read_service_config_from_cluster,
         reconcile_registry_ingress_path, wait_for_service_ready)
 
@@ -1131,7 +1131,7 @@ def cluster_token(namespace, kube_context, quiet):
       vast exec cluster token -q         the token alone
       vast exec cluster token -x prod    a specific cluster
     """
-    from robovast.execution.cluster_execution.service_deploy import (
+    from .service_deploy import (
         existing_auth_token, published_url)
 
     try:
@@ -1199,9 +1199,9 @@ def cleanup(config_name, namespace, options, kube_context):
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they made `vast login` and `vast wait` pay for the cluster stack.
-    from robovast.common.cluster_context import \
+    from .cluster_context import \
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
-    from robovast.execution.cluster_execution.cluster_setup import \
+    from .cluster_setup import \
         delete_server  # pylint: disable=import-outside-toplevel
     try:
         require_context_for_multi_cluster(kube_context, get_vast_file_override())

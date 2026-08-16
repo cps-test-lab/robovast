@@ -20,7 +20,7 @@ import logging
 import yaml
 from kubernetes import client
 
-from robovast.common.kube import load_kube_config
+from robovast.execution.cluster_execution.kube_client import load_kube_config
 
 from ..cluster_execution.kubernetes import (apply_manifests, check_pod_running,
                                             delete_manifests)

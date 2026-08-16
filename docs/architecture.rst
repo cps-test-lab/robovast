@@ -319,7 +319,7 @@ The lane-specific half is a small protocol (``ExecLane``): ``DockerExecLane`` ru
 ``docker run``/``docker exec``, ``KubeExecLane`` an aux pod plus ``pods/exec``. Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
-``exec_stream`` in ``robovast.common.kube``; they live in ``common`` because the execution
+``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
 engine may not import ``robovast.service``).
 
 **The diagnostic stages the way a run stages.** In-cluster, ``/config`` is uploaded to the
@@ -837,7 +837,7 @@ lives in the ``run_data`` MCP plugin):
   stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
   container: the ROS shape gives the simulator and the system under test their own, and
   on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
-  are found via ``common.kube.pod_workload_containers``. They report live state only; the persisted per-run logs remain
+  are found via ``cluster_execution.kube_client.pod_workload_containers``. They report live state only; the persisted per-run logs remain
   part of the campaign result data, served by ``get_campaign_logs`` unchanged.
   ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
   the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign

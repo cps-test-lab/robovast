@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from robovast.common.kube import (exec_stream, pod_pending_reason,
+from robovast.execution.cluster_execution.kube_client import (exec_stream, pod_pending_reason,
                                   pod_workload_containers, wait_pod_gone,
                                   wait_pod_ready)
 

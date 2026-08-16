@@ -106,7 +106,7 @@ class KubeExecLane:
         if self._core is None:
             from kubernetes import client
 
-            from robovast.common.kube import load_kube_config
+            from robovast.execution.cluster_execution.kube_client import load_kube_config
             load_kube_config(context=self._kube_context)
             self._core = client.CoreV1Api()
         return self._core
@@ -145,7 +145,7 @@ class KubeExecLane:
     def start_held(self, spec: ExecSpec, deadline_s: int) -> None:
         from kubernetes.client.rest import ApiException
 
-        from robovast.common.kube import wait_pod_ready
+        from robovast.execution.cluster_execution.kube_client import wait_pod_ready
         core = self._client()
         self.stop_held()
         prefix = self._stage(spec)
@@ -196,7 +196,7 @@ class KubeExecLane:
 
     def exec_in_held(self, spec: ExecSpec, limit_s: int,
                      detach: bool) -> tuple[int, str, str, bool]:
-        from robovast.common.kube import exec_stream
+        from robovast.execution.cluster_execution.kube_client import exec_stream
         # Both forms come from the spec, so the liveness check a detached start needs
         # cannot be present on one lane and missing on the other — which is exactly how
         # it was, until a scenario silently failed to start.
@@ -220,7 +220,7 @@ class KubeExecLane:
         """
         from kubernetes.client.rest import ApiException
 
-        from robovast.common.kube import wait_pod_gone
+        from robovast.execution.cluster_execution.kube_client import wait_pod_gone
         core = self._client()
         existed = False
         try:
@@ -260,7 +260,7 @@ class KubeExecLane:
         """
         from kubernetes.client.rest import ApiException
 
-        from robovast.common.kube import exec_stream
+        from robovast.execution.cluster_execution.kube_client import exec_stream
         try:
             _code, out, _err, _timed_out = exec_stream(
                 self._client(), _pod_name(), self._namespace, _CONTAINER,

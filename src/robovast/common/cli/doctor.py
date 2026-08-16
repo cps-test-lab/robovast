@@ -122,7 +122,7 @@ def check_cluster(context: str | None = None) -> list[Check]:
     diagnostic command that dies while diagnosing is the one failure it cannot have.
     """
     try:
-        from robovast.common.kube import \
+        from robovast.execution.cluster_execution.kube_client import \
             load_kube_config  # pylint: disable=import-outside-toplevel
         loaded = load_kube_config(context=context)
     except ImportError:
@@ -138,7 +138,7 @@ def check_cluster(context: str | None = None) -> list[Check]:
 
     from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from robovast.execution.cluster_execution.kube_client import \
         quiet_urllib3_retries  # pylint: disable=import-outside-toplevel
 
     # urllib3 prints a warning per retry attempt while it is still deciding whether the

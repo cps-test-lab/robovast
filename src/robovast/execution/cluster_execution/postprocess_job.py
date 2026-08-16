@@ -122,7 +122,7 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str) -> int:
     rosbag. The Job mirrored its outputs at campaign-relative paths, so they land
     directly at ``<campaign_root>/<config>/<run>/``.
     """
-    from robovast.execution.cluster_execution import in_pod_storage  # noqa: PLC0415
+    from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)
@@ -333,7 +333,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
     """
     from importlib.resources import files  # noqa: PLC0415
 
-    from robovast.execution.cluster_execution.cluster_execution import (  # noqa: PLC0415
+    from .cluster_execution import (  # noqa: PLC0415
         _label_safe_campaign)
 
     data_dir = files("robovast.results_processing.data")
@@ -377,7 +377,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
     ``results_processing/data`` — the K8s analog of ``docker_exec.sh``'s
     ``-v <scripts>:/scripts`` — so the script version always matches the driver.
     """
-    from robovast.execution.cluster_execution.cluster_execution import (  # noqa: PLC0415
+    from .cluster_execution import (  # noqa: PLC0415
         _label_safe_campaign)
 
     endpoint, access_key, secret_key, bucket, campaign_prefix = s3
@@ -475,7 +475,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     from kubernetes import client  # noqa: PLC0415
     from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
-    from robovast.execution.cluster_execution import in_pod_storage  # noqa: PLC0415
+    from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)

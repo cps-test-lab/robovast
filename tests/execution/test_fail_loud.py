@@ -73,7 +73,7 @@ def test_kueue_quota_raises_when_no_allocatable_cpu():
     node.status.allocatable = {"cpu": "0", "memory": "0"}
     node_list = mock.Mock(items=[node])
 
-    with mock.patch("robovast.common.kube.load_kube_config"), \
+    with mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch.object(kubernetes_kueue.client, "CoreV1Api") as api:
         api.return_value.list_node.return_value = node_list
         with pytest.raises(RuntimeError, match="No allocatable CPU"):
@@ -84,7 +84,7 @@ def test_kueue_quota_raises_when_query_fails():
     """A failed node query must raise, not fall back to a hard-coded quota."""
     from robovast.execution.cluster_execution import kubernetes_kueue
 
-    with mock.patch("robovast.common.kube.load_kube_config"), \
+    with mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch.object(kubernetes_kueue.client, "CoreV1Api") as api:
         api.return_value.list_node.side_effect = RuntimeError("api unreachable")
         with pytest.raises(RuntimeError, match="Failed to query cluster resources"):
@@ -125,7 +125,7 @@ def test_load_kube_config_raises_when_no_source():
     """Neither in-cluster nor host config available must raise, not proceed silently."""
     from kubernetes import config as kc
 
-    from robovast.common.kube import load_kube_config
+    from robovast.execution.cluster_execution.kube_client import load_kube_config
     with mock.patch.object(kc, "load_incluster_config",
                            side_effect=kc.ConfigException("not in cluster")), \
          mock.patch.object(kc, "load_kube_config",
@@ -137,7 +137,7 @@ def test_load_kube_config_raises_when_no_source():
 def test_load_kube_config_prefers_in_cluster():
     from kubernetes import config as kc
 
-    from robovast.common.kube import load_kube_config
+    from robovast.execution.cluster_execution.kube_client import load_kube_config
     with mock.patch.object(kc, "load_incluster_config", return_value=None):
         assert load_kube_config() == "in-cluster"
 
@@ -181,7 +181,7 @@ def _verify(api, **kwargs):
     from robovast.execution.cluster_execution import kubernetes_kueue
     with mock.patch.object(kubernetes_kueue.client, "CustomObjectsApi",
                            return_value=api), \
-         mock.patch("robovast.common.kube.load_kube_config"):
+         mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"):
         return kubernetes_kueue.verify_kueue_admission_ready(namespace="ns", **kwargs)
 
 

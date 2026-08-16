@@ -319,7 +319,7 @@ def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch):
 
     runner = _runner()
     monkeypatch.setattr(
-        "robovast.common.kube.exec_stream",
+        "robovast.execution.cluster_execution.kube_client.exec_stream",
         lambda *a, **k: (124, "", "", True))
     with pytest.raises(subprocess.CalledProcessError) as excinfo:
         runner._exec(["sleep", "infinity"])
@@ -335,7 +335,7 @@ def test_the_exec_bound_is_passed_through_not_ignored(monkeypatch):
         return 0, "ok", "", False
 
     runner = _runner()
-    monkeypatch.setattr("robovast.common.kube.exec_stream", fake_stream)
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.exec_stream", fake_stream)
     assert runner._exec(["true"]) == "ok"
     assert seen["limit_s"] == AUX_EXEC_LIMIT_S
 
@@ -364,10 +364,10 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
             raise AssertionError("should go through the shared helpers")
 
     monkeypatch.setattr(
-        "robovast.common.kube.wait_pod_gone",
+        "robovast.execution.cluster_execution.kube_client.wait_pod_gone",
         lambda *a, **k: events.append("wait_gone"))
     monkeypatch.setattr(
-        "robovast.common.kube.wait_pod_ready",
+        "robovast.execution.cluster_execution.kube_client.wait_pod_ready",
         lambda *a, **k: events.append("wait_ready"))
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.container_runner."
@@ -392,7 +392,7 @@ def test_the_session_honours_the_service_context(monkeypatch):
     and no test, and it sent a standalone driver to a different cloud.
     """
     seen = {}
-    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         lambda context=None: seen.update(context=context))
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
     AuxPodSession("c-1", [], "ns", kube_context="local")._client()
@@ -401,7 +401,7 @@ def test_the_session_honours_the_service_context(monkeypatch):
 
 def test_the_runner_honours_the_service_context(monkeypatch):
     seen = {}
-    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         lambda context=None: seen.update(context=context))
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
     spec = ContainerSpec(image="example/img:1")

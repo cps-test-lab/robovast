@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from robovast.common import kube
+from robovast.execution.cluster_execution import kube_client as kube
 
 
 @pytest.fixture

@@ -30,7 +30,7 @@ class ClusterServeBackend:
         if in_pod:
             return ClusterService(kube_context=context, store=store)
 
-        from robovast.execution.cluster_execution.service_deploy import \
+        from .service_deploy import \
             read_service_config_from_cluster  # pylint: disable=import-outside-toplevel
         name, kwargs = read_service_config_from_cluster(namespace, context)
         if not name:

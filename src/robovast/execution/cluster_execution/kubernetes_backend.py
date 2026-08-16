@@ -66,7 +66,7 @@ from kubernetes import client
 
 from robovast.common import (COMPAT_VERSION, get_execution_env_variables,
                              plan_containers, scenario_env)
-from robovast.common.cluster_context import resolve_resources
+from .cluster_context import resolve_resources
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents,
@@ -346,7 +346,7 @@ class BatchJobRunner:
         """Initialise Kubernetes clients from the in-cluster service account."""
         if self._k8s_initialized:
             return
-        from robovast.common.kube import load_kube_config  # pylint: disable=import-outside-toplevel
+        from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
         # In-cluster in the service pod; host kubeconfig for host-side dry-runs / tests.
         load_kube_config(context=self.kube_context)
         self.k8s_client = client.CoreV1Api()
@@ -430,7 +430,7 @@ class BatchJobRunner:
         try:
             pull_secret = self.cluster_config.get_registry_config().pull_secret_name
             if not pull_secret:
-                from robovast.execution.cluster_execution.service_deploy import \
+                from .service_deploy import \
                     REGISTRY_PUSH_SECRET_NAME
                 from kubernetes import client as _k8s_client
                 try:
@@ -1266,7 +1266,7 @@ class KubernetesBackend(ExecutionBackend):
         """
         from robovast.execution.backends import \
             CampaignConfigError  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution import \
+        from . import \
             in_pod_upload  # pylint: disable=import-outside-toplevel
 
         if not in_pod_upload.share_type_configured():
@@ -1291,7 +1291,7 @@ class KubernetesBackend(ExecutionBackend):
         controller wraps this call).
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution import in_pod_upload  # pylint: disable=import-outside-toplevel
+        from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 
         from robovast.execution.backends import \
             CampaignConfigError  # pylint: disable=import-outside-toplevel

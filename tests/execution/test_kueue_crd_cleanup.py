@@ -29,7 +29,9 @@ def _crd(name, group="kueue.x-k8s.io", annotations=None):
 
 @pytest.fixture(autouse=True)
 def _no_kube(monkeypatch):
-    monkeypatch.setattr("robovast.common.kube.load_kube_config", lambda context=None: "")
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.load_kube_config",
+        lambda context=None: "")
 
 
 def test_a_crd_without_helm_ownership_is_reported_as_orphaned(monkeypatch):

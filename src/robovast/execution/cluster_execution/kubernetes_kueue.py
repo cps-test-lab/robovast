@@ -145,7 +145,7 @@ def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
         stop_policy: Policy string, e.g. ``"Hold"``.
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     load_kube_config(context=kube_context)
     custom_api = client.CustomObjectsApi()
     body = {"spec": {"stopPolicy": stop_policy if stop_policy else "None"}}
@@ -249,7 +249,7 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
             queue that has been up for a while, so a real breakage fails immediately.
     """
     from robovast.common.errors import CampaignConfigError
-    from robovast.common.kube import api_transport_errors, load_kube_config
+    from .kube_client import api_transport_errors, load_kube_config
     load_kube_config(context=kube_context)
     deadline = time.monotonic() + settle_timeout
     while True:
@@ -560,7 +560,7 @@ def delete_kueue_webhook_configs(kube_context=None):
     Args:
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     load_kube_config(context=kube_context)
     admission_api = client.AdmissionregistrationV1Api()
     for name, deleter in [
@@ -591,7 +591,7 @@ def cleanup_kueue_cluster_resources(kube_context=None):
     Args:
         kube_context: Kubernetes context to use. ``None`` uses the active context.
     """
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     load_kube_config(context=kube_context)
     # Remove the admission webhooks first: if the kueue-controller-manager pods
     # are already gone, the webhook calls fail and block the finalizer patches
@@ -668,7 +668,7 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
 
     # 2. Generic K8s node query — total allocatable (autoscaling-safe)
     try:
-        from robovast.common.kube import load_kube_config
+        from .kube_client import load_kube_config
         load_kube_config(context=kube_context)
 
         v1 = client.CoreV1Api()
@@ -974,7 +974,7 @@ def orphaned_kueue_crds(kube_context=None):
     lingers, carrying Helm's *labels* but none of its ownership, and the next install
     refuses with "invalid ownership metadata".
     """
-    from robovast.common.kube import \
+    from .kube_client import \
         load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)
@@ -1050,7 +1050,7 @@ def delete_kueue_crds(kube_context=None, timeout_s=120.0):
     from kubernetes.client.rest import \
         ApiException  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.kube import \
+    from .kube_client import \
         load_kube_config  # pylint: disable=import-outside-toplevel
 
     load_kube_config(context=kube_context)

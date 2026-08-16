@@ -70,7 +70,7 @@ def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-
 
     # 2. Detect from Kubernetes node metadata
     try:
-        from robovast.common.kube import load_kube_config
+        from robovast.execution.cluster_execution.kube_client import load_kube_config
         load_kube_config(context=kube_context)
 
         v1 = client.CoreV1Api()

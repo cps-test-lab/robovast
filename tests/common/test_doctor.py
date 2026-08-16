@@ -53,7 +53,7 @@ def test_gcloud_is_only_checked_for_the_gcp_flavor(monkeypatch):
 
 
 def test_an_unusable_kubeconfig_is_a_single_actionable_failure(monkeypatch):
-    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         mock.Mock(side_effect=RuntimeError("no kubeconfig")))
     checks = doctor.check_cluster()
     assert [c.name for c in checks] == ["kubeconfig"]
@@ -119,7 +119,7 @@ def test_sufficient_permissions_pass(monkeypatch):
 def test_every_failure_carries_a_remedy(monkeypatch):
     """The rule the whole command rests on."""
     monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
-    monkeypatch.setattr("robovast.common.kube.load_kube_config",
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         mock.Mock(side_effect=RuntimeError("nope")))
     for check in doctor.run_checks(flavor="gcp"):
         if not check.ok:

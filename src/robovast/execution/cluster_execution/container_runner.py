@@ -137,7 +137,7 @@ def aux_workspace_prefix(owner_id: str, workspace_name: str) -> str:
 
 def aux_owner_prefix(owner_id: str) -> str:
     """Everything mirrored on behalf of one campaign (or scene build), for the sweep."""
-    from robovast.execution.cluster_execution.cluster_execution import \
+    from .cluster_execution import \
         _label_safe_campaign
     return f"{AUX_WORKSPACE_PREFIX}/{_label_safe_campaign(owner_id)}"
 
@@ -158,7 +158,7 @@ def mc_host_env(endpoint: str, access_key: str, secret_key: str) -> dict:
 
 def aux_pod_name(campaign_id: str) -> str:
     """Deterministic aux-pod name for *campaign_id*."""
-    from robovast.execution.cluster_execution.cluster_execution import \
+    from .cluster_execution import \
         _label_safe_campaign
     return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
 
@@ -298,13 +298,13 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     """
     from kubernetes import client
 
-    from robovast.execution.cluster_execution.cluster_execution import \
+    from .cluster_execution import \
         _label_safe_campaign
 
     selector = AUX_LABEL
     if campaign is not None:
         selector += f",campaign-id={_label_safe_campaign(campaign)}"
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     try:
         load_kube_config(context=kube_context)
         core = client.CoreV1Api()
@@ -348,7 +348,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     not ours to add tools to — the same trick the rosbag postprocess Job uses to run
     ``mc`` inside the system-under-test's own image.
     """
-    from robovast.execution.cluster_execution.cluster_execution import \
+    from .cluster_execution import \
         _label_safe_campaign
     from robovast.common.execution import resolve_sidecar_image
 
@@ -491,7 +491,7 @@ class AuxPodSession:
         if self._core_v1 is None:
             from kubernetes import client
 
-            from robovast.common.kube import load_kube_config
+            from .kube_client import load_kube_config
             load_kube_config(context=self._kube_context)
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
@@ -501,7 +501,7 @@ class AuxPodSession:
             return self
         from kubernetes.client.rest import ApiException
 
-        from robovast.common.kube import wait_pod_gone, wait_pod_ready
+        from .kube_client import wait_pod_gone, wait_pod_ready
         core = self._client()
         manifest = build_aux_pod_manifest(
             self.campaign_id, self.specs, self.namespace,
@@ -637,7 +637,7 @@ class ClusterContainerRunner:
         if self._core_v1 is None:
             from kubernetes import client
 
-            from robovast.common.kube import load_kube_config
+            from .kube_client import load_kube_config
             load_kube_config(context=self._kube_context)
             self._core_v1 = client.CoreV1Api()
         return self._core_v1
@@ -653,7 +653,7 @@ class ClusterContainerRunner:
         loop used to have no overall bound, so a helper that hung took the campaign's
         worker thread with it, with nothing in the log to say what it was waiting for.
         """
-        from robovast.common.kube import exec_stream
+        from .kube_client import exec_stream
 
         stderr_sink = progress_update_callback or (
             lambda line: logger.debug("aux stderr: %s", line))

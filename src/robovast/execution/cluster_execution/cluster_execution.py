@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
 
-from robovast.common.kube import pod_workload_containers
+from .kube_client import pod_workload_containers
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
@@ -483,7 +483,7 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
     # In-cluster first (the service drives campaigns in-pod), else the host context.
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     load_kube_config(context=context)
     k8s_client = client.CoreV1Api()
     k8s_batch_client = client.BatchV1Api()
@@ -638,7 +638,7 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
         namespace: Kubernetes namespace.
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     load_kube_config(context=context)
     try:
         # Phase reflects true pod state (an active-but-Pending pod counts as pending).

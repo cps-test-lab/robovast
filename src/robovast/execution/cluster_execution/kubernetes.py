@@ -29,7 +29,7 @@ def get_kubernetes_client(context=None):
     Args:
         context: Kubernetes context name to use. ``None`` uses the active context.
     """
-    from robovast.common.kube import load_kube_config
+    from .kube_client import load_kube_config
     try:
         load_kube_config(context=context)
         return client.CoreV1Api()

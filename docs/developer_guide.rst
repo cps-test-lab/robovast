@@ -1551,9 +1551,9 @@ Per-Cluster Resource Resolution
 
 The resolution logic for per-cluster resources (the ``{context-name: value}``
 mappings documented under *Per-Cluster Resource Limits* in
-:doc:`cluster_execution`) lives in :mod:`robovast.common.cluster_context`:
+:doc:`cluster_execution`) lives in :mod:`robovast.execution.cluster_execution.cluster_context`:
 
-.. automodule:: robovast.common.cluster_context
+.. automodule:: robovast.execution.cluster_execution.cluster_context
    :members: get_active_kube_context, list_all_contexts, get_config_context_names,
              require_context_for_multi_cluster, resolve_resource_value, resolve_resources
    :undoc-members:
