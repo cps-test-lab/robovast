@@ -20,9 +20,10 @@ A strict client of a running ``robovast-service`` — the single execution autho
 is no local subprocess path: when no service answers these tools fail loudly rather than
 silently running a divergent lane.
 
-Building the experiment image lives here too. A build is part of a campaign's driven work
-(``start_campaign`` performs one when the ``.vast`` has a ``build:`` section), not a
-separate lifecycle stage, so its tools belong beside the run they serve.
+Building derived images lives here too. A build is part of a campaign's driven work
+(``start_campaign`` performs one when a container in ``execution.containers`` adds
+packages), not a separate lifecycle stage, so its tools belong beside the run they
+serve.
 """
 
 import logging

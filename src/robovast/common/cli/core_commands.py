@@ -447,13 +447,14 @@ def import_results(archive, output, force):
 
 @click.group()
 def image():
-    """Build the experiment image declared by a project's ``build:`` section.
+    """Build the derived images a project's containers declare.
 
     Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
-    Registry-free: you name a project; the service builds from its ``build:`` section
-    and the image is referenced as ``build:<tag>`` in ``execution.image``. Every
-    command prints the target it resolved — a service on the conventional local port
-    if one answers, otherwise the one ``vast login`` stored.
+    Registry-free: you name a project; the service builds every container in
+    ``execution.containers`` that adds ``system_packages`` or ``python_packages``,
+    and each image is referenced as ``build:<container>`` in ``execution.image``.
+    Every command prints the target it resolved — a service on the conventional local
+    port if one answers, otherwise the one ``vast login`` stored.
     """
 
 
@@ -465,7 +466,12 @@ def image():
 @click.option('--wait/--no-wait', default=True, help='Wait for the build to finish (default).')
 @target_options
 def image_build(workspace_id, config_path, wait, namespace, context):
-    """Build (or reuse) the experiment image from the project's ``build:`` section."""
+    """Build (or reuse) the images the project's containers declare.
+
+    Zero or more: one per container in ``execution.containers`` that adds packages.
+    The workspace is what names the project, and the project is what decides which
+    containers build -- there is no CWD project and no single "the" image.
+    """
     import time as _time
 
     from robovast.service.interface import BuildImageRequest

@@ -188,7 +188,7 @@ simulation run, a sweep, or a repeated trial, that is `start_campaign`.
 The loop:
 1. `create_workspace`, then `write_file` to put a `.vast` in it.
 2. `validate_project` — reports every problem at once, before any compute is spent.
-3. `build_experiment_image` when the project declares a `build:` section, then
+3. `build_experiment_image` when a container adds packages, then
    `wait_for_image_build`, then `exec_in_container` to check that image — an import,
    `ros2 pkg list`, a file check, or one config's scenario. Seconds here, and it produces
    no campaign data; the same mistake found by a campaign costs the campaign.

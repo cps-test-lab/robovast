@@ -1207,12 +1207,17 @@ export interface components {
         };
         /**
          * BuildImageRequest
-         * @description Build the experiment image declared by a workspace project's ``build:`` section.
+         * @description Build the derived images a workspace project's containers declare.
          *
-         *     The declarative content (base image, apt/pip packages, tag) lives in the
-         *     ``.vast`` ``build:`` section — this request only names the project, so the
-         *     client stays free of any registry knowledge. Idempotent/content-addressed: if
-         *     an image for the same inputs already exists it is reused (no build runs).
+         *     Every entry in ``execution.containers`` that adds ``system_packages`` or
+         *     ``python_packages`` is built on top of its ``image``; one that adds nothing is
+         *     pulled as-is and never built. So this is zero or more images, tagged by container
+         *     name — not one "experiment image", and not tied to any particular role.
+         *
+         *     The declarative content lives in the ``.vast``; this request only names the
+         *     project, so the client stays free of any registry knowledge.
+         *     Idempotent/content-addressed: if an image for the same inputs already exists it is
+         *     reused (no build runs).
          */
         BuildImageRequest: {
             /**

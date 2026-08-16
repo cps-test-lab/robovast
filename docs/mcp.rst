@@ -633,8 +633,10 @@ assistant adds ``system_packages`` / ``python_packages`` to that
 several images -- one per container that adds packages -- so the ``execution`` plugin
 exposes:
 
-* ``build_experiment_image`` — build (or reuse) the image from the project's
-  ``build:`` section. Returns ``{build_id, tag, cached}``.
+* ``build_experiment_image`` — build (or reuse) the derived images the project's
+  containers declare: one per entry in ``execution.containers`` that adds
+  ``system_packages`` or ``python_packages``, tagged by container name. Returns
+  ``{build_id, tag, cached}``.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus, on failure,
   a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
   base-pull / push / resource, the offending ``build:`` ``entry``, and
@@ -677,7 +679,7 @@ sibling may also be waiting on.
 The workflow is three steps and stays entirely in the ``.vast`` the assistant
 already edits:
 
-#. edit the ``build:`` section (and drop in the new package);
+#. add the package to the container's ``python_packages`` / ``system_packages``;
 #. ``build_experiment_image`` — **idempotent**, so it is safe to always call (a
    no-op cache hit when nothing changed);
 #. ``start_campaign`` — the image is wired in automatically.

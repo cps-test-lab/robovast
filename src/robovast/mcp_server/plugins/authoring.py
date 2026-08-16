@@ -158,8 +158,8 @@ def validate_project(address: str) -> dict:
     as few iterations as possible.
 
     ``valid: true`` means the file is well-formed and every reference resolves. It does
-    **not** mean a ``build:`` section will build — those failures pass validation and then cost
-    a full apt+pip cycle, so if the project has one, read
+    **not** mean a derived image will build — those failures pass validation and then cost
+    a full apt+pip cycle, so if any container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
     Args:

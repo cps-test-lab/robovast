@@ -112,12 +112,17 @@ class CampaignRef(BaseModel):
 
 
 class BuildImageRequest(BaseModel):
-    """Build the experiment image declared by a workspace project's ``build:`` section.
+    """Build the derived images a workspace project's containers declare.
 
-    The declarative content (base image, apt/pip packages, tag) lives in the
-    ``.vast`` ``build:`` section — this request only names the project, so the
-    client stays free of any registry knowledge. Idempotent/content-addressed: if
-    an image for the same inputs already exists it is reused (no build runs).
+    Every entry in ``execution.containers`` that adds ``system_packages`` or
+    ``python_packages`` is built on top of its ``image``; one that adds nothing is
+    pulled as-is and never built. So this is zero or more images, tagged by container
+    name — not one "experiment image", and not tied to any particular role.
+
+    The declarative content lives in the ``.vast``; this request only names the
+    project, so the client stays free of any registry knowledge.
+    Idempotent/content-addressed: if an image for the same inputs already exists it is
+    reused (no build runs).
     """
 
     workspace_id: str
@@ -1630,14 +1635,17 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def build_image(self, request: BuildImageRequest) -> ImageBuildRef:
-        """Build the experiment image from the project's ``build:`` section.
+        """Build the derived images the project's containers declare.
+
+        A container is built when it adds ``system_packages`` or ``python_packages``,
+        whatever its role; one that adds nothing is pulled as-is.
 
         Idempotent/content-addressed: returns immediately with ``cached=True`` when
         an image for the same inputs already exists; otherwise starts a build and
         returns its id (poll :meth:`get_image_build_status`). The image is referenced
         from ``execution.image`` as ``build:<tag>``; the concrete registry-qualified
         ref is resolved server-side and never crosses this interface. Raises
-        ``ValueError`` if the project has no ``build:`` section or it fails
+        ``ValueError`` if the project declares no derived image or it fails
         validation (fail-fast at submit).
         """
 
