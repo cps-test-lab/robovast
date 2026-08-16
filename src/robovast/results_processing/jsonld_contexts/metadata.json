@@ -1,0 +1,86 @@
+{
+    "@context": {
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+        "dcterms": "http://purl.org/dc/terms/",
+        "schema": "https://schema.org/",
+        "doi": "https://doi.org/",
+        "orcid": "https://orcid.org/",
+        "repository": "https://purl.org/robovast/datasets/",
+        "catalog": "https://purl.org/robovast/datasets/catalog/",
+        "agent": "https://purl.org/robovast/datasets/agent/",
+        "datasets": "https://purl.org/robovast/datasets/dataset/",
+        "distributions": "https://purl.org/robovast/datasets/distribution/",
+        "dcat": "http://www.w3.org/ns/dcat#",
+        "foaf": "http://xmlns.com/foaf/0.1/",
+        "DataService": "dcat:DataService",
+        "Catalog": "dcat:Catalog",
+        "Dataset": "dcat:Dataset",
+        "Distribution": "dcat:Distribution",
+        "title": "dcterms:title",
+        "description": "dcterms:description",
+        "license": {
+            "@id": "dcterms:license",
+            "@type": "@id"
+        },
+        "issued": {
+            "@id": "dcterms:issued",
+            "@type": "xsd:dateTime"
+        },
+        "modified": {
+            "@id": "dcterms:modified",
+            "@type": "xsd:dateTime"
+        },
+        "publisher": {
+            "@id": "dcterms:publisher",
+            "@type": "@id"
+        },
+        "servesDataset": {
+            "@id": "dcat:servesDataset",
+            "@type": "@id"
+        },
+        "dataset": {
+            "@id": "dcat:dataset",
+            "@type": "@id"
+        },
+        "distribution": {
+            "@id": "dcat:distribution",
+            "@type": "@id"
+        },
+        "conformsTo": {
+            "@id": "dcterms:conformsTo",
+            "@type": "@id"
+        },
+        "isPartOf": {
+            "@id": "dcterms:isPartOf",
+            "@type": "@id"
+        },
+        "endPointURL": 
+        "dcat:endPointURL",
+        "mediaType": "dcat:mediaType",
+        "accessURL": "dcat:accessURL",
+        "downloadURL": "dcat:downloadURL",
+        "themeTaxonomy": "dcat:themeTaxonomy",
+        "format": "dcterms:format",
+        "language": "dcterms:language",
+        "creator": {
+            "@id": "dcterms:creator",
+            "@type": "@id"
+        },
+        "contributor": {
+            "@id": "dcterms:contributor",
+            "@type": "@id"
+        },
+        "affiliation": {
+            "@id": "schema:affiliation",
+            "@type": "@id"
+        },
+        "funder": {
+            "@id": "schema:funder",
+            "@type": "@id"
+        },
+        "funding": {
+            "@id": "schema:funding",
+            "@type": "@id"
+        }
+    }
+}

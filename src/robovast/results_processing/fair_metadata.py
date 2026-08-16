@@ -35,6 +35,7 @@ import yaml
 import logging
 import os
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple
 
@@ -75,13 +76,97 @@ _BASE_CONTEXT = {
 
 
 # ---------------------------------------------------------------------------
+# Context resolution
+# ---------------------------------------------------------------------------
+
+#: Directory holding byte-for-byte copies of the contexts named above.
+#: See its ``PROVENANCE.md`` for the source URLs and the pinned commit.
+_CONTEXT_DIR = Path(__file__).parent / "jsonld_contexts"
+
+#: Remote context URL -> the vendored file that answers for it.
+_VENDORED_CONTEXTS = {
+    "https://secorolab.github.io/metamodels/prov.json": "prov.json",
+    "https://secorolab.github.io/metamodels/metadata.json": "metadata.json",
+    "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json":
+        "robovast.json",
+}
+
+
+@lru_cache(maxsize=None)
+def _load_vendored_context(filename: str) -> str:
+    """Read one vendored context, once per process.
+
+    Returns the raw text rather than parsed JSON: ``pyld`` may mutate the
+    document it is handed, and a shared cached dict would let one compaction
+    corrupt the next.
+    """
+    path = _CONTEXT_DIR / filename
+    if not path.is_file():
+        # Falling back to the network here would trade a clear error for an
+        # intermittent one: provenance generation would appear to work and then
+        # hang or fail whenever the upstream host is unreachable.
+        raise FileNotFoundError(
+            f"Vendored JSON-LD context {filename!r} is missing from {_CONTEXT_DIR}. "
+            "It ships with the package; reinstall robovast, or restore the file as "
+            "described in that directory's PROVENANCE.md.")
+    return path.read_text(encoding="utf-8")
+
+
+def _vendored_document_loader(url: str, options=None):
+    """``pyld`` document loader that serves the pinned contexts from disk.
+
+    ``pyld`` re-resolves every context on every operation, and one
+    :func:`generate_prov_metadata` call runs four (compact, expand, flatten,
+    compact). Fetched over the network that is ~35s per test-suite run, and it
+    makes provenance generation fail whenever ``secoro.uni-bremen.de`` or
+    ``raw.githubusercontent.com`` is unreachable -- a campaign's provenance
+    should not depend on someone else's uptime.
+
+    Any URL outside the pinned set still goes to the network: that is a context
+    we have not vendored, and silently resolving it to something local would be
+    worse than the fetch.
+    """
+    filename = _VENDORED_CONTEXTS.get(url)
+    if filename is None:
+        return jsonld.get_document_loader()(url, options or {})
+    return {
+        "contentType": "application/ld+json",
+        "contextUrl": None,
+        "documentUrl": url,
+        "document": json.loads(_load_vendored_context(filename)),
+    }
+
+
+def _jsonld_options(**extra) -> dict:
+    """``pyld`` options wired to the vendored loader.
+
+    Passed per call rather than installed with ``jsonld.set_document_loader()``:
+    that setter is global to the process, and this module has no business
+    changing how unrelated code resolves its contexts.
+    """
+    return {"documentLoader": _vendored_document_loader, **extra}
+
+
+# ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
 def load_graph(file_path: str) -> "rdflib.Graph":
-    """Load a JSON-LD file into an rdflib Graph with standard namespace bindings."""
+    """Load a JSON-LD file into an rdflib Graph with standard namespace bindings.
+
+    The document is expanded through :func:`_jsonld_options` first, rather than
+    handed to rdflib as-is. rdflib resolves ``@context`` with its own loader,
+    which knows nothing about the vendored copies, so parsing the compacted file
+    directly went back to the network -- and failed outright when offline, which
+    is exactly the visualization step that runs by default after every campaign.
+    Expansion inlines every term, so the graph rdflib then sees needs no context
+    at all.
+    """
+    with open(file_path, encoding="utf-8") as f:
+        document = json.load(f)
+    expanded = jsonld.expand(document, _jsonld_options())
     g = rdflib.Graph()
-    g.parse(file_path, format="json-ld")
+    g.parse(data=json.dumps(expanded), format="json-ld")
     g.bind("robovast", ROBOVAST)
     g.bind("scenarios", SCENARIOS)
     return g
@@ -833,10 +918,12 @@ def generate_prov_metadata(
     # Compact the JSON-LD graph
     document = {"@graph": graph}
     document.update(iri_context)
-    compact = jsonld.compact(document, _BASE_CONTEXT, {"expandContext": _BASE_CONTEXT, "graph": True})
-    expanded = jsonld.expand(compact)
-    flattened = jsonld.flatten(expanded)
-    compact2 = jsonld.compact(flattened, iri_context, {"graph": True})
+    compact = jsonld.compact(
+        document, _BASE_CONTEXT,
+        _jsonld_options(expandContext=_BASE_CONTEXT, graph=True))
+    expanded = jsonld.expand(compact, _jsonld_options())
+    flattened = jsonld.flatten(expanded, None, _jsonld_options())
+    compact2 = jsonld.compact(flattened, iri_context, _jsonld_options(graph=True))
 
     prov_json_path = campaign_dir / "metadata.prov.json"
     with open(prov_json_path, "w", encoding="utf-8") as f:
