@@ -19,17 +19,21 @@ pandas = "^2.2"
 # already lazy / guarded, so the rest of robovast runs without it.
 pyside6-essentials = {version = "^6.6", optional = true}
 pyside6-addons = {version = "^6.6", optional = true}
-matplotlib = "^3.10"
+# Only analysis notebooks and the desktop plots import these; nothing in robovast
+# itself does. Optional so a service that never renders a notebook -- and every
+# client -- skips them. The controller image installs the ``analysis`` extra because
+# `render_campaign_notebook` executes notebooks in-process.
+matplotlib = {version = "^3.10", optional = true}
 nbformat = "^5.9"
 nbconvert = "^7.16"
 lxml-html-clean = "^0.1"
 kubernetes = "^34.1"
 boto3 = "^1.35"
 google-cloud-storage = "^2.0"
-scipy = "^1.16"
+scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
-docker = "^7.0"
-ruamel-yaml = "^0.18"
+# Read by the Qt config editor only, so it follows the ``gui`` extra.
+ruamel-yaml = {version = "^0.18", optional = true}
 scenario-execution = "^1.3.0"
 rdflib = "^7.0"
 pyld = "^2.0"
@@ -80,7 +84,8 @@ sphinx-click = "^5.0.0"
 [tool.poetry.extras]
 nav = ["robovast-nav"]
 roqsim = ["robovast-sim-roqsim"]
-gui = ["pyside6-essentials", "pyside6-addons"]
+gui = ["pyside6-essentials", "pyside6-addons", "ruamel-yaml"]
+analysis = ["matplotlib", "scipy"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
 optuna = ["optuna"]

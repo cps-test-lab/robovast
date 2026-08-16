@@ -15,41 +15,52 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Docker and Kubernetes utilities for RoboVAST CLI."""
+"""Is the local Docker lane usable? A preflight for ``vast init``.
+
+Asks the ``docker`` **CLI**, not the Python SDK, because that is what actually runs a
+campaign: the local lane shells out to ``docker compose`` and ``docker buildx`` throughout
+(``docker_exec_lane``, ``execute_local``, ``image_build``). Checking through the SDK could
+therefore pass while the thing the lane really needs was missing, and it cost a hard
+dependency on ``docker`` for a check on one command.
+"""
 
 import logging
-
-import docker
-from docker.errors import DockerException
+import shutil
+import subprocess  # nosec B404 - the docker CLI is what the local lane itself runs
 
 logger = logging.getLogger(__name__)
 
 
 def check_docker_access():
-    """Check if Docker is accessible and running.
+    """Check that the Docker CLI is present and its daemon answers.
 
     Returns:
-        tuple: (bool, str) - (success, message)
-            - success: True if Docker is accessible, False otherwise
-            - message: Success message or error description
+        tuple: (bool, str) — (success, message). The message names the remedy on
+        failure, since this runs as a preflight and the caller only relays it.
     """
+    if shutil.which("docker") is None:
+        logger.warning("the docker CLI is not on PATH")
+        return False, ("the 'docker' command is not on PATH, and the local lane runs "
+                       "campaigns through it. Install Docker, or pass --force to skip "
+                       "this check.")
     try:
         logger.debug("Checking Docker daemon access")
-        k8s_client = docker.from_env()
-        # Try to ping the Docker daemon
-        k8s_client.ping()
+        # `docker version` (not `--version`) talks to the daemon; `--version` prints the
+        # client's version happily while the daemon is down, which is the state that
+        # actually breaks a run.
+        out = subprocess.run(  # noqa: S603,S607 - fixed argv, no shell
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.error("Failed to check Docker access: %s", e)
+        return False, f"Failed to check Docker access: {e}"
 
-        # Get Docker version info for additional verification
-        version_info = k8s_client.version()
-        docker_version = version_info.get('Version', 'unknown')
+    if out.returncode != 0:
+        detail = (out.stderr or out.stdout).strip().splitlines()
+        reason = detail[0] if detail else "no reason given"
+        logger.warning("Docker daemon is not accessible: %s", reason)
+        return False, f"Docker daemon is not accessible: {reason}"
 
-        logger.debug(f"Docker is accessible (version {docker_version})")
-        return True, f"Docker is accessible (version {docker_version})"
-
-    except DockerException as e:
-        logger.warning(f"Docker daemon is not accessible: {str(e)}")
-        return False, f"Docker daemon is not accessible: {str(e)}"
-
-    except Exception as e:
-        logger.error(f"Failed to check Docker access: {str(e)}")
-        return False, f"Failed to check Docker access: {str(e)}"
+    version = out.stdout.strip() or "unknown"
+    logger.debug("Docker is accessible (version %s)", version)
+    return True, f"Docker is accessible (version {version})"
