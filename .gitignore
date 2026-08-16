@@ -22,3 +22,5 @@ src/robovast_nav/robovast_nav/web/dist
 # @module-federation/vite's build-time scratch dir (diagnostics), written next to the sources.
 **/.mf
 .env
+# Staged copy of frontend/ui/dist for the wheel (see `make ui-stage`).
+src/robovast/_ui/

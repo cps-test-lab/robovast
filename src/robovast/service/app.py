@@ -1181,19 +1181,34 @@ def _build_mcp_app(impl: RobovastInterface):
 
 
 def _ui_dist() -> Optional[Path]:
-    """Locate the built web UI (``frontend/ui/dist``), or ``None`` if it isn't built.
+    """Locate the built web UI, or ``None`` if there is none to serve.
 
-    Order: ``ROBOVAST_UI_DIST`` env override, then the repo-root ``frontend/ui/dist``
-    relative to this source file (the dev / ``vast serve`` layout). Packaged images set
-    the env var to the assets baked into the image.
+    Three places, in the order that makes each caller see the freshest one it has:
+
+    1. ``ROBOVAST_UI_DIST`` — an explicit override, and how a container image points at
+       assets baked in at a path unrelated to the source tree.
+    2. ``frontend/ui/dist`` relative to this file — a source checkout, where the live
+       ``npm run build`` output is what a developer means, even if a wheel-shaped copy
+       also happens to be lying around.
+    3. ``robovast/_ui`` inside the installed package — the wheel. Resolving *up* from
+       ``__file__`` cannot find it: installed, this module is
+       ``site-packages/robovast/service/app.py``, and ``parents[3]`` is above
+       site-packages. That is why a plain ``pip install`` used to ship no UI at all and
+       say nothing about it.
     """
     import os  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
 
+    candidates = []
     env = os.environ.get("ROBOVAST_UI_DIST")
-    candidate = (Path(env) if env
-                 else Path(__file__).resolve().parents[3] / "frontend" / "ui" / "dist")
-    return candidate if (candidate / "index.html").is_file() else None
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(__file__).resolve().parents[3] / "frontend" / "ui" / "dist")
+    candidates.append(Path(__file__).resolve().parent.parent / "_ui")
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 def _mount_ui(app) -> None:

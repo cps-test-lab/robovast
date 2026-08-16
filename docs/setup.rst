@@ -28,6 +28,12 @@ Install RoboVAST and the navigation extension in editable mode:
    pip install -e src/robovast_nav
 
 This will install the ``vast`` command and all its plugins.
+
+The web UI is not built by ``pip``. For a source checkout, build it once with
+``cd frontend/ui && npm ci && npm run build`` — ``vast serve`` then finds it there and
+picks up every rebuild. A wheel carries it instead: ``make build`` runs ``make ui-stage``
+first, which copies the built assets into the package so an installed service has a UI.
+Without either, ``vast serve`` warns and serves the API alone.
 The ``vast`` command provides a unified interface to all RoboVAST functionality.
 
 .. code-block:: bash

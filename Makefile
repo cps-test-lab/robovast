@@ -78,8 +78,15 @@ poetry_reinstall:
 	poetry install
 	@echo "✅ Done!"
 
+.PHONY: ui-stage
+ui-stage: ## Copy the built web UI into the package so the wheel carries it
+	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: cd frontend/ui && npm ci && npm run build"; exit 1; }
+	rm -rf src/robovast/_ui
+	cp -r frontend/ui/dist src/robovast/_ui
+	@echo "staged the web UI into src/robovast/_ui for the wheel"
+
 .PHONY: build
-build:
+build: ui-stage
 	poetry build
 	cd src/robovast_nav && poetry build
 

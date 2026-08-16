@@ -6,6 +6,11 @@ authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "robovast", from = "src"}]
+# The built web UI, staged into the package by `make ui-stage` (which `build`
+# runs). Needs an explicit include because the source is git-ignored and poetry
+# excludes ignored files by default -- and it has to land *inside* the package,
+# since an installed module cannot resolve up to a repo-root directory.
+include = [{path = "src/robovast/_ui/**/*", format = "wheel"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
