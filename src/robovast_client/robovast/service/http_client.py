@@ -30,7 +30,7 @@ import logging
 from typing import Optional
 
 from robovast.client import file_address
-from robovast.execution.control_server import Status
+from robovast.client.status import Status
 from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignRef, CreateCampaignRequest,
                                         CreateUploadRequest,
@@ -46,7 +46,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 from robovast.service.auth import USER_HEADER
-from robovast.common.app_version import running_version
+from robovast.client.app_version import running_version
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +237,6 @@ class HTTPTransport(RobovastInterface):
         return Status.model_validate(self._get(Routes.campaign_status(campaign_id)))
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        from robovast.service.interface import LogChunk
         return LogChunk.model_validate(
             self._get(Routes.campaign_logs(campaign_id), offset=offset))
 
@@ -539,7 +538,7 @@ class HTTPTransport(RobovastInterface):
 # ---------------------------------------------------------------------------
 
 
-def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
+def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802  # pylint: disable=invalid-name
                    token: str | None = None,
                    user: str | None = None) -> RobovastInterface:
     """Return a transport-agnostic client.

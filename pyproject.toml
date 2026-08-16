@@ -83,6 +83,14 @@ robovast-nav = {path = "src/robovast_nav", optional = true}
 # image installs it by default (container/controller/Dockerfile). That is what lets a
 # campaign say `backend: roqsim` without shipping the package itself in `plugins:`.
 robovast-sim-roqsim = {path = "src/robovast_sim_roqsim", optional = true}
+# The client layer -- the interface models, the HTTP client, the credential store, the
+# things a client needs to talk to a service. Path dependency on the sibling
+# robovast-client package (src/robovast_client, published standalone).
+#
+# NOT optional, unlike the two above: this is the layer robovast is built on, not a
+# capability it can decline. The direction matters and is the whole reason the split is
+# safe -- robovast-client depends on nothing of ours, so this edge cannot become a cycle.
+robovast-client = {path = "src/robovast_client"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"

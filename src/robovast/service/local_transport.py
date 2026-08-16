@@ -430,7 +430,7 @@ class LocalTransport(RobovastInterface):
             # snapshots (results/**/_config/*.vast); skip those (and hidden dirs)
             # so a project with one authored .vast still resolves cleanly. Normal
             # workspaces never contain results/, so this is a no-op for them.
-            from robovast.service.workspaces import PINNED_SKIP_DIRS
+            from robovast.client.workspaces import PINNED_SKIP_DIRS
             vasts = [
                 v for v in sorted(project_dir.rglob("*.vast"))
                 if not any(part.startswith(".") or part in PINNED_SKIP_DIRS

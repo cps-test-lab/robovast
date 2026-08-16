@@ -114,7 +114,7 @@ def service_client(namespace='default', context=None, *, require_service=False):
     """
     del namespace, context
     from robovast.service.client import RobovastClient
-    from robovast.service.workspaces import default_workspaces_root
+    from robovast.client.workspaces import default_workspaces_root
 
     url = detected_service_url()
 

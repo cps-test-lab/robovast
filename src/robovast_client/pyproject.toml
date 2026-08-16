@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "robovast-client"
+version = "2.0.0"
+description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+# Ships into the `robovast` namespace rather than a name of its own, so no import path
+# changes: `robovast/`, `robovast/service/` and `robovast/execution/` carry no
+# `__init__.py` in any distribution, which makes them PEP 420 namespace packages and lets
+# the trees merge. `robovast/client/` is a regular package because only this
+# distribution ever provides it.
+packages = [{include = "robovast"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+# The whole point of this distribution. `pip install robovast` pulls 88 distributions and
+# ~290 MB -- pandas and numpy alone are 152 MB of it -- to run four HTTP verbs. These
+# three are ~30 MB, and nothing here may add a fourth without a reason that survives
+# "could the service do this instead?".
+#
+# Deliberately NOT depending on `robovast`. The dependency runs the other way: robovast is
+# built on this, and an edge back would be a cycle.
+pydantic = "^2.12"
+click = "^8.1"
+requests = "^2.31"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

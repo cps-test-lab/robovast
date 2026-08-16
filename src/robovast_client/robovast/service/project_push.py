@@ -29,7 +29,7 @@ import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
-from robovast.service.workspaces import is_skipped as _should_skip
+from robovast.client.workspaces import is_skipped as _should_skip
 
 logger = logging.getLogger(__name__)
 

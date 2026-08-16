@@ -68,28 +68,12 @@ PROJECT_DIRNAME = "project"
 #: Default lifetime of an upload token; the PUT must arrive within this window.
 UPLOAD_TTL_SECONDS = 600
 
-#: Dir names hidden from a *pinned* (read-only) workspace listing / .vast lookup —
-#: campaign outputs, not project inputs (mirrors the CLI ``workspace init`` skip).
-PINNED_SKIP_DIRS = {"results"}
-
-
-def is_skipped(rel_path, skip_dirs=frozenset()) -> bool:
-    """Whether a workspace-relative path is hidden from listings and pushes alike.
-
-    Hidden files/dirs (``.git``, ``.cache``) and anything under a name in *skip_dirs*
-    (campaign outputs, typically ``results/``). One definition because a listing and a
-    push that disagree make ``prune`` delete files it would not restore.
-    """
-    parts = rel_path.split("/") if isinstance(rel_path, str) else Path(rel_path).parts
-    return any(p.startswith(".") or p in skip_dirs for p in parts)
-
-
-def default_workspaces_root() -> Path:
-    """Root for workspace storage (``ROBOVAST_WORKSPACES_ROOT`` or ``~/.robovast``)."""
-    env = os.environ.get("ROBOVAST_WORKSPACES_ROOT")
-    if env:
-        return Path(env)
-    return Path.home() / ".robovast" / "workspaces"
+# The client half of the workspace vocabulary. A client pushing a directory must agree
+# with this module about which files belong to a project, but must not have to install
+# the registry and the store to find out -- so those two live in robovast.client and this
+# module is one of their callers, not their home.
+from robovast.client.workspaces import (PINNED_SKIP_DIRS,
+                                        default_workspaces_root, is_skipped)
 
 
 class WorkspaceError(ValueError):

@@ -3932,6 +3932,24 @@ docs = ["docutils", "sphinx", "sphinx_copybutton", "sphinx_rtd_theme"]
 tests = ["pytest", "pytest-cov"]
 
 [[package]]
+name = "robovast-client"
+version = "2.0.0"
+description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
+optional = false
+python-versions = ">=3.12,<3.14"
+files = []
+develop = false
+
+[package.dependencies]
+click = "^8.1"
+pydantic = "^2.12"
+requests = "^2.31"
+
+[package.source]
+type = "directory"
+url = "src/robovast_client"
+
+[[package]]
 name = "robovast-nav"
 version = "2.0.0"
 description = "Navigation-specific variation types for RoboVAST"
@@ -5290,4 +5308,4 @@ test = ["optuna", "pytest", "ribs", "shapely"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "5363b7f8acb9bee2cbbc4f7ef776c2a645690b05b6739b5ebe7252102604de1a"
+content-hash = "413b44ef0672bc17c45c147d27e67bc602d95cf6c732373360478ed31936690b"

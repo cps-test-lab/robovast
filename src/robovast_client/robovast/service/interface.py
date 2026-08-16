@@ -27,7 +27,7 @@ pydantic request/response models. Three bindings mirror this contract 1:1:
 * the **MCP tools** and **``vast`` CLI commands** are thin wrappers over the
   client.
 
-Campaign **status** reuses :class:`robovast.execution.control_server.Status`
+Campaign **status** reuses :class:`robovast.client.status.Status`
 verbatim — the same model the per-campaign controller already serves over its
 ``/status`` channel and the ``vast ... monitor`` command already consumes — so
 the persistent service is a superset of the existing control channel, not a new
@@ -41,7 +41,7 @@ operations extend :class:`RobovastInterface` in later phases.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -50,7 +50,7 @@ from robovast.client import file_address
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
-from robovast.execution.control_server import Phase, Status  # noqa: F401
+from robovast.client.status import Phase, Status  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Request / response models

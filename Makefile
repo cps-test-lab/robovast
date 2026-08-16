@@ -39,14 +39,15 @@ venv: venv/.robovast_installed
 # and without a word, and `make venv` cheerfully reported nothing to do.
 venv/.robovast_installed: pyproject.toml src/robovast_nav/pyproject.toml \
                           src/robovast_sim_roqsim/pyproject.toml \
-                          src/robovast_cluster/pyproject.toml
+                          src/robovast_cluster/pyproject.toml \
+                          src/robovast_client/pyproject.toml
 	@if [ ! -d venv ]; then \
 		echo "Creating virtual environment..."; \
 		python3 -m venv venv; \
 	fi
 	
 	@echo "Setting up RoboVAST environment..."
-	# The two sibling packages are installed explicitly, not via extras: they are path
+	# The sibling packages are installed explicitly, not via extras: they are path
 	# dependencies, and `pip install -e .[roqsim]` would take them from the index.
 	# roqsim was missing here, so every fresh venv lacked the `roqsim` simulator entry
 	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
@@ -54,7 +55,10 @@ venv/.robovast_installed: pyproject.toml src/robovast_nav/pyproject.toml \
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
 	# with no execution lane but `local`, so `vast exec cluster` disappears and the
 	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
-	. venv/bin/activate && pip install -e .[docs,test,gui] \
+	# robovast-client goes FIRST and editable: everything else is built on it, and a
+	# non-editable copy pulled in as a dependency would shadow the source tree.
+	. venv/bin/activate && pip install -e src/robovast_client \
+		&& pip install -e .[docs,test,gui] \
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
 		&& pip install -e src/robovast_cluster
@@ -100,6 +104,7 @@ build: ui-stage
 	poetry build
 	cd src/robovast_nav && poetry build
 	cd src/robovast_cluster && poetry build
+	cd src/robovast_client && poetry build
 
 .PHONY: release-images
 release-images:
