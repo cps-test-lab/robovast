@@ -1070,7 +1070,8 @@ def upgrade(namespace, kube_context):
         apply_controller_rbac
     from .service_deploy import (
         deploy_service, published_host, read_service_config_from_cluster,
-        reconcile_registry_ingress_path, wait_for_service_ready)
+        reconcile_registry_ingress_path, running_image_digest,
+        wait_for_service_ready)
 
     try:
         config_name, config_kwargs = read_service_config_from_cluster(
@@ -1086,6 +1087,7 @@ def upgrade(namespace, kube_context):
         ingress_host = published_host(namespace, kube_context)
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
+        before = running_image_digest(namespace, kube_context)
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  added the registry's /v2 route to the existing Ingress")
@@ -1093,6 +1095,14 @@ def upgrade(namespace, kube_context):
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
         wait_for_service_ready(namespace=namespace, kube_context=kube_context)
+        # With a floating tag the Deployment spec is byte-identical either way, so this
+        # is the only thing distinguishing "rolled onto new code" from "restarted the
+        # same image" -- the question every upgrade actually asks.
+        after = running_image_digest(namespace, kube_context)
+        if before and after and before != after:
+            click.echo(f"  image {before[:19]} -> {after[:19]}")
+        elif after:
+            click.echo(f"  image unchanged: {after[:19]}")
         click.echo("✓ upgraded and ready")
     except click.ClickException:
         raise

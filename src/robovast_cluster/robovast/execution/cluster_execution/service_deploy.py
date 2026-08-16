@@ -361,6 +361,43 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
         f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
 
 
+def running_image_digest(namespace="default", kube_context=None,
+                         container=SERVICE_NAME) -> str:
+    """The digest of the image the service pod is *running*, or "" if there is none.
+
+    Not the Deployment's image ref: that is what was asked for, and with a floating tag
+    it says nothing about which bytes arrived. ``imageID`` is what the kubelet resolved
+    the ref to when it pulled, so it answers the only question an upgrade actually
+    raises -- did this roll onto new code? -- and it answers it identically whether the
+    ref was ``:latest`` or already a digest.
+
+    Empty rather than raising: this is reporting, and an upgrade that worked must not
+    fail because the thing describing it could not read a field.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    try:
+        _load_kube_config(kube_context)
+        pods = client.CoreV1Api().list_namespaced_pod(
+            namespace, label_selector=f"app={SERVICE_NAME}").items
+        running = [p for p in pods if (p.status.phase or "") == "Running"]
+        if not running:
+            return ""
+        # The newest Running pod. During a rollout both generations are up, and the old
+        # one's digest is precisely the wrong answer to "what is running now?".
+        newest = max(running, key=lambda p: p.metadata.creation_timestamp)
+        for status in (newest.status.container_statuses or []):
+            if status.name == container:
+                # docker-shim era kubelets prefix this with the repo and a "docker://"
+                # scheme; the digest is the part anyone compares.
+                image_id = status.image_id or ""
+                _, sep, digest = image_id.partition("@")
+                return digest if sep else image_id
+        return ""
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
 class IngressRefused(RuntimeError):
     """An Ingress was asked for in a configuration that would publish an open service."""
 
