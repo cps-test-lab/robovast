@@ -382,7 +382,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
                 command=shell_command, workspace_id=workspace_id,
                 config_path=config_path, campaign_id=campaign_id,
                 config_name=config_name, keep_alive=keep_alive,
-                backend='cluster' if cluster else None))
+                backend=None))
     except Exception as e:  # noqa: BLE001 - handled uniformly as a CLI error
         handle_cli_exception(e)
         return
@@ -411,7 +411,7 @@ def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            result = client.stop_exec_container('cluster' if cluster else None)
+            result = client.stop_exec_container(None)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
@@ -1140,9 +1140,9 @@ def log(campaign, follow, namespace, context):
     The same divider-separated stream the web UI and MCP show — the variation
     (config-generation), run (controller) and postprocessing phases in order, each
     under a ``===== PHASE =====`` divider. Goes through the robovast-service when
-    one is reachable (auto-detected, or ``--cluster`` to tunnel in); otherwise
-    reads the campaign from disk (the local project's results dir, or an absolute
-    campaign path).
+    one is reachable (the conventional local port, else the ``vast login`` record);
+    otherwise reads the campaign from disk (the local project's results dir, or an
+    absolute campaign path).
     """
     try:
         from robovast.service.client import HTTPTransport
@@ -1336,10 +1336,9 @@ def download_cleanup(campaign, force, namespace, context):
     the authoritative live-campaign set — so no local credentials are needed and a
     bulk delete never removes a campaign that is still running.
 
-    The service is auto-detected on the conventional local port (a ``vast serve``
-    or a tunnel); or pass ``--cluster`` (``-x`` context, ``-n``
-    namespace) to tunnel to the in-cluster service for this call. Use ``--campaign``
-    to remove a single one.
+    The service is resolved the usual way: the conventional local port if one
+    answers, otherwise the one ``vast login`` stored. Use ``--campaign`` to remove a
+    single one.
     """
     try:
         from robovast.service.interface import CleanupDataRequest
@@ -1374,8 +1373,8 @@ def run_cleanup(campaign, data, force, namespace, context):
 
     Use ``--data`` to **also** delete the campaign result bucket(s) from the object
     store. That step goes **through the robovast-service** (which holds the
-    object-store credentials), auto-detected on the conventional local port or
-    reached with ``--cluster`` — no local credentials needed.
+    object-store credentials), resolved on the conventional local port or from the
+    ``vast login`` record — no local credentials needed.
 
     Usage: vast execution cluster run-cleanup
     Usage: vast execution cluster run-cleanup --campaign campaign-2025-02-27-123456

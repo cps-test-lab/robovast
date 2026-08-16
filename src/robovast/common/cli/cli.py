@@ -614,9 +614,8 @@ def workspace():
     tools and drive the same interface.
 
     A workspace lives in the store of whichever service you talk to, so every
-    command here takes ``--cluster`` and prints the target it resolved. Without
-    it they act on this machine (the store a local ``vast serve`` uses); with it,
-    on the in-cluster service — the store *its* web UI reads.
+    command here prints the target it resolved: a service on the conventional local
+    port if one answers, otherwise the one ``vast login`` stored.
     """
 
 
@@ -640,8 +639,7 @@ def workspace_init(directory, name, excludes, namespace, context):
     workspace id — open it in the web UI's Config tab.
 
     \b
-      vast workspace init configs/examples/growth_sim            # this machine
-      vast workspace init configs/examples/growth_sim --cluster  # the cluster UI
+      vast workspace init configs/examples/growth_sim   # into the resolved service
     """
     from pathlib import Path
     from robovast.service.interface import CreateWorkspaceRequest
@@ -756,8 +754,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
     with service_client(namespace, context) as (client, target):
         _echo_target(target)
         wid = _resolve_workspace_id(client, workspace)
-        described = client.describe_world(wid, path, targets, entities,
-                                          "cluster" if cluster else "")
+        described = client.describe_world(wid, path, targets, entities)
         if as_json:
             click.echo(json_mod.dumps(described.model_dump(), indent=2))
             return
@@ -1102,8 +1099,8 @@ def image():
     Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
     Registry-free: you name a project; the service builds from its ``build:`` section
     and the image is referenced as ``build:<tag>`` in ``execution.image``. Every
-    command takes ``--cluster`` and prints the target it resolved (this machine's
-    ``vast serve`` by default, or the in-cluster service with ``--cluster``).
+    command prints the target it resolved — a service on the conventional local port
+    if one answers, otherwise the one ``vast login`` stored.
     """
 
 
