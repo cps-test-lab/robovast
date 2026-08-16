@@ -1,0 +1,13 @@
+{
+  "name": "robovast",
+  "owner": {
+    "name": "RoboVAST"
+  },
+  "plugins": [
+    {
+      "name": "robovast",
+      "source": "./",
+      "description": "Never end a turn silently in the middle of a campaign."
+    }
+  ]
+}
