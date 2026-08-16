@@ -398,8 +398,8 @@ than silently running a divergent local lane. (For a serviceless local run, use
 the ``vast exec local run`` CLI directly.)
 
 ``start_campaign`` validates and launches through the service and returns
-immediately — the campaign has barely started. Wait for it with ``vast exec
-wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
+immediately — the campaign has barely started. Wait for it with
+``vast wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
 elapsed), which returns only once the campaign is genuinely over, past
 postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
 run for days, and a blocking tool call would occupy its caller for the whole of

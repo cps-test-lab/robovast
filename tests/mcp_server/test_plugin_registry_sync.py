@@ -89,9 +89,46 @@ _FORBIDDEN_NAMES = [
 #: Commands that do not exist on the ``vast`` CLI. A tool that tells an LLM to run one
 #: sends it somewhere there is nothing to run: four nav error messages named
 #: ``vast analysis postprocess``, which has never been a command.
+#:
+#: Kept as a denylist *in addition to* the derived check below, for names that read
+#: plausibly enough to invite reintroduction even after they stop appearing.
 _FORBIDDEN_COMMANDS = [
     "vast analysis ",
 ]
+
+
+def _real_command_paths() -> set:
+    """Every command path the assembled ``vast`` CLI actually offers.
+
+    Derived from the click tree with all plugins loaded, so it is whatever this install
+    really provides -- the point being that a denylist can only catch a command somebody
+    remembered to add to it.
+    """
+    from robovast.client.cli import (  # pylint: disable=import-outside-toplevel
+        cli, load_plugins)
+    load_plugins()
+
+    import click  # pylint: disable=import-outside-toplevel
+
+    def walk(group, prefix):
+        yield " ".join(prefix)
+        if not isinstance(group, click.Group):
+            return
+        ctx = click.Context(group)
+        # `list_commands`/`get_command`, not `.commands`: the exec group registers its
+        # lane subgroups lazily, so the dict is empty until something asks. Reading it
+        # directly reported `vast exec cluster` as non-existent.
+        for name in group.list_commands(ctx):
+            sub = group.get_command(ctx, name)
+            if sub is not None:
+                yield from walk(sub, prefix + (name,))
+
+    return set(walk(cli, ("vast",)))
+
+
+#: A `vast ...` invocation in prose: the words after `vast` that are plainly command
+#: names. Stops at the first token that is a flag, a placeholder, a path, or punctuation.
+_INVOCATION = re.compile(r"\bvast((?:\s+[a-z][a-z0-9-]*)+)")
 
 
 def _registered_plugin_modules():
@@ -215,6 +252,14 @@ def _llm_facing_text() -> dict[str, str]:
     # ``cleanup_campaign_data`` are current method names — correct there, and a name
     # that survives as a method is not a name an LLM is being offered as a tool.
     text["mcp.rst"] = (_DOCS_DIR / "mcp.rst").read_text(encoding="utf-8")
+
+    # Strings a tool *returns* to an LLM, not just ones it documents. `next_step` is the
+    # sharpest example: it is the command an agent runs verbatim after start_campaign,
+    # and it kept naming `vast exec wait` for a whole refactor because every guard here
+    # read docstrings and this is a runtime return value.
+    from robovast.mcp_server.plugins.execution import \
+        _wait_next_step  # pylint: disable=import-outside-toplevel
+    text["start_campaign next_step"] = _wait_next_step("<campaign-id>")
     return text
 
 
@@ -235,6 +280,41 @@ def test_no_phantom_cli_commands_in_llm_facing_text(phantom):
     """A tool that tells an LLM to run a command sends it somewhere; the command must exist."""
     hits = [where for where, text in _llm_facing_text().items() if phantom in text]
     assert not hits, f"non-existent CLI command {phantom!r} referenced in: {hits}"
+
+
+def test_every_vast_invocation_in_llm_facing_text_resolves():
+    """Every ``vast ...`` an LLM is told to run must be a command that exists.
+
+    The denylist above cannot do this: it only catches names somebody thought to add.
+    ``vast exec wait`` proved the gap -- waiting moved to the top level, the MCP's
+    ``next_step`` kept handing back the old spelling, and every guard stayed green while
+    the tool sent agents at ``Error: No such command 'wait'``. Precisely the step where a
+    campaign gets lost, which is what makes this worth deriving rather than listing.
+    """
+    real = _real_command_paths()
+    bad = {}
+    for where, text in _llm_facing_text().items():
+        for match in _INVOCATION.finditer(text):
+            words = match.group(1).split()
+            # Longest prefix that resolves wins: trailing words are arguments
+            # (`vast wait <id>`), and only a *first* word that resolves to nothing is a
+            # phantom command rather than an argument to a real one.
+            if " ".join(["vast", words[0]]) not in real:
+                bad.setdefault(where, set()).add(f"vast {words[0]}")
+                continue
+            path = ["vast"]
+            for word in words:
+                if " ".join(path + [word]) not in real:
+                    break
+                path.append(word)
+            # A second word that is neither a subcommand nor plausibly an argument.
+            if len(words) > 1 and len(path) == 2 and re.fullmatch(r"[a-z-]+", words[1]):
+                candidate = f"vast {words[0]} {words[1]}"
+                if candidate not in real and any(
+                        p.startswith(f"vast {words[0]} ") for p in real):
+                    bad.setdefault(where, set()).add(candidate)
+    assert not bad, "\n".join(
+        f"{where}: {sorted(cmds)}" for where, cmds in sorted(bad.items()))
 
 
 # SQL identifiers the prompt legitimately backticks. They collide with the verb
