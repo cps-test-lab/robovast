@@ -117,6 +117,11 @@ evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to
 # import the cluster package to start a service -- see service/serve_backends.py.
+# Subcommands that attach to `vast exec`. Loaded on use, not on import, so the
+# cluster group does not put the Kubernetes client back on every invocation.
+[tool.poetry.plugins."robovast.exec_plugins"]
+cluster = "robovast.execution.cluster_execution.cli:cluster"
+
 [tool.poetry.plugins."robovast.execution_backends"]
 local = "robovast.service.local_serve_backend:LocalServeBackend"
 cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"

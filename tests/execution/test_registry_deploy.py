@@ -89,7 +89,7 @@ def test_the_setup_help_quotes_the_real_default_storage_path():
     from pathlib import Path
 
     cli = (Path(__file__).resolve().parents[2] / "src" / "robovast" / "execution"
-           / "execution_utils" / "cli.py").read_text()
+           / "cluster_execution" / "cli.py").read_text()
     assert f"(default: {rd.DEFAULT_REGISTRY_HOST_PATH})" in cli
 
 

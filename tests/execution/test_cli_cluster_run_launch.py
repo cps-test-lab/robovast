@@ -11,6 +11,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from robovast.execution.cluster_execution import cli as cluster_cli
 from robovast.execution.execution_utils import cli as exec_cli
 
 
@@ -49,7 +50,7 @@ def _yield_client():
 
 def _invoke(vast, *args):
     return CliRunner().invoke(
-        exec_cli.execution, ['cluster', 'run', *args],
+        cluster_cli.cluster, ['run', *args],
         obj={'vast_file': vast}, catch_exceptions=False)
 
 
@@ -69,7 +70,7 @@ def test_description_and_workspace_reach_the_launch(launch):
     _invoke(launch["_vast"], '--description', 'pilot: 5 reps', '--workspace', 'ws-name')
     assert launch["description"] == 'pilot: 5 reps'
     assert launch["workspace_name"] == 'ws-name'
-    assert launch["on_exists"] is exec_cli._confirm_overwrite
+    assert launch["on_exists"] is cluster_cli._confirm_overwrite
 
 
 def test_an_over_long_description_is_refused_before_anything_is_pushed(launch):
@@ -94,7 +95,7 @@ def test_campaign_id_is_not_accepted(launch):
 def test_overwrite_prompt_proceeds_off_a_terminal(monkeypatch, capsys):
     # A scripted launch has nobody to ask; blocking would hang it. Proceed, but say so.
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    assert exec_cli._confirm_overwrite("myproj", "ws-1") is True
+    assert cluster_cli._confirm_overwrite("myproj", "ws-1") is True
     assert "not a terminal" in capsys.readouterr().out
 
 
@@ -107,6 +108,6 @@ def test_overwrite_prompt_defaults_to_yes_on_a_terminal(monkeypatch):
         return default
 
     monkeypatch.setattr(click, "confirm", fake_confirm)
-    assert exec_cli._confirm_overwrite("myproj", "ws-1") is True
+    assert cluster_cli._confirm_overwrite("myproj", "ws-1") is True
     assert seen["default"] is True          # Enter is enough
     assert "myproj" in seen["question"] and "ws-1" in seen["question"]

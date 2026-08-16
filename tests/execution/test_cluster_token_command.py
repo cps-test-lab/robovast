@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from robovast.execution.execution_utils.cli import cluster
+from robovast.execution.cluster_execution.cli import cluster
 
 TOKEN = "a-token-that-is-long-enough-to-look-real"
 MODULE = "robovast.execution.cluster_execution.service_deploy"
@@ -69,7 +69,7 @@ def test_setup_points_at_this_command_rather_than_kubectl():
     """The two must not drift: setup's parting words are where operators look first."""
     import inspect
 
-    from robovast.execution.execution_utils import cli as cli_module
+    from robovast.execution.cluster_execution import cli as cli_module
     # `setup` is a click Command; the body lives on its callback.
     source = inspect.getsource(cli_module.setup.callback)
     assert "vast exec cluster token" in source
