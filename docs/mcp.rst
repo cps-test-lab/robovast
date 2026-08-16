@@ -75,6 +75,24 @@ Pass ``--no-mcp`` to ``vast serve`` to serve the API without the tools.
    TLS. See :ref:`deployment`.
 
 
+Claude Code plugin
+------------------
+
+The repository ships a small Claude Code plugin (``.claude-plugin/``) with one job:
+**never end a turn silently in the middle of a campaign.** ``start_campaign`` returns as
+soon as the campaign is *named*, so an agent that reads one status and stops has told the
+user a campaign finished when it had barely begun.
+
+Its hook blocks the first attempt to end a turn on a campaign nobody is waiting for, once,
+and then allows. Three things settle a campaign: backgrounding ``vast exec wait``, saying
+plainly that you are not waiting and that ntfy announces the end, or ``stop_campaign``.
+Blocking until done would hold a three-day sweep's session hostage, which is a worse
+failure than the one being fixed.
+
+It cannot live in the service: only the agent harness can see a turn ending. Hooks are a
+Claude Code feature, so other harnesses get the advisory path — the ``next_step`` the tool
+hands back, the server instructions, and ntfy.
+
 .. _mcp-taxonomy:
 
 Tool Taxonomy
