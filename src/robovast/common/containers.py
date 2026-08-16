@@ -143,7 +143,7 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
     """
     # Absent means the scenario container and nothing else. The schema requires
     # ``containers`` where a campaign is *authored*; this also runs against raw
-    # ``campaign_data`` assembled by hand (offline manifest emit, prepare-run, tests),
+    # ``campaign_data`` assembled by hand (offline manifest emit, tests),
     # where an explicit image is passed instead — refusing that would turn a legitimate
     # one-container run into an error about a key it never needed.
     declared = execution.get('containers') or {}

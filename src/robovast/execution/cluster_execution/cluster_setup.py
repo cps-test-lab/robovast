@@ -266,8 +266,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
     """Get a cluster config instance, reconstructed **from the deployed service**.
 
     This is the way to obtain a config object for commands that run *after*
-    ``setup`` (``cleanup``, ``prepare-run``, off-cluster ``serve --backend
-    cluster``). It reads the config name + setup kwargs from the in-cluster
+    ``setup`` (``cleanup``, off-cluster ``serve --backend cluster``). It reads the config name + setup kwargs from the in-cluster
     ``robovast-service`` Deployment's env — the authoritative record setup wrote
     there — and calls :meth:`~BaseConfig.restore_from_setup_kwargs` so that
     credential-dependent methods such as :meth:`~BaseConfig.get_s3_credentials`

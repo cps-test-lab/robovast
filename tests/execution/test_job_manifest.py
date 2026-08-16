@@ -175,7 +175,7 @@ def test_job_tag_and_artifact_path_are_batch_namespaced(monkeypatch):
     # Flat, slash-free job tag (K8s name / param file) vs nested artifact path.
     assert r._job_tag(3) == "batch-0-job-3"
     assert r._job_artifact_path(3) == "batch-0/job-3"
-    # Unbatched runner (prepare-run): flat everywhere.
+    # Unbatched runner: flat everywhere.
     r._batch_tag = None
     assert r._job_tag(3) == "job-3"
     assert r._job_artifact_path(3) == "job-3"

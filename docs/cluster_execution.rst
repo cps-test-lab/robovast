@@ -498,37 +498,6 @@ see :ref:`containers <config-containers>`.
    avoids this.
 
 
-Manual Deployment (prepare-run)
----------------------------------
-
-A **batch-only** debugging aid: generate all manifests and scripts **without
-running them** (e.g. for airgapped clusters, CI pipelines, or to inspect exactly
-what the service would submit):
-
-.. code-block:: bash
-
-   vast execution cluster prepare-run ./output-dir
-
-The generated Job manifests are produced by the same builder the controller uses
-at run time, so they match what a real run submits. (For search campaigns, use
-``vast execution cluster run``.)
-
-To bake in credentials, ``prepare-run`` reads the cluster config from the deployed
-robovast-service (so it needs kubeconfig access to that cluster); pass
-``--cluster-config <name>`` with ``-o key=value`` credentials to run fully offline
-against a cluster that isn't up yet.
-
-The output directory contains:
-
-* ``robovast-manifest.yaml`` — robovast base services (e.g. MinIO pod/service manifest)
-* ``kueue-queue-setup.yaml`` + ``README_kueue.md`` — Kueue queue objects
-* ``out_template/`` — scenario configuration files
-* ``jobs/`` — individual Kubernetes Job YAML files per scenario/run
-* ``all-jobs.yaml`` — all jobs in a single file
-* ``upload_configs.py`` — script to upload configs to S3
-* ``README.md`` + cluster-specific README files
-
-
 Job Queueing with Kueue
 -----------------------
 
@@ -590,7 +559,7 @@ the ``--context`` flag to any cluster sub-command to select a specific context
    vast execution cluster run --context gcp-c4
 
 The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
-``prepare-run``, ``run-cleanup``, and ``cleanup``.
+``run-cleanup``, and ``cleanup``.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 

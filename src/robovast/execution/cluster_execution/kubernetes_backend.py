@@ -26,9 +26,7 @@ with full bandwidth.
 
 The job-manifest toolkit lives here in :class:`BatchJobRunner` (built only via
 :meth:`BatchJobRunner.for_batch`): it composes per-job Kubernetes manifests,
-submits/polls/cleans up the Jobs, and writes the per-run job-link manifest. The
-host-side ``vast exec cluster prepare-run`` reuses the same builder to emit the
-exact manifests the controller would submit, for debugging.
+submits/polls/cleans up the Jobs, and writes the per-run job-link manifest.
 
 Per batch it:
 
@@ -51,8 +49,7 @@ projection (the same one the service's ``fetch_campaign`` reconstructs on re-run
 
 Each batch is isolated under a ``_batches/<batch_tag>/`` storage sub-prefix and
 uses batch-namespaced job names, so batches of one search campaign never
-collide. A ``_batch_tag`` of ``None`` selects the classic single-batch layout
-(used by ``prepare-run``).
+collide. A ``_batch_tag`` of ``None`` selects the classic single-batch layout.
 """
 
 import copy
@@ -253,8 +250,7 @@ class BatchJobRunner:
     Constructed only via :meth:`for_batch` from a pre-built ``campaign_data``
     (the controller has already composed it). Runs in-pod: storage I/O is direct
     (no archiver) and the Kubernetes client uses the in-cluster service account.
-    The same builder is reused offline by ``vast exec cluster prepare-run`` to emit
-    job manifests without touching the API (only :meth:`run_batch_in_pod` does).
+    Building manifests touches no API; only :meth:`run_batch_in_pod` does.
     """
 
     #: Cooperative-stop signal, set by :meth:`for_batch`. Class-level default so a
@@ -294,7 +290,7 @@ class BatchJobRunner:
         # Kubernetes API client uses in-cluster config (see _ensure_k8s_initialized).
         self.kube_context = kube_context
         self.log_tree = log_tree
-        # Cooperative-stop signal; ``None`` for offline callers (prepare-run).
+        # Cooperative-stop signal; ``None`` for offline callers (manifest emit, tests).
         self._state = state
 
         self.campaign = campaign_id
@@ -307,7 +303,7 @@ class BatchJobRunner:
         self.image = image
         self._resolved_image_digest = None
         self._resolved_image_digests = {}
-        # ``None`` ⇒ classic single-batch layout (prepare-run); the controller sets
+        # ``None`` ⇒ classic single-batch layout; the controller sets
         # a tag per search batch so jobs/param files/storage prefix don't collide.
         self._batch_tag = batch_tag
 
