@@ -31,6 +31,7 @@ it only talks to something that can.
 | `vast login <url>` / `vast logout` | store or forget the service credentials |
 | `vast workspace init/update/list/delete` | push a project directory to the service |
 | `vast files get/put` | move a single file by address |
+| `vast image build/status/log` | have the service build a project's derived images |
 | `vast wait <campaign-id>` | block until a campaign is genuinely over |
 | `vast results download -i <id>` | fetch a finished campaign's results |
 | `vast doctor` | check the login, the service and your PATH |
@@ -57,7 +58,7 @@ wrapper's status instead, which turns a failed campaign into a reported success.
 ## What it is not
 
 No simulator, no Kubernetes client, no Docker, no MuJoCo, no ROS. It cannot execute a
-campaign, only ask a service to. If you need to *run* campaigns on your own machine,
+campaign or build an image itself, only ask a service to. If you need to *run* campaigns on your own machine,
 install `robovast`; to host them on a cluster, add `robovast-cluster`.
 
 ## Licence

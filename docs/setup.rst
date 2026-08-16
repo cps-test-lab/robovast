@@ -24,16 +24,24 @@ Install RoboVAST and its sibling packages in editable mode:
 
 .. code-block:: bash
 
+   pip install -e src/robovast_client     # the layer everything else is built on
    pip install -e .
    pip install -e src/robovast_nav
    pip install -e src/robovast_sim_roqsim
    pip install -e src/robovast_cluster     # only if you will drive a Kubernetes cluster
 
-Order matters: each sibling depends on ``robovast``, never the other way round, which is what
-keeps the dependency graph acyclic. ``poetry install`` at the root will **not** pull them in for
-the same reason — they are separate distributions built on this one, not extras of it.
+Order matters, and it runs both ways. ``robovast-client`` goes **first**: it is the layer the
+core is built on, and it must be editable before anything pulls it in as a dependency. The
+others go after, because each depends on ``robovast`` and never the reverse — which is what
+keeps the dependency graph acyclic. ``poetry install`` at the root will **not** give you the
+lanes: they are separate distributions built on this one, not extras of it.
 
-``pip install -e .`` alone gives you a working ``vast`` and a service that can run **local Docker
+``pip install -e src/robovast_client`` alone is a complete, supported install — a ``vast`` that
+can log in, push workspaces, have the service build their images, wait for campaigns and fetch
+results, in 13 packages and about 30 MB. Every verb it offers only *drives* a service; nothing
+it can run needs a simulator, Docker or a kubeconfig.
+
+Adding ``pip install -e .`` gives you a service that can run **local Docker
 campaigns**, with no Kubernetes client anywhere in the environment. That is the point of the split,
 so declining the cluster package is a supported setup rather than a broken one: ``vast exec`` simply
 lists ``local`` and not ``cluster``, and ``vast doctor`` reports ``cluster support: not installed``

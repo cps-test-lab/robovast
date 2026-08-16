@@ -111,7 +111,7 @@ that matters — can decline what it does not.
 
 | Distribution | Contains | Adds |
 |---|---|---|
-| `robovast-client` | the `vast` root command group, the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
+| `robovast-client` | the `vast` root command group and every verb that only drives a service (login, workspace, files, image, wait, doctor), the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
 | `robovast` | service core, config/variation, results, MCP, controller, the local Docker lane | no kubernetes |
 | `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the deploy/operator commands | `kubernetes`, `boto3`, `google-cloud-storage` |
 | `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
