@@ -158,9 +158,8 @@ The name header is the HTTP equivalent of the one ``vast login`` stores: an agen
 config file, so without it every campaign the agent starts is unattributed while your own
 CLI runs are labelled. Drop the line to stay unattributed on purpose.
 
-Nothing to install: ``vast serve`` mounts MCP on the same port the UI is on. (A local
-``vast mcp serve`` over stdio also works and picks up ``vast login``'s credentials,
-name included.)
+The service mounts MCP on the same port the web UI is on, so this is the whole setup —
+there is no separate MCP process to run, here or on the deployed instance.
 
 
 Keeping it running

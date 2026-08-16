@@ -305,8 +305,8 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    '(source checkout only).')
 @click.option('--mcp/--no-mcp', 'mount_mcp', default=True, show_default=True,
               help='Also expose the MCP server at /mcp on this same port, so one '
-                   'tunnel covers the web UI, the REST API, and MCP tools together. '
-                   'Pass --no-mcp to run MCP separately (e.g. via "vast mcp serve").')
+                   'URL and one token cover the web UI, the REST API, and the MCP '
+                   'tools together. Pass --no-mcp to serve the API without them.')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
               callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
@@ -524,8 +524,6 @@ def login(url, token, name):
     click.echo("\nTo give an agent the same access over HTTP:")
     click.echo("  " + " \\\n      ".join(
         login_config.mcp_add_command(url, token, name)))
-    click.echo("\n(A local 'vast mcp serve' over stdio needs none of that — it reads "
-               "this login.)")
 
 
 @cli.command()

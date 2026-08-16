@@ -17,8 +17,7 @@ shortcut that opens a browser at that port; it starts nothing.
 
 ``vast serve`` also exposes its MCP tools at ``/mcp`` on that same port by
 default, so a single tunnel to ``8800`` reaches the web UI, the REST API, *and*
-MCP together — pass ``--no-mcp`` to turn that off (e.g. to run ``vast mcp serve``
-as its own separate process/port instead; see :ref:`mcp`).
+MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`).
 
 * **Local-only, no service** — ``vast exec local run``. One-shot local Docker
   run, no persistent service (mode 1). CLI only.
@@ -134,12 +133,8 @@ auto-detects it — nothing to export:
    # ...author, run, and query campaigns on the VM.
 
 That one tunnel also reaches MCP, since ``vast serve`` mounts it at ``/mcp`` on
-the same port by default. A client that can spawn a local subprocess (Claude
-Desktop, the ``vast`` CLI itself) can still run ``vast mcp serve`` here on your
-own machine instead — its tool calls then reach the VM over the very same
-tunnel — but a client that only takes a URL (Open WebUI, or any HTTP/SSE MCP
-client) points straight at ``http://127.0.0.1:8800/mcp`` through the tunnel,
-with no second port to forward.
+the same port by default: a client points at ``http://127.0.0.1:8800/mcp``
+through the tunnel, with no second port to forward.
 
 Walkthrough — the in-cluster service
 ------------------------------------

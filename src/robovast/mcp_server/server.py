@@ -16,17 +16,13 @@
 
 """RoboVAST MCP server.
 
-Start via the VAST CLI::
+Mounted by ``vast serve`` at ``/mcp`` on the service's own port, so one port (and one
+token) reaches the web UI, the REST API and the MCP tools together. There is no separate
+process to start: a client registers the URL, which ``vast serve``, ``vast login`` and
+``vast exec cluster token`` each print.
 
-    vast mcp serve                                      # SSE on 127.0.0.1:8801 (default)
-    vast mcp serve --transport stdio                    # stdio
-    vast mcp serve --transport streamable-http          # modern HTTP (Open WebUI etc.)
-    vast mcp serve --transport streamable-http --host 127.0.0.1 --port 9000
-    vast mcp serve --transport streamable-http -d       # log each tool call + args
-    vast mcp serve --transport streamable-http -dd      # also log the result
-
-All tools are provided by plugins registered under the
-``robovast.mcp_plugins`` entry-point group.
+All tools are provided by plugins registered under the ``robovast.mcp_plugins``
+entry-point group.
 """
 
 import contextvars
@@ -259,4 +255,5 @@ def create_server(
 
 
 if __name__ == "__main__":
-    raise SystemExit("Use 'vast mcp serve' to start the MCP server.")
+    raise SystemExit("The MCP server is mounted by 'vast serve' at /mcp; "
+                     "there is no separate process to start.")

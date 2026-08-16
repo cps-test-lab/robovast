@@ -50,54 +50,27 @@ build context is not archived in its results, so launch it from its workspace in
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
 **config** is one scenario parameter set within a campaign.
 
-``vast serve`` already exposes these tools at ``/mcp`` on its own port
-(``127.0.0.1:8800`` by default) — see :ref:`deployment`. That is the right
-choice whenever a ``robovast-service`` is running anyway, since it means one
-port (and, remotely, one SSH tunnel) reaches the web UI, the REST API, and MCP
-together. Pass ``--no-mcp`` to ``vast serve`` to turn that off.
+The tools live at ``/mcp`` on the service's own port — ``vast serve`` mounts them
+there by default, so one URL and one token reach the web UI, the REST API and the
+MCP tools together. There is no separate server process to start.
 
-``vast mcp serve`` below starts MCP as its **own** separate process, on its
-own port. Reach for it only when that separation is actually wanted: a
-``stdio`` transport for a locally-spawned client such as Claude Desktop (which
-never goes over a port at all), or a deliberately standalone MCP endpoint
-decoupled from ``vast serve``'s lifecycle.
+Register a client against that URL. ``vast serve``, ``vast login`` and ``vast exec
+cluster token`` each print the invocation, so the port, the path and the header set
+never have to be assembled by hand:
 
 .. code-block:: bash
 
-   vast mcp serve                                # SSE on 127.0.0.1:8801 (default)
-   vast mcp serve --transport stdio              # stdio (local clients, e.g. Claude Desktop)
-   vast mcp serve --transport streamable-http    # modern HTTP
-   vast mcp serve --transport streamable-http --host 127.0.0.1 --port 9000
-   vast mcp serve --debug                        # log all MCP messages
+   claude mcp add --transport http robovast http://127.0.0.1:8800/mcp \
+     --header 'Authorization: Bearer <token>'
 
-.. warning::
+Pass ``--no-mcp`` to ``vast serve`` to serve the API without the tools.
 
-   **The control tools launch and kill real compute, and the server has no
-   authentication.** By default the server binds ``127.0.0.1`` (localhost only)
-   precisely because the control surface is unauthenticated. Only pass
-   ``--host 0.0.0.0`` (or another routable address) on a network you fully
-   trust: anyone who can reach the port can start or stop campaigns.
+.. note::
 
-**Options**
-
-.. option:: --transport {stdio,sse,streamable-http}
-
-   Transport layer. ``sse`` is the default HTTP transport; ``stdio`` is used by
-   local MCP clients such as Claude Desktop; ``streamable-http`` is the modern
-   HTTP transport.
-
-.. option:: --host HOST
-
-   Host to bind when using an HTTP transport (default ``127.0.0.1``). See the
-   safety warning above before binding a routable address.
-
-.. option:: --port PORT
-
-   Port to bind when using an HTTP transport (default ``8801``).
-
-.. option:: --debug
-
-   Enable ``DEBUG`` logging for all MCP messages.
+   **The control tools launch and kill real compute**, so the mount is behind the same
+   shared token as every other route — there is no unauthenticated mode. A local
+   ``vast serve`` binds ``127.0.0.1``; a deployed one is published over its Ingress with
+   TLS. See :ref:`deployment`.
 
 
 .. _mcp-taxonomy:
