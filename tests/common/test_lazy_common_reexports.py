@@ -79,3 +79,19 @@ def test_the_re_exports_still_work_for_callers():
     result = _import_in_subprocess(
         "from robovast.common import load_config, VariationConfig, is_campaign_dir")
     assert result["count"] > 0  # it imported at all, i.e. the names resolved
+
+
+def test_the_client_closure_does_not_import_the_in_process_server():
+    """`campaign_wait` + `service_target` + `login` is what a thin client needs.
+
+    They reach `RobovastClient` through `service.client`, which used to re-export the
+    3,000-line in-process server eagerly -- so asking "is this campaign done yet?" pulled
+    the whole local Docker lane. A client distribution would not even have that module.
+    """
+    result = _import_in_subprocess(
+        "import robovast.execution.campaign_wait, robovast.common.cli.service_target, "
+        "robovast.common.cli.login")
+    for heavy in HEAVY:
+        assert heavy not in result["mods"], f"the client closure pulled {heavy}"
+    assert result["count"] < 400, (
+        f"the client closure now costs {result['count']} modules (was 286).")

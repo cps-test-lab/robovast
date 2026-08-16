@@ -46,8 +46,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 from robovast.service.auth import USER_HEADER
-from robovast.service.local_transport import (LocalTransport,
-                                              _robovast_version)
+from robovast.common.app_version import running_version
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +153,7 @@ class HTTPTransport(RobovastInterface):
         logs a warning on mismatch so a stale service surfaces instead of failing
         obscurely. Best-effort: an unreachable service yields ``compatible=None``.
         """
-        client_v = _robovast_version()
+        client_v = running_version()
         try:
             info = self.version()
         except Exception as e:  # noqa: BLE001 - unreachable service
@@ -548,7 +547,9 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
     """Return a transport-agnostic client.
 
     * ``service_url`` set → :class:`HTTPTransport` to that ``robovast-service``.
-    * empty (default) → :class:`LocalTransport` (in-process local Docker).
+    * empty (default) → :class:`LocalTransport` (in-process local Docker), imported only
+      on that branch: the in-process server is 3,000 lines this module otherwise has no
+      use for, and an install that ships only the client does not have it at all.
 
     Callers resolve *service_url* explicitly (see
     :func:`robovast.common.cli.service_target.detected_service_url`); there is no
@@ -560,6 +561,14 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802
     remote users. Pass them explicitly to override.
     """
     if not service_url:
+        try:
+            from robovast.service.local_transport import \
+                LocalTransport  # pylint: disable=import-outside-toplevel
+        except ImportError as e:  # a client-only install has no in-process server
+            raise RuntimeError(
+                "no service URL was given, and this install has no in-process service "
+                "to fall back to. Point at a running one: 'vast login <url>', or start "
+                "one with 'vast serve'.") from e
         return LocalTransport()
     if token is None or user is None:
         from robovast.common.cli.login import credentials
