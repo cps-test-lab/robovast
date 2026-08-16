@@ -191,6 +191,22 @@ plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlu
 image_catalog = "robovast.mcp_server.plugins.image_catalog:ImageCatalogPlugin"
 prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 
+[tool.isort]
+# Without this, isort classifies `robovast` as third-party -- there is no top-level
+# `robovast/` directory to infer it from, only `src/robovast*/`. Bare `isort .` then
+# merges first-party imports into the third-party block and deletes the blank line
+# between them, "fixing" 147 files by making every one of them worse. That is why the
+# repo has never had a clean isort run: the failures were the tool's, not the code's.
+known_first_party = ["robovast", "robovast_nav", "robovast_sim_roqsim"]
+src_paths = ["src", "tests"]
+# GRID (0) -- aligned to the opening paren, several names per line. Chosen by measuring
+# every mode against the tree: the imports here have no one consistent style, so all six
+# reformat ~180 files, and this is the one the majority already look like. Matching what
+# is there beats imposing something tidier.
+line_length = 100
+multi_line_output = 0
+include_trailing_comma = false
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
