@@ -34,6 +34,7 @@ pyyaml = "^6.0"
 
 [tool.poetry.plugins."robovast.panel_types"]
 costmap = "robovast_nav.panels:CostmapPanelType"
+map2d = "robovast_nav.panels:Map2DPanelType"
 nav2_behavior_tree = "robovast_nav.panels:Nav2BehaviorTreePanelType"
 
 [tool.poetry.plugins."robovast.service_endpoints"]

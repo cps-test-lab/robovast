@@ -23,7 +23,11 @@ It declares three attributes (duck-typed, like variation types' ``WEB_PREVIEW``)
 * ``WEB_PANEL`` -- directory (relative to this module) holding the built Module-Federation
   bundle (``remoteEntry.js`` + chunks), served by the service at
   ``/panel_types/<name>/assets/...`` and loaded by the run view at runtime.
-* ``PANEL_MODULE`` -- the exposed MF module the run view renders.
+* ``PANEL_MODULE`` -- the exposed MF module the view renders.
+* ``SURFACE`` (optional) -- which view the panel is for: ``"run"`` (the default, and what every
+  panel was before there was a second surface) or ``"config"`` for the Config tab's column. One
+  entry-point group and one asset route serve both; this is what tells them apart, and what makes
+  a run panel named in ``visualization.config.panels`` a refusal rather than a blank panel.
 * ``REMOTE_NAME`` (optional) -- the Module-Federation *container* name. Defaults to the
   entry-point name (one container per type). All panels here share a single ``robovast_nav``
   bundle (``robovast_nav/web`` exposes every ``PANEL_MODULE``), so they set the same
@@ -49,6 +53,26 @@ class CostmapPanelType:
     TYPE = "costmap"
     WEB_PANEL = "web/dist"
     PANEL_MODULE = "./costmap"
+    REMOTE_NAME = REMOTE_NAME
+
+
+class Map2DPanelType:
+    """The occupancy map a nav campaign plans on -- a **config-view** panel.
+
+    The direct replacement for the desktop config editor's map view, which is the one custom
+    visualization that tool had. It ships here rather than in the core UI for the reason the
+    costmap panel does: only a nav campaign has a ``map.yaml``, and only this package knows how
+    to read one.
+
+    It exists beside the 3D scene rather than being replaced by it because it is the *planning*
+    view: a path is searched over these cells and an obstacle is placed relative to that path, so
+    "why did the path go there" is a question about this picture rather than about the mesh.
+    """
+
+    TYPE = "map2d"
+    SURFACE = "config"
+    WEB_PANEL = "web/dist"
+    PANEL_MODULE = "./map2d"
     REMOTE_NAME = REMOTE_NAME
 
 

@@ -31,6 +31,8 @@ from typing import Optional
 
 from robovast.common.scene_markers import ConfigViewContribution, SceneMarker
 
+from .object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
+
 #: The palette. Fixed here rather than left to the panels because these markers are read
 #: together -- a path and the obstacles on it -- and a per-panel choice would give the same
 #: configuration different colours in the 3D scene and the 2D map.
@@ -133,9 +135,6 @@ def obstacle_markers(config: dict) -> list[SceneMarker]:
     A campaign that only spawns at run time (``objects`` bound, ``instances`` not) has no
     declared extents anywhere, and only there is the argument string consulted.
     """
-    from .object_shapes import (get_object_type_from_model_path,  # local: keeps import cost off
-                                get_obstacle_dimensions)          # every composition
-
     markers: list[SceneMarker] = []
     params = config.get("config") or {}
     objects = params.get(config.get("_objects_parameter_name")) or []

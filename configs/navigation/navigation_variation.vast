@@ -53,6 +53,16 @@ results_processing:
   - rosbags_costmap_to_csv:
       topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
 visualization:
+  # The Config tab's third column: what each generated configuration contains.
+  #
+  # No `world`/`scene3d` here -- this campaign declares no simulation container, so there is no
+  # world to compile. What it does have is a map: FloorplanVariation generates one per cell, and
+  # the path and obstacle variations plan on it. `map2d` is that picture, and it is where a reader
+  # can see *why* the path went where it did, which the obstacles are then placed relative to.
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "30%"}
+    - map2d: {title: Map, path and obstacles}
   results:
     # The web Run view (Results -> Run view): replay one run over its rosbag timeline.
     run_view:

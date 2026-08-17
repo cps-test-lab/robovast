@@ -31,7 +31,11 @@ export interface OccupancyGrid {
     height: number // cells
     origin: { position: Point; orientation: Quaternion } // pose of cell (0,0)'s corner in header.frame_id
   }
-  data: number[] // row-major, data[y*width + x]; y=0 is the bottom row
+  // Row-major, data[y*width + x]; y=0 is the bottom row. A typed array as well as a plain one:
+  // an authored map is decoded straight into an Int8Array (a 4000x4000 map is 16M cells, and a JS
+  // number[] of those costs an order of magnitude more memory), and every reader here indexes it
+  // identically.
+  data: number[] | Int8Array
 }
 
 // --- planar geometry ---

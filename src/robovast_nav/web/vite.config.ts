@@ -49,6 +49,7 @@ export default defineConfig({
         //   behaviorTree -> loadRemote('robovast_nav/behaviorTree')
         './costmap': './src/costmap.tsx',
         './behaviorTree': './src/behaviorTree.tsx',
+        './map2d': './src/map2d.tsx',
       },
       shared: {
         react: { singleton: true, requiredVersion: '^18' },

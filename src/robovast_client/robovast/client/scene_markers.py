@@ -114,5 +114,3 @@ class ConfigViewContribution(BaseModel):
             markers=[*self.markers, *other.markers],
             files={**self.files, **other.files},
         )
-
-
