@@ -679,7 +679,7 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 
         execution:
           containers:
-            sut: {image: ghcr.io/…/robovast_jazzy,
+            sut: {image: family:robovast,
                   system_packages: [ros-jazzy-nav2-smac-planner]}
 
     ``python_packages`` is a list of **install groups**: a flat list is one pip pass, so

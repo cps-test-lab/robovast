@@ -6,7 +6,6 @@ configuration:
 execution:
   containers:
     scenario:
-      image: ghcr.io/cps-test-lab/robovast:latest
       resources:
         cpu: 1
   runs: 1

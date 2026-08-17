@@ -27,8 +27,9 @@ configuration:
       values: [1.5, 2.5]
 execution:
   containers:
-    scenario:
-      image: ghcr.io/cps-test-lab/robovast:latest
+    # All defaults: the framework image, resolved from the
+    # deployment's project (ROBOVAST_PROJECT).
+    scenario: {}
   runs: 5
   scenario_file: scenario.osc
   run_files:

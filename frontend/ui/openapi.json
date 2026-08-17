@@ -607,6 +607,16 @@
             "title": "Description",
             "type": "string"
           },
+          "image_project": {
+            "default": "",
+            "title": "Image Project",
+            "type": "string"
+          },
+          "image_project_tag": {
+            "default": "",
+            "title": "Image Project Tag",
+            "type": "string"
+          },
           "postprocess": {
             "default": true,
             "title": "Postprocess",

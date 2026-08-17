@@ -29,11 +29,11 @@ against a real API server without scheduling anything (see
 Python client — the same style as
 :func:`robovast.execution.cluster_execution.cluster_setup.apply_controller_rbac`.
 
-Note on image currency (plan 0.7): the Deployment runs
-:func:`robovast.common.execution.resolve_controller_image` with a service
-command. That image must contain the ``robovast.service`` package; publish a
-service image (or layer the current wheel) before a real rollout — override with
-``ROBOVAST_CONTROLLER_IMAGE`` to point at a dev image.
+Note on image currency: the Deployment runs
+:func:`robovast.common.execution.resolve_controller_image` with a service command. That
+image must contain the ``robovast.service`` package; publish a service image (or layer the
+current wheel) before a real rollout. Point ``ROBOVAST_PROJECT`` at your own registry to
+run a dev build — it moves the whole image family, this one included.
 """
 
 import datetime
@@ -1054,23 +1054,30 @@ def service_manifests(namespace="default", image=None, env=None,
     image = image or resolve_controller_image()
     if env is None:
         env = _cluster_env(namespace, config_name, config_kwargs, kube_context)
-    # The service no longer launches controller pods, but it still needs an image
-    # that contains robovast: the postprocessing Job mounts the conversion scripts
-    # in from it via an initContainer. Default it to the SAME image the service
-    # runs, so they are always in step.
-    if not any(e["name"] == "ROBOVAST_CONTROLLER_IMAGE" for e in env):
-        env = [*env, {"name": "ROBOVAST_CONTROLLER_IMAGE", "value": image}]
-    # The sidecar is resolved *in this pod* -- the s3-init container, the mc-tools aux
-    # container, the postprocessing Job, campaign Jobs and the image-build Job all call
-    # resolve_sidecar_image() from inside the service. So an operator who set
-    # ROBOVAST_SIDECAR_IMAGE for a dev build got it honoured everywhere except the place
-    # it is actually read, and quietly kept the published sidecar: exactly the "three of
-    # the four images" failure that knob was added to end. Carrying it over is the other
-    # half of adding it.
+    # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. It was carried in for the
+    # postprocessing Job, whose initContainer used to copy robovast out of the controller
+    # image -- but the conversion scripts come from a per-campaign ConfigMap built in the
+    # driver's own process now (postprocess_job.scripts_configmap_manifest, precisely so
+    # there is no controller-image version skew), and the conversion container runs the
+    # *campaign's* recorded execution image. Nothing in the pod reads the variable, so
+    # setting it there says something untrue about what this deployment uses.
+    #
+    # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
+    # for a campaign, the simulator's, the sidecar for every init container, the build
+    # base. So the project they resolve from has to be carried in, or an operator who
+    # configured one gets it honoured everywhere except the place it is actually read.
+    #
+    # That was the old bug, and it was worse than it sounds: of the five per-image
+    # variables that used to exist, only two were ever propagated, so `setup --force`
+    # appeared to move the images and moved only the controller. One variable for the
+    # whole family means there is one thing to carry rather than five to forget -- and
+    # this is the *site default*: a campaign may override it on its own request
+    # (CreateCampaignRequest.image_project), which is what makes a dev run need no deploy.
     import os  # pylint: disable=import-outside-toplevel
-    sidecar = os.environ.get("ROBOVAST_SIDECAR_IMAGE", "").strip()
-    if sidecar and not any(e["name"] == "ROBOVAST_SIDECAR_IMAGE" for e in env):
-        env = [*env, {"name": "ROBOVAST_SIDECAR_IMAGE", "value": sidecar}]
+    for var in ("ROBOVAST_PROJECT", "ROBOVAST_PROJECT_TAG"):
+        value = os.environ.get(var, "").strip()
+        if value and not any(e["name"] == var for e in env):
+            env = [*env, {"name": var, "value": value}]
 
     extra = []
     if git_token is None:

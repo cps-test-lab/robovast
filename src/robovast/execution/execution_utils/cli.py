@@ -66,8 +66,8 @@ def local():
 @click.option('--no-gui',  is_flag=True,
               help='Disable host GUI support')
 @click.option('--image', '-i', default=None,
-              help='Use a custom Docker image (overrides execution.image, ROBOVAST_IMAGE '
-                   'and the built-in default)')
+              help='Use a custom Docker image (overrides execution.image and the '
+                   'RoboVAST family default)')
 @click.option('--abort-on-failure', is_flag=True,
               help='Stop execution after the first failed run config (default: continue)')
 @click.option('--use-resource-allocation', is_flag=True,
@@ -139,7 +139,7 @@ def run(config, runs, output, start_only, no_gui, image, abort_on_failure,
             if not gui:
                 cmd.append("--no-gui")
             # Only an explicit --image is forwarded; otherwise the generated
-            # run.sh already bakes in the resolved image (config/ROBOVAST_IMAGE/default).
+            # run.sh already bakes in the resolved image (config, else the family default).
             if image:
                 cmd.extend(["--image", image])
             os.execv(run_script_path, cmd)  # replaces this process

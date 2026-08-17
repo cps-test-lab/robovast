@@ -149,10 +149,11 @@ To test local container images in a minikube cluster, you can load the image int
     # first terminal
     docker run --rm -it --network=host alpine ash -c "apk add socat && socat TCP-LISTEN:5000,reuseaddr,fork TCP:$(minikube ip):5000"
 
-    # second terminal
-    ./container/build.sh --push
+    # second terminal -- publish the whole family into the local registry
+    make release-images PROJECT=localhost:5000 PUSH=1
 
-    # specify the image in your RoboVAST configuration file
+    # third: point runs at it (a .vast names no RoboVAST image; see docs/images.rst)
+    export ROBOVAST_PROJECT=localhost:5000
 
 
 6. Analysis
@@ -449,7 +450,8 @@ the quadrotor search vasts.
    * For a cluster run, the built-in ``robovast`` / ``robovast-nav`` code comes
      from the **service image** (``vast exec cluster setup`` deploys it), so dev
      changes to those sources reach a run by rebuilding/redeploying that image —
-     point ``ROBOVAST_CONTROLLER_IMAGE`` at a dev image to iterate. This applies
+     publish your own set (``make release-images PROJECT=docker.io/<you> PUSH=1``)
+     and point ``ROBOVAST_PROJECT`` at it to iterate. This applies
      only to the built-in sources; independent plugins are handled by
      ``discover_plugin_installs`` above (installed into the workspace, no image
      rebuild needed).

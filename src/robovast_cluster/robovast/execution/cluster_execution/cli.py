@@ -725,27 +725,33 @@ def upgrade(namespace, kube_context):
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
-    Reads ``./.env`` from the current directory, like every ``vast`` command, so run it
-    from the checkout whose ``.env`` describes this deployment. That file is also where
-    every image ref comes from -- there is deliberately no ``--image``. A flag would have
-    been one-shot, because nothing reads the deployed image back, so a later bare
-    ``upgrade`` would silently revert a digest pinned that way to whatever the floating
-    tag points at -- the exact failure pinning exists to prevent, arriving through the
-    command that looks safe. For a one-off, a real environment variable already beats a
-    ``.env`` line::
+    Reads the environment like every ``vast`` command -- ``./.env`` then
+    ``~/.config/robovast/env`` -- so ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG``
+    are where the images come from, and this is the command that moves them. Both are
+    baked into the service pod as the *site default*; a campaign can still override them
+    per launch (``vast exec cluster run --image-project``), which needs no upgrade at all.
 
-        ROBOVAST_CONTROLLER_IMAGE=repo@sha256:... vast exec cluster upgrade
+    There is deliberately no ``--image``. A flag would have been one-shot, because nothing
+    reads the deployed image back, so a later bare ``upgrade`` would silently revert it --
+    arriving through the command that looks safe. For a one-off, a real environment
+    variable already beats both files::
 
-    and ``make image-digests`` writes the durable form into ``.env``.
+        ROBOVAST_PROJECT=freeedlabs vast exec cluster upgrade
 
-    Distinct from ``setup --force``, deliberately:
+    ``make image-digests PROJECT=...`` checks that a project holds a complete family
+    before you point a cluster at it.
+
+    **This is the command for rolling out an image**, not ``setup --force``:
 
     \b
-      upgrade        the image, RBAC, and the credential Secrets it can rebuild
-                     from the environment (git, share, ntfy, registry). The access
-                     token is preserved, so nobody is logged out.
-      setup --force  additionally re-mints the access token when asked
-                     (--rotate-token), which does log everyone out.
+      upgrade        the image, RBAC, and the credential Secrets it can rebuild from
+                     the environment (git, share, ntfy, registry). Recovers this
+                     cluster's config and ingress host from the cluster itself, so it
+                     cannot lose them. The access token is preserved.
+      setup --force  re-provisions: Kueue, the object store, the registry storage. It
+                     takes its options as *arguments*, so a re-run without the original
+                     flags re-provisions with different ones. Also re-mints the access
+                     token when asked (--rotate-token), logging everyone out.
 
     Campaign data lives in the object store and survives both.
     """

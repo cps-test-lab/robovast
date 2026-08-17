@@ -96,6 +96,18 @@ class CreateCampaignRequest(BaseModel):
     #: effect rather than after the internal ``RunOptions.gui`` it sets, because a client
     #: reads this field without the run machinery in front of it.
     show_gui: bool = False
+    #: Which project (registry/namespace) and tag this campaign's **RoboVAST family**
+    #: images come from — ``""`` for the service's own default. Per campaign, and on the
+    #: request rather than in the service's environment, because that is what makes
+    #: "run this against my dev images" a launch decision instead of a redeployment: the
+    #: images are resolved service-side, so a client that could only set an env var could
+    #: not reach them at all without rolling the service.
+    #:
+    #: Affects **only** images RoboVAST publishes. A container whose ``image`` the
+    #: ``.vast`` states is run exactly as written — that field is for the campaign's own
+    #: images, and silently redirecting one would launch something nobody named.
+    image_project: str = ""
+    image_project_tag: str = ""
 
 
 class CampaignRef(BaseModel):

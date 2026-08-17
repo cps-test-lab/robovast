@@ -1,5 +1,31 @@
 ARG ROS_DISTRO=jazzy
 
+# Where scenario-execution comes from, defaulted HERE so this Dockerfile builds on its own.
+#
+# The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a commit
+# that only ever existed on a feature branch; once that branch was merged and deleted the
+# commit became unreachable, and every build from a clean clone failed with "fatal: reference
+# is not a tree". A pin whose commit can disappear is not a pin.
+ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
+ARG SCENARIO_EXECUTION_REF=bd77cc9b283f1b775240ab8ac65d71c761bd1e8a
+
+FROM alpine/git AS scenario-execution-clone
+ARG SCENARIO_EXECUTION_REPO
+ARG SCENARIO_EXECUTION_REF
+# No --depth: the ref is a bare commit sha, which a shallow clone cannot name. .git is dropped
+# afterwards -- the colcon build below never reads it.
+RUN git clone "$SCENARIO_EXECUTION_REPO" /src \
+ && git -C /src checkout "$SCENARIO_EXECUTION_REF" \
+ && rm -rf /src/.git
+
+# The source tree alone, so that ``--build-context scenario-execution-src=<path>`` can replace
+# it with a working checkout. That hatch is needed because the pin is a *release* control:
+# iterating on scenario-execution means building from a commit that is not pushed yet, which a
+# clone cannot do, and pushing to the shared repo first is a release decision made for the
+# wrong reason.
+FROM scratch AS scenario-execution-src
+COPY --from=scenario-execution-clone /src /
+
 FROM osrf/ros:${ROS_DISTRO}-desktop-full
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
@@ -83,37 +109,18 @@ RUN curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /
 
 RUN mkdir -p /ws/src
 
-# Staged by build.sh, and empty unless it was asked for: a release build leaves this
-# directory empty and the pinned clone below is what lands in the image. ``build.sh
-# --scenario-execution-src <path>`` fills it with a working tree instead.
+# From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
+# working tree when a build overrides it (see the stage definition at the top of this file).
 #
-# The same shape as Dockerfile.roqsim's staged context, and for the same reason: a
-# Dockerfile cannot branch on a build arg, so build.sh decides what is *in* the context and
-# there is one COPY rather than two code paths for "where does the source come from".
-#
-# Why the hatch is needed at all: the pin is a release control, and iterating on
-# scenario-execution means building an image from a commit that is not pushed yet -- which
-# the clone cannot do. Without it the only way to test a change here is to push it to the
-# shared repo first, which is a release decision made for the wrong reason.
-COPY scenario-execution-src /tmp/scenario-execution-src
+# This used to be ``COPY scenario-execution-src ...`` of a directory build.sh created, empty,
+# in a temp context. Git cannot track an empty directory, so the COPY had nothing to resolve
+# against in a plain checkout -- and CI builds with ``context: .``, which means this image's own
+# workflow could never have produced it. A Dockerfile that only builds through one particular
+# wrapper is a Dockerfile whose CI job is decorative.
+COPY --from=scenario-execution-src / /ws/src/scenario-execution
 
-# The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a
-# commit that only ever existed on a feature branch; once that branch was merged and
-# deleted the commit became unreachable, and every build of this image from a clean
-# clone failed with "fatal: reference is not a tree". A pin whose commit can disappear
-# is not a pin.
 # hadolint ignore=DL3003
-RUN  if [ -n "$(ls -A /tmp/scenario-execution-src 2>/dev/null)" ]; then \
-       echo "scenario-execution: staged working tree (--scenario-execution-src)" && \
-       cp -a /tmp/scenario-execution-src /ws/src/scenario-execution; \
-     else \
-       echo "scenario-execution: clone @ bd77cc9b283f1b775240ab8ac65d71c761bd1e8a" && \
-       git clone "https://github.com/cps-test-lab/scenario-execution.git" /ws/src/scenario-execution && \
-       cd /ws/src/scenario-execution && \
-       git checkout bd77cc9b283f1b775240ab8ac65d71c761bd1e8a; \
-     fi && \
-     rm -rf /tmp/scenario-execution-src && \
-     cd /ws && \
+RUN  cd /ws && \
      git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
      git checkout 39c55d1081dcdd9f04f3762c0ec84b189c50b2da && \

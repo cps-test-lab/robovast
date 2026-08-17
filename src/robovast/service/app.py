@@ -1364,20 +1364,21 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     if not ephemeral:
         logger.info("authenticating with the configured %s", auth.TOKEN_ENV_VAR)
 
-    # These four vars are the only knobs that move a campaign off the built-in
-    # image defaults (see _resolve_image() / robovast_sim_roqsim.backend); a
-    # persistent service running against a non-default image for months is easy
-    # to forget, so surface it once at startup rather than only on demand.
+    # Where this service's images come from. A persistent service pulling from a dev
+    # project for months is easy to forget, so state it once at startup rather than only
+    # on demand -- and state it whether or not it was overridden, because "which images
+    # is it running?" is the first question when a campaign behaves unexpectedly, and an
+    # answer that appears only when someone configured something cannot be relied on.
+    #
+    # This is the *service default*. A campaign may carry its own project on the request
+    # (CreateCampaignRequest.image_project), which is why the line says "default".
     import os  # pylint: disable=import-outside-toplevel
-    image_overrides = {
-        var: value for var in
-        ("ROBOVAST_IMAGE", "ROBOVAST_ROQSIM_IMAGE",
-         "ROBOVAST_CONTROLLER_IMAGE", "ROQSIM_IMAGE")
-        if (value := os.environ.get(var, "").strip())
-    }
-    if image_overrides:
-        logger.info("image overrides from environment: %s",
-                     ", ".join(f"{k}={v}" for k, v in image_overrides.items()))
+
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        DEFAULT_IMAGE_PROJECT, default_image_project, default_image_tag)
+    project = default_image_project()
+    logger.info("RoboVAST image default: %s/*:%s%s", project, default_image_tag(),
+                "" if project == DEFAULT_IMAGE_PROJECT else " (ROBOVAST_PROJECT)")
 
     # Drive uvicorn via an explicit Server so the SSE generators can probe
     # ``should_exit`` (set when a Ctrl+C begins shutdown, before the connection

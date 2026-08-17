@@ -10,9 +10,9 @@
 #   container/controller/build.sh  (controller)
 #
 # The sidecar has no build.sh, so it is built with buildx directly. It used to be left
-# out for that reason -- which meant a release to a dev registry published three images
-# and silently kept the public sidecar, the same "three of the four" gap that
-# ROBOVAST_SIDECAR_IMAGE was added to close.
+# out for that reason -- which meant a release to a dev registry published three images and
+# silently kept the public sidecar. That gap is why the family is published as a *set*: one
+# ROBOVAST_PROJECT moves all four, so there is no longer a per-image knob to forget.
 #
 # Usage:
 #   ./container/release_images.sh --project <prefix> [--push] [--ros-distro <distro>] \
@@ -34,11 +34,18 @@ PUSH=""
 ROS_DISTRO="jazzy"
 ROQSIM_REF="robovast"
 ROQSIM_SRC=""
+# `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
+# immutable set, which is how a deployment is pinned: ROBOVAST_PROJECT_TAG=<stamp>.
+TAG="latest"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --project)
       PROJECT="$2"
+      shift 2
+      ;;
+    --tag)
+      TAG="$2"
       shift 2
       ;;
     --push|-n)
@@ -71,8 +78,9 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project docker.io/freeedlabs --push" >&2
+  echo "Pinned:  $0 --project docker.io/freeedlabs --tag 2026-08-17 --push" >&2
 }
 
 if [[ -z "$PROJECT" ]]; then
@@ -104,18 +112,20 @@ fi
 PUSH_FLAG=()
 [[ -n "$PUSH" ]] && PUSH_FLAG=(--push)
 
-BASE_TAG="${PROJECT}robovast_${ROS_DISTRO}:latest"
-ROQSIM_TAG="${PROJECT}robovast_roqsim_${ROS_DISTRO}:latest"
-CONTROLLER_TAG="${PROJECT}robovast-controller:latest"
-# Not ROS-distro suffixed: alpine + mc + boto3, with nothing a distro could change.
-SIDECAR_TAG="${PROJECT}robovast-sidecar:latest"
+# The four family members, at one tag. One tag for the whole set is what makes
+# ROBOVAST_PROJECT_TAG a single knob -- and why pinning a deployment means publishing an
+# immutable tag rather than pasting four digests, which one tag cannot express.
+BASE_TAG="${PROJECT}robovast:${TAG}"
+ROQSIM_TAG="${PROJECT}robovast-roqsim:${TAG}"
+CONTROLLER_TAG="${PROJECT}robovast-controller:${TAG}"
+SIDECAR_TAG="${PROJECT}robovast-sidecar:${TAG}"
 
 SRC_FLAG=()
 [[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
 
 echo "== base + roqsim =="
 ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
-  --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
+  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
 
 echo
 echo "== controller =="
@@ -128,17 +138,17 @@ echo
 echo "== sidecar =="
 # Built here rather than only in CI so a dev-registry release is complete. It was the one
 # image release_images.sh did not publish, which meant an operator pointing PROJECT at
-# their own registry got three dev images and silently kept the published sidecar --
-# and, until the service started carrying ROBOVAST_SIDECAR_IMAGE into its pod, had no way
-# to notice. Buildx directly: there is no container/sidecar/build.sh.
+# their own registry got three dev images and silently kept the published sidecar, with
+# nothing to notice it by. A release must publish the whole family, because ROBOVAST_PROJECT
+# moves the whole family. Buildx directly: there is no container/sidecar/build.sh.
 # shellcheck source=container/platforms.env
 . "$BASEDIR/platforms.env"
 docker buildx build --platform "$PLATFORMS_SIDECAR" \
   -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "$BASEDIR/sidecar" $EXTRA_ARGS
 
-# The digest for a repo:tag, as repo@sha256:... -- printed instead of the floating tag
-# below, matching this repo's own pin-by-digest convention (see the roqsim image comment
-# in configs/examples/basic_nav/basic_nav_roqsim.vast).
+# The digest for a repo:tag, as repo@sha256:... -- reported below, and used to verify that a
+# --push actually landed. Not the configuration: one ROBOVAST_PROJECT_TAG covers all four
+# members and so cannot be four digests; an immutable --tag is how a deployment is pinned.
 #
 # Two sources, cheapest first:
 #   1. the local image's RepoDigests. Set when this image was pushed to (or pulled from)
@@ -175,30 +185,25 @@ image_ref() {
 }
 
 resolve_refs() {
-  local name tag ref
+  local tag ref
   MISSING_DIGESTS=()
-  for name in BASE ROQSIM_IMAGE CONTROLLER_IMAGE SIDECAR_IMAGE; do
-    case "$name" in
-      BASE)             tag="$BASE_TAG" ;;
-      ROQSIM_IMAGE)   tag="$ROQSIM_TAG" ;;
-      CONTROLLER_IMAGE) tag="$CONTROLLER_TAG" ;;
-      SIDECAR_IMAGE)    tag="$SIDECAR_TAG" ;;
-    esac
+  DIGEST_REFS=()
+  for tag in "$BASE_TAG" "$ROQSIM_TAG" "$CONTROLLER_TAG" "$SIDECAR_TAG"; do
     ref=$(image_ref "$tag")
     if [[ -z "$ref" ]]; then
       MISSING_DIGESTS+=("$tag")
-      ref="$tag"
+    else
+      DIGEST_REFS+=("$ref")
     fi
-    printf -v "${name}_REF" '%s' "$ref"
   done
 }
 
 resolve_refs
 
-# A --push run whose digest cannot be resolved is a failure, not a footnote: the tags
-# printed below would be indistinguishable from a successful digest run for anyone
-# copying them into a .vast or .env, and a floating :latest silently changes what a
-# campaign ran on. Say so and exit non-zero rather than hand out an unpinnable ref.
+# A --push run whose digest cannot be resolved is a failure, not a footnote: the digest is
+# the only evidence the push reached the registry, so without it "== done ==" would report a
+# published set that may not be there -- and the next thing to touch it is a cluster pulling
+# the tag. Say so and exit non-zero.
 if [[ -n "$PUSH" && ${#MISSING_DIGESTS[@]} -gt 0 ]]; then
   echo >&2
   echo "ERROR: pushed, but could not resolve a digest for:" >&2
@@ -218,32 +223,50 @@ fi
 echo "  $BASE_TAG"
 echo "  $ROQSIM_TAG"
 echo "  $CONTROLLER_TAG"
-echo
-if [[ ${#MISSING_DIGESTS[@]} -eq 0 ]]; then
-  echo "Referenced below by digest rather than the floating :latest tag, so the image a run"
-  echo "actually uses stays a recorded fact:"
-else
+echo "  $SIDECAR_TAG"
+
+# The digests are a record and a receipt, not the configuration: one ROBOVAST_PROJECT_TAG
+# covers all four members, so it cannot be four different digests. Printed so a release can
+# be written down and so a push can be *verified* -- which is what the exit above uses them
+# for -- while the two lines below are what actually configures anything.
+if [[ ${#DIGEST_REFS[@]} -gt 0 ]]; then
+  echo
+  echo "Digests (for the record -- what this tag points at right now):"
+  printf '  %s\n' "${DIGEST_REFS[@]}"
+fi
+if [[ ${#MISSING_DIGESTS[@]} -gt 0 ]]; then
   # Only reachable without --push (a --push run with a missing digest exited above). A
   # mixed list is normal there: an image whose rebuild was fully cached still carries the
-  # RepoDigest of its earlier push and is pinnable; a rebuilt one is not in the registry.
-  echo "${#MISSING_DIGESTS[@]} of 4 images are not in ${PROJECT%/} under a digest and are named by"
-  echo ":latest below -- there is nothing pinnable for them yet. Re-run with --push to publish"
-  echo "them and get repo@sha256:... refs instead:"
+  # RepoDigest of its earlier push; a rebuilt one is not in the registry at all.
+  echo
+  echo "Not in ${PROJECT%/} yet (re-run with --push):"
+  printf '  %s\n' "${MISSING_DIGESTS[@]}"
 fi
-echo "  ROBOVAST_IMAGE=${BASE_REF}"
-echo "  ROBOVAST_ROQSIM_IMAGE=${ROQSIM_IMAGE_REF}"
-echo "  ROBOVAST_CONTROLLER_IMAGE=${CONTROLLER_IMAGE_REF}"
-echo "  ROBOVAST_SIDECAR_IMAGE=${SIDECAR_IMAGE_REF}"
-echo "Note: a .vast file's own 'image:' field overrides .env/env vars -- edit it directly if a"
-echo "campaign pins its image explicitly (as configs/examples/basic_nav/*.vast do)."
 
-# Offer to write the four lines above into ./.env -- the file `vast` itself loads (see
-# src/robovast/common/env_file.py: current directory only, current directory when `vast`
-# runs). Only ever touches these four keys in place; any other line (e.g. registry
-# credentials) is left untouched. Skipped outside an interactive terminal (e.g. CI) rather
-# than hanging on a read that will never come.
+echo
+echo "Configure it with two lines:"
+echo "  ROBOVAST_PROJECT=${PROJECT%/}"
+echo "  ROBOVAST_PROJECT_TAG=${TAG}"
+if [[ "$TAG" == "latest" ]]; then
+  echo
+  echo "Note: :latest floats. For a deployment whose image set cannot change under it,"
+  echo "re-run with --tag <stamp> (e.g. --tag \"\$(date +%F)\") and pin that instead."
+fi
+echo "Note: a container's own 'image:' in a .vast is used verbatim and is NOT affected by"
+echo "these -- that field is for your own images. Delete it to run a family image."
+
+# Offer to write the two lines into the *user* config -- ~/.config/robovast/env, which
+# `vast` loads whatever directory it runs in (see src/robovast/common/env_file.py). The
+# per-project ./.env is the wrong home for a released image set: it is one directory's
+# setting, and running `vast` one level up silently loses it. Only ever touches these two
+# keys in place; any other line (registry credentials, share config) is left untouched.
+# Skipped outside an interactive terminal (e.g. CI) rather than hanging on a read that will
+# never come.
+USER_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/robovast/env"
+
 set_env_var() {
-  local key="$1" value="$2" file="${3:-.env}"
+  local key="$1" value="$2" file="$3"
+  mkdir -p "$(dirname "$file")"
   touch "$file"
   if grep -q "^${key}=" "$file"; then
     sed -i "s|^${key}=.*|${key}=${value}|" "$file"
@@ -254,15 +277,13 @@ set_env_var() {
 
 if [[ -t 0 ]]; then
   echo
-  read -r -p "Update ./.env with these 4 lines now? [y/N] " REPLY || REPLY=""
+  read -r -p "Write these 2 lines to ${USER_ENV_FILE} now? [y/N] " REPLY || REPLY=""
   if [[ "$REPLY" =~ ^[Yy] ]]; then
-    set_env_var ROBOVAST_IMAGE "$BASE_REF"
-    set_env_var ROBOVAST_ROQSIM_IMAGE "$ROQSIM_IMAGE_REF"
-    set_env_var ROBOVAST_CONTROLLER_IMAGE "$CONTROLLER_IMAGE_REF"
-    set_env_var ROBOVAST_SIDECAR_IMAGE "$SIDECAR_IMAGE_REF"
-    echo "Updated ./.env."
+    set_env_var ROBOVAST_PROJECT "${PROJECT%/}" "$USER_ENV_FILE"
+    set_env_var ROBOVAST_PROJECT_TAG "$TAG" "$USER_ENV_FILE"
+    echo "Updated ${USER_ENV_FILE}."
   fi
 else
   echo
-  echo "(non-interactive -- run this script directly in a terminal to be offered an automatic .env update)"
+  echo "(non-interactive -- run this script directly in a terminal to be offered an automatic update)"
 fi

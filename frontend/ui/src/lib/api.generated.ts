@@ -1546,6 +1546,16 @@ export interface components {
              */
             description: string;
             /**
+             * Image Project
+             * @default
+             */
+            image_project: string;
+            /**
+             * Image Project Tag
+             * @default
+             */
+            image_project_tag: string;
+            /**
              * Postprocess
              * @default true
              */

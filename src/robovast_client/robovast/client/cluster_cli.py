@@ -130,9 +130,18 @@ def _confirm_overwrite(name, workspace_id):
 @click.option('--workspace', 'workspace_name', default=None, metavar='NAME',
               help="Workspace to push the project into (default: the .vast's "
                    'directory name). Reused when it already exists.')
+@click.option('--image-project', 'image_project', default=None, metavar='PROJECT',
+              help='Registry/namespace to take the RoboVAST images from for this run '
+                   '(e.g. freeedlabs), overriding ROBOVAST_PROJECT. Affects only images '
+                   'RoboVAST publishes — a container image your .vast names is run as '
+                   'written. Per campaign: no cluster redeploy.')
+@click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',
+              help='Tag to take those images at (default: ROBOVAST_PROJECT_TAG, else '
+                   'latest).')
 def run(config, runs, log_tree, namespace, context, wait_and_download,
         poll_interval, campaign_name, upload_to_share,
-        description, workspace_name):  # pylint: disable=function-redefined,redefined-outer-name
+        description, workspace_name, image_project,
+        image_project_tag):  # pylint: disable=function-redefined,redefined-outer-name
     """Execute a campaign (batch or search) on a Kubernetes cluster.
 
     \b
@@ -186,7 +195,12 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
                 # campaign without failing anything.
                 runs=runs or 0, feedback=click.echo, upload_to_share=upload_to_share,
                 campaign_name=campaign_name or "", description=description or "",
-                workspace_name=workspace_name or "", on_exists=_confirm_overwrite)
+                workspace_name=workspace_name or "", on_exists=_confirm_overwrite,
+                # The flag beats ROBOVAST_PROJECT; unset here means "whatever the .env
+                # said", which project_push reads. Resolved client-side into the request
+                # because the images are resolved *service*-side — a client that could
+                # only set its own env var could not reach them at all.
+                image_project=image_project, image_project_tag=image_project_tag)
             if not wait_and_download:
                 click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
                            f"Track it with 'vast wait {cid}' or the web UI.")

@@ -1037,7 +1037,9 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         backend=be, options=opts,
         store=store, campaign_config_dump=campaign_config.model_dump(),
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
-        evaluator=Evaluator(search_cfg, vast_dir), compose=Compose(vast_file),
+        evaluator=Evaluator(search_cfg, vast_dir),
+        compose=Compose(vast_file, image_project=opts.image_project,
+                        image_project_tag=opts.image_project_tag),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
         stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier,
         description=description, created_by=created_by)
@@ -1141,7 +1143,8 @@ def filter_configs_by_name(configs, config_filter):
 
 
 def build_campaign_data(vast_file, output_dir, config_filter=None,
-                        progress_update_callback=None):
+                        progress_update_callback=None, image_project=None,
+                        image_project_tag=None):
     """Generate the batch campaign data and apply the optional ``--config`` filter.
 
     Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
@@ -1152,12 +1155,18 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
     *progress_update_callback* receives the composition narrative (and the
     isolated-plugin subprocess output it forwards); :func:`run_batch_campaign`
     routes it to ``variation.log`` while the host-side pre-flight leaves it ``None``.
+
+    *image_project* / *image_project_tag* select the project this campaign's RoboVAST
+    family images resolve from; ``None`` means the process environment's. A run passes
+    the campaign's own (see :class:`~robovast.execution.backends.RunOptions`) — the
+    pre-flight leaves them unset, since it only counts configs.
     """
     from robovast.common.config_generation import generate_scenario_variations
 
     campaign_data = generate_scenario_variations(
         variation_file=vast_file, progress_update_callback=progress_update_callback,
-        output_dir=output_dir)
+        output_dir=output_dir, image_project=image_project,
+        image_project_tag=image_project_tag)
     if not campaign_data["configs"]:
         raise CampaignConfigError("No configs found in vast-file")
     if config_filter:
@@ -1185,6 +1194,10 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
+    # Resolved before composition, not after: the image family's project is an input to
+    # composition (it is what ``family:`` refs resolve against), so the defaulting cannot
+    # wait until the backend is picked further down.
+    opts = options or RunOptions()
 
     with tempfile.TemporaryDirectory(prefix="robovast_batch_") as tmp:
         # Capture the variation (config-generation) phase into its own phase file,
@@ -1212,12 +1225,13 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         try:
             campaign_data = build_campaign_data(
                 vast_file, tmp, config_filter,
-                progress_update_callback=variation_logger.info)
+                progress_update_callback=variation_logger.info,
+                image_project=opts.image_project,
+                image_project_tag=opts.image_project_tag)
         finally:
             remove_campaign_log_handler(var_handler)
 
         be = backend or DockerBackend(state=state)
-        opts = options or RunOptions()
         _preflight_upload_to_share(be, opts)
         # One notifier drives the whole campaign: the controller fires the lifecycle
         # events, and _finish_campaign (outside the controller) fires `uploaded`.

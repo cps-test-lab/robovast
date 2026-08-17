@@ -1003,6 +1003,8 @@ def _build_generate_cache_key(
     analysis_files: list,
     configurations: list,
     tolerate_infeasible: bool = False,
+    image_project: str | None = None,
+    image_project_tag: str | None = None,
 ) -> CacheKey:
     """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations.
 
@@ -1018,6 +1020,13 @@ def _build_generate_cache_key(
     # A cache entry composed with one tolerance policy must never satisfy a request
     # made with the other -- same file, different composition outcome.
     key.add("tolerate_infeasible", tolerate_infeasible)
+
+    # Same reason: the composed data carries the *resolved* family image refs, so an entry
+    # composed against one project must not satisfy a request for another. Without this a
+    # dev run against a second registry would silently reuse the first campaign's images —
+    # the one failure mode a per-campaign override must not have.
+    key.add("image_project", image_project or "")
+    key.add("image_project_tag", image_project_tag or "")
 
     # .vast file itself
     key.add_file(variation_file, base_dir=vast_dir)
@@ -1122,7 +1131,8 @@ def _result_from_transport(data: dict, output_dir) -> dict:
 
 
 def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
-                      tolerate_infeasible=False):
+                      tolerate_infeasible=False, image_project=None,
+                      image_project_tag=None):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1154,6 +1164,12 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 "output_dir": output_dir,
                 "use_cache": bool(use_cache),
                 "tolerate_infeasible": bool(tolerate_infeasible),
+                # In the job file, not the env: the worker composes for exactly this
+                # campaign, and the parent process may be composing others against other
+                # projects at the same time. An inherited env var would be whichever
+                # campaign set it last.
+                "image_project": image_project,
+                "image_project_tag": image_project_tag,
                 "result_path": result_path,
             }, f)
 
@@ -1188,8 +1204,13 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None):
     """Generate all scenario variation configs from a .vast file.
+
+    ``image_project`` / ``image_project_tag`` select which project the RoboVAST image
+    family resolves from for *this* campaign (``None`` = the process environment's).
+    They only affect ``family:`` refs; a container image the ``.vast`` states is
+    untouched.
 
     ``tolerate_infeasible`` controls what happens when a variation raises
     :class:`~.variation.base_variation.VariationInfeasibleError` (a specific
@@ -1362,6 +1383,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             analysis_files=analysis_files,
             configurations=configurations,
             tolerate_infeasible=tolerate_infeasible,
+            image_project=image_project,
+            image_project_tag=image_project_tag,
         )
         _cached = _cache_meta.get_json(_cache_key)
         if _cached is not None:
@@ -1393,7 +1416,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # writes the cache, so the next build hits the fast path above without forking.
     if should_isolate:
         return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
-                                 tolerate_infeasible), {}
+                                 tolerate_infeasible, image_project=image_project,
+                                 image_project_tag=image_project_tag), {}
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
@@ -1574,6 +1598,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_section = apply_backend(parameters.get('execution', {}) or {},
                                       base_dir=os.path.dirname(variation_file))
+    # And immediately resolve the ``family:`` refs a backend (or the default) contributed,
+    # so the campaign data carries concrete images from here on. The project/tag arrive as
+    # arguments rather than being read from the environment here: this runs in the
+    # service's campaign worker thread, and for a ``plugins:``-declaring config in a
+    # subprocess of it, while the service composes campaigns for several projects at once.
+    from robovast.common.execution import \
+        resolve_family_images_in_containers  # pylint: disable=import-outside-toplevel
+    resolve_family_images_in_containers(execution_section.get('containers'),
+                                        project=image_project, tag=image_project_tag)
     execution_params = {
         "env": execution_section.get('env'),
         "run_as_user": execution_section.get('run_as_user'),

@@ -259,8 +259,8 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     # The campaign driver runs in this same process (local backend, or an off-cluster
     # '--backend cluster' driver), so everything it reads from os.environ comes from
     # the ./.env the group callback loaded: share credentials for '--upload-to-share',
-    # the registry, ROBOVAST_IMAGE / ROBOVAST_CONTROLLER_IMAGE. In-pod there is no
-    # project .env, so the deployment env is the whole environment.
+    # the registry, ROBOVAST_PROJECT. In-pod there is neither a project .env nor a user
+    # config, so the deployment env is the whole environment.
     # Build the SPA the service serves, so a source checkout needs one command
     # (no-op for a packaged/in-cluster install — see _ensure_ui_built).
     _ensure_ui_built(rebuild=rebuild_ui)

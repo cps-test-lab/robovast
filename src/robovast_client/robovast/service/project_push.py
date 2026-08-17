@@ -314,27 +314,45 @@ def run_project_via_service(client, config_path: str,
                             config_filter: str = "", runs: int = 0,
                             feedback=None, upload_to_share: bool = False,
                             campaign_name: str = "", description: str = "",
-                            workspace_name: str = "", on_exists=None) -> str:
+                            workspace_name: str = "", on_exists=None,
+                            image_project: str | None = None,
+                            image_project_tag: str | None = None) -> str:
     """Push the local project through *client* and start a campaign. Returns id.
 
     ``runs=0`` means "whatever the ``.vast`` declares": the service maps a non-positive
     count to ``None`` and falls back to ``execution.runs``. Any other substitute for
     "unset" is an override nobody asked for, and it shrinks the campaign silently —
     fewer repetitions is not a failure any later stage can notice.
+
+    ``image_project`` / ``image_project_tag`` are ``None`` for "whatever the environment
+    says", which is read *here* rather than left to the service: the client's ``.env`` is
+    where an operator configures their own registry, and the service cannot see it.
     """
     from robovast.service.interface import CreateCampaignRequest
 
     say = feedback or logger.info
+    if image_project is None:
+        image_project = os.environ.get("ROBOVAST_PROJECT", "").strip()
+    if image_project_tag is None:
+        image_project_tag = os.environ.get("ROBOVAST_PROJECT_TAG", "").strip()
     workspace_id, action = workspace_for_project(
         client, config_path, workspace_name, on_exists=on_exists)
     say(f"Pushing project to robovast-service ({action} workspace {workspace_id}) ...")
     push_project_files(client, workspace_id, config_path, prune=True)
+    if image_project or image_project_tag:
+        # Said out loud: which images a campaign ran against is the first thing anyone
+        # asks when a result looks wrong, and this is a per-launch override that leaves
+        # no trace in the .vast.
+        say(f"RoboVAST images for this campaign: "
+            f"{image_project or '(service default)'}/*:"
+            f"{image_project_tag or '(service default)'}")
     say(f"Uploaded to workspace {workspace_id}; starting campaign ...")
     ref = client.create_campaign(CreateCampaignRequest(
         workspace_id=workspace_id, config_filter=config_filter,
         campaign_name=campaign_name, description=description,
         runs=runs if runs and runs > 0 else 0,
-        upload_to_share=upload_to_share))
+        upload_to_share=upload_to_share,
+        image_project=image_project, image_project_tag=image_project_tag))
     return ref.campaign_id
 
 

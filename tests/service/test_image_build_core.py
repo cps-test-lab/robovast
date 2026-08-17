@@ -355,7 +355,7 @@ def test_a_dependency_of_a_local_package_blames_the_base_image_not_the_list():
     which sends an agent to edit a list that does not contain the name, and cannot.
     """
     err = classify_build_error(_TRANSITIVE, _spec(
-        base_image="harbor.example/robovast_roqsim_jazzy@sha256:abc",
+        base_image="harbor.example/robovast-roqsim@sha256:abc",
         python_packages=["./", ["./ros2_ws/src/roqsim_mm_bringup"]]))
 
     assert err.phase == "base-image"

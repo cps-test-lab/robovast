@@ -133,6 +133,23 @@ jobs:
         # about what an image is built for.
         run: . container/platforms.env && echo "platforms=$PLATFORMS_ROQSIM" >> "$GITHUB_OUTPUT"
 
+      # The clone happens in a build layer whose cache key is its ARGs, not the state of the
+      # remote -- so with a branch name here, `cache-from: type=gha` below would serve the tree
+      # from the first ever run of this job, forever, while reporting a fresh build. Resolving to
+      # a commit makes the key change exactly when the branch moves. Same reason and same
+      # mechanism as container/robovast/build.sh; the two must not disagree.
+      - name: Resolve the roqsim commit
+        id: roqsim
+        run: |
+          ref="${{ vars.ROQSIM_REF || 'robovast' }}"
+          sha=$(git ls-remote https://github.com/cps-test-lab/roqsim.git "$ref" | awk 'NR==1{print $1}')
+          if [ -z "$sha" ]; then
+            echo "cannot resolve '$ref' in cps-test-lab/roqsim (private repo needs a token)" >&2
+            exit 1
+          fi
+          echo "roqsim: $ref -> $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Build and push roqsim image
         uses: docker/build-push-action@v6
         with:
@@ -144,9 +161,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
+          # this job needs no checkout of it and the context is not read at all. It used to be
+          # passed to a Dockerfile that declared no such ARG and did no cloning, while that
+          # Dockerfile's `COPY roqsim` needed a directory `context: .` does not contain: the
+          # job could not have succeeded, which is why nothing ever published this image.
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name == github.event.repository.default_branch && 'latest' || github.ref_name }}
-            ROQSIM_REF=${{ vars.ROQSIM_REF || 'main' }}
+            ROQSIM_REF=${{ steps.roqsim.outputs.sha }}
 
   integration-test:
     needs: build-and-push

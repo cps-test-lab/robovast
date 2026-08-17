@@ -197,11 +197,16 @@ That rolls the Deployment onto the resolved image, reconciles RBAC, and waits fo
 the pod to be Ready before saying anything. **The access token is preserved**, so
 nobody is logged out by a version bump.
 
-Run it from the checkout whose ``.env`` describes this deployment: like every ``vast``
-command it reads ``./.env`` from the current directory only. That ``.env`` is also how
-the image is chosen — there is no ``--image`` flag, because a one-shot override is just
-``ROBOVAST_CONTROLLER_IMAGE=repo@sha256:… vast exec cluster upgrade`` (a real environment
-variable beats a ``.env`` line), and a pin that should last belongs in the file.
+It reads the environment like every ``vast`` command — ``./.env`` from the current
+directory, then ``~/.config/robovast/env`` — and that is also how the image is chosen:
+``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG`` (:doc:`images`). There is no ``--image``
+flag, because a one-shot override is just
+``ROBOVAST_PROJECT=freeedlabs vast exec cluster upgrade`` (a real environment variable
+beats both files), and a setting that should last belongs in a file.
+
+**This is the command that moves a cluster's images**, not ``setup --force``. Both values
+are baked into the service pod as the *site default*; a single campaign can still override
+them per launch with ``vast exec cluster run --image-project``, which needs no upgrade.
 
 **It always restarts the pod**, even when nothing looks different, and that is
 deliberate. An image ref that is a floating tag, or a change confined to the Secrets,

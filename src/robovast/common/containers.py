@@ -134,7 +134,8 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
     2. *images* -- concrete refs produced by the build lifecycle, keyed by container
        name, for containers that build one;
     3. the container's declared ``image``;
-    4. *main_image_fallback* -- ``ROBOVAST_IMAGE`` / the built-in default, main
+    4. *main_image_fallback* -- the framework image, resolved from the deployment's
+       project (see :func:`~robovast.common.execution.resolve_robovast_image`), main
        container only. A sidecar has no such fallback: guessing an image for the
        system under test would run something nobody named.
 

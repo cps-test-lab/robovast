@@ -6,36 +6,18 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict
 
+from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
                                         SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, ContainerQuery,
                                         SimulatorBackend, shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
 
-#: The image roqsim runs in when it has a container of its own -- roqsim's **own**
-#: published image, not something a campaign builds. It carries the GL libraries,
-#: ``mujoco`` and every ``rst_*`` package, which is exactly why the ROS shape needs no
-#: build at all: nothing a campaign owns contains roqsim.
-DEFAULT_SIM_IMAGE = os.environ.get(
-    "ROQSIM_IMAGE", "ghcr.io/cps-test-lab/roqsim-ros:jazzy")
-
-#: The image the *scenario* runs in when roqsim is stepped in-process. Here the two
-#: roles are one container, so it must carry both the RoboVAST contract
-#: (``/etc/robovast_compat_version``, scenario-execution, the ``/out`` mount) and
-#: roqsim -- which is the one thing roqsim's own image does not have.
-#: The tag is ``:latest`` because that is what ``.github/workflows/image.yml`` publishes
-#: for this image (``type=raw,value=latest`` on the default branch, plus branch/PR/semver
-#: tags). It defaulted to ``:jazzy`` — a tag CI has never produced — so the fallback named
-#: an image that does not exist, and only a campaign setting the image explicitly worked.
-#: ``tests/common/test_image_defaults.py`` keeps the two in agreement.
-DEFAULT_COMBINED_IMAGE = os.environ.get(
-    "ROBOVAST_ROQSIM_IMAGE", "ghcr.io/cps-test-lab/robovast-roqsim:latest")
 
 #: The ``SimulationInterface`` scenario-execution steps.
 ADAPTER = "roqsim.scenario_adapter:MujocoSim"
@@ -147,6 +129,15 @@ class RoqsimBackend(SimulatorBackend):
     DOTTED_ROOT = "overrides"
 
     def containers(self, cfg, execution: dict) -> dict:
+        # Both shapes name the SAME family member, symbolically: only that image carries
+        # roqsim *and* the RoboVAST contract (/etc/robovast_compat_version,
+        # scenario-execution, the /out mount). The ROS shape used to name roqsim's own
+        # published image, which has the simulator but not the contract, so the runner
+        # rejected it -- and nothing published that tag anyway.
+        #
+        # Symbolic, not resolved here: which project and tag it comes from is a property
+        # of the campaign, and this runs before one exists.
+        image = family_image_ref(MEMBER_ROQSIM)
         if shape_for(execution.get("mode", "auto")) == SHAPE_ROS:
             # Its own container, running roqsim's ordinary CLI. Not a RoboVAST-specific
             # entry point: the same command debugs the world by hand, so there is no
@@ -164,11 +155,10 @@ class RoqsimBackend(SimulatorBackend):
                 # quoting, keeps it out of the results, and leaves nobody able to replay
                 # the cell. RoboVAST mounts the document; this only names where.
                 command += ["--override", SIM_OVERRIDES_MOUNT]
-            return {SIMULATION_CONTAINER: {"image": DEFAULT_SIM_IMAGE,
-                                           "command": command}}
+            return {SIMULATION_CONTAINER: {"image": image, "command": command}}
         # Stepped: scenario-execution calls step(), so the simulator is in its process
         # and the two roles are one container.
-        return {SCENARIO_CONTAINER: {"image": DEFAULT_COMBINED_IMAGE}}
+        return {SCENARIO_CONTAINER: {"image": image}}
 
     def simulation_ref(self, cfg, execution: dict) -> Optional[str]:
         return cfg.adapter or ADAPTER

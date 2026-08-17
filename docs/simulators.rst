@@ -17,7 +17,7 @@ assembling one:
          backend: roqsim              # RoboVAST's: which entry point
          config: worlds/depot.yaml      # roqsim's own key
        sut:
-         image: ghcr.io/cps-test-lab/robovast:latest
+         image: family:robovast
          system_packages: [ros-jazzy-navigation2]
      scenario_file: scenario.osc
 
@@ -225,14 +225,21 @@ It is affordable there precisely because the backend is container specs and stri
 only dependency RoboVAST already has — no MuJoCo enters that image. The simulator itself
 lives in the images named below, which the backend only *refers to*.
 
-It serves **both** shapes:
+It serves **both** shapes, and both from the **same** image — the ``robovast-roqsim``
+family member, which is the only one carrying roqsim *and* the RoboVAST contract
+(``/etc/robovast_compat_version``, scenario-execution, the ``/out`` mount):
 
-- ``mode: ros2`` — a ``simulation`` container running ``roqsim sim <config> --ros --headless``
-  from roqsim's own published image. Nothing a campaign owns contains roqsim, so the
+- ``mode: ros2`` — a ``simulation`` container of its own, running
+  ``roqsim sim <config> --ros --headless``. Nothing a campaign owns contains roqsim, so the
   GL packages, the ``mujoco`` pin and the ``rst_*`` package list leave the ``.vast``
   entirely.
-- ``mode: base`` — the combined ``robovast_roqsim`` image, because a stepped simulator
-  shares the scenario's process. Built by ``container/robovast/build.sh --image roqsim``.
+- ``mode: base`` — the same image as the ``scenario`` container, because a stepped
+  simulator shares the scenario's process.
+
+The ROS shape used to default to roqsim's *own* published image, which has the simulator
+but not the contract — so the runner rejected it, and no workflow published that tag in any
+case. Built by ``container/robovast/build.sh --image roqsim``; which registry it is pulled
+from is ``ROBOVAST_PROJECT`` (:doc:`images`), never a ``.vast`` field.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
 ``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
@@ -389,8 +396,20 @@ plugins, so declaring them costs the world nothing.
 Developing against a working tree
 `````````````````````````````````
 
-The combined image is built from a git pin, which is roqsim as *pushed* — not your
-working tree. Set ``ROBOVAST_ROQSIM_SRC`` to a local checkout and the CLI stages it into
-the campaign's own image build, so an edit is picked up on the next run. It works on both
-lanes (the cluster stages the context to its build bucket) and it keeps provenance honest:
-the image digest still describes exactly what ran.
+The Dockerfile clones roqsim at a pinned ref, which is roqsim as *pushed* — not your working
+tree. To build it from a checkout on disk instead::
+
+    container/robovast/build.sh --image roqsim --roqsim-src ../roqsim \
+        --project docker.io/<you> --push
+
+That replaces the Dockerfile's clone stage with your tree (buildx ``--build-context``), so both
+paths reach the same ``COPY`` and there is no second code path to drift. The build says in its
+log which source it used, because the resulting image no longer corresponds to the ref.
+
+While roqsim is not a public repository the *clone* path additionally needs a token — set
+``GITHUB_TOKEN`` and ``build.sh`` passes it as a BuildKit secret — so ``--roqsim-src`` is the
+practical route from this working tree.
+
+``make release-images PROJECT=... ROQSIM_SRC=../roqsim PUSH=1`` does the same for the whole
+family at once, which is what a cluster needs — ``ROBOVAST_PROJECT`` moves all four members,
+so a project holding only one of them cannot serve a campaign.

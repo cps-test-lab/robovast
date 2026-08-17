@@ -122,17 +122,18 @@ build: ui-stage
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "PUSH=1 publishes the images and reports them as repo@sha256:... -- without it there is nothing in the registry to pin to."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 actually publishes; without it nothing reaches the registry."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,) \
+		$(if $(TAG),--tag "$(TAG)",) \
 		$(if $(ROQSIM_REF),--roqsim-ref "$(ROQSIM_REF)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
 
 .PHONY: image-digests
 image-digests:
-	@test -n "$(PROJECT)" || { echo "Usage: make image-digests PROJECT=docker.io/<namespace> [ROS_DISTRO=<distro>]"; echo "Prints the registry's current images as ROBOVAST_*_IMAGE=repo@sha256:... lines to paste into .env, so a deployment stops depending on a floating :latest. Builds nothing -- it reads the registry, so it works on a machine that has never built an image."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make image-digests PROJECT=docker.io/<namespace> [TAG=<tag>]"; echo "Reports whether that project holds a complete, pullable family at that tag, and what each member currently resolves to. Fails if any member is missing -- ROBOVAST_PROJECT moves all four at once, so a partial set cannot serve a campaign."; echo "Builds nothing: it reads the registry, so it works on a machine that has never built an image."; exit 1; }
 	@./container/image_digests.sh --project "$(PROJECT)" \
-		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
+		$(if $(TAG),--tag "$(TAG)",)
 
 .PHONY: build-client
 build-client:

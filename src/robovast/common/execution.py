@@ -42,21 +42,63 @@ from .simulators import SIM_CONFIG_FILE
 # /etc/robovast_compat_version.
 COMPAT_VERSION = 2
 
-# Default container images, used when nothing is configured anywhere. The
-# matching ``ROBOVAST_*_IMAGE`` env var overrides *this* hard-coded default only;
-# an explicit value (``--image`` / an ``execution.image`` entry in the ``.vast``
-# file) always takes precedence over the env var.
-DEFAULT_ROBOVAST_IMAGE = "ghcr.io/cps-test-lab/robovast:latest"
 # The unprivileged user a robovast execution image runs as (fixuid is configured for it). Experiment
 # image builds step up to root for apt/pip and must drop back to this, or a cluster pod -- which
 # takes the user from the image, unlike a local run, where compose sets it explicitly -- would run
 # the scenario as root.
 DEFAULT_IMAGE_USER = "ubuntu:ubuntu"
-# robovast-controller hosts the in-cluster CampaignController for cluster runs.
-DEFAULT_ROBOVAST_CONTROLLER_IMAGE = "ghcr.io/cps-test-lab/robovast-controller:latest"
-# robovast-sidecar is the small (alpine + mc + boto3) helper used by the object-store
-# init container and the postprocessing Job.
-DEFAULT_ROBOVAST_SIDECAR_IMAGE = "ghcr.io/cps-test-lab/robovast-sidecar:latest"
+
+
+# -- the RoboVAST image family ---------------------------------------------------------
+#
+# A family image ref glues three independent facts into one string, and authoring all
+# three in one place is what made image configuration a five-variable problem:
+#
+#   harbor.example.org/robovast / robovast-roqsim : latest
+#   \_______ WHERE ____________/   \____ WHAT ___/   \ WHICH /
+#      deployment config             never a choice    version
+#
+# WHAT follows from the container's role and the campaign's mode, so it is never
+# authored: a ``.vast`` names its OWN images and nothing else. That leaves one knob for
+# WHERE (:envvar:`ROBOVAST_PROJECT`) and one for WHICH
+# (:envvar:`ROBOVAST_PROJECT_TAG`), and the member is referred to symbolically until
+# core resolves it -- exactly the treatment :data:`BUILD_IMAGE_PREFIX` gets below, and
+# for the same reason: the author does not hold the context the ref needs.
+
+#: Marks a ref that names a *member of the published set* rather than a concrete image:
+#: ``family:<member>``. Resolved to ``<project>/<member>:<tag>`` by
+#: :func:`resolve_family_image`; like a ``build:`` ref, one reaching a pod or compose
+#: spec unresolved is a hard error rather than an image name nothing can pull.
+FAMILY_IMAGE_PREFIX = "family:"
+
+#: The RoboVAST contract image: ROS, scenario-execution, the VNC stack, ``/out``, the
+#: compat marker. What a campaign runs in when no simulator adds to it, and the ``FROM``
+#: every experiment image builds on. Carries no ``robovast`` Python package.
+MEMBER_ROBOVAST = "robovast"
+#: ``MEMBER_ROBOVAST`` plus roqsim and MuJoCo. Used by **both** roqsim shapes: stepped
+#: in-process (where the scenario container *is* the simulator) and the ROS shape (where
+#: the simulator gets its own container) -- it is the only image carrying both roqsim and
+#: the RoboVAST contract, so one member serves both roles.
+MEMBER_ROQSIM = "robovast-roqsim"
+#: The service/API/UI host (``vast serve``). Python only -- no ROS, no GL.
+MEMBER_CONTROLLER = "robovast-controller"
+#: The small alpine helper (mc + boto3) used by object-store init containers and the
+#: postprocessing Job.
+MEMBER_SIDECAR = "robovast-sidecar"
+
+#: Every member of the published set. A member is a *repository* name under the project,
+#: so the ROS distro is a tag and never part of the name -- ``container/robovast/build.sh``,
+#: ``container/release_images.sh`` and ``.github/workflows/image.yml`` publish exactly
+#: these four, and ``tests/common/test_image_defaults.py`` keeps them in agreement.
+#: Enumerated so a typo fails here rather than as a 404 at pull time, on a node.
+FAMILY_MEMBERS = (MEMBER_ROBOVAST, MEMBER_ROQSIM, MEMBER_CONTROLLER, MEMBER_SIDECAR)
+
+#: Where the published set lives when :envvar:`ROBOVAST_PROJECT` says nothing.
+DEFAULT_IMAGE_PROJECT = "ghcr.io/cps-test-lab"
+
+#: The tag used when neither :envvar:`ROBOVAST_PROJECT_TAG` nor a release version applies.
+#: A floating tag, so resolving to it warns -- see :func:`default_image_tag`.
+FLOATING_IMAGE_TAG = "latest"
 
 
 # Marks an image ref that is *produced by a build* rather than pulled: ``build:<name>``,
@@ -78,129 +120,202 @@ def build_image_tag(image: str) -> str:
     return image.strip()[len(BUILD_IMAGE_PREFIX):]
 
 
-def _resolve_image(default: str, env_var: str, *, explicit: str | None = None,
-                   config_image: str | None = None, required: bool = False,
-                   role: str = "container image",
-                   pin_hint: str = "--image, execution.image") -> str:
+def family_image_ref(member: str) -> str:
+    """The symbolic ``family:<member>`` ref for *member*."""
+    if member not in FAMILY_MEMBERS:
+        raise ValueError(
+            f"unknown RoboVAST image family member {member!r}; "
+            f"expected one of: {', '.join(FAMILY_MEMBERS)}")
+    return FAMILY_IMAGE_PREFIX + member
+
+
+def is_family_image_ref(image: str | None) -> bool:
+    """True if *image* is a symbolic ``family:<member>`` ref."""
+    return bool(image) and image.strip().startswith(FAMILY_IMAGE_PREFIX)
+
+
+def family_member(image: str) -> str:
+    """The ``<member>`` from a ``family:<member>`` ref, validated against the set."""
+    member = image.strip()[len(FAMILY_IMAGE_PREFIX):]
+    if member not in FAMILY_MEMBERS:
+        raise CampaignConfigError(
+            f"unknown RoboVAST image family member {member!r} in {image!r}; "
+            f"expected one of: {', '.join(FAMILY_MEMBERS)}")
+    return member
+
+
+def default_image_project() -> str:
+    """The project (registry/namespace) the image family is pulled from.
+
+    ``ROBOVAST_PROJECT`` is the *one* image knob: it moves the whole set at once, which
+    is why there are no per-image variables. Five of those existed and three were never
+    propagated into the in-cluster service, so an operator could set them all and still
+    run the published images -- a knob per image is a knob per place to forget.
+    """
+    return os.environ.get("ROBOVAST_PROJECT", "").strip() or DEFAULT_IMAGE_PROJECT
+
+
+def default_image_tag() -> str:
+    """The tag the image family is pulled at.
+
+    :data:`FLOATING_IMAGE_TAG` unless ``ROBOVAST_PROJECT_TAG`` pins one, and resolving to
+    it warns (see :func:`resolve_family_image`).
+
+    Deriving it from the installed version instead -- so a client and its images would be
+    in step with nobody pinning either -- was tried and is wrong: it assumes every version
+    has a published tag. This project is at 2.0.0 with no ``v2`` tag ever pushed, and CI
+    publishes semver tags only for ``v*`` pushes, so the derived default named an image
+    that does not exist. A default has to be a tag CI produces on every merge to the
+    default branch, and ``latest`` is the only one that is.
+    """
+    return os.environ.get("ROBOVAST_PROJECT_TAG", "").strip() or FLOATING_IMAGE_TAG
+
+
+def resolve_family_image(image: str, *, project: str | None = None,
+                         tag: str | None = None, role: str = "container image") -> str:
+    """Resolve a ``family:<member>`` ref to ``<project>/<member>:<tag>``.
+
+    *project* and *tag* come from the campaign when there is one (so a single campaign
+    can run against a dev project without touching the deployment) and from the
+    environment otherwise. They are passed explicitly rather than read from ambient
+    state here because a campaign is composed in a worker thread, and sometimes in an
+    isolated subprocess -- neither of which a module-level value survives, and both of
+    which run concurrently with campaigns configured differently.
+    """
+    member = family_member(image)
+    resolved = f"{project or default_image_project()}/{member}:{tag or default_image_tag()}"
+    if resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
+        # The spirit of the pinning rule this replaced: a run whose image is a floating
+        # tag is not reproducible, and the person who has to know that is the one
+        # starting it. Not an error -- a floating tag is the right answer for a dev loop
+        # and for an editable install, which has no release tag to match.
+        logger.warning(
+            "%s resolved to %r, a floating tag: what this runs against is whatever was "
+            "last pushed there. Set ROBOVAST_PROJECT_TAG to pin it.", role, resolved)
+    return resolved
+
+
+def resolve_family_images_in_containers(containers: dict | None, *,
+                                        project: str | None = None,
+                                        tag: str | None = None) -> dict | None:
+    """Resolve every ``family:`` ref in an ``execution.containers`` mapping, in place.
+
+    Called once per campaign, right after a simulator backend has filled its container
+    blocks in, so that everything downstream -- the container plan, the image builds, the
+    run environment, and ``_execution/execution.yaml`` -- reads concrete refs. Resolving
+    later instead would leave a ``family:`` ref in the campaign's own record, and
+    postprocessing reads that record to pick the image it deserializes rosbags in.
+
+    Only ``family:`` refs are touched. A ref the ``.vast`` states is left byte-identical,
+    digest and all: that field names the campaign's own image, and rewriting it would run
+    something the author did not ask for.
+    """
+    for name, block in (containers or {}).items():
+        if not isinstance(block, dict) or not is_family_image_ref(block.get("image")):
+            continue
+        block["image"] = resolve_family_image(
+            block["image"], project=project, tag=tag,
+            role=f"image for container '{name}'")
+    return containers
+
+
+def _resolve_image(member: str | None, *, explicit: str | None = None,
+                   config_image: str | None = None, project: str | None = None,
+                   tag: str | None = None, role: str = "container image") -> str:
     """Resolve a container image with a fixed precedence.
 
-    Precedence (highest first): *explicit* (e.g. a ``--image`` flag) →
-    *config_image* (a value from the ``.vast`` file) → the *env_var* environment
-    variable (a replacement for the built-in default only, handy for testing a
-    dev image pushed to e.g. Docker Hub) → *default*.
+    Precedence (highest first): *explicit* (e.g. a ``--image`` flag) → *config_image*
+    (a value from the ``.vast``) → the family default for *member*.
 
-    When *required* is set, there is **no** silent fall-through to *default*: if
-    nothing configured an image, resolution fails loudly. This is used for the
-    image a campaign actually *runs* (see :func:`resolve_robovast_image`), where a
-    mutable default tag would mean the exact code under test is whatever was last
-    pushed — unacceptable for a reconstruction. The build *base* image keeps the
-    default (``required=False``): building experiment images from the framework's
-    own published image is the normal case.
+    Whatever wins, a symbolic ref is resolved here and only here. There are two, and the
+    difference matters: a ``build:`` ref must already have been made concrete by the
+    build lifecycle, so one arriving here is a bug and raises; a ``family:`` ref is
+    *meant* to arrive symbolic, because this is the layer that knows the project and tag.
 
-    A symbolic ``build:<tag>`` ref must have been resolved to a concrete image by
-    the build lifecycle before it reaches here; if one slips through it would be
-    used verbatim as an (invalid) image name, so we fail loudly instead.
+    *member* is ``None`` where there is no family default to fall back on — a sidecar
+    container, whose image nothing but the campaign can name. Guessing the framework
+    image for it would run something nobody asked for, so it fails loudly instead.
     """
     if explicit:
         resolved = explicit
     elif config_image:
         resolved = config_image
+    elif member:
+        resolved = family_image_ref(member)
     else:
-        env_image = os.environ.get(env_var, "").strip()
-        if env_image:
-            resolved = env_image
-        elif required:
-            # CampaignConfigError, not ValueError: this is bad input with a
-            # self-contained, actionable message, and `failure_detail` drops the
-            # traceback for it. A stack trace here reads as a RoboVAST bug rather than
-            # as something the author has to go and configure -- the same reason
-            # cluster_service raises it for an unconfigured registry.
-            raise CampaignConfigError(
-                "no container image configured for this run: set execution.image "
-                f"in the .vast, pass --image, or set {env_var}. Refusing to fall "
-                "back to a mutable default tag — the image a reconstruction runs "
-                "against must be pinned.")
-        else:
-            # Non-required (e.g. the build base image): fall through to the built-in
-            # default, but never silently — it is a mutable ``:latest`` tag. *role* and
-            # *pin_hint* name what was being resolved and the knob that pins it: this
-            # warning fired at "execution.image" while resolving the build's FROM, for
-            # a campaign whose execution.image *was* set (to a build: ref) — sending
-            # the reader to a knob that was not the unpinned one.
-            resolved = default
-            # An image whose only knob *is* the env var (the sidecar) would otherwise
-            # read "checked ROBOVAST_SIDECAR_IMAGE, ROBOVAST_SIDECAR_IMAGE".
-            checked = pin_hint if pin_hint == env_var else f"{pin_hint}, {env_var}"
-            logger.warning(
-                "No %s configured (checked %s); using the built-in default %r. "
-                "This is a mutable tag — pin it for a reproducible run.",
-                role, checked, resolved)
+        # CampaignConfigError, not ValueError: this is bad input with a self-contained,
+        # actionable message, and `failure_detail` drops the traceback for it. A stack
+        # trace here reads as a RoboVAST bug rather than as something the author has to
+        # go and configure -- the same reason cluster_service raises it for an
+        # unconfigured registry.
+        raise CampaignConfigError(
+            f"no image configured for this {role}: set "
+            "execution.containers.<name>.image in the .vast. There is no family default "
+            "for a container RoboVAST does not own — an image nobody named is not a "
+            "default.")
     if is_build_image_ref(resolved):
         raise CampaignConfigError(
             f"unresolved build image ref '{resolved}': the 'build:' image must be "
             "built (build_experiment_image / the start_campaign preflight) before "
             "it can be used as a container image")
+    if is_family_image_ref(resolved):
+        resolved = resolve_family_image(resolved, project=project, tag=tag, role=role)
     return resolved
 
 
 def resolve_robovast_image(explicit: str | None = None,
-                           config_image: str | None = None,
-                           *, required: bool = False) -> str:
-    """Resolve the robovast (job / local) container image.
+                           config_image: str | None = None, *,
+                           fallback: bool = True, project: str | None = None,
+                           tag: str | None = None) -> str:
+    """Resolve the image a campaign's scenario container runs in.
 
-    Overridable via ``ROBOVAST_IMAGE``. Used both for the image a campaign *runs*
-    (the job pods / local docker run — pass ``required=True`` there so an
-    unconfigured run fails loudly instead of using a mutable default tag) and as
-    the default *base* image for building experiment images (see
-    :func:`resolve_build_base_image`, which is that call spelled out so its warning
-    names the knob that actually pins it).
+    Defaults to :data:`MEMBER_ROBOVAST` — the RoboVAST contract image — which is also
+    the ``FROM`` experiment images build on (:func:`resolve_build_base_image`).
+
+    *fallback* is ``False`` for a container that is **not** the main one: a sidecar or
+    system-under-test has no family default, and inventing one would launch an image the
+    campaign never named.
     """
-    return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
+    return _resolve_image(MEMBER_ROBOVAST if fallback else None,
                           explicit=explicit, config_image=config_image,
-                          required=required)
+                          project=project, tag=tag)
 
 
-def resolve_build_base_image(config_image: str | None = None) -> str:
+def resolve_build_base_image(config_image: str | None = None, *,
+                             project: str | None = None,
+                             tag: str | None = None) -> str:
     """Resolve the ``FROM`` an experiment image is built on (``build.base_image``).
 
-    Never *required*: building on the framework's own published image is the normal
-    case. But the fall-through is to a mutable ``:latest`` tag, and the warning that
-    says so has to name ``build.base_image`` — a campaign reaching here has its
-    ``execution.image`` set (to the ``build:`` ref that got us here), so a warning
-    about ``execution.image`` reads as a bug in the campaign that is not there.
+    Spelled out separately from :func:`resolve_robovast_image` so the *role* in any
+    warning names ``build.base_image``: a campaign reaching here has its
+    ``execution.image`` set (to the ``build:`` ref that got us here), so a warning about
+    ``execution.image`` reads as a bug in the campaign that is not there.
     """
-    return _resolve_image(DEFAULT_ROBOVAST_IMAGE, "ROBOVAST_IMAGE",
-                          config_image=config_image,
-                          role="build base image",
-                          pin_hint="build.base_image")
+    return _resolve_image(MEMBER_ROBOVAST, config_image=config_image,
+                          project=project, tag=tag, role="build base image")
 
 
 def resolve_controller_image(explicit: str | None = None,
                              config_image: str | None = None) -> str:
-    """Resolve the robovast-controller container image (the in-cluster controller pod).
+    """Resolve the robovast-controller image (the ``vast serve`` Deployment).
 
-    Overridable via ``ROBOVAST_CONTROLLER_IMAGE`` — point this at a dev image
-    (e.g. pushed to Docker Hub) to test controller changes before CI publishes
-    the canonical image.
+    Cluster-side and never per-campaign: this image is chosen when the service is
+    deployed, so it takes the project from the environment ``vast exec cluster
+    upgrade`` runs in.
     """
-    return _resolve_image(DEFAULT_ROBOVAST_CONTROLLER_IMAGE, "ROBOVAST_CONTROLLER_IMAGE",
-                          explicit=explicit, config_image=config_image,
-                          role="controller image",
-                          pin_hint="--controller-image")
+    return _resolve_image(MEMBER_CONTROLLER, explicit=explicit,
+                          config_image=config_image, role="controller image")
 
 
 def resolve_sidecar_image(explicit: str | None = None) -> str:
     """Resolve the robovast-sidecar image (object-store init + postprocessing Job).
 
-    Overridable via ``ROBOVAST_SIDECAR_IMAGE``. It was the one image with no knob at
-    all — hard-coded in two places — so an interim build pushed to a dev registry
-    could be tested for three of the four images and silently kept the published
-    sidecar for the fourth.
+    Resolved *inside* the service (the s3-init container, the mc-tools aux container,
+    the postprocessing Job, campaign Jobs and the image-build Job all call this from
+    there), so the project it uses is the one carried into the service pod's
+    environment — see :func:`~...service_deploy.service_manifests`.
     """
-    return _resolve_image(DEFAULT_ROBOVAST_SIDECAR_IMAGE, "ROBOVAST_SIDECAR_IMAGE",
-                          explicit=explicit,
-                          role="sidecar image",
-                          pin_hint="ROBOVAST_SIDECAR_IMAGE")
+    return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
 
 
 def get_app_version() -> str:

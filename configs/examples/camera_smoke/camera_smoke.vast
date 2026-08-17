@@ -30,11 +30,10 @@ execution:
     simulation:
       backend: roqsim
       config: world/camera_smoke.yaml
-  # Stated rather than omitted: this deployment sets no ROBOVAST_ROQSIM_IMAGE, and RoboVAST refuses
-  # to fall back to a mutable default tag for the image a campaign runs. Pin by digest for real
-  # work — for a smoke test the point is to exercise whatever `:latest` currently is.
+  # No image named anywhere in this file: the backend supplies the family member and the
+  # deployment supplies the project (ROBOVAST_PROJECT), which is what lets one smoke test run
+  # against whichever registry the operator publishes to.
     scenario:
-      image: freeedlabs/robovast_roqsim_jazzy:latest
       resources:
         cpu: 2
   scenario_file: scenario.osc

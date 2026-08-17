@@ -328,11 +328,14 @@ Any other key is an ad-hoc container and must state its own ``image`` (and norma
    execution:
      containers:
        scenario:
-         image: ghcr.io/cps-test-lab/robovast:latest
          resources: {cpu: 8}
        sut:
-         image: ghcr.io/cps-test-lab/robovast:latest
+         image: family:robovast
          system_packages: [ros-jazzy-navigation2]
+
+Note what is *not* there: the scenario container names no image. Which RoboVAST image a
+container needs follows from its role, and which registry it comes from belongs to the
+deployment — see :doc:`images`.
 
 Every block takes the same keys:
 
@@ -340,8 +343,13 @@ Every block takes the same keys:
    **What the container starts from.** With no package keys that is also what it runs;
    with them, a derived image is built on top. There is no separate ``base_image`` and no
    author-chosen tag — the tag is the container's name — so a campaign states what a
-   container *adds*, never what it adds to. May be omitted on ``scenario`` to mean the
-   framework's own image (``ROBOVAST_IMAGE`` / the built-in default).
+   container *adds*, never what it adds to.
+
+   **This field is for images of your own**, and is used exactly as written — never
+   reprojected or re-tagged. Omit it on ``scenario`` to get the RoboVAST framework image,
+   which is the normal case; write ``family:<member>`` to base a container of yours on a
+   RoboVAST image while still following the deployment's project. :doc:`images` has the
+   whole story.
 ``system_packages``
    apt packages (``apt-get install -y``).
 ``python_packages``

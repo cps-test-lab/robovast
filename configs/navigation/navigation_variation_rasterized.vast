@@ -34,7 +34,6 @@ configuration:
 execution:
   containers:
     scenario:
-      image: ghcr.io/cps-test-lab/robovast:latest
       resources:
         cpu: 8
   runs: 10

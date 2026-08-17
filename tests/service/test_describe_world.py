@@ -24,8 +24,6 @@ roqsim_backend = pytest.importorskip(
     "robovast_sim_roqsim.backend",
     reason="no simulator installed; robovast is standalone (`make venv` installs one)")
 
-DEFAULT_COMBINED_IMAGE = roqsim_backend.DEFAULT_COMBINED_IMAGE
-DEFAULT_SIM_IMAGE = roqsim_backend.DEFAULT_SIM_IMAGE
 RoqsimBackend = roqsim_backend.RoqsimBackend
 RoqsimConfig = roqsim_backend.RoqsimConfig
 
@@ -50,11 +48,17 @@ def test_a_ros_campaign_is_asked_in_its_simulation_container():
     assert query.spec.image == pinned
 
 
-@pytest.mark.parametrize("mode, expected", [("ros2", DEFAULT_SIM_IMAGE),
-                                            ("base", DEFAULT_COMBINED_IMAGE)])
-def test_a_campaign_that_pins_nothing_falls_back_to_the_shape_default(mode, expected):
+@pytest.mark.parametrize("mode", ["ros2", "base"])
+def test_a_campaign_that_pins_nothing_falls_back_to_the_family_member(mode):
+    """One member for both shapes, and still symbolic here.
+
+    ``describe_query`` runs before a campaign exists, so there is no per-campaign project
+    to resolve against; the consumer resolves it. Asserting a concrete ref here would
+    only assert this test's own environment.
+    """
+    from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
     query = RoqsimBackend().describe_query(_cfg(), {"mode": mode})
-    assert query.spec.image == expected
+    assert query.spec.image == family_image_ref(MEMBER_ROQSIM)
 
 
 def test_input_files_asks_the_same_image():

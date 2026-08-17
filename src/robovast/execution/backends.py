@@ -45,7 +45,7 @@ from robovast.common import prepare_campaign_configs
 # class itself has to live there too. Every caller keeps importing it from here.
 from robovast.common.errors import \
     CampaignConfigError  # noqa: F401  # pylint: disable=unused-import
-from robovast.common.execution import DEFAULT_ROBOVAST_IMAGE, resolve_robovast_image
+from robovast.common.execution import resolve_robovast_image
 from robovast.execution.execution_utils.execute_local import generate_compose_run_script
 
 logger = logging.getLogger(__name__)
@@ -68,10 +68,16 @@ class RunOptions:
     gui: bool = False
     start_only: bool = False
     abort_on_failure: bool = False
-    # None ⇒ resolve via resolve_robovast_image() (config / ROBOVAST_IMAGE / default);
-    # a non-None value is an explicit ``--image``. It addresses the container the
-    # scenario runs in — the only one a single ``--image`` flag can mean.
+    # None ⇒ resolve via resolve_robovast_image() (config / the family default); a
+    # non-None value is an explicit ``--image``. It addresses the container the scenario
+    # runs in — the only one a single ``--image`` flag can mean.
     image: str | None = None
+    # The image family's project and tag for THIS campaign, or None for the process
+    # environment's. Per-campaign so a dev run can point at another registry without
+    # redeploying the service — which drives many campaigns concurrently in one process,
+    # where an env var could not distinguish them (same reason as ``postprocess`` below).
+    image_project: str | None = None
+    image_project_tag: str | None = None
     # Concrete refs for containers whose image was *built*, keyed by container name.
     # Filled by the build lifecycle before the backend runs; a container absent from
     # here uses its declared image verbatim.
@@ -116,8 +122,10 @@ def _scenario_image(execution: dict, options: RunOptions) -> str:
     containers = execution.get("containers") or {}
     declared = (containers.get(SCENARIO_CONTAINER) or {}).get("image")
     built = (options.images or {}).get(SCENARIO_CONTAINER)
-    return resolve_robovast_image(required=True, explicit=options.image,
-                                  config_image=built or declared)
+    return resolve_robovast_image(explicit=options.image,
+                                  config_image=built or declared,
+                                  project=options.image_project,
+                                  tag=options.image_project_tag)
 
 
 class ExecutionBackend(ABC):
@@ -283,8 +291,11 @@ class DockerBackend(ExecutionBackend):
                 cmd.append("--start-only")
             if options.abort_on_failure:
                 cmd.append("--abort-on-failure")
-            if image != DEFAULT_ROBOVAST_IMAGE:
-                cmd.extend(["--image", image])
+            # Always, rather than only when it differs from a default: the default is now
+            # computed from the project and this installation's version, so there is no
+            # compile-time constant to compare against -- and passing the ref we resolved
+            # is what keeps run.sh from re-deriving one of its own.
+            cmd.extend(["--image", image])
 
             logger.info("Launching batch %s: %s", batch_tag, " ".join(cmd))
             # NOT check=True: in a failure-finding run, scenario runs are *meant*

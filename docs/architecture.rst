@@ -930,3 +930,69 @@ lives in the ``run_data`` MCP plugin):
   re-run in the background and returns at once (watch the campaign view for progress).
 * **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
+
+.. _image-resolution:
+
+Why images resolve the way they do
+----------------------------------
+
+:doc:`images` says what the mechanism is. This is why it is that, because it is the part
+someone will otherwise re-litigate.
+
+A family image ref glues three independent facts into one string, and authoring all three
+in one place is what made image configuration a five-variable problem::
+
+    harbor.example/robovast / robovast-roqsim : latest
+    \_______ WHERE _______/   \____ WHAT ___/   \ WHICH /
+       deployment config         never a choice   version
+
+**WHAT is never authored.** Which member a container needs follows from its role and the
+campaign's mode. Once that is granted, a ``.vast`` has no reason to mention a family image
+at all, and the question that used to be hard — what should an override do to a
+digest-pinned ref in a published dataset's config? — stops existing rather than being
+answered.
+
+**``family:<member>`` mirrors ``build:<tag>``.** Both are symbolic refs core resolves late
+from context the author does not hold, and both fail loudly if one reaches a container spec
+unresolved. The alternative considered was a rewrite pass that matched family
+repositories in already-concrete refs and moved them to another project. It was
+rejected: it needs a
+whitelist of names to match, and anything a whitelist can match by mistake it can
+*redirect* by mistake — a campaign's own ``sut`` image silently pulled from somewhere the
+author never named. A prefix marker cannot do that, because writing it is a request.
+
+**Resolution is per-campaign and explicitly threaded.** ``image_project`` rides on
+``CreateCampaignRequest`` → ``RunOptions`` → ``build_campaign_data`` →
+``generate_scenario_variations``, and is resolved in one pass right after ``apply_backend``.
+Two properties force the threading rather than an ambient module-level or context value:
+a campaign is composed in a worker thread, and a ``plugins:``-declaring config is composed
+in a subprocess of that thread (which is why the value travels in the compose worker's job
+file, not its environment). The service drives several campaigns concurrently, so a process
+-wide value would be whichever campaign set it last. The composition cache key includes the
+project for the same reason: the composed data carries resolved refs, so an entry composed
+against one project must not satisfy a request for another.
+
+Resolving into the campaign data — rather than at each point of use — is what makes
+``_execution/execution.yaml`` record a concrete image. Postprocessing reads that record to
+choose the image it deserializes rosbags in, so a symbolic ref surviving there would be a
+``family:`` string handed to Kubernetes as an image name.
+
+**The pod env is the site default; the request overrides it.** That ordering is the whole
+reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables
+that used to exist, only two were ever carried into the service pod, so
+``vast exec cluster setup --force`` appeared to move the images and moved only the
+controller — three of the five were read in-pod and set nowhere.
+
+**Reproducibility lives in the recorded digest.** ``resolve_robovast_image`` used to refuse
+a mutable default outright, so that the image a campaign ran was always pinned by its
+author. That rule aimed at the right thing from the wrong layer: it made every ``.vast``
+carry a registry-specific string, which is how a shipped example came to pin a private
+registry only one site could pull. What makes a run reproducible is the digest captured
+*from* it (``pullable_digest`` / ``_capture_image_digest``, replayed by
+``from_campaign``) — a fact about what happened, not an intention recorded beforehand. The
+unpinned case now resolves and warns.
+
+The default tag is ``latest`` and not this installation's version. Deriving it reads well
+and is wrong: it assumes every version has a published tag, and CI publishes semver tags
+only for ``v*`` pushes. Tried, it produced ``robovast:2.0`` — a tag no workflow had ever
+built — which is precisely the failure the whole change set out to remove.

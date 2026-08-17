@@ -402,12 +402,12 @@ class ExecutionConfig(BaseModel):
                     f"({', '.join(CONTAINER_ROLES)}) have a default.")
         return v
 
-    # No schema check that the scenario container has an image: omitting it is
-    # meaningful (build on / run the framework's own image, as an absent
-    # ``build.base_image`` used to mean), and whether that resolves depends on
-    # ``ROBOVAST_IMAGE``, which the schema cannot see. ``resolve_robovast_image`` makes
-    # the call at run time and already refuses to fall back to a mutable default tag.
-    # A *sidecar* is different -- it has no fallback at all -- and is checked above.
+    # No schema check that the scenario container has an image: omitting it is the normal
+    # case, not an omission. It means "the RoboVAST framework image", whose project and
+    # tag are the deployment's to choose and are not visible to a schema.
+    # A *sidecar* is different -- it has no such default at all, because inventing an
+    # image for the thing under test would run something nobody named -- and is checked
+    # above.
 
     @model_validator(mode='after')
     def _mode_auto_is_ambiguous_with_a_backend(self):

@@ -40,10 +40,11 @@ def test_an_ad_hoc_container_must_name_its_image():
 
 
 def test_the_scenario_container_may_omit_its_image():
-    """Omitting it means "the framework's own image", as an absent ``build.base_image``
-    used to. Whether that resolves depends on ROBOVAST_IMAGE, which the schema cannot
-    see -- ``resolve_robovast_image`` makes that call at run time, and already refuses
-    to fall back to a mutable default tag."""
+    """Omitting it means "the RoboVAST framework image", which is the normal case.
+
+    Which project and tag that resolves to is the deployment's to choose and is not
+    visible to a schema; ``resolve_robovast_image`` makes the call at run time.
+    """
     c = validate_config(_cfg(scenario={"system_packages": ["ros-jazzy-nav2-bringup"]}))
     assert c.execution.containers["scenario"].image is None
 
@@ -246,9 +247,11 @@ def test_a_sidecar_has_no_image_fallback():
                         main_image_fallback="default:1")
 
 
-def test_run_image_required_fails_loud(monkeypatch):
-    # The image a campaign RUNS must be pinned: nothing configured -> raise, not
-    # silently use the mutable default tag.
+def test_a_container_with_no_family_default_fails_loud(monkeypatch):
+    # A container RoboVAST does not own -- a sidecar, a system-under-test -- has no
+    # default: guessing the framework image for it would launch something nobody named.
+    # (The main container DOES have one; see the test below. That is the difference
+    # `fallback` expresses, and it used to be tangled up with refusing a mutable tag.)
     #
     # CampaignConfigError specifically, and asserted as such: the message is
     # self-contained and actionable, so `failure_detail` must report it WITHOUT a
@@ -257,13 +260,29 @@ def test_run_image_required_fails_loud(monkeypatch):
     # bug rather than as a .vast key the author has to set.
     from robovast.common.errors import CampaignConfigError
 
-    monkeypatch.delenv("ROBOVAST_IMAGE", raising=False)
     with pytest.raises(CampaignConfigError,
-                       match="no container image configured for this run") as excinfo:
-        resolve_robovast_image(required=True)
+                       match="no image configured for this") as excinfo:
+        resolve_robovast_image(fallback=False)
     assert excinfo.value.include_traceback is False
-    assert resolve_robovast_image(required=True, explicit="reg/x:1") == "reg/x:1"
-    assert resolve_robovast_image(required=True, config_image="reg/y:2") == "reg/y:2"
+    assert resolve_robovast_image(fallback=False, explicit="reg/x:1") == "reg/x:1"
+    assert resolve_robovast_image(fallback=False, config_image="reg/y:2") == "reg/y:2"
+
+
+def test_the_main_container_falls_back_to_the_family(monkeypatch):
+    """A campaign that names no image runs the framework image, and says which.
+
+    This is the amended rule. Refusing outright -- the old behaviour -- made every
+    ``.vast`` carry a pinned ref, which is what put five registry-specific strings into
+    a shipped example and a published dataset. What actually makes a run reproducible is
+    the digest recorded *from* the run, not a tag copied into the config by hand; so the
+    unpinned case resolves and warns instead of refusing.
+    """
+    monkeypatch.setenv("ROBOVAST_PROJECT", "example.test/ns")
+    monkeypatch.delenv("ROBOVAST_PROJECT_TAG", raising=False)
+    assert resolve_robovast_image() == "example.test/ns/robovast:latest"
+    # An explicit value still wins over the family, byte for byte -- digest included.
+    pinned = "harbor.example/robovast@sha256:" + "a" * 64
+    assert resolve_robovast_image(config_image=pinned) == pinned
 
 
 # -- reading a section out of an old snapshot ---------------------------------------

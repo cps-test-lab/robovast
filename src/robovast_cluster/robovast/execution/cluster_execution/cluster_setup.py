@@ -328,9 +328,21 @@ def setup_server(config_name=None, list_configs=False, force=False,
     existing_config, _ = read_service_config_from_cluster(namespace, kube_context)
     if existing_config and not force:
         key_label = f" for context '{context_key}'" if context_key else ""
+        # Point at `upgrade` first, because it is what almost everyone reaching this
+        # message actually wants. `setup` *provisions*: it re-runs the Kueue install, the
+        # object store and the registry storage, and it takes its ingress/registry/storage
+        # options as arguments -- so a re-run without the flags of the original run
+        # re-provisions with different ones. `upgrade` reads those back from the live
+        # cluster and touches only the image, RBAC and the env-derived Secrets.
         raise RuntimeError(
             f"Cluster is already set up with '{existing_config}' config{key_label}.\n"
-            f"Run 'vast execution cluster cleanup' first to clean up the existing setup."
+            "To roll out a new image or refresh credentials, use:\n"
+            "    vast exec cluster upgrade\n"
+            "It recovers this cluster's own settings and cannot lose them, which a\n"
+            "re-run of `setup` can: setup takes --ingress-host/--registry-* as\n"
+            "arguments and re-provisions with whatever it is given this time.\n"
+            "To genuinely re-provision, pass --force (supply the original flags too),\n"
+            "or 'vast exec cluster cleanup' first to start from nothing."
         )
 
     # Before anything is installed or deployed. A refused Ingress combination is a pure
@@ -379,8 +391,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
     # its own RBAC) so clients drive campaigns over HTTP (mode 3), reached via
     # `kubectl port-forward svc/robovast-service`. Requires a controller image
-    # that contains the `robovast.service` package + `vast serve` (plan 0.7);
-    # override with ROBOVAST_CONTROLLER_IMAGE to point at a current dev image.
+    # that contains the `robovast.service` package + `vast serve`; set
+    # ROBOVAST_PROJECT to run the family from your own registry.
     # The Deployment env carries config_name + cluster_kwargs, which is now the
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.

@@ -909,7 +909,9 @@ class LocalTransport(RobovastInterface):
         # run machinery's: the generated run.sh's flag is ``--no-gui`` and cannot be
         # renamed with it, so the boundary is here rather than spread over both.
         return RunOptions(gui=bool(getattr(request, "show_gui", False)),
-                          upload_to_share=bool(getattr(request, "upload_to_share", False)))
+                          upload_to_share=bool(getattr(request, "upload_to_share", False)),
+                          image_project=getattr(request, "image_project", "") or None,
+                          image_project_tag=getattr(request, "image_project_tag", "") or None)
 
     def _campaign_context(self, campaign_id: str, project):
         """Per-campaign setup entered *inside* the worker thread.
@@ -1504,7 +1506,7 @@ class LocalTransport(RobovastInterface):
 
         if not target.builds:
             return resolve_robovast_image(
-                config_image=target.image, required=not target.is_main)
+                config_image=target.image, fallback=target.is_main)
 
         specs, project_dir = self._build_specs_for(
             WorkspaceTarget(config_path=vast_file), campaign_config)

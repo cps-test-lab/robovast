@@ -1,10 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast serve`` logs which image env vars override the built-in defaults.
+"""``vast serve`` announces which project its images come from.
 
-A persistent service pointed at a non-default image via an env var set once at
-process startup is easy to forget about months later -- see
-:func:`robovast.service.app.serve`.
+A persistent service pulling from a dev project, configured once at process startup, is
+easy to forget about months later -- and "which images is it running?" is the first
+question when a campaign behaves unexpectedly. See :func:`robovast.service.app.serve`.
 """
 
 import logging
@@ -33,46 +33,22 @@ class _FakeServer:
         pass
 
 
-_IMAGE_VARS = ("ROBOVAST_IMAGE", "ROBOVAST_ROQSIM_IMAGE",
-               "ROBOVAST_CONTROLLER_IMAGE", "ROQSIM_IMAGE")
+def test_serve_logs_the_image_project(monkeypatch, caplog):
+    """Logged unconditionally, and marked when it is not the built-in project.
 
-
-def _run_serve(monkeypatch):
+    Unconditionally because a line that appears only when someone configured something
+    cannot answer "which images is this running?" -- the case where nobody remembers
+    configuring anything is exactly the case worth logging.
+    """
     import uvicorn
 
     from robovast.service import app as app_module
 
+    monkeypatch.setenv("ROBOVAST_PROJECT", "freeedlabs")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "dev")
     monkeypatch.setattr(uvicorn, "Server", _FakeServer)
-    monkeypatch.setattr(app_module, "build_app", lambda impl, mount_mcp=True, auth_token=None: _StubApp())
-    app_module.serve(impl=object())
-
-
-def test_no_log_line_when_nothing_overridden(monkeypatch, caplog):
-    for var in _IMAGE_VARS:
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(app_module, "build_app",
+                        lambda impl, mount_mcp=True, auth_token=None: _StubApp())
     with caplog.at_level(logging.INFO, logger="robovast.service.app"):
-        _run_serve(monkeypatch)
-    assert "image overrides" not in caplog.text
-
-
-def test_logs_each_overridden_image_var(monkeypatch, caplog):
-    monkeypatch.setenv("ROBOVAST_IMAGE", "docker.io/freeedlabs/robovast_jazzy@sha256:abc")
-    monkeypatch.setenv("ROBOVAST_CONTROLLER_IMAGE",
-                       "docker.io/freeedlabs/robovast-controller:latest")
-    monkeypatch.delenv("ROBOVAST_ROQSIM_IMAGE", raising=False)
-    monkeypatch.delenv("ROQSIM_IMAGE", raising=False)
-    with caplog.at_level(logging.INFO, logger="robovast.service.app"):
-        _run_serve(monkeypatch)
-    assert ("image overrides from environment: "
-            "ROBOVAST_IMAGE=docker.io/freeedlabs/robovast_jazzy@sha256:abc, "
-            "ROBOVAST_CONTROLLER_IMAGE=docker.io/freeedlabs/robovast-controller:latest"
-            in caplog.text)
-
-
-def test_blank_env_value_is_not_treated_as_set(monkeypatch, caplog):
-    for var in _IMAGE_VARS:
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ROQSIM_IMAGE", "   ")
-    with caplog.at_level(logging.INFO, logger="robovast.service.app"):
-        _run_serve(monkeypatch)
-    assert "image overrides" not in caplog.text
+        app_module.serve(impl=object())
+    assert "RoboVAST image default: freeedlabs/*:dev (ROBOVAST_PROJECT)" in caplog.text

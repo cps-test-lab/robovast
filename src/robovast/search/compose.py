@@ -119,9 +119,16 @@ def _substitute_vars(node: Any, values: dict[str, Any], used: set[str]) -> Any:
 class Compose:
     """Turns parameter sets into ``campaign_data`` using a base ``.vast``."""
 
-    def __init__(self, vast_file: str):
+    def __init__(self, vast_file: str, image_project: str | None = None,
+                 image_project_tag: str | None = None):
         self.vast_file = os.path.abspath(vast_file)
         self.vast_dir = os.path.dirname(self.vast_file)
+        # Which project the RoboVAST family images resolve from, for every batch this
+        # composes. Held here rather than read at compose time because a search composes
+        # repeatedly over the campaign's life, and all of those batches belong to the one
+        # campaign that chose the project.
+        self.image_project = image_project
+        self.image_project_tag = image_project_tag
         self.base = load_config(self.vast_file)
         # The variation/parameter template lives in the search: block. Each param
         # set fills it in; unreferenced search dims fall back to scenario params.
@@ -175,6 +182,8 @@ class Compose:
                 use_cache=False,
                 tolerate_infeasible=True,
                 progress_update_callback=variation_logger.info,
+                image_project=self.image_project,
+                image_project_tag=self.image_project_tag,
             )
             # Repoint "vast" at the persistent original (same dir, so relative
             # scenario_file/run_files still resolve) so downstream consumers that

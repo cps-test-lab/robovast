@@ -1,30 +1,92 @@
 # syntax=docker/dockerfile:1
 #
-# robovast + roqsim: the image for a **stepped** simulator run.
+# robovast + roqsim: the ``robovast-roqsim`` family member, and the image for **both**
+# roqsim shapes.
 #
-# A SimulationInterface is stepped in-process by scenario-execution, so the simulator and
-# the scenario share a process -- and therefore an image. That is what this is for, and
-# the only thing it is for. A ROS campaign does NOT use it: there the simulator runs in
-# its own container from roqsim's own published image, and nothing a campaign owns
-# contains roqsim at all.
+#   stepped (mode: base)  a SimulationInterface is stepped in-process by
+#                         scenario-execution, so simulator and scenario share a process
+#                         and therefore an image.
+#   ROS (mode: ros2)      the simulator runs in a container of its own -- from this image
+#                         too, because it is the only one that can.
 #
-# Neither existing image can do this job alone, which is why a third exists:
+# That second line is the part worth knowing, because it used to be otherwise. Neither
+# other image can do the job:
 #
-#   robovast_<distro>   carries the RoboVAST contract (/etc/robovast_compat_version,
-#                       scenario-execution, the /out mount) but no simulator.
-#   roqsim-ros             carries roqsim but not that contract, so the runner rejects it
-#                       before a scenario starts.
+#   robovast    carries the RoboVAST contract (/etc/robovast_compat_version,
+#               scenario-execution, the /out mount) but no simulator.
+#   roqsim-ros  roqsim's own image: carries roqsim but not that contract, so the runner
+#               rejects it before a scenario starts -- and no workflow has ever published
+#               the tag the ROS shape used to default to.
 #
-# Built by ``container/robovast/build.sh --image roqsim`` and by CI, on top of a
-# *resolved* base tag (BASE_IMAGE) so the two images cannot drift apart. The compat
-# version is inherited from that base rather than restated here -- one file, one source.
-#
-# The pin is a release control, not a development one: it builds roqsim as *pushed*,
-# which is not this working tree. Iterating on roqsim code goes through
-# ROBOVAST_ROQSIM_SRC instead, which stages the working tree into the campaign's own
-# image build (see docs/simulators.rst) -- the digest then still describes what ran.
+# Built by ``container/robovast/build.sh --image roqsim`` and by CI, on top of a *resolved*
+# base tag (BASE_IMAGE) so the two images cannot drift apart. The compat version is
+# inherited from that base rather than restated here -- one file, one source.
 
+# Where roqsim comes from, defaulted HERE rather than in whatever invokes the build: a
+# Dockerfile that cannot build on its own is one that only works through a wrapper, and both
+# this image and the base image were exactly that -- their source COPY needed a directory git
+# cannot track (an empty one), staged by build.sh into a temp context. CI builds with
+# `context: .`, so neither job could ever have succeeded, which is why nothing published the
+# images the defaults named.
+#
+# `main` was restructured to a sim_suite_* layout for a different consumer and no longer has
+# the rst_* packages installed below; `robovast` is the branch that still does.
+ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
+ARG ROQSIM_REF=robovast
+
+# Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
+# declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
+# to the empty string ("base name should not be blank").
 ARG BASE_IMAGE=ghcr.io/cps-test-lab/robovast:latest
+
+FROM alpine/git AS roqsim-clone
+ARG ROQSIM_REPO
+ARG ROQSIM_REF
+# A full clone then checkout, the same shape as the base image's scenario-execution stage, and
+# for a reason: ``--depth 1 --branch <ref>`` cannot check out a bare commit sha, and a sha is
+# what build.sh and CI pass (see below). One idiom that takes a branch, a tag or a sha beats two
+# that each take some of them. .git is dropped afterwards -- no layer below reads it, and it is
+# also where a credentialled clone would leave the token behind.
+#
+# NOTE ON CACHING: this layer's cache key is the command text plus the ARGs, not the state of
+# the remote. With a *branch* in ROQSIM_REF the cache therefore serves the tree from the first
+# build forever, however far the branch has moved -- so build.sh resolves the ref to a sha with
+# ``git ls-remote`` before building, which makes the key change exactly when the remote does. A
+# bare ``docker build`` that leaves the branch default needs ``--no-cache`` to pick up new
+# commits; that is the cost of a default that is not a pin.
+#
+# The token is optional and arrives as a BuildKit secret, because roqsim is not public: an
+# anonymous clone of it gets "could not read Username for 'https://github.com'", which is git
+# asking for a password on a terminal that does not exist. A secret rather than a build arg so
+# the value is not recorded in the image history; only this command's text is, and the value is
+# read from the mount at run time.
+#
+#   docker buildx build --secret id=git_token,env=GITHUB_TOKEN ...
+RUN --mount=type=secret,id=git_token \
+    url="$ROQSIM_REPO"; \
+    if [ -s /run/secrets/git_token ]; then \
+      url="https://x-access-token:$(cat /run/secrets/git_token)@${ROQSIM_REPO#https://}"; \
+    fi; \
+    if ! { git clone "$url" /src 2>/tmp/clone.err \
+           && git -C /src checkout --quiet "$ROQSIM_REF" 2>>/tmp/clone.err; }; then \
+      sed 's/x-access-token:[^@]*@/x-access-token:***@/g' /tmp/clone.err >&2; \
+      echo "" >&2; \
+      echo "Could not clone $ROQSIM_REPO at '$ROQSIM_REF'." >&2; \
+      echo "roqsim is not a public repository, so an anonymous clone cannot work. Either:" >&2; \
+      echo "  - build from a checkout:  build.sh --image roqsim --roqsim-src <path>" >&2; \
+      echo "  - or pass a token:        --secret id=git_token,env=GITHUB_TOKEN" >&2; \
+      echo "  - or point elsewhere:     --build-arg ROQSIM_REPO=<url>" >&2; \
+      exit 1; \
+    fi \
+ && rm -rf /src/.git
+
+# The source tree, as a filesystem with nothing else in it. Its whole purpose is to be
+# *overridable*: `docker buildx build --build-context roqsim-src=../roqsim` replaces this stage
+# with a local checkout, so a working tree and a clone reach the COPY below through one code
+# path -- no build-arg branch, and no directory that has to exist in the repository.
+FROM scratch AS roqsim-src
+COPY --from=roqsim-clone /src /
+
 FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
@@ -53,16 +115,15 @@ RUN apt-get update && \
 ##############################################################
 ####                      roqsim                        ####
 ##############################################################
-# From the build context, always -- ``build.sh`` decides what is in it: a clone at a pin
-# for a release, or the local working tree for development. One COPY here rather than a
-# conditional clone, because a Dockerfile cannot branch and two code paths for "where
-# does the source come from" is how the two drift.
+# From the ``roqsim-src`` stage above: a clone of the pinned ref by default, or whatever a
+# ``--build-context roqsim-src=<path>`` pointed it at. robovast vendors no copy of roqsim and
+# has no submodule, deliberately, so each repository stays publishable on its own.
 #
-# The distinction matters more than it looks. A pinned clone builds roqsim as *pushed*,
-# which is routinely not what a developer has in front of them -- and an image built from
-# the wrong source fails in ways that look like the integration is broken rather than
-# stale. ``build.sh --roqsim-src`` is the answer; see it for which was used.
-COPY roqsim /opt/roqsim
+# Why the distinction matters more than it looks: a clone builds roqsim as *pushed*, which is
+# routinely not what a developer has in front of them -- and an image built from the wrong
+# source fails in ways that look like the integration is broken rather than stale.
+# ``build.sh --roqsim-src`` is the answer; the build log says which was used.
+COPY --from=roqsim-src / /opt/roqsim
 
 # Into the ROS **system** interpreter, with --break-system-packages, which is what
 # roqsim's own image does (container/Dockerfile.ros) and for the same reason: nodes are
@@ -100,7 +161,39 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_manipulation_assets \
         /opt/roqsim/roqsim_mobile_manipulation \
         /opt/roqsim/roqsim_scenes \
+        /opt/roqsim/roqsim_walker \
+        /opt/roqsim/roqsim_webctrl \
         /opt/roqsim/scenario_execution_roqsim
+
+# The learned-policy platforms, behind a switch because they pull CPU torch: quadruped +
+# humanoid are ~80 MB of assets and torch several hundred more, on an image that every
+# campaign pulls -- including the ones that never load a policy.
+#
+# Named and tested exactly as roqsim's own lean image does it (container/Dockerfile:
+# ``ARG INCLUDE_TORCH_PKGS=0`` and ``= "1"``), so "which image has the legged platforms"
+# reads the same in both repos. The ``= "1"`` rather than a non-empty test is deliberate:
+# ``--build-arg INCLUDE_TORCH_PKGS=0`` must mean off, which is what a reader expects it to
+# mean.
+#
+# Note the asymmetry with roqsim's *ROS* image, which installs torch unconditionally. This
+# image serves the ROS shape now, so a legged-robot ROS campaign needs this switch on
+# where it previously got torch for free. That is the deliberate trade: the default image
+# stays small for the mobile campaigns that are the common case.
+#
+# torch on its own line and with --index-url, not --extra-index-url: the CPU wheel index
+# does not carry the roqsim packages' other dependencies, so a single pass that mixed them
+# would resolve those against it and fail.
+ARG INCLUDE_TORCH_PKGS=0
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    if [ "${INCLUDE_TORCH_PKGS}" = "1" ]; then \
+      echo "legged platforms: installing quadruped + humanoid (CPU torch)" && \
+      pip install --break-system-packages torch --index-url https://download.pytorch.org/whl/cpu && \
+      pip install --break-system-packages \
+        /opt/roqsim/roqsim_quadruped \
+        /opt/roqsim/roqsim_humanoid ; \
+    else \
+      echo "legged platforms: skipped (build with --build-arg INCLUDE_TORCH_PKGS=1)" ; \
+    fi
 
 # The ROS bridge and the nav2 example are colcon packages, not pip ones: they register
 # the `ros2_bridge` / `sim_interfaces` plugins a world gets when a run asks for transport.

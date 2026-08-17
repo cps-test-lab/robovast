@@ -162,31 +162,30 @@ execution:
   # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
   # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
       config: world/depot_nav2.yaml
-  # The published image, so this example runs for anyone who clones the repo. It was pinned by
-  # digest to a private registry that only one site could pull, which made the example
-  # unrunnable everywhere else.
+  # No `image:` here, and that is the point: the roqsim backend supplies the family member it
+  # needs, and which registry it comes from is the deployment's business (ROBOVAST_PROJECT), not
+  # this file's. Naming a ref here pinned the example to one site's private registry and made it
+  # unrunnable for anyone who cloned the repo.
   #
-  # Pin it by digest for real work: this is the image the simulator runs, so a moving tag means
-  # the code under test is not a recorded fact. It is also the image the run view's geometry is
-  # compiled in, cached by image identity. `make release-images PROJECT=... PUSH=1` prints the
-  # `repo@sha256:...` refs to paste here (or into .env).
-      image: ghcr.io/cps-test-lab/robovast-roqsim:latest
+  # To run a whole campaign against another project: `--image-project`, or ROBOVAST_PROJECT.
       resources:
         cpu: 1
   # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
   # That is the claim this shape makes -- point it at any nav2 image and it works.
+  #
+  # It has to name an image: a `sut` is the campaign's own container, and RoboVAST has no default
+  # for one -- inventing an image for the thing under test would run something nobody chose. This
+  # names the framework image *by family member*, so it still follows ROBOVAST_PROJECT; a concrete
+  # ref here would be used verbatim, which is what you want for a real third-party nav2 image.
     sut:
-      image: ghcr.io/cps-test-lab/robovast:latest
+      image: family:robovast
       system_packages:
   # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish an
   # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
       - ros-jazzy-nav2-minimal-tb4-description
       resources:
         cpu: 4
-  # Stock, but it still has to name its image: RoboVAST refuses a mutable default tag for the image
-  # a campaign runs.
     scenario:
-      image: ghcr.io/cps-test-lab/robovast:latest
       resources:
         cpu: 1.25
   mode: ros2
