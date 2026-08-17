@@ -31,6 +31,8 @@ NAMESPACE_MODULES = {
     "robovast.service.interface": "robovast-client (src/robovast_client)",
     "robovast.service.project_push": "robovast-client (src/robovast_client)",
     "robovast.client.scene_markers": "robovast-client (src/robovast_client)",
+    "robovast.client.cluster_cli": "robovast-client (src/robovast_client)",
+    "robovast.client.exec_cli": "robovast-client (src/robovast_client)",
     "robovast.service.local_transport": "robovast",
 }
 
@@ -46,4 +48,35 @@ def test_the_suite_runs_against_this_checkout(module_name, distribution):
         f"{distribution} is installed as a *copy* rather than editable, so it shadows the "
         f"source being edited and the suite is testing the installed version.\n"
         f"Fix: pip install --no-deps -e src/<that package>  (or: make venv)"
+    )
+
+
+#: Entry-point groups where two distributions declaring the same name is a real hazard
+#: rather than a merge: the loader builds ``{ep.name: ep}``, so a duplicate resolves
+#: unpredictably to whichever came last.
+SINGLE_PROVIDER_GROUPS = ("robovast.cli_plugins", "robovast.exec_plugins",
+                          "robovast.cluster_plugins")
+
+
+@pytest.mark.parametrize("group", SINGLE_PROVIDER_GROUPS)
+def test_no_entry_point_name_has_two_providers(group):
+    """Stale metadata is invisible until it resolves the wrong way.
+
+    Entry points live in *installed* metadata, so moving one between distributions leaves
+    the old declaration behind until every dist is reinstalled. ``vast exec cluster`` was
+    moved from ``robovast-cluster`` to ``robovast-client`` exactly this way; in the window
+    before a reinstall both declared ``cluster`` under ``robovast.exec_plugins`` and which
+    one won was unspecified. Nothing else in the suite can see that: the modules are fine,
+    the imports are fine, and the CLI lists the verb either way.
+    """
+    from collections import Counter
+    from importlib.metadata import entry_points
+
+    seen = Counter(ep.name for ep in entry_points(group=group))
+    duplicated = {name: count for name, count in seen.items() if count > 1}
+    assert not duplicated, (
+        f"{duplicated} declared more than once in '{group}'.\n"
+        f"Two installed distributions claim the same verb, so which one runs is "
+        f"unspecified. Usually stale metadata from a moved entry point: re-run "
+        f"'make venv' (or 'pip install --no-deps -e .' in each of src/*)."
     )

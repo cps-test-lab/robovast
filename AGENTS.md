@@ -112,9 +112,9 @@ that matters — can decline what it does not.
 
 | Distribution | Contains | Adds |
 |---|---|---|
-| `robovast-client` | the `vast` root command group and every verb that only drives a service (login, workspace, files, image, wait, doctor), the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
-| `robovast` | service core, config/variation, results, MCP, controller, the local Docker lane | no kubernetes |
-| `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the deploy/operator commands | `kubernetes`, `boto3`, `google-cloud-storage` |
+| `robovast-client` | the `vast` root command group and every verb that only drives a service (login, workspace, files, image, wait, doctor, **and `exec cluster run/stop/stop-job/log/download-cleanup`**), the `exec` and `exec cluster` group shells, the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
+| `robovast` | service core, config/variation, results, MCP, controller, the local Docker lane (`exec local`) | no kubernetes |
+| `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the operator verbs (`exec cluster setup/cleanup/upgrade/token/run-cleanup/monitor`) | `kubernetes`, `boto3`, `google-cloud-storage` |
 | `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
 | `robovast-sim-roqsim` | the roqsim simulator backend | `pydantic` only |
 
@@ -135,8 +135,20 @@ Four rules keep this working:
 - **Missing means missing, not broken.** With a lane absent, `vast` must still start, `vast exec`
   must list only what is installed, `vast doctor` must warn rather than fail, and asking for the
   absent lane must name the lanes that exist — never a `ModuleNotFoundError` for a module the
-  caller never mentioned. Core degrading correctly is covered by
-  `tests/execution/test_core_without_cluster_package.py`; keep it that way.
+  caller never mentioned. This now holds at **two** levels: `vast exec` lists `cluster` without
+  `local` on a client-only install, and `vast exec cluster` lists `run` without `setup`. The
+  mechanism is one reusable `client/lazy_group.py:LazyPluginGroup`, parameterised by entry-point
+  group (`robovast.exec_plugins`, then `robovast.cluster_plugins`). Core degrading correctly is
+  covered by `tests/execution/test_core_without_cluster_package.py` and
+  `tests/execution/test_lazy_exec_subgroups.py`; keep it that way.
+- **A distribution's own verbs are not entry points.** Entry points are for crossing a
+  distribution boundary. A verb defined in the same module as its group stays an ordinary
+  `@group.command()`, because entry points live in *installed metadata*: declaring your own there
+  means a `pyproject` edit without a reinstall makes the verb vanish, silently. Moving one between
+  distributions has the mirror hazard — the old declaration lingers until every dist is reinstalled,
+  and two providers of one name resolve unpredictably. `tests/test_editable_installs.py` asserts
+  exactly one provider per name; if `vast` warns `has no attribute` after a pull, that is this, and
+  `make venv` is the fix.
 
 **A client install must stay a working install.** `robovast-client` ships without the core,
 and every leak found so far has been a *deferred* import of it -- the module imports fine and

@@ -103,3 +103,29 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
                 f"Campaign {campaign_id!r} did not finish within {timeout}s "
                 f"(last state: {last_report})")
         time.sleep(interval)
+
+
+def wait_for_campaign_outcome(campaign_id: str, *, client=None, service_url: str = "",
+                              interval: float = DEFAULT_POLL_INTERVAL_S,
+                              timeout: Optional[float] = None,
+                              feedback: Optional[Callable[[str], None]] = None) -> str:
+    """Block until *campaign_id* is over; report ``"succeeded"`` or ``"failed"``.
+
+    The two-value reduction of :func:`wait_for_campaign_status`, for callers that branch
+    rather than inspect -- ``vast exec cluster run --wait-and-download`` is the one that
+    exists. It also echoes the failure reason, which is on the Status and would otherwise
+    be dropped by the reduction.
+
+    This was ``execution_utils.cluster_run.wait_for_cluster_campaign``, in the core, under
+    a cluster-flavoured name its own docstring called a mistake: nothing about waiting on
+    the service's status contract is lane-specific, and leaving it there made the launch
+    verb -- otherwise pure client code -- unable to move out of ``robovast-cluster``.
+    """
+    from robovast.client.status import Phase
+    say = feedback or (lambda _msg: None)
+    status = wait_for_campaign_status(
+        campaign_id, client=client, service_url=service_url, interval=interval,
+        timeout=timeout, feedback=feedback)
+    if status.phase == Phase.FAILED and status.error:
+        say(f"{campaign_id}: {status.error}")
+    return "succeeded" if status.phase == Phase.FINISHED else "failed"

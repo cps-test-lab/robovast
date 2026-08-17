@@ -157,15 +157,52 @@ publish-client-test-venv:
 		--extra-index-url https://pypi.org/simple/ \
 		robovast-client
 	@echo "The surface is the client's, and nothing else..."
+# The VERB LIST, not the help text. Grepping the whole `--help` for "^  <verb>" reads the
+# prose too: the `--vast-file` paragraph wraps onto a line beginning "  configuration file
+# instead of...", so an absence check for `config` matched documentation and failed a
+# perfectly good install. Only the `Commands:` section is a list of verbs, and only its
+# first column is a verb name -- so extract that and compare whole lines.
 	@/tmp/robovast-client-test-venv/bin/vast --help > /tmp/robovast-client-help.txt
-	@for verb in login logout workspace files wait doctor; do \
-		grep -q "^  $$verb" /tmp/robovast-client-help.txt \
-			|| { echo "❌ '$$verb' missing from vast --help"; exit 1; }; \
+	@awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' \
+		/tmp/robovast-client-help.txt | sort -u > /tmp/robovast-client-verbs.txt
+	@for verb in login logout workspace files wait doctor image exec; do \
+		if ! grep -qx "$$verb" /tmp/robovast-client-verbs.txt; then \
+			echo "❌ '$$verb' missing from vast --help"; exit 1; fi; \
 	done
-	@for verb in serve exec image init; do \
-		grep -q "^  $$verb" /tmp/robovast-client-help.txt \
-			&& { echo "❌ '$$verb' present in a client-only install"; exit 1; }; \
+# `if`, not `grep && { exit 1; }`. The latter returns GREP's status, so an absence loop
+# whose last verb is correctly absent exits 1 and fails the target on the passing path --
+# which is why this check had never once run green.
+	@for verb in serve init config results ui import-results; do \
+		if grep -qx "$$verb" /tmp/robovast-client-verbs.txt; then \
+			echo "❌ '$$verb' present in a client-only install"; exit 1; fi; \
 	done
+# `exec` being present is not the whole claim -- it must resolve down two lazy levels to
+# the verb a user actually types, and must NOT expose the halves that need Docker or a
+# kubeconfig. `run --help` is checked by RUNNING it, because a group lists a subcommand it
+# cannot load and still exits 0 on its own `--help`.
+	@echo "...that 'exec' reaches the launch verb, and stops short of the operator's..."
+	@/tmp/robovast-client-test-venv/bin/vast exec cluster run --help > /dev/null \
+		|| { echo "❌ 'vast exec cluster run' does not resolve on a client-only install"; exit 1; }
+	@/tmp/robovast-client-test-venv/bin/vast exec --help \
+		| awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' | sort -u \
+		> /tmp/robovast-client-exec-verbs.txt
+	@if grep -qx "local" /tmp/robovast-client-exec-verbs.txt; then \
+		echo "❌ 'exec local' present without the core (it needs Docker)"; exit 1; fi
+	@/tmp/robovast-client-test-venv/bin/vast exec cluster --help \
+		| awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' | sort -u \
+		> /tmp/robovast-client-cluster-verbs.txt
+	@for verb in run stop stop-job log download-cleanup; do \
+		if ! grep -qx "$$verb" /tmp/robovast-client-cluster-verbs.txt; then \
+			echo "❌ 'exec cluster $$verb' missing from a client-only install"; exit 1; fi; \
+	done
+	@for verb in setup cleanup upgrade token monitor run-cleanup; do \
+		if grep -qx "$$verb" /tmp/robovast-client-cluster-verbs.txt; then \
+			echo "❌ 'exec cluster $$verb' present without robovast-cluster"; exit 1; fi; \
+	done
+# `--version` used to name the `robovast` distribution, which a client-only install does
+# not have -- click resolves that lazily, so it raised only when asked. Cheap to assert.
+	@/tmp/robovast-client-test-venv/bin/vast --version > /dev/null \
+		|| { echo "❌ 'vast --version' fails on a client-only install"; exit 1; }
 	@echo "...and none of the weight it exists to avoid."
 	@/tmp/robovast-client-test-venv/bin/python -c "import importlib.util as u, sys; \
 		heavy = [m for m in ('numpy','pandas','fastapi','kubernetes','docker', \

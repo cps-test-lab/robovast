@@ -126,9 +126,14 @@ def check_cluster(context: str | None = None) -> list[Check]:
             load_kube_config  # pylint: disable=import-outside-toplevel
         loaded = load_kube_config(context=context)
     except ImportError:
+        # Not "to deploy or drive a cluster" any more: driving one is `vast exec cluster
+        # run`, which this distribution ships. What needs the lane is OWNING a cluster --
+        # deploying the service into it and operating it. Saying otherwise sent exactly
+        # the audience this install is for after 290 MB they do not need.
         return [Check("cluster support", False, "not installed",
-                      "This install has no cluster lane. Install it to deploy or drive "
-                      "a cluster; nothing else here needs it.", optional=True)]
+                      "This install has no cluster lane, and does not need one to run "
+                      "campaigns ('vast exec cluster run' works). Install it to deploy "
+                      "or operate a cluster of your own.", optional=True)]
     except Exception as exc:  # noqa: BLE001 - every other failure means "no cluster"
         return [Check("kubeconfig", False, str(exc)[:120],
                       "Point kubectl at a cluster (`kubectl config use-context …`), or "

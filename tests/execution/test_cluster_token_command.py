@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from robovast.execution.cluster_execution.cli import cluster
+from robovast.execution.cluster_execution.cli import cluster_token
 
 TOKEN = "a-token-that-is-long-enough-to-look-real"
 MODULE = "robovast.execution.cluster_execution.service_deploy"
@@ -28,7 +28,11 @@ MODULE = "robovast.execution.cluster_execution.service_deploy"
 def _run(args, token=TOKEN, url="https://robovast.example.org"):
     with patch(f"{MODULE}.existing_auth_token", return_value=token), \
          patch(f"{MODULE}.published_url", return_value=url):
-        return CliRunner().invoke(cluster, ["token"] + args)
+        # The command itself, not `cluster token`: the group lives in robovast-client and
+        # resolves this through entry-point metadata, which would make these unit tests
+        # depend on a fresh reinstall. `test_operator_hands_out_the_client` covers the
+        # chain deliberately.
+        return CliRunner().invoke(cluster_token, args)
 
 
 def test_quiet_prints_the_token_and_nothing_else():

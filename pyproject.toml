@@ -121,8 +121,15 @@ serve = "robovast.common.cli.core_commands:serve"
 ui = "robovast.common.cli.core_commands:ui"
 "import-results" = "robovast.common.cli.core_commands:import_results"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
-execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
+# No `execution` here: `vast exec` is the client's group now, because the launch path
+# (push a project, ask the service to run it) needs nothing the core provides. What
+# needed the core was `vast exec local`, which attaches below.
+
+# `vast exec local`. Attached to the client's `exec` group lazily, so Docker and the
+# config schema stay out of every other `vast` invocation.
+[tool.poetry.plugins."robovast.exec_plugins"]
+local = "robovast.execution.execution_utils.cli:local"
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to
 # import the cluster package to start a service -- see service/serve_backends.py.

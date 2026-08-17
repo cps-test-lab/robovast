@@ -71,7 +71,20 @@ def without_core(monkeypatch):
     # install, and the wrong simulation of this one.
     from robovast.client import cli as client_cli  # pylint: disable=import-outside-toplevel
     monkeypatch.setattr(client_cli, "_core_installed", lambda: False)
-    monkeypatch.setattr(client_cli, "entry_points", lambda group: [])
+
+    # Entry points are *filtered*, not emptied. Returning `[]` was right while every
+    # `cli_plugins` entry belonged to the core; it stopped being right when the client
+    # started declaring one of its own (`execution` -> `vast exec`), because emptying the
+    # group deleted the very verb this distribution exists to provide and the simulation
+    # quietly stopped covering it. So: keep what points into `robovast.client`, drop the
+    # rest -- which is exactly what a client-only install's metadata contains.
+    real_entry_points = client_cli.entry_points
+
+    def client_only_entry_points(group):
+        return [ep for ep in real_entry_points(group=group)
+                if ep.value.startswith("robovast.client")]
+
+    monkeypatch.setattr(client_cli, "entry_points", client_only_entry_points)
 
     yield
     if finder in sys.meta_path:
@@ -102,14 +115,85 @@ def test_every_client_module_imports_without_the_core(without_core, module):
 @pytest.mark.parametrize("argv", [
     ["--help"], ["login", "--help"], ["logout", "--help"], ["doctor", "--help"],
     ["workspace", "--help"], ["files", "--help"], ["wait", "--help"],
+    ["--version"],
+    # The launch path, one level per entry: `exec` is the client's group now, `cluster`
+    # is reached through `robovast.exec_plugins`, and `run` is the verb this whole
+    # distribution exists to make reachable.
+    ["exec", "--help"], ["exec", "cluster", "--help"],
+    ["exec", "cluster", "run", "--help"], ["exec", "cluster", "stop", "--help"],
+    ["exec", "cluster", "stop-job", "--help"], ["exec", "cluster", "log", "--help"],
+    ["exec", "cluster", "download-cleanup", "--help"],
 ])
 def test_the_cli_runs_without_the_core(without_core, argv):
     """`--help` still builds the command and its options, which is where a module-level
     core import would surface."""
-    from robovast.client.cli import cli  # pylint: disable=import-outside-toplevel
+    from robovast.client.cli import cli, load_plugins  # pylint: disable=import-outside-toplevel
 
+    # `main()` assembles the CLI; importing it does not. The plugin-provided verbs -- `exec`
+    # among them, now that it is the client's -- do not exist on `cli` until this runs, and
+    # the `without_core` fixture is what makes it see a client-only install's metadata.
+    load_plugins()
     result = CliRunner().invoke(cli, argv)
     assert result.exit_code == 0, result.output
+
+
+def test_launching_a_campaign_gets_as_far_as_the_service(without_core, monkeypatch,
+                                                        tmp_path):
+    """`exec cluster run` DRIVEN, not merely `--help`-ed.
+
+    The verb that justifies the whole distribution, and the one whose old home made it
+    unreachable. Its body defers four imports (`campaign_wait`, `service.interface`,
+    `service.project_push` twice) and any one of them reaching for the core would pass an
+    import check and a `--help`, then fail at the only moment that matters. This is the
+    class of leak the file exists for: found at call time, not import time.
+    """
+    import contextlib  # pylint: disable=import-outside-toplevel
+
+    from robovast.client import cluster_cli  # pylint: disable=import-outside-toplevel
+
+    vast = tmp_path / "demo.vast"
+    vast.write_text("version: 2\n")
+    launched = {}
+
+    def fake_run(client, config_path, **kwargs):  # noqa: ARG001
+        launched.update(kwargs, config_path=config_path)
+        return "camp-1"
+
+    monkeypatch.setattr("robovast.service.project_push.run_project_via_service", fake_run)
+
+    @contextlib.contextmanager
+    def _client(*_a, **_k):
+        yield object(), "fake service"
+
+    monkeypatch.setattr(cluster_cli, "service_client", _client)
+    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
+                        classmethod(lambda cls, start_dir=None: None))
+
+    # `obj={'vast_file': ...}` is the `-V` override, which is how a client-only user names
+    # a project: `vast init` is a core verb they do not have.
+    result = CliRunner().invoke(cluster_cli.cluster,
+                                ["run", "--description", "pilot"],
+                                obj={"vast_file": str(vast)})
+    assert result.exit_code == 0, result.output
+    assert launched["config_path"] == str(vast)
+    assert launched["description"] == "pilot"
+
+
+def test_the_waiting_half_of_wait_and_download_needs_no_core(without_core):
+    """``--wait-and-download`` calls `wait_for_campaign_outcome`, which used to be
+    `wait_for_cluster_campaign` in the core -- the single reason `run` could not move."""
+    from robovast.execution import campaign_wait  # pylint: disable=import-outside-toplevel
+
+    class _Done:
+        phase, stage, error, postprocessing_error = "finished", "", "", ""
+
+    class _Client:
+        def get_status(self, *_a, **_k):
+            return _Done()
+
+    outcome = campaign_wait.wait_for_campaign_outcome(
+        "camp-1", client=_Client(), interval=0.0, timeout=10)
+    assert outcome == "succeeded"
 
 
 def test_a_verb_that_talks_to_a_service_gets_that_far(without_core, monkeypatch):

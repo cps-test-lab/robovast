@@ -23,7 +23,7 @@ import pytest
 from click.testing import CliRunner
 
 from robovast.client import cli as root_cli
-from robovast.execution.execution_utils import cli as exec_cli
+from robovast.client import exec_cli
 
 
 class _Recorder:

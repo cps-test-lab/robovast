@@ -11,8 +11,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from robovast.execution.cluster_execution import cli as cluster_cli
-from robovast.execution.execution_utils import cli as exec_cli
+from robovast.client import cluster_cli, exec_cli
 
 
 @pytest.fixture
@@ -33,7 +32,7 @@ def launch(monkeypatch, tmp_path):
     # Patch where the name is *bound*, not where it is defined: the cluster CLI
     # imports it at module level, so rebinding the source module would not be seen.
     monkeypatch.setattr(
-        "robovast.execution.cluster_execution.cli.service_client",
+        "robovast.client.cluster_cli.service_client",
         lambda *a, **k: _yield_client())
     monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
                         classmethod(lambda cls, start_dir=None: None))

@@ -84,7 +84,7 @@ def test_a_digestless_image_id_is_passed_through(pods):
 def _run_upgrade(before, after, converged=True):
     from click.testing import CliRunner
 
-    from robovast.execution.cluster_execution.cli import cluster
+    from robovast.execution.cluster_execution.cli import upgrade
 
     digests = iter([before, after])
     with patch.multiple(
@@ -98,7 +98,7 @@ def _run_upgrade(before, after, converged=True):
             running_image_digest=MagicMock(side_effect=lambda *a, **k: next(digests))), \
             patch("robovast.execution.cluster_execution.cluster_setup."
                   "apply_controller_rbac", MagicMock()):
-        return CliRunner().invoke(cluster, ["upgrade", "-n", "default"])
+        return CliRunner().invoke(upgrade, ["-n", "default"])
 
 
 @pytest.mark.parametrize("before,after,expected", [

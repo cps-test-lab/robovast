@@ -35,6 +35,11 @@ What you can do with it
      - Does
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
+   * - ``vast exec cluster run``
+     - **Launch a campaign.** Pushes the project and starts it on the service's lane.
+       Add ``--wait-and-download`` to block until it finishes and pull the results down.
+   * - ``vast exec cluster stop|stop-job|log``
+     - Stop a campaign, kill one wedged job, read a campaign's infrastructure log.
    * - ``vast workspace init|update|list|delete``
      - Push a project directory to the service; re-sync it after edits.
    * - ``vast files ls|cat|get|put|rm``
@@ -45,19 +50,51 @@ What you can do with it
      - Block until a campaign is genuinely over.
    * - ``vast image wait <build-id>…``
      - Block until every named image build is done.
-   * - ``vast results download <id>``
-     - Fetch a finished campaign's results.
+   * - ``vast exec cluster download-cleanup``
+     - Remove result buckets from the service's object store.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
 
-Authoring, validating, launching and querying results are available to an **agent**
-through the service's MCP endpoint, which needs nothing installed at all — see
-:ref:`mcp`. ``vast login`` prints the ``claude mcp add`` line that registers it.
+Authoring, validating and querying results are available to an **agent** through the
+service's MCP endpoint, which needs nothing installed at all — see :ref:`mcp`.
+``vast login`` prints the ``claude mcp add`` line that registers it.
 
-What is deliberately absent: ``vast serve``, ``vast exec``, ``vast init``, ``vast
-config``. They are not hidden or disabled — the distribution does not
-register them, so ``vast --help`` on a client install lists exactly what it can run. That
-is the point of installing it alone.
+.. _client-partial-surface:
+
+What is absent, and what is only partly here
+============================================
+
+**Absent:** ``vast serve``, ``vast init``, ``vast config``, ``vast results``. They are not
+hidden or disabled — the distribution does not register them, so ``vast --help`` on a
+client install lists exactly what it can run. That is the point of installing it alone.
+
+**Partly here:** ``vast exec``. The rule is the same one, applied a level down — a
+subcommand exists exactly when something that can perform it is installed:
+
+* ``vast exec cluster run|stop|stop-job|log|download-cleanup`` ship with the client. Every
+  one of them only *drives* a service, so a client install runs them completely.
+* ``vast exec cluster setup|cleanup|upgrade|token|run-cleanup|monitor`` arrive with
+  ``robovast-cluster``. They need a kubeconfig, an API server or a cluster Secret.
+* ``vast exec local`` arrives with ``robovast``. It needs Docker.
+
+So ``vast exec --help`` on a client install lists ``cluster`` and not ``local``, and
+``vast exec cluster --help`` lists ``run`` and not ``setup``. Nothing is stubbed and
+nothing fails on use.
+
+``monitor`` is the one worth a word, because ``run`` used to point at it. It is a live,
+job-level dashboard over *every* campaign, and its fallback view reads the Jobs from your
+kubeconfig — which is what keeps it on the operator's side. A client install watches a
+campaign with ``vast wait`` (one campaign, phase by phase, with an exit code) and the web
+UI, which between them show everything monitor's service view did.
+
+.. note::
+
+   ``vast init`` is a core verb, so on a client-only install the way to name a project is
+   the global ``-V`` flag::
+
+      vast -V my-experiment/my.vast exec cluster run --description "pilot"
+
+   Every command that needs a ``.vast`` accepts it, and it needs no ``.robovast_project``.
 
 
 Pushing a project

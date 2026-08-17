@@ -58,6 +58,23 @@ def configure_logging(ctx, param, value):
     return value
 
 
+def _print_version(ctx, param, value):  # pylint: disable=unused-argument
+    """``--version``, resolved from the running code rather than a named distribution.
+
+    This was ``@click.version_option(package_name="robovast")``, which a client-only
+    install does not have -- and click resolves that name lazily, in the callback, so the
+    failure only appeared when someone asked. `running_version()` prefers the git revision
+    (so "the fix I just made is loaded" is answerable), falls back to package metadata, and
+    never raises. Computed in the callback, not at decoration time: a git call on every
+    ``vast`` invocation is exactly the weight this distribution exists to avoid.
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    from robovast.client.app_version import running_version
+    click.echo(f"RoboVAST, version {running_version()}")
+    ctx.exit()
+
+
 @click.group()
 @click.option('--log-level', '-l',
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
@@ -67,7 +84,9 @@ def configure_logging(ctx, param, value):
               expose_value=False)
 @click.option('--vast-file', '-V', type=click.Path(exists=True), default=None,
               help='Override the .vast configuration file (instead of project default)')
-@click.version_option(package_name="robovast", prog_name="RoboVAST")
+@click.option('--version', is_flag=True, is_eager=True, expose_value=False,
+              callback=_print_version,
+              help='Show the version and exit.')
 @click.pass_context
 def cli(ctx, vast_file):
     """VAST - RoboVAST Command-Line Interface.

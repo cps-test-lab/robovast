@@ -27,9 +27,22 @@ google-cloud-storage = "^2.0"
 [tool.poetry.plugins."robovast.execution_backends"]
 cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"
 
-# `vast exec cluster`. Attached lazily, so a plain `vast` invocation does not pay for it.
-[tool.poetry.plugins."robovast.exec_plugins"]
-cluster = "robovast.execution.cluster_execution.cli:cluster"
+# The operator half of `vast exec cluster` -- the verbs that need a kubeconfig, an API
+# server or a cluster Secret. The `cluster` group itself belongs to robovast-client, whose
+# service-driven verbs (run/stop/stop-job/log/download-cleanup) need none of this; these
+# attach to it lazily, so `vast exec cluster --help` lists them without importing the
+# Kubernetes client.
+#
+# `monitor` is here rather than in the client because its kubeconfig fallback view and its
+# service view are one command chosen at runtime -- moving it would split one function's
+# body across two distributions. A client-only user gets `vast wait` and the web UI.
+[tool.poetry.plugins."robovast.cluster_plugins"]
+monitor = "robovast.execution.cluster_execution.cli:monitor"
+setup = "robovast.execution.cluster_execution.cli:setup"
+cleanup = "robovast.execution.cluster_execution.cli:cleanup"
+upgrade = "robovast.execution.cluster_execution.cli:upgrade"
+token = "robovast.execution.cluster_execution.cli:cluster_token"
+"run-cleanup" = "robovast.execution.cluster_execution.cli:run_cleanup"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"

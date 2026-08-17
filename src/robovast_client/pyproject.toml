@@ -31,6 +31,20 @@ requests = "^2.31"
 [tool.poetry.scripts]
 vast = "robovast.client.cli:main"
 
+# `vast exec`. The group shell is the client's because the verb this audience actually
+# wants -- `exec cluster run` -- is four HTTP verbs against a service and needs nothing
+# else. `exec local` (Docker) and the operator half of `exec cluster` (kubeconfig) attach
+# from their own distributions, so what `vast exec` lists equals what is installed.
+[tool.poetry.plugins."robovast.cli_plugins"]
+execution = "robovast.client.exec_cli:execution"
+
+# `vast exec cluster`. Its service-driven verbs are defined in the same module as the
+# group, so they are ordinary `@cluster.command()`s rather than entry points -- metadata
+# is for crossing distributions, and a distribution's own verbs must not vanish on a
+# pyproject edit that was not followed by a reinstall.
+[tool.poetry.plugins."robovast.exec_plugins"]
+cluster = "robovast.client.cluster_cli:cluster"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

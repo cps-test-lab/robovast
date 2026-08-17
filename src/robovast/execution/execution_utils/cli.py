@@ -15,74 +15,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI plugin for execution management."""
+"""``vast exec local`` -- the local Docker execution lane.
+
+Only the *lane* lives here. The ``vast exec`` group shell itself, and the two verbs that
+merely drive a service (``command``, ``stop-container``), are in
+``robovast.client.exec_cli``: they need nothing the core provides, and while they lived
+here they put ``robovast.common.config`` (pydantic), ``host_display`` and
+``execute_local`` on every ``vast`` invocation, because `load_plugins()` imports each
+``robovast.cli_plugins`` entry point eagerly.
+
+This group attaches to ``vast exec`` through the ``robovast.exec_plugins`` entry-point
+group, so it is listed without being imported and loads only when someone types
+``vast exec local`` -- which is what keeps Docker out of ``vast login``.
+"""
 
 import os
-import sys
 import tempfile
 
 import click
 
 from robovast.client.errors import handle_cli_exception
 from robovast.client.project_config import get_project_config
-from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
 from robovast.common.common import load_config
 from robovast.common.config import validate_config
 from robovast.common.host_display import gui_by_default
 
 from .execute_local import initialize_local_execution
 
-#: Entry-point group for subcommands that attach to ``vast exec``.
-EXEC_PLUGIN_GROUP = "robovast.exec_plugins"
 
-
-class _LazyExecGroup(click.Group):
-    """``vast exec``, with subgroups that are listed without being imported.
-
-    ``vast exec cluster`` lives in the cluster package and pulls in the Kubernetes
-    client. Registering it eagerly would put that import back on every ``vast``
-    invocation -- `load_plugins()` imports this module each time -- for a subcommand
-    almost nobody in a given run is about to type.
-
-    Click asks for the names it can offer (``list_commands``) separately from the one it
-    is about to run (``get_command``), so the names come from entry-point *metadata* and
-    only the chosen subgroup is loaded. A subgroup that fails to import is reported and
-    skipped, the same way `load_plugins()` treats a missing plugin: an install without
-    the cluster package should be short a subcommand, not broken.
-    """
-
-    def _plugins(self):
-        from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
-        return {ep.name: ep for ep in entry_points(group=EXEC_PLUGIN_GROUP)}
-
-    def list_commands(self, ctx):
-        return sorted(set(super().list_commands(ctx)) | set(self._plugins()))
-
-    def get_command(self, ctx, cmd_name):
-        command = super().get_command(ctx, cmd_name)
-        if command is not None:
-            return command
-        entry = self._plugins().get(cmd_name)
-        if entry is None:
-            return None
-        try:
-            return entry.load()
-        except Exception as exc:  # noqa: BLE001 - a missing package is not a crash
-            click.echo(f"Warning: '{cmd_name}' could not be loaded: {exc}", err=True)
-            return None
-
-
-@click.group(cls=_LazyExecGroup)
-def execution():
-    """Execute scenarios locally or on a cluster.
-
-    Run scenario configurations either locally using Docker or on a
-    Kubernetes cluster for distributed execution.
-    """
-
-
-@execution.group()
+@click.group()
 def local():
     """Execute scenarios locally using Docker.
 
@@ -360,78 +321,3 @@ def _print_search_summary(report):
             f"Archive: {report.extra['num_elites']} elite(s), "
             f"coverage={report.extra.get('coverage', 0):.2f}, "
             f"qd_score={report.extra.get('qd_score', 0):.4g}")
-
-
-@execution.command('command')
-@click.argument('shell_command', required=False, default='')
-@click.option('--workspace', 'workspace_id', default='',
-              help='Workspace whose project to use (with --config for the .vast).')
-@click.option('--config', 'config_path', default='',
-              help='Which .vast in the workspace (workspace-relative).')
-@click.option('--campaign', 'campaign_id', default='',
-              help="Use an existing campaign's _config/ as the project instead.")
-@click.option('--config-name', 'config_name', default='',
-              help='Stage this configuration. Omitted, the bare image is used.')
-@click.option('--keep-alive', is_flag=True,
-              help='Leave the container running so later calls can inspect it.')
-@target_options
-def exec_command(shell_command, workspace_id, config_path, campaign_id, config_name,
-                 keep_alive, namespace, context):  # pylint: disable=redefined-outer-name
-    """Test a container and its setup by running SHELL_COMMAND in the experiment image.
-
-    Produces **no campaign data** — nothing durable, no provenance, no repetitions. Use
-    ``vast execution local run`` / ``cluster run`` to run the experiment itself.
-
-    Omit ``--config-name`` to check the bare image (``python3 -c 'import x'``,
-    ``ros2 pkg list``, file checks). Name one to stage that configuration; an empty
-    SHELL_COMMAND then starts its scenario, and its output goes to a log file inside the
-    container rather than to stdout (the path is printed).
-
-    There is at most one such container at a time; ``vast execution stop-container``
-    ends it. No ``--timeout``: the limit is derived from what is being run (the
-    project's ``execution.timeout`` for a scenario, a fixed cap for a command) and
-    reported with the result.
-    """
-    from robovast.service.interface import ExecRequest
-    try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            result = client.exec_in_container(ExecRequest(
-                command=shell_command, workspace_id=workspace_id,
-                config_path=config_path, campaign_id=campaign_id,
-                config_name=config_name, keep_alive=keep_alive,
-                backend=None))
-    except Exception as e:  # noqa: BLE001 - handled uniformly as a CLI error
-        handle_cli_exception(e)
-        return
-    if result.stdout:
-        click.echo(result.stdout, nl=False)
-    if result.stderr:
-        click.echo(result.stderr, nl=False, err=True)
-    click.echo(f"\n[exit {result.exit_code}"
-               f"{' TIMED OUT' if result.timed_out else ''}"
-               f", limit {result.limit_s}s from {result.limit_source}]", err=True)
-    if result.log_path:
-        click.echo(f"[scenario log inside the container: {result.log_path} — read it with "
-                   f"a follow-up: --keep-alive \"tail -200 {result.log_path}\"]", err=True)
-    if result.container.kept:
-        click.echo(f"[container kept: image {result.container.image}"
-                   f"{', config ' + result.container.config if result.container.config else ''}"
-                   f", hard stop in {result.container.deadline_in_s}s]", err=True)
-    if result.timed_out or result.exit_code != 0:
-        sys.exit(result.exit_code or 1)
-
-
-@execution.command('stop-container')
-@target_options
-def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
-    """Stop the held container-exec container, if there is one."""
-    try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            result = client.stop_exec_container()
-    except Exception as e:  # noqa: BLE001
-        handle_cli_exception(e)
-        return
-    click.echo(f"stopped {result.target}" if result.stopped
-               else "no exec container was running")

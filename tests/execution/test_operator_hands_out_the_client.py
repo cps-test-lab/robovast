@@ -26,7 +26,11 @@ def handover(monkeypatch):
     """The block `vast exec cluster token` prints, without a cluster."""
     from unittest.mock import MagicMock, patch
 
-    from robovast.execution.cluster_execution.cli import cluster
+    # The group belongs to robovast-client now; `token` reaches it through the
+    # `robovast.cluster_plugins` entry point. Invoking it from here therefore exercises
+    # the whole three-level chain (root -> exec -> cluster -> token) end to end, which is
+    # the thing most likely to break silently after a pyproject edit.
+    from robovast.client.cluster_cli import cluster
 
     with patch.multiple(
             "robovast.execution.cluster_execution.service_deploy",

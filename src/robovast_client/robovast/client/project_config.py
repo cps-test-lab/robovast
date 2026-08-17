@@ -261,8 +261,12 @@ def get_project_config() -> ProjectConfig:
                 results_dir=os.path.abspath("results"),
             )
         else:
+            # Both remedies, because `vast init` is a **core** verb: on a client-only
+            # install -- the audience `vast exec cluster run` exists for -- naming only
+            # `vast init` sends the reader after a command their install does not have.
             raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
+                "Project not initialized. Run 'vast init <config-file>' first, or name "
+                "the file directly: 'vast -V <config-file> ...'."
             )
 
     if override_path:
