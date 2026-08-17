@@ -44,6 +44,9 @@ export interface TimeSeriesSource {
    *  missing. Comes from the service, which fetches one row past the cap to know -- a row count
    *  cannot tell, since rows with an unparseable time are dropped below. */
   truncated: boolean
+  /** The service's explanation when it truncated for a reason other than the row cap (the reply-size
+   *  ceiling). Null for a plain row-cap truncation, which the panels already word themselves. */
+  truncationNote: string | null
   /** The columns present on the rows (from the first sample). */
   columns: string[]
   /** The numeric time (seconds) extracted from a row, using this source's time column. */
@@ -58,6 +61,7 @@ export function timeSeriesFromRows(
   rows: DataRow[],
   timeColumn = DEFAULT_TIME_COLUMN,
   truncated = false,
+  truncationNote: string | null = null,
 ): TimeSeriesSource {
   const timeOf = (row: DataRow) => Number(row[timeColumn])
   // Sort a shallow copy by numeric time; drop rows whose time isn't a finite number so lookups and
@@ -88,6 +92,7 @@ export function timeSeriesFromRows(
       return sorted
     },
     truncated,
+    truncationNote,
     columns,
     timeOf,
   }
@@ -111,7 +116,7 @@ export async function buildTimeSeriesSource(
     maxRows,
     decimate: binding.decimate_hz ? { hz: binding.decimate_hz, key: binding.key } : undefined,
   })
-  return timeSeriesFromRows(page.rows, timeCol, page.truncated)
+  return timeSeriesFromRows(page.rows, timeCol, page.truncated, page.note ?? null)
 }
 
 /** React Query wrapper so panels get `{ data: source, isPending, error }` and share the cache by
@@ -183,7 +188,8 @@ export async function buildTimeSeriesGroups(
   }
   // The cap applied to the one combined query, so it truncated all of these series or none.
   return new Map(
-    Array.from(byKey, ([k, list]) => [k, timeSeriesFromRows(list, timeCol, page.truncated)] as const),
+    Array.from(byKey, ([k, list]) =>
+      [k, timeSeriesFromRows(list, timeCol, page.truncated, page.note ?? null)] as const),
   )
 }
 

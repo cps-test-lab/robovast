@@ -194,13 +194,22 @@ function VegaPanel({ spec, clock, data }: PanelProps) {
       {query.data?.truncated ? (
         <Alert severity="warning" variant="outlined" sx={{ py: 0, mb: 0.5 }}>
           Showing only the first {rows.length} rows of <code>{source.table}</code>
-          {source.decimate_hz
-            ? `, even at ${source.decimate_hz} Hz — the run ends after them. Lower `
-            : ' — the rest of the run is not plotted. Set '}
-          <code>source.decimate_hz</code>
-          {source.decimate_hz
-            ? '.'
-            : ' to thin the whole run instead; the service caps max_rows at 5000, so raising it cannot help.'}
+          {/* The service says so when it stopped for a reason other than the row cap, and only it
+              knows which -- so quote it rather than name a fix that belongs to the other cause. */}
+          {query.data.truncationNote ? (
+            ` — ${query.data.truncationNote}`
+          ) : source.decimate_hz ? (
+            <>
+              , even at {source.decimate_hz} Hz — the run ends after them. Lower{' '}
+              <code>source.decimate_hz</code> further.
+            </>
+          ) : (
+            <>
+              {' '}
+              — the rest of the run is not plotted. Set <code>source.decimate_hz</code> to thin the
+              whole run instead; the service caps max_rows at 5000, so raising it cannot help.
+            </>
+          )}
         </Alert>
       ) : null}
       <VegaLiteChart spec={chartSpec} datasets={{ [TABLE]: rows, [CURSOR]: [{ t }] }} />

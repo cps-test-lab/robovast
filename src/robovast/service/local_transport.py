@@ -2405,14 +2405,14 @@ class LocalTransport(RobovastInterface):
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids=None,
+        extra_campaign_ids=None, max_bytes: int | None = None,
     ) -> "DataQueryResult":
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
         extra_dirs = {f"c{i + 1}": self._query_dir(cid)
                       for i, cid in enumerate(extra_campaign_ids or [])}
         result = query_data_db(self._query_dir(campaign_id), sql, max_rows,
-                               extra_dirs=extra_dirs)
+                               extra_dirs=extra_dirs, max_bytes=max_bytes)
         return DataQueryResult(campaign_id=campaign_id, **result)
 
     def stream_campaign_query_csv(self, campaign_id: str, sql: str,

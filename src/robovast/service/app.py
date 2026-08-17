@@ -1008,9 +1008,16 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         campaign_id: str, sql: str = Body(..., embed=True),
         max_rows: int = Body(500, embed=True),
         extra_campaign_ids: list[str] = Body(default_factory=list, embed=True),
+        max_bytes: int | None = Body(None, embed=True),
     ) -> DataQueryResult:
+        """Run a read-only ``SELECT``.
+
+        ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
+        rather than reading them; omitted, it stays at the context-sized default, so an
+        agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+        """
         return _guard(lambda: impl.query_campaign_data_sql(
-            campaign_id, sql, max_rows, extra_campaign_ids))
+            campaign_id, sql, max_rows, extra_campaign_ids, max_bytes))
 
     @app.get(Routes.campaign_query_csv("{campaign_id}"), tags=["results"])
     def query_campaign_data_csv(campaign_id: str, sql: str,

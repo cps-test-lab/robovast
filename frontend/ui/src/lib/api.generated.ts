@@ -427,7 +427,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Query Campaign Data Sql */
+        /**
+         * Query Campaign Data Sql
+         * @description Run a read-only ``SELECT``.
+         *
+         *     ``max_bytes`` raises the reply's size ceiling for a client that renders the rows
+         *     rather than reading them; omitted, it stays at the context-sized default, so an
+         *     agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
+         */
         post: operations["query_campaign_data_sql_campaigns__campaign_id__query_post"];
         delete?: never;
         options?: never;
@@ -1235,6 +1242,8 @@ export interface components {
         Body_query_campaign_data_sql_campaigns__campaign_id__query_post: {
             /** Extra Campaign Ids */
             extra_campaign_ids: string[];
+            /** Max Bytes */
+            max_bytes: number | null;
             /**
              * Max Rows
              * @default 500

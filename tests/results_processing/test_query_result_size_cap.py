@@ -99,3 +99,39 @@ def test_the_row_cap_still_applies_on_its_own(wide_campaign):
     assert result["row_count"] == 10
     assert result["truncated"] is True
     assert "ceiling" not in result.get("note", ""), "this is the row cap, not the size cap"
+
+
+def test_a_rendering_caller_can_raise_the_ceiling(wide_campaign):
+    """The ceiling is a *token* budget, so it belongs to callers who spend tokens.
+
+    The web UI draws the rows rather than reading them, and at the default a run-view chart
+    over ``poses`` stopped at ~120 rows while still reporting the 5000-row cap -- which reads
+    as "the run ended here", not "the reply did". A caller who can hold the rows says so.
+    """
+    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=5000,
+                           max_bytes=8 * 1024 * 1024)
+
+    assert result["row_count"] == 5000, "the raised ceiling was not honoured"
+    assert result["truncated"] is False
+    assert "note" not in result
+
+
+def test_the_raised_ceiling_is_still_a_ceiling(wide_campaign):
+    """Raised, not removed: a caller asking for more than it named still gets bounded."""
+    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=5000,
+                           max_bytes=256 * 1024)
+
+    assert result["row_count"] < 5000
+    assert result["truncated"] is True
+    assert "256 KB" in result["note"], result["note"]
+
+
+def test_omitting_the_budget_fails_safe(wide_campaign):
+    """The default has to be the *small* one: an agent that forgets the parameter loses a
+    query, while a chart that forgets it loses only resolution. Wiring it the other way
+    round would make the context blow-up the silent case again."""
+    default = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=5000)
+    explicit = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=5000,
+                             max_bytes=data_query._MAX_RESULT_BYTES)
+
+    assert default["row_count"] == explicit["row_count"]

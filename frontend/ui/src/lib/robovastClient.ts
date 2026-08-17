@@ -86,6 +86,18 @@ export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 // a longer one.
 export const DESCRIPTION_MAX_LEN = 200
 
+// How large a `/query` reply this client will accept, sent with every query. The service's own
+// default (64 KB, data_query.py:_MAX_RESULT_BYTES) is a *token* budget: it exists so an agent
+// cannot spend its whole context on one `SELECT *`. This client draws the rows instead of reading
+// them, so its limit is the browser and the wire -- and at the default a `poses` panel stopped at
+// ~120 rows (that table is ~560 B/row) while still reporting the 5000-row cap, which reads as "the
+// run ended" rather than "the reply did".
+//
+// 8 MB clears the largest reply the row cap can produce (5000 x ~560 B ~= 2.8 MB), so within the
+// documented caps the size ceiling never engages here; it remains a backstop against a `SELECT *`
+// over a table of blobs.
+export const UI_RESULT_BYTES = 8 * 1024 * 1024
+
 export type CampaignRef = Schemas['CampaignRef']
 
 export type ActionResult = Schemas['ActionResult']
@@ -476,6 +488,7 @@ export const robovast = {
     request<DataQueryResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/query`, {
       sql,
       max_rows: maxRows,
+      max_bytes: UI_RESULT_BYTES,
     }),
 
   // Cheap pre-flight for the two above: on a cluster campaign the first of them fetches the

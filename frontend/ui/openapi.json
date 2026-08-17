@@ -123,6 +123,17 @@
             "title": "Extra Campaign Ids",
             "type": "array"
           },
+          "max_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Bytes"
+          },
           "max_rows": {
             "default": 500,
             "title": "Max Rows",
@@ -135,6 +146,7 @@
         },
         "required": [
           "extra_campaign_ids",
+          "max_bytes",
           "max_rows",
           "sql"
         ],
@@ -4155,6 +4167,7 @@
     },
     "/campaigns/{campaign_id}/query": {
       "post": {
+        "description": "Run a read-only ``SELECT``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.",
         "operationId": "query_campaign_data_sql_campaigns__campaign_id__query_post",
         "parameters": [
           {

@@ -488,13 +488,17 @@ class HTTPTransport(RobovastInterface):
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
-        extra_campaign_ids=None,
+        extra_campaign_ids=None, max_bytes=None,
     ) -> "DataQueryResult":
         from robovast.service.interface import DataQueryResult
+        body = {"sql": sql, "max_rows": max_rows,
+                "extra_campaign_ids": extra_campaign_ids or []}
+        # Only sent when asked for: an older service rejects an unknown body key, and the
+        # default is the one this client's callers (MCP tools) want anyway.
+        if max_bytes is not None:
+            body["max_bytes"] = max_bytes
         return DataQueryResult.model_validate(self._post(
-            Routes.campaign_query(campaign_id),
-            json={"sql": sql, "max_rows": max_rows,
-                  "extra_campaign_ids": extra_campaign_ids or []},
+            Routes.campaign_query(campaign_id), json=body,
             timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":

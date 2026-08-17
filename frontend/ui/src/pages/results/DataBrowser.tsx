@@ -314,7 +314,13 @@ export function DataBrowser({
                 Run
               </Button>
               {result.data && !result.isFetching ? (
-                <Typography variant="caption" color="text.secondary">
+                // The service explains a truncation it did not make for the row cap; "(truncated)"
+                // alone sends the reader to `LIMIT`, which is the fix for only one of the causes.
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  title={result.data.note ?? undefined}
+                >
                   {result.data.row_count} rows{result.data.truncated ? ' (truncated)' : ''}
                 </Typography>
               ) : null}

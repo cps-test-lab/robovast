@@ -37,6 +37,10 @@ export interface SeriesPage {
   // Whether the query hit the row cap. Then `rows` are the FIRST `maxRows` BY TIME and the tail of
   // the run is simply absent -- a chart of them ends mid-run while looking complete.
   truncated: boolean
+  // Why it truncated, when the service said. `truncated` alone does not distinguish the row cap
+  // from the reply-size ceiling, and the two have different fixes -- thinning the run helps one and
+  // narrowing the columns helps the other -- so a panel that guesses sends the reader the wrong way.
+  note?: string | null
 }
 
 export interface DataProvider {

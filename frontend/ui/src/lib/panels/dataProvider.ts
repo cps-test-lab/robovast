@@ -101,7 +101,7 @@ export function dbDataProvider(
     // Strip here rather than in the caller: the alias would otherwise show up in
     // TimeSeriesSource.columns, in numeric coercion, and in any Vega `fold` over the row.
     if (sentinel) for (const row of res.rows) delete row[sentinel]
-    return { rows: res.rows, truncated: res.truncated }
+    return { rows: res.rows, truncated: res.truncated, note: res.note }
   }
 
   return {

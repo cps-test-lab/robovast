@@ -1877,8 +1877,15 @@ class RobovastInterface(ABC):
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500,
         extra_campaign_ids: Optional[list[str]] = None,
+        max_bytes: Optional[int] = None,
     ) -> DataQueryResult:
-        """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached)."""
+        """Run a read-only ``SELECT`` over a campaign's data (``campaign.db`` attached).
+
+        The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
+        size. The size ceiling defaults to a *context* budget, because the caller that
+        cannot afford a large reply is the one reading it into a context window; a caller
+        that renders the rows passes ``max_bytes`` to lift it.
+        """
 
     @abstractmethod
     def stream_campaign_query_csv(

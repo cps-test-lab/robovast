@@ -58,6 +58,13 @@ _MAX_CELL_BYTES = 2048
 #: 64 KB is ~16,000 tokens: bigger than any answer worth reading inline, and still larger
 #: than the entire MCP tool surface's own budget. A caller who wants the data rather than
 #: the answer has :func:`stream_query_csv`, which has no row cap at all.
+#:
+#: This is the *default*, not the only budget: it is a token budget, and it belongs to
+#: callers who spend tokens. :func:`query_data_db` takes ``max_bytes`` so a caller that
+#: renders the rows instead of reading them — the web UI's panels and data browser — is
+#: bounded by what a browser can hold instead. That caller picks its own number (see
+#: ``UI_RESULT_BYTES`` in ``frontend/ui/src/lib/robovastClient.ts``); this one stays as the
+#: default so forgetting the parameter fails safe for an agent rather than for a chart.
 _MAX_RESULT_BYTES = 64 * 1024
 
 
@@ -757,8 +764,8 @@ def _empty_result_note(conn: sqlite3.Connection) -> str:
     )
 
 
-def _cap_result_size(rows: list) -> tuple:
-    """Trim *rows* until the reply fits :data:`_MAX_RESULT_BYTES`; say whether it was.
+def _cap_result_size(rows: list, max_bytes: int = _MAX_RESULT_BYTES) -> tuple:
+    """Trim *rows* until the reply fits *max_bytes*; say whether it was.
 
     Measured cumulatively rather than by serializing the whole list and bisecting: the
     payload being bounded is the one that would otherwise be built in full first, and
@@ -768,7 +775,7 @@ def _cap_result_size(rows: list) -> tuple:
     total = 0
     for i, row in enumerate(rows):
         total += len(json.dumps(row, default=str).encode("utf-8", "replace"))
-        if total > _MAX_RESULT_BYTES:
+        if total > max_bytes:
             # At least one row, always: an empty result would read as "no data" rather
             # than "your query was too wide", which are different answers.
             return rows[:max(1, i)], True
@@ -776,16 +783,24 @@ def _cap_result_size(rows: list) -> tuple:
 
 
 def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
-                  extra_dirs: dict | None = None) -> dict:
+                  extra_dirs: dict | None = None,
+                  max_bytes: int | None = None) -> dict:
     """Run a read-only ``SELECT``; return ``{columns, rows, row_count, truncated}``.
 
     *extra_dirs* (schema alias → campaign dir) attaches further campaigns so one
     query can span several (e.g. an A/B comparison); see :func:`_open_db`.
 
+    *max_bytes* overrides :data:`_MAX_RESULT_BYTES`. That default is sized for a caller
+    who has to *read* the reply into a context window; a caller that renders it — the run
+    view's panels, the data browser's table — is bounded by a browser rather than by a
+    token budget, and clamping it to 16k tokens truncates a chart at ~120 rows of ``poses``
+    while the row cap it reports still says 5000. Callers who plot ask for more.
+
     Raises :class:`DataQueryError` for a rejected (non-read) or invalid query.
     """
     conn = _open_db(campaign_dir, extra_dirs=extra_dirs)
     max_rows = max(1, min(int(max_rows), 5000))
+    max_bytes = _MAX_RESULT_BYTES if max_bytes is None else max(1024, int(max_bytes))
     try:
         conn.set_authorizer(_readonly_authorizer)
         try:
@@ -803,13 +818,13 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
         truncated = len(fetched) > max_rows
         rows = [{c: _cap_cell(v) for c, v in zip(columns, r)}
                 for r in fetched[:max_rows]]
-        rows, size_capped = _cap_result_size(rows)
+        rows, size_capped = _cap_result_size(rows, max_bytes)
         result = {"columns": columns, "row_count": len(rows),
                   "truncated": truncated or size_capped, "rows": rows}
         if size_capped:
             result["note"] = (
                 f"stopped at {len(rows)} rows: the reply reached the "
-                f"{_MAX_RESULT_BYTES // 1024} KB ceiling. Rows are capped separately from "
+                f"{max_bytes // 1024} KB ceiling. Rows are capped separately from "
                 f"size, and a wide table reaches this long before max_rows. Aggregate in "
                 f"SQL (COUNT/AVG/MIN/MAX, GROUP BY) or select the columns you need — or "
                 f"export the whole result as CSV instead of reading it here.")
