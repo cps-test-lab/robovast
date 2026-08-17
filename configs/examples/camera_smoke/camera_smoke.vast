@@ -1,0 +1,45 @@
+version: 2
+metadata:
+  name: camera_smoke
+  title: Does offscreen rendering work on the node this job landed on?
+  description: |
+    The smallest campaign that renders. One container, one camera, no system under test, no ROS.
+
+    It exists because a camera world reached the cluster before any campaign had ever rendered a
+    frame there, and died with `mujoco.FatalError: gladLoadGL error` — MuJoCo binds its GL backend
+    at `import mujoco`, so every camera-less campaign before it had run happily against a backend
+    that was already wrong. Nothing in RoboVAST's own examples configured a camera, so nothing
+    caught it.
+
+    Run this before trusting a rendering campaign on a lane you have not rendered on. It answers in
+    a couple of minutes what a real campaign answers in an hour, and it produces a file rather than
+    an opinion: `coverage/report.json` is written by a probe that renders at `configure` time, so
+    its presence means a GL context was created and drawn into.
+
+    Stepped (`mode: base`) on purpose: the simulator shares the scenario's process, so there is one
+    container and one image, and a failure has almost nowhere else to come from.
+  keywords: [robotics, mujoco, roqsim, camera, rendering, opengl, smoke-test]
+configuration:
+- name: render
+execution:
+  mode: base
+  containers:
+  # Stepped, so this collapses into the scenario's container and its image is the combined
+  # robovast_roqsim one. The backend supplies the command, the GL libraries and the recording
+  # variables; this file states only which simulator and which world.
+    simulation:
+      backend: roqsim
+      config: world/camera_smoke.yaml
+  # Stated rather than omitted: this deployment sets no ROBOVAST_ROQSIM_IMAGE, and RoboVAST refuses
+  # to fall back to a mutable default tag for the image a campaign runs. Pin by digest for real
+  # work — for a smoke test the point is to exercise whatever `:latest` currently is.
+    scenario:
+      image: freeedlabs/robovast_roqsim_jazzy:latest
+      resources:
+        cpu: 2
+  scenario_file: scenario.osc
+  runs: 1
+  # Software rendering through llvmpipe is slow, and the first render also compiles the world.
+  # Generous, but bounded: without a timeout `get_campaign_status` can return no stall verdict at
+  # all, so a wedged run looks exactly like a slow one.
+  timeout: 600

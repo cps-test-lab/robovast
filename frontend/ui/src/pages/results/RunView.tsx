@@ -37,7 +37,7 @@ import { parsePanels } from '@/lib/panels/parsePanels'
 import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
-import { DEFAULT_CAPTURE_PATH } from '@/panels/Scene3DPanel'
+import { DEFAULT_CAPTURE_PATH } from '@/panels/run_view/Scene3DPanel'
 import '@/panels/run_view' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.

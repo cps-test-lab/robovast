@@ -434,6 +434,14 @@ export const robovast = {
       entities,
     }),
 
+  // The config view's geometry. Same shared cache as a campaign's, so a project and a campaign
+  // launched from it never compile the same world twice.
+  workspaceSceneStatus: (id: string, path = '') =>
+    request<SceneStatus>('GET', `/workspaces/${encodeURIComponent(id)}/scene?path=${encodeURIComponent(path)}`),
+
+  runWorkspaceScene: (id: string, path = '') =>
+    request<ActionResult>('POST', `/workspaces/${encodeURIComponent(id)}/scene/run?path=${encodeURIComponent(path)}`),
+
   getConfigSchema: () => request<Record<string, unknown>>('GET', '/config/schema'),
 
   listVariationTypes: () => request<VariationTypesResponse>('GET', '/variation_types'),
@@ -601,4 +609,10 @@ export const robovast = {
   // every run compiled identically, a frozen input under `_config/`. The path is campaign-relative,
   // so it addresses across runs where `runFileUrl` cannot; sibling fetches resolve the same way.
   campaignFileUrl: (campaignId: string, path: string) => `${BASE}${resultsUrl(campaignId, path)}`,
+
+  // URL of one authored file of a workspace — what a config panel fetches for a
+  // `contribution.files` entry (an occupancy map, say). The same address the file tree edits, so
+  // there is no second way to name a project's inputs.
+  workspaceFileUrl: (workspaceId: string, path: string) =>
+    `${BASE}${sourcesUrl(workspaceId, path)}`,
 }

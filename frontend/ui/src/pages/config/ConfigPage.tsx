@@ -15,7 +15,8 @@ import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
 import { type ConfigSource } from '@/lib/configSource'
 import { useDialogs } from '@/components/DialogProvider'
 import { ConfigEditorPane } from './ConfigEditorPane'
-import { ConfigPreviewPane } from './ConfigPreviewPane'
+import { ConfigListPane } from './ConfigListPane'
+import { ConfigViewPane } from './ConfigViewPane'
 import { FilesView } from './FilesView'
 import { useConfigEditor } from './useConfigEditor'
 
@@ -217,9 +218,13 @@ export function ConfigPage({
         <Box
           sx={{
             display: 'grid',
+            // Three columns: the editor, a narrow index of what it expands to, and the view the
+            // .vast itself declares over the selected configuration. The middle one is deliberately
+            // thin — it is a list of names — so the space goes to the two that show content.
+            //
             // One column in campaign mode: Generate and validation are workspace operations, so
             // there is no resolved-config preview to put beside the editor.
-            gridTemplateColumns: campaignMode ? '1fr' : '1fr 1fr',
+            gridTemplateColumns: campaignMode ? '1fr' : '40fr 10fr 50fr',
             gap: 2,
             flexGrow: 1,
             minHeight: 0,
@@ -246,8 +251,14 @@ export function ConfigPage({
             </Box>
           </Box>
 
-          {/* Right column: the resolved-config preview, always visible regardless of the left tab. */}
-          {campaignMode ? null : <ConfigPreviewPane editor={editor} />}
+          {/* Middle + right columns: what the .vast expands to, and what the .vast says to show
+              about the selected one. Both stay visible regardless of the left tab. */}
+          {campaignMode ? null : <ConfigListPane editor={editor} />}
+          {campaignMode ? null : (
+            <Box sx={{ minWidth: 0, minHeight: 0 }}>
+              <ConfigViewPane editor={editor} workspaceId={workspaceId} />
+            </Box>
+          )}
         </Box>
       )}
     </Stack>

@@ -1,0 +1,56 @@
+# The smallest world that renders: one RGB camera looking into the default empty room.
+#
+# This exists to answer one question a campaign should never have to ask twice — does offscreen
+# rendering work on the node this job landed on? MuJoCo binds its GL backend at `import mujoco`,
+# so a world with no camera never instantiates a GL context and a mis-bound backend stays silent
+# until the first `mujoco.Renderer`. That is exactly how a broken backend reached a real campaign.
+#
+# `sim.world` is left unset, so the engine builds the default `empty_room` — a lit, walled room,
+# which is enough geometry for both consumers below to render something non-trivial.
+
+plugins:
+  # 320x240 @ 5 Hz, not the manifest's 640x480 @ 30 Hz: a cluster node has no render device, so
+  # this renders through llvmpipe on the CPU. The question is whether a frame comes out at all,
+  # and a cheap frame answers it just as well as an expensive one.
+  - spawn_sensor:
+      model: d435
+      name: cam
+      prefix: "cam_"
+      pos: [1.0, 0.0, 0.5]
+      rpy: [0.0, 0.0, 1.5708]   # yaw +90°, so the +y-default camera faces -x, across the room
+      default_plugins: false    # the manifest would attach realsense_d435 at its own defaults
+
+  - realsense_d435:
+      robot: cam
+      camera: d435_color
+      width: 320
+      height: 240
+      rate_hz: 5.0
+
+  # The positive artifact, and the reason this world does not rely on the camera alone. The camera
+  # plugin gates its capture on `has_subscribers()`, so in a shape where nobody subscribes it can
+  # legitimately render nothing — and a smoke test that passes by rendering nothing is worse than
+  # no smoke test. This probe draws once at `configure`, unconditionally.
+  #
+  # WHAT TO CHECK IS THE FILE `coverage/coverage_3d.png`, NOT THE COVERAGE FRACTION. The fraction is
+  # pure raycasting and would come out identical with no GL at all; the PNG is what can only exist
+  # if a GL context was created and drawn into. That is also why no `target:` is declared — a
+  # coverage threshold would be asserting something this campaign is not testing.
+  #
+  # (The fraction did read 0.000 on a lone camera in an empty room, because a mount's own housing
+  # occluded it — `d435_front` sits 4.3 mm ahead of the MuJoCo camera. Fixed in roqsim_sensors via
+  # SensorFov.body_exclude; see "A sensor never occludes itself" in roqsim's docs/coverage.rst. An
+  # image built before that fix still shows 0.000 here, which is the old defect, not a GL failure.)
+  - sensor_coverage_probe:
+      sensors: auto
+      sample: {volume: true, objects: false, resolution: 0.4, heights: [0.5]}
+      # ABSOLUTE, and under /out. The plugin's `out` is relative to the CWD, which in a RoboVAST
+      # job is /ws -- root-owned, so a relative path dies with `PermissionError: [Errno 13]
+      # Permission denied: 'coverage'` at configure, before any rendering is even attempted.
+      # /out is the run's artifact mount (world-writable), so writing here also means the file is
+      # collected into the campaign's results instead of vanishing with the container.
+      out: /out/coverage
+      # 3d, not both: the 2D heatmap goes through matplotlib, which is an optional extra
+      # (roqsim_sensors[coverage]) and is not in the campaign image. The 3D render is
+      # mujoco + numpy only -- which is also the one that actually exercises the GL path.
+      render: 3d

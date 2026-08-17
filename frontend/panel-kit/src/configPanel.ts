@@ -16,16 +16,19 @@ import type { PanelSpec } from './panel'
  *  robovast.common.scene_markers.SceneMarker; the fields a `kind` does not use are absent. */
 export interface SceneMarker {
   kind: 'box' | 'cylinder' | 'sphere' | 'pose' | 'path' | 'point'
+  // Every optional field is `| null` as well as absent: these arrive from a pydantic model whose
+  // unset Optionals serialize as null, so a type that said only `?` would be a description of
+  // something the wire never sends.
   /** [x, y] or [x, y, z]. Absent on `path`, which carries `points`. */
-  pos?: number[]
+  pos?: number[] | null
   /** `box`: full extents [x, y, z]. */
-  size?: number[]
-  radius?: number
-  height?: number
+  size?: number[] | null
+  radius?: number | null
+  height?: number | null
   /** Rotation about z, radians. */
-  yaw?: number
+  yaw?: number | null
   /** `path`: the polyline, in order. */
-  points?: number[][]
+  points?: number[][] | null
   label?: string
   /** CSS colour; empty lets the panel choose. */
   color?: string
@@ -47,8 +50,9 @@ export interface ConfigViewContribution {
 export interface VariationPreview {
   variation_type: string
   params: Record<string, unknown>
-  /** A Module-Federation descriptor when the variation's plugin ships a web preview. */
-  remote?: { name: string; remote_entry_url: string; module: string }
+  /** A Module-Federation descriptor when the variation's plugin ships a web preview; null when
+   *  the type renders host-native. */
+  remote?: { name: string; remote_entry_url: string; module: string } | null
 }
 
 /** One resolved configuration, as a config panel sees it. */

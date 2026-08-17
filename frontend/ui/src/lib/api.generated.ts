@@ -1500,28 +1500,6 @@ export interface components {
             force: boolean;
         };
         /**
-         * ConfigViewContribution
-         * @description What the variations of one configuration contribute to the config view.
-         *
-         *     Neutral geometry plus named files, in the vocabulary of
-         *     :mod:`robovast.common.scene_markers` — so a panel draws a variation it has never heard
-         *     of. ``errors`` carries a hook that raised, named, rather than dropping its markers: a
-         *     view that silently loses one variation's contribution is indistinguishable from a
-         *     variation that placed nothing.
-         */
-        ConfigViewContribution: {
-            /** Errors */
-            errors: string[];
-            /** Files */
-            files: {
-                [key: string]: string;
-            };
-            /** Markers */
-            markers: {
-                [key: string]: unknown;
-            }[];
-        };
-        /**
          * CreateCampaignRequest
          * @description Start a campaign from a workspace's current project.
          *
@@ -2177,7 +2155,7 @@ export interface components {
          * @description One resolved configuration a ``.vast`` expands to.
          */
         PreviewConfiguration: {
-            contribution: components["schemas"]["ConfigViewContribution"];
+            contribution: components["schemas"]["ServedContribution"];
             /** Internals */
             internals: {
                 [key: string]: unknown;
@@ -2369,6 +2347,48 @@ export interface components {
             campaign_id: string;
         };
         /**
+         * SceneMarker
+         * @description One thing to draw, in world coordinates.
+         *
+         *     ``kind`` selects which fields matter; a panel ignores a kind it cannot render rather
+         *     than failing, so a package shipping a richer marker degrades instead of breaking an
+         *     older UI.
+         */
+        SceneMarker: {
+            /**
+             * Color
+             * @default
+             */
+            color: string;
+            /**
+             * Group
+             * @default
+             */
+            group: string;
+            /** Height */
+            height: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "box" | "cylinder" | "sphere" | "pose" | "path" | "point";
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Points */
+            points: number[][] | null;
+            /** Pos */
+            pos: number[] | null;
+            /** Radius */
+            radius: number | null;
+            /** Size */
+            size: number[] | null;
+            /** Yaw */
+            yaw: number | null;
+        };
+        /**
          * SceneStatus
          * @description Whether this run's 3D geometry is ready, and if not, what is happening about it.
          *
@@ -2443,6 +2463,24 @@ export interface components {
              * @default
              */
             world: string;
+        };
+        /**
+         * ServedContribution
+         * @description A contribution as the service serves it: the geometry, plus what went wrong collecting it.
+         *
+         *     ``errors`` is not part of what a *variation* returns -- it is what the collection observed, one
+         *     entry per hook that raised. Reported rather than swallowed: a view missing one variation's
+         *     markers is indistinguishable from a variation that placed nothing.
+         */
+        ServedContribution: {
+            /** Errors */
+            errors: string[];
+            /** Files */
+            files: {
+                [key: string]: string;
+            };
+            /** Markers */
+            markers: components["schemas"]["SceneMarker"][];
         };
         /**
          * Status

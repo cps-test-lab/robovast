@@ -1,0 +1,20 @@
+import osc.helpers
+
+# Advance the simulation, and nothing else.
+#
+# The trial has no system under test and asserts nothing about behaviour: what is being tested is
+# the substrate's ability to render at all, and that verdict is written by the world's plugins
+# (coverage/report.json) and by the absence of a GL abort in the log. Anything more here would be
+# another thing that can fail for a reason that has nothing to do with rendering.
+#
+# ASCII only, deliberately: scenario-execution decodes this file as ASCII, so a stray en-dash or a
+# non-breaking space in a COMMENT fails the whole campaign at parse time with
+# "'ascii' codec can't decode byte 0xe2".
+scenario camera_smoke:
+    timeout(240s)
+
+    do serial:
+        # 5 s at the camera's 5 Hz is ~25 captures - enough that a backend which creates a context
+        # but fails on a later frame is still caught, and short enough to stay cheap on llvmpipe.
+        wait elapsed(5s)
+        log('camera smoke test: simulation advanced 5 s with a camera attached')

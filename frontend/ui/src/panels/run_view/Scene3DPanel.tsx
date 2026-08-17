@@ -39,30 +39,17 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { registerPanel } from '@/lib/panels/registry'
 import type { PanelProps } from '@robovast/panel-kit'
-import { robovast, type SceneStatus } from '@/lib/robovastClient'
+import { robovast } from '@/lib/robovastClient'
 import type { MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
 import { openRunCapture } from '@/lib/scene3d/runCapture'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
+import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 
 /** Where a run's capture manifest lives unless the panel says otherwise. Exported because RunView
  *  needs the same answer to find the run's time base -- a `scene3d` panel implies a capture whether or
  *  not it spells one out, and two copies of this string would drift. */
 export const DEFAULT_CAPTURE_PATH = 'capture/capture.json'
-
-/** How often to re-ask while geometry is being built. A warm cluster build is ~8 s and a cold one up
- *  to a couple of minutes (a 2 GB image pull), so a second is responsive without making the wait
- *  itself expensive. */
-const SCENE_POLL_MS = 1000
-
-/** What each stage is called, naming the *cost* rather than the mechanism -- the point of showing a
- *  stage at all is that a two-minute image pull must not look like a hang. */
-const STAGE_TEXT: Record<string, string> = {
-  queued: 'Waiting for cluster capacity \u2014 the campaign queue is busy',
-  pulling: 'Fetching the simulation image onto the node \u2014 first time only',
-  compiling: 'Compiling the world geometry',
-  transferring: 'Copying the scene back from the container',
-}
 
 /** What the scene could not be driven by, so an empty-looking view can explain itself. */
 interface Mismatch {
@@ -84,8 +71,6 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   const sourceRef = useRef<MotionSource | null>(null)
   const sinkRef = useRef<MotionSink | null>(null)
 
-  const [scene, setScene] = useState<SceneStatus | null>(null)
-  const [sceneError, setSceneError] = useState<string | null>(null)
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [mismatch, setMismatch] = useState<Mismatch | null>(null)
@@ -144,47 +129,17 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
     }
   }, [])
 
-  // Resolve the geometry through the service: ask, POST once if nothing is cached, then poll until it
-  // is. Asking never builds -- that is what makes it safe to re-render, prefetch, or reload mid-build.
-  useEffect(() => {
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let asked = false
-    setScene(null)
-    setSceneError(null)
+  // Resolving a descriptor is the same protocol in both scene panels, so it is one hook.
+  // Two distinct failures, kept apart: `resolveError` is the service refusing or failing to build
+  // the descriptor, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
+  // but only one of them is worth retrying.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const { status: scene, error: resolveError, url: sceneUrl, buildingText } = useSceneGeometry(
+    () => robovast.sceneStatus(data.campaignId, data.configName, data.runId),
+    () => robovast.runScene(data.campaignId, data.configName, data.runId),
+    `${data.campaignId}/${data.configName}/${data.runId}`,
+  )
 
-    const poll = async () => {
-      try {
-        const status = await robovast.sceneStatus(data.campaignId, data.configName, data.runId)
-        if (cancelled) return
-        setScene(status)
-        if (status.error) return
-        if (status.cached) return
-        // One POST per mount. Re-posting each tick would be harmless (the service joins an in-flight
-        // build) but it would also hide a build that silently never starts.
-        if (!asked && !status.in_progress) {
-          asked = true
-          const started = await robovast.runScene(data.campaignId, data.configName, data.runId)
-          if (cancelled) return
-          if (!started.ok) {
-            setSceneError(started.message)
-            return
-          }
-        }
-        timer = setTimeout(poll, SCENE_POLL_MS)
-      } catch (err: unknown) {
-        if (cancelled) return
-        setSceneError(err instanceof Error ? err.message : String(err))
-      }
-    }
-    void poll()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [data.campaignId, data.configName, data.runId])
-
-  const sceneUrl = scene?.cached && scene.url ? robovast.sceneAssetUrl(scene.url) : ''
 
   // Load the geometry once the service says it is ready. Disposing the previous model matters even
   // though the panel usually remounts: a URL that changes *within* a mounted viewport (a campaign
@@ -212,7 +167,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setSceneError(err instanceof Error ? err.message : String(err))
+        setLoadError(err instanceof Error ? err.message : String(err))
       })
     return () => {
       cancelled = true
@@ -267,13 +222,6 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
 
   useEffect(() => clock.subscribe(() => applyAt(clock.t)), [clock, applyAt])
 
-  // Non-empty exactly while geometry is being built, and never once it is cached or has failed --
-  // polling a dead task while showing "nearly there" is worse than showing the error.
-  const buildingText =
-    scene && !scene.cached && !scene.error && !sceneError
-      ? STAGE_TEXT[scene.stage] ?? 'Building the world geometry'
-      : ''
-
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: '#12171f' }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
@@ -304,7 +252,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
           sat *behind* one and a run with no geometry looked like a run with an empty world. The
           centre is the one edge of the viewport nothing else claims. Translated by half its own
           width rather than given a width, so a short message stays as narrow as it reads. */}
-      {sceneError || scene?.error ? (
+      {resolveError || loadError || scene?.error ? (
         <Alert
           severity="warning"
           sx={{
@@ -315,7 +263,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
             maxWidth: 'min(620px, calc(100% - 16px))',
           }}
         >
-          No 3D geometry: {sceneError || scene?.error}
+          No 3D geometry: {resolveError || loadError || scene?.error}
         </Alert>
       ) : scene && !scene.overrides_known ? (
         <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 620 }}>

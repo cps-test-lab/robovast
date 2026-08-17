@@ -14,100 +14,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What a variation contributes to the config view, as neutral geometry.
+"""Collecting what each variation contributes to the config view.
 
-A variation type knows what it produced -- obstacles at poses, a planned path, a start and
-a goal. The config view's panels know how to draw. This module is the vocabulary between
-them, and it is deliberately about *shapes at places* rather than about navigation: a
-marker names a box, a polyline or a pose, never "an obstacle" or "a goal". A panel can
-therefore draw a variation it has never heard of, and a new variation needs no change in
-any panel.
+The **vocabulary** -- :class:`SceneMarker`, :class:`ConfigViewContribution` -- is defined in
+:mod:`robovast.client.scene_markers`, because it is also the shape the service serves and the
+web UI's types are generated from that schema. It is re-exported here so a variation author
+imports one module and never has to know which distribution the model lives in.
 
-This replaces the desktop editor's ``GUI_CLASS`` / ``GUI_RENDERER_CLASS`` pair, where a
-variation shipped a Qt widget and drew onto it imperatively (``draw_obstacle``,
-``draw_path``). That coupled every variation to one toolkit and to one 2D projection; the
-same contribution now feeds the 3D scene and the 2D map alike, and travels over HTTP.
+What is *here* is the part that needs the variation classes: asking each of them, in order,
+what it contributes for one resolved configuration.
 """
 
-from typing import Any, Literal, Optional
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from robovast.client.scene_markers import ConfigViewContribution, Point, SceneMarker
 
-#: A point in world coordinates. ``z`` is optional because most callers work on the floor
-#: plane and repeating a zero adds noise to every marker they build.
-Point = list[float]
-
-
-class SceneMarker(BaseModel):
-    """One thing to draw, in world coordinates.
-
-    ``kind`` selects which fields matter; a panel ignores a kind it cannot render rather
-    than failing, so a package shipping a richer marker degrades instead of breaking an
-    older UI.
-    """
-
-    model_config = ConfigDict(extra='forbid')
-
-    kind: Literal['box', 'cylinder', 'sphere', 'pose', 'path', 'point']
-    #: Where it is. Unused by ``path``, which carries ``points`` instead.
-    pos: Optional[Point] = None
-    #: ``box``: full extents ``[x, y, z]``. Ignored by the other kinds.
-    size: Optional[Point] = None
-    #: ``cylinder``/``sphere``.
-    radius: Optional[float] = None
-    #: ``cylinder``.
-    height: Optional[float] = None
-    #: Rotation about z, radians. ``box``/``pose``.
-    yaw: Optional[float] = None
-    #: ``path``: the polyline, in order.
-    points: Optional[list[Point]] = None
-    #: Shown on or beside the marker.
-    label: str = ""
-    #: CSS colour. Omitted lets the panel choose, which is what keeps a variation from
-    #: having to know the view's palette.
-    color: str = ""
-    #: Markers sharing a group are shown and hidden together, and the group name is what a
-    #: panel puts in its legend. Defaults to the contributing variation's type name.
-    group: str = ""
-
-    @model_validator(mode='after')
-    def _kind_has_its_geometry(self):
-        # A marker with no geometry draws nothing, and silently: it is exactly the case
-        # where a variation "contributed a preview" and the view stayed empty.
-        if self.kind == 'path':
-            if not self.points:
-                raise ValueError("a 'path' marker needs 'points'")
-        elif self.pos is None:
-            raise ValueError(f"a '{self.kind}' marker needs 'pos'")
-        if self.kind == 'box' and not self.size:
-            raise ValueError("a 'box' marker needs 'size' (full extents [x, y, z])")
-        if self.kind in ('cylinder', 'sphere') and self.radius is None:
-            raise ValueError(f"a '{self.kind}' marker needs 'radius'")
-        return self
-
-
-class ConfigViewContribution(BaseModel):
-    """Everything one variation contributes for one resolved configuration.
-
-    Both fields are optional and a variation contributing neither is the normal case --
-    only a variation that produces *placement* has anything to draw.
-    """
-
-    model_config = ConfigDict(extra='forbid')
-
-    markers: list[SceneMarker] = Field(default_factory=list)
-    #: Named workspace-relative paths a panel may need to fetch, e.g.
-    #: ``{"map": "environments/office/map.yaml"}`` for the 2D map panel. Named rather than
-    #: positional so a panel asks for the role it wants and a variation that has no map is
-    #: simply missing the key.
-    files: dict[str, str] = Field(default_factory=dict)
-
-    def merged_with(self, other: "ConfigViewContribution") -> "ConfigViewContribution":
-        """This contribution plus *other*'s. Later files win on a key collision."""
-        return ConfigViewContribution(
-            markers=[*self.markers, *other.markers],
-            files={**self.files, **other.files},
-        )
+__all__ = ["ConfigViewContribution", "Point", "SceneMarker", "collect_contributions"]
 
 
 def collect_contributions(config: dict, variation_classes, base_path: str) -> dict[str, Any]:

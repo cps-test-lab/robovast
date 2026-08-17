@@ -28,6 +28,23 @@ configuration:
       - position: {x: 21.0, y: -4.0}
       - position: {x: 21.0, y: -6.0}
 visualization:
+  # The Config tab's third column: what each generated configuration contains, beside the editor.
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    - world: {title: World configuration, height: "15%"}
+    # The Depot world this campaign runs, with this configuration's endpoints drawn on it. No
+    # variation contributes markers here -- `goal_pose` is a plain ParameterVariationList, which
+    # varies a number and knows nothing about placement -- so the two poses are declared.
+    - scene3d:
+        title: Scene
+        markers:
+        # The robot spawns at world (-8, 0); see world/depot_nav2.yaml's spawn_robot plugin.
+        - {kind: pose, pos: [-8.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+        # goal_pose is a MAP-frame pose and map = world + (8, 0) for this world (the same offset
+        # the analysis applies to the ground-truth frame), so the marker is shifted back by it.
+        # Declared here rather than inferred: nothing in the panel can know a campaign's frames.
+        - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal, color: "#4ade80"}
   results:
     # Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the roqsim backend
     # contributes it, because a campaign it runs always records the capture that panel replays.

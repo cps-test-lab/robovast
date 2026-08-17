@@ -565,40 +565,6 @@
         "title": "CleanupDataRequest",
         "type": "object"
       },
-      "ConfigViewContribution": {
-        "description": "What the variations of one configuration contribute to the config view.\n\nNeutral geometry plus named files, in the vocabulary of\n:mod:`robovast.common.scene_markers` \u2014 so a panel draws a variation it has never heard\nof. ``errors`` carries a hook that raised, named, rather than dropping its markers: a\nview that silently loses one variation's contribution is indistinguishable from a\nvariation that placed nothing.",
-        "properties": {
-          "errors": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Errors",
-            "type": "array"
-          },
-          "files": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Files",
-            "type": "object"
-          },
-          "markers": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Markers",
-            "type": "array"
-          }
-        },
-        "required": [
-          "errors",
-          "files",
-          "markers"
-        ],
-        "title": "ConfigViewContribution",
-        "type": "object"
-      },
       "CreateCampaignRequest": {
         "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
         "properties": {
@@ -1522,7 +1488,7 @@
         "description": "One resolved configuration a ``.vast`` expands to.",
         "properties": {
           "contribution": {
-            "$ref": "#/components/schemas/ConfigViewContribution"
+            "$ref": "#/components/schemas/ServedContribution"
           },
           "internals": {
             "additionalProperties": true,
@@ -1751,6 +1717,131 @@
         "title": "RunShareRequest",
         "type": "object"
       },
+      "SceneMarker": {
+        "additionalProperties": false,
+        "description": "One thing to draw, in world coordinates.\n\n``kind`` selects which fields matter; a panel ignores a kind it cannot render rather\nthan failing, so a package shipping a richer marker degrades instead of breaking an\nolder UI.",
+        "properties": {
+          "color": {
+            "default": "",
+            "title": "Color",
+            "type": "string"
+          },
+          "group": {
+            "default": "",
+            "title": "Group",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "kind": {
+            "enum": [
+              "box",
+              "cylinder",
+              "sphere",
+              "pose",
+              "path",
+              "point"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "points": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Points"
+          },
+          "pos": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pos"
+          },
+          "radius": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radius"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "yaw": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yaw"
+          }
+        },
+        "required": [
+          "color",
+          "group",
+          "height",
+          "kind",
+          "label",
+          "points",
+          "pos",
+          "radius",
+          "size",
+          "yaw"
+        ],
+        "title": "SceneMarker",
+        "type": "object"
+      },
       "SceneStatus": {
         "description": "Whether this run's 3D geometry is ready, and if not, what is happening about it.\n\nThe same job as :class:`CampaignDataStatus`, for the same reason \u2014 *say why you are about to wait,\nbefore you wait* \u2014 so the fields deliberately reuse its names rather than inventing synonyms. A\nscene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;\nthe first viewer of a given world pays for it and everyone after reads it from disk.\n\nReading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB\nimage pull would fire on a browser prefetch or a strict-mode double render.",
         "properties": {
@@ -1835,6 +1926,40 @@
           "world"
         ],
         "title": "SceneStatus",
+        "type": "object"
+      },
+      "ServedContribution": {
+        "additionalProperties": false,
+        "description": "A contribution as the service serves it: the geometry, plus what went wrong collecting it.\n\n``errors`` is not part of what a *variation* returns -- it is what the collection observed, one\nentry per hook that raised. Reported rather than swallowed: a view missing one variation's\nmarkers is indistinguishable from a variation that placed nothing.",
+        "properties": {
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "object"
+          },
+          "markers": {
+            "items": {
+              "$ref": "#/components/schemas/SceneMarker"
+            },
+            "title": "Markers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "errors",
+          "files",
+          "markers"
+        ],
+        "title": "ServedContribution",
         "type": "object"
       },
       "Status": {

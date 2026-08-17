@@ -49,6 +49,7 @@ from robovast.client import file_address
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
+from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401
 from robovast.client.status import Phase, Status  # noqa: F401
 
 # ---------------------------------------------------------------------------
@@ -784,18 +785,14 @@ class VariationPreview(BaseModel):
     remote: Optional[VariationRemote] = None
 
 
-class ConfigViewContribution(BaseModel):
-    """What the variations of one configuration contribute to the config view.
+class ServedContribution(ConfigViewContribution):
+    """A contribution as the service serves it: the geometry, plus what went wrong collecting it.
 
-    Neutral geometry plus named files, in the vocabulary of
-    :mod:`robovast.common.scene_markers` — so a panel draws a variation it has never heard
-    of. ``errors`` carries a hook that raised, named, rather than dropping its markers: a
-    view that silently loses one variation's contribution is indistinguishable from a
-    variation that placed nothing.
+    ``errors`` is not part of what a *variation* returns -- it is what the collection observed, one
+    entry per hook that raised. Reported rather than swallowed: a view missing one variation's
+    markers is indistinguishable from a variation that placed nothing.
     """
 
-    markers: list[dict] = Field(default_factory=list)
-    files: dict[str, str] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
 
 
@@ -812,8 +809,9 @@ class PreviewConfiguration(BaseModel):
     #: The ``_``-prefixed keys a variation wrote for other readers (``_map_file``,
     #: ``_path``, …). Shown behind a toggle, the way the desktop editor's ``--debug`` did.
     internals: dict = Field(default_factory=dict)
-    #: Geometry and files the config view's panels draw (see :class:`ConfigViewContribution`).
-    contribution: ConfigViewContribution = Field(default_factory=ConfigViewContribution)
+    #: Geometry and files the config view's panels draw. Typed rather than a bare dict so the
+    #: generated web-UI types describe a marker; the models are the ones a variation returns.
+    contribution: ServedContribution = Field(default_factory=ServedContribution)
     #: Per-variation preview descriptors (Phase 2b — Module Federation remotes /
     #: host-native built-ins); empty when a variation contributes no preview.
     previews: list[VariationPreview] = Field(default_factory=list)
