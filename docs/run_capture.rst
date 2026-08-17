@@ -92,7 +92,7 @@ The manifest
              "off": 0, "dtype": "f8", "samples": 734, "width": 1},
     "producer": "roqsim",
     "producer_version": "0.1.0",
-    "world": "roqsim_tiago_pick:tiago_pick",
+    "world": "tiago_pick:tiago_pick",
     "overrides": {},
     "packages": {"roqsim": "0.1.0", "mujoco": "3.11.0", "numpy": "2.5.1"},
     "seed": 1869948900,
