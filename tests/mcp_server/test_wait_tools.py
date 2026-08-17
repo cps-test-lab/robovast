@@ -1,49 +1,29 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Waiting for an image build is a call; waiting for a campaign is not.
+"""Neither a campaign nor a build is waited for inside a tool call.
 
 Both operations return the moment the work is *named* and then run on, and both used to
 offer nothing but "poll this" prose — which is how an agent came to read one status and
 end its turn mid-campaign.
 
-They are answered differently on purpose. A build takes minutes and always has work
-behind it in the same turn, so blocking inside the tool costs nothing. A campaign can run
-for days, and blocking there would occupy the caller for the whole of it — so the campaign
-wait is a shell command (``vast wait``, tested in ``tests/execution/test_cli_wait``)
-that a harness can background and be notified about. Same poll loop underneath; only who
-holds the wait differs.
+They were once answered differently: the campaign wait went to a shell command, the build
+wait stayed a blocking tool on the argument that a build is minutes rather than days, so
+holding the caller costs nothing. That argument had a cap in it. The tool blocked for at
+most 600s, and a ROS build doing apt + pip + colcon came back unfinished, to be re-called
+— blocking again — in exactly the case where blocking cost most. The single-read half
+(``get_image_build_status``) already existed, so the blocking loop was a third thing beside
+it rather than the missing one.
+
+So both are shell commands now (``vast wait``, ``vast image wait``), over loops in
+``robovast_client`` that a harness can background, and what each tool owes its caller is
+the *command*, in band, with the ids already filled in. Waiting for the loops themselves is
+tested in ``tests/execution/test_cli_wait`` and ``tests/execution/test_image_build_wait``.
 """
 
 from robovast.mcp_server.plugins import execution
 
 
-def test_image_build_wait_blocks_until_done(monkeypatch):
-    polls = iter([False, False, True])
-    monkeypatch.setattr(execution, "get_image_build_status",
-                        lambda bid: {"build_id": bid, "done": next(polls)})
-    out = execution.wait_for_image_build("b1", poll_interval_s=1)
-    assert out["done"] is True
-
-
-def test_image_build_wait_says_call_again_on_timeout(monkeypatch):
-    """A bounded wait ending is not a failure: the build is untouched and the recovery is
-    to repeat the call — which is also what happens when an MCP client kills it."""
-    monkeypatch.setattr(execution, "get_image_build_status",
-                        lambda bid: {"build_id": bid, "done": False})
-    out = execution.wait_for_image_build("b1", timeout_s=2, poll_interval_s=1)
-    assert out["done"] is False
-    assert out["next_step"] == "wait_for_image_build(build_id='b1')"
-
-
-def test_image_build_failure_points_at_the_log(monkeypatch):
-    monkeypatch.setattr(
-        execution, "get_image_build_status",
-        lambda bid: {"build_id": bid, "done": True, "error_detail": {"phase": "pip"}})
-    out = execution.wait_for_image_build("b1", poll_interval_s=1)
-    assert out["next_step"] == "get_image_build_log(build_id='b1')"
-
-
-def test_starting_a_campaign_hands_back_the_command_that_waits_for_it(monkeypatch):
+def test_starting_a_campaign_hands_back_the_command_that_waits_for_it():
     """In-band, with the id filled in: a launch that returns only an id leaves "and now
     wait for it" to be remembered, and not remembering it is the reported bug.
 
@@ -53,3 +33,33 @@ def test_starting_a_campaign_hands_back_the_command_that_waits_for_it(monkeypatc
     step = execution._wait_next_step("camp-1")
     assert "vast wait camp-1" in step
     assert "background" in step
+
+
+def test_building_an_image_hands_back_the_command_that_waits_for_it():
+    """The same debt, and for a while the only surface that still paid it in prose."""
+    step = execution._build_wait_next_step("b1", {"sut": "b1"}, False)
+    assert "vast image wait b1" in step
+    assert "background" in step
+
+
+def test_a_multi_container_build_waits_for_every_id():
+    """A project builds one image per container that adds packages. Naming only
+    ``build_id`` would wait for one of them and call the rest built."""
+    step = execution._build_wait_next_step(
+        "b1", {"sut": "b1", "nav": "b2"}, False)
+    assert "b1" in step and "b2" in step
+
+
+def test_a_cache_hit_is_not_waited_for():
+    """It already finished, so the wait is the one wrong next step — and the command
+    would sit on a build id that never runs."""
+    step = execution._build_wait_next_step("b1", {"sut": "b1"}, True)
+    assert "vast image wait" not in step
+    assert "start_campaign" in step
+
+
+def test_the_blocking_build_wait_tool_is_gone():
+    """It is not enough that the function was deleted: an entry left in ``_TOOLS`` would
+    still spend the surface budget the deletion was meant to return."""
+    assert not hasattr(execution, "wait_for_image_build")
+    assert "wait_for_image_build" not in {fn.__name__ for fn in execution._TOOLS}

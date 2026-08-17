@@ -31,7 +31,7 @@ it only talks to something that can.
 | `vast login <url>` / `vast logout` | store or forget the service credentials |
 | `vast workspace init/update/list/delete` | push a project directory to the service |
 | `vast files get/put` | move a single file by address |
-| `vast image build/status/log` | have the service build a project's derived images |
+| `vast image build/wait/status/log` | have the service build a project's derived images |
 | `vast wait <campaign-id>` | block until a campaign is genuinely over |
 | `vast results download -i <id>` | fetch a finished campaign's results |
 | `vast doctor` | check the login, the service and your PATH |

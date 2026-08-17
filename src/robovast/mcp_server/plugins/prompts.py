@@ -116,9 +116,9 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
 2. **Check before spending compute.** `validate_project` returns *every* problem at once;
    fix them in one pass. `preview_configurations` shows what the sweep expands to — read
    the cell count before launching, not after. Then check the *images*, which validation
-   cannot see into: `build_experiment_image` if any container adds packages, then
-   `exec_in_container` to run an import, `ros2 pkg list`, or one config's scenario inside
-   it. Pass `container=` to pick which one — the check that matters is usually not in the
+   cannot see into: `build_experiment_image` if any container adds packages, background
+   the `vast image wait` it hands back in `next_step`, then `exec_in_container` to run an
+   import, `ros2 pkg list`, or one config's scenario inside it. Pass `container=` to pick which one — the check that matters is usually not in the
    same container as the thing you are debugging. Do this instead of learning from a
    failed campaign that a package is missing — that is the same answer, minutes later.
 3. **Size it.** `get_resource_usage` for the lane you intend to use. It touches the lane,

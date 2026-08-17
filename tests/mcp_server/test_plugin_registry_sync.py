@@ -510,6 +510,21 @@ def test_a_shared_parameter_name_keeps_one_type():
 #:
 #: The general rule this leaves: **if the wait can outlive a turn, it is not a tool.**
 #:
+#: **That raise has since been returned: ``wait_for_image_build`` is gone** (−~250 tokens,
+#: 60 tools to 59), and the exception above did not survive contact with its own rule. The
+#: wait was capped at 600s, so a ROS build doing apt + pip + colcon came back unfinished and
+#: had to be re-called — blocking again, with dead air between — in exactly the case where
+#: blocking cost most. "Minutes, not days" was true of the median build and false of the one
+#: that hurt. The surface also already held the single-read half (``get_image_build_status``),
+#: so the blocking loop was a third thing beside it rather than the missing one; what was
+#: genuinely missing was the *command*, which ``build_experiment_image`` now hands back in
+#: ``next_step`` the way ``start_campaign`` always did. ``vast image wait`` holds the loop
+#: (``execution.image_build_wait``), at no surface cost.
+#:
+#: So the rule now has no exception, and one fewer way to read it: **if the wait can outlive
+#: a turn, it is not a tool** — and a cap on how long a tool may block does not make it one,
+#: it only moves the overrun to the caller.
+#:
 #: Raised 13_000 → 13_500 for the image catalog's four tools (``list_scenario_actions``,
 #: ``get_scenario_action_details``, ``list_roqsim_plugins``, ``get_roqsim_plugin_details``
 #: — 245 tokens together). Unlike the raise above, this one was **not** paid for by

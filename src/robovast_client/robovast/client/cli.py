@@ -751,8 +751,6 @@ def image_build(workspace_id, config_path, wait, namespace, context):  # pylint:
     The workspace is what names the project, and the project is what decides which
     containers build -- there is no CWD project and no single "the" image.
     """
-    import time as _time
-
     from robovast.service.interface import BuildImageRequest
     with service_client(namespace, context) as (client, target):
         _echo_target(target)
@@ -761,27 +759,71 @@ def image_build(workspace_id, config_path, wait, namespace, context):  # pylint:
         if ref.cached:
             click.echo(f"✓ image 'build:{ref.tag}' already up to date (cache hit)")
             return
-        click.echo(f"building 'build:{ref.tag}' (build_id={ref.build_id}) ...")
+        ids = list((ref.builds or {}).values()) or [ref.build_id]
+        click.echo(f"building 'build:{ref.tag}' (build_id={' '.join(ids)}) ...")
         if not wait:
-            click.echo("started; poll 'vast image status'")
+            click.echo(f"started; wait with 'vast image wait {' '.join(ids)}'")
             return
-        while True:
-            status = client.get_image_build_status(ref.build_id)
-            if status.done:
-                break
-            _time.sleep(2.0)
-        if status.phase in ('succeeded', 'cached'):
+        _wait_for_builds(client, ids, interval=2.0, timeout=None)
+
+
+def _wait_for_builds(client, build_ids, *, interval, timeout):
+    """Wait, report, and exit non-zero on failure — shared by ``image build`` and ``image wait``.
+
+    Failure detail is the point of doing this in one place: ``error.entry`` and
+    ``fixable_by`` say *what to change*, and a caller that prints only "build failed"
+    sends the reader to the builder log for something the status already knew.
+    """
+    from robovast.execution.image_build_wait import (SUCCESS_PHASES,
+                                                     wait_for_image_builds)
+    try:
+        done = wait_for_image_builds(build_ids, client=client, interval=interval,
+                                     timeout=timeout, feedback=click.echo)
+    except TimeoutError as e:
+        # As `vast wait`: the caller stopped waiting, the builds did not stop building.
+        # A distinct code keeps that apart from a build that actually failed.
+        click.echo(str(e), err=True)
+        raise SystemExit(2) from e
+    failed = False
+    for build_id, status in done.items():
+        if status.phase in SUCCESS_PHASES:
             click.echo(f"✓ built 'build:{status.tag}'")
+            continue
+        failed = True
+        err = status.error
+        if err:
+            click.echo(f"✗ {build_id} failed [{err.phase}] {err.message}", err=True)
+            if err.entry:
+                click.echo(f"  offending entry: {err.entry} (fixable_by={err.fixable_by})",
+                           err=True)
         else:
-            err = status.error
-            if err:
-                click.echo(f"✗ build failed [{err.phase}] {err.message}", err=True)
-                if err.entry:
-                    click.echo(f"  offending entry: {err.entry} (fixable_by={err.fixable_by})",
-                               err=True)
-            else:
-                click.echo("✗ build failed", err=True)
-            sys.exit(1)
+            click.echo(f"✗ {build_id} failed", err=True)
+    if failed:
+        sys.exit(1)
+
+
+@image.command('wait')
+@click.argument('build_ids', metavar='BUILD_ID...', nargs=-1, required=True)
+@click.option('--interval', default=5.0, show_default=True,
+              help='Seconds between status polls.')
+@click.option('--timeout', type=float, default=None,
+              help='Give up after this many seconds (default: wait indefinitely).')
+@target_options
+def image_wait(build_ids, interval, timeout, namespace, context):
+    """Block until every BUILD_ID is built: exit 0 (built), 1 (failed), 2 (--timeout).
+
+    Exists so a *caller* can wait without holding a request open, and is why the MCP
+    offers no image-build-wait tool — it did, and the cap on how long a tool call may
+    block turned a long ROS build into repeated blocking calls. An agent harness
+    backgrounds this instead and is notified when it exits; ``build_experiment_image``
+    hands back the command with the ids already filled in.
+
+    Takes **several** ids because a project builds one image per container that adds
+    packages, and waiting for the first says nothing about the rest.
+    """
+    with service_client(namespace, context) as (client, target):
+        _echo_target(target)
+        _wait_for_builds(client, list(build_ids), interval=interval, timeout=timeout)
 
 
 @image.command('status')

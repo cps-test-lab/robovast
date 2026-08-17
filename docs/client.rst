@@ -39,10 +39,12 @@ What you can do with it
      - Push a project directory to the service; re-sync it after edits.
    * - ``vast files ls|cat|get|put|rm``
      - Read and write single files by address.
-   * - ``vast image build|status|log``
+   * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
    * - ``vast wait <campaign-id>``
      - Block until a campaign is genuinely over.
+   * - ``vast image wait <build-id>…``
+     - Block until every named image build is done.
    * - ``vast results download <id>``
      - Fetch a finished campaign's results.
    * - ``vast doctor``

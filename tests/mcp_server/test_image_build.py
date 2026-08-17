@@ -39,9 +39,12 @@ def test_build_experiment_image_delegates(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: _Client())
     out = cc.build_experiment_image(workspace_id="ws1", config_path="a.vast")
     # ``builds`` carries every image the request started; ``build_id`` names only one, so
-    # a campaign building two is not silently reported as having built one.
+    # a campaign building two is not silently reported as having built one. ``next_step``
+    # is the wait, in band -- here a cache hit, which is the one case with nothing to wait
+    # for and so the one where naming a wait command would be wrong.
     assert out == {"build_id": "imgbuild-sut-abc", "tag": "sut", "cached": True,
-                   "builds": {"sut": "imgbuild-sut-abc"}}
+                   "builds": {"sut": "imgbuild-sut-abc"},
+                   "next_step": "start_campaign(...) — cache hit, nothing to wait for"}
     assert captured["request"].workspace_id == "ws1"
     assert captured["request"].config_path == "a.vast"
     assert captured["request"].container is None

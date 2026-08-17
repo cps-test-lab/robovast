@@ -404,7 +404,18 @@ elapsed), which returns only once the campaign is genuinely over, past
 postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
 run for days, and a blocking tool call would occupy its caller for the whole of
 it, where a command can be backgrounded and waited on. ``get_campaign_status``
-is the single-read version for a campaign you are not waiting on. Results live
+is the single-read version for a campaign you are not waiting on.
+
+**Image builds wait the same way**, through ``vast image wait <build-id>…``.
+That was once the exception — a blocking ``wait_for_image_build`` tool, on the
+argument that a build is minutes rather than days — and the exception did not
+hold. The tool could block for at most 600s, so a ROS build doing apt + pip +
+colcon returned unfinished and had to be called again, blocking again, in
+exactly the case where blocking cost most. A cap on how long a tool may block
+does not make a long wait tool-shaped; it moves the overrun to the caller. The
+rule that survives: **if a wait can outlive a turn, it is not a tool.**
+
+Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
 ``get_campaign_download``).
@@ -636,7 +647,13 @@ exposes:
 * ``build_experiment_image`` — build (or reuse) the derived images the project's
   containers declare: one per entry in ``execution.containers`` that adds
   ``system_packages`` or ``python_packages``, tagged by container name. Returns
-  ``{build_id, tag, cached}``.
+  ``{build_id, tag, cached, builds, next_step}``. It is **not built when this returns**:
+  ``next_step`` is the ``vast image wait`` command to background, with every build id
+  filled in (or, on a cache hit, the run to go straight to). As for a campaign, the wait
+  is a shell command rather than a tool — see :ref:`mcp-control`.
+* ``vast image wait <build-id>…`` — block until every build is done (exit 0 built,
+  1 failed, 2 ``--timeout``). Takes several ids because a project builds one image per
+  container that adds packages, and waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus, on failure,
   a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
   base-pull / push / resource, the offending ``build:`` ``entry``, and

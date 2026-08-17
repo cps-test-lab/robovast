@@ -27,7 +27,6 @@ serve.
 """
 
 import logging
-import os
 import time
 
 from fastmcp import FastMCP
@@ -283,47 +282,6 @@ def get_campaign_status(campaign_id: str) -> dict:
         return result
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-
-
-#: Hard ceiling on a single blocking wait, whatever the caller asks for. A wait holds a
-#: worker thread, and the MCP client kills the call at its own timeout anyway.
-_WAIT_MAX_S = int(os.environ.get("ROBOVAST_MCP_WAIT_MAX_S", "600"))
-
-
-def wait_for_image_build(build_id: str, timeout_s: int = 240,
-                         poll_interval_s: int = 5) -> dict:
-    """Block until an image build finishes. Call this after ``build_experiment_image``.
-
-    Blocking is right here, unlike for a campaign: a build takes minutes and always has
-    work behind it in the same turn, so nothing is gained by handing the wait to a shell.
-    On ``done: false`` the build is still going and ``next_step`` is the call to repeat.
-    On failure read ``error_detail`` — it names what to change — before reaching for the
-    builder log.
-
-    Args:
-        build_id: One id from ``build_experiment_image``.
-        timeout_s: How long this call blocks before returning ``done: false``.
-        poll_interval_s: Seconds between status reads.
-
-    Returns:
-        ``get_image_build_status``'s fields plus ``done`` and ``next_step``, or
-        ``{error}``.
-    """
-    deadline = time.monotonic() + max(1, min(int(timeout_s), _WAIT_MAX_S))
-    interval = max(1, int(poll_interval_s))
-    while True:
-        result = get_image_build_status(build_id)
-        if result.get("error"):
-            return result
-        if result.get("done"):
-            result["next_step"] = (
-                f"get_image_build_log(build_id={build_id!r})"
-                if result.get("error_detail") else "start_campaign(...)")
-            return result
-        if time.monotonic() >= deadline:
-            result["next_step"] = f"wait_for_image_build(build_id={build_id!r})"
-            return result
-        time.sleep(interval)
 
 
 def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
@@ -681,6 +639,25 @@ def get_resource_usage() -> dict:
         return {"error": str(e)}
 
 
+def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool) -> str:
+    """The literal command to run next, ids already filled in — as ``_wait_next_step``.
+
+    A build that hands back only ids offered nothing but "poll this" prose, which is the
+    same defect that seam fixes for campaigns: the operation returns while its work runs
+    on, and nothing waits for it.
+
+    A cache hit already finished, so waiting for it is the one wrong answer; it goes
+    straight to the run. Every other build names **all** its ids, because a project builds
+    one image per container that adds packages and waiting for the first says nothing about
+    the rest.
+    """
+    if cached:
+        return "start_campaign(...) — cache hit, nothing to wait for"
+    ids = list((builds or {}).values()) or [build_id]
+    return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
+            f"(exit 0 built, 1 failed)")
+
+
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
                            container: str = "") -> dict:
     """Bake new code or system packages into a container's image.
@@ -689,8 +666,12 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
     ``/config`` at runtime never need a build.
 
     **Optional**: ``start_campaign`` builds what it needs as its first step. Call this to
-    build ahead of time. Idempotent — a no-op cache hit when nothing changed. Poll
-    ``get_image_build_status``. You never handle a registry ref or credentials.
+    build ahead of time. Idempotent — a no-op cache hit when nothing changed. You never
+    handle a registry ref or credentials.
+
+    **It is not built when this returns** — background the ``next_step`` command to be told
+    when it is. ``get_image_build_status`` is the single-read version, and the one that
+    explains a failure.
 
     A campaign may build **several** images, one per container that adds packages, and
     this starts them all. ``image`` is what a container starts FROM; packages are what
@@ -710,8 +691,8 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         container: Build only this one's image. Omit to build every one that needs it.
 
     Returns:
-        ``{build_id, tag, cached, builds}`` or ``{error}``. ``builds`` maps each container
-        to its build id; ``build_id`` names only one, so poll the rest through there.
+        ``{build_id, tag, cached, builds, next_step}`` or ``{error}``. ``builds`` maps each
+        container to its build id, and ``next_step`` waits for **all** of them.
     """
     client = service_access.service_client()
     if client is None:
@@ -722,7 +703,9 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
             workspace_id=workspace_id, config_path=config_path,
             container=container or None))
         return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
-                "builds": ref.builds}
+                "builds": ref.builds,
+                "next_step": _build_wait_next_step(
+                    ref.build_id, ref.builds, ref.cached)}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -913,7 +896,6 @@ _TOOLS = [
     stop_job,
     get_resource_usage,
     build_experiment_image,
-    wait_for_image_build,
     get_image_build_status,
     get_image_build_log,
     exec_in_container,
