@@ -325,9 +325,20 @@ locally.
    is on a private network and is the first thing to revisit before exposing it to the
    internet. Adding auth is an htpasswd Secret plus an Ingress annotation.
 
-**A service with no Ingress cannot build.** There is then no address a node could pull a
-built image back from, so there is no prefix, and a ``build:`` project fails at submit
-naming that reason. Re-run ``setup`` with ``--ingress-host``.
+**A service without a registry prefix cannot build.** The prefix is the service's own
+published host — with no Ingress there is no address a node could pull a built image back
+from — so a project whose container adds packages fails at submit naming that reason.
+
+Two different states produce it, with two different fixes, and the service cannot tell them
+apart: it reads the prefix out of its environment and has no RBAC to look at its own Ingress.
+
+* **Published, but the prefix is unset.** A ``setup`` re-run *without* ``--ingress-host``
+  used to drop it while leaving the Ingress alone, so nothing looked wrong until a campaign
+  was submitted. ``vast exec cluster upgrade`` re-bakes the prefix from the live Ingress.
+  (Setup no longer drops it; deployments set up before that fix still need the upgrade.)
+* **Never published.** Re-run ``setup`` with ``--ingress-host``.
+
+``vast doctor -n <namespace>`` says which of the two you are in.
 
 Storage defaults to a ``hostPath`` on the node the pod is pinned to, because a stock RKE2
 cluster ships no StorageClass and a PVC there stays ``Pending`` forever. ``emptyDir`` is

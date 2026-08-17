@@ -912,12 +912,7 @@ class ClusterService(LocalTransport):
         cfg = self._cluster_config()
         registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
-            raise ValueError(
-                "this cluster has no registry builds could be pushed to. RoboVAST runs "
-                "one in the service pod, but it is reached over the service's own "
-                "Ingress -- an unpublished service has no address the cluster's nodes "
-                "could pull an image back from. Re-run 'vast exec cluster setup' with "
-                "--ingress-host.")
+            raise ValueError(f"cannot build an image: {registry.why_disabled()}")
         from .cluster_image_build import build_context_bucket
         bucket = build_context_bucket(cfg)
         return project, campaign_config, specs, project_dir, cfg, registry, bucket
@@ -1368,11 +1363,10 @@ class ClusterService(LocalTransport):
         cfg = self._cluster_config()
         registry = self._resolve_registry_objects(cfg.get_registry_config())
         if not registry.enabled():
+            # The leading clause is this site's own: a campaign author needs to hear that
+            # their *campaign* is what asked for a build. The rest is shared.
             raise CampaignConfigError(
-                "this campaign builds a container image, but this cluster has nowhere to "
-                "push it: RoboVAST's own registry is published on the service's Ingress, "
-                "and this service has none. Re-run 'vast exec cluster setup' with "
-                "--ingress-host.")
+                f"this campaign builds a container image, but {registry.why_disabled()}")
         return specs, project_dir, cfg, registry
 
     def _start_build_images(self, project, campaign_config) -> list:

@@ -52,6 +52,35 @@ class RegistryConfig:
         """True when a registry is configured (in-cluster builds are possible)."""
         return bool(self.registry_prefix)
 
+    def why_disabled(self) -> str:
+        """Why in-cluster builds are unavailable, and both commands that fix it.
+
+        Empty when :meth:`enabled`. The **shared half only**: each caller prefixes what it
+        was doing when it found out, because that differs usefully — a campaign author needs
+        to hear "this campaign builds an image", and a request caller does not.
+
+        **Both remedies, because this process cannot tell the two states apart.** The prefix
+        is baked from the service's Ingress host at setup/upgrade time and read back here out
+        of the environment; the in-pod service has no RBAC to read its own Ingress and is
+        deliberately not given any. So "published, but the prefix was dropped" and "never
+        published" are indistinguishable from in here, and they have different fixes.
+        Naming only one sent an operator to re-run ``setup --ingress-host`` on a deployment
+        that was already published, where ``upgrade`` was the answer.
+
+        Carries no registry host, prefix or credential: registry details never cross the
+        client interface (see this class's docstring), and this string reaches a client.
+        """
+        if self.enabled():
+            return ""
+        # "push it" rather than "push a built image": each caller's opener has already
+        # named the image, so repeating it reads as a stutter in both compositions.
+        return ("this cluster has nowhere to push it. RoboVAST runs its own "
+                "registry in the service pod, reached over the service's own Ingress, and "
+                "this service's registry prefix is unset. If the service is published, "
+                "'vast exec cluster upgrade' re-bakes the prefix from the live Ingress; if "
+                "it is not published at all, re-run 'vast exec cluster setup' with "
+                "--ingress-host. 'vast doctor -n <namespace>' says which.")
+
 
 class BaseConfig(object):
     """Base class for cluster configurations.
