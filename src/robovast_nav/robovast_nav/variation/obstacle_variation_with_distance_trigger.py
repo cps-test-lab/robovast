@@ -38,8 +38,7 @@ from pydantic import ConfigDict, field_validator, model_validator
 from robovast.common import convert_dataclasses_to_dict
 
 from ..data_model import Orientation, Pose, Position
-from .obstacle_variation import (ObstacleVariation, ObstacleVariationConfig,
-                                 ObstacleVariationGuiRenderer)
+from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig
 
 # ---------------------------------------------------------------------------
 # Config model
@@ -92,40 +91,6 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
 
 # ---------------------------------------------------------------------------
 # GUI renderer
-# ---------------------------------------------------------------------------
-
-class ObstacleVariationWithDistanceTriggerGuiRenderer(ObstacleVariationGuiRenderer):
-    """Renders path, obstacles, and the spawn trigger point on the map."""
-
-    def update_gui(self, config, path):
-        # Draw path
-        nav_path = config.get('_path', None)
-        if nav_path:
-            plain_path = [(p.x, p.y) for p in nav_path]
-            self.gui_object.draw_path(plain_path,
-                                      color='red', linewidth=2.0,
-                                      alpha=0.8, label='Path',
-                                      show_endpoints=True)
-
-        # Draw obstacles via parent renderer
-        super().update_gui(config, path)
-
-        # Draw spawn trigger point
-        tp = config.get('_trigger_point')
-        if tp:
-            x, y = tp['x'], tp['y']
-            self.gui_object.draw_circle(x, y, radius=0.25,
-                                        color='orange', alpha=0.9,
-                                        label='Spawn Trigger Point')
-            self.gui_object.map_visualizer.ax.annotate(
-                'trigger', xy=(x, y), fontsize=7,
-                color='orange', ha='center', va='bottom'
-            )
-            self.gui_object.canvas.draw()
-
-
-# ---------------------------------------------------------------------------
-# Variation class
 # ---------------------------------------------------------------------------
 
 class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
@@ -182,7 +147,6 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
-    GUI_RENDERER_CLASS = ObstacleVariationWithDistanceTriggerGuiRenderer
 
     def variation(self, in_configs):
         self.progress_update("Running ObstacleVariationWithDistanceTrigger...")

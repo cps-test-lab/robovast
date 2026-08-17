@@ -67,7 +67,8 @@ one resolver instead of every route.
 `docs/` separates the two audiences — keep them distinct and both current:
 
 - **User-facing** — how to *use* RoboVAST: `quickstart.rst`, `how_to_run.rst`,
-  `configuration.rst`, `variation.rst`, `results_processing.rst`, `evaluation.rst`,
+  `configuration.rst`, `variation.rst`, `results_processing.rst`,
+  `analysis_notebooks.rst`,
   `deployment.rst`, `web_ui.rst`, `mcp.rst`, `setup.rst`, `example.rst`. Task-oriented, no
   implementation detail beyond what a user needs. `quickstart.rst` is split by *role* —
   operator versus user — because only one of them touches Kubernetes; keep that split when

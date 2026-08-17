@@ -1155,7 +1155,7 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
     """
     from robovast.common.config_generation import generate_scenario_variations
 
-    campaign_data, transient_files = generate_scenario_variations(
+    campaign_data = generate_scenario_variations(
         variation_file=vast_file, progress_update_callback=progress_update_callback,
         output_dir=output_dir)
     if not campaign_data["configs"]:
@@ -1163,7 +1163,7 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
     if config_filter:
         campaign_data["configs"] = filter_configs_by_name(
             campaign_data["configs"], config_filter)
-    return campaign_data, transient_files
+    return campaign_data
 
 
 def _preflight_upload_to_share(backend: ExecutionBackend, opts: RunOptions) -> None:
@@ -1210,7 +1210,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         if state is not None:
             state.set_phase(Phase.VARIATION)
         try:
-            campaign_data, _ = build_campaign_data(
+            campaign_data = build_campaign_data(
                 vast_file, tmp, config_filter,
                 progress_update_callback=variation_logger.info)
         finally:

@@ -65,7 +65,7 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	# The result is a developer editing src/robovast_client and seeing no effect, with
 	# nothing said. Installing it after everything that depends on it is what makes the
 	# editable install the one that survives.
-	. venv/bin/activate && pip install -e .[docs,test,gui] \
+	. venv/bin/activate && pip install -e .[docs,test] \
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
 		&& pip install -e src/robovast_cluster \

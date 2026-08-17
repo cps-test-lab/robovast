@@ -826,7 +826,7 @@ def _batch_composition_report(config_path):
     from robovast.common.variation.base_variation import \
         VariationInfeasibleError  # pylint: disable=import-outside-toplevel
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
     except VariationInfeasibleError as e:
         # The message already names the config block and the plugin's reason; say

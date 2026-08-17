@@ -557,7 +557,6 @@ class FloorplanVariation(NavVariation):
     """
 
     CONFIG_CLASS = FloorplanVariationConfig
-    # GUI_CLASS = FloorplanVariationGui
 
     @classmethod
     def get_required_container(cls, parameters):

@@ -30,7 +30,7 @@ A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only projec
 binding the service accepts, and ``config_path`` selects among several
 ``.vast`` files in that workspace. There is no server-side "current project" —
 ``.robovast_project`` / ``vast init`` bind the *CLI's* project (for
-``vast exec local run``, ``vast results``, ``vast eval``) and never select what
+``vast exec local run``, ``vast results``) and never select what
 the service runs. Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
 only for a service running on that host), or by uploading one from the machine

@@ -216,7 +216,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                 configs = sample["configs"]
                 runs = sample["runs_per_config"]
             else:
-                campaign_data, _ = generate_scenario_variations(
+                campaign_data = generate_scenario_variations(
                     variation_file=address, output_dir=None)
                 configs = campaign_data["configs"]
                 runs = campaign_data.get("execution", {}).get("runs", 1)

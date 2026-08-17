@@ -64,7 +64,7 @@ def _project(tmp_path, configuration):
 
 
 def _compose(vast, tmp_path):
-    data, _ = generate_scenario_variations(
+    data = generate_scenario_variations(
         str(vast), progress_update_callback=lambda m: None,
         output_dir=str(tmp_path / "gen"), use_cache=False)
     return data

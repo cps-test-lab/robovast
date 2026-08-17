@@ -55,7 +55,7 @@ through the service's MCP endpoint, which needs nothing installed at all — see
 :ref:`mcp`. ``vast login`` prints the ``claude mcp add`` line that registers it.
 
 What is deliberately absent: ``vast serve``, ``vast exec``, ``vast init``, ``vast
-config``, ``vast eval``. They are not hidden or disabled — the distribution does not
+config``. They are not hidden or disabled — the distribution does not
 register them, so ``vast --help`` on a client install lists exactly what it can run. That
 is the point of installing it alone.
 

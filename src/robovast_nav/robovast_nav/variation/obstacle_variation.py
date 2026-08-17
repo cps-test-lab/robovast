@@ -25,12 +25,9 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from rdflib import Namespace
 
 from robovast.common import convert_dataclasses_to_dict
-from robovast.common.variation import VariationGuiRenderer
 from robovast.common.variation.base_variation import (DestinationConfig, ProvContribution,
                                                       VariationInfeasibleError)
 
-from ..gui.navigation_gui import NavigationGui
-from ..object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 from ..obstacle_placer import ObstaclePlacer
 from ..path_generator import PathGenerator
 from .nav_base_variation import NavVariation
@@ -269,56 +266,6 @@ def _instances_for_sim(obstacle_objects, obstacle_geometry) -> list:
     return instances
 
 
-class ObstacleVariationGuiRenderer(VariationGuiRenderer):
-
-    @staticmethod
-    def _find_obstacles(config):
-        """Return the list of obstacle dicts from the config.
-
-        Prefers the explicit ``_objects_parameter_name`` private key; falls back to
-        scanning ``config['config']`` for any list whose first element looks like an
-        obstacle (has a ``spawn_pose`` key).
-        """
-        cfg = config.get('config', {})
-        obstacle_name = config.get('_objects_parameter_name')
-        if obstacle_name:
-            return cfg.get(obstacle_name, [])
-        return []
-
-    def update_gui(self, config, path):
-        for obstacle in self._find_obstacles(config):
-            # Get model path and determine shape
-            model_path = obstacle.get('model', '')
-            object_type = get_object_type_from_model_path(model_path)
-
-            if object_type == 'cylinder':
-                shape = 'circle'
-            else:
-                shape = 'box'
-
-            # Parse xacro_arguments to get actual dimensions
-            xacro_args_str = obstacle.get('xacro_arguments', '')
-            dimensions = get_obstacle_dimensions(xacro_args_str)
-
-            # Prepare draw_args based on object type
-            if object_type == 'cylinder':
-                # For cylinder, use diameter
-                radius = dimensions.get('radius', 0.25)
-                draw_args = {'diameter': radius * 2}
-            else:
-                # Default to box with parsed dimensions
-                draw_args = {
-                    'width': dimensions.get('width', 0.5),
-                    'length': dimensions.get('length', 0.5)
-                }
-
-            pose = obstacle['spawn_pose']
-            x = pose['position']['x']
-            y = pose['position']['y']
-            yaw = pose['orientation']['yaw']
-            self.gui_object.draw_obstacle(x, y, draw_args, yaw, shape=shape)
-
-
 class ObstacleVariation(NavVariation):
     """Places random obstacles in the environment based on configured obstacle types.
 
@@ -358,8 +305,6 @@ class ObstacleVariation(NavVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationConfig
-    GUI_CLASS = NavigationGui
-    GUI_RENDERER_CLASS = ObstacleVariationGuiRenderer
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):

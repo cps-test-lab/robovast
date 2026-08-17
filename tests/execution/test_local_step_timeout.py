@@ -27,7 +27,7 @@ VAST = "configs/examples/ros2_basic/ros2_service.vast"
 
 
 def _run_script(tmp_path, **execution_overrides):
-    campaign_data, _transient = build_campaign_data(VAST, str(tmp_path / "gen"))
+    campaign_data = build_campaign_data(VAST, str(tmp_path / "gen"))
     campaign_data["execution"].update(execution_overrides)
     options = RunOptions(
         gui=False, start_only=False, abort_on_failure=False,
@@ -98,7 +98,7 @@ def test_a_timed_out_step_is_torn_down_and_counted_as_a_failure(tmp_path):
 
 def test_the_step_limit_matches_what_the_cluster_would_set_for_the_same_project(tmp_path):
     """One key, one meaning: the two lanes must compute the same number."""
-    campaign_data, _t = build_campaign_data(VAST, str(tmp_path / "gen"))
+    campaign_data = build_campaign_data(VAST, str(tmp_path / "gen"))
     campaign_data["execution"].update({"timeout": 120, "runs_per_job": 3})
     execution = campaign_data["execution"]
     cluster_value = declared_per_run_seconds(execution) * int(execution["runs_per_job"])

@@ -169,7 +169,7 @@ class Compose:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 yaml.safe_dump(params, f, sort_keys=False)
-            campaign_data, _ = generate_scenario_variations(
+            campaign_data = generate_scenario_variations(
                 variation_file=temp_vast,
                 output_dir=output_dir,
                 use_cache=False,

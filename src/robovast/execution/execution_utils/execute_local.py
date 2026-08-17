@@ -93,7 +93,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Generate and filter configs
     logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    campaign_data, _ = generate_scenario_variations(
+    campaign_data = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=None,
         output_dir=temp_dir.name

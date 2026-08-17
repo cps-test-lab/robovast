@@ -281,8 +281,6 @@ class ProvContribution:
 class Variation():
 
     CONFIG_CLASS = None  # Pydantic model class for config validation
-    GUI_CLASS = None  # Could be set to a GUI class for editing (desktop, PySide6)
-    GUI_RENDERER_CLASS = None  # Could be set to a GUI renderer class (desktop, PySide6)
     #: Web config editor: package-relative dir of a built Module-Federation remote
     #: (``remoteEntry.js`` + chunks) exposing a ``./preview`` React component
     #: ``({config}) => JSX``. ``None`` = no web preview (the editor renders the

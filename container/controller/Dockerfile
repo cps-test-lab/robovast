@@ -55,21 +55,18 @@ ARG TARGETARCH
 # (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
 # removed archiver sidecar. tar ships in the base image.
 #
-# The remaining libs (libglib2.0-0, libegl1, libfontconfig1, libx11-6,
-# libxkbcommon0, libgl1, libfreetype6, libdbus-1-3) are *not* for any display:
-# nothing here opens a window or instantiates QApplication. They're the minimal
-# shared-object set PySide6's bundled Qt6 libs dynamically link against at
-# import time — required because robovast-nav's variation plugins (the `nav`
-# extra below) import Qt-based GUI helpers at module level rather than lazily.
-# Without them `import PySide6.QtWidgets` fails with e.g. "libGL.so.1: cannot
-# open shared object file", which surfaces as nav variation types silently
-# failing to register ("Unknown variation class"). Verified minimal/sufficient
-# against pyside6-essentials + matplotlib's Qt backend on this base image.
+# No X/GL shared objects here, deliberately. This image used to carry eight of
+# them (libglib2.0-0, libegl1, libfontconfig1, libx11-6, libxkbcommon0, libgl1,
+# libfreetype6, libdbus-1-3) for no display at all: they were the minimal set
+# PySide6's bundled Qt6 libs had to dynamically link against just to be
+# *imported*, because robovast-nav's variation plugins pulled a Qt map editor in
+# at module level. Without them `import PySide6.QtWidgets` failed with
+# "libGL.so.1: cannot open shared object file", which surfaced as nav variation
+# types silently failing to register ("Unknown variation class"). The desktop
+# tools are gone and nothing imports Qt any more, so the libs went with them.
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates pigz git \
-        libglib2.0-0 libegl1 libfontconfig1 libx11-6 \
-        libxkbcommon0 libgl1 libfreetype6 libdbus-1-3 \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc
@@ -92,15 +89,9 @@ WORKDIR /opt/robovast
 # dependency (pydantic) is already here, and it imports nothing from roqsim —
 # no MuJoCo runtime enters this image. Contrast the nav extra below.
 #
-# The robovast(.gui) Qt extra itself is intentionally omitted (headless); rosbag
-# postprocessing runs in the ROS image, not here. Note: robovast-nav currently
-# hard-depends on pyside6-essentials (its variation classes import Qt-based
-# helpers at module level, not lazily), so that extra does pull PySide6 into the
-# image despite the controller being otherwise headless — and PySide6 ships no
-# linux-aarch64 wheels.
+# Rosbag postprocessing runs in the ROS image, not here.
 # Split into two layers so editing robovast/robovast_nav source doesn't force a
-# full reinstall of the (large, slow) third-party dependency set — notably
-# PySide6, pulled in by the nav extra.
+# full reinstall of the (large, slow) third-party dependency set.
 #
 # Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
 # Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
@@ -127,7 +118,7 @@ RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks
 # Without it the pod starts, serves, and then fails every create_campaign for want of a
 # lane: the service comes up looking healthy and can run nothing. Its three dependencies
 # (kubernetes, boto3, google-cloud-storage) resolve here rather than in layer 1, which
-# costs a little cache; they are small next to PySide6, which is what layer 1 protects.
+# costs a little cache; they are small next to the scientific stack layer 1 protects.
 RUN pip install --no-cache-dir ./src/robovast_cluster
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image

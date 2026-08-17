@@ -1,93 +1,20 @@
 .. _evaluation:
 
-Evaluation
-==========
+Analysis Notebooks
+==================
 
-RoboVAST provides an interactive GUI (``vast eval``) based on Jupyter notebooks
-for exploration and visualization of scenario execution results.
+An analysis notebook is a plain Jupyter notebook a campaign declares under
+``visualization.results.explorer.notebooks``. The :doc:`web UI <web_ui>` Results
+**Explorer** executes one per selected tree node — campaign, batch, configuration or run
+— server-side, and renders it as HTML.
 
-.. note::
-
-   The :doc:`web UI <web_ui>` Results **Explorer** renders these same
-   ``visualization.results.explorer.notebooks`` notebooks per selected node, executed server-side and
-   shown as HTML — so the notebooks written below work in both the desktop GUI and the
-   browser.
-
-
-.. _evaluation-gui:
-
-GUI
----
-
-.. code-block:: bash
-
-   vast eval gui [OPTIONS]
-
-Opens a GUI application for interactive exploration and visualization of run results.
-Automatically runs postprocessing before launching, unless ``--skip-postprocessing``
-is specified.
-
-**Options**
-
-.. option:: -r, --results-dir PATH
-
-   Directory containing the run results.  When omitted the value configured
-   with ``vast init`` is used.
-
-.. option:: -f, --force
-
-   Force postprocessing even if the results directory is unchanged.
-
-.. option:: --skip-postprocessing
-
-   Launch the GUI without running postprocessing first.
-
-.. option:: -o, --override VAST_FILE
-
-   Use the given ``.vast`` file for both postprocessing and notebook
-   discovery instead of the campaign copy.  See :ref:`evaluation-override`.
-
-
-.. _evaluation-override:
-
-Using ``--override`` to Supply a Local ``.vast`` File
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-By default ``vast eval gui`` reads the ``.vast`` configuration from the
-**campaign snapshot** stored in
-``<results-dir>/<campaign-name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
-at execution time and may be out of date.
-
-``--override`` (short form ``-o``) lets you point to any ``.vast`` file on disk,
-for example your current working copy:
-
-.. code-block:: bash
-
-   # Use a local/updated .vast file
-   vast eval gui --override my_project.vast
-
-**When to use ``--override``**
-
-- You have updated the ``visualization.results.explorer.notebooks`` section (e.g. new notebooks,
-  changed paths) and want the GUI to pick up the changes immediately without
-  re-running the scenario.
-- The results were produced in a different directory and the campaign snapshot
-  points to stale paths.
-- During notebook development: point to your working ``.vast`` so the GUI
-  always uses the latest notebook paths.
-
-.. note::
-
-   When ``--override`` is supplied, the same ``.vast`` file is used for
-   **every** campaign folder (``<campaign-name>-<timestamp>``) found under the results directory.  The
-   config directory of the override file (its parent folder) is used to
-   resolve relative notebook paths defined under ``visualization.results.explorer.notebooks``.
-
+This page is about writing those notebooks and about the analysis library they read the
+campaign's data with. Where they *appear* is the Explorer; see :doc:`web_ui`.
 
 .. _evaluation-notebooks:
 
 Writing Evaluation Notebooks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------
 
 Notebooks are plain Jupyter ``.ipynb`` files referenced from the
 ``visualization.results.explorer.notebooks`` section of the ``.vast`` file:
@@ -124,7 +51,7 @@ are instant.
 .. _evaluation-self-contained:
 
 Self-Contained Evaluation Notebooks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------------
 
 The *self-contained* pattern extends the basic requirement above: the
 notebook is written so it can be opened and executed **directly in VS Code
@@ -132,7 +59,7 @@ or JupyterLab** (i.e. without the GUI) by setting ``DATA_DIR`` to a real
 path, while still remaining fully compatible with the GUI.
 
 The approach
-^^^^^^^^^^^^
+------------
 
 Set ``DATA_DIR`` to a real results directory in the very first code cell:
 
@@ -146,7 +73,7 @@ When the GUI runs the notebook it replaces the entire ``DATA_DIR = ...``
 line, so the hardcoded path is never used in production.
 
 Recommended first-cell pattern
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------
 
 .. code-block:: python
 
@@ -165,7 +92,7 @@ Recommended first-cell pattern
 .. _evaluation-reading-results:
 
 Reading results
-^^^^^^^^^^^^^^^
+---------------
 
 ``read_table`` reads one of the campaign's ``data.db`` tables and **restricts it to what
 ``DATA_DIR`` selects** — a run directory gives that run's rows, a configuration directory that
@@ -227,7 +154,7 @@ The per-run file readers (:mod:`robovast.common.analysis.files`) remain availabl
 genuinely not in the database.
 
 Handling missing columns defensively
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--------------------------------------
 
 When developing against a specific dataset, guard against unexpected
 DataFrame schemas so the notebook fails clearly rather than with a cryptic
@@ -242,7 +169,7 @@ DataFrame schemas so the notebook fails clearly rather than with a cryptic
                         f"Available: {list(df.columns)}")
 
 Scoping ``DATA_DIR`` per notebook type
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------
 
 Use paths appropriate to the *scope* of the notebook:
 
@@ -272,7 +199,7 @@ Use paths appropriate to the *scope* of the notebook:
    cell serve every scope.
 
 Benefits of the self-contained pattern
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------
 
 - **Interactive development**: run all cells with ``Run All`` in VS Code
   without launching the GUI.
@@ -284,7 +211,7 @@ Benefits of the self-contained pattern
   the notebook was last developed against.
 
 Typical development workflow
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-----------------------------
 
 1. Run an execution campaign to produce results.
 2. Open the relevant ``.ipynb`` file in VS Code.

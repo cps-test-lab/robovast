@@ -18,21 +18,21 @@
 Obstacle placement module for generating obstacle positions near navigation paths.
 """
 
+import logging
 import math
 import random
 from typing import List
 
 import numpy as np
-from PySide6.QtCore import QObject, Signal
 
 from .data_model import Orientation, Pose, Position, StaticObject
 from .map_loader import load_map
 
+logger = logging.getLogger(__name__)
 
-class ObstaclePlacer(QObject):
+
+class ObstaclePlacer:
     """Class for placing obstacles near navigation paths."""
-
-    status_update = Signal(str)
 
     def place_obstacles(
         self,
@@ -98,10 +98,9 @@ class ObstaclePlacer(QObject):
         attempts = 0
 
         while len(obstacle_objects) < amount and attempts < max_attempts:
-            self.status_update.emit(
-                f"Attempting to place obstacle: {len(obstacle_objects) + 1}/{amount}, "
-                f"try {attempts + 1}/{max_attempts}"
-            )
+            logger.debug(
+                "Attempting to place obstacle: %d/%d, try %d/%d",
+                len(obstacle_objects) + 1, amount, attempts + 1, max_attempts)
             attempts += 1
             # Select a random segment based on length (longer segments get more
             # obstacles)
@@ -191,10 +190,9 @@ class ObstaclePlacer(QObject):
         attempts = 0
 
         while len(obstacle_objects) < amount and attempts < max_attempts:
-            self.status_update.emit(
-                f"Attempting to place obstacle: {len(obstacle_objects) + 1}/{amount}, "
-                f"try {attempts + 1}/{max_attempts}"
-            )
+            logger.debug(
+                "Attempting to place obstacle: %d/%d, try %d/%d",
+                len(obstacle_objects) + 1, amount, attempts + 1, max_attempts)
             attempts += 1
 
             # Select random free space coordinate

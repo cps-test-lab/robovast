@@ -38,33 +38,6 @@ def configuration():
     """
 
 
-@configuration.command()
-@click.option('--debug', is_flag=True, help='Show internal config values starting with _')
-def gui(debug):
-    """Launch the graphical configuration editor.
-
-    Opens a GUI for editing and validating RoboVAST configuration files.
-    """
-    from PySide6.QtWidgets import QApplication  # pylint: disable=import-outside-toplevel
-
-    from robovast.configuration.gui.config_editor import \
-        ConfigEditor  # pylint: disable=import-outside-toplevel
-    project_config = get_project_config()
-
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-
-    try:
-        window = ConfigEditor(project_config, debug=debug)
-        window.show()
-        exit_code = app.exec_()
-        window.deleteLater()
-        sys.exit(exit_code)
-
-    except Exception as e:
-        handle_cli_exception(e)
-
-
 @configuration.command(name='list')
 @click.option('--debug', is_flag=True, help='Show internal values starting with _')
 def list_cmd(debug):
@@ -80,7 +53,7 @@ def list_cmd(debug):
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None
@@ -119,7 +92,7 @@ def info():
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None
@@ -428,7 +401,7 @@ def import_configs(source):
                           sort_keys=False, allow_unicode=True)
                 tmp_path = tmp.name
 
-            campaign_data, _ = generate_scenario_variations(
+            campaign_data = generate_scenario_variations(
                 variation_file=tmp_path,
                 progress_update_callback=None,
                 output_dir=None,
@@ -497,7 +470,7 @@ def generate(output_dir, keep_transient, no_cache):
     try:
         os.makedirs(output_dir, exist_ok=True)
 
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=output_dir,
@@ -611,7 +584,7 @@ def variation_points():
     click.echo("")
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None,

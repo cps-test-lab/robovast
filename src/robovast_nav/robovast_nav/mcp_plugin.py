@@ -736,7 +736,7 @@ def draw_map(
         NavDataError: The configuration has no map (an image tool has no result dict to
             carry an ``{"error": …}`` in, so it raises instead).
     """
-    from robovast_nav.gui.map_visualizer import \
+    from robovast_nav.map_visualizer import \
         MapVisualizer  # pylint: disable=import-outside-toplevel
 
     # Straight from the configuration's own resolved scenario parameters, rather than the

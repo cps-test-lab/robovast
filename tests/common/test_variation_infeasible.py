@@ -85,7 +85,7 @@ def test_infeasible_error_is_tolerated_when_opted_in(tmp_path):
     """With tolerate_infeasible=True (search composition's opt-in), only the
     affected config block is dropped; the rest of the campaign still composes."""
     vast = _project(tmp_path, _two_block_config("InfeasibleVariation"), _INFEASIBLE_VARIATION)
-    data, _ = generate_scenario_variations(str(vast), use_cache=False, tolerate_infeasible=True)
+    data = generate_scenario_variations(str(vast), use_cache=False, tolerate_infeasible=True)
     names = [c["name"] for c in data["configs"]]
     assert names == ["ok"]
 

@@ -35,7 +35,7 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
     Precedence:
 
     1. an initialized CWD project's ``results_dir`` (``.robovast_project``), so a
-       ``vast serve`` started inside a project and the ``vast results`` / ``vast eval``
+       ``vast serve`` started inside a project and the ``vast results``
        CLI look in the same place;
     2. otherwise a service-owned ``results`` directory beside the workspaces store, so a
        headless service still has one stable location.

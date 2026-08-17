@@ -17,11 +17,6 @@ How to run
    :nested: full
    :commands: postprocess, merge-campaigns, postprocess-commands
 
-.. click:: robovast.evaluation.result_analyzer.cli:evaluation
-   :prog: vast eval
-   :nested: full
-   :commands: gui
-
 
 Environment variables
 ---------------------

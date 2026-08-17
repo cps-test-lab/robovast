@@ -14,14 +14,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Execute an evaluation notebook and export it to a self-contained HTML page.
+"""Execute an analysis notebook and export it to a self-contained HTML page.
 
-This is the shared, Qt-free render core behind both the ``vast eval gui`` desktop
-tool (:mod:`robovast.evaluation.result_analyzer.widgets.jupyter_widget`) and the
-``robovast-service`` ``GET /campaigns/{id}/notebook`` endpoint. Given a notebook and
-the data directory of the selected node, it injects ``DATA_DIR`` (the same contract
-the desktop uses — see :ref:`evaluation-notebooks`), executes every cell, and exports
-the outputs to HTML with the inputs hidden.
+The render core behind the ``robovast-service`` ``GET /campaigns/{id}/notebook``
+endpoint, which the web UI's Results Explorer calls per selected tree node. Given a
+notebook and the data directory of that node, it injects ``DATA_DIR`` (see
+:ref:`evaluation-notebooks`), executes every cell, and exports the outputs to HTML with
+the inputs hidden.
 
 The result is cached per node: the cache lives in ``<data_dir>/.cache`` (so each
 campaign/config/run node caches separately) and is keyed on the notebook's **content**
@@ -172,13 +171,14 @@ class _ProgressExecutePreprocessor(ExecutePreprocessor):
     """``ExecutePreprocessor`` that reports per-cell progress and honours a cancel check.
 
     All three hooks are optional; without them this behaves like the plain preprocessor.
-    Used by the desktop tool (progress bar + campaign-switch cancellation) and by the web
-    endpoint, which takes *on_cell* only.
+    The web endpoint takes *on_cell* only.
 
-    *progress_cb* and *on_cell* report the same event in the two shapes its consumers
-    actually want — a percentage plus a ready-made sentence for the desktop's status line,
-    raw ``(done, total)`` counts for a caller that draws its own bar. One callback serving
-    both would mean the web service parsing cell numbers back out of an English string.
+    *progress_cb* and *on_cell* report the same event in two shapes: a percentage plus a
+    ready-made sentence for a status line, and raw ``(done, total)`` counts for a caller
+    that draws its own bar. One callback serving both would mean parsing cell numbers back
+    out of an English string. Only the second has a caller today — the first is kept
+    because a long render still wants a sentence, and the cancel hook is what makes an
+    abandoned render stop rather than run to completion.
     """
 
     def __init__(self, *args, progress_cb=None, on_cell=None, is_cancelled=None, **kwargs):

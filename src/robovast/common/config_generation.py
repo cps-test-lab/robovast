@@ -1060,21 +1060,6 @@ def _build_generate_cache_key(
     return key
 
 
-def _rebuild_variation_gui_classes(configurations: list, vast_dir="") -> dict:
-    """Cheaply reconstruct variation_gui_classes from config blocks without running variations."""
-    gui_classes = {}
-    for config_block in configurations:
-        for variation_class, _ in _get_variation_classes(config_block, vast_dir):
-            gui_class = getattr(variation_class, 'GUI_CLASS', None)
-            renderer_class = getattr(variation_class, 'GUI_RENDERER_CLASS', None)
-            if gui_class:
-                if gui_class not in gui_classes:
-                    gui_classes[gui_class] = []
-                if renderer_class and renderer_class not in gui_classes[gui_class]:
-                    gui_classes[gui_class].append(renderer_class)
-    return gui_classes
-
-
 def _result_to_transport(result: dict) -> dict:
     """Serialize a composition ``result`` to a JSON-safe transport dict.
 
@@ -1394,11 +1379,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             # so cached and freshly-composed results are structurally identical.
             _cached = _result_from_transport(_cached, output_dir)
             progress_update_callback("Loaded configurations from cache (no changes detected).")
-            # A plugin campaign's cache hit returns here WITHOUT importing the plugin:
-            # skip the GUI rebuild (which would import it in-process). Headless callers
-            # discard GUI classes anyway; the GUI editor opts out of isolation.
-            gui_classes = {} if should_isolate else _rebuild_variation_gui_classes(configurations, vast_dir)
-            return _cached, gui_classes
+            return _cached
         logger.debug("Cache MISS for generate_scenario_variations (%s)", variation_file)
     else:
         _cache_meta = None
@@ -1426,7 +1407,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
 
     configs = []
-    variation_gui_classes = {}
     campaign_input_files = []
     campaign_transient_files = []
     config_transient_files = []
@@ -1482,20 +1462,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             'config': config_dict}]
 
         for variation_class, variation_parameters in variation_classes_and_parameters:
-            variation_gui_class = None
-            if hasattr(variation_class, 'GUI_CLASS'):
-                if variation_class.GUI_CLASS is not None:
-                    variation_gui_class = variation_class.GUI_CLASS
-            if variation_gui_class:
-                if variation_gui_class not in variation_gui_classes:
-                    variation_gui_classes[variation_gui_class] = []
-            variation_gui_renderer_class = None
-            if hasattr(variation_class, 'GUI_RENDERER_CLASS'):
-                variation_gui_renderer_class = variation_class.GUI_RENDERER_CLASS
-                if variation_gui_renderer_class is not None:
-                    if variation_gui_class is None:
-                        raise ValueError(f"Variation class {variation_class.__name__} has GUI_RENDERER_CLASS defined but no GUI_CLASS.")
-                    variation_gui_classes[variation_gui_class].append(variation_gui_renderer_class)
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             # Auxiliary container: if the plugin declares one, the active backend
@@ -1673,4 +1639,4 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Failed to cache generate_scenario_variations result: %s", e)
 
-    return result, variation_gui_classes
+    return result

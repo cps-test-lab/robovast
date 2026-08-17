@@ -42,8 +42,6 @@ commands=(
     "vast exec cluster run"
     "vast exec cluster prepare-run"
     "vast results download"
-    "vast eval"
-    "vast eval gui"
 )
 
 # Test each command

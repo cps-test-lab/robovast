@@ -318,7 +318,7 @@ def stage(vast_file: str, config_name: str, *,
                 f.write(render_entrypoint(cluster=cluster))
             scenario_vars = {}
         else:
-            campaign_data, _transient = build_campaign_data(vast_file, generated)
+            campaign_data = build_campaign_data(vast_file, generated)
             campaign_data["configs"] = filter_configs_by_name(
                 campaign_data["configs"], config_name)
             # gui is forwarded so ``execution.local.gui.parameter_overrides`` reaches the

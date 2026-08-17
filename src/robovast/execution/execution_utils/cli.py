@@ -328,7 +328,7 @@ def prepare_run(output_dir, config, runs, use_resource_allocation, log_tree, deb
             # Batch is fully enumerated — materialize the whole config tree + a
             # runnable docker-compose run.sh (the classic prepare-run).
             with tempfile.TemporaryDirectory(prefix="robovast_prepare_") as tmp:
-                campaign_data, _ = generate_scenario_variations(
+                campaign_data = generate_scenario_variations(
                     variation_file=vast, progress_update_callback=None, output_dir=tmp)
                 if not campaign_data["configs"]:
                     raise click.ClickException("No configs found in vast-file.")

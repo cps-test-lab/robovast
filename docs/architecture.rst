@@ -251,7 +251,7 @@ Results/query operations key on ``campaign_id`` only.
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
 ``config_path`` selects among several ``.vast`` files in that workspace. There is no
 server-side "current project" — ``.robovast_project`` / ``vast init`` bind the *CLI's*
-project (``vast exec local run``, ``vast results``, ``vast eval``) and never select
+project (``vast exec local run``, ``vast results``) and never select
 what the service runs. Omitting ``workspace_id`` is refused rather than resolved from
 somewhere else, because the fallback that used to exist ignored ``config_path`` and so
 could run a different ``.vast`` than the caller named.
@@ -698,7 +698,7 @@ pass/fail even before postprocessing builds ``data.db``. Joining ``runs`` to any
 metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
 *<metric>*" in one query. Analysis notebooks read the same ``data.db`` through
 :mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
-:ref:`evaluation-reading-results`); the ``vast eval gui`` path is the same one.
+:ref:`evaluation-reading-results`).
 
 **Versioned, never migrated.** The layout is stamped into ``PRAGMA user_version``
 (``DATA_DB_SCHEMA_VERSION``), and no migration table goes with it — the deliberate difference

@@ -34,8 +34,8 @@ To run the example, execute the following commands in the base folder of the Rob
    # cleanup pods in cluster
    vast exec cluster cleanup
 
-   # evaluate the results
-   vast eval gui
+   # read the results in the browser
+   vast ui
 
 Introduction
 ------------
@@ -205,12 +205,13 @@ Postprocessing is cached based on the results directory hash. If the results dir
 
    vast results postprocess --force
 
-After postprocessing, the actual evaluation can be performed.
-To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
+After postprocessing, the actual evaluation can be performed. Open the web UI and use the
+Results **Explorer**: it executes the campaign's analysis notebooks server-side, one per
+selected node of the campaign/config/run tree, and renders them as HTML.
 
 .. code-block:: bash
 
-   vast eval gui
+   vast ui
 
 The visualization can be customized by adapting the ``visualization.results.explorer.notebooks`` section of the ``.vast`` configuration file.
 

@@ -23,12 +23,10 @@ from pydantic import BaseModel, ConfigDict
 from rdflib import Namespace
 
 from robovast.common import FileCache
-from robovast.common.variation import VariationGuiRenderer
 from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
                                                       ProvContribution)
 
 from ..data_model import Orientation, Pose, Position
-from ..gui.navigation_gui import NavigationGui
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
 from .nav_base_variation import NavVariation
@@ -70,58 +68,6 @@ class PathVariationRandomConfig(DestinationConfig):
     min_distance: float
     seed: int
     robot_diameter: float
-
-
-class PathVariationGuiRenderer(VariationGuiRenderer):
-
-    def update_gui(self, config, path):
-        path = config.get('_path', None)
-        if path:
-            plain_path = [(p.x, p.y) for p in path]
-            self.gui_object.draw_path(plain_path,
-                                      color='red', linewidth=2.0,
-                                      alpha=0.8, label='Path',
-                                      show_endpoints=True)
-
-        # The campaign names its own goal parameter, so the variation records which one it
-        # wrote and the renderer reads that. Guessing from a fixed pair of names drew
-        # nothing the moment an author picked a third.
-        goals = config.get('config', {}).get(config.get('_goal_parameter_name'), None)
-
-        if goals is None:
-            goal_poses_list, label = [], 'Goal Poses'
-        elif isinstance(goals, list):
-            goal_poses_list, label = goals, 'Goal Poses'
-        else:
-            goal_poses_list, label = [goals], 'Goal Pose'
-
-        if goal_poses_list:
-            # Extract x and y coordinates from Pose objects
-            x_coords = [pose.position.x for pose in goal_poses_list]
-            y_coords = [pose.position.y for pose in goal_poses_list]
-
-            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
-                                                      s=10,  # marker size
-                                                      c='blue',
-                                                      alpha=0.9,
-                                                      label=label,
-                                                      zorder=10)
-
-        # Visualize raster points if available
-        raster_points = config.get('_raster_points', None)
-        if raster_points:
-            # Draw all raster points at once for better performance
-            x_coords = [point[0] for point in raster_points]
-            y_coords = [point[1] for point in raster_points]
-            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
-                                                      s=3,  # marker size
-                                                      c='gray',
-                                                      alpha=0.3,
-                                                      label='Raster Points',
-                                                      zorder=2)
-
-        # Final canvas draw to update display
-        self.gui_object.canvas.draw()
 
 
 class StartGoalSlots:
@@ -195,8 +141,6 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     """
 
     CONFIG_CLASS = PathVariationRandomConfig
-    GUI_CLASS = NavigationGui
-    GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
@@ -551,8 +495,6 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
     """
 
     CONFIG_CLASS = PathVariationRasterizedConfig
-    GUI_CLASS = NavigationGui
-    GUI_RENDERER_CLASS = PathVariationGuiRenderer
 
     def variation(self, in_configs):
         self.progress_update("Running Rasterized Path Variation...")

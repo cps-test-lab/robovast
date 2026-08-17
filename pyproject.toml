@@ -18,13 +18,7 @@ click = "^8.1"
 pyyaml = "^6.0"
 numpy = "^1.26"
 pandas = "^2.2"
-# Qt desktop GUI (config editor / result analyzer). Optional: headless installs
-# (the in-cluster controller, CI) skip it, and PySide6 ships no linux-aarch64
-# wheels. Install with the ``gui`` extra for the desktop tools. GUI imports are
-# already lazy / guarded, so the rest of robovast runs without it.
-pyside6-essentials = {version = "^6.6", optional = true}
-pyside6-addons = {version = "^6.6", optional = true}
-# Only analysis notebooks and the desktop plots import these; nothing in robovast
+# Only analysis notebooks import these; nothing in robovast
 # itself does. Optional so a service that never renders a notebook -- and every
 # client -- skips them. The controller image installs the ``analysis`` extra because
 # `render_campaign_notebook` executes notebooks in-process.
@@ -38,8 +32,6 @@ nbconvert = {version = "^7.16", optional = true}
 lxml-html-clean = {version = "^0.1", optional = true}
 scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
-# Read by the Qt config editor only, so it follows the ``gui`` extra.
-ruamel-yaml = {version = "^0.18", optional = true}
 scenario-execution = "^1.3.0"
 # FAIR/PROV metadata generation, one module. Both call sites defer the import.
 rdflib = {version = "^7.0", optional = true}
@@ -101,7 +93,6 @@ sphinx-click = "^5.0.0"
 [tool.poetry.extras]
 nav = ["robovast-nav"]
 roqsim = ["robovast-sim-roqsim"]
-gui = ["pyside6-essentials", "pyside6-addons", "ruamel-yaml"]
 analysis = ["matplotlib", "scipy"]
 notebooks = ["nbformat", "nbconvert", "ipykernel", "lxml-html-clean"]
 fair = ["rdflib", "pyld"]
@@ -132,7 +123,6 @@ ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
-evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to
 # import the cluster package to start a service -- see service/serve_backends.py.

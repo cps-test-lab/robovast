@@ -64,7 +64,7 @@ def _client():
 
     The control tools require a service because they need an execution authority. Files
     do not: a campaign directory on this host is readable with no service running, which
-    is how ``vast results``/``vast eval`` have always worked. So the fallback is an
+    is how ``vast results`` has always worked. So the fallback is an
     explicit in-process ``LocalTransport`` — constructed deliberately here rather than
     obtained by passing an empty URL to ``RobovastClient``, where "no service" would be
     substituted for a reachable one without anyone deciding it.

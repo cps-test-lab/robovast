@@ -175,30 +175,27 @@ In case you are using ROS bags as output format, it is recommended to postproces
 
 Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
-Afterwards you can start the GUI:
+Afterwards, read the results in the browser (``vast ui``, against a running service):
 
 .. code-block:: bash
 
     vast results postprocess
     # or, to force postprocessing even if results are unchanged:
     vast results postprocess --force
-    vast evaluation gui
 
 .. note::
 
-   The GUI discovers campaigns **exclusively from a per-campaign
-   ``campaign.db`` store** — it does not walk the results filesystem. Search
-   campaigns write this store live; batch campaigns are indexed post-hoc from
-   their results tree. ``vast evaluation gui`` indexes any missing batch stores
-   automatically before launching, but you can also (re)build them explicitly:
+   The Results views discover campaigns **exclusively from a per-campaign
+   ``campaign.db`` store** — they do not walk the results filesystem. Search campaigns
+   write this store live; a batch campaign's is written by the controller that ran it.
 
-   .. code-block:: bash
+   A results tree with **no** store is therefore invisible to the UI, and nothing
+   rebuilds one: ``vast eval index``, which used to, went with the desktop tools. That
+   only affects a tree produced outside a controller — a hand-copied or pre-store
+   campaign.
 
-       vast evaluation index            # build/refresh campaign stores
-       vast evaluation index --force    # rebuild even if up to date
-
-   The store also carries the campaign **mode** (``batch``/``search``), so the
-   GUI renders the search ``batch`` level and resolves the
+   The store also carries the campaign **mode** (``batch``/``search``), so the Explorer
+   renders the search ``batch`` level and resolves the
    ``visualization.results.explorer.notebooks`` notebooks from the recorded ``config_dir``. See
    :ref:`campaign-store` for the schema and internals.
 
@@ -1326,12 +1323,13 @@ Who writes it
   reconstructs the same store by scanning a finished results tree (reusing the
   ``campaign_data`` readers). It is used for campaign dirs not produced by the
   controller — e.g. cluster results downloaded from S3 — and is idempotent
-  (mtime-guarded; ``force=True`` to rebuild), invoked by ``vast evaluation index``
-  and automatically on ``vast evaluation gui`` launch. Controller-written stores
-  are left untouched.
+  (mtime-guarded; ``force=True`` to rebuild). Controller-written stores are left
+  untouched. It has **no CLI entry point**: ``vast eval index`` was the only caller and
+  went with the desktop tools, so a tree that has no store keeps none. The function
+  itself stays because ``import-results`` and the tests use it.
 
-Store-driven GUI
-^^^^^^^^^^^^^^^^^
+Store-driven results views
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
 ``<results_dir>/*/campaign.db`` — there is no filesystem-walk or depth-based
@@ -1779,7 +1777,7 @@ service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
 this version requires setting it up again** (``vast exec cluster cleanup`` then ``setup``,
 or ``setup --force``) to add the grant.
 
-**Config editor** (``frontend/ui/src/pages/ConfigEditor.tsx``) is the browser ``vast config gui``:
+**Config editor** (``frontend/ui/src/pages/config/``) is where a ``.vast`` is authored:
 a **Monaco** editor (``frontend/ui/src/lib/monaco.ts`` bundles the editor + YAML workers and, via
 ``monaco-yaml``, drives completion/inline-validation from ``get_config_schema()``). It edits a
 workspace's ``.vast`` (workspace = the project, since a browser has no CWD), autosaves +
@@ -1803,7 +1801,7 @@ package-relative dir holding a built **Module Federation** remote (``remoteEntry
 descriptor, which ``RemotePreview.tsx`` loads at runtime (sharing the host's React singletons).
 Built-ins ship no assets; a type with neither shows just the resolved parameters.
 
-**Results viewer** (``frontend/ui/src/pages/Eval.tsx``) is the browser ``vast eval gui``: pick a
+**Results viewer** (``frontend/ui/src/pages/results/``): pick a
 campaign, browse its ``data.db`` schema, run read-only SQL, and chart the result with
 **Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
@@ -1966,8 +1964,7 @@ binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
 directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
 it), and drives ``basePose`` from the clock.
 
-Deferred: web notebook execution (a server-side kernel; the desktop ``vast eval gui`` keeps that
-role) and a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
+Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 
 .. _cluster-postprocessing:
 

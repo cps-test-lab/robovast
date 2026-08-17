@@ -917,7 +917,6 @@ def load_plugins():
     aliases = {
         'configuration': 'config',
         'execution': 'exec',
-        'evaluation': 'eval',
     }
     try:
         eps = entry_points(group='robovast.cli_plugins')

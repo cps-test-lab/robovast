@@ -59,7 +59,7 @@ def main(argv) -> int:
     from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
         _result_to_transport, generate_scenario_variations)
 
-    result, _gui_classes = generate_scenario_variations(
+    result = generate_scenario_variations(
         variation_file=job["variation_file"],
         output_dir=job["output_dir"],
         use_cache=job.get("use_cache", True),

@@ -10,7 +10,7 @@ RoboVAST ships a small **web frontend** — a browser client of the
 server use, so it works identically against a local ``vast serve`` or an
 in-cluster service.
 
-It provides four views, one per desktop GUI:
+It provides four views:
 
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
@@ -90,12 +90,12 @@ It provides four views, one per desktop GUI:
   cluster run``. *Upload to share when done* streams a raw, pre-postprocessing
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
-* **Config** — a workspace-based ``.vast`` editor with live validation and a
-  generated-configuration preview. The browser equivalent of ``vast config gui``. It also
-  serves, read-only, the configuration a campaign already ran — see
+* **Config** — a workspace-based ``.vast`` editor with live validation, a
+  generated-configuration preview, and a per-configuration view the ``.vast`` declares. It
+  also serves, read-only, the configuration a campaign already ran — see
   :ref:`web-ui-campaign-config`.
-* **Results** — browse a campaign's data, run read-only SQL, and chart it. The
-  browser equivalent of ``vast eval gui`` (SQL + charts rather than notebooks).
+* **Results** — browse a campaign's data: an Explorer over its analysis notebooks, a
+  panel-based replay of one run, and read-only SQL with charts.
 
 .. _web-ui-freshness:
 
@@ -264,8 +264,8 @@ bring such a campaign forward, migrate its configuration by hand:
 Config editor
 -------------
 
-The **Config** tab replicates ``vast config gui`` in the browser. Because a browser
-has no working directory, the project lives in a server-side **workspace** (see
+The **Config** tab is where a ``.vast`` is authored. Because a browser has no working
+directory, the project lives in a server-side **workspace** (see
 :ref:`architecture`): select or create one, **upload** the scenario file and any
 run files, and author the ``.vast`` in the Monaco editor.
 
@@ -498,9 +498,8 @@ dot; selecting a node opens its details on the right. When a campaign declares
 :ref:`evaluation notebooks <evaluation-notebooks>` under
 ``visualization.results.explorer.notebooks``, each workload appears as a **tab**, and the notebook for
 the selected node's level (campaign / batch / config / run) is executed server-side and
-shown as a rendered HTML page — the web equivalent of ``vast eval gui``. The notebook's
-``DATA_DIR`` is set to the selected node's directory (the same contract the desktop
-tool uses), so the *same* notebooks work in both. Output is cached, so re-selecting a
+shown as a rendered HTML page. The notebook's ``DATA_DIR`` is set to the selected node's
+directory (see :ref:`evaluation-notebooks`). Output is cached, so re-selecting a
 node is instant. Selecting a campaign here also selects it for the other two sub-views
 (it is the shared, URL-carried selection); the config or run picked below it is the
 Explorer's own.
@@ -515,8 +514,8 @@ so it is left flat — grouping it would add a node that says nothing.
 A batch is a grouping recorded in the store, **not** a directory: a search's configs sit
 flat under the campaign root whichever round proposed them. A ``batch`` notebook is
 therefore given the campaign root as its ``DATA_DIR`` and told *which* round through an
-injected ``BATCH`` index — again the same contract as the desktop tool, so one notebook
-serves both. See :ref:`evaluation notebooks <evaluation-notebooks>` for how to declare one.
+injected ``BATCH`` index. See :ref:`evaluation notebooks <evaluation-notebooks>` for how to
+declare one.
 
 After the declared workloads comes a built-in **Log** tab, which needs nothing in the ``.vast``.
 It shows the same merged log as the run-view panel — same filters, same colours — over whatever
