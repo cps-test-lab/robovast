@@ -131,15 +131,18 @@ def test_single_campaign_query_unchanged_without_extra(campaign):
 
 
 def test_list_campaign_plots(campaign):
-    # Author-declared plots live in the snapshot .vast under evaluation.plots.
+    # Author-declared plots live in the snapshot .vast under
+    # visualization.results.data_browser.plots.
     config_dir = __import__("pathlib").Path(campaign) / "_config"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "demo.vast").write_text(
-        "evaluation:\n"
-        "  plots:\n"
-        "    - title: Wind vs objective\n"
-        "      query: SELECT param_wind, objective FROM runs\n"
-        "      vega_lite: {mark: point}\n",
+        "visualization:\n"
+        "  results:\n"
+        "    data_browser:\n"
+        "      plots:\n"
+        "        - title: Wind vs objective\n"
+        "          query: SELECT param_wind, objective FROM runs\n"
+        "          vega_lite: {mark: point}\n",
         encoding="utf-8")
     r = run_data.list_campaign_plots(campaign)
     assert r["plots"][0]["title"] == "Wind vs objective"

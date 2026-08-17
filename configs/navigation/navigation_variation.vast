@@ -52,26 +52,28 @@ results_processing:
     # Compact, lossless costmap frames for the web Run view (see visualization below).
   - rosbags_costmap_to_csv:
       topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      campaign: analysis/analysis_campaign.ipynb
-# The web Run view (Results -> Run view): replay one run over its rosbag timeline.
 visualization:
-  panels:
-  - playback:                  # transport bar spanning the bottom (registry defaults)
-  - costmap:
-      title: Nav2 costmaps
-      position: {anchor: top-right, width: 440, height: 440}
-      minimizable: true
-      layers:
-        map: {topic: /map}
-        global: {topic: /global_costmap/costmap}
-        local: {topic: /local_costmap/costmap}
-        poses: {table: poses}
-  - scenario_tree:
-      position: {anchor: left, width: 320}
-      minimizable: true
-      source: {table: behaviors}
+  results:
+    # The web Run view (Results -> Run view): replay one run over its rosbag timeline.
+    run_view:
+      panels:
+      - playback:                  # transport bar spanning the bottom (registry defaults)
+      - costmap:
+          title: Nav2 costmaps
+          position: {anchor: top-right, width: 440, height: 440}
+          minimizable: true
+          layers:
+            map: {topic: /map}
+            global: {topic: /global_costmap/costmap}
+            local: {topic: /local_costmap/costmap}
+            poses: {table: poses}
+      - scenario_tree:
+          position: {anchor: left, width: 320}
+          minimizable: true
+          source: {table: behaviors}
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb

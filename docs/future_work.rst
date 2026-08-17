@@ -18,7 +18,7 @@ questions are well served: per-run metrics are consolidated into
 ``<campaign>/_execution/data.db`` and queried with read-only SQL
 (``describe_campaign_data`` / ``query_campaign_data_sql``), and
 a campaign's author-declared charts are exposed as Vega-Lite specs by
-``list_campaign_plots`` (from ``evaluation.plots`` in the snapshot ``.vast``).
+``list_campaign_plots`` (from ``visualization.results.data_browser.plots`` in the snapshot ``.vast``).
 
 What is **not** reachable is any raster or video output. ``read_file`` deliberately
 refuses binary content (it would be mangled, not read), so ``rosbags_to_webm``
@@ -67,7 +67,7 @@ cheap 90%: the failure being fixed is forgetting, not being unable.
 Server-rendered figures (optional)
 ----------------------------------
 
-A machine-readable figure layer **now exists**: a campaign's ``evaluation.plots``
+A machine-readable figure layer **now exists**: a campaign's ``visualization.results.data_browser.plots``
 declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
 ``list_campaign_plots`` and over the service by ``GET
 /campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
@@ -77,7 +77,7 @@ What is *not* built is a server-side ``render_analysis(campaign, spec) ->
 figure_json`` that resolves a declarative spec to a figure on the server. It is an
 open question whether this is worth building at all: an LLM that can write SQL and
 emit a Vega-Lite spec itself may not need the server to render one. Retained here
-as a possibility, not a commitment. The ``evaluation.visualization`` Jupyter
+as a possibility, not a commitment. The ``visualization.results.explorer.notebooks`` Jupyter
 notebook path (rendered to a static ``overview_*.html`` via ``nbconvert``) is
 unaffected and stays for rich, code-driven analysis.
 

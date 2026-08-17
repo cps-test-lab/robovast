@@ -1853,9 +1853,11 @@ execution:
   - '**/files/*'
   preprocessing:
   - ../../tools/ros2_exec.sh rosbags_to_csv.py
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      campaign: analysis/analysis_campaign.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb

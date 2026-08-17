@@ -2409,6 +2409,7 @@ class LocalTransport(RobovastInterface):
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         # Raw-load (not full validation) — reading declared plots must not depend on
         # the rest of the snapshot config being re-validatable.
+        from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
         from robovast.service.interface import CampaignPlotsResponse
         config_dir = Path(self._config_dir(campaign_id))
@@ -2416,7 +2417,7 @@ class LocalTransport(RobovastInterface):
         plots = []
         if vasts:
             cfg, _ = _safe_load(str(vasts[0]))
-            for p in (((cfg or {}).get("evaluation") or {}).get("plots") or []):
+            for p in (visualization_block(cfg, "results", "data_browser", "plots") or []):
                 if isinstance(p, dict) and p.get("query"):
                     plots.append({"title": p.get("title", ""), "query": p["query"],
                                   "vega_lite": p.get("vega_lite") or {}})
@@ -2426,17 +2427,17 @@ class LocalTransport(RobovastInterface):
         # Raw-load (not full validation) — reading declared panels must not depend on
         # the rest of the snapshot config being re-validatable. Reads the *effective*
         # .vast so in-place run-view visualization edits are reflected.
-        from robovast.common.config import CUSTOM_PANEL_TYPE
+        from robovast.common.config import CUSTOM_PANEL_TYPE, visualization_block
         from robovast.common.config_validation import _safe_load
         from robovast.common.simulators import merge_default_panels
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import campaign_vast
         cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
-        viz = (cfg or {}).get("visualization") or {}
+        run_view = visualization_block(cfg, "results", "run_view") or {}
         # The simulator backend contributes the panels that replay what it always records
         # (roqsim's `scene3d`), so a campaign never declares one it could not do without.
         # Merged here rather than in the UI, so validation and the view agree.
-        raw = merge_default_panels(viz.get("panels") or [], (cfg or {}).get("execution") or {})
+        raw = merge_default_panels(run_view.get("panels") or [], (cfg or {}).get("execution") or {})
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
         # for a bare panel); flatten to the ``{type, ...fields}`` the web UI consumes.
         # A bare ``- playback`` (no colon) parses to the plain string ``"playback"``.
@@ -2465,7 +2466,7 @@ class LocalTransport(RobovastInterface):
                 panel["remote"] = pkg_remotes[ptype]
             panels.append(panel)
         return CampaignPanelsResponse(
-            campaign_id=campaign_id, panels=panels, timeline=viz.get("timeline"))
+            campaign_id=campaign_id, panels=panels, timeline=run_view.get("timeline"))
 
     def resolve_campaign_panel_asset(self, campaign_id: str, rel_path: str) -> str:
         """Resolve a ``custom`` panel's staged bundle file, confined to the campaign's
@@ -2709,19 +2710,20 @@ class LocalTransport(RobovastInterface):
     _VIS_LEVELS = ("run", "config", "batch", "campaign")
 
     def _visualization_workloads(self, campaign_id: str):
-        """Parse ``evaluation.visualization`` from the snapshot ``.vast``.
+        """Parse ``visualization.results.explorer.notebooks`` from the snapshot ``.vast``.
 
         Returns ``({workload_name: {level: notebook_path}}, config_dir)`` — notebook
         paths are resolved against the ``_config`` snapshot dir, where the campaign's
-        visualization notebooks are copied (see ``common.execution``).
+        explorer notebooks are copied (see ``common.execution``).
         """
+        from robovast.common.config import visualization_block
         from robovast.common.config_validation import _safe_load
         config_dir = Path(self._config_dir(campaign_id))
         vasts = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
         workloads: dict = {}
         if vasts:
             cfg, _ = _safe_load(str(vasts[0]))
-            for view in (((cfg or {}).get("evaluation") or {}).get("visualization") or []):
+            for view in (visualization_block(cfg, "results", "explorer", "notebooks") or []):
                 if not isinstance(view, dict):
                     continue
                 for name, levels in view.items():

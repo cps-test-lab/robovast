@@ -162,7 +162,7 @@ def test_scene3d_without_a_capture_producing_simulator_is_refused():
     raw = {
         "execution": {"mode": "ros2", "containers": {
             "simulation": {"backend": "nocapture", "stage": "x"}}},
-        "visualization": {"panels": [{"scene3d": {}}]},
+        "visualization": {"results": {"run_view": {"panels": [{"scene3d": {}}]}}},
     }
 
     original = sim_mod.resolve_backend
@@ -171,7 +171,7 @@ def test_scene3d_without_a_capture_producing_simulator_is_refused():
         problems = _run_capture_problems(raw)
         assert len(problems) == 1
         assert "does not produce one" in problems[0]["message"]
-        assert problems[0]["field"] == "visualization.panels[0]"
+        assert problems[0]["field"] == "visualization.results.run_view.panels[0]"
 
         class _WithCapture(SimulatorBackend):
             def produces_run_capture(self, cfg, execution):
@@ -187,5 +187,5 @@ def test_the_capture_check_stays_quiet_without_a_backend():
     """Nothing here could tell where an unconfigured simulator's capture would come from."""
     from robovast.common.config_validation import _run_capture_problems
     raw = {"execution": {"containers": {"scenario": {"image": "a"}}},
-           "visualization": {"panels": [{"scene3d": {}}]}}
+           "visualization": {"results": {"run_view": {"panels": [{"scene3d": {}}]}}}}
     assert _run_capture_problems(raw) == []

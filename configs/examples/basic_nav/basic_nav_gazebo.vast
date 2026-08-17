@@ -33,14 +33,56 @@ configuration:
       scenario: [sim_launch_package, sim_launch_file, headless]
       values:
       - ["", "files/gazebo_tb4_launch.py", "True"]
-# Results-explorer notebook views, one per tree level. The same three the roqsim half declares, so
-# both backends are read through identical views.
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      campaign: analysis/analysis_campaign.ipynb
+visualization:
+  results:
+    # Web Run view: replay one run over its rosbag timeline.
+    run_view:
+      panels:
+      - playback:
+      # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
+      # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
+      # half the column each; both claiming `left` would stack them on top of each other.
+      - nav2_behavior_tree:
+          position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
+          minimizable: true
+      - scenario_tree:
+          title: Scenario
+          position: {anchor: bottom-left, width: 320, height: "calc(50% - 44px)"}
+          minimizable: true
+          source: {table: behaviors}
+      - costmap:
+          title: Nav2 costmaps
+          position: {anchor: top-right, width: 320, height: 550}
+          minimizable: true
+          layers:
+            map: {topic: /map}
+            global: {topic: /global_costmap/costmap}
+            local: {topic: /local_costmap/costmap}
+            poses: {table: poses}
+      # Every container's output merged with /rosout on the playback clock. The declared width is what
+      # makes `bottom-center` float above the playback bar instead of docking into it.
+      - log:
+          title: Run log
+          position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 220}
+          minimizable: true
+          minimized: true
+      - timeseries:
+          title: base_link pose
+          position: {anchor: bottom-right, width: 320, height: 220}
+          minimizable: true
+          source: {table: poses, filter: {frame: base_link}}
+          series:
+          - {column: position.x, label: x}
+          - {column: position.y, label: y}
+          - {column: orientation.yaw, label: yaw}
+    # Results-explorer notebook views, one per tree level. The same three the roqsim half declares, so
+    # both backends are read through identical views.
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb
 execution:
   containers:
     scenario:
@@ -72,43 +114,3 @@ results_processing:
   - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - rosbags_costmap_to_csv:
       topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
-# Web Run view: replay one run over its rosbag timeline.
-visualization:
-  panels:
-  - playback:
-  # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
-  # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
-  # half the column each; both claiming `left` would stack them on top of each other.
-  - nav2_behavior_tree:
-      position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
-      minimizable: true
-  - scenario_tree:
-      title: Scenario
-      position: {anchor: bottom-left, width: 320, height: "calc(50% - 44px)"}
-      minimizable: true
-      source: {table: behaviors}
-  - costmap:
-      title: Nav2 costmaps
-      position: {anchor: top-right, width: 320, height: 550}
-      minimizable: true
-      layers:
-        map: {topic: /map}
-        global: {topic: /global_costmap/costmap}
-        local: {topic: /local_costmap/costmap}
-        poses: {table: poses}
-  # Every container's output merged with /rosout on the playback clock. The declared width is what
-  # makes `bottom-center` float above the playback bar instead of docking into it.
-  - log:
-      title: Run log
-      position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 220}
-      minimizable: true
-      minimized: true
-  - timeseries:
-      title: base_link pose
-      position: {anchor: bottom-right, width: 320, height: 220}
-      minimizable: true
-      source: {table: poses, filter: {frame: base_link}}
-      series:
-      - {column: position.x, label: x}
-      - {column: position.y, label: y}
-      - {column: orientation.yaw, label: yaw}

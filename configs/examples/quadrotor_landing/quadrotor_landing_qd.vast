@@ -61,13 +61,15 @@ search:
         landing_speed: {low: 0.0, high: 5.0}
         control_effort: {low: 0.0, high: 20.0}
     sigma: 0.15
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      batch: analysis/analysis_batch.ipynb
-      campaign: analysis/analysis_qd.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          batch: analysis/analysis_batch.ipynb
+          campaign: analysis/analysis_qd.ipynb
 results_processing:
   postprocessing:
   - analysis/render.py:DescentVideo

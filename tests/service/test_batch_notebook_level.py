@@ -24,13 +24,15 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 _VAST = """\
 configuration:
   name: x
-evaluation:
-  visualization:
-    - Analysis:
-        campaign: analysis/campaign.ipynb
-        batch: analysis/batch.ipynb
-        config: analysis/config.ipynb
-        run: analysis/run.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+        - Analysis:
+            campaign: analysis/campaign.ipynb
+            batch: analysis/batch.ipynb
+            config: analysis/config.ipynb
+            run: analysis/run.ipynb
 """
 
 

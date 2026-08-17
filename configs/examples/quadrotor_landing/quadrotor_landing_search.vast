@@ -48,13 +48,15 @@ search:
   - batches: 4
   seed: 0
   # random takes no strategy_parameters
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      batch: analysis/analysis_batch.ipynb
-      campaign: analysis/analysis_qd.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          batch: analysis/analysis_batch.ipynb
+          campaign: analysis/analysis_qd.ipynb
 results_processing:
   postprocessing:
   - analysis/render.py:DescentVideo

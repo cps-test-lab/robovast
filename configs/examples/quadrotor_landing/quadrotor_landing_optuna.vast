@@ -45,13 +45,15 @@ search:
   seed: 0
   strategy_parameters:
     sampler: tpe
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      batch: analysis/analysis_batch.ipynb
-      campaign: analysis/analysis_campaign.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          batch: analysis/analysis_batch.ipynb
+          campaign: analysis/analysis_campaign.ipynb
 results_processing:
   postprocessing:
   - analysis/render.py:DescentVideo

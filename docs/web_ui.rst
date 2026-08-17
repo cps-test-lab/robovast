@@ -210,6 +210,55 @@ against it, so the two cannot drift into telling a human and an agent to reserve
 amounts for the same campaign. Each item carries a plain-text ``title`` and ``detail`` beside
 its ``kind``, so a consumer that has never heard of a particular kind can still show it.
 
+.. _visualization-key-map:
+
+What a campaign declares, and where it lands
+--------------------------------------------
+
+Everything the UI draws is declared in the ``.vast``'s ``visualization:`` block, which is
+shaped like this page: one key per view.
+
+.. code-block:: yaml
+
+   visualization:
+     config:
+       panels: [...]               # Config tab, third column
+     results:
+       run_view:
+         panels: [...]             # Results -> Run view
+         timeline: {...}           # Results -> Run view, playback time base
+       explorer:
+         notebooks: [...]          # Results -> Explorer
+       data_browser:
+         plots: [...]              # Results -> Data browser
+
+.. _visualization-old-keys:
+
+**Reading an older campaign.** These declarations used to live in two unrelated top-level
+blocks. The mapping, for anyone opening a campaign's archived ``_config/*.vast``:
+
+=================================  ============================================
+Old key                            Now
+=================================  ============================================
+``visualization.panels``           ``visualization.results.run_view.panels``
+``visualization.timeline``         ``visualization.results.run_view.timeline``
+``evaluation.visualization``       ``visualization.results.explorer.notebooks``
+``evaluation.plots``               ``visualization.results.data_browser.plots``
+=================================  ============================================
+
+This table documents a **historical format; it is not a compatibility promise**. Nothing in
+RoboVAST reads the old keys: a ``.vast`` using them is refused by name, and a campaign that
+*ran* with them keeps them in its frozen snapshot — so its Explorer tabs, declared plots and
+run-view panels do not appear, and it can neither be retriggered nor reconstructed into a
+workspace. Its data is unaffected: SQL, logs, the run listing and the download all work. To
+bring such a campaign forward, migrate its configuration by hand:
+
+.. code-block:: bash
+
+   vast files cat /results/<campaign_id>/_config/<name>.vast > old.vast
+   # move the keys per the table above, then:
+   vast workspace init <dir> --name recovered
+
 .. _web-ui-config:
 
 Config editor
@@ -447,7 +496,7 @@ one that already ran.
 **Explorer.** The tree shows each campaign's configs and runs with a pass/fail status
 dot; selecting a node opens its details on the right. When a campaign declares
 :ref:`evaluation notebooks <evaluation-notebooks>` under
-``evaluation.visualization``, each workload appears as a **tab**, and the notebook for
+``visualization.results.explorer.notebooks``, each workload appears as a **tab**, and the notebook for
 the selected node's level (campaign / batch / config / run) is executed server-side and
 shown as a rendered HTML page — the web equivalent of ``vast eval gui``. The notebook's
 ``DATA_DIR`` is set to the selected node's directory (the same contract the desktop
@@ -517,7 +566,7 @@ alongside the query itself.
 .. _declared-plots:
 
 **Declared plots.** A campaign can carry its own saved plots, authored in the
-``.vast`` under ``evaluation.plots`` (analogous to referencing analysis notebooks).
+``.vast`` under ``visualization.results.data_browser.plots`` (analogous to referencing analysis notebooks).
 Each plot is a SQL query plus a `Vega-Lite <https://vega.github.io/vega-lite/>`_
 encoding; the viewer runs the query and binds the result rows into the spec as
 ``data.values`` — so the query's column aliases are the Vega-Lite ``field`` names and
@@ -525,21 +574,23 @@ no ``data`` block is written:
 
 .. code-block:: yaml
 
-   evaluation:
-     plots:
-       - title: "Landing error vs wind speed"
-         query: >
-           SELECT r.param_wind_speed AS wind_speed,
-                  m.value            AS landing_error,
-                  r.config_name      AS config
-           FROM runs r
-           JOIN landing_error m ON (m.config_name = r.config_name AND m.run_id = r.run_id)
-         vega_lite:
-           mark: point
-           encoding:
-             x:     { field: wind_speed,    type: quantitative }
-             y:     { field: landing_error, type: quantitative }
-             color: { field: config,        type: nominal }
+   visualization:
+     results:
+       data_browser:
+         plots:
+           - title: "Landing error vs wind speed"
+             query: >
+               SELECT r.param_wind_speed AS wind_speed,
+                      m.value            AS landing_error,
+                      r.config_name      AS config
+               FROM runs r
+               JOIN landing_error m ON (m.config_name = r.config_name AND m.run_id = r.run_id)
+             vega_lite:
+               mark: point
+               encoding:
+                 x:     { field: wind_speed,    type: quantitative }
+                 y:     { field: landing_error, type: quantitative }
+                 color: { field: config,        type: nominal }
 
 Declared plots render automatically in the Results tab for that campaign, and are
 schema-validated with the rest of the ``.vast`` in the Config editor.
@@ -595,30 +646,32 @@ the verdict was recorded, leave the control disabled with that reason on hover: 
 trimmed, rather than trimmed to a guess.
 
 Which panels appear, where they sit, and where each gets its data are declared in the
-``.vast`` under a top-level ``visualization.panels`` list — the campaign author defines
+``.vast`` under a top-level ``visualization.results.run_view.panels`` list — the campaign author defines
 the view once and every run of the campaign replays through it:
 
 .. code-block:: yaml
 
    visualization:
-     panels:
-       - playback:                            # transport bar; defaults to full-width bottom
-       - costmap:
-           title: Nav2 costmaps
-           position: { anchor: top-right, width: 440, height: 440 }
-           minimizable: true
-           layers:
-             map:    { topic: /map }
-             global: { topic: /global_costmap/costmap }
-             local:  { topic: /local_costmap/costmap }
-             poses:  { table: poses }         # TF source for placing/moving layers
-       - scenario_tree:
-           position: { anchor: left, width: 320 }
-           source: { table: behaviors }
-       - camera:
-           title: Camera
-           position: { fill: true }     # everything the docked panels leave over
-           source: { topic: /camera/image_raw }
+     results:
+       run_view:
+         panels:
+           - playback:                        # transport bar; defaults to full-width bottom
+           - costmap:
+               title: Nav2 costmaps
+               position: { anchor: top-right, width: 440, height: 440 }
+               minimizable: true
+               layers:
+                 map:    { topic: /map }
+                 global: { topic: /global_costmap/costmap }
+                 local:  { topic: /local_costmap/costmap }
+                 poses:  { table: poses }     # TF source for placing/moving layers
+           - scenario_tree:
+               position: { anchor: left, width: 320 }
+               source: { table: behaviors }
+           - camera:
+               title: Camera
+               position: { fill: true }       # everything the docked panels leave over
+               source: { topic: /camera/image_raw }
 
 Each panel entry is a single-key mapping — the key is the panel **type** (selecting the
 panel plugin) and its value holds that panel's fields: an optional ``title``, a
@@ -716,7 +769,7 @@ The built-in panels:
 progress bar, an icon play/pause, a **2×** fast-forward toggle, and a ``current / total``
 time label. It owns the clock; every other panel follows it. The timeline range comes from the run
 capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
-before any postprocessing), else from an explicit ``visualization.timeline``, else from the union of the
+before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
 postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.
 
 That range is the whole **recording**; where the trial ended is a separate figure, so the
@@ -1018,7 +1071,7 @@ both charts get a cursor:
              color: {field: series, type: nominal}
 
 This is the same authoring language as the campaign-scoped :ref:`declared plots
-<declared-plots>` above; the difference is scope and binding — ``evaluation.plots`` runs a SQL query
+<declared-plots>` above; the difference is scope and binding — ``visualization.results.data_browser.plots`` runs a SQL query
 across the whole campaign and renders in the Data browser, while a ``vega`` panel binds one table of
 one run and renders in the Run view.
 
@@ -1043,13 +1096,15 @@ code lives is invisible to the config:
   .. code-block:: yaml
 
      visualization:
-       panels:
-         - custom:
-             remote: panels/my_panel        # dir (or remoteEntry.js) relative to the .vast
-             module: ./myPanel              # the exposed module (default ./panel)
-             title: My view
-             position: { anchor: right, width: 420 }
-             # any further keys are panel-specific data bindings (as for built-ins)
+       results:
+         run_view:
+           panels:
+             - custom:
+                 remote: panels/my_panel    # dir (or remoteEntry.js) relative to the .vast
+                 module: ./myPanel          # the exposed module (default ./panel)
+                 title: My view
+                 position: { anchor: right, width: 420 }
+                 # any further keys are panel-specific data bindings (as for built-ins)
 
 **Writing a panel.** A panel is a React component implementing the same contract the
 built-ins use — ``({ spec, clock, data }) => JSX`` — so it is time-synced and reads the

@@ -136,13 +136,14 @@ class RunResultsAnalyzer(QMainWindow):
         self._campaign_index = {}
 
         # When an override is given, load it once and reuse for all campaigns.
-        override_eval = None
+        override_explorer = None
         override_dir = None
         if self._override_vast:
             override_dir = str(Path(self._override_vast).parent)
             try:
-                override_eval = load_config(
-                    self._override_vast, "evaluation", allow_missing=True)
+                viz = load_config(
+                    self._override_vast, "visualization", allow_missing=True) or {}
+                override_explorer = ((viz.get("results") or {}).get("explorer")) or {}
                 print(f"Using override .vast for notebook discovery: {self._override_vast}")
             except Exception as e:
                 raise RuntimeError(
@@ -156,18 +157,18 @@ class RunResultsAnalyzer(QMainWindow):
                 print(f"Warning: could not read campaign store {store_path}: {e}")
                 continue
 
-            # Resolve the evaluation block + notebook base dir (override wins).
-            if override_eval is not None:
-                eval_block, nb_base = override_eval, override_dir
+            # Resolve the explorer block + notebook base dir (override wins).
+            if override_explorer is not None:
+                explorer_block, nb_base = override_explorer, override_dir
                 config_file = self._override_vast
             else:
-                config_json = entry["config_json"]
-                eval_block = config_json.get("evaluation") or {}
+                viz = entry["config_json"].get("visualization") or {}
+                explorer_block = ((viz.get("results") or {}).get("explorer")) or {}
                 nb_base = entry["config_dir"]
                 config_file = entry["config_file"]
 
             entry["workloads"] = self._build_workloads(
-                eval_block, nb_base, entry["name"])
+                explorer_block, nb_base, entry["name"])
             entry["config_file"] = config_file
             self._campaign_index[entry["name"]] = entry
             result[entry["name"]] = {
@@ -219,10 +220,10 @@ class RunResultsAnalyzer(QMainWindow):
             "batches": batches,
         }
 
-    def _build_workloads(self, eval_block, nb_base, campaign_name):
-        """Build notebook workloads from an evaluation block resolved against nb_base."""
+    def _build_workloads(self, explorer_block, nb_base, campaign_name):
+        """Build notebook workloads from an explorer block resolved against nb_base."""
         workloads = []
-        for view in (eval_block.get("visualization") or []):
+        for view in ((explorer_block or {}).get("notebooks") or []):
             if not isinstance(view, dict):
                 continue
             for name, values in view.items():

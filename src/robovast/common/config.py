@@ -17,6 +17,7 @@
 import logging
 import math
 import re
+from functools import lru_cache
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -484,15 +485,9 @@ class PlotSpec(BaseModel):
     vega_lite: dict[str, Any] = {}
 
 
-class EvaluationConfig(BaseModel):
-    visualization: Optional[list[dict[str, Any]]] = None
-    #: Declared plots, rendered by the web eval viewer (see :class:`PlotSpec`).
-    plots: Optional[list[PlotSpec]] = None
-
-
-#: Core built-in panel types bundled into the web UI itself (statically imported in
-#: ``frontend/ui/src/panels``). Kept here (rather than only in the UI) so the ``.vast`` fails fast
-#: on a typo instead of silently dropping a panel. Package-provided panels (e.g.
+#: Core built-in run-view panel types bundled into the web UI itself (statically imported in
+#: ``frontend/ui/src/panels/run_view``). Kept here (rather than only in the UI) so the ``.vast``
+#: fails fast on a typo instead of silently dropping a panel. Package-provided panels (e.g.
 #: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
 #: group and are accepted in addition to these (see ``PanelConfig._known_type``).
 BUILTIN_PANEL_TYPES = frozenset({
@@ -500,9 +495,143 @@ BUILTIN_PANEL_TYPES = frozenset({
     "camera",
 })
 
-#: Entry-point group for package-provided run-view panels (loaded as Module-Federation
-#: remotes). Mirrors ``robovast.variation_types`` for variation-type web previews.
+#: Core built-in *config-view* panel types (``frontend/ui/src/panels/config``). A second
+#: vocabulary rather than a second mechanism: the two surfaces take different props (a config
+#: panel gets a resolved configuration, a run panel a playback clock and a run-scoped data
+#: provider), so a run panel declared in ``visualization.config.panels`` -- or the reverse --
+#: has to be refused rather than mounted against props it cannot read.
+BUILTIN_CONFIG_PANEL_TYPES = frozenset({
+    "parameters", "world", "scene3d",
+})
+
+#: Entry-point group for package-provided panels of *either* surface (loaded as
+#: Module-Federation remotes). Mirrors ``robovast.variation_types`` for variation-type web
+#: previews. Which surface a registered panel belongs to is the panel class's own ``SURFACE``
+#: attribute (``"run"`` by default, ``"config"`` for a config-view panel), so one group, one
+#: web-asset attribute and one asset route serve both.
 PANEL_TYPES_GROUP = "robovast.panel_types"
+
+#: The surface a panel type belongs to, when its class does not say. ``run`` because every
+#: panel that existed before the config view is one, so an unmarked third-party panel keeps
+#: working unchanged.
+DEFAULT_PANEL_SURFACE = "run"
+
+
+@lru_cache(maxsize=None)
+def panel_type_names(surface: str) -> frozenset:
+    """Names of the installed :data:`PANEL_TYPES_GROUP` panels belonging to *surface*.
+
+    Needs the classes themselves -- ``SURFACE`` is a class attribute -- so unlike
+    :func:`~robovast.common.plugin_ref.list_ref_names` this imports each plugin. Best-effort
+    in the same way: a plugin that fails to import is attributed to **both** surfaces rather
+    than dropped, because "unknown panel type" would be a wrong diagnosis of a broken import,
+    and the runtime reports the real failure when it tries to serve the bundle.
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+    names = set()
+    try:
+        eps = list(entry_points().select(group=PANEL_TYPES_GROUP))
+    except Exception:  # noqa: BLE001 - enumeration must never break validation
+        logger.debug("could not enumerate entry-point group %r", PANEL_TYPES_GROUP)
+        return frozenset()
+    for ep in eps:
+        try:
+            if getattr(ep.load(), "SURFACE", DEFAULT_PANEL_SURFACE) == surface:
+                names.add(ep.name)
+        except Exception:  # noqa: BLE001 - a broken plugin is not an unknown panel type
+            logger.debug("panel plugin %r failed to load; accepting it on every surface", ep.name)
+            names.add(ep.name)
+    return frozenset(names)
+
+
+def visualization_block(cfg, *path):
+    """Walk ``visualization.<path...>`` of a **raw** config dict; ``None`` if any step is absent.
+
+    Several readers take a snapshot ``.vast`` raw rather than through :class:`ConfigV1` -- reading
+    a campaign's declared panels or plots must not depend on the rest of its config still being
+    re-validatable. Without this each of them spells the nested path out as a chain of
+    ``(… or {}).get(…)``, which is where a key rename goes wrong quietly.
+    """
+    node = cfg or {}
+    for key in ('visualization',) + path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+        if node is None:
+            return None
+    return node
+
+
+def flatten_panel_shorthand(v):
+    """Accept the ``.vast``'s panel shorthand and return ``{type, ...fields}``.
+
+    A panel is authored as a single-key mapping keyed by its type (``- playback:`` /
+    ``- costmap: {title: ...}``) or as a bare string (``- playback``), and the service
+    flattens it the same way before serving it to the UI (see ``list_campaign_panels``).
+    Shared by both panel surfaces so validation cannot come to accept a shape the runtime
+    does not, or the other way round.
+    """
+    if isinstance(v, str):
+        return {'type': v}
+    if isinstance(v, dict) and 'type' not in v and len(v) == 1:
+        (ptype, props), = v.items()
+        if props is None or isinstance(props, dict):
+            return {'type': ptype, **(props or {})}
+    return v
+
+
+def panel_json_schema(core_schema, handler):
+    """JSON Schema for a panel, reflecting the shorthand :func:`flatten_panel_shorthand` takes.
+
+    The shorthand accepts shapes the post-validation model cannot express: a bare string (the
+    type), or a single-key mapping keyed by the type instead of a ``type`` property. The default
+    schema would require a literal ``type``, so the web editor flags valid YAML as
+    ``Missing property "type"``. The shorthand branch keeps the remaining panel properties, so
+    the editor still completes and validates ``title`` & co. inside it.
+    """
+    default = handler(core_schema)
+    props = {k: v for k, v in default.get('properties', {}).items() if k != 'type'}
+    return {
+        'anyOf': [
+            {'type': 'string'},
+            default,
+            {
+                'type': 'object',
+                'minProperties': 1,
+                'maxProperties': 1,
+                'additionalProperties': {
+                    'anyOf': [
+                        {'type': 'null'},
+                        {'type': 'object', 'properties': props, 'additionalProperties': True},
+                    ],
+                },
+            },
+        ],
+    }
+
+
+def check_panel_type(value: str, builtins: frozenset, surface: str, allow_custom: bool) -> str:
+    """Validate a panel ``type`` against *surface*'s vocabulary, or raise.
+
+    Valid types are the surface's core built-ins plus the installed package panels registered
+    for it, plus ``custom`` where that surface supports a user-authored bundle. Package types
+    come from the entry points so validation matches what the runtime can actually serve --
+    ``costmap`` is valid only when ``robovast_nav`` is installed.
+
+    The surface is part of the check because the two panel kinds take different props: naming a
+    run panel in ``visualization.config.panels`` would mount a component that reads a playback
+    clock against a resolved configuration, which is a blank panel at best.
+    """
+    allowed = builtins | panel_type_names(surface)
+    if allow_custom:
+        allowed = allowed | {CUSTOM_PANEL_TYPE}
+    if value not in allowed:
+        where = "config-view" if surface == "config" else "run-view"
+        raise ValueError(
+            f"unknown {where} panel type {value!r}; expected one of {', '.join(sorted(allowed))} "
+            f"(package panels require the providing plugin, e.g. 'robovast_nav', installed)")
+    return value
+
 
 #: The panel type for a user-authored panel shipped as a built bundle next to the
 #: ``.vast`` (referenced by its ``remote``/``module`` fields rather than by a registered
@@ -637,61 +766,17 @@ class PanelConfig(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _flatten_shorthand(cls, v):
-        # The .vast authors panels in shorthand -- ``- playback:`` / ``- costmap: {...}`` (a
-        # single-key mapping keyed by the type) or a bare ``- playback`` string -- which the
-        # service flattens to ``{type, ...fields}`` for the UI (see list_campaign_panels).
-        # Accept the same shorthand here so validation matches what the runtime serves.
-        if isinstance(v, str):
-            return {'type': v}
-        if isinstance(v, dict) and 'type' not in v and len(v) == 1:
-            (ptype, props), = v.items()
-            if props is None or isinstance(props, dict):
-                return {'type': ptype, **(props or {})}
-        return v
+        return flatten_panel_shorthand(v)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema, handler):
-        # ``_flatten_shorthand`` accepts shapes the post-validation model can't express:
-        # a bare string (the panel type), or a single-key mapping keyed by the type
-        # (``- playback:`` / ``- costmap: {title: ...}``) instead of a ``type`` property.
-        # The default schema would require a literal ``type`` property, so the web editor
-        # flags valid YAML as ``Missing property "type"``. Reflect the real accepted forms
-        # here; the shorthand branch keeps the remaining panel properties so the editor
-        # still completes/validates ``title``, ``position`` & co. inside it.
-        default = handler(core_schema)
-        props = {k: v for k, v in default.get('properties', {}).items() if k != 'type'}
-        return {
-            'anyOf': [
-                {'type': 'string'},
-                default,
-                {
-                    'type': 'object',
-                    'minProperties': 1,
-                    'maxProperties': 1,
-                    'additionalProperties': {
-                        'anyOf': [
-                            {'type': 'null'},
-                            {'type': 'object', 'properties': props, 'additionalProperties': True},
-                        ],
-                    },
-                },
-            ],
-        }
+        return panel_json_schema(core_schema, handler)
 
     @field_validator('type')
     @classmethod
     def _known_type(cls, v):
-        # Valid types: core built-ins + installed package panels (entry points) + ``custom``.
-        # Package types come from the entry-point group so validation matches what the runtime
-        # can actually serve; e.g. ``costmap`` is valid only when ``robovast_nav`` is installed.
-        from robovast.common.plugin_ref import \
-            list_ref_names  # pylint: disable=import-outside-toplevel
-        allowed = BUILTIN_PANEL_TYPES | list_ref_names(PANEL_TYPES_GROUP) | {CUSTOM_PANEL_TYPE}
-        if v not in allowed:
-            raise ValueError(
-                f"unknown panel type {v!r}; expected one of {', '.join(sorted(allowed))} "
-                f"(package panels require the providing plugin, e.g. 'robovast_nav', installed)")
-        return v
+        return check_panel_type(v, BUILTIN_PANEL_TYPES, DEFAULT_PANEL_SURFACE,
+                                allow_custom=True)
 
     @model_validator(mode='after')
     def _custom_needs_remote(self):
@@ -743,7 +828,88 @@ class TimelineConfig(BaseModel):
     time_column: str = 'timestamp'
 
 
-class VisualizationConfig(BaseModel):
+def _last_member_may_omit_size(panels, describe, size_name: str, of_what: str):
+    """Refuse a stack where a member that takes "the rest" is not the last one.
+
+    A vertical stack sizes its members in order and one without a size takes whatever is left,
+    so anything declared after it would be laid out on top of it. Shared by the run view's
+    ``left``/``right`` gutters and the config view's single column, which are the same rule
+    about the same layout arithmetic.
+    """
+    for i, panel in enumerate(panels[:-1]):
+        if describe(panel) is None:
+            raise ValueError(
+                f"panel '{panel.type}' is {of_what} with no {size_name}, so it takes the rest "
+                f"of the column and the {len(panels) - i - 1} panel(s) after it would land on "
+                f"top of it. Give it a {size_name}, or make it the last one."
+            )
+
+
+class ConfigPanelConfig(BaseModel):
+    """One panel of the web **config view** -- the Config tab's third column, which shows what
+    a selected generated configuration contains.
+
+    Same shorthand and the same "extra keys are this panel's data bindings" rule as
+    :class:`PanelConfig`, but a much smaller layout grammar: the config view is one column, so a
+    panel declares only its ``height`` (pixels, or a ``"35%"`` string). There are no anchors and
+    no drag/resize -- the column is the campaign author's declared order.
+    """
+    model_config = ConfigDict(extra='allow')
+    type: str
+    title: Optional[str] = None
+    #: Pixels (int) or a percentage of the column (``"35%"``). Omit on the last panel to give it
+    #: whatever the ones above it left over.
+    height: Optional[int | str] = None
+    hidden: Optional[bool] = None
+    #: For ``type: custom`` -- path (relative to the ``.vast``) to the built panel bundle.
+    remote: Optional[str] = None
+    #: For ``type: custom`` -- the exposed Module-Federation module to render.
+    module: Optional[str] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def _flatten_shorthand(cls, v):
+        return flatten_panel_shorthand(v)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        return panel_json_schema(core_schema, handler)
+
+    @field_validator('type')
+    @classmethod
+    def _known_type(cls, v):
+        return check_panel_type(v, BUILTIN_CONFIG_PANEL_TYPES, "config", allow_custom=True)
+
+    @model_validator(mode='after')
+    def _custom_needs_remote(self):
+        if self.type == CUSTOM_PANEL_TYPE and not self.remote:
+            raise ValueError(
+                "a 'custom' panel must set 'remote' (path to its built bundle relative to "
+                "the .vast); 'module' is optional (default './panel')")
+        if self.type != CUSTOM_PANEL_TYPE and (self.remote or self.module):
+            raise ValueError(
+                f"'remote'/'module' are only valid on a 'custom' panel, not {self.type!r}")
+        return self
+
+
+class ConfigViewConfig(BaseModel):
+    """The Config tab's third column: what each generated configuration contains."""
+    model_config = ConfigDict(extra='forbid')
+    panels: Optional[list[ConfigPanelConfig]] = Field(default_factory=list)
+
+    @field_validator('panels', mode='before')
+    @classmethod
+    def _default_empty(cls, v):
+        return [] if v is None else v
+
+    @model_validator(mode='after')
+    def _column_members_sized(self):
+        visible = [p for p in (self.panels or []) if not p.hidden]
+        _last_member_may_omit_size(visible, lambda p: p.height, 'height', 'in the config column')
+        return self
+
+
+class RunViewConfig(BaseModel):
     """The web run-view: an ordered list of panels for replaying a single run of a
     postprocessed campaign over its timeline. Rendered by the UI from the campaign's
     snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
@@ -767,14 +933,8 @@ class VisualizationConfig(BaseModel):
         for side in ('left', 'right'):
             members = [p for p in (self.panels or [])
                        if p.position and p.position.anchor == side and not p.hidden]
-            for p in members[:-1]:
-                if p.position.height is None:
-                    raise ValueError(
-                        f"panel '{p.type}' is in the '{side}' column with no height, so it takes "
-                        f"the rest of the column and the {len(members) - members.index(p) - 1} "
-                        f"panel(s) after it would land on top of it. Give it a height, or make it "
-                        f"the last '{side}' panel."
-                    )
+            _last_member_may_omit_size(
+                members, lambda p: p.position.height, 'height', f"in the '{side}' column")
         return self
 
     @model_validator(mode='after')
@@ -790,6 +950,40 @@ class VisualizationConfig(BaseModel):
                 f"rectangle. Keep one and anchor or hide the rest."
             )
         return self
+
+
+class ExplorerConfig(BaseModel):
+    """The Results **Explorer**: analysis notebooks, executed server-side per selected tree
+    node (campaign / batch / config / run) and rendered as HTML."""
+    model_config = ConfigDict(extra='forbid')
+    notebooks: Optional[list[dict[str, Any]]] = None
+
+
+class DataBrowserConfig(BaseModel):
+    """The Results **Data browser**: campaign-scoped declared plots (see :class:`PlotSpec`)."""
+    model_config = ConfigDict(extra='forbid')
+    plots: Optional[list[PlotSpec]] = None
+
+
+class ResultsViewConfig(BaseModel):
+    """What the Results tab draws, one key per sub-view."""
+    model_config = ConfigDict(extra='forbid')
+    run_view: Optional[RunViewConfig] = None
+    explorer: Optional[ExplorerConfig] = None
+    data_browser: Optional[DataBrowserConfig] = None
+
+
+class VisualizationConfig(BaseModel):
+    """Everything the web UI draws for this campaign, shaped like the UI itself.
+
+    One key per place a declaration lands -- the Config tab, and the Results tab's three
+    sub-views -- so reading a ``.vast`` says *where* each block appears. This replaced a flat
+    ``visualization.panels`` beside an unrelated top-level ``evaluation:`` block, which said
+    neither.
+    """
+    model_config = ConfigDict(extra='forbid')
+    config: Optional[ConfigViewConfig] = None
+    results: Optional[ResultsViewConfig] = None
 
 
 class FloatDim(BaseModel):
@@ -1113,9 +1307,8 @@ class ConfigV1(BaseModel):
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
-    evaluation: Optional[EvaluationConfig] = None
-    #: The web run-view panels (see :class:`VisualizationConfig`). Top-level (distinct
-    #: from ``evaluation.visualization``, which drives the notebook analysis views).
+    #: Everything the web UI draws, shaped like the UI (see :class:`VisualizationConfig`):
+    #: ``config.panels``, ``results.run_view``, ``results.explorer``, ``results.data_browser``.
     visualization: Optional[VisualizationConfig] = None
 
     @field_validator('plugins')

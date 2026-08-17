@@ -777,7 +777,7 @@ The web :ref:`Run view <run-view>` is a small **panel framework**, built so it c
 reworking the core. It has four decoupled contracts, and panels only ever see the bottom
 three:
 
-* **Declaration** — the campaign's ``.vast`` carries a top-level ``visualization.panels``
+* **Declaration** — the campaign's ``.vast`` carries a top-level ``visualization.results.run_view.panels``
   list (:class:`robovast.common.config.VisualizationConfig`), served verbatim to the UI by
   ``list_campaign_panels`` (the same raw-load pattern as ``list_campaign_plots``). The
   frontend normalizes it against each panel type's registry defaults

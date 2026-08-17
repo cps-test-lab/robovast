@@ -189,8 +189,25 @@ def _scenario_file_problems(raw, vast_dir):
     return problems, scenario_file
 
 
+#: Where a run-view panel lives in the config, as the reader sees it. Used to build the
+#: ``field`` of every panel problem, so a report points at the key the author actually wrote.
+RUN_VIEW_PANELS = "visualization.results.run_view.panels"
+
+
+def _run_view_panels(raw):
+    """The raw ``visualization.results.run_view.panels`` list, or ``[]``.
+
+    Every panel check walks the same path and each used to inline it, which is one copy per
+    check of a key that can be renamed.
+    """
+    from robovast.common.config import \
+        visualization_block  # pylint: disable=import-outside-toplevel
+    panels = visualization_block(raw, "results", "run_view", "panels")
+    return panels if isinstance(panels, list) else []
+
+
 def _panel_entry(entry):
-    """Extract ``(type, fields)`` from a raw ``visualization.panels`` entry, accepting the
+    """Extract ``(type, fields)`` from a raw run-view panels entry, accepting the
     key-as-type shorthand (``- costmap: {...}`` / bare ``- playback``) as well as the
     flattened ``{type, ...}`` form. Returns ``(None, {})`` for an unrecognized shape."""
     if isinstance(entry, str):
@@ -300,12 +317,9 @@ def _scene_descriptor_problems(raw, vast_dir):
         matches_patterns  # pylint: disable=import-outside-toplevel
 
     problems = []
-    viz = raw.get("visualization") or {}
-    if not isinstance(viz, dict):
-        return problems
     patterns = ((raw.get("execution") or {}).get("run_files")) or []
     generated = _generated_out_dirs(raw)
-    for i, entry in enumerate(viz.get("panels") or []):
+    for i, entry in enumerate(_run_view_panels(raw)):
         ptype, props = _panel_entry(entry)
         if ptype != "scene3d" or not isinstance(props, dict):
             continue
@@ -320,7 +334,7 @@ def _scene_descriptor_problems(raw, vast_dir):
         # Campaign-relative '_config/<rel>' addresses the same '<rel>' that run_files
         # and generators write, relative to the .vast.
         rel = path[len("_config/"):]
-        field = f"visualization.panels[{i}].scene.path"
+        field = f"{RUN_VIEW_PANELS}[{i}].scene.path"
         if any(rel == out or rel.startswith(out + "/") for out in generated):
             continue
         abs_path = os.path.join(vast_dir, rel)
@@ -374,10 +388,7 @@ def _run_capture_problems(raw):
     capture would come from.
     """
     problems = []
-    viz = raw.get("visualization") or {}
-    if not isinstance(viz, dict):
-        return problems
-    panels = [(i, entry) for i, entry in enumerate(viz.get("panels") or [])
+    panels = [(i, entry) for i, entry in enumerate(_run_view_panels(raw))
               if _panel_entry(entry)[0] == "scene3d"]
     if not panels:
         return problems
@@ -401,7 +412,7 @@ def _run_capture_problems(raw):
         f"the scene3d panel replays a run capture, but the '{name}' simulator does not "
         f"produce one. The campaign would run and pass, and the 3D view would show a world "
         f"that never moves.",
-        field=f"visualization.panels[{i}]") for i, _entry in panels]
+        field=f"{RUN_VIEW_PANELS}[{i}]") for i, _entry in panels]
 
 
 def _camera_panel_problems(raw):
@@ -425,10 +436,7 @@ def _camera_panel_problems(raw):
         VIDEO_PRODUCER_COMMANDS  # pylint: disable=import-outside-toplevel
 
     problems = []
-    viz = raw.get("visualization") or {}
-    if not isinstance(viz, dict):
-        return problems
-    panels = [(i, props) for i, entry in enumerate(viz.get("panels") or [])
+    panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
               for ptype, props in [_panel_entry(entry)] if ptype == "camera"]
     if not panels:
         return problems
@@ -445,7 +453,7 @@ def _camera_panel_problems(raw):
         "declares no step that produces one. Add `rosbags_to_webm` (naming the image topic "
         "the scenario records) to results_processing.postprocessing, or point the panel at a "
         "file directly with `source: {path: ..., t0: ...}`.",
-        field=f"visualization.panels[{i}]")
+        field=f"{RUN_VIEW_PANELS}[{i}]")
         for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
 
 
@@ -458,7 +466,7 @@ def _vega_panel_problems(i, props):
         panel_source_problems  # pylint: disable=import-outside-toplevel
 
     problems = []
-    prefix = f"visualization.panels[{i}]"
+    prefix = f"{RUN_VIEW_PANELS}[{i}]"
     spec = props.get("vega_lite")
     if not isinstance(spec, dict) or not spec:
         problems.append(_problem(
@@ -480,7 +488,7 @@ def _vega_panel_problems(i, props):
 
 
 def _panel_problems(raw, vast_dir):
-    """Validate ``visualization.panels`` beyond the schema: a ``custom`` panel's built
+    """Validate the run-view panels beyond the schema: a ``custom`` panel's built
     bundle must exist next to the ``.vast``, and a ``vega`` panel carries the bindings it
     needs. Package panels (entry-point types) are only name-checked by the schema — their
     built assets ship with the plugin and may be absent in a source checkout, so they are
@@ -491,10 +499,7 @@ def _panel_problems(raw, vast_dir):
         _validate_relative_path  # pylint: disable=import-outside-toplevel
 
     problems = []
-    viz = raw.get("visualization") or {}
-    if not isinstance(viz, dict):
-        return problems
-    for i, entry in enumerate(viz.get("panels") or []):
+    for i, entry in enumerate(_run_view_panels(raw)):
         ptype, props = _panel_entry(entry)
         if ptype == VEGA_PANEL_TYPE:
             problems.extend(_vega_panel_problems(i, props if isinstance(props, dict) else {}))
@@ -504,7 +509,7 @@ def _panel_problems(raw, vast_dir):
         remote = props.get("remote") if isinstance(props, dict) else None
         if not remote:
             continue  # schema already flags a custom panel missing 'remote'
-        field = f"visualization.panels[{i}].remote"
+        field = f"{RUN_VIEW_PANELS}[{i}].remote"
         try:
             _validate_relative_path(remote, field)
         except ValueError as e:

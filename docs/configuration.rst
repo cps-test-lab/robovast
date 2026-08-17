@@ -1114,10 +1114,12 @@ campaign — so here they are together. A reader who finds only one of them gets
 
    # 3. the run view plays it. A bare `- camera:` is enough when the run has one video.
    visualization:
-     panels:
-     - camera:
-         title: Monitor camera
-         position: {anchor: center, width: 560, height: 560}
+     results:
+       run_view:
+         panels:
+         - camera:
+             title: Monitor camera
+             position: {anchor: center, width: 560, height: 560}
 
 Validation catches the common half-step: a ``camera`` panel with no step that produces a video
 is refused before the campaign runs, rather than showing an empty panel after the compute is
@@ -1259,23 +1261,47 @@ Defines metadata processing plugins that run after generic metadata generation.
            param1: value1
 
 
-Evaluation Section
-------------------
+.. _visualization-section:
 
-The ``evaluation`` section defines how run results should be visualized and evaluated.
+Visualization Section
+---------------------
 
-visualization
-^^^^^^^^^^^^^
+The ``visualization`` section declares everything the web UI draws for this campaign, and it
+is **shaped like the UI**: one key per place a declaration appears, so reading it says *where*
+each block shows up.
+
+.. code-block:: yaml
+
+   visualization:
+     config:                       # the Config tab
+       panels: [...]               #   its third column, per generated configuration
+     results:                      # the Results tab
+       run_view:
+         panels: [...]             #   the replay panels
+         timeline: {...}           #   which table defines the playback clock
+       explorer:
+         notebooks: [...]          #   analysis notebooks, one tab each
+       data_browser:
+         plots: [...]              #   campaign-scoped declared plots
+
+.. note::
+
+   This replaced a flat ``visualization.panels`` beside a separate top-level ``evaluation:``
+   block (``evaluation.visualization`` for the notebooks, ``evaluation.plots`` for the plots).
+   The ``evaluation:`` key is **gone** — it is not accepted, and a ``.vast`` still using it is
+   refused by name. See :ref:`the key map <visualization-key-map>` in the web UI page.
+
+results.explorer.notebooks
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Type:** List of dictionaries
 
 **Required:** No
 
-Defines evaluation notebooks for visualization in the evaluation GUI. Each entry creates a
-tab in the GUI — in the desktop viewer (``vast eval gui``) and in the web Results Explorer
-alike, which execute the same notebooks against the same ``DATA_DIR`` contract.
+Defines analysis notebooks for the Results Explorer. Each entry creates a tab, executed
+server-side against the ``DATA_DIR`` contract for the selected tree node.
 
-Each dictionary can have a custom name and four reserved keys for different evaluation scopes:
+Each dictionary can have a custom name and four reserved keys for different analysis scopes:
 
 - ``run``: Path to Jupyter notebook for analyzing a single run
 - ``config``: Path to Jupyter notebook for analyzing all runs of a configuration
@@ -1285,16 +1311,18 @@ Each dictionary can have a custom name and four reserved keys for different eval
 
 .. code-block:: yaml
 
-   evaluation:
-     visualization:
-     - Analysis:
-         run: analysis/analysis_run.ipynb
-         config: analysis/analysis_config.ipynb
-         batch: analysis/analysis_batch.ipynb
-         campaign: analysis/analysis_campaign.ipynb
-     - Performance:
-         run: analysis/performance_run.ipynb
-         config: analysis/performance_config.ipynb
+   visualization:
+     results:
+       explorer:
+         notebooks:
+         - Analysis:
+             run: analysis/analysis_run.ipynb
+             config: analysis/analysis_config.ipynb
+             batch: analysis/analysis_batch.ipynb
+             campaign: analysis/analysis_campaign.ipynb
+         - Performance:
+             run: analysis/performance_run.ipynb
+             config: analysis/performance_config.ipynb
 
 **Notebook requirements:**
 
@@ -1375,9 +1403,11 @@ Here's a complete example showing all major configuration options:
         frames: [base_link]
      - rosbags_to_csv
      - rosbags_to_webm
-   evaluation:
-     visualization:
-     - Analysis:
-         run: analysis/analysis_run.ipynb
-         config: analysis/analysis_config.ipynb
-         campaign: analysis/analysis_campaign.ipynb
+   visualization:
+     results:
+       explorer:
+         notebooks:
+         - Analysis:
+             run: analysis/analysis_run.ipynb
+             config: analysis/analysis_config.ipynb
+             campaign: analysis/analysis_campaign.ipynb

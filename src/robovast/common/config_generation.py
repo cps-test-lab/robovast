@@ -856,18 +856,26 @@ def _validate_relative_path(path, description="path"):
         raise ValueError(f"{description} must not escape the base directory: {path}")
 
 
+def _section(obj, key):
+    """``obj[key]`` whether *obj* is a plain dict or a pydantic model, else ``None``.
+
+    The config reaches this module both ways -- raw YAML during composition, validated models
+    from the service -- and the nested ``visualization`` tree would otherwise need this pair of
+    branches at every level.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None) if obj is not None else None
+
+
 def _collect_analysis_input_files(parameters, base_dir=None):
-    """Collect file paths referenced in evaluation.visualization and results.postprocessing sections."""
+    """Collect file paths referenced in the explorer notebooks and results.postprocessing."""
     analysis_files = []
 
-    # Collect visualization files from evaluation section
-    evaluation = parameters.get('evaluation')
-    if isinstance(evaluation, dict):
-        visualizations = evaluation.get('visualization') or []
-    elif evaluation is not None and hasattr(evaluation, 'visualization'):
-        visualizations = evaluation.visualization or []
-    else:
-        visualizations = []
+    # Explorer notebooks: visualization.results.explorer.notebooks
+    visualizations = _section(
+        _section(_section(_section(parameters, 'visualization'), 'results'), 'explorer'),
+        'notebooks') or []
 
     # Collect postprocessing files from results_processing section.
     # The top-level config key is ``results_processing`` (not ``results``).
@@ -925,7 +933,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     _collect_ref(search_extract_plugin)
 
     # Custom run-view panels ship a built Module-Federation bundle next to the .vast
-    # (``visualization.panels: - custom: {remote: <dir-or-remoteEntry.js>}``). Stage every
+    # (``visualization.results.run_view.panels: - custom: {remote: <dir-or-remoteEntry.js>}``). Stage every
     # file in each bundle dir so remoteEntry.js + its chunks land in _config/ and are served
     # per campaign at runtime. Package panels (entry-point types) ship their own assets and
     # are not collected here.

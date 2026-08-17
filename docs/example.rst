@@ -212,7 +212,7 @@ To simplify this process, RoboVAST provides a GUI tool, which enables users to e
 
    vast eval gui
 
-The visualization can be customized by adapting the ``evaluation.visualization`` section of the ``.vast`` configuration file.
+The visualization can be customized by adapting the ``visualization.results.explorer.notebooks`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml

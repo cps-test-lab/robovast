@@ -199,7 +199,7 @@ Afterwards you can start the GUI:
 
    The store also carries the campaign **mode** (``batch``/``search``), so the
    GUI renders the search ``batch`` level and resolves the
-   ``evaluation.visualization`` notebooks from the recorded ``config_dir``. See
+   ``visualization.results.explorer.notebooks`` notebooks from the recorded ``config_dir``. See
    :ref:`campaign-store` for the schema and internals.
 
 
@@ -1230,7 +1230,7 @@ Schema
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
-  against which ``evaluation.visualization`` notebooks resolve), ``config_json``
+  against which ``visualization.results.explorer.notebooks`` notebooks resolve), ``config_json``
   (the full config), an opaque ``strategy_state`` blob for resumable
   strategies, and the campaign's **execution provenance**:
   ``robovast_version``, ``execution_type`` (``local``/``cluster``), ``image``,
@@ -1813,7 +1813,7 @@ helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3
 resolve the campaign dir per transport (``LocalTransport`` on disk, the cluster service via
 ``fetch_campaign`` from the object store), and the MCP ``run_data`` plugin resolves it via
 ``results_resolver`` **or delegates to a configured service** — so CLI, MCP, and the web UI query
-results identically, local or cluster. User-declared plots (``evaluation.plots`` in the ``.vast``,
+results identically, local or cluster. User-declared plots (``visualization.results.data_browser.plots`` in the ``.vast``,
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
@@ -1828,7 +1828,7 @@ without touching any panel:
   ``registerPanel`` (``registry.ts``) by importing ``frontend/ui/src/panels/index.ts``. *Remote*
   panels — package-provided or user-authored — are loaded at runtime as Module-Federation
   remotes (see below) and never touch the static registry. The ``.vast``'s
-  ``visualization.panels`` specs are normalized by ``parseVastPanels.ts`` (single-key
+  ``visualization.results.run_view.panels`` specs are normalized by ``parseVastPanels.ts`` (single-key
   shorthand → ``{type, ...fields}``; the same shorthand is accepted by the Pydantic schema,
   see ``PanelConfig._flatten_shorthand``). Valid ``type`` values are the core built-ins
   (``BUILTIN_PANEL_TYPES``) ∪ installed ``robovast.panel_types`` entry-point names ∪

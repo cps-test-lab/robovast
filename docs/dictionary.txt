@@ -83,6 +83,7 @@ reproducible
 Retrigger
 rollups
 ROS
+retriggered
 rosbag
 rosbags
 rosout

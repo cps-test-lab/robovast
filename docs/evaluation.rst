@@ -9,7 +9,7 @@ for exploration and visualization of scenario execution results.
 .. note::
 
    The :doc:`web UI <web_ui>` Results **Explorer** renders these same
-   ``evaluation.visualization`` notebooks per selected node, executed server-side and
+   ``visualization.results.explorer.notebooks`` notebooks per selected node, executed server-side and
    shown as HTML — so the notebooks written below work in both the desktop GUI and the
    browser.
 
@@ -68,7 +68,7 @@ for example your current working copy:
 
 **When to use ``--override``**
 
-- You have updated the ``evaluation.visualization`` section (e.g. new notebooks,
+- You have updated the ``visualization.results.explorer.notebooks`` section (e.g. new notebooks,
   changed paths) and want the GUI to pick up the changes immediately without
   re-running the scenario.
 - The results were produced in a different directory and the campaign snapshot
@@ -81,7 +81,7 @@ for example your current working copy:
    When ``--override`` is supplied, the same ``.vast`` file is used for
    **every** campaign folder (``<campaign-name>-<timestamp>``) found under the results directory.  The
    config directory of the override file (its parent folder) is used to
-   resolve relative notebook paths defined under ``evaluation.visualization``.
+   resolve relative notebook paths defined under ``visualization.results.explorer.notebooks``.
 
 
 .. _evaluation-notebooks:
@@ -90,16 +90,18 @@ Writing Evaluation Notebooks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Notebooks are plain Jupyter ``.ipynb`` files referenced from the
-``evaluation.visualization`` section of the ``.vast`` file:
+``visualization.results.explorer.notebooks`` section of the ``.vast`` file:
 
 .. code-block:: yaml
 
-   evaluation:
-     visualization:
-       - MyAnalysis:
-           run: analysis/analysis_run.ipynb
-           config: analysis/analysis_config.ipynb
-           campaign: analysis/analysis_campaign.ipynb
+   visualization:
+     results:
+       explorer:
+         notebooks:
+           - MyAnalysis:
+               run: analysis/analysis_run.ipynb
+               config: analysis/analysis_config.ipynb
+               campaign: analysis/analysis_campaign.ipynb
 
 There are three reserved scopes:
 
@@ -289,7 +291,7 @@ Typical development workflow
 3. Set ``DATA_DIR`` to the actual campaign/config/run directory.
 4. Develop and iterate with **Run All** (or cell-by-cell).
 5. Once satisfied, commit the notebook.  The GUI will use it via the
-   ``evaluation.visualization`` section of the ``.vast`` file; ``DATA_DIR``
+   ``visualization.results.explorer.notebooks`` section of the ``.vast`` file; ``DATA_DIR``
    will be replaced automatically.
 6. To share the notebook with colleagues working on the same dataset, leave
    the real ``DATA_DIR`` value in place -- they only need to update the path.

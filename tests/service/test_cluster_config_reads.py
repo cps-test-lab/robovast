@@ -59,10 +59,12 @@ class _FakeStorage:
 
 
 PLOTS_VAST = b"""\
-evaluation:
-  plots:
-    - title: speed
-      query: SELECT time, speed FROM runs
+visualization:
+  results:
+    data_browser:
+      plots:
+        - title: speed
+          query: SELECT time, speed FROM runs
 """
 
 

@@ -10,8 +10,13 @@ import pytest
 from pydantic import ValidationError
 
 from robovast.common.config import (DATA_QUERY_ROW_CAP, ConfigV1, PanelConfig, PanelPosition,
-                                    VisualizationConfig)
+                                    RunViewConfig)
 from robovast.common.config_validation import _panel_problems
+
+
+def _viz(panels):
+    """A raw config whose run view declares *panels*."""
+    return {"visualization": {"results": {"run_view": {"panels": panels}}}}
 
 
 def test_builtin_shorthand():
@@ -44,17 +49,17 @@ def test_remote_only_on_custom():
 
 
 def test_validation_flags_missing_custom_bundle(tmp_path):
-    raw = {"visualization": {"panels": [
-        {"custom": {"remote": "panels/missing", "module": "./x"}}]}}
+    raw = _viz([
+        {"custom": {"remote": "panels/missing", "module": "./x"}}])
     problems = _panel_problems(raw, str(tmp_path))
     assert len(problems) == 1
-    assert problems[0]["field"] == "visualization.panels[0].remote"
+    assert problems[0]["field"] == "visualization.results.run_view.panels[0].remote"
 
 
 def test_validation_passes_when_bundle_present(tmp_path):
     (tmp_path / "panels" / "ok").mkdir(parents=True)
     (tmp_path / "panels" / "ok" / "remoteEntry.js").write_text("//\n")
-    raw = {"visualization": {"panels": [{"custom": {"remote": "panels/ok"}}]}}
+    raw = _viz([{"custom": {"remote": "panels/ok"}}])
     assert _panel_problems(raw, str(tmp_path)) == []
 
 
@@ -95,16 +100,16 @@ def test_vega_rejects_incomplete_bindings(props):
 def test_validation_reports_every_broken_vega_panel():
     # Why this check exists at all: the schema raises on the first bad panel, so a .vast with two
     # of them would only ever show one. ``validate_project`` is the collect-all report.
-    raw = {"visualization": {"panels": [
+    raw = _viz([
         {"vega": {"source": {"table": "poses"}}},   # missing vega_lite
         {"vega": {"vega_lite": VEGA_SPEC}},         # missing source
-    ]}}
+    ])
     fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
-    assert fields == ["visualization.panels[0].vega_lite", "visualization.panels[1].source"]
+    assert fields == ["visualization.results.run_view.panels[0].vega_lite", "visualization.results.run_view.panels[1].source"]
 
 
 def test_validation_passes_for_complete_vega_panel():
-    raw = {"visualization": {"panels": [_vega()]}}
+    raw = _viz([_vega()])
     assert _panel_problems(raw, "/nonexistent") == []
 
 
@@ -132,14 +137,14 @@ def test_vega_rejects_a_row_cap_the_service_will_not_honour():
 
 
 def test_validation_reports_thinning_problems_per_panel():
-    raw = {"visualization": {"panels": [
+    raw = _viz([
         _vega(source={"table": "poses", "decimate_hz": 0}),
         _vega(max_rows=99999),
-    ]}}
+    ])
     fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
     assert fields == [
-        "visualization.panels[0].source.decimate_hz",
-        "visualization.panels[1].max_rows",
+        "visualization.results.run_view.panels[0].source.decimate_hz",
+        "visualization.results.run_view.panels[1].max_rows",
     ]
 
 
@@ -175,7 +180,7 @@ def test_placement_rejects_combinations_it_could_not_honour(position):
 
 def test_only_one_panel_may_fill():
     with pytest.raises(ValidationError):
-        VisualizationConfig.model_validate({"panels": [
+        RunViewConfig.model_validate({"panels": [
             {"scene3d": {"position": {"fill": True}}},
             {"camera": {"position": {"fill": True}}},
         ]})
@@ -199,7 +204,7 @@ def _column(*heights):
     ("calc(50% - 44px)", None),
 ])
 def test_column_members_may_be_sized_by_ratio_pixels_or_remainder(heights):
-    assert len(VisualizationConfig.model_validate(_column(*heights)).panels) == len(heights)
+    assert len(RunViewConfig.model_validate(_column(*heights)).panels) == len(heights)
 
 
 @pytest.mark.parametrize("heights", [
@@ -208,12 +213,12 @@ def test_column_members_may_be_sized_by_ratio_pixels_or_remainder(heights):
 ])
 def test_only_the_last_column_member_may_omit_its_height(heights):
     with pytest.raises(ValidationError):
-        VisualizationConfig.model_validate(_column(*heights))
+        RunViewConfig.model_validate(_column(*heights))
 
 
 def test_a_hidden_fill_panel_does_not_count():
     # Hidden panels are filtered out before layout, so they occupy no rectangle to collide over.
-    vis = VisualizationConfig.model_validate({"panels": [
+    vis = RunViewConfig.model_validate({"panels": [
         {"scene3d": {"position": {"fill": True}}},
         {"camera": {"position": {"fill": True}, "hidden": True}},
     ]})

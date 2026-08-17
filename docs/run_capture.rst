@@ -259,9 +259,11 @@ shutdown, against the still-live model — no world rebuild, and no GL backend i
      # - ROQSIM_CAPTURE_FPS: "25"            # optional; samples per *simulated* second
 
    visualization:
-     panels:
-     - scene3d:
-         position: { fill: true }
+     results:
+       run_view:
+         panels:
+         - scene3d:
+             position: { fill: true }
          scene:   { path: _config/files/scene/scene.json, scope: campaign }
          capture: { path: capture/capture.json }
 

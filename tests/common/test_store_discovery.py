@@ -33,9 +33,11 @@ VAST = textwrap.dedent("""\
       containers: {scenario: {image: img}}
       runs: 2
       scenario_file: scenario.osc
-    evaluation:
-      visualization:
-      - View: {run: r.ipynb, config: c.ipynb}
+    visualization:
+      results:
+        explorer:
+          notebooks:
+          - View: {run: r.ipynb, config: c.ipynb}
     """)
 
 
@@ -64,7 +66,8 @@ def test_read_campaign_store_and_workloads(tmp_path):
     assert [(u["config_name"], u["status"], u["n_samples"]) for u in units] == [("ca", "passed", 2)]
 
     workloads = R._build_workloads(
-        None, entry["config_json"]["evaluation"], entry["config_dir"], "camp")
+        None, entry["config_json"]["visualization"]["results"]["explorer"],
+        entry["config_dir"], "camp")
     assert len(workloads) == 1
     assert workloads[0].name == "View"
     assert workloads[0].run_nb.endswith("r.ipynb")

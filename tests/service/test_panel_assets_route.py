@@ -54,13 +54,15 @@ def _make_campaign(tmp_path):
     (cfg / "camp.vast").write_text(
         "version: 2\n"
         "visualization:\n"
-        "  panels:\n"
-        "  - playback:\n"
-        "  - costmap:\n"
-        "      title: Nav2\n"
-        "  - custom:\n"
-        "      remote: panels/my\n"
-        "      module: ./myPanel\n"
+        "  results:\n"
+        "    run_view:\n"
+        "      panels:\n"
+        "      - playback:\n"
+        "      - costmap:\n"
+        "          title: Nav2\n"
+        "      - custom:\n"
+        "          remote: panels/my\n"
+        "          module: ./myPanel\n"
     )
     (cfg / "panels" / "my" / "remoteEntry.js").write_text("// built bundle\n")
     (tmp_path / "secret.txt").write_text("outside")

@@ -20,11 +20,13 @@ VAST = textwrap.dedent("""\
       containers: {scenario: {image: img}}
       runs: 2
       scenario_file: scenario.osc
-    evaluation:
-      visualization:
-      - Analysis:
-          run: analysis/run.ipynb
-          campaign: analysis/camp.ipynb
+    visualization:
+      results:
+        explorer:
+          notebooks:
+          - Analysis:
+              run: analysis/run.ipynb
+              campaign: analysis/camp.ipynb
     """)
 
 
@@ -79,11 +81,13 @@ def test_build_campaign_store_batch(tmp_path):
         assert all(u["n_samples"] == 2 for u in units.values())
         assert units["ca"]["result_dir"] == "ca"
 
-    # config_json carries the evaluation.visualization block for the GUI.
+    # config_json carries the explorer notebooks, which is how they resolve for a
+    # campaign read back from its store.
     import json
     with CampaignStore(store_path) as store:
         cfg = json.loads(store.list_campaigns()[0]["config_json"])
-    assert cfg["evaluation"]["visualization"][0]["Analysis"]["run"] == "analysis/run.ipynb"
+    notebooks = cfg["visualization"]["results"]["explorer"]["notebooks"]
+    assert notebooks[0]["Analysis"]["run"] == "analysis/run.ipynb"
 
 
 def _write_execution_record(campaign, execution_time: str) -> None:
