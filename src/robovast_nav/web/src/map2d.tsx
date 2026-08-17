@@ -12,9 +12,18 @@
 //
 // Everything below the fetch is occupancyGrid.ts's: the same decode-to-canvas, the same grayscale
 // ramp and the same planar transforms the run view's costmap panel draws with.
+//
+// Bindings (vast visualization.config.panels), both optional:
+//   map: files/depot.yaml           # a checked-in map, when no variation contributes one
+//   markers:                        # literal markers, and ones bound to a resolved parameter
+//     - {kind: pose, pos: [0, 0], yaw: 0, label: start}
+//     - {kind: pose, param: goal_pose, label: goal}
+//
+// The markers are drawn in the MAP frame -- this panel *is* the map -- so a map-frame parameter needs
+// no `offset:` here, where the world-frame 3D scene does.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ConfigPanelProps, SceneMarker } from '@robovast/panel-kit'
+import { declaredMarkers, type ConfigPanelProps, type SceneMarker } from '@robovast/panel-kit'
 import {
   applyPlanar,
   decodeGrid,
@@ -33,6 +42,24 @@ const MAP_FILE_ROLE = 'map'
 /** Fraction of the panel left as margin when fitting the map. */
 const FIT_MARGIN = 0.06
 
+/** Candidate scale-bar lengths in metres: a 1/2/5 sequence, so the bar is always a round number. */
+const SCALE_STEPS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200]
+
+/** The panel's own ink and a halo that contrasts with it.
+ *
+ *  The canvas is transparent — what surrounds the map is the panel, so the annotations have to be
+ *  legible against whatever the host's theme paints there. Taken from the element's computed `color`
+ *  rather than a constant: a remote panel shares only react with the host and cannot read its theme,
+ *  but the inherited text colour is that theme, already resolved. A fixed slate-on-white pair read
+ *  as invisible the moment the host went dark. */
+function inkFor(el: HTMLElement): { ink: string; halo: string } {
+  const ink = getComputedStyle(el).color || '#334155'
+  const [r = 0, g = 0, b = 0] = (ink.match(/[\d.]+/g) ?? []).map(Number)
+  // Rec. 601 luma: light ink means a dark surface behind it, so the halo goes the other way.
+  const light = (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5
+  return { ink, halo: light ? 'rgba(0, 0, 0, 0.75)' : 'rgba(255, 255, 255, 0.85)' }
+}
+
 const note: React.CSSProperties = { margin: 8, color: '#b26a00', fontSize: 12, lineHeight: 1.4 }
 
 interface View {
@@ -43,15 +70,26 @@ interface View {
   cy: number
 }
 
-export default function Map2DPanel({ config, fileUrl }: ConfigPanelProps) {
+export default function Map2DPanel({ spec, config, fileUrl }: ConfigPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [grid, setGrid] = useState<OccupancyGrid | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View | null>(null)
   const drag = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
 
-  const mapPath = config.contribution?.files?.[MAP_FILE_ROLE]
-  const markers = config.contribution?.markers ?? []
+  // A declared `map:` wins over a contributed one: it is the campaign author naming a file that is
+  // checked in, where the contribution is what a variation happened to generate. A campaign whose
+  // only factor is a plain parameter list has no variation to contribute anything and would
+  // otherwise have no map at all, though its map is sitting right there in the project.
+  const declaredMap = typeof spec.config?.map === 'string' ? spec.config.map : undefined
+  const mapPath = declaredMap || config.contribution?.files?.[MAP_FILE_ROLE]
+
+  // Contributed plus declared, concatenated rather than one overriding the other -- the same rule
+  // (and the same resolver) the 3D scene panel uses.
+  const markers = useMemo<SceneMarker[]>(
+    () => [...(config.contribution?.markers ?? []), ...declaredMarkers(spec.config, config)],
+    [config, spec.config],
+  )
 
   useEffect(() => {
     if (!mapPath) return
@@ -116,16 +154,22 @@ export default function Map2DPanel({ config, fileUrl }: ConfigPanelProps) {
     ctx.drawImage(bitmap, 0, 0, o.width * o.res * current.scale, o.height * o.res * current.scale)
     ctx.restore()
 
-    drawMarkers(ctx, markers, toPx, current.scale)
+    const { ink, halo } = inkFor(canvas)
+    drawMarkers(ctx, markers, toPx, current.scale, halo)
+    drawScaleBar(ctx, rect.width, rect.height, current.scale, ink, halo)
     if (!view) setView(current)
   }, [grid, bitmap, markers, view])
 
   if (!mapPath) {
     return (
       <div style={note}>
-        No map for this configuration. This panel draws the occupancy map a nav variation planned
-        on, which reaches it as the <code>map</code> entry of the variation&apos;s contribution —
-        a campaign whose factors place nothing has none.
+        No map for this configuration. A map reaches this panel one of two ways: as the{' '}
+        <code>map</code> entry of a variation&apos;s contribution — a campaign whose factors place
+        nothing has none — or declared on the panel itself, which is how a campaign points at a map
+        that is checked in:
+        <pre style={{ margin: '6px 0 0' }}>
+          {'- map2d:\n    map: files/depot.yaml'}
+        </pre>
       </div>
     )
   }
@@ -134,7 +178,10 @@ export default function Map2DPanel({ config, fileUrl }: ConfigPanelProps) {
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: '100%', height: '100%', display: 'block', cursor: 'grab', background: '#eef1f5' }}
+      // No background: the map's unknown cells are transparent (mapColor) and so is everything
+      // around the grid, so the panel's own surface shows through instead of a light slab of ours
+      // sitting in a dark theme.
+      style={{ width: '100%', height: '100%', display: 'block', cursor: 'grab' }}
       onWheel={(e) => {
         e.preventDefault()
         setView((v) => (v ? { ...v, scale: v.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15) } : v))
@@ -158,18 +205,25 @@ export default function Map2DPanel({ config, fileUrl }: ConfigPanelProps) {
       onMouseLeave={() => {
         drag.current = null
       }}
+      // Back to fit. Zooming into a corner is easy to do and, without this, only a remount undoes.
+      onDoubleClick={() => setView(null)}
+      title="drag to pan, wheel to zoom, double-click to fit"
     />
   )
 }
 
-/** Draw the contributed markers top-down. The same marker list the 3D scene draws, projected: a
- *  box becomes its footprint, a pose a dot with a heading tick, a path a polyline. A kind with no
- *  2D meaning is skipped rather than approximated. */
+/** Draw the markers top-down. The same marker list the 3D scene draws, projected: a box becomes its
+ *  footprint, a pose a dot with a heading tick, a path a polyline. A kind with no 2D meaning is
+ *  skipped rather than approximated.
+ *
+ *  Labels are drawn here and nowhere else so far: `label` is part of the marker contract, and two
+ *  pose dots distinguished only by colour do not say which is the start. */
 function drawMarkers(
   ctx: CanvasRenderingContext2D,
   markers: SceneMarker[],
   toPx: (x: number, y: number) => { px: number; py: number },
   scale: number,
+  halo: string,
 ) {
   for (const marker of markers) {
     const color = marker.color || '#38bdf8'
@@ -237,5 +291,61 @@ function drawMarkers(
       default:
         break
     }
+
+    // `point` is left unlabelled on purpose: a rasterized path contributes hundreds of them, all
+    // named the same, and the labels would bury the map they are drawn on.
+    if (marker.label && marker.kind !== 'point') {
+      drawLabel(ctx, marker.label, px + 7, py - 6, color, halo)
+    }
   }
+}
+
+/** Small text with a halo, so it stays readable over free cells (near-white), occupied ones
+ *  (near-black) and the bare panel alike -- a marker sits on all three, and picking one text colour
+ *  loses the others. */
+function drawLabel(ctx: CanvasRenderingContext2D, text: string, px: number, py: number,
+                   color: string, halo: string) {
+  ctx.save()
+  ctx.font = '11px system-ui, -apple-system, sans-serif'
+  ctx.textBaseline = 'middle'
+  ctx.lineWidth = 3
+  ctx.strokeStyle = halo
+  ctx.strokeText(text, px, py)
+  ctx.fillStyle = color
+  ctx.fillText(text, px, py)
+  ctx.restore()
+}
+
+/** A round-number scale bar, bottom-left. This is a metric top-down view of a place a robot drives
+ *  through, so "how far is that" is the question it is asked most; the alternative is a reader
+ *  counting grid cells they cannot see. */
+function drawScaleBar(ctx: CanvasRenderingContext2D, width: number, height: number, scale: number,
+                      ink: string, halo: string) {
+  // The largest round length that fits a quarter of the panel, so the bar stays a comparable size
+  // as the view zooms rather than growing off the edge.
+  const budget = width * 0.25
+  const metres = [...SCALE_STEPS].reverse().find((m) => m * scale <= budget) ?? SCALE_STEPS[0]
+  const length = metres * scale
+  const x = 10
+  const y = height - 12
+
+  ctx.save()
+  // The halo first, as a slightly fatter line under the bar: the bar crosses both the map and the
+  // bare panel, so it needs the same two-tone treatment the labels get.
+  ctx.lineWidth = 4
+  ctx.strokeStyle = halo
+  ctx.beginPath()
+  ctx.moveTo(x, y)
+  ctx.lineTo(x + length, y)
+  ctx.stroke()
+  ctx.lineWidth = 1.5
+  ctx.strokeStyle = ink
+  ctx.beginPath()
+  ctx.moveTo(x, y - 4)
+  ctx.lineTo(x, y)
+  ctx.lineTo(x + length, y)
+  ctx.lineTo(x + length, y - 4)
+  ctx.stroke()
+  drawLabel(ctx, `${metres} m · map frame`, x + length + 6, y - 1, ink, halo)
+  ctx.restore()
 }

@@ -43,6 +43,26 @@ COPY frontend/ui/ ./
 COPY frontend/panel-kit/ /panel-kit
 RUN npm run build          # -> /ui/dist
 
+# -- robovast_nav's panel remote (costmap, map2d, nav2_behavior_tree) ---------
+# Built here for the same reason the SPA is, and it is easy to miss: this bundle is
+# *package data* of robovast-nav (pyproject `include = robovast_nav/web/dist/**`), it is
+# git-ignored, and nothing in the Python install builds it. Without this stage the image
+# ships whatever `dist/` happened to be lying in the build context -- a stale bundle from
+# someone's laptop, or, from a clean clone, none at all: the service then serves the panel
+# TYPE (the entry point is installed either way) with no assets behind it, and every nav
+# panel in the run and config views fails to load at runtime.
+#
+# The directory layout is reproduced rather than flattened: the package's vite/tsconfig
+# resolve @robovast/panel-kit at ../../../frontend/panel-kit relative to web/, so the two
+# must sit where that alias points.
+FROM node:20-slim AS nav-panels-build
+WORKDIR /build/src/robovast_nav/web
+COPY src/robovast_nav/web/package.json src/robovast_nav/web/package-lock.json ./
+RUN npm ci
+COPY frontend/panel-kit/ /build/frontend/panel-kit/
+COPY src/robovast_nav/web/ ./
+RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
+
 FROM python:3.12-slim
 
 # BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
@@ -111,6 +131,11 @@ RUN pip install --no-cache-dir poetry==1.8.2 \
 # — fast.
 COPY README.md ./
 COPY src ./src
+# The panel bundle, into the package that declares it as data -- so the wheel poetry builds
+# below carries it. After `COPY src` (which would otherwise shadow it) and before the
+# install (which is what packages it).
+COPY --from=nav-panels-build /build/src/robovast_nav/robovast_nav/web/dist \
+     ./src/robovast_nav/robovast_nav/web/dist
 RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks fair sftp" --no-cache
 
 # The Kubernetes execution lane. It is a separate distribution that depends on robovast --

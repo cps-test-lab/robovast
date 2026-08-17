@@ -24,14 +24,13 @@ import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import type { ConfigPanelProps, SceneMarker } from '@robovast/panel-kit'
+import { declaredMarkers, type ConfigPanelProps, type SceneMarker } from '@robovast/panel-kit'
 import { registerConfigPanel } from '@/lib/panels/registry'
 import { robovast } from '@/lib/robovastClient'
 import { buildMarkers, type MarkerLayer } from '@/lib/scene3d/markers'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
-import { declaredMarkers } from './declaredMarkers'
 
 function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)

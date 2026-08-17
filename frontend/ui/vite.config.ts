@@ -96,6 +96,12 @@ export default defineConfig({
       '@robovast/panel-kit': fileURLToPath(new URL('../panel-kit/src/index.ts', import.meta.url)),
     },
   },
+  test: {
+    // The second entry is ../panel-kit: shared, framework-free TypeScript with no build tooling of
+    // its own, so its tests run here rather than through a second vitest install. Without it a kit
+    // module's test is simply never run — vitest's default include is rooted at this package.
+    include: ['src/**/*.test.{ts,tsx}', '../panel-kit/src/**/*.test.ts'],
+  },
   build: {
     // The editor and charting vendors are legitimately large; warning about them on every
     // build trains people to ignore the warning. The real guard is the chunk table in CI.

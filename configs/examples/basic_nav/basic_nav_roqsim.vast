@@ -33,18 +33,24 @@ visualization:
     panels:
     - parameters: {title: Scenario parameters, height: "35%"}
     - world: {title: World configuration, height: "15%"}
-    # The Depot world this campaign runs, with this configuration's endpoints drawn on it. No
-    # variation contributes markers here -- `goal_pose` is a plain ParameterVariationList, which
-    # varies a number and knows nothing about placement -- so the two poses are declared.
-    - scene3d:
-        title: Scene
+    # The grid this campaign navigates, with this configuration's endpoints drawn on it. `map2d` and
+    # not `scene3d`: the 3D panel keys its geometry on the simulator image, and this example pins a
+    # mutable `:latest` tag on purpose (so it runs for anyone who clones the repo), which cannot
+    # identify the bytes it would compile -- there would be nothing to look at. The 2D map needs
+    # nothing but the two files below, and it is the view nav2 plans in anyway.
+    - map2d:
+        title: Map
+        # The very map the scenario hands nav2 (scenario_roqsim.osc: key_value('map',
+        # '/config/files/depot.yaml')), so this is the grid the run plans on and not a look-alike.
+        # Declared because nothing contributes it: `goal_pose` is a plain ParameterVariationList,
+        # which varies a number and knows nothing about placement.
+        map: files/depot.yaml
         markers:
-        # The robot spawns at world (-8, 0); see world/depot_nav2.yaml's spawn_robot plugin.
-        - {kind: pose, pos: [-8.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
-        # goal_pose is a MAP-frame pose and map = world + (8, 0) for this world (the same offset
-        # the analysis applies to the ground-truth frame), so the marker is shifted back by it.
-        # Declared here rather than inferred: nothing in the panel can know a campaign's frames.
-        - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal, color: "#4ade80"}
+        # MAP-frame, unlike the 3D scene's world-frame markers -- this panel *is* the map -- so
+        # goal_pose needs no offset here. The robot starts at the map origin: it spawns at world
+        # (-8, 0) and map = world + (8, 0), which is also where AMCL is seeded (files/nav2_params.yaml).
+        - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     # Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the roqsim backend
     # contributes it, because a campaign it runs always records the capture that panel replays.

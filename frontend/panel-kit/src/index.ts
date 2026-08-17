@@ -16,6 +16,9 @@ export type {
   VariationPreview,
 } from './configPanel'
 
+export type { DeclaredMarker } from './declaredMarkers'
+export { declaredMarkers } from './declaredMarkers'
+
 export { useCanvasClock } from './useCanvasClock'
 
 export { lastAtOrBefore, nearestIndex } from './timeIndex'

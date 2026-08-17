@@ -1,4 +1,4 @@
-// Markers a .vast declares directly on the scene3d config panel.
+// Markers a .vast declares directly on a geometry config panel.
 //
 // The complement to what a variation contributes. A campaign whose factor is a plain
 // `ParameterVariationList` has no variation that knows about placement, so nothing is contributed —
@@ -14,11 +14,16 @@
 // `offset:` is a literal translation applied afterwards — it is how a map-frame parameter is placed
 // in a world-frame scene, declared in the file where the reader can see the reason rather than
 // guessed at by the panel.
+//
+// It lives in the kit rather than beside one panel because both geometry panels take the same
+// bindings: the host's `scene3d` and robovast_nav's `map2d`, which is a Module-Federation remote and
+// so can reach nothing of the host's but this package. One resolver, or `param:`/`offset:` would
+// mean two subtly different things depending on which panel a reader declared them on.
 
-import type { ResolvedConfiguration, SceneMarker } from '@robovast/panel-kit'
+import type { ResolvedConfiguration, SceneMarker } from './configPanel'
 
 /** A declared marker: a SceneMarker plus the two authoring-only keys the panel resolves. */
-interface DeclaredMarker extends SceneMarker {
+export interface DeclaredMarker extends SceneMarker {
   /** Name of a resolved scenario parameter to read the position (and yaw) from. */
   param?: string
   /** Added to the resolved position. */

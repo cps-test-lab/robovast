@@ -68,7 +68,9 @@ A marker with no geometry for its kind is refused rather than drawn as nothing.
 ``files`` names workspace-relative paths a panel may need — ``{"map": …}`` is what the
 ``map2d`` panel binds. Named rather than positional, so a variation with no map is simply
 missing the key. Return the *relative* path: the browser fetches it through the workspace,
-and an absolute path from the host that composed means nothing there.
+and an absolute path from the host that composed means nothing there. A campaign with no
+map-producing variation is not stuck: the panel also takes a ``map:`` path declared on it in
+the ``.vast`` (see :ref:`config-view`), which is the route for a map that is checked in.
 
 Two properties worth knowing:
 

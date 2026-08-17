@@ -418,11 +418,12 @@ column is never empty for want of a block nobody wrote.
 
 The built-in panels:
 
-**Scenario parameters** (``parameters``) — what the trial is given, as YAML. A toggle adds
-the ``_``-prefixed keys a variation wrote for other readers (``_map_file``, ``_path``,
-``_goal_parameter_name``); they are a different *level* of the configuration rather than a
-filtered subset, so they appear as their own block. Below them, the per-variation previews:
-the distribution or value list each factor came from, with this configuration's value marked.
+**Scenario parameters** (``parameters``) — what the trial is given, as YAML, and nothing
+else. It used to add a toggle for the ``_``-prefixed keys a variation writes for other
+readers (``_map_file``, ``_path``, ``_goal_parameter_name``) and, below that, a preview of
+each factor's value list with this configuration's value marked; both restated in a second
+notation what the ``.vast`` in the next column already says, and the column is too narrow to
+spend on that.
 
 **World configuration** (``world``) — the resolved ``sim`` block: the world this
 configuration runs in and the plugin overrides on it. A different question from the
@@ -450,7 +451,28 @@ the base world plus placements, not a compiled preview of the exact model the ru
 **Map** (``map2d``, ships with ``robovast_nav``) — the occupancy map a nav campaign plans
 on, with the same markers drawn top-down. It exists beside the 3D scene because it is the
 *planning* view: a path is searched over these cells and an obstacle is placed relative to
-that path, so "why did the path go there" is a question about this picture.
+that path, so "why did the path go there" is a question about this picture. Drag to pan,
+wheel to zoom, double-click to fit; the scale bar reads in metres.
+
+Which map it draws: the one a variation contributed as its ``map`` role, or — declared on
+the panel — a workspace-relative path, which is how a campaign points at a map that is
+checked in rather than generated. A declared path wins, being the author naming a file
+outright:
+
+.. code-block:: yaml
+
+   - map2d:
+       title: Map
+       map: files/depot.yaml
+       markers:
+       - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+       - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
+
+Its markers are in the **map** frame — the panel *is* the map — so a map-frame parameter
+needs no ``offset:`` here, where the world-frame 3D scene needs one. The map itself must be
+a nav ``map.yaml`` (``image``, ``resolution``, ``origin``) beside an 8-bit binary **PGM**,
+which is what ``map_saver`` writes; the panel reports anything it cannot read rather than
+drawing a map at a guessed origin.
 
 What a variation contributes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -461,9 +483,9 @@ geometry** — a box at a pose, a polyline, a pose marker — and every panel dr
 is handed. So a panel renders a variation it has never heard of, and a new variation needs
 no change in any panel. See :ref:`variation-config-view` for writing one.
 
-Markers can also be declared in the ``.vast``, which is how a campaign whose factor is a
-plain parameter list shows its endpoints — nothing about ``ParameterVariationList`` knows
-about placement, so it contributes nothing:
+Markers can also be declared in the ``.vast``, on either geometry panel and with the same
+grammar, which is how a campaign whose factor is a plain parameter list shows its endpoints —
+nothing about ``ParameterVariationList`` knows about placement, so it contributes nothing:
 
 .. code-block:: yaml
 
@@ -481,6 +503,10 @@ translation applied afterwards — the way a map-frame parameter is placed in a 
 scene, declared in the file because nothing in a panel can know a campaign's frames. A
 ``param:`` the configuration does not have draws **nothing**, rather than a marker at the
 origin: a pose silently at (0, 0) is a wrong answer, an absent one is a visible question.
+``label`` is drawn beside the marker by ``map2d``.
+
+Declared and contributed markers are concatenated, not one overriding the other: a campaign
+can have both.
 
 See :repo_link:`configs/examples/basic_nav/basic_nav_roqsim.vast` for the declared form and
 :repo_link:`configs/navigation/navigation_variation.vast` for the contributed one.

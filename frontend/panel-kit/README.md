@@ -30,6 +30,12 @@ Only what a **panel** consumes, and only what is free of host-specific machinery
 
 - `panel.ts` — `PanelSpec` / `PanelProps` / `PanelBuiltins`. The panel-facing spec is `type`, `title`
   and `config`; the host extends it with layout and remote-descriptor fields that no panel reads.
+- `configPanel.ts` — the sibling contract for the **config view**: `ConfigPanelProps`,
+  `ResolvedConfiguration`, `SceneMarker`, `ConfigViewContribution`.
+- `declaredMarkers.ts` — resolves the `markers:` a `.vast` declares on a geometry panel (`param:`,
+  `offset:`) against a configuration. Shared because both geometry panels take those bindings — the
+  host's `scene3d` and `robovast_nav`'s `map2d` — and two copies would mean `param:` quietly meaning
+  two things.
 - `clock.ts` — `PlaybackClock` and `useClock`.
 - `dataProvider.ts` — the `DataProvider` **interface** and its option types. The implementation
   (`dbDataProvider`, React Query, SQL) stays in the host.
@@ -39,3 +45,10 @@ Only what a **panel** consumes, and only what is free of host-specific machinery
   trailing-edge fetch pump.
 
 Anything that needs `@/lib/*`, React Query, MUI, or the layout engine belongs in the host instead.
+
+## Tests
+
+A `*.test.ts` here is run by the host UI's vitest — `frontend/ui/vite.config.ts` names this directory
+in `test.include`, so `npm --prefix frontend/ui run test` covers both packages. The kit has no runner
+of its own for the same reason it has no build: one dependency-free tree, compiled and exercised by
+its consumers.

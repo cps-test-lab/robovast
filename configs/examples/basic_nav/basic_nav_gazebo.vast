@@ -34,6 +34,27 @@ configuration:
       values:
       - ["", "files/gazebo_tb4_launch.py", "True"]
 visualization:
+  # The Config tab's third column: what each generated configuration contains, beside the editor.
+  # No `world` panel, unlike the roqsim half -- this half declares no simulation container (Gazebo is
+  # started by the scenario's ros_launch), so there is no resolved `sim` block to show and no
+  # geometry a panel could compile. The 2D map is the whole picture here, and it is the same map and
+  # the same markers the roqsim half declares: both halves are read through identical views.
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    - map2d:
+        title: Map
+        # The map the scenario hands nav2 (scenario_gazebo.osc: key_value('map',
+        # '/config/files/depot.yaml')), so this is the grid the run plans on and not a look-alike.
+        # Declared because nothing contributes it: `goal_pose` is a plain ParameterVariationList,
+        # which varies a number and knows nothing about placement.
+        map: files/depot.yaml
+        markers:
+        # MAP-frame -- this panel *is* the map -- so goal_pose needs no offset. The robot starts at
+        # the map origin: gz spawns it at world (-8, 0) and map = world + (8, 0), which is also where
+        # AMCL is seeded (files/nav2_params.yaml).
+        - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     # Web Run view: replay one run over its rosbag timeline.
     run_view:

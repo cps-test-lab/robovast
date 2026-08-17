@@ -1,5 +1,8 @@
+// Run by the host UI's vitest (frontend/ui/vite.config.ts names this directory in `test.include`):
+// the kit is pure shared TypeScript with no build tooling of its own, and one runner covering both
+// packages beats a second install here.
 import { describe, expect, it } from 'vitest'
-import type { ResolvedConfiguration } from '@robovast/panel-kit'
+import type { ResolvedConfiguration } from './configPanel'
 import { declaredMarkers } from './declaredMarkers'
 
 const config = (parameters: Record<string, unknown>): ResolvedConfiguration => ({

@@ -18,6 +18,14 @@ venv
 frontend/ui/node_modules
 frontend/ui/dist
 
+# The same rule for robovast_nav's panel remote, which is built in its own stage. The dist
+# is package data of robovast-nav, so a host-built copy would be silently packaged into the
+# wheel; excluding it makes the in-image build the only source. (Docker matches these
+# patterns against the whole context-relative path, not the basename -- the bare `dist`
+# below covers only the repository root, which is why both of these are spelled out.)
+src/robovast_nav/web/node_modules
+src/robovast_nav/robovast_nav/web/dist
+
 # Campaign outputs / generated artifacts
 results
 allure-report

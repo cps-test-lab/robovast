@@ -46,6 +46,19 @@ Gazebo spawns the TB4 at world `(-8, 0)` and AMCL seeds at the map origin, so `m
 `turtlebot4_base_link_gt` convention (the world pose, labelled `map`; analysis shifts it `+8 m` in x)
 therefore apply to both halves.
 
+## What the Config tab shows
+
+Both halves declare a `map2d` panel bound to `files/depot.yaml` — the very map they hand nav2 — with
+`start` at the map origin and `goal` bound to the `goal_pose` parameter, so clicking through the five
+configurations walks the goal marker down the map while everything else stays put. The markers are in
+the **map** frame, which is why neither declares an `offset:` (a world-frame `scene3d` marker would
+need `[-8, 0, 0]`).
+
+2D and not 3D on purpose: `scene3d` keys its geometry on the simulator image, and this example pins a
+mutable `:latest` tag so it runs for anyone who clones the repo — a moving tag cannot identify the
+geometry it would compile, so the 3D panel has nothing to show. The map needs nothing but the two
+checked-in files.
+
 ## What differs between the halves
 
 Only the bring-up. The measurement half — `init_nav2`, `bag_record`, `nav_to_pose` — is identical in
