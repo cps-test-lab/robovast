@@ -145,8 +145,28 @@ def test_each_context_entry_is_copied_before_its_groups_install(tmp_path):
              if ln.startswith(("COPY", "RUN --mount"))]
     assert lines[0].startswith("COPY a ")
     assert lines[1].startswith("COPY b ")
-    assert "-e /robovast_build_context/a" in lines[2]
-    assert "-e /robovast_build_context/b" in lines[2]
+    assert "/robovast_build_context/a" in lines[2]
+    assert "/robovast_build_context/b" in lines[2]
+
+
+def test_a_source_dir_is_not_installed_editable(tmp_path):
+    """`-e` skips `data_files`, which silently breaks every ROS package.
+
+    An editable install routes setuptools through `setup.py develop`, which does not
+    install `data_files` -- so an `ament_python` package's
+    `share/ament_index/resource_index/packages/<pkg>` marker never lands and
+    `ros2 launch <pkg> ...` reports the package as missing, listing a search path that
+    contains the prefix it was installed into. It cost a Kinova/MoveIt campaign whose
+    move_group never came up. The COPY above already bakes the source into the image, so
+    editability had nothing to keep in sync and only this failure to offer.
+    """
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "setup.py").write_text("")
+    spec = BuildSpec(tag="t", python_packages=["pkg"])
+    df = generate_dockerfile(spec, tmp_path, BASE)
+    assert "/robovast_build_context/pkg" in df
+    assert "-e /robovast_build_context/pkg" not in df, (
+        "source dirs must install non-editably or data_files are dropped")
 
 
 # ---------------------------------------------------------------------------

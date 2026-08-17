@@ -276,11 +276,18 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
     does not.
     """
     h = hashlib.sha256()
+    # v5: source directories install NON-editably now. `-e` routed setuptools through
+    # `setup.py develop`, which skips `data_files` -- so an ament_python package's
+    # ament-index marker never landed and `ros2 launch <pkg>` could not find it. The epoch
+    # is what makes this reach existing projects: their specs and contents are unchanged, so
+    # without a bump the hash matches and the service serves the image the OLD renderer
+    # built, keeping the broken install semantics after an upgrade.
+    #
     # v4: the rendered Dockerfile changed again (installs into a venv at /usr/local, one pip pass
     # per install group instead of one per entry). The Dockerfile text is not itself an input --
     # only the epoch makes a robovast upgrade rebuild rather than serve the image the old renderer
     # produced, which would silently keep the old install semantics.
-    h.update(b"v4")
+    h.update(b"v5")
     h.update(base_ref.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
@@ -344,7 +351,21 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
         for entry in group:
             if _is_source_dir(entry, project_dir):
                 lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
-                args.append(f"-e {_CONTEXT_DIR}/{entry}")
+                # A REGULAR install, not `-e`. Editable was the odd one out here (the
+                # wheel and index-pin branches below never were) and it bought nothing:
+                # the COPY above already bakes the source into the image, so there is
+                # nothing for editability to keep in sync in an immutable layer.
+                #
+                # What it did buy was a silent failure. An editable install routes
+                # setuptools through `setup.py develop`, which does NOT install
+                # `data_files` -- so an `ament_python` package's
+                # `share/ament_index/resource_index/packages/<pkg>` entry never lands,
+                # `ros2 launch <pkg> ...` cannot resolve it, and the campaign fails with
+                # "package not found" listing a search path that includes the very prefix
+                # it was installed into. Diagnosed on a Kinova/MoveIt campaign whose
+                # move_group never started; the same shape affects every ROS package
+                # shipped this way. Cost of the fix is a little duplicated space.
+                args.append(f"{_CONTEXT_DIR}/{entry}")
             elif _is_context_wheel(entry, project_dir):
                 lines.append(f"COPY {entry} {_CONTEXT_DIR}/{entry}")
                 args.append(f"{_CONTEXT_DIR}/{entry}")
