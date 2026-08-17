@@ -1439,7 +1439,10 @@ class LocalTransport(RobovastInterface):
         return ref
 
     def stop_exec_container(self) -> "ExecStopResult":  # noqa: F821
-        del backend            # single-lane service; a multi-backend one overrides
+        # The `del backend` that used to be here outlived the parameter it deleted: the
+        # per-request lane selector went when a service became single-lane, and this line
+        # made every call raise NameError. Nothing caught it because every test of this
+        # verb uses a fake transport, so the real method was never called.
         return self._exec_manager.stop()
 
     def resolve_image(self, request) -> "ImageResolution":  # noqa: F821
@@ -2602,7 +2605,10 @@ class LocalTransport(RobovastInterface):
         if scene_cache.is_generating(key):
             return ActionResult(ok=True, message="this world's geometry is already being built")
 
-        runner_context = self._scene_runner_context(campaign_id, identity)
+        # None on this lane by design -- an absent factory makes the generator fall back
+        # to an ephemeral `docker run`. The cluster lane overrides it with an aux pod.
+        runner_context = self._scene_runner_context(  # pylint: disable=assignment-from-none
+            campaign_id, identity)
 
         # A retry starts clean, so a stale reason cannot outlive the attempt that is about to replace it.
         scene_cache.clear_failure(key)
