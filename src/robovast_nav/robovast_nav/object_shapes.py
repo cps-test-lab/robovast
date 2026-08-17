@@ -117,4 +117,12 @@ def get_obstacle_dimensions(xacro_arguments: str) -> Dict[str, float]:
     else:
         dimensions["length"] = dimensions["width"]  # Default to square
 
+    # Height was absent while the only consumer was a top-down map, where it could not be
+    # seen. The config view's 3D scene draws the same obstacle as a solid, so an unparsed
+    # height is a visibly wrong box rather than an invisible field.
+    if "height" in params:
+        dimensions["height"] = params["height"]
+    elif "box_height" in params:
+        dimensions["height"] = params["box_height"]
+
     return dimensions

@@ -37,6 +37,7 @@ from pydantic import ConfigDict, field_validator, model_validator
 
 from robovast.common import convert_dataclasses_to_dict
 
+from .. import config_view
 from ..data_model import Orientation, Pose, Position
 from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig
 
@@ -147,6 +148,12 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The obstacles, plus the trigger point that spawns them."""
+        del base_path
+        return config_view.trigger_contribution(config)
 
     def variation(self, in_configs):
         self.progress_update("Running ObstacleVariationWithDistanceTrigger...")

@@ -288,6 +288,34 @@ class Variation():
     WEB_PREVIEW = None
     CACHE_ID = None  # Subclasses set to enable caching (e.g. "robovast_mt_generation_")
 
+    @classmethod
+    def config_view_data(cls, config: dict, base_path: str):
+        """What this variation contributes to the config view for one resolved *config*.
+
+        Return a :class:`~robovast.common.scene_markers.ConfigViewContribution` -- neutral
+        geometry (boxes at poses, a polyline, a pose marker) plus any named files a panel
+        needs to fetch. The default contributes nothing, which is right for every variation
+        that varies a number rather than placing something in the world.
+
+        A **pure function of the resolved configuration**: it is called after composition,
+        in the service process, and must not re-run the variation or touch the filesystem.
+        That is what lets the answer be recomputed cheaply for whichever configuration the
+        user clicks, without composing anything again.
+
+        *base_path* is the ``.vast``'s directory, for resolving a relative path a variation
+        recorded. Prefer returning the *relative* path in ``files`` -- the browser fetches
+        it through the workspace, and an absolute path from the service host means nothing
+        there.
+
+        This replaces the desktop editor's ``GUI_CLASS``/``GUI_RENDERER_CLASS``, which had
+        a variation build a Qt widget and draw onto it. Returning data instead is what lets
+        the same contribution feed the 3D scene, the 2D map, and anything added later.
+        """
+        del config, base_path
+        from robovast.common.scene_markers import \
+            ConfigViewContribution  # pylint: disable=import-outside-toplevel
+        return ConfigViewContribution()
+
     def __init__(self, base_path, parameters, general_parameters, progress_update_callback,
                  scenario_file, output_dir, container_runner=None):
         # Reset shared config index for each new Variation instance so

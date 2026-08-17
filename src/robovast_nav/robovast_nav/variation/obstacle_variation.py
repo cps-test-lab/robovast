@@ -30,6 +30,7 @@ from robovast.common.variation.base_variation import (DestinationConfig, ProvCon
 
 from ..obstacle_placer import ObstaclePlacer
 from ..path_generator import PathGenerator
+from .. import config_view
 from .nav_base_variation import NavVariation
 
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
@@ -305,6 +306,12 @@ class ObstacleVariation(NavVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationConfig
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """One marker per placed obstacle, sized from what the campaign declared."""
+        del base_path
+        return config_view.obstacle_contribution(config)
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):

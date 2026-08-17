@@ -784,11 +784,36 @@ class VariationPreview(BaseModel):
     remote: Optional[VariationRemote] = None
 
 
+class ConfigViewContribution(BaseModel):
+    """What the variations of one configuration contribute to the config view.
+
+    Neutral geometry plus named files, in the vocabulary of
+    :mod:`robovast.common.scene_markers` — so a panel draws a variation it has never heard
+    of. ``errors`` carries a hook that raised, named, rather than dropping its markers: a
+    view that silently loses one variation's contribution is indistinguishable from a
+    variation that placed nothing.
+    """
+
+    markers: list[dict] = Field(default_factory=list)
+    files: dict[str, str] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+
+
 class PreviewConfiguration(BaseModel):
     """One resolved configuration a ``.vast`` expands to."""
 
     name: str
+    #: The scenario parameters, i.e. what the trial is given.
     parameters: dict = Field(default_factory=dict)
+    #: The resolved ``sim`` block: the world this configuration runs in and the plugin
+    #: overrides on it. A different level from ``parameters`` rather than a subset —
+    #: one says what the trial does, the other what it runs in.
+    sim: dict = Field(default_factory=dict)
+    #: The ``_``-prefixed keys a variation wrote for other readers (``_map_file``,
+    #: ``_path``, …). Shown behind a toggle, the way the desktop editor's ``--debug`` did.
+    internals: dict = Field(default_factory=dict)
+    #: Geometry and files the config view's panels draw (see :class:`ConfigViewContribution`).
+    contribution: ConfigViewContribution = Field(default_factory=ConfigViewContribution)
     #: Per-variation preview descriptors (Phase 2b — Module Federation remotes /
     #: host-native built-ins); empty when a variation contributes no preview.
     previews: list[VariationPreview] = Field(default_factory=list)

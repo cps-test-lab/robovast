@@ -169,6 +169,26 @@ def _config_previews(config: dict, remotes: dict) -> list:
     return out
 
 
+def _config_view_contribution(config: dict, vast_dir: str) -> dict:
+    """What the config view draws for one resolved config: ``{markers, files, errors}``.
+
+    Asked of the variation *classes* here rather than carried out of composition, because
+    the answer is a pure function of the resolved configuration
+    (:meth:`Variation.config_view_data`). That keeps it off the ``isolate_plugins`` IPC
+    path and out of the composition cache, and means a cache hit still gets its markers.
+    """
+    from robovast.common.config_generation import \
+        _get_variation_classes  # pylint: disable=import-outside-toplevel
+    from robovast.common.scene_markers import \
+        collect_contributions  # pylint: disable=import-outside-toplevel
+    block = config.get("_config_block") or {}
+    try:
+        classes = [cls for cls, _params in _get_variation_classes(block, vast_dir)]
+    except Exception as exc:  # noqa: BLE001 - an unresolvable plugin is reported, not raised
+        return {"markers": [], "files": {}, "errors": [f"variation types: {exc}"]}
+    return collect_contributions(config, classes, vast_dir)
+
+
 # ---------------------------------------------------------------------------
 # Local (in-process) transport
 # ---------------------------------------------------------------------------
@@ -2229,14 +2249,24 @@ class LocalTransport(RobovastInterface):
                 raise ValueError(str(e)) from e
             configs = campaign_data["configs"]
             runs = campaign_data.get("execution", {}).get("runs", 1)
+        from robovast.common.common import convert_dataclasses_to_dict
         remotes = _variation_remotes()
+        vast_dir = str(Path(project.config_path).parent)
+        # Truncate BEFORE building the payload: the contribution of a configuration nobody
+        # will see still costs every variation's hook, and a large sweep is exactly where
+        # max_configs is passed.
+        shown = configs[:max_configs] if max_configs else configs
         items = [PreviewConfiguration(
-                    name=c["name"], parameters=c.get("config", {}),
+                    name=c["name"],
+                    parameters=convert_dataclasses_to_dict(c.get("config", {})),
+                    sim=convert_dataclasses_to_dict(c.get("sim", {})),
+                    internals=convert_dataclasses_to_dict(
+                        {k: v for k, v in c.items()
+                         if k.startswith("_") and k != "_config_block"}),
+                    contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
-                 for c in configs]
-        truncated = bool(max_configs) and len(items) > max_configs
-        if truncated:
-            items = items[:max_configs]
+                 for c in shown]
+        truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
                                configurations=items, truncated=truncated)

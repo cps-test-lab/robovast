@@ -29,6 +29,7 @@ from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationCo
 from ..data_model import Orientation, Pose, Position
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
+from .. import config_view
 from .nav_base_variation import NavVariation
 
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
@@ -141,6 +142,12 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     """
 
     CONFIG_CLASS = PathVariationRandomConfig
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The planned path, its start/goal poses, and the map they were planned on."""
+        del base_path
+        return config_view.path_contribution(config)
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
@@ -495,6 +502,12 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
     """
 
     CONFIG_CLASS = PathVariationRasterizedConfig
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The planned path, its start/goal poses, and the map they were planned on."""
+        del base_path
+        return config_view.path_contribution(config)
 
     def variation(self, in_configs):
         self.progress_update("Running Rasterized Path Variation...")
