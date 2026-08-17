@@ -251,6 +251,7 @@ Checking a deployment
    vast doctor              # prerequisites, capacity, permissions
    vast doctor --flavor gcp # also what the gcp flavor needs
    vast doctor -x local     # a specific kubeconfig context
+   vast doctor -n robovast  # a deployment in another namespace
 
 Reads only, so it is safe at any time — which makes it usable both as the first step
 of an install and as the first step of debugging one. Every failure names its remedy.
@@ -259,3 +260,29 @@ resolves and the API server answers, that the caller may create ClusterRoles (se
 does), and that one node is large enough for the Kueue controller's 4 CPU / 16 GiB —
 a cluster with plenty of *total* capacity but no node big enough leaves that
 controller Pending and admits no campaign at all.
+
+**It also checks whether the deployment can build experiment images**, which is the one
+prerequisite that used to surface only when a campaign was submitted and refused:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Check
+     - Says
+   * - ``build registry``
+     - Whether a push target is configured. A published service with no prefix wants
+       ``vast exec cluster upgrade``; one that was never published wants ``setup`` with
+       ``--ingress-host``. Reading the Ingress is what lets it name *which* — the in-pod
+       service cannot tell those apart and has to offer both.
+   * - ``registry route``
+     - Whether that target is actually reachable: the ``/v2`` rule **and** the upload-size
+       annotation. Both matter and fail differently — without the annotation every layer
+       push dies on nginx's 1 MiB default with a 413, while ``GET /v2/`` answers 200.
+
+Both are advisory: a deployment that cannot build is not a broken one. The namespace
+matters, so pass ``-n`` when the service is not in ``default``.
+
+From a machine with **no kubeconfig**, ``vast doctor`` still reports an ``image builds``
+line — read from the service's own handshake rather than the cluster. It is absent when the
+service is older than that field: absent is "did not say", not "no".

@@ -801,6 +801,49 @@ def auth_secret_manifest(namespace, token):
                                 {"ROBOVAST_AUTH_TOKEN": token})
 
 
+def deployed_registry_prefix(namespace="default", kube_context=None) -> str:
+    """The registry prefix the deployed service actually *reads*, or ``""``.
+
+    **Both halves are checked, because the failure that motivated this leaves one intact.**
+    A ``setup`` re-run without ``--ingress-host`` made the registry env resolve to nothing,
+    so the Secret was neither refreshed nor listed in the Deployment's ``envFrom`` -- but a
+    Secret created by an earlier setup *stays in the namespace*. Reading only the Secret
+    therefore reports a prefix the pod has no way to see, which is worse than reporting
+    none: it says builds work when they cannot.
+
+    So: the container must list the Secret in ``envFrom`` **and** the Secret must carry a
+    non-empty prefix. ``""`` when either is missing, or when there is no Deployment.
+    """
+    import base64  # pylint: disable=import-outside-toplevel
+
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    try:
+        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    containers = (getattr(getattr(dep.spec, "template", None), "spec", None)
+                  and dep.spec.template.spec.containers) or []
+    listed = any(
+        getattr(getattr(src, "secret_ref", None), "name", None) == REGISTRY_CONFIG_SECRET_NAME
+        for c in containers for src in (getattr(c, "env_from", None) or []))
+    if not listed:
+        return ""
+    try:
+        secret = client.CoreV1Api().read_namespaced_secret(
+            REGISTRY_CONFIG_SECRET_NAME, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return ""
+        raise
+    encoded = (secret.data or {}).get("ROBOVAST_REGISTRY_PREFIX", "")
+    return base64.b64decode(encoded).decode().strip() if encoded else ""
+
+
 def existing_auth_token(namespace, kube_context=None):
     """The token already deployed in *namespace*, or ``""``.
 
@@ -852,6 +895,42 @@ def published_url(namespace="default", kube_context=None):
     return f"{'https' if secure else 'http'}://{host}"
 
 
+def registry_ingress_defects(ingress) -> list:
+    """Which parts of the registry's Ingress contract are missing. ``[]`` when intact.
+
+    The route and the annotations are equally load-bearing and fail differently, so both
+    are named: without the ``/v2`` path the node has no address to pull from, and without
+    ``proxy-body-size`` every layer push dies on nginx's 1 MiB default with a 413 — an
+    Ingress that has the route and not the annotation is still a broken registry, and a
+    ``200`` from ``GET /v2/`` cannot see that.
+
+    Split out so :func:`reconcile_registry_ingress_path` and ``vast doctor`` share one
+    definition of "what a healthy registry Ingress looks like". They had no reason to
+    disagree, and every reason to drift: one patches, the other reports, and a
+    re-implemented comparison in the reporting half would describe a contract the
+    patching half no longer enforces.
+
+    Takes the Ingress object rather than a namespace: pure, so the reporting caller
+    decides whether reading one is even possible.
+    """
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    rules = getattr(getattr(ingress, "spec", None), "rules", None) or []
+    if not rules:
+        return ["the Ingress has no rules at all"]
+    paths = getattr(getattr(rules[0], "http", None), "paths", None) or []
+    defects = []
+    if not any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH
+               for p in paths):
+        defects.append(f"no {registry_deploy.REGISTRY_INGRESS_PATH} route to the registry")
+    have = getattr(getattr(ingress, "metadata", None), "annotations", None) or {}
+    missing = sorted(k for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
+                     if have.get(k) != v)
+    if missing:
+        defects.append("missing annotations: " + ", ".join(missing))
+    return defects
+
+
 def reconcile_registry_ingress_path(namespace="default", kube_context=None):
     """Add the registry's ``/v2`` rule to an Ingress that predates it. Returns True if added.
 
@@ -886,8 +965,7 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
     have = getattr(ingress.metadata, "annotations", None) or {}
     missing_annotations = {k: v for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
                            if have.get(k) != v}
-    if any(getattr(p, "path", "") == registry_deploy.REGISTRY_INGRESS_PATH
-           for p in paths) and not missing_annotations:
+    if not registry_ingress_defects(ingress):
         return False
     if missing_annotations:
         # Without proxy-body-size a push dies on nginx's 1m default with a 413, so an

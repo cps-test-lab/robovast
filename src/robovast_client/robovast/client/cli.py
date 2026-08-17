@@ -115,7 +115,10 @@ def cli(ctx, vast_file):
               help='Also check what this cluster flavor needs (e.g. gcp).')
 @click.option('--context', '-x', default=None, metavar='NAME',
               help='Kubernetes context to check (default: the active one).')
-def doctor(flavor, context):
+@click.option('--namespace', '-n', default='default', show_default=True, metavar='NAME',
+              help='Namespace the robovast-service is deployed in. Checked for whether '
+                   'that deployment can build experiment images.')
+def doctor(flavor, context, namespace):
     """Check the prerequisites, before something else finds them the hard way.
 
     Reads only — safe to run at any time, which is what makes it usable both as the
@@ -126,7 +129,7 @@ def doctor(flavor, context):
     """
     from robovast.client.doctor import run_checks
 
-    checks = run_checks(flavor=flavor, context=context)
+    checks = run_checks(flavor=flavor, context=context, namespace=namespace)
     width = max(len(c.name) for c in checks)
     marks = {"ok": "✓", "warn": "⚠", "FAIL": "✗"}
     for check in checks:

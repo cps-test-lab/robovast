@@ -221,6 +221,102 @@ def _check_capacity() -> Check:
         "ever be admitted. Use a larger node.")
 
 
+def check_deployment(namespace: str = "default",
+                     context: str | None = None) -> list[Check]:
+    """What the *cluster* intends for this deployment, as opposed to what the pod has.
+
+    Two independent questions, so two Checks rather than one branch tree: is a push target
+    configured (``build registry``), and can that target actually be reached
+    (``registry route``). Named for the *infrastructure*, not the capability -- the
+    client-side ``image builds`` check reports what the running service says it can do, and
+    two rows with one name would read as a single check contradicting itself. Where they
+    disagree, they are describing different things: a pod that predates its own registry
+    config has the capability its config denies, and both lines printing is the point. The second only when the first is
+    green — "the route is broken" is noise when there is no registry to route to.
+
+    **The cluster import is deferred, and its absence is not an error.** This module ships
+    in ``robovast-client``, which depends on neither the cluster lane nor the core, so on a
+    client-only install ``robovast.execution`` does not exist in any form. A module-level
+    import here would pass every core-without-lane test and break the install the
+    distribution exists for. ``[]`` on ImportError, exactly as :func:`check_cluster` does.
+
+    Silent when the lane is absent or the cluster unusable: :func:`check_cluster` has
+    already said so, and saying it twice makes a reader look for two problems.
+
+    All Checks are optional. A deployment that cannot build is not a broken install, and
+    every verdict names the command that changes it.
+    """
+    try:
+        from robovast.execution.cluster_execution import \
+            service_deploy  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return []
+
+    try:
+        config_name, _kwargs = service_deploy.read_service_config_from_cluster(
+            namespace, context)
+    except Exception:  # noqa: BLE001 - check_cluster already reported an unusable cluster
+        return []
+    if not config_name:
+        return [Check("build registry", False, f"no service in namespace {namespace!r}",
+                      "Nothing is deployed here. Run 'vast exec cluster setup <flavor>', "
+                      "or pass -n <namespace> if it is deployed elsewhere.",
+                      optional=True)]
+
+    try:
+        prefix = service_deploy.deployed_registry_prefix(namespace, context)
+        host = service_deploy.published_host(namespace, context)
+    except Exception:  # noqa: BLE001 - same reason as above
+        return []
+
+    if not prefix:
+        # The two states the in-pod service cannot tell apart -- and from here, with the
+        # Ingress readable, they *can* be. Which is the whole reason this check exists.
+        if host:
+            return [Check(
+                "build registry", False, f"no prefix (published at {host})",
+                "The service is published but its registry prefix is unset, so builds "
+                "cannot push. 'vast exec cluster upgrade' re-bakes it from the live "
+                "Ingress.", optional=True)]
+        return [Check(
+            "build registry", False, "not published, so no registry",
+            "The registry is reached over the service's own Ingress, and there is none. "
+            "Re-run 'vast exec cluster setup <flavor> --force --ingress-host <host>' with "
+            "--issuer or --tls-secret (or --insecure-http on a trusted network).",
+            optional=True)]
+
+    checks = [Check("build registry", True, prefix)]
+    checks.extend(_check_registry_route(namespace, context))
+    return checks
+
+
+def _check_registry_route(namespace: str, context: str | None) -> list[Check]:
+    """Whether the configured push target is actually reachable.
+
+    Read from the Ingress object rather than by probing ``GET /v2/``, because the object
+    says more: a probe cannot see a missing ``proxy-body-size`` annotation, and without it
+    every layer push dies on nginx's 1 MiB default with a 413 while ``/v2/`` answers 200.
+    A probe from a workstation also proves little about the failure that matters — the
+    resolver and trust store deciding whether a *node* can pull are not this machine's.
+    """
+    try:
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from robovast.execution.cluster_execution import \
+            service_deploy  # pylint: disable=import-outside-toplevel
+        ingress = client.NetworkingV1Api().read_namespaced_ingress(
+            service_deploy.SERVICE_NAME, namespace)
+        defects = service_deploy.registry_ingress_defects(ingress)
+    except Exception:  # noqa: BLE001 - unreadable Ingress is not a verdict about the route
+        return []
+    if not defects:
+        return [Check("registry route", True, "reachable")]
+    return [Check("registry route", False, "; ".join(defects),
+                  "The registry has a prefix but the Ingress does not route to it "
+                  "correctly, so pushes fail even though builds start. "
+                  "'vast exec cluster upgrade' reconciles it.", optional=True)]
+
+
 def check_client() -> list[Check]:
     """What a *user* needs: a service to talk to, and a command that reaches it.
 
@@ -267,10 +363,51 @@ def check_client() -> list[Check]:
             "vast on PATH", False, "only inside this venv",
             "A new shell — an agent's, or your next terminal — cannot run 'vast'. "
             "Run 'vast login --link' to symlink it somewhere already on PATH."))
+
+    if target:
+        checks.extend(_check_build_capability(target))
     return checks
 
 
-def run_checks(flavor: str = "", context: str | None = None) -> list[Check]:
+def _check_build_capability(target: str) -> list[Check]:
+    """What the *running* service says about building images, from the handshake.
+
+    Answered without kubectl, so a user who will never deploy anything still learns that
+    the service they are pointed at cannot build — before authoring a container that adds
+    packages and finding out from ``start_campaign``, after a push and a workspace.
+
+    Silence in three cases, all of which are "no verdict" rather than "no":
+
+    * the service did not report the field (older than it) — ``None`` must never be read
+      as ``False``, or every healthy pre-field deployment gets told to fix itself;
+    * the handshake could not be read at all. A local ``vast serve`` whose token differs
+      from the stored login answers 401, and a doctor that turned that into a red line
+      would be reporting its own credential mismatch as the service's problem;
+    * the service can build, and there is nothing to say beyond ✓.
+
+    Optional, because a service with no registry is not a broken install — it is a
+    deployment that cannot do one thing, and the operator half below says which command
+    fixes it.
+    """
+    from robovast.service.http_client import \
+        RobovastClient  # pylint: disable=import-outside-toplevel
+    try:
+        info = RobovastClient(target).version()
+    except Exception:  # noqa: BLE001 - unreachable, unauthorised, or too old to ask
+        return []
+    if info.can_build_images is None:
+        return []
+    if info.can_build_images:
+        return [Check("image builds", True, "available")]
+    return [Check("image builds", False, "unavailable on this service",
+                  info.build_unavailable or
+                  "The service did not say why. 'vast doctor -n <namespace>' from a "
+                  "machine with a kubeconfig reports which remedy applies.",
+                  optional=True)]
+
+
+def run_checks(flavor: str = "", context: str | None = None,
+               namespace: str = "default") -> list[Check]:
     """Every check, in the order the two roles hit them.
 
     The cluster prerequisites are **advisory when the client checks pass**. They are what
@@ -288,7 +425,13 @@ def run_checks(flavor: str = "", context: str | None = None) -> list[Check]:
     # configured" into four red ✗ for kubectl, helm and a kubeconfig the user will never
     # need -- the exact confusion the client/operator split exists to prevent.
     usable = all(c.ok for c in client if not c.optional)
-    operator = [check_python(), *check_tools(flavor), *check_cluster(context)]
+    cluster = check_cluster(context)
+    operator = [check_python(), *check_tools(flavor), *cluster]
+    # Only when the cluster is actually usable. Asking a deployment about itself over an
+    # unreachable API server produces a second way of saying "no cluster", and a reader
+    # then has two problems to chase where there is one.
+    if all(c.ok for c in cluster):
+        operator += check_deployment(namespace=namespace, context=context)
     if usable:
         operator = [replace(c, optional=True) for c in operator]
     return client + operator

@@ -150,6 +150,18 @@ def test_waiting_builds_its_own_client(without_core, monkeypatch):
     assert status.phase == "finished"
 
 
+def test_doctor_can_ask_about_a_deployment_without_the_core(without_core):
+    """`check_deployment` reads the cluster lane, which a client install does not have.
+
+    Its import is deferred inside the function for exactly that reason. A module-level one
+    would pass `test_core_without_cluster_package.py` -- that only removes the *lane* --
+    and break the install this distribution exists for.
+    """
+    from robovast.client.doctor import check_deployment  # pylint: disable=import-outside-toplevel
+
+    assert check_deployment(namespace="default") == []
+
+
 def test_no_service_url_and_no_core_is_a_clear_refusal(without_core):
     """With neither a URL nor an in-process server there is nothing to talk to. It must
     say so, not raise ModuleNotFoundError for a module the caller never named."""
