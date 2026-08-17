@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 
 // In production the robovast-service serves frontend/ui/dist itself, so the SPA is same-origin with the REST
@@ -65,7 +66,26 @@ function vendorChunk(id: string): string | undefined {
   return undefined
 }
 
+// The Module-Federation runtime version the host was BUILT against. Reported in a panel's
+// error message, because a skew between this and the version a remote bundle embeds produces
+// MF's `remoteEntryExports is undefined` and names none of it. Read from the installed
+// package rather than written down, so it cannot drift from what is actually bundled.
+function mfRuntimeVersion(): string {
+  for (const pkg of ['@module-federation/runtime', '@module-federation/enhanced']) {
+    try {
+      const path = fileURLToPath(new URL(`./node_modules/${pkg}/package.json`, import.meta.url))
+      return `${pkg}@${JSON.parse(readFileSync(path, 'utf8')).version}`
+    } catch {
+      // Not this one; try the next. An empty result just omits the line.
+    }
+  }
+  return ''
+}
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_MF_RUNTIME_VERSION': JSON.stringify(mfRuntimeVersion()),
+  },
   plugins: [react()],
   resolve: {
     alias: {

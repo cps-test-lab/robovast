@@ -15,7 +15,7 @@
   "dependencies": {
     "@emotion/react": "^11.13.0",
     "@emotion/styled": "^11.13.0",
-    "@module-federation/enhanced": "^0.9.1",
+    "@module-federation/runtime": "2.8.0",
     "@monaco-editor/react": "^4.6.0",
     "@mui/icons-material": "^6.1.0",
     "@mui/material": "^6.1.0",

@@ -100,8 +100,14 @@ poetry_reinstall:
 	poetry install
 	@echo "✅ Done!"
 
+# Two package trees have to agree on one Module-Federation runtime version, and neither
+# tree can check that alone -- so it lives here rather than in `frontend/ui`'s vitest.
+.PHONY: check-mf-runtime
+check-mf-runtime:
+	@python3 tools/check_mf_runtime.py
+
 .PHONY: ui-stage
-ui-stage: ## Copy the built web UI into the package so the wheel carries it
+ui-stage: check-mf-runtime ## Copy the built web UI into the package so the wheel carries it
 	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: cd frontend/ui && npm ci && npm run build"; exit 1; }
 	rm -rf src/robovast/_ui
 	cp -r frontend/ui/dist src/robovast/_ui

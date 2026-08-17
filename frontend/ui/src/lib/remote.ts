@@ -18,12 +18,12 @@ export interface RemoteDescriptor {
   module: string
 }
 
-type MFRuntime = typeof import('@module-federation/enhanced/runtime')
+type MFRuntime = typeof import('@module-federation/runtime')
 let runtime: Promise<MFRuntime> | null = null
 
 function mf(): Promise<MFRuntime> {
   if (!runtime) {
-    runtime = import('@module-federation/enhanced/runtime').then((m) => {
+    runtime = import('@module-federation/runtime').then((m) => {
       m.init({
         name: 'robovast_ui',
         remotes: [],
@@ -37,6 +37,40 @@ function mf(): Promise<MFRuntime> {
   }
   return runtime
 }
+
+/** Why a remote failed to load, in terms of the actual exception.
+ *
+ *  Module Federation's `Module.getEntry` catches the browser's `import()` rejection and
+ *  re-throws its own assert — `remoteEntryExports is undefined` — which names neither the
+ *  cause nor the file. Its `loadEntryError` hook is not passed the error either, so the real
+ *  one is unreachable from inside the runtime. This re-imports the entry directly, on the
+ *  failure path only, to recover it.
+ *
+ *  A syntax error in the bundle, a 404, a MIME type the browser refuses to execute and a
+ *  runtime version skew all reach the user as the same sentence otherwise. That sentence has
+ *  already cost one debugging round — the comment above `type: 'module'` is what it bought.
+ */
+async function diagnose(remote: RemoteDescriptor, mfError: Error): Promise<string> {
+  let real = ''
+  try {
+    await import(/* @vite-ignore */ remote.remote_entry_url)
+    // The direct import succeeded, so the entry itself is loadable and the failure is in
+    // what MF did with it — sharing, the exposed module id, or the container name.
+    real = 'the entry imports cleanly on its own, so this is not the bundle: ' +
+      'check the exposed module id and the container name.'
+  } catch (probe) {
+    real = `importing the entry failed: ${(probe as Error).message}`
+  }
+  // Both runtimes, because a skew between them produces exactly the message MF threw and
+  // names none of it. The remote embeds its own; this is the host's.
+  const hostRuntime = MF_RUNTIME_VERSION ? ` [host MF runtime ${MF_RUNTIME_VERSION}]` : ''
+  return `${mfError.message}\n\n${real}${hostRuntime}`
+}
+
+/** The host's Module-Federation runtime version, for the diagnosis above. Read from the
+ *  package rather than hard-coded, so it cannot drift from what is installed. */
+const MF_RUNTIME_VERSION: string =
+  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MF_RUNTIME_VERSION ?? ''
 
 /** Load a remote's exposed component at runtime. Returns `{Comp, err}`: `Comp` is null while
  *  loading, then the component (or stays null with `err` set on failure). The caller renders
@@ -68,7 +102,7 @@ export function useRemoteComponent<P>(
           setComp(() => C)
         }
       } catch (e) {
-        if (!cancelled) setErr((e as Error).message)
+        if (!cancelled) setErr(await diagnose(remote, e as Error))
       }
     })()
     return () => {
