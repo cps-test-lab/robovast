@@ -32,13 +32,13 @@ import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
 import { runNodeId, type ResultsTreeItem } from '@/lib/resultsTree'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
-import { dbDataProvider } from '@/lib/dashboard/dataProvider'
-import { parseVastPanels } from '@/lib/dashboard/parseVastPanels'
-import { PanelHost } from '@/lib/dashboard/PanelHost'
+import { dbDataProvider } from '@/lib/panels/dataProvider'
+import { parsePanels } from '@/lib/panels/parsePanels'
+import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { DEFAULT_CAPTURE_PATH } from '@/panels/Scene3DPanel'
-import '@/panels' // registers the built-in panels
+import '@/panels/run_view' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
 // The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
@@ -224,7 +224,7 @@ export function RunView({
   useEffect(() => () => clock.dispose(), [clock])
 
   const specs = useMemo(
-    () => (panels.data ? parseVastPanels(panels.data.panels) : []),
+    () => (panels.data ? parsePanels(panels.data.panels) : []),
     [panels.data],
   )
 

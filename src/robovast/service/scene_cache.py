@@ -198,6 +198,74 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
     return identity
 
 
+def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | None = None,
+                             resolve_digest=None) -> dict:
+    """The same identity, for a world declared in a **workspace** rather than recorded by a run.
+
+    The config view compiles the world a ``.vast`` names, before anything has run -- so there is no
+    capture to read the world and its overrides from, and they come from the file instead. Everything
+    downstream (:func:`cache_key`, :func:`generate`, the eviction) is unchanged, which is what makes a
+    workspace and a campaign that name the same world **share one cache entry**: open the Config tab
+    on a project, then the run view of a campaign built from it, and the second is already warm.
+
+    *sim_block* is the campaign-level resolved simulation block. Per-configuration overrides are
+    deliberately NOT keyed in: a campaign that varies its obstacles would otherwise compile a world
+    per configuration -- seconds each, on every click -- to move boxes the panel can draw itself from
+    the variation's contribution. A configuration that names a different world *file* is a different
+    identity and does get its own entry, which is the case that actually changes the geometry.
+    """
+    from robovast.common.config import \
+        SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+
+    execution = (raw_config or {}).get("execution") or {}
+    containers = execution.get("containers") or {}
+    simulation = containers.get(SIMULATION_CONTAINER) or {}
+
+    world = (sim_block or {}).get("world") or simulation.get("config")
+    if not world:
+        raise SceneUnavailable(
+            "this project's simulation container declares no world (execution.containers."
+            f"{SIMULATION_CONTAINER}.config), so there is no geometry to compile.")
+
+    image = simulation.get("image") or ""
+    if resolve_digest and image and not _is_immutable_image(image):
+        image = resolve_digest(image) or image
+    if not image:
+        raise SceneUnavailable(
+            f"this project's execution.containers.{SIMULATION_CONTAINER} declares no image, so its "
+            "world cannot be compiled -- the exporter runs in the simulator's own image.")
+    if not _is_immutable_image(image):
+        raise SceneUnavailable(
+            f"the simulator image {image!r} is a mutable tag, so it cannot identify the geometry it "
+            "produces: the same tag names different bytes after a rebuild. Pin it by digest.")
+
+    root = Path(workspace_dir)
+    # A workspace-relative world is mounted the way a campaign's run_files are, so the world resolves
+    # what it references by exactly the paths it would at run time -- and so the cache key matches the
+    # campaign's for the same bytes.
+    world_ref = str(world)
+    identity = {
+        "producer": "roqsim",
+        "world": world_ref if world_ref.startswith(_RUN_FILE_MOUNT) else
+                 f"{_RUN_FILE_MOUNT}{world_ref.lstrip('/')}",
+        "overrides": {k: v for k, v in (sim_block or {}).items() if k != "world"},
+        "overrides_known": True,
+        "image": image,
+        "execution": execution,
+        "backend": backend_name(execution),
+    }
+    local = root / world_ref.lstrip("/")
+    if local.is_file():
+        identity.update({"world_file": str(local), "config_root": str(root),
+                         "config_sha": _tree_sha(root)})
+    else:
+        # A packaged world (``roqsim_scenes:depot``) lives in the image, so there is no tree to
+        # stage and the image digest already covers its bytes.
+        identity["world"] = world_ref
+    return identity
+
+
 #: Where a campaign's ``run_files`` are mounted in a running job. A world declared as a
 #: path in the ``.vast`` is recorded by the capture under this prefix, because that is
 #: where the simulator read it from.

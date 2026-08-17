@@ -139,13 +139,62 @@ def _variation_remotes() -> dict:
                            Routes.variation_asset, module_default="./preview")
 
 
-def _panel_remotes() -> dict:
-    """Package-provided panel type name → MF remote descriptor for types shipping a
-    ``WEB_PANEL`` (e.g. ``robovast_nav``'s ``costmap``). See :func:`_plugin_remotes`."""
-    from robovast.common.config import PANEL_TYPES_GROUP  # pylint: disable=import-outside-toplevel
-    return _plugin_remotes(PANEL_TYPES_GROUP, "WEB_PANEL",
-                           Routes.panel_types_asset, module_attr="PANEL_MODULE",
-                           module_default="./panel")
+def _panel_remotes(surface: str = "run") -> dict:
+    """Package-provided panel type name → MF remote descriptor, for panels of *surface*.
+
+    Types shipping a ``WEB_PANEL`` (e.g. ``robovast_nav``'s ``costmap``); see
+    :func:`_plugin_remotes`. One entry-point group and one asset route serve both surfaces --
+    which one a panel is for is its class's ``SURFACE`` -- so this filters rather than reading a
+    second group.
+    """
+    from robovast.common.config import (PANEL_TYPES_GROUP,  # pylint: disable=import-outside-toplevel
+                                        panel_type_names)
+    wanted = panel_type_names(surface)
+    remotes = _plugin_remotes(PANEL_TYPES_GROUP, "WEB_PANEL",
+                              Routes.panel_types_asset, module_attr="PANEL_MODULE",
+                              module_default="./panel")
+    return {name: descriptor for name, descriptor in remotes.items() if name in wanted}
+
+
+def _config_panel_specs(raw_config: dict, remotes: dict, workspace_id: str = "") -> list:
+    """The ``visualization.config.panels`` a ``.vast`` declares, flattened for the UI.
+
+    Same single-key shorthand as the run view (``- parameters:`` / ``- scene3d: {...}``), so the
+    flattening is the schema's own; the remote descriptor is attached here for a
+    package-provided panel exactly as ``list_campaign_panels`` does for the run view.
+
+    Defaults to the two panels that need nothing from the campaign, so a ``.vast`` that declares
+    no config view still shows what each configuration contains -- which is what the Config tab
+    did before it had panels at all.
+    """
+    from robovast.common.config import (CUSTOM_PANEL_TYPE,  # pylint: disable=import-outside-toplevel
+                                        flatten_panel_shorthand, visualization_block)
+    declared = visualization_block(raw_config, "config", "panels")
+    if not isinstance(declared, list) or not declared:
+        declared = [{"parameters": None}, {"world": None}]
+    panels = []
+    for entry in declared:
+        flat = flatten_panel_shorthand(entry)
+        if not isinstance(flat, dict) or not flat.get("type"):
+            continue
+        panel = dict(flat)
+        ptype = panel["type"]
+        if ptype == CUSTOM_PANEL_TYPE:
+            # A user-authored bundle sits next to the .vast, so it is served as an ordinary
+            # workspace file -- no dedicated asset route, because /sources already addresses
+            # exactly these bytes.
+            rel = panel.get("remote")
+            if rel and workspace_id:
+                entry = rel if str(rel).endswith(".js") else f"{str(rel).rstrip('/')}/remoteEntry.js"
+                panel["remote"] = {
+                    "name": f"config_panel_{len(panels)}",
+                    "remote_entry_url": f"/{file_address.SOURCES}/{workspace_id}/{entry}",
+                    "module": panel.get("module") or "./panel",
+                }
+        elif ptype in remotes:
+            panel["remote"] = remotes[ptype]
+        panels.append(panel)
+    return panels
 
 
 def _config_previews(config: dict, remotes: dict) -> list:
@@ -2269,7 +2318,13 @@ class LocalTransport(RobovastInterface):
         truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
-                               configurations=items, truncated=truncated)
+                               configurations=items, truncated=truncated,
+                               # The config view is declared in the same file this expanded, and
+                               # is wanted at exactly the same moment, so it rides along rather
+                               # than costing a second round trip.
+                               config_panels=_config_panel_specs(
+                                   load_config(project.config_path) or {},
+                                   _panel_remotes("config"), workspace_id))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False, backend: str = "") -> WorldDescription:
@@ -2671,6 +2726,102 @@ class LocalTransport(RobovastInterface):
         # step -- the same footing as an image build.
         threading.Thread(target=work, name=f"robovast-scene-{key[:8]}", daemon=True).start()
         return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
+
+    # -- the config view's geometry -----------------------------------------
+    #
+    # The same cache, the same key function and the same generator as a campaign's, keyed on a
+    # world declared in a WORKSPACE instead of one a run recorded. So a project and a campaign
+    # built from it share one entry: compile it once in the Config tab and the run view is warm.
+
+    def _workspace_scene_identity(self, workspace_id: str, path: str = ""):
+        from robovast.service import scene_cache
+        from robovast.common.common import load_config
+        project = self._resolve_project(workspace_id, path)
+        raw = load_config(project.config_path) or {}
+        sim_block = self._campaign_sim_block(raw)
+        identity = scene_cache.workspace_world_identity(
+            str(Path(project.config_path).parent), raw, sim_block,
+            resolve_digest=self._resolve_image_digest)
+        return identity, scene_cache.cache_key(identity)
+
+    def _campaign_sim_block(self, raw: dict) -> dict:
+        """The campaign-level ``sim`` block as the ``.vast`` declared it, or ``{}``.
+
+        The campaign default only -- per-configuration overrides are deliberately not keyed into
+        the geometry (see :func:`scene_cache.workspace_world_identity`). Best-effort: a project
+        whose simulator plugin is not installed here still gets its bare world compiled, which is a
+        usable picture, rather than no 3D view and an error about a plugin nobody asked about.
+        """
+        from robovast.common.simulators import (backend_name,  # pylint: disable=import-outside-toplevel
+                                                campaign_sim_block)
+        execution = raw.get("execution") or {}
+        if not backend_name(execution):
+            return {}
+        try:
+            return campaign_sim_block(execution) or {}
+        except Exception as err:  # noqa: BLE001 - a bare world is still worth showing
+            logger.debug("could not resolve the campaign sim block for the config view: %s", err)
+            return {}
+
+    def workspace_scene_status(self, workspace_id: str, path: str = "") -> "SceneStatus":
+        from robovast.service import scene_cache
+        from robovast.service.interface import SceneStatus
+        base = SceneStatus(campaign_id=workspace_id, config_name="", run_id="")
+        try:
+            identity, key = self._workspace_scene_identity(workspace_id, path)
+        except scene_cache.SceneUnavailable as err:
+            return base.model_copy(update={"error": str(err), "note": str(err)})
+        cached = scene_cache.is_cached(key)
+        if cached:
+            scene_cache.touch(key)
+        running = scene_cache.is_generating(key)
+        failure = "" if (cached or running) else scene_cache.last_failure(key)
+        return base.model_copy(update={
+            "cached": cached,
+            "generation_required": not cached,
+            "in_progress": running,
+            "stage": "compiling" if running else "",
+            "bytes": scene_cache.entry_bytes(key) if cached else 0,
+            "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/scene.json")
+                    if cached else ""),
+            "world": identity["world"],
+            "overrides_known": True,
+            "error": failure,
+            "note": failure or ("geometry is cached; nothing will be built" if cached
+                                else "geometry has not been built for this world yet"),
+        })
+
+    def run_workspace_scene(self, workspace_id: str, path: str = "") -> ActionResult:
+        from robovast.service import scene_cache
+        try:
+            identity, key = self._workspace_scene_identity(workspace_id, path)
+        except scene_cache.SceneUnavailable as err:
+            return ActionResult(ok=False, message=str(err))
+        if scene_cache.is_cached(key):
+            scene_cache.touch(key)
+            return ActionResult(ok=True, message="geometry is already cached")
+        if scene_cache.is_generating(key):
+            return ActionResult(ok=True, message="this world's geometry is already being built")
+        scene_cache.clear_failure(key)
+
+        def work():
+            try:
+                scene_cache.generate(identity, key)
+            except scene_cache.SceneUnavailable as err:
+                logger.warning("scene generation failed for workspace %s: %s", workspace_id, err)
+                scene_cache.record_failure(key, str(err))
+            except Exception as err:  # pylint: disable=broad-except
+                logger.exception("scene generation crashed for workspace %s", workspace_id)
+                scene_cache.record_failure(key, f"the scene build crashed: {err}")
+
+        threading.Thread(target=work, name=f"robovast-wscene-{key[:8]}", daemon=True).start()
+        return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
+
+    def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
+        """One file of a cached descriptor. The cache is keyed by content and shared, so the
+        workspace only scopes the *route*, not the bytes."""
+        del workspace_id
+        return self.resolve_campaign_scene_asset("", path)
 
     def _run_state_path(self, campaign_id: str, config_name: str, run_id: str,
                         filename: str) -> Path:

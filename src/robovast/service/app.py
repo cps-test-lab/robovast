@@ -587,6 +587,28 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return FileResponse(str(_guard(
             lambda: impl.resolve_campaign_scene_asset(campaign_id, path))))
 
+    @app.get(Routes.workspace_scene("{workspace_id}"), response_model=SceneStatus,
+             tags=["authoring"])
+    def workspace_scene_status(workspace_id: str, path: str = ""):
+        """Is this project's world compiled, and if not what is happening about it.
+
+        The config view's geometry. Pure, exactly like the campaign one — and behind the same
+        cache, so a project and a campaign launched from it share an entry."""
+        return _guard(lambda: impl.workspace_scene_status(workspace_id, path))
+
+    @app.post(Routes.workspace_scene_run("{workspace_id}"), response_model=ActionResult,
+              tags=["authoring"])
+    def run_workspace_scene(workspace_id: str, path: str = ""):
+        """Compile this project's world unless it is cached, and return at once."""
+        return _guard(lambda: impl.run_workspace_scene(workspace_id, path))
+
+    @app.get(Routes.workspace_scene_asset("{workspace_id}", "{path:path}"), tags=["authoring"])
+    def workspace_scene_asset(workspace_id: str, path: str):
+        """One file of a cached scene descriptor, for the config view's loader."""
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
+        return FileResponse(str(_guard(
+            lambda: impl.resolve_workspace_scene_asset(workspace_id, path))))
+
     @app.get(Routes.campaign_panel_asset("{campaign_id}", "{path:path}"), tags=["authoring"])
     def campaign_panel_asset(campaign_id: str, path: str):
         """Serve a user-authored ``custom`` panel's bundle, staged into the campaign's

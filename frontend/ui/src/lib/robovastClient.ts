@@ -162,6 +162,7 @@ export interface VariationPreview {
 export type PreviewConfiguration = Schemas['PreviewConfiguration']
 
 export type PreviewResponse = Schemas['PreviewResponse']
+export type WorldDescription = Schemas['WorldDescription']
 
 export type VariationTypeParam = Schemas['VariationTypeParam']
 
@@ -423,6 +424,14 @@ export const robovast = {
     request<PreviewResponse>('POST', `/workspaces/${encodeURIComponent(id)}/preview`, {
       max_configs: maxConfigs,
       path,
+    }),
+
+  // What the simulator says this workspace's world offers. Runs a container in the campaign's
+  // own image, so it is only ever called from an explicit button.
+  describeWorld: (id: string, path = '', entities = false) =>
+    request<WorldDescription>('POST', `/workspaces/${encodeURIComponent(id)}/world`, {
+      path,
+      entities,
     }),
 
   getConfigSchema: () => request<Record<string, unknown>>('GET', '/config/schema'),

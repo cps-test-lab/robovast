@@ -6,7 +6,7 @@ import Alert from '@mui/material/Alert'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
-import type { PreviewConfiguration, VariationPreview } from '@/lib/robovastClient'
+import type { VariationPreview } from '@/lib/robovastClient'
 import { BUILTIN_PREVIEWS } from './builtins'
 import { RemotePreview } from './RemotePreview'
 
@@ -29,7 +29,15 @@ function OnePreview({
   return null
 }
 
-export function PreviewHost({ config }: { config: PreviewConfiguration }) {
+/** What PreviewHost actually reads: the declared factors and this config's resolved values.
+ *  Structural rather than the full PreviewConfiguration, so a config panel can mount it with the
+ *  configuration the panel-kit contract hands it. */
+interface PreviewSource {
+  parameters: Record<string, unknown>
+  previews?: VariationPreview[]
+}
+
+export function PreviewHost({ config }: { config: PreviewSource }) {
   const previews = config.previews ?? []
   if (!previews.length) {
     return (

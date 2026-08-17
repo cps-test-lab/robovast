@@ -8,6 +8,14 @@ export type { DataProvider, DataRow, SeriesOptions, SeriesPage } from './dataPro
 
 export type { PanelBuiltins, PanelProps, PanelSpec } from './panel'
 
+export type {
+  ConfigPanelProps,
+  ConfigViewContribution,
+  ResolvedConfiguration,
+  SceneMarker,
+  VariationPreview,
+} from './configPanel'
+
 export { useCanvasClock } from './useCanvasClock'
 
 export { lastAtOrBefore, nearestIndex } from './timeIndex'

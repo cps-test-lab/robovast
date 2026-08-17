@@ -493,9 +493,7 @@ function PanelFrame({
   ) : plugin ? (
     <plugin.component spec={spec} clock={clock} data={data} />
   ) : (
-    <Box sx={{ p: 2, color: 'error.main', fontSize: 13 }}>
-      Unknown panel type “{spec.type}”. Register it or fix the vast <code>visualization.panels</code>.
-    </Box>
+    <UnknownPanel type={spec.type} where="visualization.results.run_view.panels" />
   )
 
   // Two boxes, not one: the outer box carries the layout and does NOT clip, so the handles can hang
@@ -504,49 +502,22 @@ function PanelFrame({
   // `auto` and an absolutely positioned child would leave the outer box with no height at all.
   return (
     <Box ref={paperRef} sx={{ ...layout, display: 'flex' }}>
-      <Paper
-        elevation={frameless ? 0 : 3}
-        square={frameless}
-        sx={{
-          flexGrow: 1,
-          minWidth: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          bgcolor: frameless ? 'transparent' : 'background.paper',
-          border: frameless ? 0 : 1,
-          borderColor: 'divider',
-        }}
+      <PanelChrome
+        frameless={frameless}
+        header={
+          showHeader
+            ? {
+                title: spec.title ?? plugin?.manifest.label ?? spec.type,
+                onMouseDown: canMove ? startMove : undefined,
+                movable: canMove,
+                minimized,
+                onToggleMinimize: spec.minimizable ? () => setMinimized((m) => !m) : undefined,
+              }
+            : undefined
+        }
       >
-        {showHeader ? (
-          <Box
-            onMouseDown={canMove ? startMove : undefined}
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1,
-              px: 1,
-              py: 0.25,
-              borderBottom: minimized ? 0 : 1,
-              borderColor: 'divider',
-              bgcolor: 'action.hover',
-              ...(canMove ? { cursor: 'move', userSelect: 'none' } : null),
-            }}
-          >
-            <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
-              {spec.title ?? plugin?.manifest.label ?? spec.type}
-            </Typography>
-            {spec.minimizable ? (
-              <IconButton size="small" onClick={() => setMinimized((m) => !m)}>
-                {minimized ? <AddRoundedIcon fontSize="inherit" /> : <RemoveRoundedIcon fontSize="inherit" />}
-              </IconButton>
-            ) : null}
-          </Box>
-        ) : null}
-        {!minimized ? (
-          <Box sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>{body}</Box>
-        ) : null}
-      </Paper>
+        {minimized ? null : body}
+      </PanelChrome>
       {handles.map((use, i) => (
         <Box
           key={i}
@@ -555,6 +526,89 @@ function PanelFrame({
         />
       ))}
     </Box>
+  )
+}
+
+/** The error a host shows for a type nothing registered — never a silent drop. Exported so the
+ *  config column shows the same thing, pointing at its own key. */
+export function UnknownPanel({ type, where }: { type: string; where: string }) {
+  return (
+    <Box sx={{ p: 2, color: 'error.main', fontSize: 13 }}>
+      Unknown panel type “{type}”. Register it or fix the vast <code>{where}</code>.
+    </Box>
+  )
+}
+
+interface ChromeHeader {
+  title: string
+  onMouseDown?: (e: React.MouseEvent) => void
+  movable?: boolean
+  minimized?: boolean
+  onToggleMinimize?: () => void
+}
+
+/** A panel's frame: the Paper that clips its content, and the optional title bar.
+ *
+ *  Shared by both hosts. The run view adds dragging and resizing around it; the config column
+ *  wants exactly this and nothing else, which is what keeps that host small instead of a second
+ *  copy of the chrome. */
+export function PanelChrome({
+  frameless = false,
+  header,
+  children,
+}: {
+  frameless?: boolean
+  header?: ChromeHeader
+  children: React.ReactNode
+}) {
+  return (
+    <Paper
+      elevation={frameless ? 0 : 3}
+      square={frameless}
+      sx={{
+        flexGrow: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        bgcolor: frameless ? 'transparent' : 'background.paper',
+        border: frameless ? 0 : 1,
+        borderColor: 'divider',
+      }}
+    >
+      {header ? (
+        <Box
+          onMouseDown={header.onMouseDown}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            px: 1,
+            py: 0.25,
+            borderBottom: header.minimized ? 0 : 1,
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+            ...(header.movable ? { cursor: 'move', userSelect: 'none' } : null),
+          }}
+        >
+          <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
+            {header.title}
+          </Typography>
+          {header.onToggleMinimize ? (
+            <IconButton size="small" onClick={header.onToggleMinimize}>
+              {header.minimized ? (
+                <AddRoundedIcon fontSize="inherit" />
+              ) : (
+                <RemoveRoundedIcon fontSize="inherit" />
+              )}
+            </IconButton>
+          ) : null}
+        </Box>
+      ) : null}
+      {children ? (
+        <Box sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>{children}</Box>
+      ) : null}
+    </Paper>
   )
 }
 

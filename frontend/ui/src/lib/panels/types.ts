@@ -2,12 +2,13 @@
 // A panel plugin declares a manifest (its type name + layout defaults) and a component; the vast file
 // declares an ordered list of panel specs (type + position + data bindings) that the PanelHost renders.
 //
-// What a panel itself receives -- PanelProps, PanelBuiltins, and the panel-facing PanelSpec -- lives in
+// What a panel itself receives -- PanelProps/ConfigPanelProps, PanelBuiltins, and the panel-facing
+// PanelSpec -- lives in
 // @robovast/panel-kit, shared with package-provided panel remotes that cannot import from here. This
 // file extends that spec with the layout and remote-descriptor fields no panel reads.
 
 import type { ComponentType } from 'react'
-import type { PanelProps, PanelSpec as PanelSpecBase } from '@robovast/panel-kit'
+import type { ConfigPanelProps, PanelProps, PanelSpec as PanelSpecBase } from '@robovast/panel-kit'
 import type { RemoteDescriptor } from '@/lib/remote'
 
 export type Anchor =
@@ -75,4 +76,33 @@ export interface HostPanelProps extends PanelProps {
 export interface PanelPlugin {
   manifest: PanelManifest
   component: ComponentType<PanelProps>
+}
+
+// -- the config view --------------------------------------------------------
+//
+// The Config tab's third column. A far smaller layout grammar than the run view's: one column,
+// so a panel declares a height and nothing else. No anchors, no drag, no resize -- the order and
+// the sizes are the campaign author's, written in the .vast.
+
+/** A config panel as declared in the vast, normalized. Extends the kit's panel-facing spec with
+ *  the two fields only the host acts on. */
+export interface ConfigPanelSpec extends PanelSpecBase {
+  /** Pixels (number) or a fraction of the column ("35%"). Undefined takes the remaining space,
+   *  which only the last panel may do. */
+  height?: number | string
+  hidden: boolean
+  /** Set when this panel is loaded at runtime as a Module-Federation remote. */
+  remote?: RemoteDescriptor
+}
+
+/** Per-type defaults a config panel ships; the vast spec overrides them. */
+export interface ConfigPanelManifest {
+  type: string
+  label: string
+  defaultHeight?: number | string
+}
+
+export interface ConfigPanelPlugin {
+  manifest: ConfigPanelManifest
+  component: ComponentType<ConfigPanelProps>
 }

@@ -23,7 +23,7 @@ import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import { registerPanel } from '@/lib/dashboard/registry'
+import { registerPanel } from '@/lib/panels/registry'
 import { resolveCameraSource, VIDEOS_TABLE, type CameraBinding } from '@/lib/camera/cameraSource'
 import type { PanelProps } from '@robovast/panel-kit'
 

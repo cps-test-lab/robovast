@@ -827,6 +827,9 @@ class PreviewResponse(BaseModel):
     total_trials: int = 0
     configurations: list[PreviewConfiguration] = Field(default_factory=list)
     truncated: bool = False
+    #: The Config tab's third column, from ``visualization.config.panels`` of the same file —
+    #: flattened, with a Module-Federation ``remote`` attached to a package-provided panel.
+    config_panels: list[dict] = Field(default_factory=list)
 
 
 class WorldDescription(BaseModel):
@@ -1327,6 +1330,22 @@ class Routes:
     def campaign_scene_run(campaign_id: str) -> str:
         # ``<noun>/run``, as postprocessing and share already are.
         return f"/campaigns/{campaign_id}/scene/run"
+
+    @staticmethod
+    def workspace_scene(workspace_id: str) -> str:
+        # The config view's geometry: the world a .vast declares, before anything has run. Status
+        # only, like its campaign sibling and for the same reason.
+        return f"/workspaces/{workspace_id}/scene"
+
+    @staticmethod
+    def workspace_scene_run(workspace_id: str) -> str:
+        return f"/workspaces/{workspace_id}/scene/run"
+
+    @staticmethod
+    def workspace_scene_asset(workspace_id: str, path: str) -> str:
+        # A separate route from the campaign's, but the SAME cache behind it -- an entry is keyed
+        # by world identity, so a project and a campaign built from it share one.
+        return f"/workspaces/{workspace_id}/scene_assets/{path}"
 
     @staticmethod
     def campaign_screenshot(campaign_id: str) -> str:
@@ -1907,6 +1926,27 @@ class RobovastInterface(ABC):
         every campaign that used that world, so the work is shared even across campaigns. Poll
         :meth:`campaign_scene_status` for progress.
         """
+
+    @abstractmethod
+    def workspace_scene_status(self, workspace_id: str, path: str = "") -> SceneStatus:
+        """Is this project's world compiled, and if not, what is happening about it.
+
+        The config view's counterpart of :meth:`campaign_scene_status`, and pure for the same
+        reason. The world comes from the ``.vast`` rather than from a run's capture, so this
+        answers before the project has ever been run.
+        """
+
+    @abstractmethod
+    def run_workspace_scene(self, workspace_id: str, path: str = "") -> ActionResult:
+        """Compile this project's world if it is not cached, and return immediately.
+
+        Shares the cache with :meth:`run_campaign_scene`: a campaign launched from this project
+        finds the geometry already built, and the reverse.
+        """
+
+    @abstractmethod
+    def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
+        """Filesystem path of one file of a cached descriptor, for the workspace route."""
 
     @abstractmethod
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,

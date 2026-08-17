@@ -13,8 +13,8 @@ import { useEffect, useRef } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import { registerPanel } from '@/lib/dashboard/registry'
-import { useTimeSeries, type TimeSeriesBinding, type TimeSeriesSource } from '@/lib/dashboard/timeSeries'
+import { registerPanel } from '@/lib/panels/registry'
+import { useTimeSeries, type TimeSeriesBinding, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useCanvasClock, type PanelProps } from '@robovast/panel-kit'
 
 interface Extent {

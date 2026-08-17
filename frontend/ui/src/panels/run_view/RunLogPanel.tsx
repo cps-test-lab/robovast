@@ -15,7 +15,7 @@
 //   severities: push a severity floor into the query, e.g. [warn, error]
 
 import { useMemo } from 'react'
-import { registerPanel } from '@/lib/dashboard/registry'
+import { registerPanel } from '@/lib/panels/registry'
 import { RunLogView } from '@/components/runLog/RunLogView'
 import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'

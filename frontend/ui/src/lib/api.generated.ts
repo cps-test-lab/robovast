@@ -1060,6 +1060,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspaces/{workspace_id}/scene": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace Scene Status
+         * @description Is this project's world compiled, and if not what is happening about it.
+         *
+         *     The config view's geometry. Pure, exactly like the campaign one — and behind the same
+         *     cache, so a project and a campaign launched from it share an entry.
+         */
+        get: operations["workspace_scene_status_workspaces__workspace_id__scene_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{workspace_id}/scene/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Workspace Scene
+         * @description Compile this project's world unless it is cached, and return at once.
+         */
+        post: operations["run_workspace_scene_workspaces__workspace_id__scene_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{workspace_id}/scene_assets/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace Scene Asset
+         * @description One file of a cached scene descriptor, for the config view's loader.
+         */
+        get: operations["workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspaces/{workspace_id}/validate": {
         parameters: {
             query?: never;
@@ -1435,6 +1498,28 @@ export interface components {
              * @default false
              */
             force: boolean;
+        };
+        /**
+         * ConfigViewContribution
+         * @description What the variations of one configuration contribute to the config view.
+         *
+         *     Neutral geometry plus named files, in the vocabulary of
+         *     :mod:`robovast.common.scene_markers` — so a panel draws a variation it has never heard
+         *     of. ``errors`` carries a hook that raised, named, rather than dropping its markers: a
+         *     view that silently loses one variation's contribution is indistinguishable from a
+         *     variation that placed nothing.
+         */
+        ConfigViewContribution: {
+            /** Errors */
+            errors: string[];
+            /** Files */
+            files: {
+                [key: string]: string;
+            };
+            /** Markers */
+            markers: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * CreateCampaignRequest
@@ -2092,6 +2177,11 @@ export interface components {
          * @description One resolved configuration a ``.vast`` expands to.
          */
         PreviewConfiguration: {
+            contribution: components["schemas"]["ConfigViewContribution"];
+            /** Internals */
+            internals: {
+                [key: string]: unknown;
+            };
             /** Name */
             name: string;
             /** Parameters */
@@ -2100,12 +2190,20 @@ export interface components {
             };
             /** Previews */
             previews: components["schemas"]["VariationPreview"][];
+            /** Sim */
+            sim: {
+                [key: string]: unknown;
+            };
         };
         /**
          * PreviewResponse
          * @description Result of :meth:`RobovastInterface.preview_configurations`.
          */
         PreviewResponse: {
+            /** Config Panels */
+            config_panels: {
+                [key: string]: unknown;
+            }[];
             /**
              * Configs
              * @default 0
@@ -4783,6 +4881,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workspace_scene_status_workspaces__workspace_id__scene_get: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SceneStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_workspace_scene_workspaces__workspace_id__scene_run_post: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

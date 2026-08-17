@@ -4,7 +4,7 @@
 // This is the *panel-facing* half. The layout fields the host needs (anchor/size, resizable,
 // minimized, the Module-Federation descriptor) are deliberately absent: no panel reads them, and
 // including them would drag the host's remote-loading types in here. The host extends `PanelSpec`
-// with those in frontend/ui/src/lib/dashboard/types.ts.
+// with those in frontend/ui/src/lib/panels/types.ts.
 
 import type { ComponentType } from 'react'
 import type { PlaybackClock } from './clock'

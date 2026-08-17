@@ -565,6 +565,40 @@
         "title": "CleanupDataRequest",
         "type": "object"
       },
+      "ConfigViewContribution": {
+        "description": "What the variations of one configuration contribute to the config view.\n\nNeutral geometry plus named files, in the vocabulary of\n:mod:`robovast.common.scene_markers` \u2014 so a panel draws a variation it has never heard\nof. ``errors`` carries a hook that raised, named, rather than dropping its markers: a\nview that silently loses one variation's contribution is indistinguishable from a\nvariation that placed nothing.",
+        "properties": {
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "object"
+          },
+          "markers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Markers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "errors",
+          "files",
+          "markers"
+        ],
+        "title": "ConfigViewContribution",
+        "type": "object"
+      },
       "CreateCampaignRequest": {
         "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
         "properties": {
@@ -1487,6 +1521,14 @@
       "PreviewConfiguration": {
         "description": "One resolved configuration a ``.vast`` expands to.",
         "properties": {
+          "contribution": {
+            "$ref": "#/components/schemas/ConfigViewContribution"
+          },
+          "internals": {
+            "additionalProperties": true,
+            "title": "Internals",
+            "type": "object"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -1502,12 +1544,20 @@
             },
             "title": "Previews",
             "type": "array"
+          },
+          "sim": {
+            "additionalProperties": true,
+            "title": "Sim",
+            "type": "object"
           }
         },
         "required": [
+          "contribution",
+          "internals",
           "name",
           "parameters",
-          "previews"
+          "previews",
+          "sim"
         ],
         "title": "PreviewConfiguration",
         "type": "object"
@@ -1515,6 +1565,14 @@
       "PreviewResponse": {
         "description": "Result of :meth:`RobovastInterface.preview_configurations`.",
         "properties": {
+          "config_panels": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Config Panels",
+            "type": "array"
+          },
           "configs": {
             "default": 0,
             "title": "Configs",
@@ -1544,6 +1602,7 @@
           }
         },
         "required": [
+          "config_panels",
           "configs",
           "configurations",
           "runs_per_config",
@@ -5880,6 +5939,162 @@
         "summary": "Preview Configurations",
         "tags": [
           "workspaces"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/scene": {
+      "get": {
+        "description": "Is this project's world compiled, and if not what is happening about it.\n\nThe config view's geometry. Pure, exactly like the campaign one \u2014 and behind the same\ncache, so a project and a campaign launched from it share an entry.",
+        "operationId": "workspace_scene_status_workspaces__workspace_id__scene_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SceneStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workspace Scene Status",
+        "tags": [
+          "authoring"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/scene/run": {
+      "post": {
+        "description": "Compile this project's world unless it is cached, and return at once.",
+        "operationId": "run_workspace_scene_workspaces__workspace_id__scene_run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Workspace Scene",
+        "tags": [
+          "authoring"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/scene_assets/{path}": {
+      "get": {
+        "description": "One file of a cached scene descriptor, for the config view's loader.",
+        "operationId": "workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workspace Scene Asset",
+        "tags": [
+          "authoring"
         ]
       }
     },

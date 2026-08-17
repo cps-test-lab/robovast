@@ -11,7 +11,7 @@ import Typography from '@mui/material/Typography'
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
 import FastForwardRoundedIcon from '@mui/icons-material/FastForwardRounded'
-import { registerPanel } from '@/lib/dashboard/registry'
+import { registerPanel } from '@/lib/panels/registry'
 import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 

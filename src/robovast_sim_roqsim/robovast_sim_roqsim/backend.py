@@ -215,7 +215,7 @@ class RoqsimBackend(SimulatorBackend):
         # MUJOCO_GL is deliberately absent. Which backend works is a property of the
         # machine the simulator lands on, and this code runs on the *service host* -- a
         # different machine whenever a campaign is dispatched. roqsim picks it at
-        # startup instead (roqsim.viewer.select_offscreen_gl), which is what finally
+        # import instead (roqsim.gl.select_offscreen_gl), which is what finally
         # retires the 22-line shell script three packages had each copied.
         if shape_for(execution.get("mode", "auto")) == SHAPE_STEPPED:
             # In-process: no command line to put the config on, so the adapter reads it

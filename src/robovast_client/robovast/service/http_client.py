@@ -464,6 +464,22 @@ class HTTPTransport(RobovastInterface):
         frame.write_bytes(resp.content)
         return str(frame)
 
+    def workspace_scene_status(self, workspace_id: str, path: str = "") -> "SceneStatus":
+        from robovast.service.interface import SceneStatus
+        return SceneStatus.model_validate(self._get(
+            Routes.workspace_scene(workspace_id), path=path))
+
+    def run_workspace_scene(self, workspace_id: str, path: str = "") -> "ActionResult":
+        from urllib.parse import urlencode
+        query = urlencode({"path": path})
+        return ActionResult.model_validate(self._post(
+            f"{Routes.workspace_scene_run(workspace_id)}?{query}"))
+
+    def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
+        # Same as its campaign sibling: a path on the service's disk means nothing here.
+        raise NotImplementedError(
+            "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
+
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes
         # from the address the status reports. Refusing beats returning a path that is not there.

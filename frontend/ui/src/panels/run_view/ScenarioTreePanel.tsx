@@ -29,8 +29,8 @@ import AltRouteRounded from '@mui/icons-material/AltRouteRounded'
 import ArrowRightAltRounded from '@mui/icons-material/ArrowRightAltRounded'
 import ChangeCircleRounded from '@mui/icons-material/ChangeCircleRounded'
 import SplitscreenRounded from '@mui/icons-material/SplitscreenRounded'
-import { registerPanel } from '@/lib/dashboard/registry'
-import { timeSeriesFromRows, type TimeSeriesSource } from '@/lib/dashboard/timeSeries'
+import { registerPanel } from '@/lib/panels/registry'
+import { timeSeriesFromRows, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useClock, type DataProvider, type DataRow, type PanelProps } from '@robovast/panel-kit'
 
 // Always present -- the seven columns every behaviours table has had.
