@@ -1275,6 +1275,7 @@ each block shows up.
    visualization:
      config:                       # the Config tab
        panels: [...]               #   its third column, per generated configuration
+                                   #   (see :ref:`config-view` for the panel reference)
      results:                      # the Results tab
        run_view:
          panels: [...]             #   the replay panels

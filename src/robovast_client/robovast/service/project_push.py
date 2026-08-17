@@ -148,6 +148,13 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
             service, where the directory is read on the service host and a path from the
             caller's machine is *expected* to be absent.
     """
+    # A pinned directory is editable file by file but never mirrored wholesale; see
+    # WorkspaceRegistry.require_syncable. Asked of the store when there is one -- an HTTP
+    # client has no registry, and the service refuses on its own side.
+    store = getattr(client, "store", None)
+    if store is not None and hasattr(store, "registry"):
+        store.registry.require_syncable(workspace_id)
+
     root = Path(directory).resolve()
     if not root.is_dir():
         raise FileNotFoundError(

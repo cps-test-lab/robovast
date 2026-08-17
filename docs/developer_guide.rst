@@ -1823,16 +1823,27 @@ without touching any panel:
 * **Panels** are plugins with **two delivery mechanisms behind one contract**. A
   ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
   ``PanelProps`` (``{spec, clock, data}``). *Core built-in* panels self-register via
-  ``registerPanel`` (``registry.ts``) by importing ``frontend/ui/src/panels/index.ts``. *Remote*
-  panels — package-provided or user-authored — are loaded at runtime as Module-Federation
-  remotes (see below) and never touch the static registry. The ``.vast``'s
-  ``visualization.results.run_view.panels`` specs are normalized by ``parseVastPanels.ts`` (single-key
+  ``registerPanel`` (``registry.ts``) by importing ``frontend/ui/src/panels/run_view/index.ts``.
+  *Remote* panels — package-provided or user-authored — are loaded at runtime as
+  Module-Federation remotes (see below) and never touch the static registry. The ``.vast``'s
+  ``visualization.results.run_view.panels`` specs are normalized by ``parsePanels.ts`` (single-key
   shorthand → ``{type, ...fields}``; the same shorthand is accepted by the Pydantic schema,
   see ``PanelConfig._flatten_shorthand``). Valid ``type`` values are the core built-ins
   (``BUILTIN_PANEL_TYPES``) ∪ installed ``robovast.panel_types`` entry-point names ∪
   ``custom`` — validated in ``PanelConfig._known_type`` in :mod:`robovast.common.config`
   (so a package panel is valid only when its plugin is installed). Adding a core built-in
   is still one file + one ``BUILTIN_PANEL_TYPES`` entry.
+
+  **Two surfaces, one framework.** The Config tab's column (:ref:`config-view`) uses the same
+  registry factory, the same spec parsing and the same panel frame; what differs is the layout
+  grammar (one column, so a panel declares only a ``height`` — ``ColumnHost.tsx``, not
+  ``PanelHost.tsx``) and the props (``ConfigPanelProps``: a resolved configuration, and no
+  clock). A config panel lives in ``frontend/ui/src/panels/config/``, registers with
+  ``registerConfigPanel``, and its type joins ``BUILTIN_CONFIG_PANEL_TYPES``. Package-provided
+  config panels use the **same** ``robovast.panel_types`` entry-point group and the same asset
+  route; the panel class's ``SURFACE`` (``"run"`` by default, ``"config"`` otherwise) is what
+  tells them apart, so naming a run panel in ``visualization.config.panels`` is refused rather
+  than mounting a component that reads a clock against a configuration.
 * **Data** comes only through ``DataProvider`` (``dataProvider.ts``): rows by table+time,
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a

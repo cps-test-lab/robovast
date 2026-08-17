@@ -104,7 +104,7 @@ class WorkspaceRegistry:
     *in place*, never copied into the store. It is in-memory only (never written to
     ``registry.json``): a ``vast serve --workspace-dir DIR`` derives it afresh each
     start with a path-stable id, so links survive a restart without a
-    ``workspace init`` upload. See :meth:`add_static` / :meth:`is_read_only`.
+    ``workspace init`` upload. See :meth:`add_static` / :meth:`is_pinned`.
 
     Exactly one, deliberately: a pinned directory holds as many ``.vast`` files as
     the caller likes (selected per campaign by ``config_path``), so N directories add
@@ -129,12 +129,17 @@ class WorkspaceRegistry:
                 self.add_static(static_dir)
 
     def add_static(self, path, name: str = "") -> dict:
-        """Pin *path* as a read-only workspace used in place; return its entry.
+        """Pin *path* as a workspace used **in place**; return its entry.
 
-        The id is derived from the resolved path (stable across restarts, so the
-        UI link keeps working), and the entry is flagged ``read_only`` so every
-        mutating store op refuses it — the files are edited on disk, not through
-        the service.
+        The id is derived from the resolved path (stable across restarts, so the UI link
+        keeps working). The directory is **writable**: an edit in the Config tab lands on
+        the real file, which is what makes a local project editable from the browser at all.
+        Without it the web UI could not replace the desktop editor's Open/Save for anyone
+        working on a git-tracked project -- the only route was to copy the project into the
+        store, edit the copy, and copy it back.
+
+        What stays refused is *deleting the workspace*: the directory is the caller's, not
+        the store's, so unpinning it is a ``--workspace-dir`` flag rather than a DELETE.
         """
         import hashlib
         p = Path(path).expanduser().resolve()
@@ -145,16 +150,38 @@ class WorkspaceRegistry:
             "workspace_id": workspace_id,
             "name": name or p.name,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "read_only": True,
+            "read_only": False,
             "source_dir": str(p),
         }
         self._static[workspace_id] = entry
         self._static_paths[workspace_id] = p
-        logger.info("Pinned read-only workspace %s -> %s", workspace_id, p)
+        logger.info("Pinned workspace %s -> %s (edits land on these files)", workspace_id, p)
         return entry
 
-    def is_read_only(self, workspace_id: str) -> bool:
-        """True if *workspace_id* is a pinned, in-place directory (no writes)."""
+    def require_syncable(self, workspace_id: str) -> None:
+        """Refuse a **bulk directory sync** into a pinned workspace.
+
+        Individual edits are allowed -- that is the point of a pinned directory. A whole-tree
+        sync is a different act: it overwrites every file at once and, with ``--prune``,
+        deletes the ones the source does not have. Against a directory the caller owns (a git
+        working tree, typically) that is a destructive operation with a plain alternative,
+        which is to edit the directory itself. Nothing is gained by mirroring a directory onto
+        itself, and a mirror of a *different* directory onto it is almost certainly a mistake.
+        """
+        if self.is_pinned(workspace_id):
+            raise WorkspaceError(
+                f"workspace {workspace_id!r} is a directory pinned in place "
+                "(vast serve --workspace-dir), so a whole-directory sync would overwrite -- "
+                "and with --prune delete -- files in that directory. Individual edits through "
+                "the service are fine; to replace the tree, edit it on disk.")
+
+    def is_pinned(self, workspace_id: str) -> bool:
+        """True if *workspace_id* is a directory used in place (``--workspace-dir``).
+
+        Pinned is about *where the files live*, not about whether they may be written: the
+        listing filter below skips what such a tree carries and ``.git`` is not ours, and
+        deleting the workspace is refused. Everything else is an ordinary workspace.
+        """
         return workspace_id in self._static
 
     def ensure_dirs(self):
@@ -291,9 +318,10 @@ class WorkspaceRegistry:
         workspace_id = self.require(id_or_name)["workspace_id"]
         if workspace_id in self._static:
             raise WorkspaceError(
-                f"workspace {workspace_id!r} is a read-only pinned directory "
-                "(vast serve --workspace-dir); it cannot be deleted through the "
-                "service — drop the --workspace-dir flag instead")
+                f"workspace {workspace_id!r} is a directory pinned in place "
+                "(vast serve --workspace-dir). Its files may be edited through the service, "
+                "but the directory is yours rather than the store's, so it is unpinned by "
+                "dropping the --workspace-dir flag, not by deleting it here.")
         with self._locked():
             data = self._read_unlocked()
             data.pop(workspace_id, None)
@@ -356,18 +384,6 @@ class WorkspaceStore:
 
     # -- read-only guard ----------------------------------------------------
 
-    def _require_writable(self, workspace_id: str) -> None:
-        """Refuse a mutation of a pinned, in-place directory.
-
-        The message is deliberately actionable — MCP tools surface it verbatim —
-        so an LLM or user knows to edit the files on disk rather than retry.
-        """
-        if self.registry.is_read_only(workspace_id):
-            raise WorkspaceError(
-                f"workspace {workspace_id!r} is read-only (a directory pinned with "
-                "vast serve --workspace-dir); edit the files on disk instead of "
-                "through the service")
-
     # -- path safety --------------------------------------------------------
 
     def _safe_join(self, workspace_id: str, rel_path: str) -> Path:
@@ -395,7 +411,6 @@ class WorkspaceStore:
 
     def write_file(self, workspace_id: str, rel_path: str, content: str) -> dict:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        self._require_writable(workspace_id)
         self._require_inline_type(rel_path)
         target = self._safe_join(workspace_id, rel_path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -406,7 +421,6 @@ class WorkspaceStore:
                   new_string: str) -> dict:
         """Replace *old_string* once — the token-cheap validate→fix loop."""
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        self._require_writable(workspace_id)
         self._require_inline_type(rel_path)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
@@ -448,13 +462,12 @@ class WorkspaceStore:
         prune destructive.
         """
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        if not self.registry.is_read_only(workspace_id):
+        if not self.registry.is_pinned(workspace_id):
             return None
         return lambda rel, _is_dir: is_skipped(rel, PINNED_SKIP_DIRS)
 
     def delete_file(self, workspace_id: str, rel_path: str) -> None:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        self._require_writable(workspace_id)
         target = self._safe_join(workspace_id, rel_path)
         if not target.is_file():
             raise WorkspaceError(
@@ -468,7 +481,6 @@ class WorkspaceStore:
                       executable: bool = False) -> dict:
         """Issue a one-time, TTL-scoped grant for an HTTP PUT of *rel_path*."""
         workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        self._require_writable(workspace_id)
         self._safe_join(workspace_id, rel_path)  # validate up front
         return self.tokens.issue(workspace_id, rel_path, executable=executable)
 

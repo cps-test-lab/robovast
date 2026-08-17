@@ -268,10 +268,11 @@ def pinned(tmp_path):
 
 def test_pinned_dir_is_used_in_place_and_listed(pinned):
     store, wid, src = pinned
-    assert store.registry.is_read_only(wid) is True
+    assert store.registry.is_pinned(wid) is True
     assert store.registry.project_dir(wid) == src
     entry = store.registry.get(wid)
-    assert entry["read_only"] is True and entry["name"] == "myproj"
+    # Pinned says *where the files live*, not that they may not be written.
+    assert entry["read_only"] is False and entry["name"] == "myproj"
 
 
 def test_pinned_id_is_stable_across_reload(tmp_path):
@@ -294,23 +295,32 @@ def test_pinned_listing_skips_hidden_and_results(pinned):
     assert _listing(store, wid) == ["demo.vast", "run.sh"]
 
 
-def test_pinned_reads_but_refuses_writes(pinned):
-    store, wid, _ = pinned
+def test_pinned_dir_is_editable_in_place(pinned):
+    """An edit through the service lands on the real file.
+
+    This is what lets the web UI replace the desktop editor's Open/Save for a project that
+    lives in a git working tree: without it the only route was to copy the project into the
+    store, edit the copy, and copy it back.
+    """
+    store, wid, src = pinned
     assert "configuration" in store.resolve(wid, "demo.vast").read_text()
-    with pytest.raises(WorkspaceError, match="read-only"):
-        store.write_file(wid, "x.vast", "y")
-    with pytest.raises(WorkspaceError, match="read-only"):
-        store.edit_file(wid, "demo.vast", "variations", "x")
-    with pytest.raises(WorkspaceError, match="read-only"):
-        store.delete_file(wid, "demo.vast")
-    with pytest.raises(WorkspaceError, match="read-only"):
-        store.create_upload(wid, "a.txt")
+
+    store.write_file(wid, "x.vast", "version: 2\n")
+    assert (src / "x.vast").read_text() == "version: 2\n"
+
+    store.edit_file(wid, "demo.vast", "configuration", "configuration  # edited")
+    assert "# edited" in (src / "demo.vast").read_text()
+
+    store.delete_file(wid, "x.vast")
+    assert not (src / "x.vast").exists()
 
 
 def test_pinned_dir_cannot_be_deleted_through_service(pinned):
-    store, wid, _ = pinned
-    with pytest.raises(WorkspaceError, match="read-only"):
+    # The directory is the caller's, not the store's: it is unpinned by dropping the flag.
+    store, wid, src = pinned
+    with pytest.raises(WorkspaceError, match="pinned in place"):
         store.registry.delete(wid)
+    assert src.is_dir()
 
 
 def test_pinned_dir_serves_the_cluster_lane_too(pinned):

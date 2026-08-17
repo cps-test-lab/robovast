@@ -216,12 +216,18 @@ def test_resolve_ambiguous_name_fails_loudly():
         _resolve_workspace_id(stub, "dup")
 
 
-def test_sync_refuses_read_only_pinned_workspace(tmp_path, project):
+def test_sync_refuses_a_pinned_workspace(tmp_path, project):
+    """A pinned directory takes individual edits but is never mirrored wholesale.
+
+    The edits are the point of pinning; a whole-tree sync overwrites every file and, with
+    --prune, deletes the ones the source lacks -- against a directory the caller owns, and
+    with a plain alternative (edit it on disk).
+    """
     registry = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(project))
     lt = LocalTransport.__new__(LocalTransport)
     lt.store = WorkspaceStore(registry=registry)
     wid = registry.list()[0]["workspace_id"]
-    with pytest.raises(WorkspaceError, match="read-only"):
+    with pytest.raises(WorkspaceError, match="pinned in place"):
         sync_directory_to_workspace(lt, wid, project, skip_dirs={"results"})
 
 

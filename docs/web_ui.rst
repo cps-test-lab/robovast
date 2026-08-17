@@ -311,7 +311,8 @@ run files, and author the ``.vast`` in the Monaco editor.
    ``put`` writes ``.vast``/``.osc`` directly and streams everything else through
    the upload side channel, preserving the executable bit — the same two paths the
    Config tab's drag-a-folder upload uses. A workspace pinned with
-   ``vast serve --workspace-dir`` is read-only: edit those files on disk.
+   ``vast serve --workspace-dir`` takes these writes like any other — they land on
+   the real files.
 
    ``update`` re-uploads every file (overwriting in place) with the same inline /
    side-channel split and skip rules as ``init``. By default it only adds and
@@ -331,14 +332,25 @@ run files, and author the ``.vast`` in the Monaco editor.
 
       vast serve --workspace-dir configs/examples/ros2_basic
 
-   The directory is used **in place** as a **read-only** workspace: it appears in
-   the dropdown the moment the service starts, with a path-stable id so its UI
-   link keeps working after a restart. Edit the files on disk to change it —
-   writes through the service/UI/MCP are refused (campaign outputs still land in
-   the shared results store, never under the pinned dir). One directory may be
-   pinned, named after itself; it may hold any number of ``.vast`` files, chosen per
-   campaign, so pin the collection rather than each project. Hidden files and
-   ``results/`` are skipped, exactly like ``workspace init``.
+   The directory is used **in place**: it appears in the dropdown the moment the
+   service starts, with a path-stable id so its UI link keeps working after a
+   restart, and **edits land on the real files**. That is what lets the Config tab
+   author a project that lives in a git working tree — the browser has no working
+   directory of its own, so without it the only route was to copy the project into
+   the store, edit the copy and copy it back. (Campaign outputs still land in the
+   shared results store, never under the pinned dir.)
+
+   Two things are refused, both because the directory is *yours* rather than the
+   store's: **deleting the workspace** (unpin it by dropping the flag) and a
+   **whole-directory sync** into it (``vast workspace update``), which would
+   overwrite every file at once and, with ``--prune``, delete the ones the source
+   does not have. Editing files one at a time is the point; mirroring a different
+   tree over someone's checkout is not.
+
+   One directory may be pinned, named after itself; it may hold any number of
+   ``.vast`` files, chosen per campaign, so pin the collection rather than each
+   project. Hidden files and ``results/`` are skipped, exactly like
+   ``workspace init``.
 
    **It lands wherever the UI is — with no flag at all.** A workspace lives in the
    store of whichever service you talk to, and ``vast workspace`` follows the same
@@ -376,6 +388,102 @@ after each edit — problems appear in the panel below the editor. **Generate** 
 the config and lists the resolved configurations with their parameters, without
 running anything. Variation plugins declared in the ``.vast`` ``plugins:`` list are
 installed server-side automatically, so validation and preview resolve them.
+
+.. _config-view:
+
+The config view
+~~~~~~~~~~~~~~~
+
+The Config tab is three columns: the **editor**, a narrow list of the
+**configurations** ``Generate`` expanded to, and — beside them — a **view of the selected
+configuration** that the ``.vast`` itself declares.
+
+.. code-block:: yaml
+
+   visualization:
+     config:
+       panels:
+       - parameters: {title: Scenario parameters, height: "35%"}
+       - world:      {title: World configuration, height: "15%"}
+       - scene3d:    {title: Scene}          # no height -> takes what is left
+
+Panels stack top to bottom in declaration order. A panel's only layout field is its
+``height`` — pixels, or a percentage of the column; the last one may omit it and take
+whatever the others left. (Declaring two heightless panels is refused when the campaign is
+validated, naming the panel, rather than laying one over the other.) Everything else on a
+panel entry is that panel's own **data binding**, exactly as in the run view.
+
+A ``.vast`` that declares no ``config:`` block gets ``parameters`` and ``world``, so the
+column is never empty for want of a block nobody wrote.
+
+The built-in panels:
+
+**Scenario parameters** (``parameters``) — what the trial is given, as YAML. A toggle adds
+the ``_``-prefixed keys a variation wrote for other readers (``_map_file``, ``_path``,
+``_goal_parameter_name``); they are a different *level* of the configuration rather than a
+filtered subset, so they appear as their own block. Below them, the per-variation previews:
+the distribution or value list each factor came from, with this configuration's value marked.
+
+**World configuration** (``world``) — the resolved ``sim`` block: the world this
+configuration runs in and the plugin overrides on it. A different question from the
+parameters — one says what the trial does, the other what it runs in — and it is where a
+campaign that varies its environment shows that. **Describe world** asks the simulator, in
+the campaign's own image, which plugin keys it actually offers; behind a button because it
+runs a container.
+
+.. _config-scene3d:
+
+**Scene** (``scene3d``) — the world in 3D, with what this configuration's variations placed
+drawn on it. Same renderer and same navigation as the :ref:`run view's <scene3d-panel>`.
+
+*The geometry is the campaign's* **base world**. It is keyed on the ``.vast``'s world and
+its campaign-level overrides, not on the selected configuration, so clicking through
+configurations swaps markers rather than running a container each time — and the entry is
+the **same cache** a campaign uses, so compiling it here leaves the run view warm, and the
+reverse. A configuration naming a different world *file* (a floorplan baked per cell) is a
+different identity and does get its own geometry.
+
+What that costs is stated in the panel: an override that changes geometry through a plugin
+is **not** in the mesh, only what the variation contributes as markers. This is a view of
+the base world plus placements, not a compiled preview of the exact model the run will load.
+
+**Map** (``map2d``, ships with ``robovast_nav``) — the occupancy map a nav campaign plans
+on, with the same markers drawn top-down. It exists beside the 3D scene because it is the
+*planning* view: a path is searched over these cells and an obstacle is placed relative to
+that path, so "why did the path go there" is a question about this picture.
+
+What a variation contributes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The markers are not the panels' knowledge. A variation type answers
+:meth:`~robovast.common.variation.base_variation.Variation.config_view_data` with **neutral
+geometry** — a box at a pose, a polyline, a pose marker — and every panel draws whatever it
+is handed. So a panel renders a variation it has never heard of, and a new variation needs
+no change in any panel. See :ref:`variation-config-view` for writing one.
+
+Markers can also be declared in the ``.vast``, which is how a campaign whose factor is a
+plain parameter list shows its endpoints — nothing about ``ParameterVariationList`` knows
+about placement, so it contributes nothing:
+
+.. code-block:: yaml
+
+   - scene3d:
+       markers:
+       # The robot spawns at world (-8, 0), per the world's spawn_robot plugin.
+       - {kind: pose, pos: [-8.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+       # goal_pose is a MAP-frame pose and map = world + (8, 0) for this world, so the
+       # marker is shifted back by it.
+       - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal}
+
+``param:`` reads a resolved scenario parameter, so the marker follows the selection; one
+parameter holding a list of poses yields one numbered marker each. ``offset:`` is a literal
+translation applied afterwards — the way a map-frame parameter is placed in a world-frame
+scene, declared in the file because nothing in a panel can know a campaign's frames. A
+``param:`` the configuration does not have draws **nothing**, rather than a marker at the
+origin: a pose silently at (0, 0) is a wrong answer, an absent one is a visible question.
+
+See :repo_link:`configs/examples/basic_nav/basic_nav_roqsim.vast` for the declared form and
+:repo_link:`configs/navigation/navigation_variation.vast` for the contributed one.
 
 Starting it
 -----------
