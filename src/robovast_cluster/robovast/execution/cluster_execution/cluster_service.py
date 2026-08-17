@@ -172,6 +172,20 @@ class ClusterService(LocalTransport):
         # disk, but that disk is the cluster's, not the caller's.
         v.results_root = None
         v.sources_root = None
+        # Overrides the local lane's unconditional True: here a build needs somewhere to
+        # push to, and this deployment may not have one. Read from the cached cluster
+        # config, which is a plain `os.environ` lookup -- deliberately not
+        # `_resolve_registry_objects`, which does Secret lookups and would put an API
+        # call in the one call a client makes to find out where it is pointed.
+        try:
+            registry = self._cluster_config().get_registry_config()
+            v.can_build_images = registry.enabled()
+            v.build_unavailable = registry.why_disabled() or None
+        except Exception:  # noqa: BLE001 - no config readable is not a build verdict
+            # Leave both None: "I could not tell" is not "you cannot build", and a
+            # consumer prints nothing for None. Reporting False here would send an
+            # operator to fix a registry over a config-loading problem.
+            pass
         return v
 
     def _api_server_url(self) -> "str | None":

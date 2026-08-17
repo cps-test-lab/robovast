@@ -149,6 +149,12 @@ def get_service_info() -> dict:
         ``in_pod``, ``api_server`` — which cluster a campaign would land in.
         ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
         fine for a pilot, fragile for a large campaign's result transfers.
+
+        ``can_build_images`` says whether this deployment can build an experiment image at
+        all — check it before authoring a container that adds packages, because otherwise
+        the refusal arrives at ``start_campaign``, after the push and the workspace.
+        ``build_unavailable`` then carries the reason and the fix. Both are **absent** when
+        the service did not say; absent is not ``false``.
     """
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE
@@ -182,6 +188,13 @@ def get_service_info() -> dict:
             "in_pod": v.in_pod,
             "api_server": v.api_server,
         })
+    # Only when the service gave a verdict. `None` means "this service did not say" --
+    # an older one has no such field -- and reporting that as False would tell every
+    # healthy pre-field deployment to go and fix a registry it does not need fixed.
+    if v.can_build_images is not None:
+        info["can_build_images"] = v.can_build_images
+        if not v.can_build_images and v.build_unavailable:
+            info["build_unavailable"] = v.build_unavailable
     return info
 
 

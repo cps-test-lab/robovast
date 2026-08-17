@@ -507,6 +507,28 @@ class VersionInfo(BaseModel):
     #: is answerable without reading the caller's kubeconfig.
     api_server: Optional[str] = None
 
+    # -- can this deployment build an experiment image? ----------------------
+    # A campaign whose container adds packages needs somewhere to push the derived image.
+    # On the cluster lane that is the service's own in-pod registry, reached over its
+    # Ingress — so a service that is unpublished, or whose registry prefix a `setup`
+    # re-run dropped, cannot build at all. Nothing said so until a campaign was
+    # submitted and refused, after a project push, a workspace create and a launch.
+    #
+    # **Capability, not liveness.** This answers "does this deployment have the
+    # infrastructure a build needs", which is a property of how it was set up. Whether
+    # Docker is running right now is a different question, answered by `resource_usage`
+    # and by the run preflight; probing it here would make the cheapest call in the
+    # interface the slowest.
+    #: True when this deployment can build an experiment image; ``None`` when the service
+    #: did not say. **A consumer must treat ``None`` as "no verdict" and print nothing**:
+    #: a service older than this field leaves it absent, and reading that as ``False``
+    #: would tell every healthy pre-field deployment to go and fix itself.
+    can_build_images: Optional[bool] = None
+    #: Why not, and the commands that fix it. Non-null only when ``can_build_images`` is
+    #: False. Never carries a registry host, prefix or credential — registry details do
+    #: not cross this interface (see :class:`RegistryConfig`), and this reaches a client.
+    build_unavailable: Optional[str] = None
+
     # -- how to reach files -------------------------------------------------
     #: The address templates, so a caller learns the file address space from the
     #: service rather than from documentation it may not have.

@@ -676,7 +676,16 @@ class LocalTransport(RobovastInterface):
         # contract -- whether the *service* has openable paths. ``app.py``'s version
         # route answers the other half and blanks them for a non-loopback caller,
         # which a transport cannot see.
+        # `can_build_images=True` unconditionally, and deliberately **without probing
+        # Docker**. This lane builds with `docker buildx --load` into the local daemon:
+        # there is no registry, no Ingress and nothing an operator can misconfigure, so
+        # the capability is a property of the lane rather than of this deployment. A dead
+        # daemon is *liveness* — `resource_usage`, the run preflight and `vast doctor`
+        # each answer that — and `check_docker_access` shells out with a 15 s timeout,
+        # which is the last thing this call should ever wait on. `_api_server_url` in the
+        # cluster lane's version() refuses to dial for the same reason.
         return VersionInfo(robovast_version=_robovast_version(), backend="docker",
+                           can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root))
 

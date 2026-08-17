@@ -2615,6 +2615,10 @@ export interface components {
             api_version: string;
             /** Backend */
             backend: string | null;
+            /** Build Unavailable */
+            build_unavailable: string | null;
+            /** Can Build Images */
+            can_build_images: boolean | null;
             /** In Pod */
             in_pod: boolean | null;
             /** Kube Context */

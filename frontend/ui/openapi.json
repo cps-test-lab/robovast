@@ -2374,6 +2374,28 @@
             ],
             "title": "Backend"
           },
+          "build_unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Unavailable"
+          },
+          "can_build_images": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Build Images"
+          },
           "in_pod": {
             "anyOf": [
               {
@@ -2459,6 +2481,8 @@
           "api_server",
           "api_version",
           "backend",
+          "build_unavailable",
+          "can_build_images",
           "in_pod",
           "kube_context",
           "kube_context_source",
