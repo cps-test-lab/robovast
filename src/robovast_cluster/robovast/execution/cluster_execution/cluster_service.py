@@ -924,36 +924,36 @@ class ClusterService(LocalTransport):
                 raise ValueError(f"invalid execution.containers.{name}:\n  - "
                                  + "\n  - ".join(problems))
         cfg = self._cluster_config()
-        registry = self._resolve_registry_objects(cfg.get_registry_config())
+        registry = self._images.registry(require=False)
         if not registry.enabled():
             raise ValueError(f"cannot build an image: {registry.why_disabled()}")
         from .cluster_image_build import build_context_bucket
         bucket = build_context_bucket(cfg)
         return project, campaign_config, specs, project_dir, cfg, registry, bucket
 
-    def _resolve_build_ref(self, spec, project_dir, registry) -> "tuple[str, str]":
-        """Return (concrete_registry_ref, image_hash) for a project's build image."""
-        from robovast.common.execution import resolve_build_base_image
-        from robovast.service.image_build import build_hash
+    @property
+    def _images(self):
+        """This lane's image store: the registry this deployment pushes to.
 
-        from .cluster_image_build import concrete_image_ref
-        base_ref = (spec.base_image or registry.base_experiment_image
-                    or resolve_build_base_image())
-        image_hash = build_hash(spec, project_dir, base_ref)
-        ref = concrete_image_ref(registry.registry_prefix, spec.tag, image_hash)
-        return ref, image_hash
+        Overriding this one factory is what makes every image question on this lane correct,
+        including the ones nobody remembered to override before — ``_exec_image`` asked the
+        *local* docker daemon from inside a service pod that has none, and reported every
+        built image as unbuilt.
+        """
+        store = getattr(self, "_image_store", None)
+        if store is None:
+            from .registry_image_store import RegistryImageStore
+            store = RegistryImageStore(self.namespace, self._cluster_config, self._k8s)
+            self._image_store = store
+        return store
 
     def build_image(self, request):
-        from robovast.common.config import SCENARIO_CONTAINER
+        from robovast.service.image_build import primary_build_ref
         (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
             self._build_context(request)
         refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
                 for name, spec in specs.items()}
-        # Every build is started; the handle names one. Prefer the container the
-        # scenario runs in, and carry the rest so the others can still be polled.
-        primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))
-        primary.builds = {name: ref.build_id for name, ref in refs.items()}
-        return primary
+        return primary_build_ref(refs)
 
     def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
@@ -962,11 +962,14 @@ class ClusterService(LocalTransport):
         from robovast.service.image_build import generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
 
-        from .cluster_image_build import (build_id_for, build_job_manifest, cache_image_ref,
+        from .cluster_image_build import (build_job_manifest, cache_image_ref,
                                           context_prefix, s3_init_env, stage_context_to_s3)
 
-        image_ref, image_hash = self._resolve_build_ref(spec, project_dir, registry)
-        build_id = build_id_for(spec.tag, image_hash)
+        # One resolution, from the store, so a submitted build and a later "is it there?"
+        # cannot disagree about what this image is called. They used to derive it
+        # separately, which is how a built image could be reported as unbuilt.
+        found = self._images.ref_for(spec, project_dir)
+        image_ref, image_hash, build_id = found.ref, found.image_hash, found.build_id
         symbolic = f"{BUILD_IMAGE_PREFIX}{spec.tag}"
         state = self._image_build_state()
 
@@ -981,7 +984,7 @@ class ClusterService(LocalTransport):
         # deleted after ttlSecondsAfterFinished (1 h) and the in-process record dies with
         # the service. Without this the same bit-identical image was rebuilt and re-pushed
         # an hour later.
-        if self._registry_has_image(image_ref, registry):
+        if self._registry_has_image(found):
             status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="cached",
                                       done=True, cached=True, image_ref=symbolic,
                                       digest=image_hash)
@@ -1106,118 +1109,21 @@ class ClusterService(LocalTransport):
         for build_id in sorted(staged - live):
             self._discard_build_context(cfg, bucket, build_id)
 
-    def _registry_has_image(self, image_ref: str, registry) -> bool:
-        """Is *image_ref* already pushed? Fails closed (see ``registry_client``)."""
-        from .registry_client import manifest_exists
-        dockerconfig = self._push_dockerconfig(registry.push_secret_name)
-        ca_path = self._registry_ca_path(registry.ca_configmap_name)
-        return manifest_exists(image_ref, dockerconfigjson=dockerconfig,
-                               insecure=registry.insecure, ca_path=ca_path)
+    def _registry_has_image(self, found) -> bool:
+        """Is *found* already pushed? The **build** path's fail-closed view of the store.
 
-    def _push_dockerconfig(self, push_secret_name: str) -> str:
-        """The push Secret's ``.dockerconfigjson``, or ``""`` when unavailable.
-
-        Same credential the build Job mounts; read here only to authenticate a read-only
-        manifest probe. Never returned to a client.
+        ``ImageBuildStore.present`` raises when the registry could not be asked, because a
+        caller deciding whether it can *run* an image must never read that as "not built".
+        The caller deciding whether to *build* one wants the opposite trade, and always did:
+        uncertainty means rebuild, which costs a redundant push, where a wrong cache hit
+        leaves the campaign's pods in ImagePullBackOff with the build long finished.
         """
-        if not push_secret_name:
-            return ""
-        from kubernetes import client
+        from robovast.common.errors import ImageStoreUnavailable
         try:
-            secret = self._k8s().read_namespaced_secret(push_secret_name, self.namespace)
-        except client.exceptions.ApiException as e:
-            logger.warning("registry check: cannot read push secret %s: %s",
-                           push_secret_name, e)
-            return ""
-        data = (secret.data or {}).get(".dockerconfigjson")
-        if not data:
-            return ""
-        import base64
-        try:
-            return base64.b64decode(data).decode()
-        except (ValueError, UnicodeDecodeError):
-            logger.warning("registry check: push secret %s is not decodable",
-                           push_secret_name)
-            return ""
-
-    def _resolve_registry_objects(self, registry):
-        """Fill in the push/pull Secret and CA ConfigMap by *looking for them*.
-
-        Their names are fixed constants written by ``vast exec cluster setup``, so the
-        ``ROBOVAST_REGISTRY_{PUSH,PULL}_SECRET`` / ``_CA_CONFIGMAP`` variables were never
-        carrying a name — only the fact that setup had created the object, since
-        referencing a Secret that does not exist keeps the pod from starting. Setup writes
-        them into the *deployed service pod's* env, so an **off-cluster** ``vast serve``
-        never learned them and silently pushed anonymously to an untrusted registry.
-
-        Checking existence covers both deployments identically. An explicitly set variable
-        still wins, for a deployment that named its objects differently.
-        """
-        from kubernetes import client
-
-        from .service_deploy import REGISTRY_CA_CONFIGMAP_NAME, REGISTRY_PUSH_SECRET_NAME
-
-        def exists(read, name):
-            try:
-                read(name, self.namespace)
-                return True
-            except client.exceptions.ApiException as e:
-                if e.status not in (403, 404):
-                    raise
-                if e.status == 403:
-                    # In-pod without RBAC for this read: say so rather than treating it as
-                    # absent, which would look like "no credentials configured".
-                    logger.warning(
-                        "not permitted to read %r in %s; cannot tell whether the registry "
-                        "object exists", name, self.namespace)
-                return False
-
-        core = self._k8s()
-        if not registry.push_secret_name and exists(
-                core.read_namespaced_secret, REGISTRY_PUSH_SECRET_NAME):
-            registry.push_secret_name = REGISTRY_PUSH_SECRET_NAME
-            logger.info("using registry push Secret %r", REGISTRY_PUSH_SECRET_NAME)
-        if not registry.pull_secret_name and registry.push_secret_name:
-            # One dockerconfigjson serves both directions (setup wires it that way).
-            registry.pull_secret_name = registry.push_secret_name
-        if not registry.ca_configmap_name and exists(
-                core.read_namespaced_config_map, REGISTRY_CA_CONFIGMAP_NAME):
-            registry.ca_configmap_name = REGISTRY_CA_CONFIGMAP_NAME
-            logger.info("using registry CA ConfigMap %r", REGISTRY_CA_CONFIGMAP_NAME)
-        return registry
-
-    def _registry_ca_path(self, ca_configmap_name: str) -> str:
-        """Materialize the registry CA to a file for ``requests``' ``verify=``.
-
-        Cached per ConfigMap name: this runs on every build submit, and a fresh temp file
-        each time would leak one per call for the service's lifetime.
-        """
-        if not ca_configmap_name:
-            return ""
-        cache = getattr(self, "_registry_ca_paths", None)
-        if cache is None:
-            cache = {}
-            self._registry_ca_paths = cache
-        if ca_configmap_name in cache:
-            return cache[ca_configmap_name]
-        from kubernetes import client
-        try:
-            cm = self._k8s().read_namespaced_config_map(ca_configmap_name, self.namespace)
-            pem = (cm.data or {}).get("ca.pem", "")
-        except client.exceptions.ApiException as e:
-            logger.warning("registry check: cannot read CA configmap %s: %s",
-                           ca_configmap_name, e)
-            pem = ""
-        path = ""
-        if pem:
-            import tempfile
-            fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the process
-                mode="w", suffix=".pem", prefix="robovast-registry-ca-", delete=False)
-            fd.write(pem)
-            fd.close()
-            path = fd.name
-        cache[ca_configmap_name] = path
-        return path
+            return self._images.present(found)
+        except ImageStoreUnavailable as e:
+            logger.warning("treating %s as not yet pushed: %s", found.identity, e)
+            return False
 
     def _delete_build_job(self, build_id: str, timeout_s: float = 60.0) -> None:
         """Delete a spent build Job (and its pods) and wait until it is really gone.
@@ -1346,7 +1252,8 @@ class ClusterService(LocalTransport):
         return LogChunk(text=raw[offset:].decode("utf-8", "replace"),
                         next_offset=len(raw), eof=done)
 
-    def _campaign_build_context(self, project, campaign_config):
+    def _campaign_build_context(self, project, campaign_config, image_project=None,
+                                image_project_tag=None):
         """``(spec, project_dir, cfg, registry)`` for a campaign's ``build:`` image, or
         ``None`` when it has none. Works from the already-resolved project/config, unlike
         :meth:`_build_context`, which resolves a standalone ``build_image`` request.
@@ -1366,7 +1273,9 @@ class ClusterService(LocalTransport):
         # simulator backend that decides which container builds, so they have to be
         # resolvable before the specs are read, and base_dir has to be passed for a
         # file-ref backend to resolve at all.
-        specs = extract_build_specs(campaign_config, base_dir=str(project_dir))
+        specs = extract_build_specs(campaign_config, base_dir=str(project_dir),
+                                    image_project=image_project,
+                                    image_project_tag=image_project_tag)
         if not specs:
             return None
         for name, spec in specs.items():
@@ -1375,7 +1284,7 @@ class ClusterService(LocalTransport):
                 raise CampaignConfigError(
                     f"invalid execution.containers.{name}:\n  - " + "\n  - ".join(problems))
         cfg = self._cluster_config()
-        registry = self._resolve_registry_objects(cfg.get_registry_config())
+        registry = self._images.registry(require=False)
         if not registry.enabled():
             # The leading clause is this site's own: a campaign author needs to hear that
             # their *campaign* is what asked for a build. The rest is shared.
@@ -1383,13 +1292,16 @@ class ClusterService(LocalTransport):
                 f"this campaign builds a container image, but {registry.why_disabled()}")
         return specs, project_dir, cfg, registry
 
-    def _start_build_images(self, project, campaign_config) -> list:
+    def _start_build_images(self, project, campaign_config, image_project=None,
+                            image_project_tag=None) -> list:
         """Submit (or join) an in-cluster BuildKit Job per image this campaign builds.
 
         Returns as soon as each build has a handle; ``LocalTransport._await_build_image``
         waits on them over the interface, so both lanes share one wait loop.
         """
-        resolved = self._campaign_build_context(project, campaign_config)
+        resolved = self._campaign_build_context(
+            project, campaign_config, image_project=image_project,
+            image_project_tag=image_project_tag)
         if resolved is None:
             return []
         specs, project_dir, cfg, registry = resolved
@@ -1398,11 +1310,14 @@ class ClusterService(LocalTransport):
         return [self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
                 for spec in specs.values()]
 
-    def _resolve_built_images(self, project, campaign_config) -> dict:
+    def _resolve_built_images(self, project, campaign_config, image_project=None,
+                              image_project_tag=None) -> dict:
         """Concrete registry refs to pin, by container name."""
         specs, project_dir, _cfg, registry = self._campaign_build_context(
-            project, campaign_config)
-        return {name: self._resolve_build_ref(spec, project_dir, registry)[0]
+            project, campaign_config, image_project=image_project,
+            image_project_tag=image_project_tag)
+        del registry            # the store carries the registry the refs are formed against
+        return {name: self._images.ref_for(spec, project_dir).ref
                 for name, spec in specs.items()}
 
     # ``list_campaigns`` is inherited from LocalTransport. Its id set is "on disk ∪ durable
@@ -1590,6 +1505,10 @@ class ClusterService(LocalTransport):
         access_key, secret_key = cfg.get_s3_credentials()
         return KubeExecLane(self.namespace, owner_ref=owner,
                             kube_context=self.kube_context,
+                            # The exec pod runs the experiment image, which on this lane is
+                            # in our own registry and may be private. Without this the pull
+                            # succeeds only on a node that already cached it.
+                            pull_secret=self._registry_pull_secret(),
                             # Deferred: off-cluster, building this opens a port-forward,
                             # and the stray-reap builds a lane it never stages into.
                             storage_factory=lambda: in_pod_storage.storage_client_for(cfg),
@@ -1668,7 +1587,7 @@ class ClusterService(LocalTransport):
         if request.campaign_id is None or not request.force:
             for c in self.list_campaigns(ListCampaignsRequest(limit=1000)).campaigns:
                 if is_running(c.phase):
-                    # Match both the raw id and its sanitised bucket name, since
+                    # Match both the raw id and its sanitized bucket name, since
                     # ``cleanup_campaigns`` compares against object-store names.
                     running.add(c.campaign_id)
                     running.add(bucket_ops.bucket_name(c.campaign_id))
@@ -1976,6 +1895,17 @@ class ClusterService(LocalTransport):
                           interactive=True)
         return str(self._cache_dir(campaign_id))
 
+    def _role_image_source_dir(self, campaign_id: str) -> str:
+        """Materialise what reading a campaign's per-role images needs, then answer from the cache.
+
+        The same two objects a retrigger reads — the frozen ``_config/`` and
+        ``_execution/execution.yaml`` — so this reuses that fetch rather than issuing a second
+        listing for the same prefix. Inheriting the base class's answer would read a directory
+        that does not exist on this lane, which is precisely the failure mode the seam exists
+        for.
+        """
+        return self._retrigger_source_dir(campaign_id)
+
     def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
         """Fetch this run's capture manifest, then read it the way the base class does.
 
@@ -2065,7 +1995,7 @@ class ClusterService(LocalTransport):
         # digest: same world -> same name, which also makes a duplicate create a 409 the session reuses.
         tag = f"scene-{hashlib.sha256(image.encode()).hexdigest()[:12]}"
         spec = ContainerSpec(image=image)
-        pull_secret = self._scene_pull_secret()
+        pull_secret = self._registry_pull_secret()
 
         @contextlib.contextmanager
         def context():
@@ -2077,8 +2007,8 @@ class ClusterService(LocalTransport):
 
         return context
 
-    def _scene_pull_secret(self) -> str:
-        """The registry pull secret, so an aux pod can pull the campaign's *private* image.
+    def _registry_pull_secret(self) -> str:
+        """The registry pull secret, so a pod of ours can pull a *private* built image.
 
         Aux images were public when that path was written, so it never needed one, and a node that has
         already cached the campaign image hides the omission (``imagePullPolicy: IfNotPresent``) -- which
@@ -2087,18 +2017,13 @@ class ClusterService(LocalTransport):
         It then never returned one at all: the import named ``cluster_execution.cluster_execution``,
         which does not define this constant, and the bare ``except`` swallowed the ImportError. So the
         function this docstring describes was a no-op from the day it was written, and the failure mode
-        it exists to prevent was simply unprotected. The import is now module-scope-correct and only
-        the *lookup* is guarded -- an absent Secret is the one thing that legitimately means "no
-        credential", and it is the only thing still caught here.
-        """
-        from kubernetes.client.rest import ApiException
+        it exists to prevent was simply unprotected.
 
-        from .service_deploy import REGISTRY_PUSH_SECRET_NAME
-        try:
-            self._k8s().read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, self.namespace)
-        except ApiException:  # an optional Secret; a public image needs none
-            return ""
-        return REGISTRY_PUSH_SECRET_NAME
+        Two callers now -- the scene aux pod and the diagnostic exec pod, which runs the same private
+        images and had the same omission -- hence the name is no longer about scenes. The store answers
+        it, because which Secret pulls from this registry is the registry's business.
+        """
+        return self._images.pull_secret_name()
 
     def _query_dir(self, campaign_id: str):
         """Materialize just the query databases into the campaign's cache dir; return it."""

@@ -22,6 +22,7 @@ from robovast.common.host_display import host_display, require_host_display
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.client import LocalTransport
 from robovast.service.container_exec import ExecSpec
+from robovast.service.image_store import ImageRef
 from robovast.service.docker_exec_lane import DockerExecLane
 from robovast.service.interface import CreateCampaignRequest, ExecRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
@@ -191,7 +192,12 @@ def test_changing_show_gui_is_a_different_container(local, monkeypatch):
     monkeypatch.setattr(LocalTransport, "_exec_manager", property(lambda self: _Mgr()))
     monkeypatch.setattr(LocalTransport, "_exec_vast_file",
                         lambda self, request: "x.vast")
-    monkeypatch.setattr(LocalTransport, "_exec_image", lambda self, vast, container=None: "img")
+    # The seam is the resolution, which hands back both the ref to run and the
+    # client-facing identity; `_exec_image` is the thin str-returning view of it.
+    monkeypatch.setattr(
+        LocalTransport, "_resolve_exec_image",
+        lambda self, vast, container=None, campaign_id="": ImageRef(
+            ref="img", identity="img", build_id=""))
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
     monkeypatch.setattr(
         "robovast.service.container_exec.stage",

@@ -1913,6 +1913,13 @@ export interface components {
              */
             cached: boolean;
             /**
+             * Cached Builds
+             * @default {}
+             */
+            cached_builds: {
+                [key: string]: unknown;
+            };
+            /**
              * Tag
              * @default
              */
@@ -1967,10 +1974,16 @@ export interface components {
          *
          *     Answers what :class:`ExecRequest`'s own image resolution would pick, without paying
          *     for a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,
-         *     or a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists
+         *     or an image-store lookup for a ``build:`` container), never Docker or Kubernetes. Exists
          *     so a caller can key a cache by "this image" — e.g. a per-image catalog a container would
          *     report identically on every call — without running the container just to learn which one
          *     it is.
+         *
+         *     For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
+         *     the concrete ref the container runs FROM: the concrete form is a local docker tag on one
+         *     lane and a registry-qualified ref on the other, and the second must never reach a client
+         *     (the zero-registry-knowledge invariant). The identity still changes exactly when the
+         *     image changes, which is all a cache key needs, and it reads the same on every lane.
          */
         ImageResolution: {
             /**

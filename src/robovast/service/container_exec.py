@@ -108,8 +108,13 @@ class ExecSpec:
     def __init__(self, *, image: str, command: str, config_dir: str,
                  env: dict, workspace_dir: str = "", workspace_id: str = "",
                  config_name: str = "", log_path: str = "", staging_dir: str = "",
-                 gui: bool = False):
+                 gui: bool = False, image_identity: str = ""):
         self.image = image
+        #: The registry-free name of :attr:`image`, for the caller. The concrete ref is a
+        #: local docker tag on one lane and a registry-qualified one on the other, and the
+        #: second must never reach a client — but a caller still needs to know *which* image
+        #: its container is, so the two travel together rather than the wrong one going out.
+        self.image_identity = image_identity or image
         self.command = command
         #: Host directory mounted read-only at ``/config`` — already in final layout.
         self.config_dir = config_dir
@@ -522,7 +527,8 @@ class ContainerExecManager:
         with self._lock:
             now = time.monotonic()
             self._held = {
-                "identity": identity, "image": spec.image, "config": spec.config_name,
+                "identity": identity, "image": spec.image_identity,
+                "config": spec.config_name,
                 "reused": False, "started": now, "idle_deadline": now + IDLE_REAP_S,
                 "deadline": now + deadline,
                 # Kept so the mounted /config outlives this call and is removed with

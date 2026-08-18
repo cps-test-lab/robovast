@@ -27,6 +27,11 @@ unexpected status — is reported as "not present", which costs a redundant rebu
 opposite error is far worse: claiming an image exists when it does not leaves the campaign
 pods in ``ImagePullBackOff`` with the build long finished, which reads as a broken cluster
 rather than a cache bug. Every such case is logged at warning level rather than swallowed.
+
+That collapse is right for *that* question and wrong for "is this image there to run?", so
+the probe itself reports three states (:func:`manifest_state`) and ``manifest_exists`` is the
+fail-closed view of it. A caller who must not confuse "could not ask" with "not there" asks
+for the state.
 """
 
 import base64
@@ -113,13 +118,36 @@ def _bearer_token(session, challenge: str, creds) -> Optional[str]:
         return None
 
 
+#: :func:`manifest_state` verdicts. ``UNKNOWN`` is not a synonym for ``ABSENT``: it means the
+#: registry could not be asked, which different callers must answer differently.
+PRESENT, ABSENT, UNKNOWN = "present", "absent", "unknown"
+
+
 def manifest_exists(image_ref: str, *, dockerconfigjson: str = "",
                     insecure: bool = False, ca_path: str = "") -> bool:
     """True only when *image_ref*'s manifest is definitely present in the registry.
 
+    The **fail-closed** view of :func:`manifest_state`, for the caller that asks "should I
+    build this?": uncertainty answers "not present" and costs a redundant rebuild. See the
+    module docstring for why that is the right trade *there*.
+
+    It is the wrong trade for "is this image available to run?" — reporting an unreachable
+    registry as an unbuilt image sends the caller off to rebuild something that already
+    exists, and once cost a real investigation. That caller asks :func:`manifest_state` and
+    handles ``UNKNOWN`` itself.
+    """
+    return manifest_state(image_ref, dockerconfigjson=dockerconfigjson,
+                          insecure=insecure, ca_path=ca_path) == PRESENT
+
+
+def manifest_state(image_ref: str, *, dockerconfigjson: str = "",
+                   insecure: bool = False, ca_path: str = "") -> str:
+    """``PRESENT`` / ``ABSENT`` / ``UNKNOWN`` for *image_ref*'s manifest.
+
     Speaks just enough of the v2 API: a ``HEAD`` on the manifest, retried once with a
-    Bearer token when the registry issues an auth challenge. See the module docstring for
-    why every failure path returns ``False``.
+    Bearer token when the registry issues an auth challenge. Only a 200 and a 404 are
+    answers; everything else — no usable credentials, an unreachable host, a status neither
+    of those — is ``UNKNOWN``, because the registry did not say.
     """
     import requests
 
@@ -127,7 +155,7 @@ def manifest_exists(image_ref: str, *, dockerconfigjson: str = "",
         host, repository, tag = split_image_ref(image_ref)
     except ValueError as e:
         logger.warning("registry check: %s", e)
-        return False
+        return UNKNOWN
 
     scheme = "http" if insecure else "https"
     url = f"{scheme}://{host}/v2/{repository}/manifests/{tag}"
@@ -150,21 +178,19 @@ def manifest_exists(image_ref: str, *, dockerconfigjson: str = "",
                 if token is None:
                     logger.warning(
                         "registry check: %s needs authentication that could not be "
-                        "satisfied; treating the image as absent", host)
-                    return False
+                        "satisfied", host)
+                    return UNKNOWN
                 resp = session.head(url, verify=verify, timeout=_TIMEOUT,
                                     headers={**headers,
                                              "Authorization": f"Bearer {token}"})
             if resp.status_code == 200:
-                return True
+                return PRESENT
             if resp.status_code == 404:
-                return False
+                return ABSENT
             logger.warning(
-                "registry check: unexpected status %s for %s; treating the image as "
-                "absent (a redundant rebuild is safe, a wrong cache hit is not)",
-                resp.status_code, image_ref)
-            return False
+                "registry check: unexpected status %s for %s; the registry did not say "
+                "whether the image is there", resp.status_code, image_ref)
+            return UNKNOWN
     except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
-        logger.warning("registry check: could not reach %s (%s); treating the image as "
-                       "absent", host, e)
-        return False
+        logger.warning("registry check: could not reach %s (%s)", host, e)
+        return UNKNOWN

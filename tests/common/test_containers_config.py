@@ -346,3 +346,58 @@ def test_a_campaigns_own_config_wins_over_a_neighbours(tmp_path):
     # Given the root, the scan still answers, for the caller that only wants "some" config.
     found_root, _ = find_campaign_vast_file(str(tmp_path))
     assert found_root == str(other / "_config" / "campaign.vast")
+
+
+# ---------------------------------------------------------------------------
+# family: refs must be resolved before a build spec, and never reach a FROM
+# ---------------------------------------------------------------------------
+
+def test_a_backend_contributed_family_ref_is_resolved_for_the_build(tmp_path, monkeypatch):
+    """The build path has to resolve `family:` refs, not just the composition path.
+
+    A backend names its member symbolically, because which project/tag it comes from is a
+    property of the campaign and does not exist when the backend runs. config_generation
+    resolved that immediately; extract_build_specs did not -- and the gap was asymmetric,
+    which is what hid it: a container taking the DEFAULT member was resolved on the
+    composition path, so `sut` and `scenario` built correctly while the one container that
+    declared a `backend:` carried `family:robovast-roqsim` into its Dockerfile FROM. Docker
+    read that as repository `family`, tag `robovast-roqsim`, and the campaign died in
+    BuildKit with a registry `insufficient_scope` -- three layers from the cause.
+    """
+    from robovast.common.execution import FAMILY_IMAGE_PREFIX, family_image_ref
+    from robovast.service.image_build import extract_build_specs
+
+    class _Block(dict):
+        def model_dump(self):
+            return dict(self)
+
+    class _Execution:
+        mode = "ros2"
+        containers = {"sim": _Block(image=family_image_ref("robovast-roqsim"),
+                                    python_packages=["./"])}
+
+    class _Config:
+        execution = _Execution()
+
+    specs = extract_build_specs(_Config(), base_dir=str(tmp_path),
+                                image_project="example.org/team", image_project_tag="v9")
+    assert specs, "a container adding python_packages must produce a spec"
+    base = specs["sim"].base_image
+    assert not base.startswith(FAMILY_IMAGE_PREFIX), f"left unresolved: {base}"
+    assert base == "example.org/team/robovast-roqsim:v9", base
+
+
+@pytest.mark.parametrize("ref", ["family:robovast-roqsim", "build:scenario"])
+def test_an_unresolved_ref_cannot_reach_a_dockerfile(tmp_path, ref):
+    """The hard error both prefixes promise, which nothing implemented.
+
+    `execution.py` says a ref reaching a pod or compose spec unresolved is "a hard error
+    rather than an image name nothing can pull" -- but `is_family_image_ref` was never called
+    outside that module, so a Dockerfile happily got one. Failing here names the bug; failing
+    in BuildKit names a registry.
+    """
+    from robovast.service.image_build import BuildSpec, generate_dockerfile
+
+    spec = BuildSpec(tag="sim", python_packages=["./"])
+    with pytest.raises(ValueError, match="unresolved image ref"):
+        generate_dockerfile(spec, tmp_path, ref)

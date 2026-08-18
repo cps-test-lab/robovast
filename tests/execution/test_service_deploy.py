@@ -158,14 +158,59 @@ def test_no_git_token_means_no_volume_or_mount():
 
     Checked by name rather than by counting: the pod gained a second container and its
     storage volume when the registry moved in, so "the pod has no volumes" stopped being
-    the way to say "no git token was configured".
+    the way to say "no git token was configured". The service container then gained an
+    always-present mount of its own (the workspace store), which retired the last
+    count-based form of this check — "no mounts at all" — for the same reason.
     """
     ms = sd.service_manifests(namespace="default", image="x")  # env cleared by fixture
     dep = next(m for m in ms if m["kind"] == "Deployment")
     pod = dep["spec"]["template"]["spec"]
     assert "git-credentials" not in [v["name"] for v in pod.get("volumes", [])]
     service_container = pod["containers"][0]
-    assert "volumeMounts" not in service_container
+    assert "git-credentials" not in [
+        m["name"] for m in service_container.get("volumeMounts", [])]
+
+
+def test_workspace_store_is_mounted_so_an_upgrade_does_not_discard_it():
+    """The workspace store must be on a volume, not the container's writable layer.
+
+    Regression: it was on the writable layer, and since every upgrade restarts the pod
+    (see ``RESTART_ANNOTATION``), one ``vast exec cluster upgrade`` deleted every pushed
+    project while reporting success. Campaign results live in the object store and were
+    untouched, which is what made it easy to miss.
+
+    The env var is asserted alongside the mount because the mount alone fixes nothing:
+    the store's default location comes from ``HOME`` inside the container, so the two
+    have to agree for the mount to be covering the directory actually written to.
+    """
+    ms = sd.service_manifests(namespace="default", image="x")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    pod = dep["spec"]["template"]["spec"]
+    service_container = pod["containers"][0]
+
+    volume = next(v for v in pod["volumes"] if v["name"] == sd.WORKSPACES_VOLUME_NAME)
+    assert "emptyDir" not in volume
+    assert volume["hostPath"]["path"] == sd.DEFAULT_WORKSPACES_HOST_PATH
+
+    mount = next(m for m in service_container["volumeMounts"]
+                 if m["name"] == sd.WORKSPACES_VOLUME_NAME)
+    assert mount["mountPath"] == sd.WORKSPACES_DATA_DIR
+    assert {"name": sd.WORKSPACES_ROOT_ENV,
+            "value": sd.WORKSPACES_DATA_DIR} in service_container["env"]
+
+
+def test_workspace_store_honours_an_explicitly_configured_root():
+    """An explicit ``ROBOVAST_WORKSPACES_ROOT`` in the env wins over the default.
+
+    Otherwise the deployer would append a second entry for the same variable, and which
+    one takes effect is decided by Kubernetes rather than by the caller.
+    """
+    env = [{"name": sd.WORKSPACES_ROOT_ENV, "value": "/somewhere/else"}]
+    dep = sd._deployment_manifest(  # pylint: disable=protected-access
+        namespace="default", image="x", env=env, restarted_at="FIXED")
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    roots = [e for e in container["env"] if e["name"] == sd.WORKSPACES_ROOT_ENV]
+    assert roots == [{"name": sd.WORKSPACES_ROOT_ENV, "value": "/somewhere/else"}]
 
 
 def test_deployment_runs_vast_serve_on_service_port():

@@ -29,10 +29,22 @@
 # `context: .`, so neither job could ever have succeeded, which is why nothing published the
 # images the defaults named.
 #
-# `main` was restructured to a sim_suite_* layout for a different consumer and no longer has
-# the rst_* packages installed below; `robovast` is the branch that still does.
+# Pinned to a COMMIT, not a branch, and that is what makes a bare `docker build` of this file
+# reproducible: the clone layer's cache key is the command text plus its ARGs, never the state of
+# the remote, so a branch default serves the tree from the first build forever (see the caching
+# note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
+#
+# `main` is the branch now. It previously held a sim_suite_* layout without the rst_* packages
+# installed below, which is why this used to name `robovast` -- but that branch is gone from the
+# public repo and main carries the roqsim layout: all eleven packages this file installs, plus
+# both colcon packages, are present at the sha below.
+#
+# Moved off 22ceb75, which no longer BUILDS on this base: its roqsim_walker required
+# `scipy>=1.13`, so pip tried to replace the ROS image's Debian-packaged scipy 1.11.4 -- which
+# ships no RECORD, so pip cannot uninstall it and the build dies. The floor is `>=1.11` from
+# 8b40bb1 on, and scipy's own metadata carries the numpy bound it was standing in for.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=robovast
+ARG ROQSIM_REF=8b40bb1004c74e25819d2609c890a8043dbba6db
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -55,9 +67,10 @@ ARG ROQSIM_REF
 # bare ``docker build`` that leaves the branch default needs ``--no-cache`` to pick up new
 # commits; that is the cost of a default that is not a pin.
 #
-# The token is optional and arrives as a BuildKit secret, because roqsim is not public: an
-# anonymous clone of it gets "could not read Username for 'https://github.com'", which is git
-# asking for a password on a terminal that does not exist. A secret rather than a build arg so
+# The token is optional and arrives as a BuildKit secret. roqsim is PUBLIC now, so an anonymous
+# clone works and the secret is only needed for a fork that is not -- it used to be required, and
+# without it the clone failed with "could not read Username for 'https://github.com'", which is
+# git asking for a password on a terminal that does not exist. A secret rather than a build arg so
 # the value is not recorded in the image history; only this command's text is, and the value is
 # read from the mount at run time.
 #
@@ -72,9 +85,11 @@ RUN --mount=type=secret,id=git_token \
       sed 's/x-access-token:[^@]*@/x-access-token:***@/g' /tmp/clone.err >&2; \
       echo "" >&2; \
       echo "Could not clone $ROQSIM_REPO at '$ROQSIM_REF'." >&2; \
-      echo "roqsim is not a public repository, so an anonymous clone cannot work. Either:" >&2; \
+      echo "roqsim IS public, so this is most likely a ref that does not exist rather than" >&2; \
+      echo "an access problem -- note that the branch is now 'main'. Either:" >&2; \
+      echo "  - check the ref:          --build-arg ROQSIM_REF=<branch|tag|sha>" >&2; \
       echo "  - build from a checkout:  build.sh --image roqsim --roqsim-src <path>" >&2; \
-      echo "  - or pass a token:        --secret id=git_token,env=GITHUB_TOKEN" >&2; \
+      echo "  - pass a token, for a private fork:  --secret id=git_token,env=GITHUB_TOKEN" >&2; \
       echo "  - or point elsewhere:     --build-arg ROQSIM_REPO=<url>" >&2; \
       exit 1; \
     fi \

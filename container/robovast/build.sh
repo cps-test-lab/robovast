@@ -246,7 +246,7 @@ build_roqsim() {
     # remote does.
     #
     # It also turns the build log into a record of what was built, which a branch name is not.
-    local ref="${ROQSIM_REF:-robovast}" resolved
+    local ref="${ROQSIM_REF:-main}" resolved
     if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
       resolved="$ref"
     else
@@ -255,8 +255,9 @@ build_roqsim() {
         # Do not fall back to the branch name: that would quietly restore the stale-cache
         # behaviour this exists to remove.
         echo "error: cannot resolve '$ref' in $ROQSIM_REPO." >&2
-        echo "       roqsim is not public, so this needs git credentials for it (or use" >&2
-        echo "       --roqsim-src <path> to build from a checkout)." >&2
+        echo "       roqsim is public, so this is a ref that does not exist rather than an" >&2
+        echo "       access problem -- check the branch/tag name, or use --roqsim-src <path>" >&2
+        echo "       to build from a checkout." >&2
         return 1
       fi
       echo "roqsim ref: $ref -> $resolved"

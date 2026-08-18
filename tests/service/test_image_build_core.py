@@ -14,7 +14,8 @@ import pytest
 
 from robovast.common.build_context import render_dockerignore
 from robovast.service.image_build import (BuildSpec, build_hash, classify_build_error,
-                                          generate_dockerfile)
+                                          generate_dockerfile, not_built_message,
+                                          primary_build_ref)
 
 BASE = "ghcr.io/x/robovast:latest"
 
@@ -418,3 +419,99 @@ def test_dockerignore_excludes_at_root_and_nested(name):
     patterns = render_dockerignore().splitlines()
     assert name in patterns
     assert f"**/{name}" in patterns
+
+
+# ---------------------------------------------------------------------------
+# The answers a lane must not phrase for itself
+# ---------------------------------------------------------------------------
+
+def _status(phase, **kw):
+    from robovast.service.interface import ImageBuildStatus
+    return ImageBuildStatus(build_id="build-sut-abc123", tag="sut", phase=phase, **kw)
+
+
+def test_no_build_known_says_build_it():
+    message, next_step = not_built_message("sut", "build-sut-abc123", None)
+    assert "not built" in message and "no build is running" in message
+    assert next_step == "build_experiment_image(container='sut')"
+
+
+@pytest.mark.parametrize("phase", ["pending", "validating", "building", "pushing"])
+def test_a_build_in_flight_says_wait_not_build(phase):
+    """The state an agent actually lands in when it execs straight after a build, and the
+    one the old single message could not distinguish from "you forgot to build"."""
+    message, next_step = not_built_message(
+        "sut", "build-sut-abc123", _status(phase, started_at="2026-08-18T10:00:00Z"))
+    assert "still building" in message
+    assert "2026-08-18T10:00:00Z" in message      # how long it has been going
+    assert "vast image wait build-sut-abc123" in next_step
+    assert "build_experiment_image" not in next_step, "a second build is the wrong move"
+
+
+def test_a_failed_build_points_at_the_diagnosis_not_a_retry():
+    from robovast.service.interface import ImageBuildError
+    message, next_step = not_built_message(
+        "sut", "build-sut-abc123",
+        _status("failed", done=True,
+                error=ImageBuildError(phase="pip", message="no distribution for shapely==99")))
+    assert "no distribution for shapely==99" in message
+    assert "fails the same way" in message
+    assert "get_image_build_status('build-sut-abc123')" in next_step
+    assert "summarize=True" in next_step
+
+
+@pytest.mark.parametrize("phase", ["succeeded", "cached"])
+def test_a_vanished_image_says_it_was_built(phase):
+    """Built and then pruned is not "never built": denying what demonstrably happened sends
+    the reader looking for a mistake they did not make."""
+    message, _ = not_built_message("sut", "build-sut-abc123", _status(phase, done=True))
+    assert "was built" in message
+    assert "no longer" in message
+
+
+def test_every_refusal_says_a_sibling_hit_proves_nothing():
+    for status in (None, _status("building"), _status("failed", done=True)):
+        message, _ = not_built_message("sut", "build-sut-abc123", status)
+        assert "another container" in message
+        assert "never builds implicitly" in message
+
+
+def test_no_refusal_leaks_a_registry_ref():
+    """The whole point of ``identity``: a refusal is client-facing text."""
+    for status in (None, _status("building"), _status("succeeded", done=True)):
+        message, next_step = not_built_message("sut", "build-sut-abc123", status)
+        assert "registry.local" not in message + next_step
+        assert "/" not in next_step.replace("build_experiment_image", "")  # no host/path ref
+
+
+# ---------------------------------------------------------------------------
+# One image's cache verdict is not the request's
+# ---------------------------------------------------------------------------
+
+def _ref(build_id, cached):
+    from robovast.service.interface import ImageBuildRef
+    return ImageBuildRef(build_id=build_id, tag=build_id, cached=cached)
+
+
+def test_a_request_is_cached_only_when_every_image_was():
+    """The reported bug: ``cached`` was the primary container's flag, so a scenario cache hit
+    reported the whole request as cached while ``sut`` was still building."""
+    primary = primary_build_ref({"scenario": _ref("b-scenario", True),
+                                 "sut": _ref("b-sut", False)})
+    assert primary.build_id == "b-scenario"       # the handle still prefers the scenario
+    assert primary.cached is False
+    assert primary.cached_builds == {"scenario": True, "sut": False}
+    assert primary.builds == {"scenario": "b-scenario", "sut": "b-sut"}
+
+
+def test_all_cached_is_still_a_cache_hit():
+    primary = primary_build_ref({"scenario": _ref("b-scenario", True),
+                                 "sut": _ref("b-sut", True)})
+    assert primary.cached is True
+    assert primary.cached_builds == {"scenario": True, "sut": True}
+
+
+def test_a_project_without_a_scenario_image_still_gets_a_handle():
+    primary = primary_build_ref({"sut": _ref("b-sut", False)})
+    assert primary.build_id == "b-sut"
+    assert primary.cached is False

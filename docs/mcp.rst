@@ -415,6 +415,16 @@ exactly the case where blocking cost most. A cap on how long a tool may block
 does not make a long wait tool-shaped; it moves the overrun to the caller. The
 rule that survives: **if a wait can outlive a turn, it is not a tool.**
 
+``next_step`` is how those commands reach the caller: a literal command with the
+ids already filled in, in band with the answer, because a reply carrying only an
+id leaves "and now wait for it" to be remembered — and it was not. **An error may
+carry one too.** A refusal is where the next move is least obvious: an agent told
+"the image is not built" moments after building it has nowhere to go, whereas the
+same refusal with ``vast image wait <build-id>`` attached is a next action. Where
+the field is *absent*, that is an answer as well: there is nothing obvious to do
+next. It is deliberately not on every reply, since a field that always appears is
+one that stops being read.
+
 Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
@@ -647,17 +657,32 @@ exposes:
 * ``build_experiment_image`` — build (or reuse) the derived images the project's
   containers declare: one per entry in ``execution.containers`` that adds
   ``system_packages`` or ``python_packages``, tagged by container name. Returns
-  ``{build_id, tag, cached, builds, next_step}``. It is **not built when this returns**:
-  ``next_step`` is the ``vast image wait`` command to background, with every build id
-  filled in (or, on a cache hit, the run to go straight to). As for a campaign, the wait
-  is a shell command rather than a tool — see :ref:`mcp-control`.
+  ``{build_id, tag, cached, cached_builds, builds, next_step}``. It is **not built when
+  this returns**: ``next_step`` is the ``vast image wait`` command to background, naming
+  exactly the builds that are not cache hits (or, when every one is, the run to go
+  straight to). As for a campaign, the wait is a shell command rather than a tool — see
+  :ref:`mcp-control`.
+
+  ``cached`` is the **conjunction**: true only when *every* image was a cache hit, with
+  ``cached_builds`` giving the per-container verdict. That distinction is load-bearing.
+  It was previously whichever value the primary container happened to have, so a project
+  whose scenario image was cached and whose ``sut`` image was still building was told
+  "cache hit, nothing to wait for" — and the caller went on to exec in a ``sut`` image
+  that did not exist yet, where the refusal read as though nothing had been built at all.
+
+  It is therefore also the cheap way to *ask* "is this image built?": idempotent, one
+  registry manifest probe (or one ``docker image inspect``) when nothing changed, and
+  ``cached_builds`` is the answer per container. Nothing else answers that without a
+  ``build_id`` already in hand.
 * ``vast image wait <build-id>…`` — block until every build is done (exit 0 built,
   1 failed, 2 ``--timeout``). Takes several ids because a project builds one image per
   container that adds packages, and waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus, on failure,
   a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
   base-pull / push / resource, the offending ``build:`` ``entry``, and
-  ``fixable_by`` = ``agent`` or ``infra``).
+  ``fixable_by`` = ``agent`` or ``infra``). Carries a ``next_step`` for the phase it
+  reports — this is the tool that is polled while deciding what to do next, and a build
+  still running, one that failed, and one that finished want three different actions.
 * ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
 
 .. _mcp-build-phase:
@@ -751,8 +776,22 @@ publishes nothing, so they contribute nothing but a way to fail).
 Testing a container and its setup
 ----------------------------------
 
-``exec_in_container`` runs one command in an experiment image. It is for **testing a
-container and its setup**, and it **produces no campaign data**: no campaign directory,
+``exec_in_container`` runs one command in an experiment image, and **which** image depends
+on the config source it is given — the two answer different questions. A ``workspace_id``
+runs what that project would build *now*: a container declaring ``system_packages`` /
+``python_packages`` must already have its image on this lane's own image store (the local
+docker daemon, or the deployment's registry), because this never builds implicitly — a
+seconds-long check must not silently become a multi-minute build. A ``campaign_id`` runs the
+image that campaign *recorded*, so it is what you exec against to ask "what did that run
+actually see?", and it stays correct after the workspace has moved on.
+
+A refusal over a missing image says which of four states it is in — nothing started, a build
+running, a build failed, or a build that succeeded and whose image has since been pruned —
+and carries the ``next_step`` for that state, because the four need four different actions.
+"Not built" alone was a dead end for the caller who had just built it.
+
+It is for **testing a container and its setup**, and it **produces no campaign data**: no
+campaign directory,
 no ``/out`` mount, no provenance, no repetitions, and no entry in ``list_campaigns``.
 This page argues throughout that a hand-started run "has no pinned image, no recorded
 provenance and no repetitions, so its output cannot be compared with a campaign's" — this

@@ -34,7 +34,7 @@ from fastmcp import FastMCP
 from robovast.client.status import stall_report
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
-from robovast.mcp_server.service_access import NO_SERVICE
+from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
 
 logger = logging.getLogger(__name__)
@@ -639,21 +639,33 @@ def get_resource_usage() -> dict:
         return {"error": str(e)}
 
 
-def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool) -> str:
+def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
+                          cached_builds: dict | None = None) -> str:
     """The literal command to run next, ids already filled in — as ``_wait_next_step``.
 
     A build that hands back only ids offered nothing but "poll this" prose, which is the
     same defect that seam fixes for campaigns: the operation returns while its work runs
     on, and nothing waits for it.
 
-    A cache hit already finished, so waiting for it is the one wrong answer; it goes
-    straight to the run. Every other build names **all** its ids, because a project builds
-    one image per container that adds packages and waiting for the first says nothing about
-    the rest.
+    Waits on exactly the builds that are **not** cache hits. Previously it waited on all of
+    them or none, and "none" was chosen from one container's ``cached`` flag: a project whose
+    scenario image was cached and whose ``sut`` image was still building was told "nothing to
+    wait for", and the caller went straight on to a container whose image did not exist yet.
+    That is the reported bug this line is the other half of.
+
+    Everything cached needs no wait at all, and names both destinations: which of them the
+    caller wanted is not knowable from here.
     """
-    if cached:
-        return "start_campaign(...) — cache hit, nothing to wait for"
-    ids = list((builds or {}).values()) or [build_id]
+    per_container = cached_builds or {}
+    if per_container:
+        ids = [bid for name, bid in (builds or {}).items() if not per_container.get(name)]
+    else:
+        # An older service that reports no per-container verdicts: wait on everything rather
+        # than trusting one aggregate flag, which is what went wrong.
+        ids = [] if cached else (list((builds or {}).values()) or [build_id])
+    if not ids:
+        return ("every image is built — start_campaign(...) to run it, or "
+                "exec_in_container(...) to look inside it")
     return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
             f"(exit 0 built, 1 failed)")
 
@@ -691,8 +703,16 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         container: Build only this one's image. Omit to build every one that needs it.
 
     Returns:
-        ``{build_id, tag, cached, builds, next_step}`` or ``{error}``. ``builds`` maps each
-        container to its build id, and ``next_step`` waits for **all** of them.
+        ``{build_id, tag, cached, cached_builds, builds, next_step}`` or ``{error}``.
+        ``builds`` maps each container to its build id; ``cached_builds`` maps each to
+        whether it was a cache hit, and ``next_step`` waits for exactly the ones that were
+        not. ``cached`` is the **conjunction** — one container's cache hit says nothing about
+        another's, so read ``cached_builds`` when you care about a particular container.
+
+        This is also the cheap way to *ask* "is this image built?": it is idempotent, costs
+        one registry manifest probe (or one ``docker image inspect``) when nothing changed,
+        and ``cached_builds`` is the per-container answer. Nothing else answers that question
+        without a ``build_id`` already in hand.
     """
     client = service_access.service_client()
     if client is None:
@@ -704,10 +724,30 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
             container=container or None))
         return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
                 "builds": ref.builds,
+                "cached_builds": getattr(ref, "cached_builds", {}) or {},
                 "next_step": _build_wait_next_step(
-                    ref.build_id, ref.builds, ref.cached)}
+                    ref.build_id, ref.builds, ref.cached,
+                    getattr(ref, "cached_builds", None))}
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return error_result(e)
+
+
+def _status_next_step(status) -> str:
+    """What to do about the build state just reported.
+
+    Three phases, three different actions, and the caller is here *because* it is deciding
+    between them: a build still running wants a wait rather than a second build; a failed one
+    wants the diagnosis rather than a retry of identical inputs; a finished one wants the run.
+    """
+    if not status.done:
+        return (f"run in the background: vast image wait {status.build_id} --interval 5 "
+                f"(exit 0 built, 1 failed)")
+    if status.phase == "failed":
+        return (f"read error_detail above, then "
+                f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
+                f"for the builder's own output")
+    return ("the image is ready — start_campaign(...) to run it, or "
+            "exec_in_container(...) to look inside it")
 
 
 def get_image_build_status(build_id: str) -> dict:
@@ -733,7 +773,9 @@ def get_image_build_status(build_id: str) -> dict:
             in its ``builds`` map when the campaign builds several images.
 
     Returns:
-        ``{build_id, tag, phase, done, cached, image_ref[, error_detail]}`` or ``{error}``.
+        ``{build_id, tag, phase, done, cached, image_ref, next_step[, error_detail]}`` or
+        ``{error}``. ``next_step`` is the command for the phase reported — this tool is
+        polled precisely while deciding what to do next, so the answer says it.
     """
     client = service_access.service_client()
     if client is None:
@@ -741,12 +783,13 @@ def get_image_build_status(build_id: str) -> dict:
     try:
         s = client.get_image_build_status(build_id)
         out = {"build_id": s.build_id, "tag": s.tag, "phase": s.phase,
-               "done": s.done, "cached": s.cached, "image_ref": s.image_ref}
+               "done": s.done, "cached": s.cached, "image_ref": s.image_ref,
+               "next_step": _status_next_step(s)}
         if s.error is not None:
             out["error_detail"] = s.error.model_dump()
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return error_result(e)
 
 
 def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
@@ -808,6 +851,18 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     (name a ``config_name``; an empty ``command`` starts that config's scenario, detached);
     what does bring-up look like (the same, plus ``keep_alive`` and ``show_gui``).
 
+    **Which image you get depends on the source you name, and they answer different
+    questions.** A ``workspace_id`` runs the image that project would build *now*: a container
+    declaring ``system_packages``/``python_packages`` must have that image built already —
+    this never builds implicitly, so ``build_experiment_image`` first, and wait for it. A
+    ``campaign_id`` runs the exact image that campaign recorded, so it is what you exec
+    against to ask "what did that run actually see?", and it stays right even after the
+    workspace has moved on.
+
+    A refusal over an unbuilt image says which of four states it is in — nothing started, one
+    building, one failed, or one built whose image has since been pruned — and hands back the
+    ``next_step`` for that state, because the four need four different actions.
+
     **At most one container exists at a time**, so ``reused: false`` means a fresh one —
     anything the previous container was running is gone. ``stop_container`` ends it. A started
     scenario logs to ``log_path`` *inside* the container, not ``stdout``: read it with a
@@ -834,8 +889,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
 
     Returns:
         ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
-        log_path, container}`` or ``{error}``. ``limit_source`` — ``command`` (fixed cap),
-        ``execution.timeout``, or ``default`` (the project set none) — makes a
+        log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` — ``command``
+        (fixed cap), ``execution.timeout``, or ``default`` (the project set none) — makes a
         ``timed_out`` result name its own remedy.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
@@ -850,7 +905,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             keep_alive=keep_alive, show_gui=show_gui,
             container=container))
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return error_result(e)
     out = result.model_dump()
     # Trim through the same filter the log tools use, so "the last N lines" and the
     # dropped accounting mean one thing across the surface.
@@ -865,6 +920,11 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             out[f"{stream}_lines_total"] = view.get("lines_total")
     if not out.get("log_path"):
         out.pop("log_path", None)
+    # A held container is a real resource — it can hold a stack's worth of memory and shows
+    # up in get_resource_usage as `exec_container` — and nothing else reaps it while the
+    # caller thinks it is done. That is worth one line; a plain call gets no hint.
+    if (out.get("container") or {}).get("kept"):
+        out["next_step"] = "stop_container() when done with this container"
     return out
 
 

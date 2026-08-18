@@ -1127,11 +1127,20 @@ class LocalTransport(RobovastInterface):
                     # resolve_robovast_image). A failed build is no longer a failed *request*:
                     # it raises into the handler below and becomes an inspectable ``failed``
                     # campaign, with the reason in its status and the output in its own log.
-                    builds = self._start_build_images(target, campaign_config)
+                    # The campaign's image project goes with it: a build's base may be a
+                    # `family:` member, and which project that resolves to is per-campaign
+                    # (--image-project) rather than ambient.
+                    builds = self._start_build_images(
+                        target, campaign_config,
+                        image_project=options.image_project,
+                        image_project_tag=options.image_project_tag)
                     for build in builds:
                         self._await_build_image(build.build_id, state, campaign_root)
                     if builds:
-                        options.images = self._resolve_built_images(target, campaign_config)
+                        options.images = self._resolve_built_images(
+                            target, campaign_config,
+                            image_project=options.image_project,
+                            image_project_tag=options.image_project_tag)
                 state.set_phase(Phase.STARTING)
                 with self._campaign_context(campaign_id, target):
                     backend = self._build_backend(state)
@@ -1202,19 +1211,28 @@ class LocalTransport(RobovastInterface):
     # -- image builds -------------------------------------------------------
 
     @property
-    def _image_builds(self):
-        """Lazily-created local image-build manager (docker buildx --load)."""
-        mgr = getattr(self, "_image_build_mgr", None)
-        if mgr is None:
+    def _images(self):
+        """This lane's image store — where its built experiment images live.
 
-            from robovast.service.image_build import LocalImageBuildManager
+        The one member a lane overrides about images, and it is a **factory, not
+        behavior**: everything that consumes the store is written once, here, so a lane
+        cannot answer an image question wrongly by forgetting to override the method that
+        asks it. That is exactly what happened before this seam existed —
+        :meth:`_exec_image` asked the local docker daemon on a lane whose images live in a
+        registry, inside a pod with no docker at all, and reported every built image as
+        unbuilt.
+        """
+        store = getattr(self, "_image_store", None)
+        if store is None:
+            from robovast.service.image_store import LocalDockerImageStore
             root = os.environ.get("ROBOVAST_BUILDS_ROOT")
             log_root = Path(root) if root else Path.home() / ".robovast" / "builds"
-            mgr = LocalImageBuildManager(log_root)
-            self._image_build_mgr = mgr
-        return mgr
+            store = LocalDockerImageStore(log_root)
+            self._image_store = store
+        return store
 
-    def _build_specs_for(self, project, campaign_config):
+    def _build_specs_for(self, project, campaign_config, image_project=None,
+                         image_project_tag=None):
         """Return ({container name: BuildSpec}, project_dir) for a project.
 
         A campaign may build several images — a system under test, and a scenario or
@@ -1238,12 +1256,15 @@ class LocalTransport(RobovastInterface):
         # base_dir also lets a backend named as a `<file>.py:<Class>` ref next to the
         # .vast resolve here -- the documented escape hatch, which silently did not work
         # on this path because nothing passed the directory it resolves against.
-        specs = extract_build_specs(campaign_config, base_dir=str(project_dir))
+        specs = extract_build_specs(campaign_config, base_dir=str(project_dir),
+                                    image_project=image_project,
+                                    image_project_tag=image_project_tag)
         if not specs:
             return {}, None
         return specs, project_dir
 
-    def _start_build_images(self, project, campaign_config) -> list:
+    def _start_build_images(self, project, campaign_config, image_project=None,
+                            image_project_tag=None) -> list:
         """Submit (or join) each container's image build; return their refs.
 
         Empty when nothing needs building. Returns as soon as each build has a
@@ -1251,14 +1272,19 @@ class LocalTransport(RobovastInterface):
         campaign's own worker thread. Overridden by :class:`ClusterService` for the
         in-cluster BuildKit Job.
         """
-        specs, project_dir = self._build_specs_for(project, campaign_config)
-        return [self._image_builds.start(spec, project_dir)
+        specs, project_dir = self._build_specs_for(
+            project, campaign_config, image_project=image_project,
+            image_project_tag=image_project_tag)
+        return [self._images.start(spec, project_dir)
                 for spec in specs.values()]
 
-    def _resolve_built_images(self, project, campaign_config) -> dict:
+    def _resolve_built_images(self, project, campaign_config, image_project=None,
+                              image_project_tag=None) -> dict:
         """Concrete image refs to pin once the builds are done, by container name."""
-        specs, project_dir = self._build_specs_for(project, campaign_config)
-        return {name: self._image_builds.resolve_ref(spec, project_dir)
+        specs, project_dir = self._build_specs_for(
+            project, campaign_config, image_project=image_project,
+            image_project_tag=image_project_tag)
+        return {name: self._images.ref_for(spec, project_dir).ref
                 for name, spec in specs.items()}
 
     #: Poll cadence of :meth:`_await_build_image`. Each tick is one build-status read plus
@@ -1342,8 +1368,8 @@ class LocalTransport(RobovastInterface):
 
     def build_image(self, request) -> "ImageBuildRef":  # noqa: F821
         from robovast.common.common import load_config
-        from robovast.common.config import SCENARIO_CONTAINER, validate_config
-        from robovast.service.image_build import validate_build_spec
+        from robovast.common.config import validate_config
+        from robovast.service.image_build import primary_build_ref, validate_build_spec
         project = self._resolve_project(request.workspace_id, request.config_path)
         campaign_config = validate_config(load_config(project.config_path))
         specs, project_dir = self._build_specs_for(project, campaign_config)
@@ -1363,20 +1389,15 @@ class LocalTransport(RobovastInterface):
             if problems:
                 raise ValueError(f"invalid execution.containers.{name}:\n  - "
                                  + "\n  - ".join(problems))
-        refs = {name: self._image_builds.start(spec, project_dir)
+        refs = {name: self._images.start(spec, project_dir)
                 for name, spec in specs.items()}
-        # Every build is started; the returned handle names one of them. Prefer the
-        # container the scenario runs in — it is the one a caller most likely means —
-        # and carry the rest so nothing has to be guessed at.
-        primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))
-        primary.builds = {name: ref.build_id for name, ref in refs.items()}
-        return primary
+        return primary_build_ref(refs)
 
     def get_image_build_status(self, build_id: str):
-        return self._image_builds.status(build_id)
+        return self._images.status(build_id)
 
     def get_image_build_log(self, build_id: str, offset: int = 0):
-        return self._image_builds.log(build_id, offset)
+        return self._images.log(build_id, offset)
 
     # -- container exec (diagnostic; produces no campaign) ------------------
 
@@ -1452,7 +1473,12 @@ class LocalTransport(RobovastInterface):
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
         try:
-            spec.image = self._exec_image(vast_file, request.container or None)
+            found = self._resolve_exec_image(vast_file, request.container or None,
+                                             campaign_id=request.campaign_id or "")
+            spec.image = found.ref
+            # What the caller is told the container is. Never `found.ref`: on the cluster
+            # lane that is registry-qualified, and this value is reported back.
+            spec.image_identity = found.identity
             if is_build_image_ref(spec.image):
                 # Defensive: _exec_image resolves build: refs, and handing docker a
                 # symbolic one would fail with a confusing pull error instead.
@@ -1481,7 +1507,8 @@ class LocalTransport(RobovastInterface):
                            duration_s=time.monotonic() - started,
                            container=self._exec_manager.state())
 
-    def _exec_image(self, vast_file: str, container: "str | None" = None) -> str:
+    def _exec_image(self, vast_file: str, container: "str | None" = None,
+                    campaign_id: str = "") -> str:
         """The concrete image to exec in, resolved exactly as a run would resolve it.
 
         *container* is a role or container name (``scenario`` / ``simulation`` / ``sut``
@@ -1489,13 +1516,36 @@ class LocalTransport(RobovastInterface):
         a campaign with no simulator is the only one — so an unqualified call answers
         the same question it always did.
 
-        A built image must already exist locally: building implicitly would turn a
-        seconds-long check into a multi-minute one the caller never asked for.
+        A built image must already exist on this lane's store: building implicitly would
+        turn a seconds-long check into a multi-minute one the caller never asked for.
+        """
+        return self._resolve_exec_image(vast_file, container, campaign_id).ref
+
+    def _resolve_exec_image(self, vast_file: str, container: "str | None" = None,
+                            campaign_id: str = "") -> "ImageRef":  # noqa: F821
+        """The exec image as an :class:`~robovast.service.image_store.ImageRef`.
+
+        Split from :meth:`_exec_image` because two callers want different halves of one
+        resolution: a container is started from ``.ref``, while :meth:`resolve_image` hands
+        ``.identity`` to a client and must not leak the concrete form. Resolving twice to
+        get the two would be two chances to disagree.
+
+        The branch is on the **config source**, not on the lane:
+
+        * a *campaign* has already run, and recorded which image each role ran on, so the
+          diagnostic runs those exact bytes — see :func:`campaign_role_image`. Re-deriving
+          a content hash from the campaign's frozen ``_config/`` cannot work anyway: that
+          snapshot holds the ``.vast``, the scenario and the run files, not the build
+          inputs, so every source dir and workspace wheel hashes as a bare requirement and
+          the hash differs from the one the build produced.
+        * a *workspace* project is asked of the image store, which is the lane's own
+          answer to "what is this called here, and is it here".
         """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
         from robovast.common.containers import plan_containers
         from robovast.common.execution import resolve_robovast_image
+        from robovast.service.image_store import ImageRef
 
         # Validate rather than reading the raw mapping: the build specs come off the
         # *model*, so handing this path a plain dict yields "no build section" for every
@@ -1505,18 +1555,82 @@ class LocalTransport(RobovastInterface):
         target = plan.by_name(container) if container else plan.main
 
         if not target.builds:
-            return resolve_robovast_image(
+            declared = resolve_robovast_image(
                 config_image=target.image, fallback=target.is_main)
+            # A declared image is already the client-facing name of itself: it carries no
+            # build of ours and no registry we chose.
+            return ImageRef(ref=declared, identity=declared, build_id="")
+
+        if campaign_id:
+            return self._campaign_exec_image(campaign_id, target.name)
 
         specs, project_dir = self._build_specs_for(
             WorkspaceTarget(config_path=vast_file), campaign_config)
-        ref = self._image_builds.resolve_ref(specs[target.name], project_dir)
-        if not self._image_builds.image_exists(ref):
-            raise ValueError(
-                f"the image for container '{target.name}' is not built — call "
-                "build_experiment_image first. This never builds implicitly, so a "
-                "quick check cannot silently become a full image build.")
-        return ref
+        found = self._images.ref_for(specs[target.name], project_dir)
+        if not self._images.present(found):
+            self._refuse_unbuilt(target.name, found.build_id)
+        return found
+
+    def _campaign_exec_image(self, campaign_id: str, role: str) -> "ImageRef":  # noqa: F821
+        """The image *campaign_id* actually ran *role* on.
+
+        Digest-first and role-aware through :func:`campaign_role_image`, which already
+        answers this for the scene cache and refuses to substitute the campaign-level image
+        for a role that owns a container. A digest is its own identity — it names bytes and
+        no registry we picked — so both fields carry it.
+
+        :meth:`_resolve_image_digest` is the existing per-lane hook for the tag-only
+        campaigns that predate per-role digests: docker locally, a deliberate refusal on the
+        cluster (guessing there would name bytes no node can pull).
+        """
+        from robovast.common.campaign_data import campaign_role_image
+        from robovast.service.image_store import ImageRef
+        image = campaign_role_image(Path(self._role_image_source_dir(campaign_id)), role,
+                                    resolve_digest=self._resolve_image_digest)
+        return ImageRef(ref=image, identity=image, build_id="")
+
+    def _role_image_source_dir(self, campaign_id: str) -> str:
+        """Where this campaign's recorded per-role images are read from.
+
+        Its own seam for the reason :meth:`_data_dir` refuses to be one: locally the campaign
+        is a directory, on the cluster it is an object-store prefix, and a caller has to say
+        which *objects* it needs rather than getting "the whole campaign" and quietly turning
+        a lookup into a rosbag download.
+
+        Two are needed, and both matter: ``_execution/execution.yaml`` holds the per-role
+        digests, and the frozen ``.vast`` under ``_config/`` is what tells
+        :func:`campaign_role_image` whether the role owns a container of its own. Without the
+        second it cannot refuse the campaign-level substitution — so exec'ing into ``sut``
+        could silently land in the scenario's image.
+        """
+        return str(self._campaign_dir(campaign_id))
+
+    def _refuse_unbuilt(self, container_name: str, build_id: str) -> "NoReturn":  # noqa: F821
+        """Refuse an exec whose image is not on the store, saying which state it is in.
+
+        Shared by every lane and never overridden: ``get_image_build_status`` is an
+        interface operation both of them implement (the cluster's even recovers an
+        untracked build from its Job), so the classification has one implementation rather
+        than two that drift — the same argument ``_await_build_image`` already makes for
+        the build wait loop.
+        """
+        from robovast.common.errors import ImageNotBuilt
+        from robovast.service.image_build import not_built_message
+        status = None
+        if build_id:
+            try:
+                status = self.get_image_build_status(build_id)
+            except KeyError:
+                status = None       # nothing was ever started for these inputs
+            except Exception as e:  # noqa: BLE001
+                # The probe must never replace the refusal it decorates: on the cluster it
+                # can touch the API server, and a failure there is not an answer about the
+                # image. Degrade to the plainest wording rather than raising something the
+                # caller cannot act on.
+                logger.debug("could not read build state for %s: %s", build_id, e)
+                status = None
+        message, next_step = not_built_message(container_name, build_id, status)
+        raise ImageNotBuilt(message, next_step=next_step)
 
     def stop_exec_container(self) -> "ExecStopResult":  # noqa: F821
         # The `del backend` that used to be here outlived the parameter it deleted: the
@@ -1528,14 +1642,19 @@ class LocalTransport(RobovastInterface):
     def resolve_image(self, request) -> "ImageResolution":  # noqa: F821
         """Same resolution :meth:`exec_in_container` runs internally, without the run.
 
-        Reuses :meth:`_exec_image` directly — the same project load, ``plan_containers``,
-        and (for a ``build:`` container) build-registry lookup ``exec_in_container`` already
-        does at ``local_transport.py:1308`` — so a resolved image never drifts from what a
-        real exec would use. No container starts either way.
+        Reuses :meth:`_resolve_exec_image` — the same project load, ``plan_containers`` and
+        image-store lookup the exec itself does — so a resolved image never drifts from what
+        a real exec would use. No container starts either way.
+
+        Hands back the ``identity``, never the concrete ref: this value crosses the API
+        boundary (it keys the per-image catalog cache and is reported to the caller), and on
+        the cluster lane the concrete form is registry-qualified.
         """
         from robovast.service.interface import ImageResolution
         vast_file = self._exec_vast_file(request)
-        return ImageResolution(image=self._exec_image(vast_file, request.container or None))
+        found = self._resolve_exec_image(vast_file, request.container or None,
+                                         campaign_id=request.campaign_id or "")
+        return ImageResolution(image=found.identity)
 
     def _postprocess(self, campaign_id, results_dir, state, entry):
         """Run analysis postprocessing for a just-finished local campaign.
@@ -1846,7 +1965,7 @@ class LocalTransport(RobovastInterface):
         A campaign still in ``building`` is stopped by the flag alone: the teardown below
         removes the *scenario* container and cannot reach a ``docker buildx`` build thread.
         That is deliberate and must stay true — an image build is content-addressed and
-        therefore shared, so canceling it could strand a sibling campaign waiting on the
+        therefore shared, so cancelling it could strand a sibling campaign waiting on the
         same image, and the image is a cache entry rather than this campaign's property.
         ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
         """
@@ -3175,4 +3294,3 @@ class LocalTransport(RobovastInterface):
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import reconstruct_status_from_disk
         return reconstruct_status_from_disk(self._record_dir(campaign_id))
-

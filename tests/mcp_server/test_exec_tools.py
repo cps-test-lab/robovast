@@ -10,6 +10,8 @@ data (the one failure mode of offering it at all), that it exposes no way to rea
 running campaign's container, and that output trimming is the same code the log tools use.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from robovast.mcp_server import service_access
@@ -176,3 +178,64 @@ def test_resource_usage_names_a_held_container(service):
     out = execution.get_resource_usage()
     assert out["exec_container"]["kept"] is True
     assert out["exec_container"]["image"] == "img:1"
+
+
+# ---------------------------------------------------------------------------
+# a refusal that names the next move
+# ---------------------------------------------------------------------------
+#
+# `next_step` was only ever attached to the paths that succeed, and the reported bug is what
+# that costs: an agent told "the image for container 'sut' is not built" -- right after
+# building it, because a sibling container's cache hit had been reported as the whole
+# request's -- had nothing to go on and tried three call shapes instead.
+
+
+def test_an_actionable_refusal_carries_its_next_step(monkeypatch):
+    from robovast.common.errors import ImageNotBuilt
+
+    class _Client:
+        def exec_in_container(self, request):
+            raise ImageNotBuilt(
+                "the image for container 'sut' is still building (build b1)",
+                next_step="run in the background: vast image wait b1 --interval 5")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
+    out = execution.exec_in_container(command="ls", workspace_id="ws1", container="sut")
+    assert "still building" in out["error"]
+    assert out["next_step"] == "run in the background: vast image wait b1 --interval 5"
+
+
+def test_an_ordinary_failure_gains_no_invented_hint(monkeypatch):
+    """Absence of ``next_step`` has to mean "nothing obvious to do", or the field stops
+    being worth reading."""
+    class _Client:
+        def exec_in_container(self, request):
+            raise ValueError("config 'nope' is not one of this campaign's configs")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
+    out = execution.exec_in_container(command="ls", workspace_id="ws1")
+    assert "next_step" not in out
+
+
+def test_a_held_container_is_the_one_success_worth_a_hint(monkeypatch):
+    """It holds a stack's worth of memory and nothing else reaps it while the caller thinks
+    it is done. A plain call gets no hint."""
+    def _result(kept):
+        return SimpleNamespace(model_dump=lambda: {
+            "exit_code": 0, "stdout": "", "stderr": "", "timed_out": False,
+            "duration_s": 0.1, "limit_s": 60, "limit_source": "command",
+            "log_path": "", "container": {"kept": kept}})
+
+    class _Client:
+        def __init__(self, kept):
+            self._kept = kept
+
+        def exec_in_container(self, request):
+            return _result(self._kept)
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client(True))
+    assert execution.exec_in_container(command="ls", workspace_id="ws1",
+                                keep_alive=True)["next_step"] == (
+        "stop_container() when done with this container")
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client(False))
+    assert "next_step" not in execution.exec_in_container(command="ls", workspace_id="ws1")

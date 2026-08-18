@@ -39,6 +39,27 @@ NO_SERVICE = ("no robovast-service reachable — start one on this machine "
               "no provenance and no repetitions, and answers a different question")
 
 
+def error_result(e: BaseException) -> dict:
+    """A tool's error dict, carrying the caller's next move when the error knows it.
+
+    ``next_step`` is already the convention on the paths that *succeed* — a literal command
+    with the ids filled in — because an answer that hands back only an id leaves "and now
+    wait for it" to be remembered. A refusal is where the next move is least obvious, and
+    carried nothing: the reported bug behind this helper was an agent told "the image is not
+    built" right after it had built the image, with no way to learn that a sibling build was
+    still running.
+
+    So an :class:`~robovast.common.errors.ActionableError` passes its hint through here, and
+    every other exception is reported exactly as before. Absence of ``next_step`` is
+    meaningful: it says there is nothing obvious to do, not that someone forgot.
+    """
+    result = {"error": str(e)}
+    next_step = getattr(e, "next_step", "")
+    if next_step:
+        result["next_step"] = next_step
+    return result
+
+
 #: Set by :func:`use_in_process_service` when the MCP app is mounted inside the service.
 _IN_PROCESS = None
 

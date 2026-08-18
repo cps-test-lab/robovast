@@ -18,10 +18,11 @@
 
 This module is backend-agnostic: it turns a validated project's ``build:`` section
 into a deterministic Dockerfile + a content hash, and classifies builder failures
-into the structured :class:`~robovast.service.interface.ImageBuildError`. The local
-Docker path (``docker buildx build --load``) lives in :class:`LocalImageBuildManager`
-here; the in-cluster Job path lives in ``cluster_service`` and reuses the pure
-helpers (``build_hash``, ``generate_dockerfile``, ``classify_build_error``).
+into the structured :class:`~robovast.service.interface.ImageBuildError`. It is the
+**recipe**: nothing here knows where an image ends up. That is the *store*
+(:mod:`robovast.service.image_store`) -- the local docker daemon or a cluster registry --
+which reuses these pure helpers (``build_hash``, ``generate_dockerfile``,
+``classify_build_error``) rather than restating them per lane.
 
 Registry invariant: nothing here emits or accepts a registry endpoint, credential,
 or registry-qualified ref. The agent-facing image is always the symbolic
@@ -31,36 +32,22 @@ a ``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a cli
 
 import hashlib
 import logging
-import os
 import re
-import subprocess
-import threading
-import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from robovast.common.build_context import BUILD_CONTEXT_IGNORE, render_dockerignore
+from robovast.common.build_context import BUILD_CONTEXT_IGNORE
 from robovast.common.containers import plan_containers
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
-                                       resolve_build_base_image)
-from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus, LogChunk
+                                       FAMILY_IMAGE_PREFIX)
+from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
 
 logger = logging.getLogger(__name__)
 
 #: Where the project dir is COPYed inside the image build context.
 _CONTEXT_DIR = "/robovast_build_context"
-#: Local docker tag namespace for agent-built experiment images.
-_LOCAL_TAG_NS = "robovast-build"
-#: The buildx builder to build experiment images with. Pinned rather than inheriting whichever
-#: builder the operator has selected, because only the ``docker`` driver runs inside dockerd and so
-#: shares the daemon's image store and build cache. On a ``docker-container`` builder (a multi-arch
-#: one is a common thing to have selected) the base image is invisible and gets re-pulled from the
-#: registry on *every* build -- measured at 124 s of a 188 s build for a 5.6 GB ROS base -- the layer
-#: cache lives in a separate store that the daemon's images cannot seed, and a locally built
-#: ``build.base_image`` (which ``_base_ref`` explicitly supports) cannot be resolved at all.
-_LOCAL_BUILDER = "default"
 #: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by both
 #: builders we drive: ``docker buildx`` locally and ``buildctl --frontend dockerfile.v0`` in-cluster.
 _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1"
@@ -145,7 +132,8 @@ class BuildSpec:
         return [spec for group in self.install_groups for spec in group]
 
 
-def extract_build_specs(campaign_config, base_dir=None) -> dict:
+def extract_build_specs(campaign_config, base_dir=None, image_project=None,
+                        image_project_tag=None) -> dict:
     """One :class:`BuildSpec` per container that adds packages, keyed by container name.
 
     A campaign may build several images -- a system under test, and a scenario or
@@ -178,6 +166,22 @@ def extract_build_specs(campaign_config, base_dir=None) -> dict:
     }
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_dict = apply_backend(execution_dict, base_dir)
+    # And resolve the ``family:`` refs it contributed, for the same reason config_generation
+    # does it immediately after its own apply_backend: a backend names its member
+    # symbolically, because which project and tag it comes from is a property of the
+    # campaign and does not exist when the backend runs.
+    #
+    # Doing it there and not here was a real gap, and an asymmetric one: a container whose
+    # image comes from the DEFAULT member assignment was resolved on the composition path,
+    # so `sut` and `scenario` built correctly while the one container that declared a
+    # `backend:` carried `family:robovast-roqsim` into its Dockerfile's FROM. Docker read
+    # that as repository `family`, tag `robovast-roqsim`, and the campaign died in BuildKit
+    # with a registry `insufficient_scope` -- which reads as a credentials problem three
+    # layers away from the cause.
+    from robovast.common.execution import \
+        resolve_family_images_in_containers  # pylint: disable=import-outside-toplevel
+    resolve_family_images_in_containers(execution_dict.get('containers'),
+                                        project=image_project, tag=image_project_tag)
     specs = {}
     plan = plan_containers(execution_dict)
     for container in plan.containers:
@@ -332,6 +336,20 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
     rebuilds nothing. The apt list is sorted to match :func:`build_hash`, so
     reordering the YAML is a cache hit rather than a rebuild.
     """
+    # The hard error :data:`FAMILY_IMAGE_PREFIX` and :data:`BUILD_IMAGE_PREFIX` both promise.
+    # Neither is an image name: one names a member of the published set and one names a build
+    # output, and both are meant to be resolved long before here. Written into a FROM they
+    # become a repository nothing can pull, and the failure surfaces as a registry
+    # authorization error inside a BuildKit log -- far from whatever forgot to resolve it.
+    for prefix, what in ((FAMILY_IMAGE_PREFIX, "a RoboVAST image family member"),
+                         (BUILD_IMAGE_PREFIX, "a build output")):
+        if str(base_ref).startswith(prefix):
+            raise ValueError(
+                f"unresolved image ref {base_ref!r} reached a Dockerfile FROM. "
+                f"{prefix!r} marks {what}, not an image: it must be resolved before a build "
+                f"spec is built. This is a bug in whatever produced the spec, not in the "
+                f"campaign -- a .vast cannot write one.")
+
     lines = [_SYNTAX_DIRECTIVE, f"FROM {base_ref}", "USER root", _VENV_SETUP,
              f"ENV VIRTUAL_ENV={_VENV}",
              # The packages this file installs land under the venv prefix, so this file
@@ -562,175 +580,91 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Local build manager — docker buildx build --load
+# Answers about a build that no lane should phrase for itself
 # ---------------------------------------------------------------------------
 
-@dataclass
-class _BuildRecord:
-    build_id: str
-    tag: str
-    image_hash: str
-    local_ref: str
-    log_path: Path
-    status: ImageBuildStatus
-    thread: Optional[threading.Thread] = None
+#: Phases in which a build is under way rather than finished, either way.
+_IN_FLIGHT = ("pending", "validating", "building", "pushing")
 
 
-def local_image_ref(tag: str, image_hash: str) -> str:
-    """Deterministic local docker tag for an agent-built experiment image.
+def not_built_message(container: str, build_id: str,
+                      status: "Optional[ImageBuildStatus]") -> "tuple[str, str]":
+    """``(message, next_step)`` for "this container's image is not on the store".
 
-    ``sim-suite-mobile`` (+ hash) → ``robovast-build/sim-suite-mobile:<hash>``. The
-    ``:version`` part of a ``name:version`` tag is folded into the repo name so the
-    hash stays the docker tag (one image identity per input set).
+    Pure, so it is testable without a service, and one function so both lanes phrase the
+    refusal identically.
+
+    The old message said only "call build_experiment_image first", which is a dead end for
+    the caller who *did* call it -- the reported bug this replaces. Four states need four
+    different actions, and the service already knows which one it is in, so *status* (the
+    build's, or ``None`` when no build is known) picks the wording and the next step:
+
+    ``None``
+        nothing was ever started for these inputs.
+    in flight
+        a build is running. The common case for an agent that execs straight after starting
+        one, and previously indistinguishable from "you forgot to build" -- so it must say
+        *wait*, not *build again*.
+    ``failed``
+        rebuilding unchanged inputs fails identically; the diagnosis is in the status.
+    done, image gone
+        the build succeeded and the artifact has since been pruned or deleted. Saying
+        "not built" here would deny something that demonstrably happened.
+
+    A build id is only offered as pollable in the states where a build actually exists;
+    ``get_image_build_status`` raises on an id nothing started, so advertising it otherwise
+    would send the caller into an error.
     """
-    name = tag.replace(":", "-")
-    return f"{_LOCAL_TAG_NS}/{name}:{image_hash}"
+    phase = getattr(status, "phase", "") if status is not None else ""
+    tail = (f"A cache hit reported for another container says nothing about this one. "
+            f"This never builds implicitly, so a quick check cannot silently become a "
+            f"full image build.")
+    if status is not None and phase in _IN_FLIGHT:
+        started = getattr(status, "started_at", None)
+        since = f", started {started}" if started else ""
+        return (f"the image for container '{container}' is still building "
+                f"(build {build_id}, phase {phase}{since}) -- wait for it rather than "
+                f"starting another build. {tail}",
+                f"run in the background: vast image wait {build_id} --interval 5 "
+                f"(exit 0 built, 1 failed)")
+    if status is not None and phase == "failed":
+        detail = getattr(getattr(status, "error", None), "message", "") or ""
+        because = f": {detail}" if detail else ""
+        return (f"the image for container '{container}' failed to build{because}. "
+                f"Rebuilding the same inputs fails the same way -- read the diagnosis "
+                f"and change what it names. {tail}",
+                f"get_image_build_status('{build_id}') for error_detail, then "
+                f"get_image_build_log(build_id='{build_id}', summarize=True)")
+    if status is not None and phase in ("succeeded", "cached"):
+        return (f"the image for container '{container}' was built (build {build_id}) and "
+                f"is no longer on this lane's image store -- pruned locally, or deleted "
+                f"from the registry. It has to be built again. {tail}",
+                f"build_experiment_image(container='{container}')")
+    return (f"the image for container '{container}' is not built, and no build is "
+            f"running for these inputs. {tail}",
+            f"build_experiment_image(container='{container}')")
 
 
-class LocalImageBuildManager:
-    """Runs experiment-image builds on the local Docker daemon (buildx --load).
+def primary_build_ref(refs: dict) -> ImageBuildRef:
+    """Fold one :class:`ImageBuildRef` per container into the single handle a request returns.
 
-    Idempotent: a build whose inputs hash to an image already present in the local
-    daemon is a no-op cache hit. Thread-per-build with a log file, mirroring the
-    campaign worker pattern.
+    Every build is started; the returned handle names one of them. Prefer the container the
+    scenario runs in -- it is the one a caller most likely means -- and carry the rest so
+    nothing has to be guessed at.
+
+    ``cached`` is the **conjunction**, and ``cached_builds`` carries the per-container
+    answer. It used to be whichever value the primary container happened to have, which
+    reported a request as a cache hit while a sibling was still building or had already
+    failed -- and the caller, told "nothing to wait for", went straight on to a container
+    whose image did not exist. One bool cannot answer a question about several images, so
+    the per-image answer is the field and the summary is derived from it.
     """
-
-    def __init__(self, log_root: Path):
-        self._log_root = Path(log_root)
-        self._log_root.mkdir(parents=True, exist_ok=True)
-        self._builds: dict[str, _BuildRecord] = {}
-        self._by_ref: dict[str, str] = {}   # local_ref -> build_id (most recent)
-        self._lock = threading.Lock()
-
-    # -- resolution ---------------------------------------------------------
-
-    def resolve_ref(self, spec: BuildSpec, project_dir: Path) -> str:
-        """Concrete local ref for a project's ``build:`` image (no build run)."""
-        base_ref = self._base_ref(spec)
-        return local_image_ref(spec.tag, build_hash(spec, project_dir, base_ref))
-
-    def image_exists(self, local_ref: str) -> bool:
-        try:
-            r = subprocess.run(["docker", "image", "inspect", local_ref],
-                               capture_output=True, timeout=30, check=False)
-            return r.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
-
-    def _base_ref(self, spec: BuildSpec) -> str:
-        # Local dev: an explicit base is used verbatim (may be an alias the operator
-        # has locally); otherwise the robovast default. Registry-alias resolution is
-        # a cluster-config concern handled server-side on the cluster path.
-        return spec.base_image or resolve_build_base_image()
-
-    # -- lifecycle ----------------------------------------------------------
-
-    def start(self, spec: BuildSpec, project_dir: Path) -> ImageBuildRef:
-        base_ref = self._base_ref(spec)
-        image_hash = build_hash(spec, project_dir, base_ref)
-        local_ref = local_image_ref(spec.tag, image_hash)
-        build_id = f"build-{spec.tag.replace(':', '-')}-{image_hash}"
-
-        # Idempotent cache hit: image already built for these exact inputs.
-        if self.image_exists(local_ref):
-            status = ImageBuildStatus(
-                build_id=build_id, tag=spec.tag, phase="cached", done=True,
-                cached=True, image_ref=f"{BUILD_IMAGE_PREFIX}{spec.tag}",
-                digest=image_hash)
-            with self._lock:
-                self._builds[build_id] = _BuildRecord(
-                    build_id, spec.tag, image_hash, local_ref,
-                    self._log_root / f"{build_id}.log", status)
-                self._by_ref[local_ref] = build_id
-            return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
-
-        log_path = self._log_root / f"{build_id}.log"
-        status = ImageBuildStatus(
-            build_id=build_id, tag=spec.tag, phase="building",
-            image_ref=f"{BUILD_IMAGE_PREFIX}{spec.tag}", digest=image_hash,
-            started_at=_now())
-        record = _BuildRecord(build_id, spec.tag, image_hash, local_ref, log_path,
-                              status)
-        with self._lock:
-            self._builds[build_id] = record
-            self._by_ref[local_ref] = build_id
-
-        thread = threading.Thread(
-            target=self._run, name=f"robovast-{build_id}",
-            args=(record, spec, project_dir, base_ref), daemon=True)
-        record.thread = thread
-        thread.start()
-        return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
-
-    def _run(self, record: _BuildRecord, spec: BuildSpec, project_dir: Path,
-             base_ref: str) -> None:
-        dockerfile = generate_dockerfile(spec, project_dir, base_ref)
-        df_path = self._log_root / f"{record.build_id}.Dockerfile"
-        df_path.write_text(dockerfile)
-        # BuildKit reads ``<dockerfile>.dockerignore`` beside an out-of-context -f
-        # Dockerfile, which is the only place to put one here: writing a .dockerignore
-        # into the project dir would mutate the user's workspace.
-        df_path.with_name(df_path.name + ".dockerignore").write_text(
-            render_dockerignore())
-        cmd = ["docker", "buildx", "build", "--builder", _LOCAL_BUILDER, "--load",
-               "-f", str(df_path), "-t", record.local_ref, str(project_dir)]
-        logger.info("Building image %s: %s", record.local_ref, " ".join(cmd))
-        try:
-            with open(record.log_path, "wb") as log:
-                log.write((dockerfile + "\n---\n").encode())
-                log.flush()
-                proc = subprocess.Popen(
-                    cmd, stdout=log, stderr=subprocess.STDOUT, env=os.environ.copy())
-                rc = proc.wait()
-        except OSError as e:
-            record.status.error = ImageBuildError(
-                phase="build", fixable_by="infra",
-                message=f"could not launch docker buildx: {e}")
-            record.status.phase = "failed"
-            record.status.done = True
-            record.status.finished_at = _now()
-            return
-
-        log_text = _read_text(record.log_path)
-        if rc == 0:
-            record.status.phase = "succeeded"
-        else:
-            record.status.phase = "failed"
-            record.status.error = classify_build_error(log_text, spec)
-        record.status.done = True
-        record.status.finished_at = _now()
-
-    # -- queries ------------------------------------------------------------
-
-    def status(self, build_id: str) -> ImageBuildStatus:
-        with self._lock:
-            record = self._builds.get(build_id)
-        if record is None:
-            raise KeyError(f"unknown build '{build_id}'")
-        return record.status
-
-    def log(self, build_id: str, offset: int = 0) -> LogChunk:
-        with self._lock:
-            record = self._builds.get(build_id)
-        if record is None:
-            raise KeyError(f"unknown build '{build_id}'")
-        if not record.log_path.exists():
-            return LogChunk(text="", next_offset=offset, eof=record.status.done)
-        data = record.log_path.read_bytes()
-        chunk = data[offset:]
-        return LogChunk(text=chunk.decode(errors="replace"),
-                        next_offset=len(data), eof=record.status.done)
-
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(errors="replace")
-    except OSError:
-        return ""
+    from robovast.common.config import SCENARIO_CONTAINER
+    primary = refs.get(SCENARIO_CONTAINER) or next(iter(refs.values()))
+    primary.builds = {name: ref.build_id for name, ref in refs.items()}
+    primary.cached_builds = {name: bool(ref.cached) for name, ref in refs.items()}
+    primary.cached = all(primary.cached_builds.values())
+    return primary
 
 
 def project_build_spec(target) -> "Optional[BuildSpec]":

@@ -239,8 +239,14 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
     monkeypatch.setattr(
         cs, "_cluster_config",
         lambda: types.SimpleNamespace(get_registry_config=RegistryConfig))
-    monkeypatch.setattr(cs, "_resolve_registry_objects",
-                        lambda registry: RegistryConfig(registry_prefix=""))
+    # A registry with no prefix: enabled() is false. The lookup that would fill in its
+    # Secrets lives in the image store now, so it is stubbed there — installing a store is
+    # how a lane supplies one.
+    monkeypatch.setattr(
+        cs, "_image_store",
+        types.SimpleNamespace(
+            registry=lambda require=True: RegistryConfig(registry_prefix="")),
+        raising=False)
     project, campaign_config = _project_needing_a_build(tmp_path)
 
     with pytest.raises(CampaignConfigError, match="nowhere to push it"):

@@ -1116,6 +1116,12 @@
             "title": "Cached",
             "type": "boolean"
           },
+          "cached_builds": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Cached Builds",
+            "type": "object"
+          },
           "tag": {
             "default": "",
             "title": "Tag",
@@ -1126,6 +1132,7 @@
           "build_id",
           "builds",
           "cached",
+          "cached_builds",
           "tag"
         ],
         "title": "ImageBuildRef",
@@ -1217,7 +1224,7 @@
         "type": "object"
       },
       "ImageResolution": {
-        "description": "The concrete image a project's container would run \u2014 resolved, nothing started.\n\nAnswers what :class:`ExecRequest`'s own image resolution would pick, without paying\nfor a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,\nor a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists\nso a caller can key a cache by \"this image\" \u2014 e.g. a per-image catalog a container would\nreport identically on every call \u2014 without running the container just to learn which one\nit is.",
+        "description": "The concrete image a project's container would run \u2014 resolved, nothing started.\n\nAnswers what :class:`ExecRequest`'s own image resolution would pick, without paying\nfor a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,\nor an image-store lookup for a ``build:`` container), never Docker or Kubernetes. Exists\nso a caller can key a cache by \"this image\" \u2014 e.g. a per-image catalog a container would\nreport identically on every call \u2014 without running the container just to learn which one\nit is.\n\nFor a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not\nthe concrete ref the container runs FROM: the concrete form is a local docker tag on one\nlane and a registry-qualified ref on the other, and the second must never reach a client\n(the zero-registry-knowledge invariant). The identity still changes exactly when the\nimage changes, which is all a cache key needs, and it reads the same on every lane.",
         "properties": {
           "image": {
             "default": "",

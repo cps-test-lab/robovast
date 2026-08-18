@@ -141,7 +141,7 @@ jobs:
       - name: Resolve the roqsim commit
         id: roqsim
         run: |
-          ref="${{ vars.ROQSIM_REF || 'robovast' }}"
+          ref="${{ vars.ROQSIM_REF || 'main' }}"
           sha=$(git ls-remote https://github.com/cps-test-lab/roqsim.git "$ref" | awk 'NR==1{print $1}')
           if [ -z "$sha" ]; then
             echo "cannot resolve '$ref' in cps-test-lab/roqsim (private repo needs a token)" >&2

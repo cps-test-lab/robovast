@@ -150,11 +150,19 @@ class ImageBuildRef(BaseModel):
 
     build_id: str
     tag: str = ""                    # the container whose image this is
-    cached: bool = False             # True if an existing image was reused (no build ran)
+    #: True only when EVERY build this request covers was a cache hit — see
+    #: :attr:`cached_builds`. One container's hit says nothing about another's.
+    cached: bool = False
     #: Every build this request started, as ``{container: build_id}``. A campaign may
     #: build several images, and :attr:`build_id` names only one of them — poll the
     #: rest through here rather than assuming "the image" is a single thing.
     builds: dict = {}
+    #: Per-container cache verdict, ``{container: bool}``. :attr:`cached` is the
+    #: conjunction of these; this is the field that answers "is the image I care about
+    #: built?" for a request that started several builds. It was previously only the
+    #: primary container's verdict, reported as the whole request's, which announced
+    #: "nothing to wait for" while a sibling build was still running.
+    cached_builds: dict = {}
 
 
 class ImageBuildError(BaseModel):
@@ -292,10 +300,16 @@ class ImageResolution(BaseModel):
 
     Answers what :class:`ExecRequest`'s own image resolution would pick, without paying
     for a container: pure config resolution (``plan_containers`` / ``resolve_robovast_image``,
-    or a build registry lookup for a ``build:`` container), never Docker or Kubernetes. Exists
+    or an image-store lookup for a ``build:`` container), never Docker or Kubernetes. Exists
     so a caller can key a cache by "this image" — e.g. a per-image catalog a container would
     report identically on every call — without running the container just to learn which one
     it is.
+
+    For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
+    the concrete ref the container runs FROM: the concrete form is a local docker tag on one
+    lane and a registry-qualified ref on the other, and the second must never reach a client
+    (the zero-registry-knowledge invariant). The identity still changes exactly when the
+    image changes, which is all a cache key needs, and it reads the same on every lane.
     """
 
     image: str = ""

@@ -75,9 +75,13 @@ class KubeExecLane:
     def __init__(self, namespace: str, owner_ref: dict | None = None,
                  kube_context: str | None = None, *, storage=None,
                  storage_factory=None, bucket: str = "", s3_endpoint: str = "",
-                 s3_access_key: str = "", s3_secret_key: str = ""):
+                 s3_access_key: str = "", s3_secret_key: str = "",
+                 pull_secret: str = ""):
         self._namespace = namespace
         self._owner_ref = owner_ref
+        # The image under test is one of ours, from this deployment's registry, and it may
+        # be private. Empty is legitimate (a public image, or no registry configured).
+        self._pull_secret = pull_secret
         # Must be the service's own context: without it this would load the kubeconfig's
         # *current* context and exec into a different cluster than the one the campaigns
         # run on — answering a question about somewhere else entirely.
@@ -153,7 +157,8 @@ class KubeExecLane:
             core.create_namespaced_pod(
                 self._namespace,
                 _pod_manifest(spec, deadline_s, self._namespace, self._owner_ref,
-                              self._s3, self._bucket, prefix))
+                              self._s3, self._bucket, prefix,
+                              pull_secret=self._pull_secret))
         except ApiException as e:
             self._discard_staged()
             raise RuntimeError(f"could not start exec pod: {e.reason}") from e
@@ -311,11 +316,15 @@ def _mirror_command(spec: ExecSpec) -> str:
 
 def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
                   owner_ref: dict | None, s3: tuple, bucket: str,
-                  prefix: str) -> dict:
+                  prefix: str, pull_secret: str = "") -> dict:
     """A single kept-alive container with ``/config`` mirrored down by an init container.
 
     ``activeDeadlineSeconds`` is the manager's own deadline, so the pod cannot outlive
     the service's intent even if the reaper never runs.
+
+    *pull_secret* authenticates the pull of the experiment image. It covers the whole pod
+    because that is the only granularity Kubernetes offers, but only the main container
+    needs it: the init container is the public sidecar.
     """
     from robovast.common.execution import resolve_sidecar_image
 
@@ -365,5 +374,6 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
                 "volumeMounts": main_mounts,
             }],
             "volumes": volumes,
+            **({"imagePullSecrets": [{"name": pull_secret}]} if pull_secret else {}),
         },
     }

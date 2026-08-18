@@ -355,8 +355,10 @@ def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path
     def _fake_ensure(vast_dir, specs, **_kw):
         seen['dir'], seen['specs'] = vast_dir, specs
 
-    def _fake_extract(_config, base_dir=None):
+    def _fake_extract(_config, base_dir=None, image_project=None,
+                      image_project_tag=None):
         seen['base_dir'] = base_dir
+        seen['project'] = (image_project, image_project_tag)
         return {}
 
     monkeypatch.setattr("robovast.common.config_plugins.ensure_workspace_plugins",
@@ -370,13 +372,17 @@ def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path
     project = types.SimpleNamespace(config_path=str(vast))
     config = types.SimpleNamespace(plugins=["./plugins/backend-1.0-py3-none-any.whl"])
 
-    transport._build_specs_for(project, config)
+    transport._build_specs_for(project, config, image_project="example.org/team",
+                               image_project_tag="v9")
 
     assert seen['specs'] == ["./plugins/backend-1.0-py3-none-any.whl"], \
         "the campaign's plugins were not installed before its build specs were read"
     assert seen['dir'] == str(vast.parent)
     assert seen['base_dir'] == str(vast.parent), \
         "no base_dir means a '<file>.py:<Class>' backend cannot resolve either"
+    assert seen['project'] == ("example.org/team", "v9"), \
+        ("the campaign's image project has to reach extract_build_specs, or a backend's "
+         "family: ref is carried into a Dockerfile FROM unresolved")
 
 
 # -- stop_job: killing one running job, and refusing everything else ---------------------

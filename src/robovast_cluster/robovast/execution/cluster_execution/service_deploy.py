@@ -65,6 +65,59 @@ SERVICE_PORT = DEFAULT_PORT
 #: an upgrade are the same kind of event, and nothing here needs to tell them apart.
 RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 
+#: Where the service keeps its workspaces inside the pod, and the volume backing it.
+#:
+#: Mounted rather than left on the container's writable layer for the same reason the
+#: registry is (see ``registry_deploy.registry_volume``): every upgrade restarts the pod,
+#: so an unmounted workspace store is discarded on each version bump — every project a
+#: user had pushed, gone, while the upgrade reports success. Campaign *results* live in
+#: the object store and are unaffected, which is what made the loss easy to miss: the
+#: data survives and the sources it was produced from do not.
+#:
+#: An explicit path plus ``ROBOVAST_WORKSPACES_ROOT`` rather than mounting over the
+#: default ``~/.robovast/workspaces``: the default is resolved from ``HOME`` inside the
+#: container (see ``robovast.service.workspaces.default_workspaces_root``), so a mount
+#: hard-coding today's home directory would silently stop covering the store if that
+#: ever changed. Here the manifest names the path it mounts.
+WORKSPACES_VOLUME_NAME = "workspaces-data"
+WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
+DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
+WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
+
+
+def workspaces_volume(storage_path="", storage_class=""):
+    """The volume backing the workspace store: a PVC when provisionable, else hostPath.
+
+    Mirrors :func:`registry_deploy.registry_volume`, including its reason for defaulting
+    to hostPath: a stock RKE2 cluster ships no StorageClass, so a PVC there stays Pending
+    forever. hostPath pins the workspaces to one node's disk, the same constraint the
+    registry already imposes on this pod.
+
+    ``emptyDir`` is deliberately not offered — it would survive nothing that matters here,
+    since the restart is exactly the event this volume exists to outlive.
+    """
+    if storage_class:
+        return {"name": WORKSPACES_VOLUME_NAME,
+                "persistentVolumeClaim": {"claimName": WORKSPACES_VOLUME_NAME}}
+    return {"name": WORKSPACES_VOLUME_NAME,
+            "hostPath": {"path": storage_path or DEFAULT_WORKSPACES_HOST_PATH,
+                         "type": "DirectoryOrCreate"}}
+
+
+def workspaces_pvc_manifest(namespace, storage_class, size="20Gi"):
+    """The PVC for :func:`workspaces_volume`, or ``None`` when backed by hostPath."""
+    if not storage_class:
+        return None
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": WORKSPACES_VOLUME_NAME, "namespace": namespace,
+                     "labels": {"app": SERVICE_NAME}},
+        "spec": {"accessModes": ["ReadWriteOnce"],
+                 "storageClassName": storage_class,
+                 "resources": {"requests": {"storage": size}}},
+    }
+
 
 def _service_rbac_manifests(namespace):
     """ServiceAccount + Role/RoleBinding letting the service launch controllers.
@@ -174,6 +227,7 @@ def _service_rbac_manifests(namespace):
 def _deployment_manifest(namespace, image, env=None, git_secret=False,
                          env_secret_names=(), pull_secret="", restarted_at=None,
                          registry_storage_path="", registry_storage_class="",
+                         workspaces_storage_path="", workspaces_storage_class="",
                          registry_node=""):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
@@ -228,11 +282,18 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     }
     if env_secret_names:
         container["envFrom"] = [{"secretRef": {"name": n}} for n in env_secret_names]
+    # Point the store at the mount, unless the caller already set it explicitly.
+    if not any(e.get("name") == WORKSPACES_ROOT_ENV for e in container["env"]):
+        container["env"].append({"name": WORKSPACES_ROOT_ENV,
+                                 "value": WORKSPACES_DATA_DIR})
+    container["volumeMounts"] = [{"name": WORKSPACES_VOLUME_NAME,
+                                  "mountPath": WORKSPACES_DATA_DIR}]
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
         "containers": [container, registry_deploy.registry_container()],
         "volumes": [registry_deploy.registry_volume(
-            registry_storage_path, registry_storage_class)],
+            registry_storage_path, registry_storage_class),
+            workspaces_volume(workspaces_storage_path, workspaces_storage_class)],
     }
     node_selector = registry_deploy.registry_node_selector(registry_node)
     if node_selector:
@@ -240,9 +301,9 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     if pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": pull_secret}]
     if git_secret:
-        container["volumeMounts"] = [{
+        container["volumeMounts"].append({
             "name": "git-credentials", "mountPath": GIT_TOKEN_MOUNT_DIR,
-            "readOnly": True}]
+            "readOnly": True})
         pod_spec["volumes"].append({
             "name": "git-credentials",
             "secret": {"secretName": GIT_SECRET_NAME, "defaultMode": 0o400}})
@@ -1032,6 +1093,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       auth_token="", ingress_host="", ingress_class="",
                       tls_secret="", issuer="", insecure_http=False,
                       registry_host="", registry_storage_path="",
+                      workspaces_storage_path="", workspaces_storage_class="",
                       registry_storage_class="", registry_node=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
@@ -1065,7 +1127,7 @@ def service_manifests(namespace="default", image=None, env=None,
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build
     # base. So the project they resolve from has to be carried in, or an operator who
-    # configured one gets it honored everywhere except the place it is actually read.
+    # configured one gets it honoured everywhere except the place it is actually read.
     #
     # That was the old bug, and it was worse than it sounds: of the five per-image
     # variables that used to exist, only two were ever propagated, so `setup --force`
@@ -1138,6 +1200,8 @@ def service_manifests(namespace="default", image=None, env=None,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret,
                              registry_storage_path=registry_storage_path,
+                             workspaces_storage_path=workspaces_storage_path,
+                             workspaces_storage_class=workspaces_storage_class,
                              registry_storage_class=registry_storage_class,
                              registry_node=registry_node),
         _service_manifest(namespace, ingress_class),
@@ -1195,6 +1259,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
                    registry_host="", registry_storage_path="",
+                   workspaces_storage_path="", workspaces_storage_class="",
                    registry_storage_class="", registry_node=""):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
@@ -1243,6 +1308,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
         insecure_http=insecure_http, registry_host=registry_host,
         registry_storage_path=registry_storage_path,
+        workspaces_storage_path=workspaces_storage_path,
+        workspaces_storage_class=workspaces_storage_class,
         registry_storage_class=registry_storage_class,
         registry_node=registry_node)
     by_kind = {m["kind"]: m for m in manifests}

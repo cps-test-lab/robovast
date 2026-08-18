@@ -27,27 +27,66 @@ def test_build_experiment_image_no_service(monkeypatch):
     assert "no robovast-service" in out["error"]
 
 
-def test_build_experiment_image_delegates(monkeypatch):
-    captured = {}
-
+def _stub_build(monkeypatch, ref, captured=None):
     class _Client:
         def build_image(self, request):
-            captured["request"] = request
-            return SimpleNamespace(build_id="imgbuild-sut-abc", tag="sut", cached=True,
-                                   builds={"sut": "imgbuild-sut-abc"})
+            if captured is not None:
+                captured["request"] = request
+            return ref
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Client())
+
+
+def test_build_experiment_image_delegates(monkeypatch):
+    captured = {}
+    _stub_build(monkeypatch, SimpleNamespace(
+        build_id="imgbuild-sut-abc", tag="sut", cached=True,
+        builds={"sut": "imgbuild-sut-abc"},
+        cached_builds={"sut": True}), captured)
     out = cc.build_experiment_image(workspace_id="ws1", config_path="a.vast")
     # ``builds`` carries every image the request started; ``build_id`` names only one, so
     # a campaign building two is not silently reported as having built one. ``next_step``
-    # is the wait, in band -- here a cache hit, which is the one case with nothing to wait
-    # for and so the one where naming a wait command would be wrong.
+    # is the wait, in band -- here everything was a cache hit, which is the one case with
+    # nothing to wait for and so the one where naming a wait command would be wrong.
     assert out == {"build_id": "imgbuild-sut-abc", "tag": "sut", "cached": True,
                    "builds": {"sut": "imgbuild-sut-abc"},
-                   "next_step": "start_campaign(...) — cache hit, nothing to wait for"}
+                   "cached_builds": {"sut": True},
+                   "next_step": ("every image is built — start_campaign(...) to run it, "
+                                 "or exec_in_container(...) to look inside it")}
     assert captured["request"].workspace_id == "ws1"
     assert captured["request"].config_path == "a.vast"
     assert captured["request"].container is None
+
+
+def test_one_containers_cache_hit_is_not_the_requests(monkeypatch):
+    """The reported bug: `cached` was whichever value the primary container happened to have.
+
+    A scenario image already built and a `sut` image still building was reported as
+    ``cached: true`` with "nothing to wait for" -- and the caller went straight on to exec in
+    a `sut` image that did not exist yet.
+    """
+    # The service aggregates (see test_image_build_core::primary_build_ref); what this tool
+    # owes the caller is a wait that names the build still running and not the cached one.
+    _stub_build(monkeypatch, SimpleNamespace(
+        build_id="b-scenario", tag="scenario", cached=False,
+        builds={"scenario": "b-scenario", "sut": "b-sut"},
+        cached_builds={"scenario": True, "sut": False}))
+    out = cc.build_experiment_image(workspace_id="ws1")
+    assert out["cached"] is False, "a request is a cache hit only when nothing has to build"
+    assert out["cached_builds"] == {"scenario": True, "sut": False}
+    assert "b-sut" in out["next_step"]
+    assert "b-scenario" not in out["next_step"]
+
+
+def test_a_service_without_per_container_verdicts_waits_on_everything(monkeypatch):
+    """An older service sends no ``cached_builds``. Waiting on all of them is the safe read;
+    trusting the single aggregate flag is what went wrong."""
+    _stub_build(monkeypatch, SimpleNamespace(
+        build_id="b-scenario", tag="scenario", cached=False,
+        builds={"scenario": "b-scenario", "sut": "b-sut"}))
+    out = cc.build_experiment_image(workspace_id="ws1")
+    assert out["cached_builds"] == {}
+    assert "b-scenario" in out["next_step"] and "b-sut" in out["next_step"]
 
 
 def test_get_image_build_status_surfaces_structured_error(monkeypatch):

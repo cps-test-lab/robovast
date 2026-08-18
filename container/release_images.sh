@@ -32,7 +32,7 @@ BASEDIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT=""
 PUSH=""
 ROS_DISTRO="jazzy"
-ROQSIM_REF="robovast"
+ROQSIM_REF="main"
 ROQSIM_SRC=""
 # `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
 # immutable set, which is how a deployment is pinned: ROBOVAST_PROJECT_TAG=<stamp>.

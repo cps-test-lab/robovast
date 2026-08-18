@@ -68,10 +68,12 @@ def _lane(store=None, namespace="ns"):
                         s3_access_key=_S3[1], s3_secret_key=_S3[2])
 
 
-def _manifest(spec, deadline=300, namespace="ns", owner=None, prefix=None):
+def _manifest(spec, deadline=300, namespace="ns", owner=None, prefix=None,
+              pull_secret=""):
     from robovast.execution.cluster_execution.kube_exec_lane import _pod_manifest
     return _pod_manifest(spec, deadline, namespace, owner, _S3,
-                         "robovast-image-builds", prefix or exec_prefix(namespace))
+                         "robovast-image-builds", prefix or exec_prefix(namespace),
+                         pull_secret=pull_secret)
 
 
 # -- pinned live-cluster bugs -------------------------------------------------
@@ -298,3 +300,61 @@ def test_the_store_is_built_lazily_not_at_lane_construction():
     lane._require_store()
     lane._require_store()
     assert built == [1], "built once, then cached"
+
+
+# -- pulling a private experiment image ---------------------------------------
+#
+# The exec pod runs the experiment image, which on this lane lives in the deployment's own
+# registry and may be private. The scene aux pod had exactly this omission and its fix
+# records why it is easy to miss: `imagePullPolicy: IfNotPresent` means a node that already
+# cached the image succeeds without a credential, so the failure waits for a fresh node.
+
+
+def test_the_pod_can_pull_a_private_image(tmp_path):
+    spec = _manifest(_spec(tmp_path), pull_secret="robovast-registry")["spec"]
+    assert spec["imagePullSecrets"] == [{"name": "robovast-registry"}]
+
+
+def test_no_secret_means_no_pull_secrets_key(tmp_path):
+    """A public image legitimately needs none, and an empty list is not the same as absent:
+    Kubernetes rejects a nameless entry."""
+    assert "imagePullSecrets" not in _manifest(_spec(tmp_path))["spec"]
+
+
+def test_the_lane_passes_the_secret_it_was_built_with(tmp_path, monkeypatch):
+    """The manifest is only right if the lane actually hands it over."""
+    from robovast.execution.cluster_execution import kube_exec_lane as kel
+    seen = {}
+    monkeypatch.setattr(kel, "_pod_manifest",
+                        lambda *a, **kw: seen.update(kw) or {"metadata": {"name": "p"}})
+    # Patched where it is defined: start_held imports it inside the function, so replacing
+    # a name on the lane's module would not reach it.
+    from robovast.execution.cluster_execution import kube_client
+    monkeypatch.setattr(kube_client, "wait_pod_ready", lambda *a, **kw: None)
+    lane = KubeExecLane("ns", storage=_FakeStore(), bucket="b", s3_endpoint=_S3[0],
+                        s3_access_key=_S3[1], s3_secret_key=_S3[2],
+                        pull_secret="robovast-registry")
+
+
+    class _Core:
+        def create_namespaced_pod(self, namespace, manifest):
+            return None
+
+        def delete_namespaced_pod(self, *a, **kw):
+            from kubernetes.client.exceptions import ApiException
+            raise ApiException(status=404, reason="Not Found")
+
+    lane._core = _Core()
+    lane.start_held(_spec(tmp_path), 300)
+    assert seen["pull_secret"] == "robovast-registry"
+
+
+def test_the_cluster_service_gives_its_exec_lane_the_pull_secret():
+    """Source-inspection, as with the kube context above: constructing a real lane needs a
+    cluster. What matters is that the wiring exists at all -- it did not, and the image the
+    exec pod runs is precisely the private one."""
+    import inspect
+
+    from robovast.execution.cluster_execution.cluster_service import ClusterService
+    source = inspect.getsource(ClusterService._exec_lane)
+    assert "pull_secret=self._registry_pull_secret()" in source

@@ -215,7 +215,15 @@ def _submit_stubs(cs, monkeypatch, storage):
     """Stub a submit down to its context handling (no registry, no kube, no docker)."""
     from robovast.execution.cluster_execution import cluster_image_build
     monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
-    monkeypatch.setattr(cs, "_resolve_build_ref", lambda *a: ("reg/foo:h", "h"))
+    # The ref now comes from the lane's image store -- one resolution shared by the submit
+    # and by every later "is it there?", so the two cannot disagree about this image's name.
+    from robovast.service.image_store import ImageRef
+    # Installing a store is how a lane supplies one, so a test supplies one the same way.
+    monkeypatch.setattr(
+        cs, "_image_store",
+        types.SimpleNamespace(ref_for=lambda spec_, dir_: ImageRef(
+            ref="reg/foo:h", identity="build:foo@h", build_id="imgbuild-foo-h",
+            image_hash="h")), raising=False)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _batch_with())
     monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
@@ -238,7 +246,7 @@ def test_submit_sweeps_even_when_the_image_is_already_built(cs, monkeypatch):
     would otherwise stop cleaning up the day it started hitting the cache."""
     storage = _FakeStorage(["image-builds/imgbuild-orphan-1/Dockerfile"])
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
-    monkeypatch.setattr(cs, "_registry_has_image", lambda ref, reg: True)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: True)
 
     assert cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt").cached
     assert storage.deleted == [("bkt", context_prefix("imgbuild-orphan-1"))]
@@ -250,7 +258,7 @@ def test_a_build_is_in_flight_before_its_context_is_staged(cs, monkeypatch):
     from robovast.execution.cluster_execution import cluster_image_build
     storage = _FakeStorage()
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
-    monkeypatch.setattr(cs, "_registry_has_image", lambda ref, reg: False)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
     seen = {}
 
     def fake_stage(storage_client, bucket, prefix, project_dir, dockerfile):
@@ -278,7 +286,7 @@ def test_a_submit_that_dies_before_its_job_exists_takes_its_context_with_it(
     keep protecting it for the service's whole lifetime."""
     storage = _FakeStorage()
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
-    monkeypatch.setattr(cs, "_registry_has_image", lambda ref, reg: False)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
 
     class _Batch:
         def list_namespaced_job(self, namespace, label_selector=None):

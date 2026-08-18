@@ -92,6 +92,54 @@ class ImageBuildFailed(RuntimeError):
     include_traceback = False
 
 
+class ActionableError(Exception):
+    """An error that knows the one command that would move the caller forward.
+
+    The MCP surface already hands back a ``next_step`` on the paths that *succeed*
+    (``start_campaign``, ``build_experiment_image``) precisely because an answer carrying
+    only an id leaves "and now wait for it" to be remembered. A refusal is where the next
+    action is least obvious and most needed, and nothing carried one — so the hint rides on
+    the exception, and the MCP layer surfaces it beside ``error`` for whichever tool raised.
+
+    *next_step* is a literal command or tool call with the ids already filled in, or empty
+    when there is genuinely nothing obvious to do next. Empty is a real answer: a hint on
+    every reply is a field callers learn to skip.
+    """
+
+    include_traceback = False
+
+    def __init__(self, message: str, next_step: str = ""):
+        super().__init__(message)
+        self.next_step = next_step
+
+
+class ImageNotBuilt(ActionableError):
+    """Raised when a container's ``build:`` image is not on the lane's own image store.
+
+    Never built implicitly: a diagnostic exec that quietly became a multi-minute image
+    build would answer a question nobody asked. What separates this from a dead end is the
+    *state* — no build known, one running, one failed, or one that succeeded and whose
+    image has since gone — and :func:`~robovast.service.image_build.not_built_message`
+    turns each into a different :attr:`ActionableError.next_step`.
+    """
+
+
+class ImageStoreUnavailable(RuntimeError):
+    """Raised when an image store could not be asked whether an image is there.
+
+    "I could not check" and "it is not there" are different answers, and conflating them
+    is a bug this class exists to prevent: the local store used to swallow a missing docker
+    CLI into ``image_exists() -> False``, so a service running where no docker daemon
+    exists reported every built image as unbuilt — a missing *dependency* reported as a
+    missing *artifact*, which cost a real investigation.
+
+    A ``RuntimeError`` for the same reason :class:`ObjectStoreUnreachableError` is one: the
+    readers that already degrade on one keep working unchanged.
+    """
+
+    include_traceback = False
+
+
 def missing_input_error(entries, *, hint=True):
     """Build a :class:`CampaignConfigError` for missing project input files.
 

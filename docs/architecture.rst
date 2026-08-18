@@ -972,10 +972,56 @@ file, not its environment). The service drives several campaigns concurrently, s
 project for the same reason: the composed data carries resolved refs, so an entry composed
 against one project must not satisfy a request for another.
 
+**The image build is a second resolution point, threaded the same way.** A build spec is not
+read from the composed campaign data — it is re-derived from the raw config, because it has to
+exist *before* composition (the images are what the campaign then runs in). So
+``extract_build_specs`` calls ``apply_backend`` itself, and therefore has to resolve what that
+contributes itself: ``image_project`` rides ``CreateCampaignRequest`` → ``RunOptions`` →
+``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs`` on both lanes.
+Missing this was asymmetric, which is what hid it: a container taking the default member was
+resolved on the composition path, so ``sut`` and ``scenario`` built correctly while the one
+container declaring a ``backend:`` carried ``family:robovast-roqsim`` into its Dockerfile's
+``FROM``. Docker read that as repository ``family``, tag ``robovast-roqsim``, and the campaign
+died in BuildKit with a registry ``insufficient_scope`` — a credentials error three layers from
+the cause. ``generate_dockerfile`` now refuses either prefix outright, so the promise that an
+unresolved ref fails loudly holds for a build and not only for a pod spec.
+
 Resolving into the campaign data — rather than at each point of use — is what makes
 ``_execution/execution.yaml`` record a concrete image. Postprocessing reads that record to
 choose the image it deserializes rosbags in, so a symbolic ref surviving there would be a
 ``family:`` string handed to Kubernetes as an image name.
+
+**Where an image lives is a lane's answer, not a caller's.** Everything above is about the
+*recipe* — which containers build and what their inputs hash to, one derivation shared by
+both lanes. Where the resulting image ends up is the other half, and it is the half that had
+no name: :class:`~robovast.service.image_store.ImageBuildStore`, with the local docker daemon
+and the deployment's registry as its two implementations. A lane overrides exactly one
+factory (``_images``); every question asked of a store — what is this image called here, is
+it actually here — is then written once.
+
+That seam is the fix for a class of bug rather than one bug. Before it, the local store was a
+class and the cluster's identical responsibilities were nineteen methods of
+``ClusterService``, so ``self._image_builds`` existed on **both** lanes and quietly answered
+wrongly on one. Every cross-lane concern needed an override someone had to remember, and one
+was forgotten: ``exec_in_container`` ran ``docker image inspect`` inside a service pod that
+has no docker, and reported every built image in the registry as unbuilt. Two rules the ABC
+now carries, because both were learned the expensive way:
+
+* ``present()`` **raises when it cannot tell.** "I could not check" and "it is not there"
+  are different answers; collapsing them is what turned a missing *dependency* into a
+  missing *artifact*, three layers from the cause. The build path wants the opposite trade
+  and says so explicitly (``_registry_has_image``): uncertainty means rebuild, because a
+  redundant push is cheap and a wrong cache hit leaves pods in ``ImagePullBackOff``.
+* only ``ImageRef.identity`` may cross the API boundary. The concrete ref is a docker tag on
+  one lane and a registry-qualified ref on the other, and the second would carry registry
+  knowledge to a client that must not have it — so there is exactly one field that is
+  allowed out, rather than a rule to remember at each return.
+
+A diagnostic against a **campaign** does not use a store at all: the campaign recorded which
+image each role ran on, and ``campaign_role_image`` returns those bytes. Re-deriving a hash
+from the campaign's frozen ``_config/`` cannot work anyway — that snapshot holds the ``.vast``
+and the run files, not the build inputs — and the recording is the better answer regardless,
+because a diagnostic about a run should run what the run ran.
 
 **The pod env is the site default; the request overrides it.** That ordering is the whole
 reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables
