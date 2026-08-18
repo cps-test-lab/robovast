@@ -105,12 +105,41 @@ _PLUGIN_GROUPS: dict[str, dict] = {
         ),
         "loader_module": "robovast.results_processing.metadata",
     },
+    "robovast.panel_types": {
+        "description": (
+            "Web panels a ``.vast`` may declare. One group for both surfaces, told apart by each "
+            "class's ``SURFACE``: ``run`` panels go under "
+            "``visualization.results.run_view.panels`` and ``config`` panels under "
+            "``visualization.config.panels`` -- see the ``surface`` field of each row."
+        ),
+        "loader_module": "robovast.common.config",
+    },
 }
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+#: Panel types are one group covering two surfaces, so a row that does not say which is ambiguous
+#: exactly where it matters: naming a run panel in the config column is refused, and vice versa.
+_PANEL_TYPES_GROUP = "robovast.panel_types"
+
+
+def _panel_surface(ep) -> str | None:
+    """The ``SURFACE`` a panel plugin declares, or the default when it declares none.
+
+    Best-effort like every other reflection here: a plugin that fails to import gets ``None``
+    rather than a guess, because "run" would be a wrong answer rather than a missing one.
+    """
+    try:
+        from robovast.common.config import \
+            DEFAULT_PANEL_SURFACE  # pylint: disable=import-outside-toplevel
+        return getattr(ep.load(), "SURFACE", DEFAULT_PANEL_SURFACE)
+    except Exception:  # noqa: BLE001 - a broken plugin must not break the listing
+        logger.debug("could not read SURFACE from panel plugin %r", ep.name)
+        return None
+
 
 def _doc_from_obj(obj, max_lines: int = 1) -> str | None:
     """Return up to *max_lines* lines of *obj*'s docstring, or ``None``.
@@ -179,8 +208,10 @@ def list_plugins(group: str = "", query: str = "") -> dict:
         for ep in entry_points(group=grp):
             if query and not _matches(ep.name, query):
                 continue
-            records.append({"group": grp, "name": ep.name, "class": ep.value,
-                            "doc": _load_doc(ep)})
+            record = {"group": grp, "name": ep.name, "class": ep.value, "doc": _load_doc(ep)}
+            if grp == _PANEL_TYPES_GROUP:
+                record["surface"] = _panel_surface(ep)
+            records.append(record)
     records.sort(key=lambda r: (r["group"], r["name"]))
     return {"plugins": records, "total": len(records)}
 
@@ -217,6 +248,8 @@ def get_plugin_details(group: str, name: str, limit: int = 0) -> dict:
         "class": ep.value,
         "doc": _doc_from_obj(obj, limit) if obj is not None else None,
     }
+    if group == _PANEL_TYPES_GROUP:
+        details["surface"] = _panel_surface(ep)
     parameters = schema_from_object(obj) if obj is not None else None
     if parameters is not None:
         details["parameters"] = parameters

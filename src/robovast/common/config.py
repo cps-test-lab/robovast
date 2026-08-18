@@ -18,7 +18,7 @@ import logging
 import math
 import re
 from functools import lru_cache
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -495,7 +495,7 @@ class PlotSpec(BaseModel):
 #: ``frontend/ui/src/panels/run_view``). Kept here (rather than only in the UI) so the ``.vast``
 #: fails fast on a typo instead of silently dropping a panel. Package-provided panels (e.g.
 #: ``robovast_nav``'s ``costmap``) register in the ``robovast.panel_types`` entry-point
-#: group and are accepted in addition to these (see ``PanelConfig._known_type``).
+#: group and are accepted in addition to these (see ``RunViewPanelConfig._known_type``).
 BUILTIN_PANEL_TYPES = frozenset({
     "playback", "scenario_tree", "scene", "scene3d", "timeseries", "state", "vega", "log",
     "camera",
@@ -521,6 +521,20 @@ PANEL_TYPES_GROUP = "robovast.panel_types"
 #: panel that existed before the config view is one, so an unmarked third-party panel keeps
 #: working unchanged.
 DEFAULT_PANEL_SURFACE = "run"
+
+#: The other surface: the Config tab's third column. Named rather than spelled ``"config"`` at each
+#: use, because three separate things key on it -- the type check, the served schema and the panel
+#: plugins' own ``SURFACE`` -- and a typo in one of them reads as "no such panel type".
+CONFIG_PANEL_SURFACE = "config"
+
+#: How each surface is named in a message, and the ``.vast`` block a panel of it is declared in.
+#: Two mappings rather than string arithmetic at each site, because both halves are read by the
+#: "wrong surface" diagnosis, which exists to point an author at the right block.
+_PANEL_SURFACE_LABELS = {DEFAULT_PANEL_SURFACE: "run-view", CONFIG_PANEL_SURFACE: "config-view"}
+_PANEL_SURFACE_BLOCKS = {
+    DEFAULT_PANEL_SURFACE: "visualization.results.run_view.panels",
+    CONFIG_PANEL_SURFACE: "visualization.config.panels",
+}
 
 
 @lru_cache(maxsize=None)
@@ -586,7 +600,8 @@ def flatten_panel_shorthand(v):
     return v
 
 
-def panel_json_schema(core_schema, handler):
+def panel_json_schema(core_schema, handler, surface: str = DEFAULT_PANEL_SURFACE,
+                      builtins: frozenset = frozenset()):
     """JSON Schema for a panel, reflecting the shorthand :func:`flatten_panel_shorthand` takes.
 
     The shorthand accepts shapes the post-validation model cannot express: a bare string (the
@@ -594,9 +609,22 @@ def panel_json_schema(core_schema, handler):
     schema would require a literal ``type``, so the web editor flags valid YAML as
     ``Missing property "type"``. The shorthand branch keeps the remaining panel properties, so
     the editor still completes and validates ``title`` & co. inside it.
+
+    *surface* and *builtins* put the surface's **vocabulary** in the schema, as an ``enum`` of
+    valid ``type`` values. Without it the vocabulary exists only inside a pydantic field validator,
+    which no JSON Schema consumer can see -- so the editor could not complete a panel type, and an
+    agent reading ``get_config_schema`` was told nothing at all. It is the installed set, from the
+    same entry points :func:`check_panel_type` validates against, so the schema and the validator
+    cannot disagree.
     """
     default = handler(core_schema)
     props = {k: v for k, v in default.get('properties', {}).items() if k != 'type'}
+    known = sorted(builtins | panel_type_names(surface) | {CUSTOM_PANEL_TYPE})
+    if known:
+        default = {**default,
+                   'properties': {**default.get('properties', {}),
+                                  'type': {**default.get('properties', {}).get('type', {}),
+                                           'enum': known}}}
     return {
         'anyOf': [
             {'type': 'string'},
@@ -605,6 +633,7 @@ def panel_json_schema(core_schema, handler):
                 'type': 'object',
                 'minProperties': 1,
                 'maxProperties': 1,
+                'propertyNames': {'enum': known} if known else {},
                 'additionalProperties': {
                     'anyOf': [
                         {'type': 'null'},
@@ -631,12 +660,26 @@ def check_panel_type(value: str, builtins: frozenset, surface: str, allow_custom
     allowed = builtins | panel_type_names(surface)
     if allow_custom:
         allowed = allowed | {CUSTOM_PANEL_TYPE}
-    if value not in allowed:
-        where = "config-view" if surface == "config" else "run-view"
-        raise ValueError(
-            f"unknown {where} panel type {value!r}; expected one of {', '.join(sorted(allowed))} "
-            f"(package panels require the providing plugin, e.g. 'robovast_nav', installed)")
-    return value
+    if value in allowed:
+        return value
+
+    where = _PANEL_SURFACE_LABELS[surface] if surface in _PANEL_SURFACE_LABELS else surface
+    # A panel that exists on the *other* surface is the likeliest mistake here, and "unknown panel
+    # type ... (requires the providing plugin installed)" is the worst possible answer to it: the
+    # plugin IS installed, and it ships exactly the panel that was named. Say where it belongs
+    # instead. Membership is tested rather than assumed disjoint -- ``scene3d`` is valid on both.
+    for other, label in _PANEL_SURFACE_LABELS.items():
+        if other == surface:
+            continue
+        if value in (BUILTIN_PANEL_TYPES if other == DEFAULT_PANEL_SURFACE
+                     else BUILTIN_CONFIG_PANEL_TYPES) | panel_type_names(other):
+            raise ValueError(
+                f"{value!r} is a {label} panel, not a {where} one; declare it under "
+                f"{_PANEL_SURFACE_BLOCKS[other]}. The {where} panels are: "
+                f"{', '.join(sorted(allowed))}")
+    raise ValueError(
+        f"unknown {where} panel type {value!r}; expected one of {', '.join(sorted(allowed))} "
+        f"(package panels require the providing plugin, e.g. 'robovast_nav', installed)")
 
 
 #: The panel type for a user-authored panel shipped as a built bundle next to the
@@ -645,7 +688,7 @@ def check_panel_type(value: str, builtins: frozenset, surface: str, allow_custom
 CUSTOM_PANEL_TYPE = "custom"
 
 #: The panel type that renders an author-supplied Vega-Lite spec over a ``data.db`` table. Its
-#: ``vega_lite``/``source`` bindings are validated by ``PanelConfig._vega_needs_bindings``.
+#: ``vega_lite``/``source`` bindings are validated by ``RunViewPanelConfig._vega_needs_bindings``.
 VEGA_PANEL_TYPE = "vega"
 
 #: The row ceiling every JSON data query is clamped to
@@ -657,7 +700,7 @@ DATA_QUERY_ROW_CAP = 5000
 def panel_source_problems(props):
     """``(field suffix, message)`` for a panel's row-cap and thinning bindings.
 
-    Shared by :meth:`PanelConfig._vega_needs_bindings` and ``config_validation``: the two report
+    Shared by :meth:`RunViewPanelConfig._vega_needs_bindings` and ``config_validation``: the two report
     differently (raise on the first vs. collect every one), but there is no reason for them to
     disagree about what is wrong.
 
@@ -739,31 +782,31 @@ class PanelPosition(BaseModel):
         return self
 
 
-class PanelConfig(BaseModel):
-    """One panel of the web run-view. ``type`` selects the panel plugin; the panel's
-    own data bindings (e.g. ``layers``/``source`` naming ``data.db`` tables) are carried
-    as extra keys (``extra='allow'``) and interpreted by that plugin.
+class PanelConfigBase(BaseModel):
+    """What every panel declaration shares, on whichever surface it is declared.
 
-    ``type`` is one of the core built-ins (:data:`BUILTIN_PANEL_TYPES`), a package-provided
-    panel registered in the :data:`PANEL_TYPES_GROUP` entry-point group, or
-    :data:`CUSTOM_PANEL_TYPE` for a user-authored panel shipped as a built bundle next to
-    the ``.vast``. A ``custom`` panel names its bundle via ``remote`` (a path relative to
-    the ``.vast`` directory, to the bundle dir or its ``remoteEntry.js``) and ``module``
-    (the exposed Module-Federation module, default ``./panel``)."""
+    A panel is named by ``type`` and configured by *bindings* -- extra keys this model keeps
+    (``extra='allow'``) for the panel plugin to interpret. Only the layout grammar differs between
+    surfaces, so it is the subclasses that add fields: the config column has a ``height``, the run
+    view has anchors and drag/resize.
+
+    Subclasses set :attr:`SURFACE` and :attr:`BUILTINS`; everything keyed on those -- the type
+    check and its diagnosis, the shorthand, the JSON Schema the editor completes from -- is written
+    once here. A further surface is then a subclass and two class attributes, which is the point:
+    the three things that consult the surface must not be written per surface and drift.
+    """
+
     model_config = ConfigDict(extra='allow')
+
+    #: Which surface this declaration belongs to (``"run"`` / ``"config"``), matching a panel
+    #: plugin class's own ``SURFACE``.
+    SURFACE: ClassVar[str] = DEFAULT_PANEL_SURFACE
+    #: The core panel types valid on this surface; package types come from the entry points.
+    BUILTINS: ClassVar[frozenset] = frozenset()
+
     type: str
     title: Optional[str] = None
-    position: Optional[PanelPosition] = None
-    #: Whether the panel's free edge/corner can be dragged to resize it in the run-view.
-    #: Defaults to on for every panel type that does not turn it off (the docked playback
-    #: bar, the full-view 3D background).
-    resizable: Optional[bool] = None
-    minimizable: Optional[bool] = None
-    minimized: Optional[bool] = None
     hidden: Optional[bool] = None
-    #: Lock the panel's geometry: the run-view lets a panel be dragged by its title bar and
-    #: resized by its free edge, and ``fixed: true`` opts this one out of both.
-    fixed: Optional[bool] = None
     #: For ``type: custom`` -- path (relative to the ``.vast``) to the built panel bundle.
     remote: Optional[str] = None
     #: For ``type: custom`` -- the exposed Module-Federation module to render.
@@ -776,13 +819,13 @@ class PanelConfig(BaseModel):
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema, handler):
-        return panel_json_schema(core_schema, handler)
+        return panel_json_schema(core_schema, handler, surface=cls.SURFACE,
+                                 builtins=cls.BUILTINS)
 
     @field_validator('type')
     @classmethod
     def _known_type(cls, v):
-        return check_panel_type(v, BUILTIN_PANEL_TYPES, DEFAULT_PANEL_SURFACE,
-                                allow_custom=True)
+        return check_panel_type(v, cls.BUILTINS, cls.SURFACE, allow_custom=True)
 
     @model_validator(mode='after')
     def _custom_needs_remote(self):
@@ -796,6 +839,33 @@ class PanelConfig(BaseModel):
             raise ValueError(
                 f"'remote'/'module' are only valid on a 'custom' panel, not {self.type!r}")
         return self
+
+
+class RunViewPanelConfig(PanelConfigBase):
+    """One panel of the web **run-view**: the free-floating, clock-driven surface.
+
+    ``type`` is one of the core built-ins (:data:`BUILTIN_PANEL_TYPES`), a package-provided
+    panel registered in the :data:`PANEL_TYPES_GROUP` entry-point group, or
+    :data:`CUSTOM_PANEL_TYPE` for a user-authored panel shipped as a built bundle next to
+    the ``.vast``. The panel's own data bindings (e.g. ``layers``/``source`` naming ``data.db``
+    tables) are extra keys, interpreted by that plugin.
+
+    Everything a config-view panel also has lives on :class:`PanelConfigBase`; what is here is
+    this surface's layout grammar -- anchors, drag and resize -- plus the ``vega`` binding check."""
+
+    SURFACE: ClassVar[str] = DEFAULT_PANEL_SURFACE
+    BUILTINS: ClassVar[frozenset] = BUILTIN_PANEL_TYPES
+
+    position: Optional[PanelPosition] = None
+    #: Whether the panel's free edge/corner can be dragged to resize it in the run-view.
+    #: Defaults to on for every panel type that does not turn it off (the docked playback
+    #: bar, the full-view 3D background).
+    resizable: Optional[bool] = None
+    minimizable: Optional[bool] = None
+    minimized: Optional[bool] = None
+    #: Lock the panel's geometry: the run-view lets a panel be dragged by its title bar and
+    #: resized by its free edge, and ``fixed: true`` opts this one out of both.
+    fixed: Optional[bool] = None
 
     @model_validator(mode='after')
     def _vega_needs_bindings(self):
@@ -851,51 +921,22 @@ def _last_member_may_omit_size(panels, describe, size_name: str, of_what: str):
             )
 
 
-class ConfigPanelConfig(BaseModel):
+class ConfigPanelConfig(PanelConfigBase):
     """One panel of the web **config view** -- the Config tab's third column, which shows what
     a selected generated configuration contains.
 
     Same shorthand and the same "extra keys are this panel's data bindings" rule as
-    :class:`PanelConfig`, but a much smaller layout grammar: the config view is one column, so a
-    panel declares only its ``height`` (pixels, or a ``"35%"`` string). There are no anchors and
-    no drag/resize -- the column is the campaign author's declared order.
+    :class:`RunViewPanelConfig`, but a much smaller layout grammar: the config view is one column,
+    so a panel declares only its ``height``. There are no anchors and no drag/resize -- the column
+    is the campaign author's declared order.
     """
-    model_config = ConfigDict(extra='allow')
-    type: str
-    title: Optional[str] = None
+
+    SURFACE: ClassVar[str] = CONFIG_PANEL_SURFACE
+    BUILTINS: ClassVar[frozenset] = BUILTIN_CONFIG_PANEL_TYPES
+
     #: Pixels (int) or a percentage of the column (``"35%"``). Omit on the last panel to give it
     #: whatever the ones above it left over.
     height: Optional[int | str] = None
-    hidden: Optional[bool] = None
-    #: For ``type: custom`` -- path (relative to the ``.vast``) to the built panel bundle.
-    remote: Optional[str] = None
-    #: For ``type: custom`` -- the exposed Module-Federation module to render.
-    module: Optional[str] = None
-
-    @model_validator(mode='before')
-    @classmethod
-    def _flatten_shorthand(cls, v):
-        return flatten_panel_shorthand(v)
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema, handler):
-        return panel_json_schema(core_schema, handler)
-
-    @field_validator('type')
-    @classmethod
-    def _known_type(cls, v):
-        return check_panel_type(v, BUILTIN_CONFIG_PANEL_TYPES, "config", allow_custom=True)
-
-    @model_validator(mode='after')
-    def _custom_needs_remote(self):
-        if self.type == CUSTOM_PANEL_TYPE and not self.remote:
-            raise ValueError(
-                "a 'custom' panel must set 'remote' (path to its built bundle relative to "
-                "the .vast); 'module' is optional (default './panel')")
-        if self.type != CUSTOM_PANEL_TYPE and (self.remote or self.module):
-            raise ValueError(
-                f"'remote'/'module' are only valid on a 'custom' panel, not {self.type!r}")
-        return self
 
 
 class ConfigViewConfig(BaseModel):
@@ -921,7 +962,7 @@ class RunViewConfig(BaseModel):
     snapshot ``.vast``; each panel reads existing ``data.db`` tables."""
     model_config = ConfigDict(extra='forbid')
     timeline: Optional[TimelineConfig] = None
-    panels: Optional[list[PanelConfig]] = Field(default_factory=list)
+    panels: Optional[list[RunViewPanelConfig]] = Field(default_factory=list)
 
     @field_validator('panels', mode='before')
     @classmethod

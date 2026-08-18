@@ -460,7 +460,7 @@ def _camera_panel_problems(raw):
 def _vega_panel_problems(i, props):
     """The ``vega`` panel's bindings, as a collect-all check.
 
-    Mirrors ``PanelConfig._vega_needs_bindings``; the duplication is the point — the schema
+    Mirrors ``RunViewPanelConfig._vega_needs_bindings``; the duplication is the point — the schema
     raises on the first bad panel, this reports every one of them in a single report."""
     from robovast.common.config import \
         panel_source_problems  # pylint: disable=import-outside-toplevel
