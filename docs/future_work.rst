@@ -264,3 +264,205 @@ and deletes code, so it is worth an afternoon's trial before deciding.
 
 If it holds, the port-forward path in ``bucket_ops`` and the reconnect machinery above can
 go with it.
+
+.. _future-node-types:
+
+Node types: per-pool quota, and how a campaign should express what a run needs
+------------------------------------------------------------------------------
+
+**Motivation.** A cluster is modelled as one homogeneous pool. ``apply_kueue_queues``
+renders a single ``default-flavor`` and a single ``ClusterQueue`` whose ``nominalQuota``
+comes from :func:`get_cluster_allocatable_resources` — the **sum** of every node's
+allocatable CPU and memory. On nodes of one shape that is correct. On a mixed cluster it is
+arithmetic fiction: two 48-core nodes plus three 8-core nodes report 120 cores, so a
+campaign reserving 8 cores per run has 15 runs admitted, of which only 11 fit the large
+nodes, while an 8-core request does not fit an 8-core node at all once ``kubelet`` and the
+DaemonSets have taken their cut. The remainder sit ``Pending`` and read as a scheduler
+fault. ``execution.kubernetes.jobs.node_labels`` is the only lever today, and it is
+all-or-nothing: it confines the whole cluster's jobs to one pool.
+
+**The part that is clear.** Declaring the pools in the config the operator names with
+``vast -V <file> exec cluster setup`` — one ``ResourceFlavor`` per node type, each with its
+own ``nominalQuota``, listed in one ``ClusterQueue`` in preference order — is a
+straightforward extension of what is already there, and Kueue then places by fit and copies
+the assigned flavor's ``nodeLabels`` onto the admitted pod. Quota per type would default to
+the allocatable sum *over the nodes carrying that type's labels*, so the derivation is the
+one already implemented, applied per label set rather than cluster-wide. A type whose
+labels match no node has to be a setup error: a flavor no job can land on is precisely the
+failure :func:`verify_kueue_admission_ready` exists to catch. With no node types declared
+the rendered YAML must stay byte-identical, so existing clusters need no re-``setup``.
+
+**The part that is not decided: where a per-type reservation is written, and by whom.**
+The reservation a run needs is a property of the *experiment* and belongs in the campaign's
+``.vast`` (``execution.containers.<name>.resources``); which pools exist is a property of
+the *cluster*. Per-node-type reservations sit exactly on that seam, and both placements
+have a real cost:
+
+* In the campaign ``.vast`` — the author gains full control, but every author, including an
+  LLM authoring a sweep over MCP, now has to know the cluster's pool names to write a
+  reservation. Performance and placement detail leaks into the file that should describe
+  only the experiment. The existing per-cluster list form
+  (``cpu: [{gke_…: 4}, {minikube: 8}]``, resolved by
+  :func:`~robovast.execution.cluster_execution.cluster_context.resolve_resources`) is the
+  precedent, and it is already the least agent-friendly corner of the schema.
+* Cluster-side only — the campaign stays clean, but the operator is silently rewriting what
+  an experiment reserved, which for a reproduction study changes the measurement, not just
+  its cost.
+
+**A ratio, and what would have to be true for it to work.** The idea worth exploring is that
+the campaign declares **one** reservation, against a reference node type, and each node type
+carries a scalar factor relative to it; the service scales the reservation for whichever pool
+a job is placed on. Authors keep writing one number, operators keep describing their
+hardware once, and no pool name appears in a campaign file. Whether a single scalar can carry
+that is an open question, and a testable one:
+
+* A pod's requests are fixed **before** Kueue assigns a flavor and are never rewritten
+  afterwards, so a scaled request forces the service to choose the type and stamp the
+  matching ``nodeSelector`` itself. Placement stops being purely Kueue's decision.
+* One factor per node type assumes every container scales the same way. They do not: a
+  MuJoCo step loop is largely bound by one core's speed, while a Nav2 planner spreads across
+  several — so the honest factor may have to be per container, or per resource (core count
+  versus per-core speed), which is where the simplicity the idea was bought for goes.
+* Scaling a reservation **down** for a smaller pool can change the result, not only the
+  runtime: a simulation given fewer cores can drop below realtime pacing. A factor is a
+  statement about *throughput*, and using it as one about *fidelity* is the failure mode to
+  guard.
+* A scaled request that no node in its pool can satisfy has to fail loudly at launch rather
+  than produce a workload that never admits.
+
+**Which software to measure it with** — the open question that gates the rest. Three
+candidates, in increasing fidelity to what we actually run:
+
+* Synthetic CPU benchmarks (``sysbench``, ``stress-ng``, ``coremark``). Cheap, standing, and
+  wrong where it matters: they measure the machine, not the simulator, so a factor derived
+  from them predicts sweep throughput only by luck.
+* A ``roqsim`` micro-benchmark — one fixed world, fixed seed, fixed duration, run headless
+  with no stack, reporting realtime factor. Cheap enough to run on every pool at setup, and
+  it measures the bottleneck that actually governs a campaign.
+* The substrate's own example campaigns (``configs/examples/basic_nav``,
+  ``growth_sim``, ``quadrotor_landing``) as reference workloads. Most faithful, and the only
+  way to learn whether *one* factor generalises across a sim-bound and a stack-bound
+  campaign.
+
+The experiment that would settle it: run one reference campaign on each pool, record wall
+time and realtime factor per run, derive the factor from the micro-benchmark, then check
+whether it predicts the other campaigns' throughput within a stated error band. If a single
+scalar holds across a sim-bound and a stack-bound campaign, the ratio design is sound; if it
+does not, the honest options are a per-container factor or dropping request scaling and
+keeping per-pool quota alone. Either way the measured factor belongs in a run's provenance
+beside ``instance_type``, since a campaign whose runs were placed by fit has runs on
+different hardware and any comparison has to group by it.
+
+**Adjacent, and smaller.** ``execution.kubernetes.control.node_labels`` is stale
+independently of all this: it was written for the per-campaign controller pod, which no
+longer exists (see :mod:`~robovast.execution.cluster_execution.cluster_service`), and today
+reaches only the MinIO storage pod — never the ``robovast-service`` Deployment that drives
+campaigns, and nothing at all on external-storage configs, which deploy no helper pod. Also
+noted while tracing it: ``vast exec cluster upgrade`` calls ``deploy_service`` without
+``registry_node``, so a hostPath registry loses the ``nodeSelector`` that keeps its blobs on
+one node's disk.
+
+
+.. _future-gpu-usage:
+
+Per-job GPU usage, and why device-wide sampling is not it
+---------------------------------------------------------
+
+**Motivation.** A campaign records what each run cost in CPU and memory — sampled at 1 Hz per
+process per container and consolidated into the ``resource_usage`` table (see
+:ref:`merged-run-log` for the sibling log path). Since simulation cameras render on the GPU
+(:ref:`cluster-gpu`), the same question is now open for the device: how much of it did *this
+job* use? That is what decides whether ``--gpu-replicas`` can be raised, and it is the one
+figure a GPU campaign cannot currently produce.
+
+**The requirement is job-wise, not node-wide.** This is the reason the obvious
+implementation was rejected rather than shipped.
+
+**What is cheaply available, and why it does not answer the question.**
+``nvidia-smi --query-gpu=memory.used,utilization.gpu`` is one 26 ms call and would slot into
+the existing sampler without difficulty. But both figures are whole-*device*: under
+time-slicing a single card carries up to ``--gpu-replicas`` tenants plus whatever else the
+node runs (a desktop session accounted for 337 MiB on ``node-02``). A row would be
+attributed per job — the sampler runs in the job's container, so ``config_name``, ``run_id``
+and ``container`` all come out right — while its *value* described the whole card. That
+answers "was the GPU saturated while my run went", not "what my run cost", and a row read in
+isolation a year later gives no hint which of the two it is.
+
+**Why per-job attribution is hard, established by measurement rather than assumption:**
+
+* ``nvidia-smi --query-compute-apps`` returns **nothing** for an offscreen GL renderer — it is
+  compute-only, and MuJoCo's EGL path is a graphics client. Per-process memory in MiB appears
+  only in the human-readable ``Processes`` table (``G`` rows), i.e. NVML's
+  ``nvmlDeviceGetGraphicsRunningProcesses``.
+* ``nvidia-smi pmon`` does list graphics processes with a type column, but its ``mem`` field is
+  a *percentage* of bandwidth, not a footprint.
+* NVML reports **host** PIDs. A container has its own PID namespace, so a process there cannot
+  recognise itself in that list, and there is no in-container mapping back. This is the actual
+  blocker, and it is not specific to us.
+
+**The tension worth stating plainly:** per-job GPU attribution and time-slicing pull against
+each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on hardware that has it — an
+RTX A2000 does not) makes a device figure exactly the job's figure and gives up the
+concurrency the replica count exists for. Time-slicing buys the concurrency and makes device
+*utilisation* meaningless per job, since the card interleaves contexts. Memory is the more
+tractable half: an allocation does belong to one context, so per-job GPU *memory* is
+attributable in principle and blocked only by the PID mapping above.
+
+**The path that would work.** A node-level agent — a privileged DaemonSet rather than
+in-container sampling — reads NVML where host PIDs are meaningful and correlates each PID to
+its pod through ``/proc/<pid>/cgroup``, which carries the pod UID and container ID. This is
+what NVIDIA's own ``dcgm-exporter`` does for per-pod GPU metrics, so the approach is proven;
+what it is not is "reuse the CPU/memory logging path", which is why it is a design decision
+and not an afternoon. Its output would still have to reach a run's rows, so the join from pod
+to ``(config_name, run_id)`` has to be designed too.
+
+Until then, the honest substitute is a **calibration campaign at** ``--gpu-replicas 1``: with
+one tenant the device figure *is* the per-job figure, measured once and reused, while real
+sweeps run time-sliced. Per-context memory has already been measured this way
+(:ref:`cluster-gpu`): 93 MiB for one 640×480 offscreen context, ~77 MiB marginal by the
+sixteenth.
+
+**Design work already done, worth keeping when this is finalised.**
+
+* **Process-level and system-level are different kinds of metric and want different tables.**
+  ``resource_usage`` is per-process by contract, and putting a device figure in it as a
+  synthetic ``__gpu__`` process would surface in the web UI's process list
+  (``frontend/ui/src/lib/campaignDetails.ts``) and be aggregated by ``advice.USAGE_SQL``
+  (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
+  ``system_usage`` table is the right shape, and the split should be structural so later
+  metrics of either kind have an obvious home.
+* **Make the new lane column-generic.** CSV → ``data.db`` already is: any ``*.csv`` in a run
+  directory becomes a table, columns are the union of row keys and types are inferred
+  (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
+  :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that
+  first appears in a later run. Only the sampler-CSV → per-run-CSV step is not:
+  :mod:`robovast.results_processing.resource_usage` names its columns in five places (its two
+  fieldname tuples, ``read_container_csv``'s row tuple, ``Tick.processes``, and the ``grouped``
+  accumulator). A slicer that carries every non-key column through verbatim would make a new
+  metric a one-line change in the sampler and nothing else — and would be the thing
+  process-level sampling could later migrate onto.
+* **Reuse the sampler and the slicing helpers.** One daemon should write both files:
+  :mod:`robovast.execution.data.monitor_resources` can derive the sibling path from its
+  ``argv[1]``, which leaves both entrypoint scripts — and the launch contract pinned by
+  ``tests/execution/test_resource_monitor_lanes.py`` — untouched. Per-run splitting,
+  ``in_window`` and the clock conversion all come from
+  :mod:`robovast.results_processing.run_slices`; its ``container_of`` is deliberately the one
+  place per-container artifact names are inverted, so a new filename is registered there.
+* **A probe registry, not a special case.** A probe is a callable returning
+  ``{metric: value}`` whose availability is decided once at startup, so an unavailable probe
+  contributes no columns and costs nothing. The GPU probe's availability test is
+  ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate without
+  configuration, because the container toolkit injects both per container: a CPU-only sidecar
+  has neither and simply does not sample.
+* **Sample the device at 5 s, not 1 Hz.** 26 ms per call is 2.6% of a core per container at
+  1 Hz, ~42% across sixteen concurrent GPU jobs — overhead charged to the very node whose
+  throughput the GPU work exists to improve. GPU memory of a running renderer is near
+  constant, so 5 s loses little. The existing loop already sleeps in 0.1 s increments to keep
+  SIGTERM prompt, so the slower cadence has to be a tick counter rather than a longer sleep.
+* **Emit** ``""`` **for a missing value, never** ``"N/A"``. One non-numeric value demotes its
+  whole column to ``TEXT`` campaign-wide (``csv_types.value_type``); an empty string becomes
+  ``NULL`` and contributes no type evidence. ``nvidia-smi`` returns ``[N/A]`` and
+  ``[Not Supported]`` for unsupported fields on some cards.
+* **If a device figure is ever recorded anyway**, record the concurrent GPU process count with
+  it. Counting the device's processes needs no PID matching, and it is what turns an
+  uninterpretable "1574 MiB" into "1574 MiB shared by sixteen renderers".
