@@ -250,7 +250,7 @@ baseline (the node's desktop session):
      - 77 MiB
 
 So the cost is **sub-linear** — the driver shares part of its allocation across contexts on
-one GPU — and 16 concurrent renderers used 13% of the card, with GPU utilisation at 45% while
+one GPU — and 16 concurrent renderers used 13% of the card, with GPU utilization at 45% while
 each rendered at 10 Hz. On this hardware VRAM is nowhere near the binding constraint: it is
 CPU quota that limits campaign width, which is why the default sits above that ceiling.
 

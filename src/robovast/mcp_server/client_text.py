@@ -10,7 +10,7 @@ This undoes it at the boundary where the escaped text arrives. It is deliberatel
 :func:`html.unescape`, which implements HTML5's error recovery and mangles ordinary
 prose:
 
-- No-semicolon references are recognised, so a URL's query string is destroyed --
+- No-semicolon references are recognized, so a URL's query string is destroyed --
   ``?a=1&param=2`` becomes ``?a=1\xb6m=2``.
 - A named reference matches by longest prefix, so ``&notit;`` becomes ``\xactit;``.
 

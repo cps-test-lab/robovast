@@ -341,7 +341,7 @@ def nav_get_obstacles(campaign_id: str, config_name: str) -> dict:
             shows them).
 
     Returns:
-        ``{obstacles, total}``, each ``{entity_name, model, x, y, yaw}`` — metres and
+        ``{obstacles, total}``, each ``{entity_name, model, x, y, yaw}`` — meters and
         radians — plus ``xacro_arguments`` where the configuration sets them.
         Or ``{error}``.
     """
@@ -714,7 +714,7 @@ def draw_map(
 ) -> Image:
     """Render the configuration's map with overlays — a trajectory, goals, obstacles.
 
-    All coordinates are world metres. Feed it points from ``nav_get_trajectory`` or
+    All coordinates are world meters. Feed it points from ``nav_get_trajectory`` or
     ``nav_get_obstacles``.
 
     Args:

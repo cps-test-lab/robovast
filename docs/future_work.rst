@@ -84,7 +84,7 @@ unaffected and stays for rich, code-driven analysis.
 Refocusing the MCP interface for a cluster-first service
 --------------------------------------------------------
 
-What is left of a running programme of work. The shared theme in every item below is a
+What is left of a running program of work. The shared theme in every item below is a
 **report that does not match reality** — a listing that omits campaigns that exist, a client
 timeout for work that succeeded. Each was found by using the interface rather than reading
 it.
@@ -270,7 +270,7 @@ go with it.
 Node types: per-pool quota, and how a campaign should express what a run needs
 ------------------------------------------------------------------------------
 
-**Motivation.** A cluster is modelled as one homogeneous pool. ``apply_kueue_queues``
+**Motivation.** A cluster is modeled as one homogeneous pool. ``apply_kueue_queues``
 renders a single ``default-flavor`` and a single ``ClusterQueue`` whose ``nominalQuota``
 comes from :func:`get_cluster_allocatable_resources` — the **sum** of every node's
 allocatable CPU and memory. On nodes of one shape that is correct. On a mixed cluster it is
@@ -341,7 +341,7 @@ candidates, in increasing fidelity to what we actually run:
   it measures the bottleneck that actually governs a campaign.
 * The substrate's own example campaigns (``configs/examples/basic_nav``,
   ``growth_sim``, ``quadrotor_landing``) as reference workloads. Most faithful, and the only
-  way to learn whether *one* factor generalises across a sim-bound and a stack-bound
+  way to learn whether *one* factor generalizes across a sim-bound and a stack-bound
   campaign.
 
 The experiment that would settle it: run one reference campaign on each pool, record wall
@@ -397,14 +397,14 @@ isolation a year later gives no hint which of the two it is.
 * ``nvidia-smi pmon`` does list graphics processes with a type column, but its ``mem`` field is
   a *percentage* of bandwidth, not a footprint.
 * NVML reports **host** PIDs. A container has its own PID namespace, so a process there cannot
-  recognise itself in that list, and there is no in-container mapping back. This is the actual
+  recognize itself in that list, and there is no in-container mapping back. This is the actual
   blocker, and it is not specific to us.
 
 **The tension worth stating plainly:** per-job GPU attribution and time-slicing pull against
 each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on hardware that has it — an
 RTX A2000 does not) makes a device figure exactly the job's figure and gives up the
 concurrency the replica count exists for. Time-slicing buys the concurrency and makes device
-*utilisation* meaningless per job, since the card interleaves contexts. Memory is the more
+*utilization* meaningless per job, since the card interleaves contexts. Memory is the more
 tractable half: an allocation does belong to one context, so per-job GPU *memory* is
 attributable in principle and blocked only by the PID mapping above.
 

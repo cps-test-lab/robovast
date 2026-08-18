@@ -226,7 +226,7 @@ CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
 """
 
 # 2 -> 3: the campaign's free-text description. ``name`` cannot carry it: it is an id
-# fragment (sanitised, no spaces — see ``campaign_id_for``), whereas this is the
+# fragment (sanitized, no spaces — see ``campaign_id_for``), whereas this is the
 # launch-time "what is this run for?" a caller passes to ``start_campaign``. Stored
 # beside the campaign it describes, so it survives a service restart and travels with a
 # downloaded results tree instead of living only in the launcher's memory.
@@ -331,7 +331,7 @@ class CampaignStore:
         else:
             for v in range(version, SCHEMA_VERSION):
                 self._conn.executescript(_MIGRATIONS[v])
-        # PRAGMA can't be parameterised; SCHEMA_VERSION is a constant we control.
+        # PRAGMA can't be parameterized; SCHEMA_VERSION is a constant we control.
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 

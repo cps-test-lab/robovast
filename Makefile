@@ -88,7 +88,10 @@ checklinks: venv
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."
 
-checkspelling: venv/.docs_installed
+# venv/.robovast_installed, not a docs-only sentinel: `pip install -e .[docs,test]`
+# above already brings in sphinxcontrib-spelling, and the venv/.docs_installed this
+# used to name had no rule anywhere -- so the target could not run at all.
+checkspelling: venv/.robovast_installed
 	. venv/bin/activate && GITHUB_REF_NAME=local GITHUB_REPOSITORY=cps-test-lab/robovast python3 -m sphinx -b html -b spelling -W docs $(LINKCHECKDIR)
 	@echo
 	@echo "Check finished. Report is in $(LINKCHECKDIR)."

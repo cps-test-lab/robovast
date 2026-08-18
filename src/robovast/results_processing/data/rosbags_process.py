@@ -232,7 +232,7 @@ def quat_to_rpy(x: float, y: float, z: float, w: float) -> Tuple[float, float, f
 #: **Quaternion, never Euler.** roll/pitch/yaw is lossy the moment a body leaves the plane -- a
 #: drone, a tilting arm, a robot on a ramp -- and this was the one place the quaternion the bag
 #: already carries got thrown away. ``orientation.yaw`` still exists downstream for the 2D
-#: consumers: it is derived at ingest and labelled as the projection it is.
+#: consumers: it is derived at ingest and labeled as the projection it is.
 #:
 #: Twist columns are declared and left empty here, because TF carries no velocity. A column present
 #: for one producer and absent for another would make every query producer-specific.
@@ -281,7 +281,7 @@ class TfToCsvHandler(RosbagHandler):
 
     ``require`` is what keeps ``all`` from costing anything. A named frame that yields nothing is a
     hard error (see :meth:`on_end`), and that assertion is load-bearing -- it is how a ground-truth
-    frame missing from one simulator's bags was caught rather than silently analysed as absent. ``all``
+    frame missing from one simulator's bags was caught rather than silently analyzed as absent. ``all``
     has no such expectation to check, so it takes the frames to assert on from ``require``; an explicit
     ``frames`` list implies ``require: <the same list>``, exactly as before.
 

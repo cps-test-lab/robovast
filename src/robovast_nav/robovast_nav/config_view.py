@@ -35,7 +35,7 @@ from .object_shapes import get_object_type_from_model_path, get_obstacle_dimensi
 
 #: The palette. Fixed here rather than left to the panels because these markers are read
 #: together -- a path and the obstacles on it -- and a per-panel choice would give the same
-#: configuration different colours in the 3D scene and the 2D map.
+#: configuration different colors in the 3D scene and the 2D map.
 PATH_COLOR = "#f87171"
 START_COLOR = "#60a5fa"
 GOAL_COLOR = "#4ade80"

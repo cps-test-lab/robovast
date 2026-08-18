@@ -74,7 +74,7 @@ FIELDNAMES = [
 #: ``time_source`` values — how the row's ``wall_ts`` was arrived at, which is not the same
 #: question as whether it could be converted to sim time.
 TIME_EXACT = "stamp"        #: the producer's own stamp, nanosecond precision
-TIME_INHERITED = "inherited"  #: no stamp of its own; bracketed by a neighbouring stamp
+TIME_INHERITED = "inherited"  #: no stamp of its own; bracketed by a neighboring stamp
 TIME_NONE = "none"          #: no stamp anywhere in the log to bracket it with
 
 #: ``source`` values.

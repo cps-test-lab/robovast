@@ -95,7 +95,7 @@ Paths are defined once
 ======================
 
 :class:`robovast.service.interface.Routes` holds the canonical path strings and the
-builders for parameterised ones. Both the app and ``HTTPTransport`` use it so the two
+builders for parameterized ones. Both the app and ``HTTPTransport`` use it so the two
 bindings cannot drift — a route renamed in one place is renamed for the client too.
 
 The table below is **generated from the running application**, not maintained by hand: it

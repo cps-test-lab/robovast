@@ -434,7 +434,7 @@ class ExecutionConfig(BaseModel):
 
 #: Fallback wall-clock budget *per run* when ``execution.timeout`` is unset. One hour:
 #: long enough for any scenario this substrate runs, short enough that a run which
-#: never shuts itself down is eventually recognised as broken.
+#: never shuts itself down is eventually recognized as broken.
 DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 
 
@@ -691,7 +691,7 @@ def panel_source_problems(props):
 
 class PanelPosition(BaseModel):
     """Where a panel sits in the run-view. ``anchor`` docks it against an edge, floats it
-    at a corner or centred along an edge, or centres it; ``fill`` is used *instead of* an
+    at a corner or centered along an edge, or centres it; ``fill`` is used *instead of* an
     anchor and takes whatever space the docked panels leave over. ``width``/``height`` are
     pixels (int) or a percentage string like ``"40%"``. Omitted fields fall back to the
     panel type's registry default in the UI.

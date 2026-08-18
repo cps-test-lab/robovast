@@ -17,7 +17,7 @@
 """Read-only SQL over a campaign's ``data.db`` — a **directory-based** helper.
 
 This is the single implementation of "describe / query a campaign's results",
-parameterised by the campaign **directory** so it serves both callers:
+parameterized by the campaign **directory** so it serves both callers:
 
 * the MCP ``run_data`` plugin, which resolves a ``campaign_id`` → dir via
   ``results_resolver`` (or delegates to a configured service); and
@@ -404,7 +404,7 @@ def open_data_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connec
 #: to use a `stamp` column that does not exist would be worse than saying nothing.
 _POSE_CLOCKS_TRANSPORT = (
     "TWO CLOCKS. `timestamp` is ARRIVAL time and the join key shared with costmaps, behaviors "
-    "and run_log -- join and scrub on it, and never difference it: it is quantised to the "
+    "and run_log -- join and scrub on it, and never difference it: it is quantized to the "
     "simulator's /clock grid and jittered by delivery, so a rate derived from it measures the "
     "transport (a constant 0.24 m/s has read as an alternating 0.21/0.43 this way). `stamp` is "
     "MEASUREMENT time -- when the pose was true -- and is the only correct base for a derivative; "

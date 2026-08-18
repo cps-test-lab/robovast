@@ -1132,7 +1132,7 @@ class BatchJobRunner:
                         self._batch_tag, n, bucket_name, campaign_prefix)
 
         # 3. Build and submit one Job per packed job, then wait.
-        # Every job is labelled into the Kueue LocalQueue, so a broken admission path
+        # Every job is labeled into the Kueue LocalQueue, so a broken admission path
         # does not fail the submit — it silently suspends all of them forever. Check
         # before creating anything, so the campaign dies here with the reason instead
         # of in the wait loop with none.

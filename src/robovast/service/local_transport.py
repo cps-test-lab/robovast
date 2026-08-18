@@ -795,7 +795,7 @@ class LocalTransport(RobovastInterface):
             return None
 
     def _compute_resource_usage(self) -> ResourceUsage:
-        """Local host capacity + live utilisation via ``psutil``.
+        """Local host capacity + live utilization via ``psutil``.
 
         ``cpu_percent(interval=None)`` is non-blocking — it averages CPU load since
         the previous call rather than sleeping per request. The first reading after
@@ -1846,7 +1846,7 @@ class LocalTransport(RobovastInterface):
         A campaign still in ``building`` is stopped by the flag alone: the teardown below
         removes the *scenario* container and cannot reach a ``docker buildx`` build thread.
         That is deliberate and must stay true — an image build is content-addressed and
-        therefore shared, so cancelling it could strand a sibling campaign waiting on the
+        therefore shared, so canceling it could strand a sibling campaign waiting on the
         same image, and the image is a cache entry rather than this campaign's property.
         ``_await_build_image`` detaches instead (see its ``CampaignStopped`` path).
         """

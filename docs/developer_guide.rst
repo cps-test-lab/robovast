@@ -243,7 +243,7 @@ core, and every leak found so far has been a *deferred* import of it — the mod
 perfectly and the command dies at call time, in exactly the install the distribution
 advertises. An import check cannot see that;
 ``tests/service/test_client_needs_no_core.py`` drives the commands with the core made
-un-importable. Anything the client needs must live in the client: a wire constant like
+not importable. Anything the client needs must live in the client: a wire constant like
 ``COMMAND_LIMIT_S`` belongs in ``interface.py``, not in the server module that enforces it.
 
 
@@ -409,7 +409,7 @@ the quadrotor search vasts.
    surfacing later on the campaign's status.
 
    Because the ``robovast-service`` is one long-lived process serving many
-   workspaces and Python cannot un-import, a plugin already loaded (from another
+   workspaces and Python cannot unload a module, a plugin already loaded (from another
    workspace) cannot be swapped; ``ensure_workspace_plugins`` **logs a warning** in
    that case (the already-loaded version wins until the service restarts).
 
@@ -709,7 +709,7 @@ and a half-written artifact can never be mistaken for a finished one.
 writes ``.generated.json`` into the output directory; the next composition hashes those paths
 and skips the generator when nothing moved. Report the *real* set — for anything compiled from
 a description that can reference others, that includes the transitive ones. A generator that
-reports nothing is never cached, and a cached result is honoured only while its outputs are
+reports nothing is never cached, and a cached result is honored only while its outputs are
 still on disk unchanged: staleness fails towards doing the work, never towards serving a stale
 artifact.
 
@@ -1434,7 +1434,7 @@ A started campaign is findable
 read path** — ``get_status`` and ``list_campaigns`` (also the MCP's ``running_only`` filter). This is what
 makes the standing advice ("a timed-out start is not a failed start; check, never retry")
 actually true: retrying a start that in fact succeeded creates a second campaign, and the
-only defence is that the first one can be found.
+only defense is that the first one can be found.
 
 Three things back it. Registration happens *before* the slow work — ``create_campaign``
 records the campaign in the lane's registry and returns, and the driver builds the image —
@@ -1477,7 +1477,7 @@ body, so there is nowhere to put a status: ``_execution/outcome.json`` stays the
 canonical terminal record and the index cannot become a second source of truth for the
 phase. Two details earn their place in the key:
 
-* the id is a segment *verbatim* — nothing was sanitised on the way in, so nothing has to
+* the id is a segment *verbatim* — nothing was sanitized on the way in, so nothing has to
   be undone on the way out;
 * ``created_at`` is there because the **listing** needs it. ``list_campaigns`` asks every
   candidate for its start time to order them *before* it paginates, so a start time that
@@ -1623,7 +1623,7 @@ target. Each generated Job carries the **label**
 ``kueue.x-k8s.io/queue-name: robovast`` — Kueue 0.16 keys queue membership off
 the label, not an annotation.
 
-**Why there is an admission preflight.** Because every Job is labelled into the
+**Why there is an admission preflight.** Because every Job is labeled into the
 LocalQueue, Kueue creates it **suspended** and starts it only once the queue
 admits it. A broken admission path therefore does not fail the submit — the jobs
 simply never start, with no pod, no event and no error. Nothing about that state
@@ -1771,7 +1771,7 @@ call a run that died without a ``test.xml`` "running" forever. The UI's sidebar 
 ``running/(running+pending)`` and hides itself when both are zero.
 
 Both share one
-TTL-cached path on the base class (``LocalTransport.resource_usage`` memoises for
+TTL-cached path on the base class (``LocalTransport.resource_usage`` memoizes for
 ``_USAGE_CACHE_TTL`` under a lock), so many polling clients cost one sampling per window.
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
 service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
@@ -1964,7 +1964,7 @@ builds a three.js ``Group`` and returns an imperative animation API (``jointMap`
 ``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's
 (``cursorDolly.ts``): scaling the orbit radius toward a fixed pivot makes the travel a geometric
-series converging on that pivot, so a notch moves millimetres once you are close and the pivot can
+series converging on that pivot, so a notch moves millimeters once you are close and the pivot can
 never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
@@ -2025,7 +2025,7 @@ driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
 ``robovast.results_processing.data``), so the script version always matches the driver.
 
 **Cluster.** A pod cannot bind-mount the caller's filesystem, so the conversion runs as a Job
-(:mod:`robovast.execution.cluster_execution.postprocess_job`) modelled on the run Jobs:
+(:mod:`robovast.execution.cluster_execution.postprocess_job`) modeled on the run Jobs:
 
 * **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
   not a silent wrong-image conversion);

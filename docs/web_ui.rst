@@ -116,7 +116,7 @@ the service heartbeats every quiet second with a *visible* event (:doc:`http_api
 UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
 connection whenever the tab becomes visible, the network returns, or the check next runs.
 The **Refresh** button on the campaign list does the same thing on demand — it is no longer
-the only way to get there. Anything other than a healthy stream is labelled ``reconnecting…``
+the only way to get there. Anything other than a healthy stream is labeled ``reconnecting…``
 next to the heading, so a stale list always says that it might be.
 
 **The polled readings** — a campaign's phase and its per-job listing, and the sidebar's
@@ -170,7 +170,7 @@ Columns, each answering something the others cannot:
   does not draw that noise as if it were a spread.
 * **Objective** — a search's best objective per round, with its stopping criteria beneath.
   Rate-shaped objectives are drawn against 0..1, since ``best = 1`` then means "as good as it
-  can get"; anything on another scale keeps its own range, and both axes are labelled either
+  can get"; anything on another scale keeps its own range, and both axes are labeled either
   way.
 
 .. _web-ui-sizing:
@@ -452,7 +452,7 @@ the base world plus placements, not a compiled preview of the exact model the ru
 on, with the same markers drawn top-down. It exists beside the 3D scene because it is the
 *planning* view: a path is searched over these cells and an obstacle is placed relative to
 that path, so "why did the path go there" is a question about this picture. Drag to pan,
-wheel to zoom, double-click to fit; the scale bar reads in metres.
+wheel to zoom, double-click to fit; the scale bar reads in meters.
 
 Which map it draws: the one a variation contributed as its ``map`` role, or — declared on
 the panel — a workspace-relative path, which is how a campaign points at a map that is
@@ -562,7 +562,7 @@ target the same way, so nothing needs to be exported.
 A connection indicator in the top bar turns green once the service answers, and
 shows the backend's live **resource usage** — used vs. total CPU cores and memory
 (``cpu 6/16 · mem 22/62 GiB``). The numbers are backend-appropriate: the host
-machine's utilisation for a local ``vast serve``, and the cluster's node
+machine's utilization for a local ``vast serve``, and the cluster's node
 capacity vs. the summed requests of the pods scheduled onto those nodes for an
 in-cluster service (runs still queued for a node show up in the jobs meter as
 pending, not as CPU in use). Hovering the chip
@@ -642,7 +642,7 @@ Explorer's own.
 time, so a flat config list buries the very thing that says whether the search worked. For
 a campaign whose ``mode`` is ``search`` the tree therefore inserts a **batch** node per
 ask/tell round: each carries the round's pass tally and its best objective, and each config
-below it is labelled with its own objective. A batch-mode campaign has exactly one round,
+below it is labeled with its own objective. A batch-mode campaign has exactly one round,
 so it is left flat — grouping it would add a node that says nothing.
 
 A batch is a grouping recorded in the store, **not** a directory: a search's configs sit
@@ -652,7 +652,7 @@ injected ``BATCH`` index. See :ref:`evaluation notebooks <evaluation-notebooks>`
 declare one.
 
 After the declared workloads comes a built-in **Log** tab, which needs nothing in the ``.vast``.
-It shows the same merged log as the run-view panel — same filters, same colours — over whatever
+It shows the same merged log as the run-view panel — same filters, same colors — over whatever
 the selected node scopes to, and it is where the *cross-run* question lives, because a run view
 can only ever show one run:
 
@@ -662,7 +662,7 @@ can only ever show one run:
   run's verdict, so "which runs logged this, and did they fail?" is one query. Click a row to
   read that run's log, and the trail back to the search stays.
 
-There is no playback clock here, so the view drops the greying and the jump button rather than
+There is no playback clock here, so the view drops the graying and the jump button rather than
 implying a position it does not have.
 
 **Data browser.** The left panel lists the tables in the campaign's
@@ -759,7 +759,7 @@ than being selectable and then answering with an empty view.
 view's settings, and its **Include shutdown phase** entry decides whether "this run" means the
 trial or the whole recording. It is **off by default** — everything after the verdict is teardown:
 nodes being killed, lifecycle transitions failing because their peer is already gone, TF errors
-from a publisher that has stopped. It is minutes of wall time, it colours the log red, and it
+from a publisher that has stopped. It is minutes of wall time, it colors the log red, and it
 describes nothing that happened during the run.
 
 It governs the view rather than a panel, which is why it sits in the header and neither the
@@ -769,7 +769,7 @@ too. Tick the entry and the full recording returns, with a divider on the playba
 where the trial ended.
 
 A menu rather than a bare icon because it is a *view-wide* setting, the same shape the campaign
-row's gear uses: the header is otherwise a row of labelled controls, and each further such
+row's gear uses: the header is otherwise a row of labeled controls, and each further such
 setting would add another icon to decode. One entry today, named in words, with room to grow.
 
 The moment itself is read from ``scenario_timestamps``, written once by postprocessing —
@@ -819,7 +819,7 @@ on its own is a complete panel.
 **Docked panels reserve the space they occupy, and everything else is placed in what is
 left.** A ``top``/``bottom`` bar reserves its height and spans the full width; a
 ``left``/``right`` column reserves its width and lives in the band between the bars. Both
-count in pixels or percent. Combinations that could not be honoured are rejected when the
+count in pixels or percent. Combinations that could not be honored are rejected when the
 campaign is validated rather than quietly ignored — a ``width`` on a full-width ``top`` bar,
 for instance.
 
@@ -830,7 +830,7 @@ reserves the **sum** of their heights. A column owns the full height, so several
 side reserves the **widest** of them, once — which is how a sidebar of two panels leaves a
 single 320 px margin, not two.
 
-A dock reserves a few pixels more than its own size, so neighbouring panels never touch: the
+A dock reserves a few pixels more than its own size, so neighboring panels never touch: the
 gap sits between a column and what is beside it, between a bar and what is above it, and
 between the members of one column. Panels still sit flush against the view's outer edges —
 it is a gap between panels, not a margin around the page.
@@ -853,7 +853,7 @@ validation rather than silently stacking one on top of the other.
 
 The four ``-center`` anchors differ from the matching dock in one way that matters:
 ``bottom`` **docks** at the very edge and reserves its height, which is what the playback bar
-does. ``bottom-center`` *floats* above that reserved band, centred on the free width, and
+does. ``bottom-center`` *floats* above that reserved band, centered on the free width, and
 reserves nothing itself — so it shares the bottom edge with the playback bar instead of
 covering it. It needs a declared size (a full-width one is just ``bottom``). The pinned edge
 is the one the anchor is named after, so ``minimized`` collapses the panel towards that edge
@@ -967,7 +967,7 @@ the file is served with ``FileResponse``, so the browser ranges into it. A clust
 fetches the one object behind the address first, then serves it the same way.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
-that colours each node by its status (running / success / failure) at the current time.
+that colors each node by its status (running / success / failure) at the current time.
 It reads the ``behaviors`` table, written by ``scenario_execution`` on every run (no ROS
 required) unless ``execution.bt_log`` turns it off. Where the data supports it, each node
 also shows its kind (sequence / selector / parallel / decorator), its feedback message at
@@ -986,7 +986,7 @@ older or differently-produced table still renders.
 
 **Run log** (``log``) — everything the run said, following the playback cursor. One row per log
 event from every container, joined with ``/rosout`` and placed on the run's clock (see
-:ref:`merged-run-log`). Lines not yet logged at the cursor are greyed out with a divider marking
+:ref:`merged-run-log`). Lines not yet logged at the cursor are grayed out with a divider marking
 "now", so the log's whole shape stays visible while the position in it is unambiguous.
 
 Filtering is instant and client-side, over the whole loaded log: a text box (substring, or a
@@ -1058,8 +1058,8 @@ The mouse bindings:
   around rather than circling a point that recedes as you approach it.
 - **right-drag** — pan sideways and vertically.
 
-The wheel deliberately does not shrink an orbit radius toward a fixed centre, which is the usual
-default and is what makes such a view freeze a short way from its centre.
+The wheel deliberately does not shrink an orbit radius toward a fixed center, which is the usual
+default and is what makes such a view freeze a short way from its center.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **capture** names the world it used and the service builds the matching **geometry** on demand. Both
@@ -1113,7 +1113,7 @@ Every panel binding a ``source`` takes ``decimate_hz`` (and ``key``) with it, on
 the :ref:`vega panel <vega-panel>` below: a run longer than the row cap is cut at the head unless it
 is thinned.
 
-**State** (``state``) — the current numeric values of selected columns as labelled
+**State** (``state``) — the current numeric values of selected columns as labeled
 read-outs (``source`` + ``fields`` of ``{ column, label, unit }``).
 
 .. _vega-panel:
@@ -1296,7 +1296,7 @@ A campaign does not deliver it. The service resolves it per view:
    GET  /campaigns/{id}/scene_assets/{key}/{file}    the bytes, from the shared cache
 
 The split matters: a ``GET`` that started a build would fire on a browser prefetch or a React
-strict-mode double render, and each of those would launch an image pull. Status is modelled on
+strict-mode double render, and each of those would launch an image pull. Status is modeled on
 ``data-status`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
 ``ActionResult`` as ``postprocessing/run`` is, and the bytes are served like a panel bundle because they
 live in the service's cache rather than in the campaign's results. The cache key is in the asset path so

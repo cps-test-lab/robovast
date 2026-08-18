@@ -260,7 +260,7 @@ def login(url, token, name, link):
 
     # An agent over HTTP does not read this config, so it needs the same three facts
     # spelled out -- the name included, or its campaigns arrive unattributed while the
-    # same person's CLI runs are labelled.
+    # same person's CLI runs are labeled.
     click.echo("\nTo give an agent the same access over HTTP:")
     click.echo("  " + " \\\n      ".join(
         login_config.mcp_add_command(url, token, name)))

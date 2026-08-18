@@ -18,7 +18,7 @@
 
 This is the in-cluster counterpart of ``vast serve``: a long-lived Deployment
 running the same FastAPI app (:mod:`robovast.service.app`), reached over a
-ClusterIP Service via ``kubectl port-forward`` (Ingress later). It generalises
+ClusterIP Service via ``kubectl port-forward`` (Ingress later). It generalizes
 the ephemeral, per-campaign control channel
 (:mod:`robovast.execution.control_server`) into a campaign-spanning service that
 launches and monitors controller pods on behalf of thin clients.
@@ -127,7 +127,7 @@ def _service_rbac_manifests(namespace):
                 # (see cluster_execution.kubernetes_kueue.cleanup_kueue_workloads).
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloads"],
                  "verbs": ["get", "list", "watch", "delete", "deletecollection", "patch"]},
-                # The admission preflight reads the LocalQueue every job is labelled
+                # The admission preflight reads the LocalQueue every job is labeled
                 # into, to fail loudly instead of letting Kueue suspend the batch
                 # forever (kubernetes_kueue.verify_kueue_admission_ready).
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["localqueues"],
@@ -1065,7 +1065,7 @@ def service_manifests(namespace="default", image=None, env=None,
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build
     # base. So the project they resolve from has to be carried in, or an operator who
-    # configured one gets it honoured everywhere except the place it is actually read.
+    # configured one gets it honored everywhere except the place it is actually read.
     #
     # That was the old bug, and it was worse than it sounds: of the five per-image
     # variables that used to exist, only two were ever propagated, so `setup --force`

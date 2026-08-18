@@ -45,7 +45,7 @@ class ObstacleConfig(BaseModel):
     """One obstacle *kind*: how many, how far off the path, and what it is.
 
     Two vocabularies, and the split is deliberate. ``shape``/``size`` say what the obstacle
-    IS -- the neutral fact, in metres, which a simulator that compiles its world needs.
+    IS -- the neutral fact, in meters, which a simulator that compiles its world needs.
     ``model``/``xacro_arguments`` say how a run-time *spawner* makes one, which is a
     property of that simulator's spawning interface and of the model file being spawned.
 
@@ -70,7 +70,7 @@ class ObstacleConfig(BaseModel):
     #: the only shape a placement plugin takes today; the field exists so a world gaining
     #: cylinders is a new value here rather than a second parallel field.
     shape: str = 'box'
-    #: Extents in metres. For ``box``: ``[x, y, z]``.
+    #: Extents in meters. For ``box``: ``[x, y, z]``.
     size: Optional[list[float]] = None
 
     @field_validator('size')
@@ -277,7 +277,7 @@ class ObstacleVariation(NavVariation):
 
       - ``amount``: Number of obstacles to place.  Mutually exclusive with
         ``amount_per_m``.
-      - ``amount_per_m``: Obstacles per metre of path length (computed as
+      - ``amount_per_m``: Obstacles per meter of path length (computed as
         ``floor(amount_per_m × path_length)``).  Accepts a single float or a list of
         floats — each value produces a separate variation.  Mutually exclusive with
         ``amount``.
@@ -288,7 +288,7 @@ class ObstacleVariation(NavVariation):
       - ``xacro_arguments``: Arguments to pass to xacro for model generation. ``{size[i]}``
         placeholders are substituted from ``size``, so the extents are stated once and the
         argument names stay with the model file that defines them.
-      - ``size``: Extents in metres (``[x, y, z]`` for a box). Required when the ``instances``
+      - ``size``: Extents in meters (``[x, y, z]`` for a box). Required when the ``instances``
         slot is bound, i.e. when a simulator has to compile the placement rather than spawn it.
       - ``shape``: What the obstacle is, for that simulator. ``box`` (default).
     - ``entity_prefix`` (optional): stem of the generated entity names, ``obstacle`` by

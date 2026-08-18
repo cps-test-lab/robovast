@@ -51,13 +51,13 @@ from typing import NamedTuple
 #: patterns below and in :data:`_LEVEL_SEVERITY`, and adding a level to some of them is
 #: worse than not adding it at all: a level the stamp cannot match loses its timestamp
 #: *and* falls through to the keyword scan, so it is silently misclassified rather than
-#: merely unrecognised. ``CRITICAL`` is here for Python's stdlib logging, whose
+#: merely unrecognized. ``CRITICAL`` is here for Python's stdlib logging, whose
 #: ``logger.critical`` is the only common producer of a level rclpy never emits.
 _LEVELS = "INFO|WARN|WARNING|ERROR|DEBUG|FATAL|CRITICAL"
 
 #: The level+timestamp+node stamp a ROS node writes ahead of its own message, e.g.
 #: ``[INFO] [1785092240.111622055] [scenario_execution_ros]: ``. One definition,
-#: used both to recognise a *relay's* stamp and to strip a line's *own*.
+#: used both to recognize a *relay's* stamp and to strip a line's *own*.
 _STAMP = (rf"\[(?P<level>{_LEVELS})\]\s+"
           r"\[(?P<t>\d+\.\d+)\]\s+\[(?P<node>[^\]]+)\]:\s+")
 

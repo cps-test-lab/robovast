@@ -188,7 +188,7 @@ class RoqsimBackend(SimulatorBackend):
             # nothing derives a `poses` table afterwards. And where there IS a rosbag it
             # is the honest one — world-frame poses on exact sim time, with velocities
             # read from the solver instead of differenced over rosbag arrival times,
-            # which are quantised by the /clock grid and jittered by delivery.
+            # which are quantized by the /clock grid and jittered by delivery.
             "ROQSIM_SIM_POSES": "1",
             # Timestamp roqsim's own log lines, so they can be placed on the run's clock like
             # every other producer's. roqsim defaults to `INFO roqsim.engine: msg` because that is

@@ -579,7 +579,7 @@ class ResourceUsage(BaseModel):
     of resource *requests* of the non-terminal pods bound to a node (schedulability,
     matching how Kueue reasons about quota — pods still queued for a node are
     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
-    on **local** they are live host utilisation. ``cpu_*`` are CPU cores;
+    on **local** they are live host utilization. ``cpu_*`` are CPU cores;
     ``memory_*`` are bytes.
 
     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
@@ -606,7 +606,7 @@ class ResourceUsage(BaseModel):
 
     backend: str                     # "docker" | "kubernetes" (informational only)
     cpu_capacity: float              # total cores (cluster allocatable / host logical CPUs)
-    cpu_used: float                  # cores claimed (cluster pod requests / host utilisation)
+    cpu_used: float                  # cores claimed (cluster pod requests / host utilization)
     memory_capacity_bytes: int
     memory_used_bytes: int
     parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
@@ -848,7 +848,7 @@ class WorldDescription(BaseModel):
     The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
     RoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a
     different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
-    plain mappings rather than modelled fields — typing them here would make this the second
+    plain mappings rather than modeled fields — typing them here would make this the second
     place a simulator's schema is written down, and the two would disagree.
 
     ``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,

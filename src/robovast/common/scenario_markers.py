@@ -22,7 +22,7 @@ TF listener complaining about a publisher that has stopped. Those lines are warn
 errors by the shared classifier's definition, so they colour a log view red and dominate
 a severity search, while saying nothing about the trial.
 
-This module is the one place that recognises the verdict in *text*. It has exactly two
+This module is the one place that recognizes the verdict in *text*. It has exactly two
 callers, and they are the two situations in which a verdict can be found:
 
 * :mod:`robovast.results_processing.postprocessing_plugins`, which **records** it into
@@ -84,7 +84,7 @@ def is_own_logger(node: str) -> bool:
     An empty *node* means "unknown", not "wrong" — a line reaching a caller through a stream
     carries no stamp of its own, and refusing it would lose the marker on exactly the non-ROS
     runs this has to cover. Same rule :func:`verdict_of` applies, exposed because a caller
-    that recognises a *start* needs it too.
+    that recognizes a *start* needs it too.
     """
     return not node or node.startswith(_LOGGER_PREFIX)
 

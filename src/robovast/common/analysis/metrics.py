@@ -115,7 +115,7 @@ def pose_time_base(df: pd.DataFrame) -> str:
     """Which column to DIFFERENTIATE a pose frame against: ``stamp`` when it has one.
 
     ``timestamp`` is arrival time. It is the right join key -- every bag-derived table shares it --
-    but it is quantised to the simulator's ``/clock`` grid and jittered by delivery, and neither of
+    but it is quantized to the simulator's ``/clock`` grid and jittered by delivery, and neither of
     those is the interval the robot moved over. Differencing it therefore reports the transport:
     measured on one campaign, a ground-truth pose published every 18 ms onto a 10 ms grid arrived
     20/20/20/20/10, and the constant 0.24 m/s it was driving at read as an alternating 0.21/0.43.
@@ -146,7 +146,7 @@ def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
         ``timestamp`` is returned unchanged whichever base was used, because it is the column every
         caller plots and joins against. ``time_base`` names what ``dt`` was actually computed from,
         so a cross-simulator comparison can *assert* both sides used the same one rather than
-        silently comparing an exact base against a quantised one.
+        silently comparing an exact base against a quantized one.
     """
     key_cols = run_key_columns(df_groundtruth)
     time_col = pose_time_base(df_groundtruth)

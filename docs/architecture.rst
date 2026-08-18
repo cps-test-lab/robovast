@@ -132,7 +132,7 @@ one at all once the flag is up, so a read still in flight cannot resurrect the t
 and leak a ``kubectl`` child past exit. The SSE streams no longer *wait* for their
 next pull either: a watchdog closes the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
-response task cancelled and the cancellation logged as an "Exception in ASGI
+response task canceled and the cancellation logged as an "Exception in ASGI
 application" traceback with the server already gone.
 
 .. code-block:: text
@@ -211,7 +211,7 @@ Four rules make those answers trustworthy, and each of them was a bug first:
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
   pre-check that logged this at debug and carried on was indistinguishable from a check that
-  passed, which is how a misspelt plugin key reached the container after the image pull.
+  passed, which is how a misspelled plugin key reached the container after the image pull.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
   answered what it could, and that payload is taken. A world whose model does not compile in the
   image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
@@ -222,7 +222,7 @@ Four rules make those answers trustworthy, and each of them was a bug first:
 * **The lane is not implied.** The query runs a container, so a service offering both lanes
   routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
   a campaign's composition (a per-campaign aux pod), so the cluster lane refuses this query with
-  that reason rather than quietly ``docker run``-ning on the serve host. A standalone aux pod for
+  that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
   one-shot queries is the follow-up that would lift it.
 
 One function runs every such query --
@@ -857,7 +857,7 @@ first or last one clamped to a cursor minutes off. From that pair
 nearest one — so it re-requests only when the answer could change, and a latched topic such as
 ``/map`` is fetched once per session — and the local publish period, hence how far the cursor
 may drift before the layer is reported as absent instead of drawn as current. A latched topic
-has no neighbours, so it is exempt from staleness *by construction* rather than by name.
+has no neighbors, so it is exempt from staleness *by construction* rather than by name.
 
 That staleness threshold is floored at the panel's own **fetch cadence**, which is not a detail:
 nav2 publishes costmaps far faster than any viewer fetches them (50 Hz local costmaps are

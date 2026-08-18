@@ -166,11 +166,11 @@ must call the lister to learn the name the getter needs. So an **empty argument 
    * - ``search_docs()`` / ``(query=…)`` / ``(page=…)``
      - the page list / matching excerpts / one page in full
    * - ``get_example()`` / ``get_example("basic_nav")``
-     - the catalogue / one project's files
+     - the catalog / one project's files
    * - ``list_workspaces()`` / ``list_workspaces("ws-ab12")``
      - all workspaces / one
    * - ``list_plugins()`` / ``(group=…)`` / ``(query=…)``
-     - the group catalogue / a group's plugins / a name search
+     - the group catalog / a group's plugins / a name search
    * - ``list_campaigns()`` / ``(running_only=True)``
      - every campaign / the live ones
    * - ``describe_campaign_data(id)`` / ``(preflight_only=True)``
@@ -201,7 +201,7 @@ reads, and a ceiling on the surface's total token cost.
 Reading results: SQL, not a tool per scope
 ------------------------------------------
 
-There is no tool that summarises one configuration, none that returns a single run's
+There is no tool that summarizes one configuration, none that returns a single run's
 outcome, none that returns a run's host information. There were nine such tools, each a
 hand-written reader of the campaign's ``metadata.yaml`` with its own response schema. Two
 things were wrong with that. The file is written **only by postprocessing**, so every one
@@ -505,7 +505,7 @@ owns, with no log reading at all:
 
 .. important::
 
-   ``stalled`` is tri-state for a reason worth stating plainly. A two-valued flag has
+   ``stalled`` is three-valued for a reason worth stating plainly. A two-valued flag has
    to answer ``false`` when there is no budget to check against, and ``false`` reads as
    *verified healthy* — a clean bill of health for a run that may already be dead. The
    tempting fix, substituting the enforcement backstop, is worse: it is one hour, so a
@@ -690,7 +690,7 @@ Two things follow from that, both worth knowing before reaching for a build tool
 
 Because ``build_hash`` is content-addressed, two campaigns needing the same image both wait
 on **one** build: the phase means *waiting for* an image, not performing a build, and
-``stop_campaign`` on a building campaign detaches it rather than cancelling a build a
+``stop_campaign`` on a building campaign detaches it rather than canceling a build a
 sibling may also be waiting on.
 
 The workflow is three steps and stays entirely in the ``.vast`` the assistant

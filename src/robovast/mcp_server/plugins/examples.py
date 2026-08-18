@@ -125,9 +125,9 @@ def _extract_description(example_dir: Path, files: list[str]) -> str:
 
 # -- Example loading, on first use --------------------------------------------
 #
-# Deliberately not at import time. Building the catalogue shells out to git and then
+# Deliberately not at import time. Building the catalog shells out to git and then
 # opens every example's README and .vast, and this module is imported whenever the MCP
-# is mounted -- so a `vast serve` paid for a catalogue nobody had asked for. It also made
+# is mounted -- so a `vast serve` paid for a catalog nobody had asked for. It also made
 # the work observable from outside: a test that patched `subprocess.run` around anything
 # that mounts the app caught this module's `git ls-files` and failed on the extra call,
 # but only when nothing had imported the plugin earlier in the process. An import that
@@ -167,7 +167,7 @@ def _load_examples() -> tuple[Path | None, dict]:
 
 
 def get_example(name: str = "") -> dict:
-    """Worked RoboVAST example projects: the catalogue, or one project's files.
+    """Worked RoboVAST example projects: the catalog, or one project's files.
 
     Copy one into a workspace as the starting point for a new ``.vast``. Only
     git-committed examples are exposed; generated artifacts never are.

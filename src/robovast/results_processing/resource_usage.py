@@ -22,7 +22,7 @@ bring-up, every run the job served, and teardown. This module cuts it to a run.
 
 Why this is worth a table rather than a file: a campaign's lane gives a job a fixed number
 of cores, and a simulator that starves the stack changes what the stack does. That is a
-competing explanation for any behavioural difference, and it can only be ruled in or out in
+competing explanation for any behavioral difference, and it can only be ruled in or out in
 the same query as the behaviour — joined to ``runs`` for ``available_cpus``, to ``poses``
 for what the robot did at the time.
 

@@ -17,7 +17,7 @@
 """Wall time → sim time, for a single run.
 
 Everything a run *logs* is stamped in wall time: rosout's receive time, and whatever
-each container printed. Everything a run is *analysed* on is sim seconds — the rosbag's
+each container printed. Everything a run is *analyzed* on is sim seconds — the rosbag's
 receive time under ``use_sim_time``, which is what the run view's playback bar scrubs.
 Relating the two is this module's whole job.
 

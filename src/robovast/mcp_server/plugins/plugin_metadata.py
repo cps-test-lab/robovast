@@ -19,7 +19,7 @@
 Discovers and describes the extension groups registered in ``importlib.metadata`` — MCP
 plugins, CLI plugins, cluster backends, variation strategies, postprocessing steps.
 
-``list_plugins`` answers three questions that were three tools (the group catalogue, one
+``list_plugins`` answers three questions that were three tools (the group catalog, one
 group's plugins, and a name search). They differ only in which filter is applied, so the
 distinction cost the caller three tool schemas to read and a choice to get wrong, while
 the implementation was one enumeration behind three signatures.
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Static catalogue of all known robovast extension groups
+# Static catalog of all known robovast extension groups
 # ---------------------------------------------------------------------------
 
 _PLUGIN_GROUPS: dict[str, dict] = {
@@ -157,7 +157,7 @@ def list_plugins(group: str = "", query: str = "") -> dict:
             it contains ``*``/``?``.
 
     Returns:
-        With neither argument, the group catalogue: ``{groups, total}``, each
+        With neither argument, the group catalog: ``{groups, total}``, each
         ``{group, description, loader_module, plugins}`` (a count). Otherwise
         ``{plugins, total}``, each ``{group, name, class, doc}`` — ``doc`` being the
         docstring's first line. Use ``get_plugin_details`` for a plugin's parameters.

@@ -107,7 +107,7 @@ def split_phases(text: str) -> list[tuple[str, str]]:
 
     The inverse of :func:`assemble_log`'s divider, kept here beside it so the format has
     exactly one definition — a reader that re-derived the banner would be a second copy to
-    drift. Only the known :data:`INFRA_PHASES` names are recognised, so a log line that
+    drift. Only the known :data:`INFRA_PHASES` names are recognized, so a log line that
     happens to look like a banner cannot invent a phase.
 
     Each ``section`` is the **exact substring** of *text*, its banner line included, and

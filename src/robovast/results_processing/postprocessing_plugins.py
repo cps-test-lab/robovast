@@ -797,7 +797,7 @@ _POSE_CONTRACT_NOTES = {
     "timestamp": (
         "ARRIVAL time, and the join key every other table in this campaign shares -- use it to "
         "read poses against costmaps, behaviors and run_log, and to place a row on the run "
-        "view's timeline. Do NOT difference it: it is quantised to the simulator's /clock grid "
+        "view's timeline. Do NOT difference it: it is quantized to the simulator's /clock grid "
         "and jittered by delivery, so a speed derived from it measures the transport rather than "
         "the robot. Use `stamp` for that."),
     "stamp": (
@@ -899,7 +899,7 @@ def _derive_yaw(rows: list) -> None:
     pitches or rolls, so a drone or a tilting arm cannot be described by them, and nothing should
     have to convert before it can report a pose. But the 2D consumers here -- the costmap panel's
     heading marker, the nav MCP tools, the notebooks -- all want a heading, and none of them should
-    each reimplement quaternion maths in SQL, JavaScript and pandas.
+    each reimplement quaternion math in SQL, JavaScript and pandas.
 
     So it is derived once, here, and marked in ``_column_notes`` as the projection it is: correct
     for a body in the plane, insufficient for one that has left it.
@@ -1332,7 +1332,7 @@ def generate_data_db(campaign_dir: str, output_callback=None) -> tuple[bool, str
         # for" instead of "no such column". No migrations go with it -- see
         # DATA_DB_SCHEMA_VERSION: this file is rebuilt from the run directories, so the
         # upgrade path for an old one is to run postprocessing again, which re-executes no
-        # trial. PRAGMA cannot be parameterised; the version is a constant we control.
+        # trial. PRAGMA cannot be parameterized; the version is a constant we control.
         conn.execute(f"PRAGMA user_version = {DATA_DB_SCHEMA_VERSION}")
 
         # Metadata table: display_name -> sql_table_name

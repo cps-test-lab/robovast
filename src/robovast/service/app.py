@@ -24,7 +24,7 @@ contract, so the same app serves:
   Docker backend, local filesystem) — persistent single-host service (mode 2);
 * a **cluster** deployment (impl = the cluster service core) — mode 3.
 
-This generalises the per-campaign FastAPI control channel in
+This generalizes the per-campaign FastAPI control channel in
 :mod:`robovast.execution.control_server` into a persistent, campaign-spanning
 service. FastAPI auto-emits OpenAPI at ``/docs``, so the same contract serves the
 CLI, the MCP server, and a future web UI. ``fastapi``/``uvicorn`` are imported

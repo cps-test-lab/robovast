@@ -273,7 +273,7 @@ def ensure_nvidia_device_plugin(kube_context=None, gpu_replicas=None, skip=False
     before:
 
     * **Implicit.** Nothing found, or the plugin does not come up: warn and carry on
-      without GPU. Setup must not fail because an optimisation nobody asked for did not
+      without GPU. Setup must not fail because an optimization nobody asked for did not
       pan out.
     * **Explicit.** The same conditions raise. Someone who passed ``--gpu-replicas``
       would otherwise get software rendering while believing they had a GPU.

@@ -473,7 +473,7 @@ def is_campaign_dir(name: str) -> bool:
 
     Both the legacy ``campaign-YYYY-MM-DD-HHMMSS`` format and the newer
     ``<metadata-name>-YYYY-MM-DD-HHMMSScc`` format (with hundredths of a
-    second for concurrent-run disambiguation) are recognised.
+    second for concurrent-run disambiguation) are recognized.
     """
     return bool(_CAMPAIGN_DIR_RE.match(name))
 

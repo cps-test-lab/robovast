@@ -61,7 +61,7 @@ Consequences to know:
 * Aux compute is scheduled by Kubernetes as its own pod, so it never competes
   with the service (the control plane) for resources.
 
-Lifecycle: the pod is labelled with its campaign, owned by the service pod (so
+Lifecycle: the pod is labeled with its campaign, owned by the service pod (so
 Kubernetes garbage-collects it if the service is replaced), carries an
 ``activeDeadlineSeconds`` backstop, and is deleted when the campaign ends.
 """

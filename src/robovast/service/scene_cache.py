@@ -293,7 +293,7 @@ def campaign_world_rel(world: str, config_name: str = "") -> str | None:
         collide in one packed job, which is why the mapping back is not the campaign one.
 
     Getting this wrong is not a broken path but a missing 3D scene, so the per-config form
-    is recognised by the configuration's own name rather than guessed from the shape of the
+    is recognized by the configuration's own name rather than guessed from the shape of the
     path -- a campaign-level ``files/nav2_params.yaml`` has a directory part too.
     """
     if not world.startswith(_RUN_FILE_MOUNT):
@@ -641,7 +641,7 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
             return out_dir
         os.makedirs(cache_root(), exist_ok=True)
         entry = _generate_entry(identity, key, max_tex_dim)
-        # use_cache=False is not an optimisation: a containerized generator's manifest names paths that
+        # use_cache=False is not an optimization: a containerized generator's manifest names paths that
         # do not exist here, so that cache can never hit (see the module docstring). Our own key already
         # decided this is a miss.
         try:

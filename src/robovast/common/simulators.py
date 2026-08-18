@@ -618,7 +618,7 @@ def resolve_sim_path(backend: SimulatorBackend, path: str, name: str = "") -> tu
 
     A bare backend key is that key; anything else lands under the backend's
     :attr:`~SimulatorBackend.DOTTED_ROOT`. A backend that declares no root has no short
-    form, so an unrecognised first segment is refused naming the keys that exist -- the
+    form, so an unrecognized first segment is refused naming the keys that exist -- the
     alternative being a campaign that composes cleanly and fails after the image pull.
     """
     parts = tuple(p for p in str(path).split(".") if p)

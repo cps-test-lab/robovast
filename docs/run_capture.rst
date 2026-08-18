@@ -110,7 +110,7 @@ failure this whole design exists to avoid.
 
 ``frame`` is the frame pose tracks are expressed in. It must match the scene's geometry — for roqsim that is
 the simulator's **world** frame. This is not bookkeeping: a nav stack's ``base_link`` lives in a *map*
-frame that can be metres from the world origin, and no reader can tell the two apart from the numbers.
+frame that can be meters from the world origin, and no reader can tell the two apart from the numbers.
 In ``configs/examples/basic_nav`` the offset is 8 m, so getting it wrong draws the robot in the wrong
 room.
 

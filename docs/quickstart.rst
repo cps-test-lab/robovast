@@ -192,7 +192,7 @@ the wait command in :ref:`mcp` reachable; pass ``--no-link`` to manage PATH your
 
 The name header is the HTTP equivalent of the one ``vast login`` stores: an agent reads no
 config file, so without it every campaign the agent starts is unattributed while your own
-CLI runs are labelled. Drop the line to stay unattributed on purpose.
+CLI runs are labeled. Drop the line to stay unattributed on purpose.
 
 The service mounts MCP on the same port the web UI is on, so this is the whole setup —
 there is no separate MCP process to run, here or on the deployed instance.

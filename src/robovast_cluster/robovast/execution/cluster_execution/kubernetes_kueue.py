@@ -239,7 +239,7 @@ def _crd_registered(custom_api, plural) -> bool:
 
 def verify_kueue_admission_ready(namespace="default", kube_context=None,
                                  settle_timeout=0.0, required_resources=()):
-    """Check that a scenario Job labelled into the robovast queue can be admitted.
+    """Check that a scenario Job labeled into the robovast queue can be admitted.
 
     Every scenario and postprocess Job carries ``kueue.x-k8s.io/queue-name``, so Kueue
     creates it **suspended** and starts it only once LocalQueue ``robovast`` admits it
@@ -255,12 +255,12 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
     :class:`~robovast.common.errors.ClusterUnreachableError` when the API server does
     not answer, so an off cluster reads as one sentence rather than a urllib3 traceback.
 
-    Deliberately does **not** look at quota *utilisation*. A queue whose capacity is
+    Deliberately does **not** look at quota *utilization*. A queue whose capacity is
     currently used up is healthy and the correct response is to wait; only a structurally
     broken admission path is an error.
 
     ``required_resources`` is the one apparent exception, and it is coverage rather than
-    utilisation: Kueue does not reject a workload asking for a resource no resourceGroup
+    utilization: Kueue does not reject a workload asking for a resource no resourceGroup
     covers, nor one asking for more than the nominal quota of a resource that is covered.
     It suspends it, permanently. Neither can ever be admitted no matter how long the
     caller waits, so both are errors and not waits -- which is exactly the distinction
@@ -307,7 +307,7 @@ def _check_kueue_admission(namespace, required_resources=()):
     if local_queue is None:
         raise CampaignConfigError(
             f"Kueue LocalQueue '{KUEUE_QUEUE_NAME}' does not exist in namespace "
-            f"'{namespace}', but every job is labelled into it "
+            f"'{namespace}', but every job is labeled into it "
             f"(kueue.x-k8s.io/queue-name={KUEUE_QUEUE_NAME}). Kueue would suspend the "
             f"jobs and never admit them.\n{remedy}")
 

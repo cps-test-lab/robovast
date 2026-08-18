@@ -123,14 +123,14 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     Expected parameters:
 
     - ``num_goal_poses``: Number of goal poses to generate per path.
-    - ``path_length``: Target path length in metres.
+    - ``path_length``: Target path length in meters.
     - ``num_paths``: Number of different paths to generate.
-    - ``min_distance``: Minimum distance between consecutive waypoints in metres.
+    - ``min_distance``: Minimum distance between consecutive waypoints in meters.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
-    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+    - ``path_length_tolerance``: Acceptable deviation from target path length in meters
       (default: ``0.5``).
     - ``seed``: Random seed for reproducible generation.
-    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``robot_diameter``: Robot diameter for collision checking in meters.
 
     Behaviour:
 
@@ -138,7 +138,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
     - Validates path length within the specified tolerance.
     - Writes one pose or a list to ``goal`` according to how the **scenario** declares that
       parameter (``pose_3d`` versus ``list of pose_3d``).
-    - Uses path caching for performance optimisation.
+    - Uses path caching for performance optimization.
     """
 
     CONFIG_CLASS = PathVariationRandomConfig
@@ -462,15 +462,15 @@ class PathVariationRasterizedConfig(DestinationConfig):
 
 
 class PathVariationRasterized(StartGoalSlots, NavVariation):
-    """Creates route variations covering all areas of the map using a square grid rasterisation.
+    """Creates route variations covering all areas of the map using a square grid rasterization.
 
     Generates paths between raster points that meet specified path length criteria.
 
     Expected parameters:
 
-    - ``raster_size``: Grid spacing between raster points in metres.
-    - ``path_length``: Target path length in metres.
-    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``raster_size``: Grid spacing between raster points in meters.
+    - ``path_length``: Target path length in meters.
+    - ``robot_diameter``: Robot diameter for collision checking in meters.
     - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
       or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
       are used as potential start poses.
@@ -478,9 +478,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
       Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
       algorithm.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
-    - ``raster_offset_x``: X-axis offset for grid alignment in metres (default: ``0.0``).
-    - ``raster_offset_y``: Y-axis offset for grid alignment in metres (default: ``0.0``).
-    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+    - ``raster_offset_x``: X-axis offset for grid alignment in meters (default: ``0.0``).
+    - ``raster_offset_y``: Y-axis offset for grid alignment in meters (default: ``0.0``).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in meters
       (default: ``0.5``).
 
     Behaviour:

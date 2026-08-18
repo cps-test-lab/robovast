@@ -267,7 +267,7 @@ that wants both writes one ``UNION ALL``.
      - **Measurement** time: when the pose was true, from the producer itself. NULL when it cannot
        state one (a latched ``/tf_static`` transform).
    * - ``position.x/y/z``
-     - Metres.
+     - Meters.
    * - ``orientation.x/y/z/w``
      - Quaternion, and the only attitude a producer emits.
    * - ``orientation.yaw``
@@ -291,13 +291,13 @@ one campaign: a ground-truth pose published every 18 ms onto a 10 ms grid arrive
 denominator was wrong. Making the grid divide the period removes that systematic alias but not the
 delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks the base for
 you and reports which it used in ``time_base``, so a cross-simulator comparison can assert both
-sides used the same one instead of quietly comparing an exact base against a quantised one.
+sides used the same one instead of quietly comparing an exact base against a quantized one.
 
 **Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
 the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
 The ingest then derives ``orientation.yaw`` for any table that has the quaternion columns and no
 yaw, because the 2D consumers — the costmap panel's heading marker, the nav MCP tools, the
-notebooks — all want a heading and none of them should reimplement quaternion maths in SQL,
+notebooks — all want a heading and none of them should reimplement quaternion math in SQL,
 JavaScript and pandas separately. It is a projection, and a ``_column_notes`` entry says so.
 
 .. _clock-map:
@@ -306,7 +306,7 @@ Wall → sim: the clock map
 """""""""""""""""""""""""
 
 Everything a run *logs* is stamped in wall time — rosout's receive time, and whatever each
-container printed. Everything it is *analysed* on is sim seconds. Relating the two is a per-run
+container printed. Everything it is *analyzed* on is sim seconds. Relating the two is a per-run
 **clock map**: a list of ``(wall_ts, sim_ts)`` samples, interpolated piecewise-linearly.
 
 **A single offset is wrong**, which is why this is a sampled map and not a number. Measured on a
@@ -377,7 +377,7 @@ Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container`
   RoboVAST's own and could simply say when it spoke.
 
   Third-party output that stamps nothing (a gz warning, a vanilla sidecar) is **never dropped**:
-  it gets a row per line, inheriting from a neighbouring event where one exists and reporting
+  it gets a row per line, inheriting from a neighboring event where one exists and reporting
   ``none`` where it does not. An untimed row is honest about being untimed; it is deliberately
   not backfilled from the next stamp, which would render exactly like a real time and claim the
   container booted at whatever second the first node came up.
@@ -427,7 +427,7 @@ table like any other per-run CSV.
 
 Why it is a table and not just those files: a lane gives a job a fixed number of cores, so a
 simulator that starves the stack changes what the stack does. That is a competing
-explanation for any behavioural result, and it can only be ruled out in the same query as
+explanation for any behavioral result, and it can only be ruled out in the same query as
 the behaviour.
 
 .. code-block:: sql

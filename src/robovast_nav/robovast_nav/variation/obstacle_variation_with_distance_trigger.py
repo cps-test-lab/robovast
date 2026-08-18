@@ -106,14 +106,14 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
       pose position.
     - ``trigger_threshold`` (slot): receives the trigger
       distance value that was used.
-    - ``trigger_distance``: Arc-length in metres from the start to the obstacle.
+    - ``trigger_distance``: Arc-length in meters from the start to the obstacle.
       Accepts a single float or a list of floats — one output configuration is produced
       per value.
     - ``obstacle_configs``: List of obstacle configurations (same format as
       :class:`ObstacleVariation`).  Total ``amount`` across all entries must equal
       exactly 1.
     - ``seed``: Seed for random number generation to ensure reproducibility.
-    - ``robot_diameter``: Diameter of the robot for collision checking in metres.
+    - ``robot_diameter``: Diameter of the robot for collision checking in meters.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
     - ``count``: Number of obstacle configurations to generate (default: ``1``).
     - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``).

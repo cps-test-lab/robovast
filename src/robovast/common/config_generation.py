@@ -506,7 +506,7 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
         except WorldQueryUnavailable as exc:
             # Say so. At debug level this silently disarmed the check for exactly the campaigns
             # most in need of it -- one whose world ships in its own built image answers
-            # nothing, and a misspelt plugin key then sailed through to the container.
+            # nothing, and a misspelled plugin key then sailed through to the container.
             logger.warning(
                 "sim overrides were not pre-checked (%s): %s. They are still refused in the "
                 "container if they are wrong.",
