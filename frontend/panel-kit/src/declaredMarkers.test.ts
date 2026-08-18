@@ -68,4 +68,28 @@ describe('declaredMarkers', () => {
     expect(declaredMarkers({}, config({}))).toEqual([])
     expect(declaredMarkers({ markers: 'not a list' }, config({}))).toEqual([])
   })
+
+  it('reads a pose from an internal a variation left behind', () => {
+    // The generic point: a panel field's source is a separate question from its meaning, so a datum
+    // a variation recorded is bindable exactly like a scenario parameter.
+    const out = declaredMarkers(
+      { markers: [{ kind: 'pose', internal: '_start_pose', label: 'start' }] },
+      { ...config({}), internals: { _start_pose: { position: { x: 2, y: 3 } } } },
+    )
+    expect(out[0].pos).toEqual([2, 3])
+    expect(out[0].label).toBe('start')
+  })
+
+  it('reads a path polyline from an internal', () => {
+    const out = declaredMarkers(
+      { markers: [{ kind: 'path', internal: '_path', label: 'planned path' }] },
+      { ...config({}), internals: { _path: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] } },
+    )
+    expect(out[0].kind).toBe('path')
+    expect(out[0].points).toEqual([[0, 0], [1, 0], [1, 1]])
+  })
+
+  it('draws nothing for an internal the configuration does not have', () => {
+    expect(declaredMarkers({ markers: [{ kind: 'path', internal: '_nope' }] }, config({}))).toEqual([])
+  })
 })

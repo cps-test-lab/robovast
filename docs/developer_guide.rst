@@ -1886,8 +1886,23 @@ without touching any panel:
   ``registerConfigPanel``, and its type joins ``BUILTIN_CONFIG_PANEL_TYPES``. Package-provided
   config panels use the **same** ``robovast.panel_types`` entry-point group and the same asset
   route; the panel class's ``SURFACE`` (``"run"`` by default, ``"config"`` otherwise) is what
-  tells them apart, so naming a run panel in ``visualization.config.panels`` is refused rather
-  than mounting a component that reads a clock against a configuration.
+  tells them apart, so naming a run panel in ``visualization.config.panels`` is refused --
+  naming the surface the panel *does* belong to and the block to declare it under, rather than
+  reporting it as unknown. **A config panel must set** ``SURFACE``: the default is ``"run"``, so
+  a class that forgets it registers on the wrong surface and its own campaigns then read as
+  "unknown config-view panel type".
+
+  A panel type may also declare **what a** ``.vast`` **may say to it**, as ``CONFIG_CLASS`` -- the
+  same attribute a variation type uses, so ``get_plugin_details`` describes a panel's fields
+  without knowing anything about panels, and the editor completes them from the served schema.
+  Fields take a :class:`~robovast.common.panel_bindings.Binding`: a literal, ``{param: ...}`` (a
+  scenario parameter), ``{internal: ...}`` (a key a variation left on the configuration) or
+  ``{role: ...}`` (a contributed file), resolved by one function in ``panel-kit``
+  (``resolveBinding``) so no panel parses its own bindings. Declaring the model is **opt-in**:
+  a type that declares none keeps the free-form ``extra`` rule, which is what lets the run
+  view's ``vega_lite``/``layers``/``series`` bindings stay free-form. A type that declares one
+  gets its keys checked, and a misspelled binding becomes an error naming the valid fields
+  instead of a panel that silently draws nothing.
 * **Data** comes only through ``DataProvider`` (``dataProvider.ts``): rows by table+time,
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a

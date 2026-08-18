@@ -564,6 +564,48 @@ def panel_type_names(surface: str) -> frozenset:
     return frozenset(names)
 
 
+@lru_cache(maxsize=None)
+def panel_type_bindings(surface: str) -> dict:
+    """``{panel type: bindings model}`` for the installed panels of *surface* that declare one.
+
+    A panel type declares its accepted bindings as ``CONFIG_CLASS``, the same attribute a variation
+    type uses -- which is why ``get_plugin_details`` describes a panel's fields without knowing
+    anything about panels. Types that declare none are absent, and keep the free-form ``extra`` rule:
+    the run view's ``vega_lite``/``layers``/``series`` bindings are rich and unmodelled, and none of
+    them has to be modelled for a panel that *does* declare its fields to be checked.
+
+    Best-effort exactly as :func:`panel_type_names` is: a plugin that fails to import contributes no
+    model, so its bindings stay unvalidated rather than reading as "unknown field".
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+    models = {}
+    try:
+        eps = list(entry_points().select(group=PANEL_TYPES_GROUP))
+    except Exception:  # noqa: BLE001 - enumeration must never break validation
+        logger.debug("could not enumerate entry-point group %r", PANEL_TYPES_GROUP)
+        return models
+    for ep in eps:
+        try:
+            cls = ep.load()
+            if getattr(cls, "SURFACE", DEFAULT_PANEL_SURFACE) != surface:
+                continue
+            model = getattr(cls, "CONFIG_CLASS", None)
+            if isinstance(model, type) and issubclass(model, BaseModel):
+                models[ep.name] = model
+        except Exception:  # noqa: BLE001 - a broken plugin is not a broken binding
+            logger.debug("panel plugin %r failed to load; its bindings stay unchecked", ep.name)
+    return models
+
+
+def bindings_model_for(panel_type: str, surface: str):
+    """The bindings model a panel type declares, or ``None`` when it declares none."""
+    from robovast.common.panel_bindings import \
+        BUILTIN_PANEL_BINDINGS  # pylint: disable=import-outside-toplevel
+    if surface == CONFIG_PANEL_SURFACE and panel_type in BUILTIN_PANEL_BINDINGS:
+        return BUILTIN_PANEL_BINDINGS[panel_type]
+    return panel_type_bindings(surface).get(panel_type)
+
+
 def visualization_block(cfg, *path):
     """Walk ``visualization.<path...>`` of a **raw** config dict; ``None`` if any step is absent.
 
@@ -826,6 +868,28 @@ class PanelConfigBase(BaseModel):
     @classmethod
     def _known_type(cls, v):
         return check_panel_type(v, cls.BUILTINS, cls.SURFACE, allow_custom=True)
+
+    @model_validator(mode='after')
+    def _declared_bindings_are_known(self):
+        """Check the panel's own keys against the model its type declares, where it declares one.
+
+        Opt-in per type on purpose. The alternative -- ``extra='forbid'`` for everyone -- would
+        refuse every run-view panel's bindings until each was modelled, and the point here is the
+        failure mode being fixed: an unknown key used to validate cleanly and draw nothing, so the
+        only symptom was an empty panel in the browser with nothing naming the key that was ignored.
+        """
+        model = bindings_model_for(self.type, self.SURFACE)
+        if model is None:
+            return self
+        extra = self.__pydantic_extra__ or {}
+        try:
+            model.model_validate(extra)
+        except ValidationError as err:
+            fields = ", ".join(sorted(model.model_fields)) or "none"
+            raise ValueError(
+                f"invalid binding for panel {self.type!r}; its fields are: {fields}. {err}"
+            ) from None
+        return self
 
     @model_validator(mode='after')
     def _custom_needs_remote(self):

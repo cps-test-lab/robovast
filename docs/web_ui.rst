@@ -454,16 +454,15 @@ on, with the same markers drawn top-down. It exists beside the 3D scene because 
 that path, so "why did the path go there" is a question about this picture. Drag to pan,
 wheel to zoom, double-click to fit; the scale bar reads in meters.
 
-Which map it draws: the one a variation contributed as its ``map`` role, or — declared on
-the panel — a workspace-relative path, which is how a campaign points at a map that is
-checked in rather than generated. A declared path wins, being the author naming a file
-outright:
+Which map it draws: the one a variation contributed as its ``map`` role, or the one bound on
+the panel, which is how a campaign points at a map it holds itself. A binding wins, being the
+author naming a file outright:
 
 .. code-block:: yaml
 
    - map2d:
        title: Map
-       map: files/depot.yaml
+       map: files/depot.yaml            # or {param: map_file} / {internal: _map_file} / {role: map}
        markers:
        - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
@@ -497,8 +496,31 @@ nothing about ``ParameterVariationList`` knows about placement, so it contribute
        # marker is shifted back by it.
        - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal}
 
+.. _panel-bindings:
+
+Every field of every panel is bound the same way, and a panel that declares its fields has
+them **checked**: a misspelled binding is a validation error naming the valid fields, where it
+used to validate cleanly and leave the panel silently empty. The four sources are
+
+``map: files/depot.yaml``
+    a literal — written out, the common case;
+``map: {param: map_file}``
+    a resolved scenario parameter, so the field follows the selected configuration;
+``path: {internal: _path}``
+    an ``_``-prefixed key a variation left on the configuration, named exactly as the
+    configuration carries it;
+``map: {role: map}``
+    a named entry of what the variations contributed.
+
+A source naming something a configuration does not have resolves to nothing, and the panel
+draws nothing for it — the same rule, and the same reason, as a ``param:`` that misses.
+Which fields a panel takes is in ``get_plugin_details("robovast.panel_types", "<type>")`` and
+in the served config schema, so the editor completes them.
+
 ``param:`` reads a resolved scenario parameter, so the marker follows the selection; one
-parameter holding a list of poses yields one numbered marker each. ``offset:`` is a literal
+parameter holding a list of poses yields one numbered marker each. ``internal:`` reads a
+variation's own datum the same way — and for ``kind: path`` it reads the polyline itself, which
+is how a campaign draws a route a variation planned (``_path``). ``offset:`` is a literal
 translation applied afterwards — the way a map-frame parameter is placed in a world-frame
 scene, declared in the file because nothing in a panel can know a campaign's frames. A
 ``param:`` the configuration does not have draws **nothing**, rather than a marker at the

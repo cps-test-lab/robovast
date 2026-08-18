@@ -39,6 +39,12 @@ contract (``{spec, clock, data}``), so it is time-synced and queries the run's `
 exactly like a built-in panel.
 """
 
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from robovast.common.panel_bindings import Binding, DeclaredMarker
+
 #: Shared Module-Federation container name for all robovast_nav panels (see vite.config.ts).
 REMOTE_NAME = "robovast_nav"
 
@@ -56,6 +62,34 @@ class CostmapPanelType:
     REMOTE_NAME = REMOTE_NAME
 
 
+class Map2DBindings(BaseModel):
+    """What a ``.vast`` may say to :class:`Map2DPanelType`.
+
+    Declared so the two keys this panel reads are checked, completed by the editor and described by
+    ``get_plugin_details`` -- before, a misspelled ``map:`` validated cleanly and the panel simply
+    drew no map, with nothing naming the key that was ignored.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    # Descriptions rather than `#:` comments: pydantic does not read doc comments, and these are what
+    # `get_plugin_details` shows an agent and the editor shows an author.
+    map: Optional[Binding] = Field(
+        None,
+        description=(
+            "The occupancy map to draw. A variation that generates one contributes it as the 'map' "
+            "role (FloorplanGeneration, PathVariationRandom, PathVariationRasterized), and then "
+            "this can be omitted. Bind it when the map is a fact the configuration does not carry: "
+            "a checked-in file (map: files/depot.yaml) or the parameter holding it "
+            "(map: {param: map_file})."))
+    markers: list[DeclaredMarker] = Field(
+        default_factory=list,
+        description=(
+            "Geometry this campaign declares itself, drawn beside whatever its variations "
+            "contributed. In the MAP frame -- this panel is the map -- so a map-frame parameter "
+            "needs no offset here, where the world-frame 3D scene needs one."))
+
+
 class Map2DPanelType:
     """The occupancy map a nav campaign plans on -- a **config-view** panel.
 
@@ -71,6 +105,9 @@ class Map2DPanelType:
 
     TYPE = "map2d"
     SURFACE = "config"
+    #: Same attribute a variation type uses, which is what makes ``get_plugin_details`` describe a
+    #: panel's fields without knowing anything about panels.
+    CONFIG_CLASS = Map2DBindings
     WEB_PANEL = "web/dist"
     PANEL_MODULE = "./map2d"
     REMOTE_NAME = REMOTE_NAME

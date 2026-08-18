@@ -286,3 +286,56 @@ def test_the_schema_names_each_surface_vocabulary():
     # the shorthand branch is keyed BY the type, so it carries the same vocabulary
     shorthand = next(b for b in defs["ConfigPanelConfig"]["anyOf"] if b.get("maxProperties") == 1)
     assert set(shorthand["propertyNames"]["enum"]) == config_enum
+
+
+def test_a_panel_that_declares_its_fields_gets_them_checked():
+    """The failure this exists to end: an unknown binding validated cleanly and drew nothing.
+
+    The only symptom was an empty panel in the browser, with nothing naming the key that was
+    ignored -- so the author looked for a broken map, a missing plugin, a stale bundle.
+    """
+    with pytest.raises(ValidationError) as err:
+        ConfigPanelConfig.model_validate({"map2d": {"maps": "files/depot.yaml"}})
+    assert "invalid binding for panel 'map2d'" in str(err.value)
+    assert "its fields are: map, markers" in str(err.value)
+
+    # ...and a valid one is untouched, in every source form the grammar offers.
+    for binding in ("files/depot.yaml", {"param": "map_file"}, {"internal": "_map_file"},
+                    {"role": "map"}):
+        ConfigPanelConfig.model_validate({"map2d": {"map": binding}})
+
+
+def test_a_binding_names_exactly_one_source():
+    with pytest.raises(ValidationError) as err:
+        ConfigPanelConfig.model_validate({"map2d": {"map": {"param": "m", "internal": "_m"}}})
+    assert "exactly one source" in str(err.value)
+
+
+def test_a_declared_marker_is_checked_too():
+    # scene3d is a core panel -- a name, not a plugin class -- so its bindings come from
+    # BUILTIN_PANEL_BINDINGS. Same check, same message shape.
+    with pytest.raises(ValidationError) as bad_kind:
+        ConfigPanelConfig.model_validate({"scene3d": {"markers": [{"kind": "blob", "pos": [0, 0]}]}})
+    assert "invalid binding for panel 'scene3d'" in str(bad_kind.value)
+
+    with pytest.raises(ValidationError) as no_position:
+        ConfigPanelConfig.model_validate({"scene3d": {"markers": [{"kind": "pose"}]}})
+    assert "needs a position" in str(no_position.value)
+
+    ConfigPanelConfig.model_validate({"scene3d": {"markers": [
+        {"kind": "pose", "pos": [-8, 0], "yaw": 0, "label": "start"},
+        {"kind": "pose", "param": "goal_pose", "offset": [-8, 0, 0]},
+        {"kind": "path", "internal": "_path", "label": "planned path"},
+    ]}})
+
+
+def test_a_panel_type_that_declares_nothing_keeps_its_free_form_bindings():
+    """Opt-in per type, which is what makes this safe to ship.
+
+    The run view's bindings are rich and unmodelled -- costmap layers, a whole Vega-Lite spec --
+    and none of them has to be modelled for a panel that *does* declare its fields to be checked.
+    """
+    RunViewPanelConfig.model_validate({"costmap": {"layers": {"map": {"topic": "/map"}},
+                                                   "whatever": {"nested": [1, 2]}}})
+    RunViewPanelConfig.model_validate({"timeseries": {"source": {"table": "poses"},
+                                                      "series": [{"column": "position.x"}]}})

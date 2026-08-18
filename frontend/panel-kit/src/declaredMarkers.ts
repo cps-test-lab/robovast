@@ -21,11 +21,14 @@
 // mean two subtly different things depending on which panel a reader declared them on.
 
 import type { ResolvedConfiguration, SceneMarker } from './configPanel'
+import { resolveBinding } from './bindings'
 
-/** A declared marker: a SceneMarker plus the two authoring-only keys the panel resolves. */
+/** A declared marker: a SceneMarker plus the authoring-only keys the resolver reads. */
 export interface DeclaredMarker extends SceneMarker {
   /** Name of a resolved scenario parameter to read the position (and yaw) from. */
   param?: string
+  /** Name of an `_`-prefixed key a variation left behind — a pose, or a path's points. */
+  internal?: string
   /** Added to the resolved position. */
   offset?: number[]
 }
@@ -79,9 +82,9 @@ export function declaredMarkers(
   for (const entry of declared) {
     if (!isRecord(entry)) continue
     const marker = entry as unknown as DeclaredMarker
-    const { param, offset, ...rest } = marker
+    const { param, internal, offset, ...rest } = marker
 
-    if (!param) {
+    if (!param && !internal) {
       const pos = translate(rest.pos, offset)
       if (rest.kind === 'path' ? rest.points : pos) {
         out.push({ ...rest, pos, group: rest.group || 'declared' })
@@ -89,7 +92,22 @@ export function declaredMarkers(
       continue
     }
 
-    const value = config.parameters?.[param]
+    // `param:` and `internal:` are the same question — where does this position come from — so they
+    // go through the one resolver every panel field uses. A path reads the value as its polyline;
+    // every other kind reads it as a pose, and a list of them yields one numbered marker each.
+    const source = param ? { param } : { internal }
+    const value = resolveBinding(source, config)
+    if (rest.kind === 'path') {
+      const points = (Array.isArray(value) ? value : [])
+        .map((p) => readPose(p).pos)
+        .filter((p): p is number[] => !!p)
+        .map((p) => translate(p, offset) as number[])
+      if (points.length) {
+        out.push({ ...rest, points, label: rest.label ?? (param || internal),
+                   group: rest.group || 'declared' })
+      }
+      continue
+    }
     // One parameter may hold a pose or a list of them (a campaign sweeping several goals), and both
     // read the same way.
     const values = Array.isArray(value) ? value : [value]
@@ -101,7 +119,9 @@ export function declaredMarkers(
         ...rest,
         pos: moved,
         yaw: rest.yaw ?? yaw,
-        label: values.length > 1 ? `${rest.label ?? param} ${i + 1}` : rest.label ?? param,
+        label: values.length > 1
+        ? `${rest.label ?? param ?? internal} ${i + 1}`
+        : rest.label ?? param ?? internal,
         group: rest.group || 'declared',
       })
     })

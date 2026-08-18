@@ -19,6 +19,9 @@ export type {
 export type { DeclaredMarker } from './declaredMarkers'
 export { declaredMarkers } from './declaredMarkers'
 
+export type { BindingSource } from './bindings'
+export { resolveBinding, resolveStringBinding } from './bindings'
+
 export { useCanvasClock } from './useCanvasClock'
 
 export { lastAtOrBefore, nearestIndex } from './timeIndex'

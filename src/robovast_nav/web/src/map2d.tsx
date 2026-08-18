@@ -13,17 +13,24 @@
 // Everything below the fetch is occupancyGrid.ts's: the same decode-to-canvas, the same grayscale
 // ramp and the same planar transforms the run view's costmap panel draws with.
 //
-// Bindings (vast visualization.config.panels), both optional:
-//   map: files/depot.yaml           # a checked-in map, when no variation contributes one
-//   markers:                        # literal markers, and ones bound to a resolved parameter
+// Bindings (vast visualization.config.panels), both optional and both declared by this panel's
+// CONFIG_CLASS (robovast_nav.panels:Map2DBindings) -- so a misspelled one is a validation error that
+// names the fields, rather than an empty panel:
+//   map: files/depot.yaml           # a literal path...
+//   map: {param: map_file}          # ...or the parameter holding it, or {internal: _map_file},
+//                                   # or {role: map} for what a variation contributed
+//   markers:
 //     - {kind: pose, pos: [0, 0], yaw: 0, label: start}
 //     - {kind: pose, param: goal_pose, label: goal}
+//     - {kind: path, internal: _path, label: planned path}
 //
-// The markers are drawn in the MAP frame -- this panel *is* the map -- so a map-frame parameter needs
-// no `offset:` here, where the world-frame 3D scene does.
+// Every field reads through the kit's one resolver, so where a value comes from is not this panel's
+// concern. The markers are drawn in the MAP frame -- this panel *is* the map -- so a map-frame
+// parameter needs no `offset:` here, where the world-frame 3D scene does.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { declaredMarkers, type ConfigPanelProps, type SceneMarker } from '@robovast/panel-kit'
+import { declaredMarkers, resolveStringBinding, type ConfigPanelProps, type SceneMarker }
+  from '@robovast/panel-kit'
 import {
   applyPlanar,
   decodeGrid,
@@ -77,11 +84,15 @@ export default function Map2DPanel({ spec, config, fileUrl }: ConfigPanelProps) 
   const [view, setView] = useState<View | null>(null)
   const drag = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null)
 
-  // A declared `map:` wins over a contributed one: it is the campaign author naming a file that is
-  // checked in, where the contribution is what a variation happened to generate. A campaign whose
-  // only factor is a plain parameter list has no variation to contribute anything and would
-  // otherwise have no map at all, though its map is sitting right there in the project.
-  const declaredMap = typeof spec.config?.map === 'string' ? spec.config.map : undefined
+  // A declared `map:` wins over a contributed one: it is the campaign author naming a file, where the
+  // contribution is what a variation happened to generate. A campaign whose only factor is a plain
+  // parameter list has no variation to contribute anything and would otherwise have no map at all,
+  // though its map is sitting right there in the project.
+  //
+  // Resolved through the kit rather than read as a string, so the binding grammar is the same one
+  // every panel field uses: `map: files/depot.yaml` and `map: {param: map_file}` both arrive here
+  // without this panel knowing the difference.
+  const declaredMap = resolveStringBinding(spec.config?.map, config)
   const mapPath = declaredMap || config.contribution?.files?.[MAP_FILE_ROLE]
 
   // Contributed plus declared, concatenated rather than one overriding the other -- the same rule
