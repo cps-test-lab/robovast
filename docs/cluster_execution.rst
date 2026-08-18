@@ -219,9 +219,46 @@ up — unless GPUs were asked for explicitly, which turns those into errors.
 ``N`` caps concurrency; it does **not** partition device memory. Nothing in Kubernetes, in
 the plugin, or in the driver gives each pod a share of VRAM — all ``N`` renderers allocate
 from the same card, first come first served — so ``N`` is an assertion that ``N``
-simultaneous trials fit in it. Exceed that and a trial's simulator fails mid-run. Measure it
-(``nvidia-smi`` on the node during a run, or the per-run ``resource_usage`` table) before
-raising the default.
+simultaneous trials fit in it. Exceed that and a trial's simulator fails mid-run.
+
+Measured on an RTX A2000 12GB, one 640×480 offscreen context per pod, against a 337 MiB
+baseline (the node's desktop session):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 25 25 30
+
+   * - Concurrent contexts
+     - GPU memory used
+     - Above baseline
+     - Marginal per context
+   * - 1
+     - 430 MiB
+     - 93 MiB
+     - 93 MiB
+   * - 4
+     - 711 MiB
+     - 374 MiB
+     - 93 MiB
+   * - 8
+     - 824 MiB
+     - 487 MiB
+     - 60 MiB
+   * - 16
+     - 1574 MiB
+     - 1237 MiB
+     - 77 MiB
+
+So the cost is **sub-linear** — the driver shares part of its allocation across contexts on
+one GPU — and 16 concurrent renderers used 13% of the card, with GPU utilisation at 45% while
+each rendered at 10 Hz. On this hardware VRAM is nowhere near the binding constraint: it is
+CPU quota that limits campaign width, which is why the default sits above that ceiling.
+
+Do not read those figures as a budget for your own worlds. A 640×480 framebuffer of a trivial
+scene is the floor: the framebuffer scales with the requested frame size, each camera builds
+its own renderer, and meshes and textures are extra. Re-measure with ``nvidia-smi`` on the
+node during a real campaign, or from the per-run ``resource_usage`` table, before raising the
+default for a heavier world.
 
 The default of 16 is chosen to sit *above* the CPU ceiling, so GPU quota is not what limits a
 campaign: a three-container scenario job asks for roughly ten cores, so a 96-core node admits
