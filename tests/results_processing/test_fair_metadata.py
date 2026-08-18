@@ -149,3 +149,38 @@ def test_a_campaign_with_no_agents_still_produces_a_graph(campaign):
 ])
 def test_as_list_wraps_a_scalar_and_leaves_a_sequence(value, expected):
     assert _as_list(value) == expected
+
+def test_a_failed_contribution_is_recorded_in_the_graph(campaign, caplog, monkeypatch):
+    """A provenance graph must declare its own gaps.
+
+    The hook used to be logged and skipped, which leaves a *published* record whose
+    incompleteness is invisible: nothing distinguishes a variation whose contribution failed
+    from one that had nothing to contribute. Warning kept, gap added -- in the artifact, and
+    in the message the postprocessing step reports.
+    """
+    class Exploding:
+        @classmethod
+        def collect_prov_metadata(cls, **kwargs):
+            raise RuntimeError("map file went missing")
+
+    from robovast.results_processing import fair_metadata as fm
+    monkeypatch.setattr(fm, "load_variation_classes", lambda: {"Exploding": Exploding})
+
+    (campaign / "ca").mkdir()
+    metadata = _metadata([])
+    metadata["configurations"] = [{
+        "name": "ca",
+        "variations": [{"name": "Exploding",
+                        "started_at": "2026-08-10T05:17:00.931964+00:00",
+                        "duration": 1.0}],
+    }]
+
+    ok, message = generate_prov_metadata(campaign, metadata, generate_visualization=False)
+
+    assert ok, message
+    assert "Exploding in ca" in message and "map file went missing" in message
+    gaps = [n for n in _graph(campaign)
+            if "ProvenanceGap" in json.dumps(n.get("@type", n.get("type", "")))]
+    assert gaps, "the graph does not declare the contribution it is missing"
+    assert "Exploding in ca" in json.dumps(gaps[0])
+    assert "collect_prov_metadata failed" in caplog.text

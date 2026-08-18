@@ -636,6 +636,9 @@ def generate_prov_metadata(
         if p.is_dir() and not p.name.startswith("_")
     )
 
+    # Contributions that raised, named in the graph below rather than only in the log.
+    contribution_gaps: list[str] = []
+
     for config_name in config_names:
         config_path = config_name + "/"
         config_ns = Namespace(f"{dataset_iri}{campaign}{config_path}")
@@ -678,11 +681,17 @@ def generate_prov_metadata(
                     gen_activity_id=gen_activity[_ID],
                     vast_id=vast_config[_ID]
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one plugin must not lose the whole graph
+                # Logged AND recorded. A provenance graph is a published claim about how a result
+                # came to be, so a contribution that failed has to be visible in the artifact: a
+                # warning in this process is gone by the time anyone reads the graph, and the gap
+                # is then indistinguishable from a variation that had nothing to contribute. The
+                # other plugins still run.
                 logger.warning(
                     "Variation '%s' collect_prov_metadata failed for '%s': %s",
                     vtype_name, config_name, e,
                 )
+                contribution_gaps.append(f"{vtype_name} in {config_name}: {e}")
                 continue
 
             end_t = dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
@@ -915,6 +924,15 @@ def generate_prov_metadata(
         graph.append(metadata_activity)
         graph.append(graph_activity)
 
+    if contribution_gaps:
+        # The graph says what it is missing, in the graph. Without this a reader cannot tell an
+        # incomplete provenance record from a complete one.
+        graph.append({
+            _ID: campaign_ns["metadata.prov.json#provenance-gaps"],
+            _TYPE: [PROV["Entity"], ROBOVAST["ProvenanceGap"]],
+            ROBOVAST["missingContributions"]: sorted(contribution_gaps),
+        })
+
     # Compact the JSON-LD graph
     document = {"@graph": graph}
     document.update(iri_context)
@@ -945,4 +963,8 @@ def generate_prov_metadata(
         except Exception as e:  # noqa: BLE001
             logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
 
+    if contribution_gaps:
+        return True, (f"PROV metadata written to {prov_json_path}, with "
+                      f"{len(contribution_gaps)} variation contribution(s) missing: "
+                      + "; ".join(sorted(contribution_gaps)))
     return True, f"PROV metadata written to {prov_json_path}"

@@ -301,6 +301,45 @@ before building the image.
 Extending RoboVAST
 ------------------
 
+.. _contribution-hooks:
+
+Contribution hooks: the shared contract
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Several seams below follow one shape: a plugin *contributes* a typed fact about something the
+caller already has, through an optional classmethod. ``config_view_data`` (geometry for the
+config view), ``collect_prov_metadata`` (provenance nodes) and ``get_required_container`` (an
+auxiliary container a variation needs) are the three that exist. A new hook should look like
+them rather than invent its own habits:
+
+#. **An optional classmethod on the plugin class.** It can be asked without instantiating the
+   plugin or composing a campaign, so a caller holding only the class gets an answer.
+#. **Answered from data the caller already holds** — a resolved configuration, a config record,
+   the plugin's own parameters. No filesystem, no container, no network: that is what keeps a
+   hook callable inside a request, and what makes its answer reproducible.
+#. **Silence is valid, and it is the default.** The base implementation returns empty or
+   ``None``, so a plugin says nothing until it has something to say.
+#. **A typed contribution, not a bare dict** (:class:`ConfigViewContribution`,
+   :class:`ProvContribution`, :class:`ContainerSpec`), so the collector, the wire and these docs
+   can describe it.
+#. **Attribution travels with the contribution.** A marker's ``group`` defaults to the
+   contributing class's name; a PROV node is named per variation type. A reader can always ask
+   which plugin said this.
+#. **The failure policy follows the consequence.** This is the one axis the three genuinely
+   differ on, and it is a decision to make rather than a default to inherit:
+
+   * the missing answer changes **what runs** -> let it propagate. ``get_required_container``
+     does: without an answer we cannot know whether the campaign needs a helper image, so the
+     campaign must fail rather than launch with no aux pod.
+   * it changes **what a record claims** -> record the gap *in the record*.
+     ``collect_prov_metadata`` does: the graph gains a ``ProvenanceGap`` entity naming the
+     contribution that raised, because a published provenance record whose incompleteness is
+     invisible is worse than a loud failure.
+   * it changes **only a view** -> report it in the view. ``config_view_data`` does: the hook's
+     error lands in the contribution's ``errors`` and is shown beside the markers that did
+     arrive, since a view missing one variation's geometry is otherwise indistinguishable from a
+     variation that placed nothing.
+
 .. _extending-variation:
 
 Add Variation Plugin
@@ -565,7 +604,10 @@ Add PROV-O Provenance Hook to a Variation Plugin
 Variation plugins can contribute domain-specific nodes to the campaign's
 PROV-O provenance graph by overriding ``collect_prov_metadata`` on the
 ``Variation`` base class.  The default implementation returns ``None``
-(no contribution).
+(no contribution).  It follows the :ref:`contribution-hooks` contract, and its
+failure policy is the "record the gap in the record" case: a hook that raises is
+logged *and* named in the graph as a ``ProvenanceGap``, so an incomplete
+provenance record says that it is incomplete.
 
 This hook is the right place for provenance that is tightly coupled to a
 specific variation — for example, a floorplan generation variation knows
