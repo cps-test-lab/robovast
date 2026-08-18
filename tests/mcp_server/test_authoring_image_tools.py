@@ -10,6 +10,7 @@ named file's own content, not just the image, the same as ``describe_world`` its
 """
 
 import json
+import re
 
 import pytest
 
@@ -62,8 +63,28 @@ def test_describe_scenario_runs_the_introspection_module_at_the_sources_address(
     authoring.describe_scenario(
         address="/sources/ws-1/a.vast", scenario_path="scenarios/pick.osc")
     request = service.exec_calls[-1]
-    assert "python -m scenario_execution.introspection describe" in request.command
+    assert "python3 -m scenario_execution.introspection describe" in request.command
     assert "/sources/ws-1/scenarios/pick.osc" in request.command
+
+
+def test_the_interpreter_is_one_a_declared_image_actually_has(service):
+    """``python3``, never bare ``python``.
+
+    A DECLARED base image has no ``python`` -- Debian ships only ``python3`` (PEP 394) -- while
+    an image RoboVAST *built* does, because the venv at /usr/local provides one. So the bare
+    form worked for a project that builds its scenario image and failed with "python: command
+    not found" for every project that declares one, which is the common case.
+
+    This assertion is the narrow thing a stubbed test CAN check. It could not have caught the
+    original bug: the stub answers whatever is asked of it, so a command naming an interpreter
+    that does not exist in any real image passed here for as long as it was wrong. What catches
+    that is an exec against a declared-image container, which is a live check rather than this
+    one -- worth knowing before trusting this test to protect the behaviour.
+    """
+    authoring.describe_scenario(address="/sources/ws-1/a.vast", scenario_path="s.osc")
+    command = service.exec_calls[-1].command
+    assert "python3 -m" in command
+    assert not re.search(r"(?<!\w)python(?!\d)", command), command
 
 
 def test_describe_scenario_returns_the_payload_plus_the_resolved_image(service):

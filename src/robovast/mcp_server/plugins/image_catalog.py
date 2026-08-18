@@ -23,10 +23,10 @@ offer, not what does robovast itself have), always needs an address, and can cos
 container round trip — three reasons this is its own pair, not a mode of the existing one.
 
 * ``list_scenario_actions``/``get_scenario_action_details`` -- every action/modifier/
-  actor/struct a ``.osc`` file can reference in the image (``python -m
+  actor/struct a ``.osc`` file can reference in the image (``python3 -m
   scenario_execution.introspection list-actions``, run inside it).
 * ``list_roqsim_plugins``/``get_roqsim_plugin_details`` -- every ``roqsim.plugins`` entry
-  a world YAML's ``plugins:`` list can add in the image (``python -m roqsim.introspection
+  a world YAML's ``plugins:`` list can add in the image (``python3 -m roqsim.introspection
   list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in
@@ -51,8 +51,17 @@ from robovast.mcp_server.service_access import NO_SERVICE
 logger = logging.getLogger(__name__)
 
 _CATALOG_COMMANDS = {
-    "scenario_actions": "python -m scenario_execution.introspection list-actions",
-    "roqsim_plugins": "python -m roqsim.introspection list",
+    # ``python3`` and not ``python``: the only interpreter a DECLARED base image is
+    # guaranteed to have. Debian/Ubuntu ship no ``python`` at all (PEP 394 -- the name meant
+    # Python 2, and it exists only via the optional ``python-is-python3``), while an image
+    # RoboVAST *built* does have one, because the venv at /usr/local provides it. So a bare
+    # ``python`` worked for a project that builds its scenario image and failed with
+    # "python: command not found" for every project that declares one -- which is the common
+    # case, and why this went unnoticed. Adding the alias to our own images would have fixed
+    # only our images: `execution.containers.<name>.image` lets a campaign pin any base, so a
+    # tool's contract must not depend on a package the substrate cannot guarantee.
+    "scenario_actions": "python3 -m scenario_execution.introspection list-actions",
+    "roqsim_plugins": "python3 -m roqsim.introspection list",
 }
 
 _cache_lock = threading.Lock()

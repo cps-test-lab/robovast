@@ -338,7 +338,10 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
         container_path = f"/sources/{request.workspace_id}/{scenario_path}"
         payload = _exec_json(
             client, request,
-            f"python -m scenario_execution.introspection describe {container_path}")
+            # ``python3``: a declared base image has no ``python`` (see image_catalog's
+            # ``_COMMANDS``), so this failed for every project that does not build its
+            # scenario image -- which is most of them.
+            f"python3 -m scenario_execution.introspection describe {container_path}")
         image = client.resolve_image(request).image
         return {**payload, "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
