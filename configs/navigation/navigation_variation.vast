@@ -61,7 +61,7 @@ visualization:
   config:
     panels:
     - parameters: {title: Scenario parameters, height: "30%"}
-    - map2d: {title: Map, path and obstacles}
+    - map2d: {title: "Map, path and obstacles"}
   results:
     # The web Run view (Results -> Run view): replay one run over its rosbag timeline.
     run_view:
