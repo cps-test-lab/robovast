@@ -358,3 +358,54 @@ def test_the_preflight_is_told_about_the_gpu_requirement(monkeypatch):
     assert r.gpu_resources_requested() is True
     assert _runner(monkeypatch, execution=_ROS_SHAPE,
                    cluster_gpus=0).gpu_resources_requested() is False
+
+
+def test_a_non_simulator_container_gets_a_gpu_when_it_asks_for_one(monkeypatch):
+    """A system under test can be a legitimate GPU consumer -- a perception or inference stack
+    -- and asking is how it says so. Only the *auto*-request is tied to the simulation role,
+    because that is the container RoboVAST knows renders; nothing here can infer that someone
+    else's stack wants a device, so an explicit request is honoured on any container."""
+    execution = {"containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"image": "img:sim", "command": ["roqsim"]},
+        "sut": {"image": "nav2:jazzy", "resources": {"cpu": 3, "gpu": 1}},
+    }}
+    r = _runner(monkeypatch, execution=execution, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    sut = _sidecar(m, "sut")
+    assert sut["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert sut["resources"]["requests"]["nvidia.com/gpu"] == "1"
+    assert _env_dict(sut)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
+    # The simulator still gets its own, so the pod asks for two replicas in total -- worth
+    # knowing, because that halves how many such jobs a given replica count admits.
+    assert _sidecar(m, "simulation")["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert m["spec"]["template"]["spec"]["runtimeClassName"] == "nvidia"
+
+
+def test_a_sut_gpu_alone_still_sets_the_pod_runtime_class(monkeypatch):
+    """Even with the simulator opted out: runtimeClassName is decided across every container,
+    so a stack that needs a device does not silently lose the runtime that provides it."""
+    execution = {"containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"image": "img:sim", "command": ["roqsim"], "resources": {"gpu": 0}},
+        "sut": {"image": "nav2:jazzy", "resources": {"gpu": 1}},
+    }}
+    r = _runner(monkeypatch, execution=execution, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    assert m["spec"]["template"]["spec"]["runtimeClassName"] == "nvidia"
+    assert "nvidia.com/gpu" not in _sidecar(m, "simulation")["resources"].get("limits", {})
+    assert _sidecar(m, "sut")["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+def test_a_sut_gpu_is_not_requested_on_a_cpu_only_cluster(monkeypatch):
+    """An explicit request is honoured, but the coverage pre-flight is what stops it becoming
+    a job that hangs: asking for a device no node advertises must be caught, not scheduled."""
+    execution = {"containers": {
+        "scenario": {"image": "img:scenario"},
+        "sut": {"image": "nav2:jazzy", "resources": {"gpu": 1}},
+    }}
+    r = _runner(monkeypatch, execution=execution, cluster_gpus=0, runtime_class=None)
+    # The declaration stands -- it is the operator's word, not a guess ...
+    assert _sidecar(_job_manifest(r), "sut")["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    # ... and the pre-flight is told, so the queue is checked before any job is created.
+    assert r.gpu_resources_requested() is True
