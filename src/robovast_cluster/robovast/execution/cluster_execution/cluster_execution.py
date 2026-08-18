@@ -104,6 +104,17 @@ POD_BLOCKED_REASONS = frozenset({
 })
 
 
+#: Why the scheduler refused to place a pod. Unlike :data:`POD_BLOCKED_REASONS` this is a
+#: pod *condition*, and it is the shape every capacity or quota mistake takes: the
+#: workload is admitted, the kubelet has nowhere to put it, and the pod sits ``Pending``
+#: with its Job ``active``. Unreported, such a batch logs "still running" until
+#: ``activeDeadlineSeconds`` fires -- an hour by default -- and then reports
+#: ``DeadlineExceeded``, telling a scenario-timeout story about an infrastructure fault.
+#: Kubernetes' own message names the missing resource ("0/1 nodes are available: 1
+#: Insufficient nvidia.com/gpu"), which is the whole diagnosis.
+POD_UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulerError"})
+
+
 def _pod_job_name(pod) -> "str | None":
     """The owning Job's name off a pod's label (``batch.kubernetes.io/job-name``,
     older clusters: ``job-name``)."""
@@ -112,11 +123,16 @@ def _pod_job_name(pod) -> "str | None":
 
 
 def pod_block_reason(pod) -> "tuple[str, str] | None":
-    """``(reason, message)`` if a container of *pod* is stuck in an unrecoverable
-    ``waiting`` state (see :data:`POD_BLOCKED_REASONS`), else ``None``.
+    """``(reason, message)`` if *pod* cannot start on its own, else ``None``.
 
-    Checks init *and* regular containers; ``message`` is Kubernetes' own text (the
-    failed image ref + registry error), possibly empty.
+    Two distinct shapes, both of which leave the pod ``Pending`` and its Job
+    ``active`` indefinitely: a container stuck in an unrecoverable ``waiting`` state
+    (see :data:`POD_BLOCKED_REASONS`), or a pod the scheduler cannot place (see
+    :data:`POD_UNSCHEDULABLE_REASONS`).
+
+    Checks init *and* regular containers; ``message`` is Kubernetes' own text -- the
+    failed image ref and registry error, or the scheduler's per-node accounting --
+    possibly empty.
     """
     status = pod.status
     if status is None:
@@ -128,6 +144,13 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
         waiting = getattr(state, "waiting", None) if state else None
         if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
             return waiting.reason, (getattr(waiting, "message", None) or "").strip()
+    # Checked after the containers because an unschedulable pod has no container
+    # statuses at all -- there is no node on which to create them.
+    for cond in (getattr(status, "conditions", None) or []):
+        if (getattr(cond, "type", None) == "PodScheduled"
+                and str(getattr(cond, "status", None)) == "False"
+                and getattr(cond, "reason", None) in POD_UNSCHEDULABLE_REASONS):
+            return cond.reason, (getattr(cond, "message", None) or "").strip()
     return None
 
 
@@ -161,6 +184,44 @@ def pod_termination_reason(pod) -> "tuple[str, str] | None":
         if term and getattr(term, "reason", None) == "OOMKilled":
             cname = getattr(cs, "name", None) or "?"
             return "OOMKilled", f"container {cname} exceeded its memory limit"
+    return None
+
+
+def pod_restarted_containers(pod) -> "tuple[str, str] | None":
+    """``(reason, message)`` if a container of *pod* has been restarted, else ``None``.
+
+    A campaign job is one-shot -- ``backoffLimit: 0``, one pod, never retried -- so no
+    container here is ever *meant* to restart. The simulator, however, runs as a native
+    sidecar (``restartPolicy: Always``, see the manifest builder), which means the
+    kubelet restarts it on a crash and does **not** fail the pod. The scenario then
+    keeps running against a simulator that has lost all of its state: the trial either
+    times out or, worse, completes and writes data. An EGL or VRAM failure mid-run is
+    exactly this shape, and it is indistinguishable from a genuine trial failure --
+    and, in the worst case, from a success.
+
+    So the restart is the signal, not the exit code: it is reported even while the pod
+    is still ``Running``, and ``last_state.terminated`` supplies what the container died
+    of. A restarted simulator invalidates the trial whatever the cause.
+    """
+    status = pod.status
+    if status is None:
+        return None
+    statuses = list(getattr(status, "init_container_statuses", None) or []) + \
+        list(getattr(status, "container_statuses", None) or [])
+    for cs in statuses:
+        if (getattr(cs, "restart_count", 0) or 0) < 1:
+            continue
+        cname = getattr(cs, "name", None) or "?"
+        last = getattr(cs, "last_state", None)
+        term = getattr(last, "terminated", None) if last else None
+        why = getattr(term, "reason", None) if term else None
+        code = getattr(term, "exit_code", None) if term else None
+        detail = f"container {cname} restarted {cs.restart_count}x"
+        if why:
+            detail += f" after {why}"
+        if code is not None:
+            detail += f" (exit {code})"
+        return "ContainerRestarted", detail
     return None
 
 
@@ -293,8 +354,9 @@ class PodLogTail:
 _POD_PHASE_RANK = {"Pending": 0, "Failed": 1, "Succeeded": 2, "Running": 3}
 
 
-def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[dict, dict, dict]":
-    """One pod list → ``(pod_phases, blocked_job_reasons, terminated_reasons)``.
+def _pod_signals(k8s_core, namespace,
+                 label_selector) -> "tuple[dict, dict, dict, dict]":
+    """One pod list → ``(pod_phases, blocked, terminated, restarted)``.
 
     ``pod_phases``: Job name → its pod's phase — the truth a Job's ``status`` can't
     give, in both directions. ``status.active`` counts Pending pods as active, and it
@@ -303,7 +365,9 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[dict, dict, dict
     ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
     errors). ``terminated_reasons``: Job name → reason string for a pod that ended
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
-    a *failed* job can explain itself.
+    a *failed* job can explain itself. ``restarted``: Job name → reason string for a pod
+    whose container the kubelet restarted (see :func:`pod_restarted_containers`) -- the
+    one signal here that condemns a job which still looks healthy.
 
     Raises on a pod-list error rather than returning empties: a silent empty result
     is indistinguishable from "nothing is blocked", which let the run loop's grace
@@ -313,7 +377,7 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[dict, dict, dict
     never as "unblocked".
     """
     pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
-    phases, blocked, terminated = {}, {}, {}
+    phases, blocked, terminated, restarted = {}, {}, {}, {}
     for pod in pods:
         name = _pod_job_name(pod)
         if not name:
@@ -332,7 +396,11 @@ def _pod_signals(k8s_core, namespace, label_selector) -> "tuple[dict, dict, dict
         if term:
             r, msg = term
             terminated[name] = f"{r}: {msg}" if msg else r
-    return phases, blocked, terminated
+        restart = pod_restarted_containers(pod)
+        if restart:
+            r, msg = restart
+            restarted[name] = f"{r}: {msg}" if msg else r
+    return phases, blocked, terminated, restarted
 
 
 def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
@@ -343,10 +411,23 @@ def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
 
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
-    """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start (image
-    pull / container-config errors); see :func:`_pod_signals`. Empty when nothing is
-    blocked, so a truthy result means "these jobs will never start on their own"."""
+    """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start -- an image
+    pull / container-config error, or a pod the scheduler cannot place; see
+    :func:`_pod_signals`. Empty when nothing is blocked, so a truthy result means
+    "these jobs will never start on their own"."""
     return _pod_signals(k8s_core, namespace, label_selector)[1]
+
+
+def restarted_job_reasons(k8s_core, namespace, label_selector) -> dict:
+    """Job name → ``"<reason>: <message>"`` for Jobs whose pod had a container restarted
+    (see :func:`pod_restarted_containers`). Empty when nothing restarted.
+
+    Separate from :func:`blocked_job_reasons` because it needs the opposite response.
+    Blocked means "cannot start yet", so it is given a grace period. A restart has
+    *already happened* and cannot be undone: the trial's simulator lost its state, and
+    waiting only produces a confidently wrong result. Callers fail immediately.
+    """
+    return _pod_signals(k8s_core, namespace, label_selector)[3]
 
 
 def _suspended_job_reasons(job_list, namespace) -> dict:
@@ -400,7 +481,8 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
-        phases, blocked, terminated = _pod_signals(k8s_core, namespace, label_selector)
+        phases, blocked, terminated, restarted = _pod_signals(
+            k8s_core, namespace, label_selector)
     except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
         # A transient pod-list hiccup: report Job-level phases for this listing only
         # (it self-corrects on the next poll). The safety-critical blocked-job
@@ -413,7 +495,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # documented "no pod truth" signal that actually falls back to Job level.
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
-        phases, blocked, terminated = None, {}, {}
+        phases, blocked, terminated, restarted = None, {}, {}, {}
     suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
@@ -428,6 +510,11 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # otherwise show no cause (its scenario log is truncated) — surface it.
         if phase == "failed" and not detail:
             detail = terminated.get(job.metadata.name)
+        # A restart is reported whatever the phase: the pod may still be Running, and
+        # that is exactly the case worth surfacing -- a job on its way to a plausible
+        # result its simulator can no longer justify.
+        if not detail:
+            detail = restarted.get(job.metadata.name)
         out.append((job, phase, detail))
     return out
 

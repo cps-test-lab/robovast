@@ -21,7 +21,9 @@ from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,
+                                                                    pod_restarted_containers,
                                                                     pod_termination_reason,
+                                                                    restarted_job_reasons,
                                                                     running_scenario_job_names)
 
 
@@ -32,18 +34,25 @@ def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed))
 
 
-def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason=None):
+def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason=None,
+         unschedulable=None, restarts=None):
     """A pod for *job_name*.
 
     ``waiting=(reason, message)`` puts its container in that ``waiting`` state (as
     ImagePullBackOff would), phase Pending. ``terminated=(container, reason)`` puts a
     container in that ``terminated`` state (as OOMKilled would), phase Failed.
     ``pod_reason=(reason, message)`` sets a pod-level termination reason (Evicted /
-    DeadlineExceeded), phase Failed.
+    DeadlineExceeded), phase Failed. ``unschedulable=(reason, message)`` sets the
+    ``PodScheduled=False`` *condition* the scheduler writes, phase Pending -- note there
+    are no container statuses at all in that state, because there is no node to create
+    them on. ``restarts=(container, count, last_reason, exit_code)`` gives a container a
+    non-zero ``restart_count`` plus the ``last_state.terminated`` it died with, leaving
+    the phase Running: that combination is the point, a pod that still looks healthy.
     """
     container_statuses = None
     reason_attr = None
     message_attr = None
+    conditions = None
     if waiting is not None:
         reason, message = waiting
         phase = "Pending"
@@ -61,12 +70,27 @@ def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason
     if pod_reason is not None:
         reason_attr, message_attr = pod_reason
         phase = "Failed"
+    if unschedulable is not None:
+        reason, message = unschedulable
+        phase = "Pending"
+        conditions = [types.SimpleNamespace(
+            type="PodScheduled", status="False", reason=reason, message=message)]
+    if restarts is not None:
+        cname, count, last_reason, exit_code = restarts
+        container_statuses = [types.SimpleNamespace(
+            name=cname,
+            restart_count=count,
+            state=types.SimpleNamespace(waiting=None, terminated=None),
+            last_state=types.SimpleNamespace(
+                terminated=types.SimpleNamespace(reason=last_reason,
+                                                 exit_code=exit_code)))]
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod", labels={"batch.kubernetes.io/job-name": job_name}),
         status=types.SimpleNamespace(
             phase=phase, container_statuses=container_statuses,
-            init_container_statuses=None, reason=reason_attr, message=message_attr))
+            init_container_statuses=None, reason=reason_attr, message=message_attr,
+            conditions=conditions))
 
 
 class _Batch:
@@ -278,3 +302,61 @@ def test_unsuspended_jobs_never_query_kueue():
     ) as wl:
         list_jobs_with_phase(_Batch(jobs), _Core([_pod("a", "Running")]), "ns", "sel")
     wl.assert_not_called()
+
+
+def test_unschedulable_pod_is_blocked_with_the_schedulers_own_message():
+    """A pod Kueue admitted but the scheduler cannot place.
+
+    This is the shape every capacity or quota mistake takes, and before it was reported
+    the batch logged "still running" until activeDeadlineSeconds fired an hour later and
+    then blamed the scenario. The scheduler's message names the missing resource, which
+    is the entire diagnosis, so it is carried through verbatim.
+    """
+    msg = "0/1 nodes are available: 1 Insufficient nvidia.com/gpu."
+    core = _Core([_pod("gpu-job", unschedulable=("Unschedulable", msg))])
+    assert blocked_job_reasons(core, "ns", "sel") == {
+        "gpu-job": f"Unschedulable: {msg}"}
+
+
+def test_unschedulable_shows_as_blocked_in_the_job_listing():
+    batch = _Batch([_job("gpu-job", active=1)])
+    core = _Core([_pod("gpu-job", unschedulable=("Unschedulable", "Insufficient cpu."))])
+    result = {j.metadata.name: (p, d)
+              for j, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+    assert result["gpu-job"] == ("blocked", "Unschedulable: Insufficient cpu.")
+
+
+def test_a_schedulable_pod_is_not_reported_blocked():
+    """PodScheduled=True must not trip the check -- every healthy pod has that condition."""
+    pod = _pod("j", "Running")
+    pod.status.conditions = [types.SimpleNamespace(
+        type="PodScheduled", status="True", reason=None, message=None)]
+    assert blocked_job_reasons(_Core([pod]), "ns", "sel") == {}
+
+
+def test_a_restarted_container_is_reported_while_the_pod_still_runs():
+    """The simulator is a native sidecar, so the kubelet restarts it without failing the
+    pod and the scenario carries on against a simulator that lost all its state. The
+    restart is therefore the signal -- not the pod phase, which is still Running."""
+    pod = _pod("j", restarts=("simulation", 1, "Error", 139))
+    assert pod_restarted_containers(pod) == (
+        "ContainerRestarted", "container simulation restarted 1x after Error (exit 139)")
+    assert restarted_job_reasons(_Core([pod]), "ns", "sel") == {
+        "j": "ContainerRestarted: container simulation restarted 1x after Error (exit 139)"}
+
+
+def test_a_clean_pod_reports_no_restart():
+    assert pod_restarted_containers(_pod("j", "Running")) is None
+    assert restarted_job_reasons(_Core([_pod("j", "Running")]), "ns", "sel") == {}
+
+
+def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
+    """The case worth catching: a job on its way to a plausible result its simulator can
+    no longer justify."""
+    batch = _Batch([_job("j", active=1)])
+    core = _Core([_pod("j", restarts=("simulation", 2, "OOMKilled", 137))])
+    result = {jb.metadata.name: (p, d)
+              for jb, p, d in list_jobs_with_phase(batch, core, "ns", "sel")}
+    phase, detail = result["j"]
+    assert phase == "running"
+    assert "restarted 2x after OOMKilled" in detail
