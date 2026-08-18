@@ -145,6 +145,22 @@ After setup, the following command should show the cluster information:
 
 For debugging and monitoring, we recommend installing `k9s <https://k9scli.io/>`_.
 
+GPU nodes (optional)
+""""""""""""""""""""
+
+Only needed to render simulation cameras in hardware; campaigns run without it, in software.
+On each GPU node install the NVIDIA driver and the `NVIDIA container toolkit
+<https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>`_
+— the toolkit is what allows a container to be handed the device at all. RKE2 and k3s
+register a ``nvidia`` RuntimeClass once it is present, which is what RoboVAST looks for:
+
+.. code-block:: bash
+
+   kubectl get runtimeclass          # a 'nvidia' entry means the node is ready
+
+Everything above the host — making the GPU schedulable and requesting it per job — is done by
+``vast execution cluster setup``. See :ref:`cluster-gpu`.
+
 
 Docker
 ^^^^^^

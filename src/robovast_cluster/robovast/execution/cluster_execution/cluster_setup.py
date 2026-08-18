@@ -23,6 +23,7 @@ from importlib.metadata import entry_points
 from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
+from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
 from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm,
                                verify_kueue_admission_ready)
 
@@ -66,6 +67,15 @@ def _controller_rbac_manifests(namespace):
                 # config via the nodes/proxy subresource.
                 {"apiGroups": [""], "resources": ["nodes/proxy"],
                  "verbs": ["get"]},
+                # Whether a `nvidia` RuntimeClass exists decides whether a GPU pod gets
+                # `runtimeClassName` -- and on a cluster where nvidia is a registered
+                # runtime rather than the default one, that field is the whole difference
+                # between a usable GPU and a device the container cannot render on. Also
+                # cluster-scoped, so it belongs here rather than on the namespaced Role.
+                # Without it the check reads "no such RuntimeClass" for a 403 and the pod
+                # loses the field silently, which is how this was found.
+                {"apiGroups": ["node.k8s.io"], "resources": ["runtimeclasses"],
+                 "verbs": ["get", "list"]},
             ],
         },
         {
@@ -288,13 +298,23 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 
 
 def setup_server(config_name=None, list_configs=False, force=False,
-                 service_kwargs=None, **cluster_kwargs):
+                 service_kwargs=None, gpu_replicas=None, no_gpu=False, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
         config_name (str, optional): Name of the cluster config plugin to use
         list_configs (bool): If True, list available configs and exit
+        gpu_replicas (int, optional): Time-slicing replicas to advertise per physical GPU.
+            ``None`` provisions GPUs opportunistically (the default) and never fails over
+            a cluster that has none; a value makes GPU support an explicit requirement.
+        no_gpu (bool): Skip GPU provisioning entirely.
         **cluster_kwargs: Cluster-specific options to pass to setup_cluster()
+
+    Named parameters rather than ``cluster_kwargs`` entries on purpose: ``cluster_kwargs``
+    is the ``-o key=value`` channel, splatted into the provider's ``setup_cluster`` and
+    persisted as the cluster's recorded config. GPU provisioning is neither
+    provider-specific nor worth recording -- the node's advertised capacity is the record,
+    and unlike a stored number it cannot go stale.
 
     Returns:
         None
@@ -354,6 +374,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
                                 if k in ("ingress_host", "tls_secret", "issuer",
                                          "insecure_http")})
 
+    if no_gpu and gpu_replicas is not None:
+        raise ValueError("--no-gpu and --gpu-replicas are contradictory; pass one.")
+    if gpu_replicas is not None and gpu_replicas < 1:
+        raise ValueError("--gpu-replicas must be at least 1 (use --no-gpu to skip GPUs).")
+
     cluster_config = get_cluster_config(config_name)
 
     # Node labels are the only thing this deploy reads from a .vast, and it reads them
@@ -368,6 +393,18 @@ def setup_server(config_name=None, list_configs=False, force=False,
         logger.info("Job node labels (ResourceFlavor): %s", jobs_node_labels)
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
+
+    # BEFORE Kueue, and the order is load-bearing: `apply_kueue_queues` sizes the
+    # ClusterQueue's GPU quota from what the nodes advertise, and a node advertises nothing
+    # until this DaemonSet is running. Install it afterwards and the quota is sized from
+    # zero GPUs by construction -- which Kueue answers by suspending every GPU job forever
+    # rather than failing, so the campaign hangs and setup reported success.
+    #
+    # Going first rather than between the two also means Kueue's own install and its
+    # rollout wait overlap the plugin registering, so the capacity check below usually
+    # returns on its first poll.
+    ensure_nvidia_device_plugin(kube_context=kube_context, gpu_replicas=gpu_replicas,
+                                skip=no_gpu)
 
     # Install Kueue and queues first (always)
     install_kueue_helm(kube_context=kube_context)
@@ -493,6 +530,12 @@ def delete_server(config_name=None, **cluster_kwargs_override):
 
     # Uninstall Kueue (always, since we always install it)
     uninstall_kueue_helm(kube_context=kube_context)
+
+    # After Kueue, mirroring the setup order. The campaign jobs are already gone by this
+    # point, so no pod still holds a GPU allocation when its advertiser disappears. A no-op
+    # on every cluster that never had the plugin, which is what keeps teardown unchanged
+    # for a CPU-only cluster.
+    uninstall_nvidia_device_plugin(kube_context=kube_context)
 
     cluster_config = get_cluster_config(config_name)
     cluster_config.cleanup_cluster(kube_context=kube_context, **cluster_kwargs)

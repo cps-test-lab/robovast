@@ -55,7 +55,7 @@ def _deploy_stubs(monkeypatch):
     # Unstubbed, these tests wait out a connection timeout apiece.
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac"):
+                 "apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     queues = mock.Mock()
     monkeypatch.setattr(cluster_setup, "apply_kueue_queues", queues)
@@ -137,3 +137,62 @@ def test_unreadable_named_config_raises(tmp_path):
     """A named config that cannot be read must abort setup, not mean "no labels"."""
     with pytest.raises(ValueError, match="could not read node labels"):
         get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))
+
+
+def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
+    """Ordering, and it is load-bearing rather than tidy.
+
+    `apply_kueue_queues` sizes the ClusterQueue's GPU quota from what the nodes advertise,
+    and a node advertises nothing until the device plugin's DaemonSet is running. Install it
+    afterwards and the quota is sized from zero GPUs by construction -- which Kueue answers
+    by suspending every GPU job forever rather than failing, so the campaign hangs while
+    setup reports success.
+    """
+    from unittest import mock
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    order = []
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
+                        lambda **k: order.append("gpu-plugin"))
+    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
+                        lambda **k: order.append("kueue-helm"))
+    monkeypatch.setattr(cluster_setup, "apply_kueue_queues",
+                        lambda **k: order.append("kueue-queues"))
+    monkeypatch.setattr(cluster_setup, "verify_kueue_admission_ready", mock.Mock())
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
+
+    cluster_setup.setup_server(config_name="rke2", namespace="default")
+
+    assert order == ["gpu-plugin", "kueue-helm", "kueue-queues"], (
+        "the GPU quota would be sized before the node could advertise any GPUs")
+
+
+def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkeypatch):
+    from unittest import mock
+
+    import pytest as _pytest
+
+    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+
+    touched = []
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: (None, None))
+    monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
+                        lambda **k: touched.append("gpu"))
+    monkeypatch.setattr(cluster_setup, "install_kueue_helm",
+                        lambda **k: touched.append("kueue"))
+    monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
+
+    with _pytest.raises(ValueError, match="contradictory"):
+        cluster_setup.setup_server(config_name="rke2", namespace="default",
+                                   gpu_replicas=8, no_gpu=True)
+    with _pytest.raises(ValueError, match="at least 1"):
+        cluster_setup.setup_server(config_name="rke2", namespace="default", gpu_replicas=0)
+    assert touched == [], "the cluster was modified before the arguments were checked"

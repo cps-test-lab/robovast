@@ -151,3 +151,73 @@ def test_an_unreadable_crd_check_does_not_accuse_the_install(monkeypatch):
 
     api = _Broken({("localqueues", kk.KUEUE_QUEUE_NAME): _local_queue()})
     assert kk._crd_registered(api, "clusterqueues") is True
+
+
+# -- resource coverage --------------------------------------------------------
+#
+# Kueue does not reject a workload requesting a resource its ClusterQueue does not cover,
+# nor one requesting more than the nominal quota. It suspends it, and a suspended Job
+# looks active: the campaign log says "still running" and activeDeadlineSeconds cannot
+# fire because its timer does not run while suspended. That is why coverage is checked up
+# front, and why it is an error rather than something to wait out.
+
+
+def _cluster_queue(resources):
+    return {
+        "spec": {
+            "resourceGroups": [{
+                "coveredResources": [r["name"] for r in resources],
+                "flavors": [{"name": kk.KUEUE_RESOURCE_FLAVOR_NAME,
+                             "resources": resources}],
+            }],
+        },
+        "status": {"conditions": [{"type": "Active", "status": "True"}]},
+    }
+
+
+def _ready_api(resources):
+    return _Api({
+        ("localqueues", kk.KUEUE_QUEUE_NAME): _local_queue(),
+        ("clusterqueues", kk.CLUSTER_QUEUE_NAME): _cluster_queue(resources),
+    })
+
+
+_CPU_MEM = [{"name": "cpu", "nominalQuota": 96},
+            {"name": "memory", "nominalQuota": "125Gi"}]
+
+
+def test_an_uncovered_resource_is_refused_up_front(monkeypatch):
+    from robovast.common.errors import CampaignConfigError
+
+    monkeypatch.setattr(kk.client, "CustomObjectsApi", lambda: _ready_api(_CPU_MEM))
+    with pytest.raises(CampaignConfigError) as excinfo:
+        kk._check_kueue_admission("default", required_resources=("nvidia.com/gpu",))
+    message = str(excinfo.value)
+    assert "nvidia.com/gpu" in message
+    assert "does not cover it" in message
+    assert "cluster setup" in message, "the message must name the remedy"
+
+
+def test_a_zero_quota_is_refused_too(monkeypatch):
+    """Covered but zero can never admit either, and it is worse than absent because it
+    looks deliberately configured."""
+    from robovast.common.errors import CampaignConfigError
+
+    resources = _CPU_MEM + [{"name": "nvidia.com/gpu", "nominalQuota": 0}]
+    monkeypatch.setattr(kk.client, "CustomObjectsApi", lambda: _ready_api(resources))
+    with pytest.raises(CampaignConfigError) as excinfo:
+        kk._check_kueue_admission("default", required_resources=("nvidia.com/gpu",))
+    assert "nominal quota" in str(excinfo.value)
+
+
+def test_a_covered_resource_passes(monkeypatch):
+    resources = _CPU_MEM + [{"name": "nvidia.com/gpu", "nominalQuota": 16}]
+    monkeypatch.setattr(kk.client, "CustomObjectsApi", lambda: _ready_api(resources))
+    kk._check_kueue_admission("default", required_resources=("nvidia.com/gpu",))
+
+
+def test_requiring_nothing_leaves_the_cpu_only_check_untouched(monkeypatch):
+    """Every existing campaign goes through here asking for nothing extra: it must not
+    start failing on a cpu/memory-only queue."""
+    monkeypatch.setattr(kk.client, "CustomObjectsApi", lambda: _ready_api(_CPU_MEM))
+    kk._check_kueue_admission("default")

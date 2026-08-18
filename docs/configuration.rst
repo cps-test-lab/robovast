@@ -832,7 +832,14 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 - ``cpu`` (Optional): Number of CPU cores — whole (``4``), fractional (``0.5``) or in the
   millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list
 - ``memory`` (Optional): Memory limit (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
-- ``gpu`` (Optional): Number of GPUs (enables the NVIDIA runtime when set)
+- ``gpu`` (Optional): Number of GPUs. **Rarely needed.** Omit it and the container running
+  the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
+  nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
+  world, which never renders). Setting it enables the NVIDIA runtime on both lanes. On the
+  Kubernetes lane the GPU must also be schedulable, which ``vast execution cluster setup``
+  arranges — see :ref:`cluster-gpu`, which also covers why the replica count caps
+  concurrency without partitioning VRAM, and the comparability caveat for a campaign whose
+  cells ran at different GPU concurrency.
 
 Fractional cores are worth the trouble on the cluster, where a campaign's throughput is
 ``quota // pod_request``: rounding a sidecar that measures 0.3 cores up to a whole one is

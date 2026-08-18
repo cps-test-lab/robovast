@@ -97,7 +97,9 @@ def _run_upgrade(before, after, converged=True):
             wait_for_rollout=MagicMock(return_value=converged),
             running_image_digest=MagicMock(side_effect=lambda *a, **k: next(digests))), \
             patch("robovast.execution.cluster_execution.cluster_setup."
-                  "apply_controller_rbac", MagicMock()):
+                  "apply_controller_rbac", MagicMock()), \
+            patch("robovast.execution.cluster_execution.kubernetes_kueue."
+                  "apply_kueue_queues", MagicMock()):
         return CliRunner().invoke(upgrade, ["-n", "default"])
 
 

@@ -103,8 +103,8 @@ cluster execution:
        wait for pods)
      - `kubectl install guide <https://kubernetes.io/docs/tasks/tools/>`_
    * - ``helm``
-     - Install and upgrade Kueue (the job-queueing controller) via the Helm
-       chart registry
+     - Install and upgrade Kueue (the job-queueing controller) and, on a GPU
+       cluster, the NVIDIA device plugin, via the Helm chart registry
      - `helm install guide <https://helm.sh/docs/intro/install/>`_
    * - ``k9s`` *(recommended)*
      - Terminal UI for monitoring pods, jobs, and logs in real time — not
@@ -113,6 +113,13 @@ cluster execution:
 
 For GCP clusters the ``gcloud`` CLI is additionally required — see
 :ref:`cluster-config-gcp` below.
+
+To render on a GPU, the **node** additionally needs the NVIDIA driver and the NVIDIA
+container toolkit installed on the host. Nothing in RoboVAST installs those: they are the
+node administrator's, and the toolkit is what lets a container be handed the device at all.
+RKE2 and k3s register a ``nvidia`` RuntimeClass when the toolkit is present, and that is the
+signal RoboVAST detects — ``kubectl get runtimeclass`` tells you whether a cluster has it.
+Everything above the host is provisioned by setup; see :ref:`cluster-gpu` below.
 
 
 Cluster Setup
@@ -141,7 +148,10 @@ The setup command:
   configs such as ``rke2``). External-storage configs (e.g. GCS) deploy no
   helper pod — the bucket is used directly.
 * Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and sizes its job
-  queue to the cluster's available CPU/memory.
+  queue to the cluster's available CPU/memory — and to its GPUs, where it has any.
+* Makes GPUs schedulable where the cluster has them, so a simulation container renders in
+  hardware instead of in software (:ref:`below <cluster-gpu>`). A cluster without GPUs is
+  left exactly as it was.
 
 .. _cluster-node-labels:
 
@@ -167,11 +177,112 @@ A named ``.vast`` that cannot be read is an error rather than a silent "no label
 config that fails to load cannot be asked whether labels were intended, and guessing
 "none" would scatter job and control pods across arbitrary nodes.
 
+.. _cluster-gpu:
+
+GPU rendering
+^^^^^^^^^^^^^
+
+A simulation container renders its cameras offscreen with MuJoCo. Given a GPU it uses EGL;
+without one it falls back to software rendering, which is correct but roughly an order of
+magnitude slower and burns a dozen CPU cores doing it. On a sweep that is often the
+difference between a campaign that finishes and one that does not.
+
+**There is nothing to configure.** Setup detects a GPU and makes it schedulable, and the
+container that runs the simulator then requests one because the cluster advertises it — no
+flag, and no change to the ``.vast``. The same file renders in hardware on a GPU cluster and
+in software on a CPU one.
+
+.. code-block:: bash
+
+   vast execution cluster setup rke2 -x local     # provisions GPUs if the cluster has them
+
+What that does, when a GPU is found: installs the `NVIDIA device plugin
+<https://github.com/NVIDIA/k8s-device-plugin>`_ with time-slicing so several pods can share
+one card, adds ``nvidia.com/gpu`` to the Kueue quota, and puts ``runtimeClassName: nvidia``
+plus ``NVIDIA_DRIVER_CAPABILITIES=all`` on the pods that ask for one. That capability is the
+load-bearing part: the container runtime's default (``compute,utility``) hands over the
+device *without* the GL half of the driver, so the container gets a GPU it cannot render on
+— and nothing errors, the job is simply slow. roqsim refuses to start in that state rather
+than quietly producing a slower result.
+
+A cluster with no GPU is not a problem to report: nothing is installed, no manifest changes,
+and setup does not fail. The same is true if the plugin cannot be installed or never comes
+up — unless GPUs were asked for explicitly, which turns those into errors.
+
+**Concurrency and VRAM.** ``--gpu-replicas N`` sets how many pods may share one physical GPU:
+
+.. code-block:: bash
+
+   vast execution cluster setup rke2 -x local --force --gpu-replicas 24
+   vast execution cluster setup rke2 -x local --no-gpu       # opt out entirely
+
+``N`` caps concurrency; it does **not** partition device memory. Nothing in Kubernetes, in
+the plugin, or in the driver gives each pod a share of VRAM — all ``N`` renderers allocate
+from the same card, first come first served — so ``N`` is an assertion that ``N``
+simultaneous trials fit in it. Exceed that and a trial's simulator fails mid-run. Measure it
+(``nvidia-smi`` on the node during a run, or the per-run ``resource_usage`` table) before
+raising the default.
+
+The default of 16 is chosen to sit *above* the CPU ceiling, so GPU quota is not what limits a
+campaign: a three-container scenario job asks for roughly ten cores, so a 96-core node admits
+about nine concurrent jobs either way. Raising ``N`` therefore changes nothing until per-job
+CPU drops — which GPU rendering itself makes possible, by freeing the cores software
+rendering was using.
+
+The value is not stored anywhere. The node's advertised capacity is the record, because
+unlike a remembered number it cannot go stale::
+
+   kubectl --context local get node <node> -o jsonpath='{.status.capacity.nvidia\.com/gpu}'
+
+A bare re-run of ``setup --force`` preserves whatever count is deployed, so it will not
+quietly undo a deliberate ``--gpu-replicas 24``.
+
+**Opting a campaign out.** Set ``gpu: 0`` on the simulation container to leave the GPU alone
+— worth doing for a camera-less world, which never renders and would otherwise hold a
+replica for nothing:
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       simulation:
+         resources:
+           gpu: 0
+
+``gpu`` also takes the per-cluster form, for one ``.vast`` across a GPU and a non-GPU
+cluster: ``gpu: [{local: 1}, {gcp-c4: 0}]``.
+
+**Which GPU did a run actually use?** ``sysinfo`` records it, so it is a query over a
+finished campaign rather than something inferred from wall-clock:
+
+.. code-block:: sql
+
+   SELECT config_name, run_id, sysinfo_json FROM run_view
+
+giving a ``gpu`` block per run — ``render_node``, ``nvidia_model``, ``nvidia_driver`` — which
+together say whether that trial could render in hardware and on what. A GPU present with no
+render node is the ``graphics``-capability mistake described above.
+
+Which backend was *bound* is a property of the process that rendered, not of the node, so it
+is asked there instead: ``roqsim.rendering.bound_gl_backend()`` and ``bound_gl_device()``, and
+roqsim logs the pair at INFO when the application configures logging. The device string is the
+informative half — ``egl`` alone is what any machine with a working hardware GL stack reports,
+and on a multi-GPU host it does not say which card the driver picked.
+
+.. note::
+
+   Fix a campaign's GPU concurrency and record it. Time-slicing inflates each trial's
+   rendering time, so cells that ran at different concurrency are not comparable with each
+   other — a result that looks like an effect of the variable under study.
+
 To tear everything down after use:
 
 .. code-block:: bash
 
    vast execution cluster cleanup
+
+Cleanup removes the device plugin too, but never the ``nvidia`` RuntimeClass or the host's
+driver and toolkit: those belong to the cluster and its node administrator.
 
 
 Running Scenarios
@@ -514,10 +625,18 @@ Job Queueing with Kueue
 
 Cluster jobs are queued by `Kueue <https://kueue.sigs.k8s.io/>`_, which ``vast
 execution cluster setup`` installs and sizes to the cluster. It admits jobs only
-when there is CPU and memory for them, so a large campaign cannot oversubscribe
-the nodes, and several campaigns launched at once share the cluster instead of
-fighting over it. There is nothing to configure — every job RoboVAST creates is
-submitted to the queue automatically.
+when there is CPU and memory for them — and GPUs, on a cluster that has them — so a
+large campaign cannot oversubscribe the nodes, and several campaigns launched at once
+share the cluster instead of fighting over it. There is nothing to configure: every job
+RoboVAST creates is submitted to the queue automatically, and the queue is sized from
+what the nodes advertise.
+
+One consequence is worth knowing, because Kueue's answer to it is silence. A job that
+asks for a resource the ClusterQueue does not cover is not rejected — it is **suspended,
+indefinitely**, and a suspended job still counts as active, so a campaign would report
+"still running" forever with nothing to show. RoboVAST therefore checks coverage before
+creating any job and fails with the remedy instead. If you see that error, re-run
+``vast execution cluster setup`` (or ``upgrade``, which reconciles the queues too).
 
 **Jobs waiting is normal.** A campaign whose jobs sit in the queue is healthy: it
 is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
@@ -583,7 +702,7 @@ Per-Cluster Resource Limits
 ----------------------------
 
 When the **same** ``.vast`` file is used on multiple clusters that have
-different hardware, resource fields (``cpu``, ``memory``) can be expressed as
+different hardware, resource fields (``cpu``, ``memory``, ``gpu``) can be expressed as
 a list of ``{context-name: value}`` mappings instead of a plain scalar.
 
 .. code-block:: yaml

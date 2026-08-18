@@ -124,7 +124,8 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     monkeypatch.setattr(service_deploy, "published_host",
                         lambda *a, **k: "robovast.example.org")
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues"):
+                 "apply_controller_rbac", "apply_kueue_queues",
+                 "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
@@ -153,7 +154,8 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
 
     monkeypatch.setattr(service_deploy, "published_host", _unreachable)
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues"):
+                 "apply_controller_rbac", "apply_kueue_queues",
+                 "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
@@ -182,7 +184,8 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
 
     monkeypatch.setattr(service_deploy, "published_host", _must_not_be_called)
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues"):
+                 "apply_controller_rbac", "apply_kueue_queues",
+                 "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
@@ -192,3 +195,38 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
                                                "insecure_http": True})
 
     assert deploy.call_args.kwargs.get("registry_host") == "given.example.org"
+
+
+def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
+    """`upgrade` is the command operators use to move versions, and the ClusterQueue's
+    covered resources are coupled to what the deployed backend requests. Skipping the
+    reconcile meant a build that started asking for a new resource kind could be rolled
+    onto a queue that does not cover it -- which Kueue answers by suspending every job
+    forever rather than failing, so the campaign hangs. Reached through the command that
+    looks safe, which is what makes it worth a test.
+    """
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue, service_deploy
+
+    apply_queues = mock.Mock()
+    monkeypatch.setattr(kubernetes_kueue, "apply_kueue_queues", apply_queues)
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: ("rke2", {"namespace": "default"}))
+    monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: True)
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
+    monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path",
+                        lambda **k: False)
+
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
+
+    assert result.exit_code == 0, result.output
+    assert apply_queues.called, "upgrade left the Kueue queues unreconciled"
+    assert apply_queues.call_args.kwargs["namespace"] == "default"

@@ -79,11 +79,20 @@ from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
 from .cluster_context import resolve_resources
-from .cluster_execution import _label_safe_campaign, blocked_job_reasons
+from .cluster_execution import _label_safe_campaign, blocked_job_reasons, restarted_job_reasons
+from .kubernetes_gpu import GPU_RESOURCE
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
+
+#: Handed to the NVIDIA container runtime for a GPU container. The load-bearing member is
+#: ``graphics``: it is what injects ``/dev/dri``, ``libEGL_nvidia`` and the glvnd ICD, and
+#: without it the container gets the device but no way to render on it -- which is not an
+#: error anywhere, just a job that quietly renders in software many times slower. ``all``
+#: rather than an explicit list so one ``.vast`` key means the same thing here as on the
+#: Compose lane, which already writes exactly this.
+GPU_DRIVER_CAPABILITIES = "all"
 
 # How often (seconds) the result-download progress logger emits a running count.
 _DOWNLOAD_PROGRESS_INTERVAL = 5.0
@@ -309,6 +318,10 @@ class BatchJobRunner:
         # One container plan, shared with the local lane and exec_in_container.
         self.plan = plan_containers(execution_params, images=built_images,
                                     explicit_main=image)
+        # Once per campaign, not per job: a `list_node()` per job would add an API call to
+        # every one of a sweep's runs to answer a question whose answer cannot change
+        # between them.
+        self._discover_gpu_support()
         # Builds self.manifest and sets self.env.
         self.manifest = self.get_job_manifest(
             self.plan.main.image or image,
@@ -326,6 +339,10 @@ class BatchJobRunner:
         self._deadline_seconds = (per_run_deadline_seconds(execution_params)
                                   * self._runs_per_job())
         self.manifest["spec"]["activeDeadlineSeconds"] = self._deadline_seconds
+        # Pod-level, so it has to be decided across every container of the plan rather
+        # than inside get_job_manifest -- which sees only the main container and would
+        # therefore lose the case that matters most, a GPU on the simulation sidecar.
+        self._apply_pod_gpu_runtime()
         # Jobs already logged as hard-killed on the deadline, so the wait loop warns
         # once per job rather than every poll.
         self._deadline_killed = set()
@@ -604,6 +621,8 @@ class BatchJobRunner:
             if sc_resources.get('memory'):
                 secondary_spec['resources']['requests']['memory'] = sc_resources['memory']
                 secondary_spec['resources']['limits']['memory'] = sc_resources['memory']
+            self._apply_gpu_to_container(secondary_spec, secondary_env,
+                                         self._gpu_request(sc_resources, sc))
             if self.run_as_user is not None:
                 secondary_spec.setdefault('securityContext', {})['runAsUser'] = self.run_as_user
             # Appended AFTER s3-init, which is an ordinary init container and therefore
@@ -841,7 +860,11 @@ class BatchJobRunner:
 
         # Normalize resources: may be a dict or a Pydantic model
         if hasattr(resources, 'cpu'):
-            resources = {'cpu': resources.cpu, 'memory': resources.memory}
+            # `gpu` is carried through here too. Listing only cpu/memory silently dropped
+            # a declared GPU for any model-shaped input, which is exactly the shape of
+            # failure this whole path has to avoid: no error, just software rendering.
+            resources = {'cpu': resources.cpu, 'memory': resources.memory,
+                         'gpu': getattr(resources, 'gpu', None)}
 
         # Resolve per-cluster resource values for the active Kubernetes context
         resources = resolve_resources(resources, self.kube_context)
@@ -870,6 +893,12 @@ class BatchJobRunner:
         if resources.get('memory'):
             main_container['resources']['requests']['memory'] = resources['memory']
             main_container['resources']['limits']['memory'] = resources['memory']
+        # In the stepped shape the simulator IS this container, so this is where its GPU
+        # goes; in the ROS shape the sidecar below carries it instead.
+        main_env = main_container.setdefault('env', [])
+        self._apply_gpu_to_container(
+            main_container, main_env,
+            self._gpu_request(resources, getattr(getattr(self, "plan", None), "main", None)))
 
         # Add custom environment variables
         if env:
@@ -881,6 +910,103 @@ class BatchJobRunner:
                             'value': str(value)
                         })
         return manifest
+
+    def _discover_gpu_support(self) -> None:
+        """Record whether this cluster can schedule GPUs, and how they must be requested.
+
+        Both answers come from the live cluster, so a campaign needs no per-cluster
+        configuration to do the right thing: the same ``.vast`` renders on a GPU where one
+        is advertised and in software where none is. A cluster that cannot answer is a
+        cluster without GPUs as far as this run is concerned -- never an error, because a
+        CPU-only cluster is the ordinary case and must behave exactly as it did before.
+        """
+        self._gpu_capacity = 0
+        self._gpu_runtime_class = None
+        try:
+            from .kubernetes_gpu import get_cluster_allocatable_gpus, gpu_runtime_class_for
+            self._gpu_capacity = get_cluster_allocatable_gpus(
+                kube_context=self.kube_context)
+            if self._gpu_capacity:
+                # Asked rather than assumed, and "cannot tell" is not "no" -- see
+                # gpu_runtime_class_for for why an unreadable answer still names the class.
+                self._gpu_runtime_class = gpu_runtime_class_for(
+                    kube_context=self.kube_context)
+        except Exception as exc:  # noqa: BLE001 - absence of GPUs is not a failure
+            logger.debug("Could not determine GPU support (%s); assuming none", exc)
+
+    def _gpu_request(self, resources, container=None) -> int:
+        """How many GPUs one container should request.
+
+        An explicit ``resources.gpu`` always wins, ``0`` included -- that is how a campaign
+        opts out of a GPU on a cluster that has one, e.g. to run wider than the advertised
+        replica count. Otherwise the container that runs the simulator asks for one if the
+        cluster advertises any, which is what makes "use the GPU if there is one" need no
+        ``.vast`` edit at all.
+
+        The cost of that convenience, stated where it is incurred: a ``.vast`` no longer
+        fully determines the pod, so the same file yields different pods on a GPU cluster
+        and a CPU one. The run's own log records which backend it bound, so the result
+        stays interpretable afterwards.
+        """
+        declared = (resources or {}).get('gpu')
+        if declared is not None:
+            try:
+                return max(0, int(declared))
+            except (TypeError, ValueError):
+                logger.warning("Ignoring non-numeric resources.gpu %r", declared)
+                return 0
+        if container is None or SIMULATION_CONTAINER not in (container.roles or ()):
+            return 0
+        return 1 if getattr(self, "_gpu_capacity", 0) else 0
+
+    def _apply_gpu_to_container(self, spec, env_list, count) -> None:
+        """Put *count* GPUs on one container spec, with the env the runtime needs."""
+        if not count:
+            return
+        # Both requests and limits. Kubernetes defaults one from the other when a *Pod* is
+        # created, but Kueue computes a workload's quota from the Job's pod *template*,
+        # which no pod has been created from yet -- so a request left empty is accounted as
+        # zero GPUs and admitted straight past the quota.
+        spec['resources'].setdefault('requests', {})[GPU_RESOURCE] = str(count)
+        spec['resources'].setdefault('limits', {})[GPU_RESOURCE] = str(count)
+        # NVIDIA_VISIBLE_DEVICES is deliberately NOT set, and the asymmetry with the
+        # Compose lane (which sets it to `all`) is the point: there, nothing allocates
+        # devices, so the container must claim them. Here the device plugin injects the
+        # UUID it allocated into exactly the container that requested one, and overriding
+        # that with `all` would hand every container every GPU regardless of quota.
+        env_list.append({'name': 'NVIDIA_DRIVER_CAPABILITIES',
+                         'value': GPU_DRIVER_CAPABILITIES})
+
+    def _apply_pod_gpu_runtime(self) -> None:
+        """Set ``runtimeClassName`` when any container of the plan wants a GPU.
+
+        ``runtimeClassName`` is a pod field with no per-container form, so one container
+        asking for a GPU decides it for the pod. On RKE2 it is also the only thing that
+        makes the request usable: nvidia is a registered runtime rather than the default
+        one, so without it the kubelet allocates the device and the container gets no
+        driver, no ``/dev/dri`` and no way to render -- while the quota is still charged.
+        """
+        plan = getattr(self, "plan", None)
+        if plan is None or not getattr(self, "_gpu_runtime_class", None):
+            return
+        wants = any(self._gpu_request(resolve_resources(c.resources, self.kube_context), c)
+                    for c in plan.containers)
+        if wants:
+            self.manifest['spec']['template']['spec']['runtimeClassName'] = \
+                self._gpu_runtime_class
+
+    def gpu_resources_requested(self) -> bool:
+        """Whether any container of this campaign requests a GPU.
+
+        Used to tell the Kueue pre-flight which resources the ClusterQueue must cover: an
+        uncovered request is suspended forever rather than rejected, so it has to be caught
+        before any job is created.
+        """
+        plan = getattr(self, "plan", None)
+        if plan is None:
+            return False
+        return any(self._gpu_request(resolve_resources(c.resources, self.kube_context), c)
+                   for c in plan.containers)
 
     def _capture_image_digest(self, job_label: str) -> None:
         """Record the immutable digest the run pods actually used for the SUT image.
@@ -935,9 +1061,15 @@ class BatchJobRunner:
         be read. Only a queue that is provably broken raises.
         """
         from .kubernetes_kueue import KueueCheckUnavailable, verify_kueue_admission_ready
+
+        # A GPU request the ClusterQueue does not cover is not rejected by Kueue -- it is
+        # suspended, permanently, while the Job reports active. Checked here so it costs one
+        # error before any job exists rather than a whole sweep's worth of hung ones.
+        required = (GPU_RESOURCE,) if self.gpu_resources_requested() else ()
         try:
             verify_kueue_admission_ready(namespace=self.namespace,
-                                         kube_context=self.kube_context)
+                                         kube_context=self.kube_context,
+                                         required_resources=required)
         except KueueCheckUnavailable as exc:
             logger.warning("Batch %s: cannot verify the Kueue admission path (%s); "
                            "proceeding. If jobs never start, check that ClusterQueue "
@@ -1057,11 +1189,31 @@ class BatchJobRunner:
                     raise CampaignConfigError(
                         f"{len(blocked)} scenario job(s) cannot start after "
                         f"{self._BLOCKED_GRACE_SECONDS:.0f}s and will not recover — "
-                        f"Kubernetes reports: {reasons}. Check the execution image "
-                        f"reference and pull credentials.")
+                        f"Kubernetes reports: {reasons}. An image reason points at the "
+                        f"execution image reference and pull credentials; an "
+                        f"Unschedulable one at cluster capacity or a resource no node "
+                        f"can satisfy (the message above names it).")
             elif blocked is not None:
                 # A successful probe that found nothing blocked clears the timer.
                 blocked_since = None
+            # No grace period, deliberately: unlike a blocked pod, a restart has already
+            # happened. The simulator lost its state, so every extra second spent waiting
+            # buys a more convincing wrong answer rather than a chance of recovery.
+            try:
+                restarted = restarted_job_reasons(self.k8s_client, self.namespace,
+                                                  job_label)
+            except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+                logger.warning("Batch %s: could not check for restarted containers: %s",
+                               self._batch_tag, exc)
+                restarted = None
+            if restarted:
+                detail = "; ".join(f"{job}: {why}" for job, why in sorted(restarted.items()))
+                raise CampaignConfigError(
+                    f"{len(restarted)} scenario job(s) had a container restarted, which "
+                    f"invalidates the trial — the simulator runs as a native sidecar, so "
+                    f"the kubelet restarts it on a crash without failing the pod, and the "
+                    f"scenario carries on against a simulator that lost all its state. "
+                    f"{detail}")
             # blocked is None (probe failed) => leave blocked_since unchanged.
             # A Kueue-suspended Job has no pod at all, so the probe above cannot see it
             # and activeDeadlineSeconds never fires (its timer does not run while

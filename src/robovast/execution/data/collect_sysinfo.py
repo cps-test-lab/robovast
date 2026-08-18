@@ -95,9 +95,70 @@ def get_platform_info() -> Dict[str, Any]:
     }
 
 
+def _nvidia_driver_version() -> Optional[str]:
+    """The driver version out of ``/proc/driver/nvidia/version``, or ``None``.
+
+    That file reads ``NVRM version: NVIDIA UNIX x86_64 Kernel Module  535.183.01  <date>``
+    -- the fields are separated by runs of spaces, and the version is the second one. It is
+    worth picking out rather than storing the whole line, because the driver version is what
+    a rendering difference between two clusters usually comes down to.
+    """
+    text = _read_first_existing(["/proc/driver/nvidia/version"])
+    if not text:
+        return None
+    fields = [f.strip() for f in text.splitlines()[0].split("  ") if f.strip()]
+    return fields[1] if len(fields) > 1 else None
+
+
+def get_gpu_info() -> Dict[str, Any]:
+    """What GPU this run could see, read straight from the filesystem.
+
+    Records the three facts that decide whether a trial rendered in hardware, so the
+    question can be answered from a campaign's data afterwards instead of inferred from
+    wall-clock:
+
+    * ``render_node`` -- a DRI render node is what the EGL backend needs. Its absence is
+      the difference between a CPU-only machine and a broken GL install.
+    * ``nvidia_model`` -- the card the driver has, from ``/proc``.
+    A GPU present with no render node is the signature of a container given the device
+    without the ``graphics`` driver capability, and this is where that shows up in the
+    data. Deliberately no imports beyond the standard library and no subprocess: this
+    script runs inside the execution image, where PyYAML is already avoided for the same
+    reason.
+
+    Deliberately does **not** report ``MUJOCO_GL`` or the bound backend. This runs as its
+    own process, so it sees its own environment rather than the simulator's -- the field was
+    recorded as ``null`` on every run, which is worse than absent because it reads as "no
+    backend" instead of "not observable from here". Which backend was actually bound is a
+    property of the process that rendered; ask it there
+    (``roqsim.rendering.bound_gl_backend`` / ``bound_gl_device``).
+    """
+    import glob
+
+    render_nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
+    model = None
+    for path in sorted(glob.glob("/proc/driver/nvidia/gpus/*/information")):
+        text = _read_first_existing([path])
+        if not text:
+            continue
+        for line in text.splitlines():
+            if line.startswith("Model:"):
+                model = line.split(":", 1)[1].strip()
+                break
+        if model:
+            break
+    return {
+        "render_node": render_nodes[0] if render_nodes else None,
+        "nvidia_present": os.path.exists("/dev/nvidiactl"),
+        "nvidia_model": model,
+        "nvidia_driver": _nvidia_driver_version(),
+    }
+
+
 def build_sysinfo(custom: Dict[str, Any]) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "platform": get_platform_info(),
+        "gpu": get_gpu_info(),
     }
     data.update(get_cpu_info())
     # Merge custom values. Keys without "/" become top-level.

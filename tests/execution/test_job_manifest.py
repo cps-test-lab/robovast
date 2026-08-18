@@ -28,10 +28,23 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
-def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"):
-    """Build a BatchJobRunner via for_batch with external calls stubbed."""
+def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast",
+            cluster_gpus=0, runtime_class=None):
+    """Build a BatchJobRunner via for_batch with external calls stubbed.
+
+    ``cluster_gpus``/``runtime_class`` stand in for the live cluster probe, which is the
+    only thing that decides whether an unstated ``resources.gpu`` becomes a request. Stubbed
+    rather than left real because otherwise every test here dials whatever cluster the
+    developer's kubeconfig happens to point at.
+    """
     monkeypatch.setattr(kubernetes_backend, "resolve_resources",
                         lambda res, ctx: dict(res) if isinstance(res, dict) else {})
+
+    def _fake_discover(self):
+        self._gpu_capacity = cluster_gpus
+        self._gpu_runtime_class = runtime_class
+
+    monkeypatch.setattr(BatchJobRunner, "_discover_gpu_support", _fake_discover)
     monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
                         lambda cfg, camp: ("bkt", ""))
     campaign_data = {
@@ -203,3 +216,145 @@ def test_a_sidecar_can_upload_what_it_writes_after_the_scenario_ends(monkeypatch
     # And the anchor a relative artifact path resolves against, so a per-run file lands
     # in the run's own directory rather than at the campaign root.
     assert env["RUN_OUTPUT_DIR"] == "/out/cfgA/0"
+
+
+# -- GPUs ---------------------------------------------------------------------------
+#
+# The requirement is "if the cluster has a GPU, the simulator uses it; if not, nothing
+# changes". Both halves are asserted, and the second one harder: a CPU-only cluster must
+# produce the manifest it produced before any of this existed.
+
+_ROS_SHAPE = {
+    "containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"image": "img:sim", "command": ["roqsim", "sim", "w.yaml"]},
+    },
+}
+_STEPPED_SHAPE = {
+    "containers": {
+        "scenario": {"image": "img:both"},
+        "simulation": {"backend": "roqsim", "config": "w.yaml"},
+    },
+}
+
+
+def _job_manifest(runner):
+    job = runner._build_jobs()[0]
+    return runner.create_job_manifest(job, total_jobs=1)
+
+
+def _main_of(manifest):
+    return manifest["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_a_cpu_only_cluster_produces_an_unchanged_manifest(monkeypatch):
+    """The invariant. No GPU limit, no runtimeClassName, no driver-capability env -- the
+    shape a campaign had before GPUs were supported at all."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=0)
+    m = _job_manifest(r)
+    assert "runtimeClassName" not in m["spec"]["template"]["spec"]
+    sim = _sidecar(m, "simulation")
+    assert "nvidia.com/gpu" not in sim["resources"].get("limits", {})
+    assert "NVIDIA_DRIVER_CAPABILITIES" not in _env_dict(sim)
+    assert "NVIDIA_DRIVER_CAPABILITIES" not in _env_dict(_main_of(m))
+
+
+def test_a_gpu_cluster_gives_the_simulation_sidecar_a_gpu(monkeypatch):
+    """The ROS shape: the simulator is a sidecar, so that is where the request must land.
+    Putting it on the scenario container instead would consume a replica and charge quota
+    while the process that actually renders still saw no device."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    sim = _sidecar(m, "simulation")
+    assert sim["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    # Both, because Kueue reads the pod TEMPLATE -- no pod exists yet for Kubernetes to
+    # default one from the other, so an empty request is accounted as zero GPUs.
+    assert sim["resources"]["requests"]["nvidia.com/gpu"] == "1"
+    assert _env_dict(sim)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
+    assert "nvidia.com/gpu" not in _main_of(m)["resources"].get("limits", {})
+
+
+def test_a_gpu_on_a_sidecar_still_sets_the_pod_runtime_class(monkeypatch):
+    """runtimeClassName is a pod field with no per-container form, so a sidecar's request
+    has to reach it -- and this is the case a main-container-only implementation loses."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
+    assert _job_manifest(r)["spec"]["template"]["spec"]["runtimeClassName"] == "nvidia"
+
+
+def test_the_stepped_shape_puts_the_gpu_on_the_main_container(monkeypatch):
+    """A simulator stepped in-process IS the scenario container, so the request belongs on
+    the main container and there is no sidecar to carry it.
+
+    Asserted on the base manifest rather than a per-job one: building a job for a stepped
+    backend runs the config expansion that feeds the backend its per-job ``sim`` block, and
+    that machinery is beside the point here -- the GPU decision is made once, where the main
+    container is described.
+    """
+    r = _runner(monkeypatch, execution=_STEPPED_SHAPE, cluster_gpus=16,
+                runtime_class="nvidia")
+    main = _main_of(r.manifest)
+    assert main["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert main["resources"]["requests"]["nvidia.com/gpu"] == "1"
+    assert _env_dict(main)["NVIDIA_DRIVER_CAPABILITIES"] == "all"
+    assert r.manifest["spec"]["template"]["spec"]["runtimeClassName"] == "nvidia"
+
+
+def test_gpu_zero_opts_a_campaign_out(monkeypatch):
+    """How a campaign runs wider than the advertised replica count on a GPU cluster."""
+    execution = {"containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"image": "img:sim", "command": ["roqsim"], "resources": {"gpu": 0}},
+    }}
+    r = _runner(monkeypatch, execution=execution, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    assert "nvidia.com/gpu" not in _sidecar(m, "simulation")["resources"].get("limits", {})
+    assert "runtimeClassName" not in m["spec"]["template"]["spec"]
+
+
+def test_an_explicit_count_wins_over_the_default(monkeypatch):
+    execution = {"containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"image": "img:sim", "command": ["roqsim"], "resources": {"gpu": 2}},
+    }}
+    r = _runner(monkeypatch, execution=execution, cluster_gpus=16, runtime_class="nvidia")
+    sim = _sidecar(_job_manifest(r), "simulation")
+    assert sim["resources"]["limits"]["nvidia.com/gpu"] == "2"
+
+
+def test_nvidia_visible_devices_is_never_set(monkeypatch):
+    """The device plugin injects the UUID it allocated into exactly the requesting
+    container. Setting this to `all` ourselves -- as the Compose lane correctly does, where
+    nothing allocates -- would hand every container every GPU regardless of quota."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    for container in (_main_of(m), _sidecar(m, "simulation")):
+        assert "NVIDIA_VISIBLE_DEVICES" not in _env_dict(container)
+
+
+def test_mujoco_gl_is_never_set(monkeypatch):
+    """roqsim's own selector decides the backend from the machine it runs on; forcing a
+    value here would override the one component that owns that decision."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
+    m = _job_manifest(r)
+    for container in (_main_of(m), _sidecar(m, "simulation")):
+        assert "MUJOCO_GL" not in _env_dict(container)
+
+
+def test_a_cluster_without_the_runtime_class_gets_no_runtime_class(monkeypatch):
+    """A managed GPU node pool advertises the resource but registers no such RuntimeClass,
+    and naming one that does not exist makes the API server reject the pod -- trading a slow
+    campaign for one that cannot start at all."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=8, runtime_class=None)
+    m = _job_manifest(r)
+    assert "runtimeClassName" not in m["spec"]["template"]["spec"]
+    # The request itself still stands: the resource is advertised, so it is schedulable.
+    assert _sidecar(m, "simulation")["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+def test_the_preflight_is_told_about_the_gpu_requirement(monkeypatch):
+    """An uncovered request is suspended forever rather than rejected, so the ClusterQueue
+    has to be checked before any job is created."""
+    r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
+    assert r.gpu_resources_requested() is True
+    assert _runner(monkeypatch, execution=_ROS_SHAPE,
+                   cluster_gpus=0).gpu_resources_requested() is False

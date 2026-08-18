@@ -130,6 +130,12 @@ class ResourcesConfig(BaseModel):
     # "4" to "4.0" for no reason.
     cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
     memory: Optional[Union[str, list[dict[str, str]]]] = None
+    #: Whole GPUs for this container. Omit it and the container running the simulator gets
+    #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
+    #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
+    #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
+    #: documented option only worked where a lane happened to read the raw mapping.
+    gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu')
     @classmethod

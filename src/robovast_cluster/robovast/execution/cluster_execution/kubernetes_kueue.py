@@ -25,6 +25,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import yaml
 from kubernetes import client
 from kubernetes.utils.quantity import parse_quantity
 
@@ -42,6 +43,10 @@ KUEUE_WORKLOAD_GROUP = "kueue.x-k8s.io"
 KUEUE_WORKLOAD_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
 KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
+
+#: Duplicated from :mod:`.kubernetes_gpu` rather than imported, to keep the dependency
+#: one-way (that module imports this one for the helm and quantity helpers).
+GPU_RESOURCE = "nvidia.com/gpu"
 
 # Admission webhook configurations installed by the Kueue Helm chart. These are
 # backed by the kueue-controller-manager pods; once those pods are gone the API
@@ -74,44 +79,68 @@ controllerManager:
         afterFinished: 5s    # Clean up the "Workload" 5s after the Job is done
 """
 
-# ResourceFlavor + ClusterQueue + LocalQueue (execution namespace set at runtime)
-# {cpu_quota} and {memory_quota} are filled from cluster allocatable resources
-# {node_labels_spec} is an optional "spec:\n  nodeLabels:\n    key: value\n" block
-KUEUE_QUEUES_YAML = """
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: ResourceFlavor
-metadata:
-  name: default-flavor
-spec:
-  tolerations:
-    - key: "dedicated"
-      value: "batch"
-      effect: "NoSchedule"   
-{node_labels_spec}---
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: ClusterQueue
-metadata:
-  name: {cluster_queue}
-spec:
-  namespaceSelector: {{}}
-  resourceGroups:
-  - coveredResources: ["cpu", "memory"]
-    flavors:
-    - name: default-flavor
-      resources:
-      - name: cpu
-        nominalQuota: {cpu_quota}
-      - name: memory
-        nominalQuota: {memory_quota}
----
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: LocalQueue
-metadata:
-  namespace: {namespace}
-  name: {queue_name}
-spec:
-  clusterQueue: {cluster_queue}
-"""
+# Built as dicts and serialised, not formatted into a YAML string. The string version
+# grew a duplicate mapping key: it opened `spec:` for the flavor's tolerations and the
+# node-label helper appended a *second* `spec:`, so PyYAML (last wins) silently dropped
+# the toleration and kubectl -- stricter about duplicate keys -- could reject the document
+# outright. It also emitted an unquoted `True` where a node label value must be a string.
+# Neither bug is expressible here, which is the point: a mapping cannot have the same key
+# twice, and safe_dump quotes what needs quoting.
+def _queue_manifests(namespace, queue_name, cluster_queue, cpu_quota, memory_quota,
+                     node_labels=None, gpu_quota=0):
+    """The ResourceFlavor + ClusterQueue + LocalQueue trio, as manifest dicts."""
+    flavor_spec = {
+        "tolerations": [
+            {"key": "dedicated", "value": "batch", "effect": "NoSchedule"},
+        ],
+    }
+    if node_labels:
+        # Label VALUES are strings to Kubernetes; a bare YAML `true` or `3` is rejected
+        # by the API server, and str() here is what keeps a `.vast` from having to quote.
+        flavor_spec["nodeLabels"] = {str(k): str(v) for k, v in node_labels.items()}
+
+    covered = ["cpu", "memory"]
+    resources = [
+        {"name": "cpu", "nominalQuota": cpu_quota},
+        {"name": "memory", "nominalQuota": memory_quota},
+    ]
+    # Omitted entirely at zero rather than written as `nominalQuota: 0`. Both block
+    # admission, but an absent resource gets Kueue's clearer "not covered by ClusterQueue"
+    # diagnosis, while a zero looks deliberately configured -- and absence is what keeps a
+    # CPU-only cluster's manifests identical to what it had before GPUs existed here.
+    if gpu_quota:
+        covered.append(GPU_RESOURCE)
+        resources.append({"name": GPU_RESOURCE, "nominalQuota": int(gpu_quota)})
+
+    return [
+        {
+            "apiVersion": "kueue.x-k8s.io/v1beta2",
+            "kind": "ResourceFlavor",
+            "metadata": {"name": KUEUE_RESOURCE_FLAVOR_NAME},
+            "spec": flavor_spec,
+        },
+        {
+            "apiVersion": "kueue.x-k8s.io/v1beta2",
+            "kind": "ClusterQueue",
+            "metadata": {"name": cluster_queue},
+            "spec": {
+                "namespaceSelector": {},
+                "resourceGroups": [{
+                    "coveredResources": covered,
+                    "flavors": [{
+                        "name": KUEUE_RESOURCE_FLAVOR_NAME,
+                        "resources": resources,
+                    }],
+                }],
+            },
+        },
+        {
+            "apiVersion": "kueue.x-k8s.io/v1beta2",
+            "kind": "LocalQueue",
+            "metadata": {"namespace": namespace, "name": queue_name},
+            "spec": {"clusterQueue": cluster_queue},
+        },
+    ]
 
 
 def _parse_resource(val):
@@ -122,16 +151,6 @@ def _parse_resource(val):
         return float(parse_quantity(val))
     except (ValueError, TypeError):
         return 0
-
-
-def _format_node_labels_spec(node_labels):
-    """Return a YAML 'spec.nodeLabels' block for a ResourceFlavor, or empty string."""
-    if not node_labels:
-        return ""
-    lines = ["spec:", "  nodeLabels:"]
-    for k, v in node_labels.items():
-        lines.append(f"    {k}: {v}")
-    return "\n".join(lines) + "\n"
 
 
 def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
@@ -219,7 +238,7 @@ def _crd_registered(custom_api, plural) -> bool:
 
 
 def verify_kueue_admission_ready(namespace="default", kube_context=None,
-                                 settle_timeout=0.0):
+                                 settle_timeout=0.0, required_resources=()):
     """Check that a scenario Job labelled into the robovast queue can be admitted.
 
     Every scenario and postprocess Job carries ``kueue.x-k8s.io/queue-name``, so Kueue
@@ -236,9 +255,16 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
     :class:`~robovast.common.errors.ClusterUnreachableError` when the API server does
     not answer, so an off cluster reads as one sentence rather than a urllib3 traceback.
 
-    Deliberately does **not** look at quota. A queue whose capacity is currently used up
-    is healthy and the correct response is to wait; only a structurally broken admission
-    path is an error.
+    Deliberately does **not** look at quota *utilisation*. A queue whose capacity is
+    currently used up is healthy and the correct response is to wait; only a structurally
+    broken admission path is an error.
+
+    ``required_resources`` is the one apparent exception, and it is coverage rather than
+    utilisation: Kueue does not reject a workload asking for a resource no resourceGroup
+    covers, nor one asking for more than the nominal quota of a resource that is covered.
+    It suspends it, permanently. Neither can ever be admitted no matter how long the
+    caller waits, so both are errors and not waits -- which is exactly the distinction
+    the paragraph above draws.
 
     Args:
         namespace: Namespace the jobs run in — the LocalQueue must live there too.
@@ -247,6 +273,9 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
             check run straight after ``apply_kueue_queues``, where Kueue may not have
             reconciled the ClusterQueue against its ResourceFlavor yet; leave at 0 for a
             queue that has been up for a while, so a real breakage fails immediately.
+        required_resources: Resource names the campaign's pods request beyond cpu/memory
+            (e.g. ``("nvidia.com/gpu",)``). Each must be covered by the ClusterQueue with
+            a non-zero nominal quota, or the jobs would be suspended forever.
     """
     from robovast.common.errors import CampaignConfigError
 
@@ -257,7 +286,8 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
         try:
             with api_transport_errors(
                     f"checking the Kueue admission path in namespace '{namespace}'"):
-                return _check_kueue_admission(namespace)
+                return _check_kueue_admission(
+                    namespace, required_resources=required_resources)
         except CampaignConfigError:
             if time.monotonic() >= deadline:
                 raise
@@ -265,7 +295,7 @@ def verify_kueue_admission_ready(namespace="default", kube_context=None,
             time.sleep(2)
 
 
-def _check_kueue_admission(namespace):
+def _check_kueue_admission(namespace, required_resources=()):
     """One pass of :func:`verify_kueue_admission_ready` (no retry, config already loaded)."""
     from robovast.common.errors import CampaignConfigError
     custom_api = client.CustomObjectsApi()
@@ -320,6 +350,31 @@ def _check_kueue_admission(namespace):
             f"({active.get('reason') or 'unknown reason'}: "
             f"{active.get('message') or 'no message'}), so no job will be admitted.\n"
             f"{remedy}")
+
+    # Coverage, checked against the same `spec` already in hand. A resource absent from
+    # every resourceGroup, or present with a nominal quota of zero, is unadmittable
+    # forever -- and Kueue says so only as text on a Workload condition that nothing
+    # fails on, which is how a campaign came to hang instead of erroring.
+    if required_resources:
+        quotas = {}
+        for group in spec.get("resourceGroups") or []:
+            for flavor in group.get("flavors") or []:
+                for res in flavor.get("resources") or []:
+                    name = res.get("name")
+                    if name is not None:
+                        quotas[name] = res.get("nominalQuota")
+        for name in required_resources:
+            if name not in quotas:
+                raise CampaignConfigError(
+                    f"This campaign's pods request '{name}', but Kueue ClusterQueue "
+                    f"'{cq_name}' does not cover it (it covers: "
+                    f"{', '.join(sorted(quotas)) or 'nothing'}). Kueue would suspend "
+                    f"every job indefinitely rather than rejecting it.\n{remedy}")
+            if not _parse_resource(quotas[name]):
+                raise CampaignConfigError(
+                    f"This campaign's pods request '{name}', but Kueue ClusterQueue "
+                    f"'{cq_name}' gives it a nominal quota of {quotas[name]!r}, so no "
+                    f"job can ever be admitted.\n{remedy}")
 
     logger.debug("Kueue admission path ready: LocalQueue '%s' in '%s' -> ClusterQueue "
                  "'%s'", KUEUE_QUEUE_NAME, namespace, cq_name)
@@ -878,6 +933,26 @@ def _run_kubectl_apply(yaml_content, check=True, kube_context=None):
     return True
 
 
+def helm_release_exists(release, namespace, ctx_helm):
+    """Whether *release* is installed in *namespace*.
+
+    Shared with the device-plugin installer so both take the same install-or-upgrade
+    branch: a copy of this would be one place for the two to drift, and the whole point of
+    the branch is that re-running setup must not fail on an already-installed chart.
+
+    A helm that cannot answer reads as "not installed", which sends the caller down the
+    ``install`` path -- and ``helm install`` on an existing release fails loudly instead of
+    doing something surprising.
+    """
+    result = subprocess.run(
+        ["helm", "list", "-n", namespace, "-q", "-f", release] + list(ctx_helm),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def install_kueue_helm(kube_context=None):
     """Install Kueue via Helm in kueue-system namespace.
 
@@ -890,13 +965,7 @@ def install_kueue_helm(kube_context=None):
     adopt_orphaned_kueue_crds(kube_context=kube_context)
     ctx_helm = [f"--kube-context={kube_context}"] if kube_context else []
     ctx_kubectl = ["--context", kube_context] if kube_context else []
-    result = subprocess.run(
-        ["helm", "list", "-n", KUEUE_NAMESPACE, "-q", "-f", KUEUE_HELM_RELEASE] + ctx_helm,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0 and result.stdout.strip():
+    if helm_release_exists(KUEUE_HELM_RELEASE, KUEUE_NAMESPACE, ctx_helm):
         logger.info(
             "Kueue Helm release already exists, upgrading to version %s",
             KUEUE_HELM_VERSION,
@@ -1173,13 +1242,29 @@ def apply_kueue_queues(namespace="default", kube_context=None, node_labels=None,
     cpu_quota, memory_quota = get_cluster_allocatable_resources(
         kube_context=kube_context, cluster_config=cluster_config
     )
-    yaml_content = KUEUE_QUEUES_YAML.format(
-        namespace=namespace,
-        queue_name=KUEUE_QUEUE_NAME,
-        cluster_queue=CLUSTER_QUEUE_NAME,
-        cpu_quota=cpu_quota,
-        memory_quota=memory_quota,
-        node_labels_spec=_format_node_labels_spec(node_labels),
+    # Read from the live nodes, exactly as cpu/memory are -- which is why no caller has to
+    # pass it and why a re-run, an `upgrade` or a `--no-gpu` run all still get a truthful
+    # quota with nothing persisted anywhere. Deliberately no `max(1, ...)`: copying the
+    # cpu/memory floor would give a cluster whose plugin is down a quota of one GPU, which
+    # Kueue admits against and no node can satisfy.
+    from .kubernetes_gpu import get_cluster_allocatable_gpus
+    try:
+        gpu_quota = get_cluster_allocatable_gpus(kube_context=kube_context)
+    except Exception as exc:  # noqa: BLE001 - a GPU-less cluster must not fail here
+        logger.debug("Could not read GPU capacity (%s); sizing the queue without it", exc)
+        gpu_quota = 0
+    yaml_content = yaml.safe_dump_all(
+        _queue_manifests(
+            namespace=namespace,
+            queue_name=KUEUE_QUEUE_NAME,
+            cluster_queue=CLUSTER_QUEUE_NAME,
+            cpu_quota=cpu_quota,
+            memory_quota=memory_quota,
+            node_labels=node_labels,
+            gpu_quota=gpu_quota,
+        ),
+        default_flow_style=False,
+        sort_keys=False,
     ).strip()
 
     ctx_kubectl = ["--context", kube_context] if kube_context else []

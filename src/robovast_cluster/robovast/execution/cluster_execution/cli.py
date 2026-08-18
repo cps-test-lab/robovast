@@ -482,6 +482,15 @@ def monitor(interval, once, kube_context, namespace):
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--force', '-f', is_flag=True,
               help='Force re-setup even if cluster is already set up')
+@click.option('--gpu-replicas', type=int, default=None, metavar='N',
+              help='Advertise N time-slicing replicas per physical GPU, so N pods can '
+                   'share one card. Without this flag a GPU that is present is used '
+                   'anyway (with a sensible default) and a cluster without one is left '
+                   'alone; passing it makes GPU support a requirement, so a cluster that '
+                   'cannot provide it becomes an error. N caps concurrency and does NOT '
+                   'partition VRAM: all N renderers allocate from the same card.')
+@click.option('--no-gpu', is_flag=True,
+              help='Set the cluster up without GPU scheduling, even if it has a GPU.')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--ingress-host', default='', metavar='HOST',
@@ -514,8 +523,8 @@ def monitor(interval, once, kube_context, namespace):
                    'multi-node cluster: the registry blobs live on one node\'s disk, so '
                    'a pod rescheduled elsewhere comes up with an empty registry.')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, namespace, options, force, kube_context, ingress_host,
-          ingress_class, issuer, tls_secret, insecure_http, rotate_token,
+def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
+          ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, registry_node,
           cluster_config):
     """Set up the Kubernetes cluster for execution.
@@ -600,8 +609,13 @@ def setup(list_configs, namespace, options, force, kube_context, ingress_host,
         'registry_node': registry_node,
     }
     try:
+        # Named arguments, never folded into cluster_kwargs: that dict is the provider's
+        # `-o` channel and is persisted as the cluster's recorded config, and it swallows
+        # keys it does not know -- so a typo like `-o gpu_replica=24` would be accepted,
+        # stored, and do nothing. A click option answers "no such option" instead.
         setup_server(config_name=cluster_config, list_configs=False, force=force,
-                     service_kwargs=service_kwargs, **cluster_kwargs)
+                     service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
+                     no_gpu=no_gpu, **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
@@ -756,6 +770,7 @@ def upgrade(namespace, kube_context):
     Campaign data lives in the object store and survives both.
     """
     from .cluster_setup import apply_controller_rbac
+    from .kubernetes_kueue import apply_kueue_queues
     from .service_deploy import (deploy_service, published_host, read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  wait_for_rollout, wait_for_service_ready)
@@ -776,6 +791,13 @@ def upgrade(namespace, kube_context):
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+        # The ClusterQueue's covered resources are coupled to what THIS version of the
+        # backend asks for, and `upgrade` is the command operators use to move versions.
+        # Skipping it meant a build that started requesting a new resource kind could be
+        # deployed onto a queue that does not cover it -- and an uncovered request is not
+        # rejected by Kueue, it is suspended forever, so the campaign hangs rather than
+        # failing. Idempotent, and it self-heals a missing CRD on the way through.
+        apply_kueue_queues(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  added the registry's /v2 route to the existing Ingress")
         deploy_service(namespace=namespace, kube_context=kube_context,
