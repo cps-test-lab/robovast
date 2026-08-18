@@ -34,10 +34,11 @@ visualization:
     - parameters: {title: Scenario parameters, height: "35%"}
     - world: {title: World configuration, height: "15%"}
     # The grid this campaign navigates, with this configuration's endpoints drawn on it. `map2d` and
-    # not `scene3d`: the 3D panel keys its geometry on the simulator image, and this example pins a
-    # mutable `:latest` tag on purpose (so it runs for anyone who clones the repo), which cannot
-    # identify the bytes it would compile -- there would be nothing to look at. The 2D map needs
-    # nothing but the two files below, and it is the view nav2 plans in anyway.
+    # not `scene3d`: the 3D panel keys its geometry on the simulator image, and an experiment .vast
+    # names none -- the deployment's project resolves it, per campaign, after apply_backend. The
+    # config view has no campaign, so it asks the file and is refused for want of an image; there
+    # would be nothing to look at. The 2D map needs nothing but the two files below, and it is the
+    # view nav2 plans in anyway.
     - map2d:
         title: Map
         # The very map the scenario hands nav2 (scenario_roqsim.osc: key_value('map',

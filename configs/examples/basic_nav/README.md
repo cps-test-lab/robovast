@@ -54,10 +54,10 @@ configurations walks the goal marker down the map while everything else stays pu
 the **map** frame, which is why neither declares an `offset:` (a world-frame `scene3d` marker would
 need `[-8, 0, 0]`).
 
-2D and not 3D on purpose: `scene3d` keys its geometry on the simulator image, and this example pins a
-mutable `:latest` tag so it runs for anyone who clones the repo — a moving tag cannot identify the
-geometry it would compile, so the 3D panel has nothing to show. The map needs nothing but the two
-checked-in files.
+2D and not 3D on purpose: `scene3d` keys its geometry on the simulator image, and an experiment `.vast`
+names no image — the deployment's project resolves it per campaign, after `apply_backend`. The Config tab
+has no campaign to resolve against, so it asks the file and is refused for want of an image, and the 3D
+panel has nothing to show. The map needs nothing but the two checked-in files.
 
 ## What differs between the halves
 
