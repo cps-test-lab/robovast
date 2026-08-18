@@ -243,6 +243,18 @@ _AUTO_INFRA_HANDLERS: Tuple[str, ...] = ("rosbags_rosout_to_csv", "rosbags_clock
 #: otherwise it rejects configs the runtime would happily execute.
 ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
 
+#: Everything the cluster lane's postprocessing **Job** runs, and therefore everything the in-pod
+#: pass must skip. The aliases above plus ``rosbags_process`` itself, which a ``.vast`` may name
+#: directly (:class:`~robovast.results_processing.postprocessing_plugins.RosbagsProcess` documents
+#: that spelling) and which ``postprocess_job.rosbag_commands_for`` already collects for the Job.
+#:
+#: Without ``rosbags_process`` here the two sides disagree and a directly-authored call runs TWICE:
+#: once in the Job, correctly, and once in the controller pod through ``docker_exec.sh`` -- which
+#: shells out to ``docker run`` and cannot work there, so the compat check reads an empty string and
+#: the campaign fails with "container image provides: <missing>" against an image that carries the
+#: file. The data is already correct by then, which is what makes the failure so misleading.
+ROSBAG_JOB_NAMES: frozenset = ROSBAG_BATCH_NAMES | {"rosbags_process"}
+
 #: Commands that register a video in a run's ``videos`` table (``rosbags_process.VIDEOS_CSV``),
 #: which is what the run view's ``camera`` panel and ``get_camera_frame`` read.
 #:

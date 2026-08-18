@@ -227,12 +227,12 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     conversion Job already did those — so there is no second implementation of the
     postprocessing sequence. Returns ``(ok, message)``.
     """
-    from robovast.results_processing.postprocessing import ROSBAG_BATCH_NAMES  # noqa: PLC0415
+    from robovast.results_processing.postprocessing import ROSBAG_JOB_NAMES  # noqa: PLC0415
     from robovast.results_processing.postprocessing import run_postprocessing
 
     return run_postprocessing(
         results_dir=results_dir, campaign=campaign_id, force=force,
-        skip=sorted(set(skip or ()) | set(ROSBAG_BATCH_NAMES)),
+        skip=sorted(set(skip or ()) | set(ROSBAG_JOB_NAMES)),
         output_callback=logger.info)
 
 
