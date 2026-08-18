@@ -130,13 +130,20 @@ def get_service_info() -> dict:
     """Which robovast-service is answering, which code it runs, and which lanes it offers.
 
     Call this first when something behaves unexpectedly: a service loads robovast **once,
-    at startup**, so after an edit a reachable service may still be running the old code —
-    compare ``code_version`` (git revision, ``+dirty`` if its tree was modified) with your
-    tree, and restart it if they differ.
+    at startup**, so after an edit a reachable service may still be running the old code.
+    Compare ``code_revision`` with your tree (``git rev-parse --short HEAD``) and restart it
+    if they differ.
+
+    **When ``code_revision`` is absent, this check is unavailable** — that deployment could
+    not determine its revision, and there is no substitute: probe for the behaviour you
+    expect instead. ``code_version`` will not do, and reading it as one is a live trap. It is
+    the package semver on a deployed service, so it stays the same across every edit, and it
+    used to be reported *in place of* a revision — which made this field silently unable to
+    detect the one thing it exists for.
 
     Returns:
-        ``{code_version, api_version, backend, results_address, sources_address}``,
-        or ``{error}``.
+        ``{code_version, api_version, backend, results_address, sources_address}``, plus
+        ``code_revision`` when known, or ``{error}``.
 
         ``backend`` is the lane this service runs, fixed when it started. Use
         ``get_resource_usage()`` to actually touch it before committing a long campaign.
@@ -172,6 +179,11 @@ def get_service_info() -> dict:
         "results_address": v.results_address,
         "sources_address": v.sources_address,
     }
+    # Only when it is genuinely known. Absent says "this deployment cannot tell you", which
+    # a caller can act on (probe the behaviour); a placeholder would be read as a revision
+    # that happens not to match, which is a different and wrong conclusion.
+    if getattr(v, "code_revision", ""):
+        info["code_revision"] = v.code_revision
     # Only when set: a null root reads as "unknown", when the truthful statement is
     # "this service has no path you can open" — so say nothing rather than say null.
     if v.results_root:

@@ -509,6 +509,18 @@ class VersionInfo(BaseModel):
     """Server/client version for the compatibility handshake (see plan 0.7)."""
 
     robovast_version: str
+    #: The revision the running code was built from, or ``""`` when this deployment cannot
+    #: tell. Separate from :attr:`robovast_version` because the two answer different
+    #: questions: that one is the semver the compatibility handshake compares, this one
+    #: answers "is the change I just made loaded?" — which a service that loads its code
+    #: once at startup makes a real question, and which a semver cannot answer because it
+    #: stays the same across every edit.
+    #:
+    #: ``""`` is information, not a gap: it means the answer is unavailable here, so a
+    #: caller must not read it as "a revision that does not match". Reporting the version
+    #: in its place was the previous behaviour and is precisely what made the field unable
+    #: to detect the staleness it exists for.
+    code_revision: str = ""
     api_version: str = "0"
     backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
 

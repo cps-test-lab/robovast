@@ -318,35 +318,73 @@ def resolve_sidecar_image(explicit: str | None = None) -> str:
     return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
 
 
+#: Env var carrying the revision this code was built from, set into the image at build
+#: time (``container/robovast/build.sh`` -> ``ARG``/``ENV``). It exists because the git
+#: lookup below **cannot** work in a deployed image: the package is installed, so there is
+#: no ``.git`` above ``site-packages/robovast/common/``, and ``git rev-parse`` there finds
+#: no repository however present the git binary is. Baking it at build time is the only
+#: point where the revision is knowable.
+GIT_REVISION_ENV = "ROBOVAST_GIT_REVISION"
+
+
+def code_revision() -> str:
+    """The revision this process's code was built from, or ``""`` when not determinable.
+
+    Separate from :func:`get_app_version` because the two answer different questions and
+    one string cannot do both: a *version* is for the client/service compatibility
+    handshake, where a semver comparison is what is wanted, while a *revision* answers "is
+    the change I just made loaded?" — which a long-lived service makes a real question and
+    which a semver cannot answer, because it stays ``2.0.0`` across every edit.
+
+    ``""`` is a deliberate, meaningful answer: **this deployment cannot tell you**. Reporting
+    a version here instead would look like a revision that happens not to match, so a caller
+    checking for staleness would read "different code" where the truth is "no information" —
+    the same confusion that had a missing docker CLI reported as an unbuilt image.
+    """
+    baked = os.environ.get(GIT_REVISION_ENV, "").strip()
+    if baked:
+        return baked
+    revision = _git_revision()
+    return revision or ""
+
+
+def _git_revision() -> "str | None":
+    """``<short-sha>[+dirty]`` from the checkout this module lives in, or ``None``.
+
+    Only ever answers for a source checkout. See :data:`GIT_REVISION_ENV` for why an
+    installed copy in an image cannot be asked this way.
+    """
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.STDOUT, cwd=module_dir, text=True).strip()
+        dirty = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.STDOUT, cwd=module_dir, text=True).strip()
+    except Exception:  # noqa: BLE001 - no repo, no git binary: not a revision, not an error
+        return None
+    return f"{sha}+dirty" if dirty else sha
+
+
 def get_app_version() -> str:
     """Return a short version string for the robovast package.
 
     Resolution order:
+    0. The revision baked into the image at build time (:data:`GIT_REVISION_ENV`) — the only
+       one of these that can answer in a deployed image.
     1. Git short SHA (works for local editable installs).
        If the working tree has uncommitted changes, ``+dirty`` is appended.
     2. Installed package metadata (works for PyPI installs).
     3. ``"unknown"`` as a last-resort fallback.
-    """
-    module_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 1. Try Git
-    try:
-        sha = subprocess.check_output(
-            ['git', 'rev-parse', '--short', 'HEAD'],
-            stderr=subprocess.STDOUT,
-            cwd=module_dir,
-            text=True,
-        ).strip()
-        # Detect uncommitted changes
-        dirty = subprocess.check_output(
-            ['git', 'status', '--porcelain'],
-            stderr=subprocess.STDOUT,
-            cwd=module_dir,
-            text=True,
-        ).strip()
-        return f"{sha}+dirty" if dirty else sha
-    except Exception:
-        pass
+    A caller that needs to distinguish "a revision" from "only a package version" should ask
+    :func:`code_revision`, which returns ``""`` rather than substituting the latter.
+    """
+    # 0/1. A revision, however it can be had — baked in at build time, else this checkout.
+    revision = code_revision()
+    if revision:
+        return revision
 
     # 2. Fall back to installed package metadata
     try:

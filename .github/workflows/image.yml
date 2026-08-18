@@ -323,6 +323,13 @@ jobs:
         # about what an image is built for.
         run: . container/platforms.env && echo "platforms=$PLATFORMS_CONTROLLER" >> "$GITHUB_OUTPUT"
 
+      - name: Short revision for the image to report
+        id: rev
+        # Short, to match what a source checkout reports (`git rev-parse --short HEAD`), so
+        # "is the service running my tree?" is a string comparison rather than a length
+        # puzzle. `github.sha` is the full 40 characters.
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
@@ -331,6 +338,10 @@ jobs:
           context: .
           file: ./container/controller/Dockerfile
           push: true
+          # So the deployed service can say which revision it is running. A tag cannot
+          # answer that (`latest` moves) and the package version cannot either.
+          build-args: |
+            ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

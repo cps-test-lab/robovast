@@ -84,6 +84,20 @@ def _detail_entry(name: str, path: Path) -> FileEntry:
                      executable=None if is_dir else bool(st.st_mode & 0o111))
 
 
+def _code_revision() -> str:
+    """The revision this process's code was built from, or ``""`` when unavailable.
+
+    Never raises and never substitutes the package version: an empty string is the honest
+    answer for a deployment that cannot tell, and a caller checking whether its change is
+    loaded needs that distinguishable from a revision that merely differs.
+    """
+    try:
+        from robovast.common.execution import code_revision
+        return code_revision()
+    except Exception:  # noqa: BLE001 - diagnostics must not break the handshake
+        return ""
+
+
 def _robovast_version() -> str:
     """The version of the code *this process is running*.
 
@@ -753,7 +767,8 @@ class LocalTransport(RobovastInterface):
         # each answer that — and `check_docker_access` shells out with a 15 s timeout,
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
-        return VersionInfo(robovast_version=_robovast_version(), backend="docker",
+        return VersionInfo(robovast_version=_robovast_version(),
+                           code_revision=_code_revision(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root))

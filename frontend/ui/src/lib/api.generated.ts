@@ -2787,6 +2787,11 @@ export interface components {
             build_unavailable: string | null;
             /** Can Build Images */
             can_build_images: boolean | null;
+            /**
+             * Code Revision
+             * @default
+             */
+            code_revision: string;
             /** In Pod */
             in_pod: boolean | null;
             /** Kube Context */

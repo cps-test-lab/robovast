@@ -156,6 +156,24 @@ ENV ROBOVAST_UI_DIST=/opt/robovast/ui
 # src/robovast/common/execution.py (same contract as the ROS image).
 RUN echo "2" > /etc/robovast_compat_version
 
+# The revision this image's `COPY src` came from, captured here because this is the ONLY
+# point at which it is knowable. `get_app_version` asks git, from the directory the module
+# lives in -- which in this image is site-packages, with no `.git` anywhere above it, so the
+# lookup cannot succeed however present the git binary is. Without this the service reported
+# the package semver instead, which stays `2.0.0` across every edit and so could not answer
+# the one question it is asked: is the change I just made loaded?
+#
+# Last, and deliberately: an ARG that changes on every commit invalidates every layer after
+# it, so it goes after the expensive installs. Empty is honest -- `code_revision` then
+# reports "" rather than a value that looks like a revision and is not.
+#
+# A build by hand should pass it, or the service it deploys cannot report its revision:
+#   docker build -f container/controller/Dockerfile \
+#     --build-arg ROBOVAST_GIT_REVISION="$(git rev-parse --short HEAD)$(git status --porcelain \
+#       | grep -q . && echo +dirty)" .
+ARG ROBOVAST_GIT_REVISION=""
+ENV ROBOVAST_GIT_REVISION=${ROBOVAST_GIT_REVISION}
+
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a
 # library now, not an entrypoint — it runs inside the service process — so the

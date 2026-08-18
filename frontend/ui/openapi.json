@@ -2609,6 +2609,11 @@
             ],
             "title": "Can Build Images"
           },
+          "code_revision": {
+            "default": "",
+            "title": "Code Revision",
+            "type": "string"
+          },
           "in_pod": {
             "anyOf": [
               {
@@ -2696,6 +2701,7 @@
           "backend",
           "build_unavailable",
           "can_build_images",
+          "code_revision",
           "in_pod",
           "kube_context",
           "kube_context_source",
