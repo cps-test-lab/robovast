@@ -165,6 +165,26 @@ def _schema_problems(raw):
     return problems
 
 
+def _unresolvable_image_problems(raw):
+    """Refuse a container a launch could not find an image for.
+
+    The schema deliberately lets a known role omit ``image``, which is right for ``scenario`` and
+    for ``simulation`` behind a backend -- but a launch resolves the framework fallback for the
+    *main* container only, so ``sut`` without one validated and then failed at launch. Sharing the
+    launch's own rule is what stops the two disagreeing; the alternative, a fallback for every
+    role, would run something nobody named as the system under test.
+    """
+    from robovast.common.containers import \
+        containers_without_a_resolvable_image  # pylint: disable=import-outside-toplevel
+
+    try:
+        unresolvable = containers_without_a_resolvable_image(raw.get("execution") or {})
+    except Exception:  # noqa: BLE001 - a malformed execution block is another check's problem
+        return []
+    return [_problem("image", why, config=name, field=f"execution.containers.{name}.image")
+            for name, why in unresolvable]
+
+
 def _image_provenance_problems(raw):
     """Refuse a container whose image nobody could later identify.
 
@@ -820,6 +840,7 @@ def validate_project_file(config_path):
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
     problems.extend(_run_capture_problems(raw))
     problems.extend(_image_provenance_problems(raw))
+    problems.extend(_unresolvable_image_problems(raw))
     # ...and a camera panel needs a step that produces the video it plays.
     problems.extend(_camera_panel_problems(raw))
 

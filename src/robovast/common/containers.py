@@ -207,6 +207,36 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
     return ContainerPlan(containers=tuple(containers), roles=roles)
 
 
+def containers_without_a_resolvable_image(execution: dict) -> "list[tuple[str, str]]":
+    """``[(container, why)]`` for containers a launch could not find an image for.
+
+    The same rule :func:`_resolve_image` applies at launch, exposed so validation can apply it
+    *before* compute is spent. Without this the two disagreed: the schema lets a known role omit
+    ``image`` -- correct for ``scenario`` (the framework image) and ``simulation`` (the backend
+    supplies one) -- while a launch then refused ``sut``, because the framework fallback is for
+    the main container only. Guessing one for the system under test would run something nobody
+    named, which is the right call; the wrong part was only discovering it at launch.
+
+    Derived from the plan rather than re-read from the mapping, so a container the backend fold
+    added or renamed is judged as it will actually run.
+    """
+    plan = plan_containers(execution)
+    out = []
+    for container in plan.containers:
+        if container.image or container.is_main:
+            continue
+        block = (execution.get("containers") or {}).get(container.name) or {}
+        if block.get("system_packages") or block.get("python_packages"):
+            continue    # robovast builds this one; the build supplies the ref.
+        out.append((container.name, (
+            f"container {container.name!r} names no 'image' and nothing supplies one. Only the "
+            f"main container falls back to the RoboVAST framework image -- inventing one for "
+            f"anything else would run something nobody named.\n"
+            f"  Set execution.containers.{container.name}.image, or give it "
+            f"'system_packages'/'python_packages' so RoboVAST builds it.")))
+    return out
+
+
 def _resolve_image(container: PlannedContainer, images: dict,
                    explicit_main: Optional[str],
                    main_image_fallback: Optional[str]) -> PlannedContainer:
