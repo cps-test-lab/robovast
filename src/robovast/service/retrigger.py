@@ -47,7 +47,7 @@ import secrets
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,12 @@ class RetriggerPlan:
     staging_dir: Path
     #: The staged ``.vast`` -- what the campaign runs.
     config_path: str
-    #: The replayed launch, ready for ``_launch_campaign``.
-    request: object
+    #: The replayed launch, ready for ``_launch_campaign``. Typed ``Any`` rather than
+    #: ``object``: ``prepare`` is handed the model class as ``request_model`` so this module
+    #: never imports the interface, and what lands here is that model's instance. ``object``
+    #: said the opposite of what was meant -- that only base-class attributes exist -- and
+    #: every read of a field on it was a true positive against the annotation.
+    request: Any
     #: ``{container: image}`` for the containers that build; empty when none do.
     pinned_images: dict
     #: Finish staging the tree (called on the worker).
