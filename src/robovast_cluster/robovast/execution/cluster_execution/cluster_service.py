@@ -990,6 +990,10 @@ class ClusterService(LocalTransport):
                                       digest=image_hash)
             state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
                                "hash": image_hash, "status": status}
+            # Nothing will be built, so this is the only chance to warm. A cache hit is the
+            # coldest case there is: the image may have been pushed weeks ago, by a service
+            # that has restarted and onto a node that has rebooted since.
+            self._warm(image_ref)
             return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
 
         # The Job is still consulted, but only for the case the registry cannot answer:
@@ -1002,6 +1006,10 @@ class ClusterService(LocalTransport):
                                       digest=image_hash)
             state[build_id] = {"tag": spec.tag, "image_ref": image_ref,
                                "hash": image_hash, "status": status}
+            # Nothing will be built, so this is the only chance to warm. A cache hit is the
+            # coldest case there is: the image may have been pushed weeks ago, by a service
+            # that has restarted and onto a node that has rebooted since.
+            self._warm(image_ref)
             return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=True)
         if existing == "running":
             return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
@@ -1073,6 +1081,11 @@ class ClusterService(LocalTransport):
             self._discard_build_context(cfg, bucket, build_id)
             raise
         status.phase = "building"
+        # The base is most of the built image: every experiment image is FROM a family
+        # member, and containerd's content store is digest-addressed, so warming it now
+        # means the pull after the build moves only this spec's own apt/pip layers. Free,
+        # because a build takes minutes and nothing is waiting on the node yet.
+        self._warm(base_ref)
         return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
 
     def _discard_build_context(self, cfg, bucket: str, build_id: str) -> None:
@@ -1199,6 +1212,14 @@ class ClusterService(LocalTransport):
                 # transition, so this repeats per poll — a no-op list once the prefix
                 # is gone, and it beats waiting for the next build to sweep it.
                 self._retire_build_context(build_id)
+                # Deliberately no prewarm here, though this is a "the image exists now"
+                # transition like the others. All this branch has is the build_id, and
+                # `build_id_for` is not reversible into a ref: it lowercases and folds `_`
+                # to `-`, which `concrete_image_ref` does not, so a tag like `my_sut` would
+                # yield a ref that no registry serves. The prewarm would then sit in
+                # ImagePullBackOff until its deadline, warming nothing and saying nothing,
+                # since nothing reads a prewarm back. The next submit for this spec takes
+                # the cache-hit path above and warms from a properly resolved ref.
                 return ImageBuildStatus(
                     build_id=build_id, phase=phase, done=done,
                     cached=phase == "succeeded")
@@ -1243,6 +1264,11 @@ class ClusterService(LocalTransport):
             # outcomes. Cheap (a prefix delete) and it runs once, since a done record
             # returns above.
             self._retire_build_context(build_id)
+            if status.phase == "succeeded":
+                # Same transition, and the fire point that earns the feature: the image
+                # exists now, nobody has pulled it yet, and what needs pulling is precisely
+                # the layers this build added on top of the base warmed at submit.
+                self._warm(record["image_ref"])
         return status
 
     def _build_pod_verdict(self, build_id: str):

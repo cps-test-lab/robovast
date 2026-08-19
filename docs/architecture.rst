@@ -1023,6 +1023,63 @@ from the campaign's frozen ``_config/`` cannot work anyway — that snapshot hol
 and the run files, not the build inputs — and the recording is the better answer regardless,
 because a diagnostic about a run should run what the run ran.
 
+**A registry is not a node, and only one lane needed telling.** The store answers where an
+image *lives*; whether a pod can *start* it quickly is a different question, and the two lanes
+answer it differently for a reason worth writing down. Locally they are the same question:
+``buildx --load`` on the pinned ``docker`` builder writes into the daemon store the runner
+reads, so a built image is runnable the instant the build returns. On the cluster the build
+pushes to a registry and stops there — the image exists and is on **no node** — so whoever
+runs it first pays the whole multi-GB pull. That is usually ``exec_in_container``, whose entire
+justification is answering "is the package installed?" in seconds; the web UI's 3D panel even
+names the wait out loud (*Fetching the simulation image onto the node*).
+
+So the cluster lane pulls the image onto a node as soon as it knows the image exists, with a
+throwaway Job whose one container *is* that image running ``/bin/true``
+(:mod:`~robovast.execution.cluster_execution.image_warm`). **The pull is the work** — nothing
+reads the Job's result, so a broken entrypoint or a nonzero exit warms the node just as well,
+which is what makes it safe to point at an arbitrary experiment image. It fires where the
+service *learns* an image is in the registry rather than where a caller asks for one: after a
+build's ``succeeded`` transition, at the two cache-hit returns, and — for the resolved base,
+concurrent with the build itself — at submit. A campaign that builds inherits all of it, because
+those fire points are on the build and not on the caller.
+
+Three properties, and each replaces machinery rather than adding it:
+
+* **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
+  a 409 meaning "already warming". No in-process record, and a service restart changes nothing —
+  the same trick ``build_id_for`` uses to make a resubmit idempotent.
+* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient, and assuming it was
+  would have reproduced a bug this codebase already paid for: TTL starts only once a Job is
+  terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
+  counters at zero and the Job ``active`` forever. That is precisely why the build path carries a
+  ``blocked``-phase probe. A prewarm has nobody watching it, so it gets
+  ``activeDeadlineSeconds`` instead of a watcher.
+* **It never fails its caller.** A failed prewarm leaves exactly the situation that held before
+  the feature existed — a slow first pod — so raising would turn a missed optimization into a
+  failed build. It warns instead, and the warning is load-bearing: nothing reads a prewarm back,
+  so the log is the only place a permanently broken one can surface.
+
+Deliberately outside Kueue, which is the same choice the build Job makes (campaign and
+postprocessing Jobs are the ones carrying the queue label). A prewarm admitted behind a full
+sweep would warm the node *after* the thing that needed it, which is worse than not warming; the
+cost is a few millicores of quota Kueue has not accounted for, and no Workload object at all.
+
+Two things it deliberately does not do. It does **not** fire on the restart branch of
+``get_image_build_status``, which holds only a ``build_id`` — and ``build_id_for`` does not
+reverse into a ref, since it lowercases and folds ``_`` to ``-`` where ``concrete_image_ref``
+does not, so a tag like ``my_sut`` would yield a ref no registry serves and a prewarm that
+reports nothing while warming nothing. And ``exec_in_container`` does not *wait* on a prewarm in
+flight: the kubelet serializes pulls per node, so a pod asking for the same ref queues behind the
+prewarm rather than duplicating the transfer, and a wait loop would add latency without moving a
+byte earlier.
+
+**The registry stays authoritative.** Warmth is an optimization on top of it, never a source of
+truth: ``present()`` still asks the registry, a node holding an image is not evidence it was
+pushed, and nothing about digests or provenance changes. Its own limit is placement — the
+prewarm Job carries no ``nodeSelector``, and neither does the exec pod, so on a single-node
+cluster they are necessarily the same node and on a larger one this is best-effort until it
+becomes a DaemonSet over the Kueue flavor's ``nodeLabels``.
+
 **The pod env is the site default; the request overrides it.** That ordering is the whole
 reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables
 that used to exist, only two were ever carried into the service pod, so
