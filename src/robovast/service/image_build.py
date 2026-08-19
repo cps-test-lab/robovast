@@ -429,14 +429,20 @@ def _hash_wheel(h: "hashlib._Hash", path: Path) -> None:
             pass
 
 
-def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str,
+def build_hash(spec: BuildSpec, project_dir: Path, base_identity: str,
                resolved_vcs: "dict | None" = None) -> str:
     """A stable short hash of everything that affects the built image.
 
-    Inputs: the resolved base image, apt packages, the python_packages specs, the *contents* of
-    every referenced source directory / context wheel, and the commit each floating git spec
+    Inputs: the base image's *identity*, apt packages, the python_packages specs, the *contents*
+    of every referenced source directory / context wheel, and the commit each floating git spec
     resolved to. Changing any of these changes the hash (a rebuild); anything else (run_files,
     scenario) does not.
+
+    ``base_identity`` is deliberately not the base *ref*. A tag names different bytes before and
+    after the base is rebuilt -- and the base is where the dated apt archives are pinned -- so
+    hashing the ref would let a snapshot refresh change what gets installed while the key stayed
+    equal. ``ImageBuildStore._base_identity`` resolves the ref to the local image ID for this,
+    falling back to the ref when the daemon cannot answer.
 
     ``resolved_vcs`` is what makes a moving branch honest. Without it the key hashed the spec
     *string*, so ``pkg @ git+...@main`` was cache-stable: the first build baked in whatever
@@ -459,7 +465,7 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str,
     # only the epoch makes a robovast upgrade rebuild rather than serve the image the old renderer
     # produced, which would silently keep the old install semantics.
     h.update(b"v5")
-    h.update(base_ref.encode())
+    h.update(base_identity.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
         h.update(pkg.encode())

@@ -51,7 +51,11 @@ ARG ROQSIM_REF=8b40bb1004c74e25819d2609c890a8043dbba6db
 # to the empty string ("base name should not be blank").
 ARG BASE_IMAGE=ghcr.io/cps-test-lab/robovast:latest
 
-FROM alpine/git AS roqsim-clone
+# Digest-pinned for the reason the base image's alpine/git pin gives: an untagged FROM
+# resolves to whatever :latest points at on the day of the build, so two builds of the
+# same commit can clone with different git versions. This is alpine/git v2.54.0, the same
+# digest container/robovast/Dockerfile uses -- refresh both with make refresh-build-pins.
+FROM alpine/git@sha256:a299a963fbe31628ab481ca42907bcf0691d004f86734c02638abdf513691d42 AS roqsim-clone
 ARG ROQSIM_REPO
 ARG ROQSIM_REF
 # A full clone then checkout, the same shape as the base image's scenario-execution stage, and

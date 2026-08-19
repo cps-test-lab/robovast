@@ -13,14 +13,14 @@ What it resolves:
 ``FROM ... @sha256:...``
     every digest-pinned base image, re-resolved from its tag with ``buildx imagetools inspect``
     (no pull). A tag is kept beside each digest precisely so this can find it again.
-the snapshot dates
-    **Reported, not rewritten** -- the Dockerfiles do not pin apt to a dated archive yet, so there
-    is no ARG to update; what this prints is the date to use when they do. The ROS date is
+``ARG UBUNTU_SNAPSHOT`` / ``ARG ROS_SNAPSHOT``
+    the dated apt archives every ``apt-get`` in the image resolves against. The ROS date is
     **discovered, not computed**: ROS publishes a fixed set, roughly quarterly, and asking for an
     arbitrary date returns 404 rather than the nearest, so a computed "today minus a month" would
     fail at build time for a reason the Dockerfile does not explain. Ubuntu's service is the
     opposite -- any timestamp since 2023-03-01 -- so that one is derived from the ROS date, keeping
-    both archives at the same point in time rather than three months apart.
+    both archives at the same point in time rather than three months apart. Moving these changes
+    what a rebuild installs, so it also has to change the image cache key.
 
 See ``container/pins/README.md`` for the recipe and the four things that only showed up by running
 it.
@@ -42,6 +42,8 @@ _FROM_PIN = re.compile(r"^FROM\s+(?P<ref>[^\s@]+)@(?P<digest>sha256:[0-9a-f]{64}
                        re.MULTILINE)
 _ARG_PIN = re.compile(r"^ARG\s+(?P<name>ROS_BASE_DIGEST)=(?P<digest>sha256:[0-9a-f]{64})",
                       re.MULTILINE)
+_UBUNTU_SNAPSHOT_PIN = re.compile(r"^ARG\s+UBUNTU_SNAPSHOT=(?P<stamp>\S+)", re.MULTILINE)
+_ROS_SNAPSHOT_PIN = re.compile(r"^ARG\s+ROS_SNAPSHOT=(?P<date>\S+)", re.MULTILINE)
 _TIMEOUT = 60
 
 
@@ -84,14 +86,34 @@ def _ros_distro(text: str) -> str:
     return match.group(1) if match else "jazzy"
 
 
-def _ubuntu_stamp(ros_date: str) -> str:
-    """The Ubuntu snapshot timestamp matching a ROS snapshot date.
+def _base_created(ref: str) -> "str | None":
+    """The base image's creation timestamp as a snapshot stamp, read without pulling it."""
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect", "--format", "{{.Image.Created}}", ref],
+            capture_output=True, text=True, check=False, timeout=_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    # "2026-08-19 00:30:43.069541076 +0000 UTC" -> "20260819T003043Z"
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", result.stdout.strip())
+    return "".join(match.groups()[:3]) + "T" + "".join(match.groups()[3:]) + "Z" if match else None
 
-    Derived from the ROS date rather than from today, so the two archives are read at the same
-    point in time. Pinning Ubuntu to now and ROS to a three-month-old snapshot would install a
-    combination nobody ever tested.
+
+def _ubuntu_stamp(base_ref: str) -> "str | None":
+    """The Ubuntu snapshot timestamp to pin, which is the BASE IMAGE's date -- not the ROS date.
+
+    Deriving it from the ROS date is the obvious thing and it is wrong. ``osrf/ros`` is rebuilt
+    daily, so its Ubuntu packages are current, while the newest ROS snapshot can be months old;
+    an older Ubuntu archive then offers ``udev 255.4-1ubuntu8.16`` against a base already carrying
+    ``libudev1 8.17``, and every install that pulls udev in fails with "held broken packages".
+
+    The constraint is one-sided: the Ubuntu snapshot must be at or after the base's own apt state.
+    So it is read from the base image itself, which also means refreshing the base digest and this
+    stamp cannot drift apart.
     """
-    return ros_date.replace("-", "") + "T000000Z"
+    return _base_created(base_ref)
 
 
 def main() -> int:
@@ -102,6 +124,21 @@ def main() -> int:
     args = parser.parse_args()
 
     changes, unresolved = [], []
+
+    # Resolved once, before the loop: every Dockerfile that pins a snapshot must land on the SAME
+    # point in time, and asking the ROS server once per file could straddle a publication.
+    distro = _ros_distro((_REPO / _DOCKERFILES[0]).read_text(encoding="utf-8"))
+    ros_date = _latest_ros_snapshot(distro)
+    if ros_date:
+        print(f"newest {distro} snapshot offered by snapshots.ros.org: {ros_date}")
+    else:
+        unresolved.append(f"could not list snapshots for {distro}")
+    ubuntu_stamp = _ubuntu_stamp(f"osrf/ros:{distro}-desktop-full")
+    if ubuntu_stamp:
+        print(f"base image's own apt state (the Ubuntu pin):         {ubuntu_stamp}")
+    else:
+        unresolved.append(f"could not read the creation date of osrf/ros:{distro}-desktop-full")
+
     for rel in _DOCKERFILES:
         path = _REPO / rel
         if not path.exists():
@@ -132,16 +169,18 @@ def main() -> int:
                 text = text.replace(f"ARG ROS_BASE_DIGEST={match.group('digest')}",
                                     f"ARG ROS_BASE_DIGEST={new}")
 
+        for pattern, group, wanted, name in (
+                (_ROS_SNAPSHOT_PIN, "date", ros_date, "ROS_SNAPSHOT"),
+                (_UBUNTU_SNAPSHOT_PIN, "stamp", ubuntu_stamp, "UBUNTU_SNAPSHOT")):
+            if wanted:
+                match = pattern.search(original)
+                if match is None or match.group(group) == wanted:
+                    continue
+                changes.append(f"{rel}: {name}\n    {match.group(group)}\n -> {wanted}")
+                text = text.replace(f"ARG {name}={match.group(group)}", f"ARG {name}={wanted}")
+
         if args.write and text != original:
             path.write_text(text, encoding="utf-8")
-
-    distro = _ros_distro((_REPO / _DOCKERFILES[0]).read_text(encoding="utf-8"))
-    ros_date = _latest_ros_snapshot(distro)
-    if ros_date:
-        print(f"newest {distro} snapshot offered by snapshots.ros.org: {ros_date}")
-        print(f"  matching Ubuntu stamp:                              {_ubuntu_stamp(ros_date)}")
-    else:
-        unresolved.append(f"could not list snapshots for {distro}")
 
     for change in changes:
         print(change)

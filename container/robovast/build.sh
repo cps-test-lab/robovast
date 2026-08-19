@@ -133,9 +133,25 @@ buildx_args() {
   else
     # Local build: the bare name is what a developer runs, and the prefixed one is
     # what a later --push would publish, so both are useful in the daemon.
-    BUILDX_ARGS+=(--load -t "$local_tag")
-    [[ -n "$published_tag" && "$published_tag" != "$local_tag" ]] \
-      && BUILDX_ARGS+=(-t "$published_tag")
+    #
+    # Pinned to the `docker` driver rather than inheriting whichever builder the operator has
+    # selected, for the reason robovast.service.image_store._LOCAL_BUILDER gives at length: only
+    # that driver runs inside dockerd, so only it can see images the daemon already has. On a
+    # docker-container builder (a multi-arch one is a common thing to have selected) the 5.6 GB
+    # ROS base is invisible and gets re-fetched from the registry on every build -- and on a
+    # builder whose container cannot resolve DNS it does not merely re-fetch, it fails outright
+    # while the image sits in the local daemon. EXTRA_ARGS is appended after these, so an explicit
+    # `-- --builder X` still wins. Not applied to --push: a multi-platform push needs the
+    # container driver, which is the one thing the docker driver cannot do.
+    BUILDX_ARGS+=(--builder default --load -t "$local_tag")
+    # An `[[ ... ]] && ...` as the LAST statement becomes the function's exit status. The two tags
+    # are equal exactly when no --project was given -- the plain local build this script documents
+    # first -- so the test failed, the function returned 1, and every caller's `|| return $?`
+    # aborted before docker was invoked at all. It looked like a build that printed its header and
+    # silently did nothing.
+    if [[ -n "$published_tag" && "$published_tag" != "$local_tag" ]]; then
+      BUILDX_ARGS+=(-t "$published_tag")
+    fi
   fi
 }
 

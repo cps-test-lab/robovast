@@ -44,7 +44,8 @@ from typing import Optional
 
 from robovast.common.build_context import render_dockerignore
 from robovast.common.errors import ImageStoreUnavailable
-from robovast.common.execution import BUILD_IMAGE_PREFIX, resolve_build_base_image
+from robovast.common.execution import (BUILD_IMAGE_PREFIX, local_image_id,
+                                       resolve_build_base_image)
 from robovast.service.image_build import (BuildSpec, build_hash, classify_build_error,
                                          generate_dockerfile, resolve_floating_vcs_specs)
 from robovast.service.interface import (ImageBuildError, ImageBuildRef, ImageBuildStatus,
@@ -193,7 +194,7 @@ class LocalDockerImageStore(ImageBuildStore):
 
     def ref_for(self, spec: BuildSpec, project_dir: Path) -> ImageRef:
         base_ref = self._base_ref(spec)
-        image_hash = build_hash(spec, project_dir, base_ref,
+        image_hash = build_hash(spec, project_dir, self._base_identity(base_ref),
                                 resolved_vcs=self.resolve_vcs(spec))
         return ImageRef(ref=local_image_ref(spec.tag, image_hash),
                         identity=build_identity(spec.tag, image_hash),
@@ -237,6 +238,24 @@ class LocalDockerImageStore(ImageBuildStore):
                 f"daemon, so this is a deployment problem, not something a rebuild "
                 f"fixes.") from e
         return r.returncode == 0
+
+    @staticmethod
+    def _base_identity(base_ref: str) -> str:
+        """What the cache key must treat as "the base" -- which is not the ref it was asked for.
+
+        ``base_ref`` is a tag (``ghcr.io/cps-test-lab/robovast:latest``, or a local alias), so
+        hashing it makes every rebuild of the base invisible to the key. That is not academic:
+        the base is where the dated apt archives are pinned, so ``make refresh-build-pins``
+        changes what a campaign image installs while the key stays equal, and the store then
+        serves an image built against the old archives -- the silent substitution the whole
+        provenance effort exists to prevent. The image ID is the thing that actually changed.
+
+        Falls back to the ref when the daemon cannot answer, which is the value the key used
+        before this refinement, so a base that is not present locally behaves exactly as it did.
+        The probe is local-only and never pulls: this is on the path to every build decision,
+        including cache hits.
+        """
+        return local_image_id(base_ref) or base_ref
 
     def _base_ref(self, spec: BuildSpec) -> str:
         # Local dev: an explicit base is used verbatim (may be an alias the operator

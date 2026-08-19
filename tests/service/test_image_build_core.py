@@ -514,3 +514,37 @@ def test_a_project_without_a_scenario_image_still_gets_a_handle():
     primary = primary_build_ref({"sut": _ref("b-sut", False)})
     assert primary.build_id == "b-sut"
     assert primary.cached is False
+
+
+# ---------------------------------------------------------------------------
+# The base is hashed by identity, not by the ref it was asked for
+# ---------------------------------------------------------------------------
+
+def test_rebuilt_base_changes_the_hash(tmp_path):
+    """The same ref pointing at new bytes must rebuild.
+
+    This is the property that makes the dated apt archives in the base image reach campaign
+    images at all: `make refresh-build-pins` rebuilds the base under an unchanged tag, and if
+    the key hashed the tag the store would keep serving an image built against the old
+    archives.
+    """
+    spec = BuildSpec(tag="sim", system_packages=["x11vnc"], python_packages=[])
+    before = build_hash(spec, tmp_path, "sha256:" + "a" * 64)
+    after = build_hash(spec, tmp_path, "sha256:" + "b" * 64)
+    assert before != after
+
+
+def test_base_identity_falls_back_to_the_ref(monkeypatch):
+    """No daemon, no verdict -- and the pre-refinement value rather than an exception.
+
+    `_base_identity` sits on the path to every build decision, cache hits included, so it must
+    not fail when docker is absent; the ref is then the honest answer and the behaviour is
+    exactly what it was before the identity refinement.
+    """
+    from robovast.service import image_store
+
+    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "")
+    assert image_store.LocalDockerImageStore._base_identity(BASE) == BASE
+
+    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "sha256:" + "c" * 64)
+    assert image_store.LocalDockerImageStore._base_identity(BASE) == "sha256:" + "c" * 64

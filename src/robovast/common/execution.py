@@ -536,6 +536,24 @@ def _image_present_locally(image: str) -> bool:
     return bool(result and result.returncode == 0)
 
 
+def local_image_id(image: str) -> str:
+    """The local daemon's content ID for *image*, or ``""`` when it cannot be read.
+
+    A tag is not an identity. ``ghcr.io/cps-test-lab/robovast:latest`` names different bytes
+    before and after the base image is rebuilt, so anything that must notice a rebuild -- an
+    image cache key above all -- has to hash this instead of the ref it was asked for.
+
+    Local only, never pulled, and ``""`` rather than an exception when the daemon cannot answer:
+    callers use this on paths that must stay cheap and must not fail because docker is absent.
+    """
+    if not image:
+        return ""
+    result = _docker(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])
+    if not result or result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def _docker_label(image: str, label: str) -> str:
     """One label off a local image, or ``""``. Never raises -- absence is the answer."""
     if not image:
