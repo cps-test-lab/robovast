@@ -39,8 +39,9 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
-                                        PreviewResponse, ResourceUsage, RobovastInterface, Routes,
-                                        ServiceError, UploadGrant, ValidationReport,
+                                        PreviewResponse, ResourceUsage, RetriggerReport,
+                                        RobovastInterface, Routes, ServiceError, UploadGrant,
+                                        ValidationReport,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
@@ -338,6 +339,10 @@ class HTTPTransport(RobovastInterface):
             json=request.model_dump()))
 
     # -- validation / preview / authoring help (config editor) --------------
+
+    def check_retrigger(self, campaign_id: str) -> RetriggerReport:
+        return RetriggerReport.model_validate(
+            self._get(Routes.campaign_retrigger_check(campaign_id)))
 
     def validate_project(self, workspace_id: str, path: str = "") -> ValidationReport:
         return ValidationReport.model_validate(

@@ -486,6 +486,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/retrigger/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check Retrigger
+         * @description Whether this campaign can be re-run, reported per axis (config version, container protocol, images, plugins, asset providers). Changes nothing and starts no container, so it is the cheap thing to call before a retrigger.
+         */
+        get: operations["check_retrigger_campaigns__campaign_id__retrigger_check_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/scene": {
         parameters: {
             query?: never;
@@ -2300,6 +2320,60 @@ export interface components {
             /** Parallel Runs */
             parallel_runs: boolean;
         };
+        /**
+         * RetriggerAxis
+         * @description One axis of a retrigger pre-flight.
+         *
+         *     ``verdict`` is ``ok`` / ``upgradable`` / ``unknown`` / ``blocked``. ``unknown`` is not a
+         *     failure: a campaign recorded before a given field existed is exactly the kind this exists
+         *     to rescue, so it is reported and does not block. ``detail`` must be actionable -- for a
+         *     blocked axis it names the artifact and how to obtain it.
+         *
+         *     ``data`` carries the axis's structured findings (the pinned images, the resolved plugins,
+         *     the migration steps), which differ per axis and so are not modelled field by field here --
+         *     a caller that wants them knows which axis it asked about.
+         */
+        RetriggerAxis: {
+            /** Data */
+            data: {
+                [key: string]: unknown;
+            };
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Verdict
+             * @default
+             */
+            verdict: string;
+        };
+        /**
+         * RetriggerReport
+         * @description Whether a campaign can be re-run, per axis (mirrors ``retrigger.check``).
+         *
+         *     Five axes, reported together on purpose: they fail independently, so learning about one at
+         *     a time means fixing the config only to discover the image is gone as well.
+         */
+        RetriggerReport: {
+            /** Axes */
+            axes: {
+                [key: string]: components["schemas"]["RetriggerAxis"];
+            };
+            /** Blocking */
+            blocking: string[];
+            /**
+             * Campaign Id
+             * @default
+             */
+            campaign_id: string;
+            /**
+             * Runnable
+             * @default false
+             */
+            runnable: boolean;
+        };
         /** RunPostprocessingRequest */
         RunPostprocessingRequest: {
             /** Campaign Id */
@@ -3870,6 +3944,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CampaignRef"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_retrigger_campaigns__campaign_id__retrigger_check_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetriggerReport"];
                 };
             };
             /** @description Validation Error */

@@ -48,7 +48,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk, PanelsSource,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
-                                        RobovastInterface, Routes, RunPostprocessingRequest,
+                                        RetriggerReport, RobovastInterface, Routes,
+                                        RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, Status,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
@@ -883,6 +884,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def stop_job(campaign_id: str, job_name: str, reason: "str | None" = None,
                  source: str = "api") -> ActionResult:
         return _guard(lambda: impl.stop_job(campaign_id, job_name, reason, source))
+
+    @app.get(Routes.campaign_retrigger_check("{campaign_id}"), response_model=RetriggerReport,
+             tags=["campaigns"],
+             description="Whether this campaign can be re-run, reported per axis (config "
+                         "version, container protocol, images, plugins, asset providers). "
+                         "Changes nothing and starts no container, so it is the cheap thing "
+                         "to call before a retrigger.")
+    def check_retrigger(campaign_id: str) -> RetriggerReport:
+        return _guard(lambda: impl.check_retrigger(campaign_id))
 
     @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
               tags=["campaigns"],

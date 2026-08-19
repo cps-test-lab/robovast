@@ -102,6 +102,94 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
         sys.exit(result.exit_code or 1)
 
 
+#: How a verdict is shown. The symbols exist so a five-line report can be scanned at a glance;
+#: the words stay because a symbol alone is not something anyone can act on or search for.
+_VERDICT_MARKS = {
+    "ok": ("ok", "green"),
+    "upgradable": ("upgradable", "yellow"),
+    "unknown": ("unknown", "yellow"),
+    "blocked": ("BLOCKED", "red"),
+}
+
+
+@execution.command('check-retrigger')
+@click.argument('campaign_id')
+@target_options
+def check_retrigger(campaign_id, namespace, context):  # pylint: disable=redefined-outer-name
+    """Can this campaign be re-run? Reports every axis, and costs nothing.
+
+    Answers before a retrigger rather than after: config version, host/container protocol,
+    recorded images, third-party plugins and asset providers -- all five at once, because they
+    fail independently and fixing one to discover the next is the thing this replaces.
+
+    ``unknown`` is not a failure. A campaign recorded before a given field existed cannot say
+    what it used, and refusing it on that basis would refuse exactly the old campaigns worth
+    re-running. Exits non-zero only when an axis is genuinely blocked.
+    """
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            report = client.check_retrigger(campaign_id)
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    click.echo(f"campaign: {report.campaign_id}")
+    for name, axis in sorted(report.axes.items()):
+        word, colour = _VERDICT_MARKS.get(axis.verdict, (axis.verdict, None))
+        click.echo(f"  {name:<10} {click.style(word, fg=colour):<20} {axis.detail}")
+    click.echo("")
+    if report.runnable:
+        click.echo(click.style("re-runnable", fg="green")
+                   + f" -- vast exec retrigger {report.campaign_id}")
+        return
+    click.echo(click.style(f"NOT re-runnable: {', '.join(report.blocking)}", fg="red"))
+    sys.exit(1)
+
+
+@execution.command('retrigger')
+@click.argument('campaign_id')
+@click.option('--force', is_flag=True,
+              help='Launch even when the pre-flight reports a blocking axis.')
+@target_options
+def retrigger(campaign_id, force, namespace, context):  # pylint: disable=redefined-outer-name
+    """Launch a NEW campaign from what CAMPAIGN_ID recorded. The source is not modified.
+
+    Reuses the frozen config and the image the source recorded, so it runs the same code rather
+    than today's. A config older than the current version is migrated into the staging copy;
+    the archived one is left exactly as its author wrote it.
+
+    The pre-flight runs first, because launching to discover the image is gone wastes the launch
+    -- and its refusal names what is missing. ``--force`` proceeds anyway, which is worth having
+    for an axis you have decided you understand.
+    """
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            report = client.check_retrigger(campaign_id)
+            if not report.runnable and not force:
+                for name in report.blocking:
+                    click.echo(click.style(f"  {name}: ", fg="red")
+                               + report.axes[name].detail, err=True)
+                click.echo("", err=True)
+                click.echo("refusing to retrigger. Run 'vast exec check-retrigger "
+                           f"{campaign_id}' for the full report, or --force to proceed anyway.",
+                           err=True)
+                sys.exit(1)
+            for name, axis in sorted(report.axes.items()):
+                if axis.verdict in ("upgradable", "unknown"):
+                    click.echo(f"note: {name}: {axis.detail}", err=True)
+            ref = client.retrigger_campaign(campaign_id)
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    click.echo(f"retriggered {campaign_id} as {ref.campaign_id}")
+    if getattr(ref, "note", ""):
+        click.echo(f"note: {ref.note}")
+    click.echo(f"  next: vast wait {ref.campaign_id}")
+
+
 @execution.command('stop-container')
 @target_options
 def stop_container(namespace, context):  # pylint: disable=redefined-outer-name

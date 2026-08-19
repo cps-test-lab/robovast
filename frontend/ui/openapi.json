@@ -1669,6 +1669,70 @@
         "title": "ResourceUsage",
         "type": "object"
       },
+      "RetriggerAxis": {
+        "description": "One axis of a retrigger pre-flight.\n\n``verdict`` is ``ok`` / ``upgradable`` / ``unknown`` / ``blocked``. ``unknown`` is not a\nfailure: a campaign recorded before a given field existed is exactly the kind this exists\nto rescue, so it is reported and does not block. ``detail`` must be actionable -- for a\nblocked axis it names the artifact and how to obtain it.\n\n``data`` carries the axis's structured findings (the pinned images, the resolved plugins,\nthe migration steps), which differ per axis and so are not modelled field by field here --\na caller that wants them knows which axis it asked about.",
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "verdict": {
+            "default": "",
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "detail",
+          "verdict"
+        ],
+        "title": "RetriggerAxis",
+        "type": "object"
+      },
+      "RetriggerReport": {
+        "description": "Whether a campaign can be re-run, per axis (mirrors ``retrigger.check``).\n\nFive axes, reported together on purpose: they fail independently, so learning about one at\na time means fixing the config only to discover the image is gone as well.",
+        "properties": {
+          "axes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RetriggerAxis"
+            },
+            "title": "Axes",
+            "type": "object"
+          },
+          "blocking": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking",
+            "type": "array"
+          },
+          "campaign_id": {
+            "default": "",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "runnable": {
+            "default": false,
+            "title": "Runnable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "axes",
+          "blocking",
+          "campaign_id",
+          "runnable"
+        ],
+        "title": "RetriggerReport",
+        "type": "object"
+      },
       "RunPostprocessingRequest": {
         "properties": {
           "campaign_id": {
@@ -4339,6 +4403,49 @@
           }
         },
         "summary": "Retrigger Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/retrigger/check": {
+      "get": {
+        "description": "Whether this campaign can be re-run, reported per axis (config version, container protocol, images, plugins, asset providers). Changes nothing and starts no container, so it is the cheap thing to call before a retrigger.",
+        "operationId": "check_retrigger_campaigns__campaign_id__retrigger_check_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetriggerReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Retrigger",
         "tags": [
           "campaigns"
         ]

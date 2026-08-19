@@ -159,8 +159,11 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             project. There is no server-side "current project".
         from_campaign: Re-run a past campaign from its own record (frozen config + the image
             its runs used): a NEW campaign, source untouched. **Takes no other argument** —
-            the record supplies them, so a pilot stays a pilot. Refused if it recorded no
-            usable image. Re-expands, so stochastic generators redraw.
+            the record supplies them, so a pilot stays a pilot. Re-expands, so stochastic
+            generators redraw. An older config is migrated in the staging copy only. Can be
+            refused (image, container protocol, unmigratable config) — read
+            ``get_campaign_summary``'s ``retrigger`` key first: it costs nothing, a launch
+            does not.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.

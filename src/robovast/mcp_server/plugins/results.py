@@ -156,6 +156,11 @@ def get_campaign_summary(campaign_id: str) -> dict:
         num_killed, worst_configs, advice}`` plus the execution provenance (which
         robovast, image, lane) once the campaign has produced it; or ``{error}``.
 
+        ``retrigger`` says whether this campaign can be re-run, per axis (config version,
+        container protocol, images, plugins, providers). Read it before
+        ``start_campaign(from_campaign=…)``: a ``blocking`` axis names what is missing,
+        and ``unknown`` means the campaign predates that record, not that it failed.
+
         ``num_killed`` counts runs an operator stopped by hand (``stop_job``). They are
         **not** in ``num_failed``: nobody learned anything about the system under test
         from them, so they are missing measurements rather than negative results, and a
@@ -228,7 +233,40 @@ def get_campaign_summary(campaign_id: str) -> dict:
         # _execution/execution.yaml, and a null "image" reads as "no image" instead of
         # "not known yet".
         result.update({k: v for k, v in provenance[0].items() if v is not None})
+
+    # Whether this campaign can be re-run. Additive, like `advice` above: an agent that
+    # ignores the key loses nothing, and one that reads it can decide whether to call
+    # start_campaign(from_campaign=...) instead of burning a launch to find out. Extended
+    # here rather than added as a tool because this is already the campaign-provenance
+    # surface -- it answers "which robovast, which image, which lane" three lines up.
+    result.update(_retrigger_view(campaign_id))
     return result
+
+
+def _retrigger_view(campaign_id: str) -> dict:
+    """``{"retrigger": {...}}`` for *campaign_id*, or ``{}`` when it cannot be determined.
+
+    Omitted rather than reported empty on failure, by the same rule the provenance merge
+    above follows: an absent key reads as "not known", where a present-but-empty one reads
+    as "checked, nothing to say" -- and those are different answers for a campaign nobody
+    has the records for.
+    """
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {}
+        report = client.check_retrigger(campaign_id)
+    except Exception:  # noqa: BLE001 - a pre-flight must not fail the summary it rides on
+        return {}
+    return {"retrigger": {
+        "runnable": report.runnable,
+        "blocking": report.blocking,
+        # Verdict and detail only. The structured per-axis findings (every pinned image, every
+        # resolved plugin) belong to the dedicated call: repeating them here would make the one
+        # aggregate tool the largest response in the surface.
+        "axes": {name: {"verdict": axis.verdict, "detail": axis.detail}
+                 for name, axis in sorted(report.axes.items())},
+    }}
 
 
 async def _announced(ctx, campaign_id: str, call):

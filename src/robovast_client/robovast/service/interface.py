@@ -41,7 +41,7 @@ operations extend :class:`RobovastInterface` in later phases.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -802,6 +802,37 @@ class ValidationReport(BaseModel):
     total_trials: int = 0
 
 
+class RetriggerAxis(BaseModel):
+    """One axis of a retrigger pre-flight.
+
+    ``verdict`` is ``ok`` / ``upgradable`` / ``unknown`` / ``blocked``. ``unknown`` is not a
+    failure: a campaign recorded before a given field existed is exactly the kind this exists
+    to rescue, so it is reported and does not block. ``detail`` must be actionable -- for a
+    blocked axis it names the artifact and how to obtain it.
+
+    ``data`` carries the axis's structured findings (the pinned images, the resolved plugins,
+    the migration steps), which differ per axis and so are not modelled field by field here --
+    a caller that wants them knows which axis it asked about.
+    """
+
+    verdict: str = ""
+    detail: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class RetriggerReport(BaseModel):
+    """Whether a campaign can be re-run, per axis (mirrors ``retrigger.check``).
+
+    Five axes, reported together on purpose: they fail independently, so learning about one at
+    a time means fixing the config only to discover the image is gone as well.
+    """
+
+    campaign_id: str = ""
+    runnable: bool = False
+    blocking: list[str] = Field(default_factory=list)
+    axes: dict[str, RetriggerAxis] = Field(default_factory=dict)
+
+
 class VariationRemote(BaseModel):
     """Where a variation type's Module-Federation preview bundle is served from.
 
@@ -1298,6 +1329,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/retrigger"
 
     @staticmethod
+    def campaign_retrigger_check(campaign_id: str) -> str:
+        # GET, not POST: it changes nothing and costs nothing, which is the whole point of
+        # having it beside the retrigger rather than inside it.
+        return f"/campaigns/{campaign_id}/retrigger/check"
+
+    @staticmethod
     def campaign_archive(campaign_id: str) -> str:
         # The postprocessed tar.gz, streamed from the object store. Named here like every
         # other path so the MCP's download link and the route serving it are one string.
@@ -1616,6 +1653,20 @@ class RobovastInterface(ABC):
         samples. This is a re-run, not a replay of the same trials.
 
         Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
+        """
+
+    @abstractmethod
+    def check_retrigger(self, campaign_id: str) -> RetriggerReport:
+        """Whether *campaign_id* can be re-run, and what is missing if not.
+
+        Answers without staging anything, starting a container or spending compute, so it is
+        the cheap thing to call before :meth:`retrigger_campaign` rather than launching to find
+        out. Reports every axis at once -- config version, host/container protocol, images,
+        third-party plugins, asset providers -- because they fail independently.
+
+        Computed service-side, like :meth:`validate_project`: a client-only install has no
+        access to the service's results directory, so a client that tried to work this out for
+        itself could not answer at all.
         """
 
     @abstractmethod

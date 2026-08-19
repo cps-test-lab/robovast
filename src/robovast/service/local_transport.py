@@ -56,7 +56,8 @@ from robovast.service.interface import (ActionResult, CampaignRef, CampaignSumma
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
-                                        RobovastInterface, Routes, UploadGrant, ValidationProblem,
+                                        RetriggerAxis, RetriggerReport, RobovastInterface, Routes,
+                                        UploadGrant, ValidationProblem,
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
@@ -956,6 +957,29 @@ class LocalTransport(RobovastInterface):
         self._admit_show_gui(request)
         target = self._resolve_project(request.workspace_id, request.config_path)
         return self._launch_campaign(request, target)
+
+    def check_retrigger(self, campaign_id: str) -> RetriggerReport:
+        """See the interface. A thin adapter over :func:`robovast.service.retrigger.check`.
+
+        Same split as :meth:`retrigger_campaign`: the module decides everything about the
+        source, and what belongs here is only which directory this lane reads it from.
+        """
+        from robovast.service import retrigger
+
+        report = retrigger.check(self._retrigger_source_dir(campaign_id), campaign_id)
+        return RetriggerReport(
+            campaign_id=report["campaign_id"],
+            runnable=report["runnable"],
+            blocking=report["blocking"],
+            axes={
+                name: RetriggerAxis(
+                    verdict=axis["verdict"], detail=axis["detail"],
+                    # Everything beyond the verdict and its explanation is the axis's own
+                    # structured findings, and they differ per axis -- so they travel as data
+                    # rather than being flattened into fields most axes would leave empty.
+                    data={k: v for k, v in axis.items() if k not in ("verdict", "detail")})
+                for name, axis in report["axes"].items()
+            })
 
     def retrigger_campaign(self, campaign_id: str) -> CampaignRef:
         """Launch a new campaign from *campaign_id*'s own records (see the interface).
