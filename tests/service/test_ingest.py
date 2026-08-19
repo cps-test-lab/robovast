@@ -19,7 +19,7 @@ import pytest
 import yaml
 
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, STAGE_REBUILT, ingest_campaign)
+                                     STAGE_NEWER, STAGE_OK, ingest_campaign)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
