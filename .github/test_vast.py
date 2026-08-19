@@ -385,29 +385,6 @@ def _collect_non_job_files(campaign_dir):
     return result
 
 
-def _set_image(text, image):
-    """Return *text* with ``execution.image`` replaced by *image*."""
-    out = []
-    in_execution = False
-    replaced = False
-    for line in text.splitlines(keepends=True):
-        stripped = line.rstrip('\n')
-        if stripped == 'execution:':
-            in_execution = True
-            out.append(line)
-            continue
-        if in_execution and stripped.startswith('  image:'):
-            out.append(f"  image: {image}\n")
-            replaced = True
-            continue
-        if in_execution and line[:1].strip() and stripped.endswith(':'):
-            in_execution = False
-        out.append(line)
-    if not replaced:
-        raise ValueError("Could not find 'image:' in the execution block")
-    return ''.join(out)
-
-
 def _set_runs_per_job(text, value):
     """Return *text* with ``runs_per_job: <value>`` set in the execution block."""
     out = []
@@ -563,7 +540,11 @@ def main():
         '--image',
         type=str,
         default=None,
-        help='Override the container image in the VAST file (e.g. a PR-built image)'
+        help='Run against this image instead of the published family, given as '
+             '<project>/<member>:<tag> (e.g. a PR-built image). Set as '
+             'ROBOVAST_PROJECT + ROBOVAST_PROJECT_TAG rather than written into the '
+             '.vast: a .vast names only its own images, and the framework ones are '
+             'symbolic family: refs until core resolves them.'
     )
 
     args = parser.parse_args()
@@ -584,49 +565,58 @@ def main():
     if args.image:
         print(f"Image override: {args.image}")
 
-    original_text = None
     if args.image:
-        original_text = config_path.read_text(encoding='utf-8')
-        config_path.write_text(_set_image(original_text, args.image), encoding='utf-8')
+        # `execution.image` was v1's shape. In v2 a .vast names its OWN images and nothing
+        # else; the framework's are `family:<member>` refs resolved from ROBOVAST_PROJECT
+        # (where) and ROBOVAST_PROJECT_TAG (which) -- see robovast.common.execution. So the
+        # override moves the whole family at once instead of pinning one container, and the
+        # run still exercises family resolution rather than bypassing it.
+        project, _, tag = args.image.rpartition(':')
+        if not project or not tag:
+            raise SystemExit(
+                f"--image must be <project>/<member>:<tag>, got '{args.image}'")
+        project = project.rsplit('/', 1)[0]
+        if not project:
+            raise SystemExit(
+                f"--image needs a project before the member, got '{args.image}'")
+        os.environ['ROBOVAST_PROJECT'] = project
+        os.environ['ROBOVAST_PROJECT_TAG'] = tag
+        print(f"Image family: {project}/<member>:{tag}")
 
-    try:
-        tests = [
-            ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
-        ]
-        if not args.no_packing_test:
-            tests.append(
-                ("runs_per_job packing equivalence", test_runs_per_job_packing,
-                 args.vast_file, args.test_directory, args.config, args.runs)
-            )
+    tests = [
+        ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
+    ]
+    if not args.no_packing_test:
+        tests.append(
+            ("runs_per_job packing equivalence", test_runs_per_job_packing,
+             args.vast_file, args.test_directory, args.config, args.runs)
+        )
 
-        results = []
-        for name, test_func, *test_args in tests:
-            try:
-                result = test_func(*test_args)
-                results.append((name, result))
-            except Exception as e:
-                print(f"✗ Test '{name}' raised exception: {e}")
-                traceback.print_exc()
-                results.append((name, False))
+    results = []
+    for name, test_func, *test_args in tests:
+        try:
+            result = test_func(*test_args)
+            results.append((name, result))
+        except Exception as e:
+            print(f"✗ Test '{name}' raised exception: {e}")
+            traceback.print_exc()
+            results.append((name, False))
 
-        print("\n" + "="*60)
-        print("Test Results Summary")
-        print("="*60)
-        for name, result in results:
-            status = "✓ PASS" if result else "✗ FAIL"
-            print(f"{status}: {name}")
+    print("\n" + "="*60)
+    print("Test Results Summary")
+    print("="*60)
+    for name, result in results:
+        status = "✓ PASS" if result else "✗ FAIL"
+        print(f"{status}: {name}")
 
-        all_passed = all(result for _, result in results)
-        print("="*60)
-        if all_passed:
-            print("✓ All tests passed!")
-            return 0
-        else:
-            print("✗ Some tests failed!")
-            return 1
-    finally:
-        if original_text is not None:
-            config_path.write_text(original_text, encoding='utf-8')
+    all_passed = all(result for _, result in results)
+    print("="*60)
+    if all_passed:
+        print("✓ All tests passed!")
+        return 0
+    else:
+        print("✗ Some tests failed!")
+        return 1
 
 
 if __name__ == '__main__':
