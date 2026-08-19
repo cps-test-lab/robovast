@@ -498,6 +498,50 @@ def killed_failure_message(entry: dict[str, Any]) -> str:
 #:
 #: Readers wanting one document get it from ``metadata.yaml``, which nests this under
 #: ``execution.launch``.
+_PLUGINS_FILENAME = "plugins.yaml"
+
+
+def write_plugins_record(campaign_root, resolved: dict) -> None:
+    """Persist what the campaign's ``plugins:`` specs resolved to, to ``_execution/plugins.yaml``.
+
+    Its own record rather than a key in ``execution.yaml`` because it is known at a different
+    time and by different code: plugins resolve while the campaign is being *composed*, where
+    the ``.vast`` directory and its ``.robovast_plugins/`` install dir are in hand, whereas
+    execution.yaml is written later -- by a generated shell script on the local lane -- from a
+    place that has neither. Threading the directory through two lanes to reach that file would
+    couple them to composition for one field. ``_execution/`` already holds several records
+    for exactly this reason (launch, outcome, killed).
+
+    Raises rather than swallowing, like the other writers in this module -- the *caller*
+    decides that a record is best-effort and says so, exactly as ``local_transport`` does for
+    launch.yaml. Keeping that decision here would hide a real failure from the one place that
+    knows whether it matters.
+    """
+    if not resolved:
+        # Nothing declared. An empty file would be indistinguishable from "recorded nothing",
+        # and the absent-file case already means "no plugins" to every reader.
+        return
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    with open(exec_dir / _PLUGINS_FILENAME, "w", encoding="utf-8") as f:
+        yaml.dump(resolved, f, default_flow_style=False, sort_keys=True)
+
+
+def read_plugins_record(campaign_dir) -> "dict | None":
+    """Read ``_execution/plugins.yaml``; ``None`` when the campaign has none.
+
+    ``None`` is not an error and does not mean "no plugins": campaigns recorded before this
+    file existed declared plugins without resolving them anywhere, so a caller has to treat
+    it as *unknown* rather than empty. Conflating the two would report a re-run as safely
+    pinned when nothing about its plugins was ever captured.
+    """
+    path = Path(campaign_dir) / "_execution" / _PLUGINS_FILENAME
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or None
+
+
 _LAUNCH_FILENAME = "launch.yaml"
 
 #: Request fields that describe the *launch* rather than the workspace it came from.

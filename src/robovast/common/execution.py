@@ -1104,6 +1104,44 @@ def render_entrypoint(*, cluster=False, instance_type_command=None):
     return content
 
 
+def _record_resolved_plugins(out_dir, vast_dir, campaign_data) -> None:
+    """Write ``_execution/plugins.yaml`` for this campaign, if it declares any plugins.
+
+    Kept out of :func:`prepare_campaign_configs` proper because it is provenance, not staging:
+    it must never be able to stop a campaign being prepared, and a reader of that function
+    should not have to hold plugin metadata in mind.
+    """
+    try:
+        from robovast.common.campaign_data import \
+            write_plugins_record  # pylint: disable=import-outside-toplevel
+        from robovast.common.config_plugins import (  # pylint: disable=import-outside-toplevel
+            resolved_plugin_versions)
+
+        specs = (campaign_data.get("plugins")
+                 or (campaign_data.get("vast_config") or {}).get("plugins")
+                 or _plugin_specs_of(campaign_data))
+        write_plugins_record(out_dir, resolved_plugin_versions(vast_dir, specs))
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Could not record resolved plugin versions: %s", e)
+
+
+def _plugin_specs_of(campaign_data) -> list:
+    """The campaign's top-level ``plugins:`` list, read back from its own ``.vast``.
+
+    ``campaign_data`` is the *composed* result and does not carry the raw top-level block, so
+    the authored file is the source. Read as a subsection, which is the lenient policy -- this
+    is provenance for a campaign already being prepared, and refusing over an unrelated part
+    of the file would take the campaign down to record a note about it.
+    """
+    from robovast.common.common import load_config  # pylint: disable=import-outside-toplevel
+
+    vast_path = campaign_data.get("vast")
+    if not vast_path:
+        return []
+    section = load_config(vast_path, subsection="plugins", allow_missing=True)
+    return section if isinstance(section, list) else []
+
+
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                              instance_type_command=None, gui=False):
     """Stage a campaign's config tree, including the generated entrypoint.
@@ -1203,6 +1241,13 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     vast_src = campaign_data["vast"]
     vast_dst = os.path.join(campaign_config_dir, os.path.basename(vast_src))
     shutil.copy2(vast_src, vast_dst)
+
+    # What the declared plugin specs resolved to. Recorded HERE because this is where the
+    # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the
+    # execution.yaml writers run later and from places that have neither. A `plugins:` entry
+    # is usually not a pin ("pkg @ git+...@main"), and the only thing recorded before this
+    # was a hash of the specs, which is identical across every resolution of them.
+    _record_resolved_plugins(out_dir, vast_file_path, campaign_data)
 
     # Copy run files
     for config_file in campaign_data.get("_run_files", []):

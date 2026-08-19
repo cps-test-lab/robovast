@@ -54,8 +54,10 @@ isolation.
 
 import hashlib
 import importlib
+import json
 import logging
 import os
+import re
 import subprocess  # nosec B404 - pip on trusted, config-declared specs
 import sys
 from importlib.metadata import PackageNotFoundError, version
@@ -157,6 +159,85 @@ def _requirement_name(spec: str) -> str:
                 head = head.split(op, 1)[0]
                 break
         return head.strip()
+
+
+def resolved_plugin_versions(vast_dir: str, specs) -> dict:
+    """What the declared plugin *specs* actually resolved to, for the campaign's record.
+
+    A ``plugins:`` entry is usually not a pin. ``scenario_mt @ git+https://host/repo@main``
+    resolves to different code every week, and the only thing recorded today is a hash of the
+    **specs** (:data:`MARKER_NAME`), which is identical across all of those resolutions. So a
+    re-run a year from now installs something else and nothing says so.
+
+    Returns ``{distribution: {...}}`` with, per plugin:
+
+    ``requested``
+        the spec as authored, so the record shows intent beside outcome.
+    ``version``
+        the installed version, read from the workspace's own install dir rather than from
+        ``sys.path`` -- the process may have a different copy of the same distribution
+        already imported, which is exactly what ``_warn_if_already_loaded`` reports.
+    ``commit`` / ``url``
+        for a VCS install, the resolved commit and origin, from the ``direct_url.json`` pip
+        writes per PEP 610. This is what turns ``@main`` into something re-installable.
+    ``resolved``
+        False when the distribution is not in the install dir at all -- an entry that was
+        already importable from elsewhere, so pip installed nothing. Recorded rather than
+        omitted, because "declared but not resolved here" is a fact a re-run needs.
+    """
+    from importlib.metadata import distributions  # pylint: disable=import-outside-toplevel
+
+    target_dir = os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
+    installed = {}
+    if os.path.isdir(target_dir):
+        for dist in distributions(path=[target_dir]):
+            name = (dist.metadata["Name"] or "").strip()
+            if name:
+                installed[_canonical(name)] = dist
+
+    record = {}
+    for spec in specs or []:
+        name = _requirement_name(spec)
+        if not name:
+            continue
+        entry = {"requested": spec}
+        dist = installed.get(_canonical(name))
+        if dist is None:
+            entry["resolved"] = False
+        else:
+            entry["version"] = dist.version
+            entry.update(_direct_url_origin(dist))
+        record[name] = entry
+    return record
+
+
+def _canonical(name: str) -> str:
+    """PEP 503 name normalisation, so ``robovast_nav`` and ``robovast-nav`` match."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _direct_url_origin(dist) -> dict:
+    """``{commit, url}`` from a distribution's PEP 610 ``direct_url.json``, if it has one.
+
+    Only a direct (VCS/archive/local) install has this file; an index install does not, and
+    for one the version alone is a sufficient pin. Read defensively: this is provenance, so a
+    malformed file must not fail the campaign that was going to record it.
+    """
+    try:
+        raw = dist.read_text("direct_url.json")
+        if not raw:
+            return {}
+        data = json.loads(raw)
+    except Exception:  # pylint: disable=broad-except
+        return {}
+    origin = {}
+    url = data.get("url")
+    if url:
+        origin["url"] = url
+    commit = (data.get("vcs_info") or {}).get("commit_id")
+    if commit:
+        origin["commit"] = commit
+    return origin
 
 
 def _diagnose_pip_failure(specs, stderr: str) -> str:
