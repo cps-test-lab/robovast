@@ -144,6 +144,11 @@ RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks
 # lane: the service comes up looking healthy and can run nothing. Its three dependencies
 # (kubernetes, boto3, google-cloud-storage) resolve here rather than in layer 1, which
 # costs a little cache; they are small next to the scientific stack layer 1 protects.
+# Kept as its own layer against DL3059: consolidating with the RUN above is exactly what the
+# comment rules out -- layer 1 exists to keep the scientific stack out of the cache key of
+# everything that changes more often, and merging the two would put it back. The directive
+# below has to be the last line before the instruction, so the reasoning goes here.
+# hadolint ignore=DL3059
 RUN pip install --no-cache-dir ./src/robovast_cluster
 
 # The built SPA + the env `robovast.service.app._ui_dist()` reads. The in-image

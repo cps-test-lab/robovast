@@ -9,7 +9,12 @@ ARG ROS_DISTRO=jazzy
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
 ARG SCENARIO_EXECUTION_REF=bd77cc9b283f1b775240ab8ac65d71c761bd1e8a
 
-FROM alpine/git AS scenario-execution-clone
+# Pinned by digest, on the same reasoning the SCENARIO_EXECUTION_REF comment above gives:
+# an untagged FROM resolves to whatever :latest points at on the day of the build, so two
+# builds of the same commit can clone with different git versions. This is alpine/git
+# v2.54.0. (hadolint DL3006 wants any explicit tag; a digest is the version that cannot
+# be moved under us.)
+FROM alpine/git@sha256:a299a963fbe31628ab481ca42907bcf0691d004f86734c02638abdf513691d42 AS scenario-execution-clone
 ARG SCENARIO_EXECUTION_REPO
 ARG SCENARIO_EXECUTION_REF
 # No --depth: the ref is a bare commit sha, which a shallow clone cannot name. .git is dropped
