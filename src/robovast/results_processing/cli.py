@@ -224,6 +224,81 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
     click.echo(f"\u2713 {message}")
 
 
+@results.command(name='backfill-provenance')
+@click.argument('results_dir', required=False, type=click.Path(exists=True))
+@click.option('--write', is_flag=True,
+              help='Actually write. Without this, report what would change and touch nothing.')
+@click.option('--force', is_flag=True,
+              help='Re-derive a block an earlier run already wrote.')
+def backfill_provenance_cmd(results_dir, write, force):
+    """Derive what an old campaign's provenance can still be recovered from.
+
+    Campaigns that ran before a field existed do not have it, and there is no way back to the
+    moment it was knowable. Some of it is still derivable, though, and gets less so over time:
+    a short revision resolves to a full one while the commit is reachable, and a tag resolves
+    to a digest while the registry still serves it.
+
+    Only ever ADDS, under a ``backfilled:`` block. A campaign's own record is evidence, so
+    nothing it wrote is replaced -- otherwise a reader can no longer tell which values the
+    campaign reported and which were inferred later. What cannot be derived is recorded as
+    unknown with the reason, because "nobody could tell" and "nobody looked" are different
+    answers.
+
+    Dry by default: this runs over published data.
+    """
+    from robovast.common.backfill import (  # pylint: disable=import-outside-toplevel
+        apply_backfill, plan_backfill)
+
+    if results_dir is None:
+        try:
+            results_dir = get_project_config().results_dir
+        except Exception as e:  # noqa: BLE001
+            handle_cli_exception(e)
+            return
+
+    root = Path(results_dir)
+    campaigns = sorted(d for d in root.iterdir() if d.is_dir() and is_campaign_dir(d.name))
+    if not campaigns:
+        click.echo(f"no campaign directories under {root}")
+        return
+
+    changed = skipped = 0
+    for campaign in campaigns:
+        plan = apply_backfill(campaign, force=force) if write else plan_backfill(campaign)
+        if plan.get("unavailable"):
+            click.echo(f"{campaign.name}: {click.style('skipped', fg='yellow')} "
+                       f"-- {plan['unavailable']}")
+            skipped += 1
+            continue
+        if plan["already_present"] and not force:
+            click.echo(f"{campaign.name}: already backfilled")
+            skipped += 1
+            continue
+
+        revision = plan["derived"]["robovast_revision"]
+        images = plan["derived"]["images"]
+        click.echo(f"{campaign.name}:")
+        if revision.get("value"):
+            click.echo(f"  revision  {revision['value']} ({revision['source']})")
+        else:
+            click.echo(f"  revision  {click.style('unknown', fg='yellow')} "
+                       f"-- {revision['unknown']}")
+        for role, entry in sorted((images.get("per_role") or {}).items()):
+            if entry.get("value"):
+                click.echo(f"  {role:<9} {entry['source']}")
+            else:
+                click.echo(f"  {role:<9} {click.style('unknown', fg='yellow')} "
+                           f"-- {entry['unknown']}")
+        changed += 1
+
+    click.echo("")
+    if write:
+        click.echo(f"wrote {changed} campaign(s), skipped {skipped}")
+    else:
+        click.echo(f"{changed} campaign(s) would change, {skipped} skipped. "
+                   f"Nothing written -- add --write.")
+
+
 @results.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', default=None,
