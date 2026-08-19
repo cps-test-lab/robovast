@@ -88,6 +88,8 @@ def test_a_store_that_forgets_a_method_cannot_be_built():
             return ImageRef(ref="x", identity="build:x@h", build_id="b")
 
     with pytest.raises(TypeError, match="present"):
+# the TypeError this asserts is the point
+        # pylint: disable-next=abstract-class-instantiated
         Forgetful()
 
 

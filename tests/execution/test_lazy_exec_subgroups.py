@@ -33,7 +33,8 @@ from robovast.client import exec_cli
 class _BlockCluster:
     """Simulate the cluster package being unimportable."""
 
-    def find_spec(self, name, path=None, target=None):
+    # None is how a MetaPathFinder declines a module
+    def find_spec(self, name, path=None, target=None):  # pylint: disable=useless-return
         if name == "robovast.execution.cluster_execution.cli":
             raise ImportError("cluster package not installed")
         return None

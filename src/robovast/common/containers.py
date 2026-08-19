@@ -99,7 +99,7 @@ class ContainerPlan:
 
     @property
     def sidecars(self) -> list:
-        return [c for c in self.containers[1:]]
+        return list(self.containers[1:])
 
     def by_name(self, name: str) -> PlannedContainer:
         """Resolve a container *or* role name to the container that backs it.

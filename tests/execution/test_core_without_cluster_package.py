@@ -28,7 +28,8 @@ class _MissingPackage:
     def __init__(self, *names):
         self.names = names
 
-    def find_spec(self, name, path=None, target=None):
+    # None is how a MetaPathFinder declines a module
+    def find_spec(self, name, path=None, target=None):  # pylint: disable=useless-return
         if any(name == n or name.startswith(n + ".") for n in self.names):
             raise ImportError(f"{name}: cluster lane not installed")
         return None

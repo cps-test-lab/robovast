@@ -14,7 +14,6 @@ import json
 import os
 import stat
 
-import pytest
 
 from robovast.client import login, service_target
 

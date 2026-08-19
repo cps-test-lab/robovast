@@ -75,7 +75,8 @@ def use_in_process_service(impl):
 
     Off-cluster and over stdio nothing calls this, and the HTTP path below is used.
     """
-    global _IN_PROCESS  # noqa: PLW0603 - process-wide, set once at app construction
+    global _IN_PROCESS  # noqa: PLW0603  # pylint: disable=global-statement
+    # process-wide, set once at app construction
     _IN_PROCESS = impl
 
 

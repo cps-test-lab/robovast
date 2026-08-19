@@ -49,9 +49,9 @@ from pathlib import Path
 # The script lives in tools/; robovast itself is importable from the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from robovast.common.kube import load_kube_config  # noqa: E402
-from robovast.execution.cluster_execution.service_deploy import AUTH_SECRET_NAME  # noqa: E402
-from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME
+from robovast.common.kube import load_kube_config  # noqa: E402  # pylint: disable=wrong-import-position
+from robovast.execution.cluster_execution.service_deploy import AUTH_SECRET_NAME  # noqa: E402  # pylint: disable=wrong-import-position
+from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME  # pylint: disable=wrong-import-position
 
 #: The cert-manager release this installs when it is missing.
 CERT_MANAGER_VERSION = "v1.16.2"

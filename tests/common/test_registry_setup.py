@@ -56,6 +56,7 @@ def test_a_configured_prefix_cannot_override_the_in_pod_registry(monkeypatch):
     ``ROBOVAST_REGISTRY_PREFIX`` in someone's .env cannot quietly redirect pushes.
     """
     monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "ghcr.io/someone-else")
+    # pylint: disable-next=unsubscriptable-object  -- _registry_env returns the dict for a real host; None is only the empty-host case, which has its own test.
     assert sd._registry_env(HOST)["ROBOVAST_REGISTRY_PREFIX"] == HOST
 
 
@@ -66,6 +67,7 @@ def test_without_an_ingress_there_is_no_build_prefix():
     fail at pull time, after the build has already been paid for.
     """
     monkeypatch_free = sd._registry_env("")
+    # pylint: disable-next=unsupported-membership-test  -- the None case is handled on this very line
     assert monkeypatch_free is None or "ROBOVAST_REGISTRY_PREFIX" not in monkeypatch_free
 
 
@@ -74,7 +76,9 @@ def test_credentials_wire_a_pull_secret_but_never_a_push_one(monkeypatch):
     monkeypatch.setenv("ROBOVAST_REGISTRY_USERNAME", "u")
     monkeypatch.setenv("ROBOVAST_REGISTRY_PASSWORD", "p")
     env = sd._registry_env(HOST)
+    # pylint: disable-next=unsubscriptable-object  -- _registry_env returns the dict for a real host; None is only the empty-host case, which has its own test.
     assert env["ROBOVAST_REGISTRY_PULL_SECRET"] == sd.REGISTRY_PUSH_SECRET_NAME
+    # pylint: disable-next=unsupported-membership-test  -- _registry_env returns the dict for a real host; None is only the empty-host case, which has its own test.
     assert "ROBOVAST_REGISTRY_PUSH_SECRET" not in env, (
         "the in-pod registry is open; a push credential would be a leftover")
 
@@ -86,12 +90,14 @@ def test_credentials_wire_a_pull_secret_but_never_a_push_one(monkeypatch):
 
 def test_a_base_experiment_image_still_passes_through(monkeypatch):
     monkeypatch.setenv("ROBOVAST_BASE_EXPERIMENT_IMAGE", "ghcr.io/org/base:latest")
+    # pylint: disable-next=unsubscriptable-object  -- _registry_env returns the dict for a real host; None is only the empty-host case, which has its own test.
     assert sd._registry_env(HOST)["ROBOVAST_BASE_EXPERIMENT_IMAGE"] == \
         "ghcr.io/org/base:latest"
 
 
 def test_host_aliases_still_pass_through(monkeypatch):
     monkeypatch.setenv("ROBOVAST_EXTRA_HOST_ALIASES", "a.example=10.0.0.1")
+    # pylint: disable-next=unsubscriptable-object  -- _registry_env returns the dict for a real host; None is only the empty-host case, which has its own test.
     assert sd._registry_env(HOST)["ROBOVAST_EXTRA_HOST_ALIASES"] == "a.example=10.0.0.1"
 
 

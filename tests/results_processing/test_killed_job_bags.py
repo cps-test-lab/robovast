@@ -132,7 +132,7 @@ def test_the_plugin_passes_a_tolerate_flag_per_killed_job(tmp_path, monkeypatch)
 
     assert ok
     cmd = seen["cmd"]
-    pairs = [(cmd[i], cmd[i + 1]) for i, a in enumerate(cmd) if a == "--tolerate-under"]
+    pairs = [(a, cmd[i + 1]) for i, a in enumerate(cmd) if a == "--tolerate-under"]
     assert pairs == [("--tolerate-under", "_jobs/batch-0/job-2"),
                      ("--tolerate-under", "_jobs/batch-0/job-5")]
 

@@ -2743,7 +2743,8 @@ class LocalTransport(RobovastInterface):
         """
         return str(self._campaign_dir(campaign_id))
 
-    def _scene_runner_context(self, campaign_id: str, identity: dict):
+    # None means 'nothing to arrange', per the docstring
+    def _scene_runner_context(self, campaign_id: str, identity: dict):  # pylint: disable=useless-return
         """Context manager yielding the generator's container-runner factory, or None.
 
         Locally there is nothing to arrange: an absent factory makes the generator fall back to an

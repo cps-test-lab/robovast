@@ -148,9 +148,8 @@ def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
     by suspending every GPU job forever rather than failing, so the campaign hangs while
     setup reports success.
     """
-    from unittest import mock
 
-    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+    from robovast.execution.cluster_execution import service_deploy
 
     order = []
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -175,11 +174,9 @@ def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
 
 
 def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkeypatch):
-    from unittest import mock
 
-    import pytest as _pytest
 
-    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+    from robovast.execution.cluster_execution import service_deploy
 
     touched = []
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
@@ -190,9 +187,9 @@ def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkey
                         lambda **k: touched.append("kueue"))
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
-    with _pytest.raises(ValueError, match="contradictory"):
+    with pytest.raises(ValueError, match="contradictory"):
         cluster_setup.setup_server(config_name="rke2", namespace="default",
                                    gpu_replicas=8, no_gpu=True)
-    with _pytest.raises(ValueError, match="at least 1"):
+    with pytest.raises(ValueError, match="at least 1"):
         cluster_setup.setup_server(config_name="rke2", namespace="default", gpu_replicas=0)
     assert touched == [], "the cluster was modified before the arguments were checked"

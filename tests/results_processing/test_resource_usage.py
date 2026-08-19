@@ -10,7 +10,6 @@ copied into every run of a job makes every aggregate a multiple of the truth.
 
 import math
 
-import pytest
 
 from robovast.results_processing import resource_usage, run_log, run_slices
 from robovast.results_processing.clock_map import NO_CLOCK_MAP, ClockMap
@@ -208,7 +207,7 @@ def test_a_tick_belongs_to_exactly_one_run_of_a_packed_job(tmp_path):
     ticks = [_tick({"a": (1.0, 1, 1)}, wall=w)
              for w in (10.0, 90.0, 110.0, 190.0, 210.0, 400.0)]
     claimed = []
-    for name, (start, end) in claims.items():
+    for _name, (start, end) in claims.items():
         got = resource_usage.rows_for_slice(
             ticks, _slice(tmp_path, claim_start=start, claim_end=end))
         claimed.append({float(r["wall_ts"]) for r in got})

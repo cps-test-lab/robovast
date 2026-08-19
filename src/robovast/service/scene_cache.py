@@ -216,7 +216,6 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
     """
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
 
     execution = (raw_config or {}).get("execution") or {}
     containers = execution.get("containers") or {}

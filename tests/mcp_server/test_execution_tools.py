@@ -436,8 +436,6 @@ def test_get_campaign_log_is_served_by_the_service(monkeypatch):
     scratch -- it reported an empty log even though
     ``ClusterService.get_campaign_logs`` already served both.
     """
-    from robovast.mcp_server import service_access
-    from robovast.mcp_server.plugins import execution
 
     class _Chunk:
         text = "===== RUN =====\nline one\nline two\n"
@@ -465,8 +463,6 @@ def test_get_campaign_log_is_served_by_the_service(monkeypatch):
 
 def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_path):
     """With no service, an archived results tree is still readable offline."""
-    from robovast.mcp_server import service_access
-    from robovast.mcp_server.plugins import execution
 
     campaign = tmp_path / "camp-2026-01-01-000000"
     (campaign / "_execution").mkdir(parents=True)
@@ -495,7 +491,6 @@ def _flooded_log(n=18226):
 
 
 def _service_with_log(monkeypatch, text):
-    from robovast.mcp_server import service_access
 
     class _Chunk:
         def __init__(self, text):
@@ -519,7 +514,6 @@ def _service_with_log(monkeypatch, text):
 
 def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch):
     """18226 lines of noise for ~20 tokens, with the count as the finding."""
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _flooded_log())
     out = execution.get_campaign_log("camp-2026-01-01-000000", summarize=True)
@@ -537,7 +531,6 @@ def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch):
 def test_a_flooded_job_log_summarizes_and_keeps_the_poll_offset(monkeypatch):
     """`next_offset` refers to the unfiltered stream, so summarizing must not break
     an incremental poll loop."""
-    from robovast.mcp_server.plugins import execution
 
     text = _flooded_log(50)
     _service_with_log(monkeypatch, text)
@@ -550,7 +543,6 @@ def test_a_flooded_job_log_summarizes_and_keeps_the_poll_offset(monkeypatch):
 def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeypatch):
     """An INFO line mentioning "error" must not be returned as an error -- which is
     exactly what the hand-written severity grep in the interim procedure did."""
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, "===== RUN =====\n"
                       "[INFO] [1.0] [nav2]: error_code: 0, goal reached\n"
@@ -561,7 +553,6 @@ def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeyp
 
 
 def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch):
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, "===== RUN =====\nline\n")
     cid = "camp-2026-01-01-000000"
@@ -580,7 +571,6 @@ def test_the_status_reports_a_stall_and_names_the_next_call():
     import time
 
     from robovast.client.status import Status
-    from robovast.mcp_server.plugins import execution
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_deadline_s=600, progress_since=time.time() - 700)
@@ -597,7 +587,6 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
     import time
 
     from robovast.client.status import Status
-    from robovast.mcp_server.plugins import execution
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_since=time.time() - 99999)
@@ -631,7 +620,6 @@ def _log_with_build(build_lines=400):
 def test_a_default_read_includes_the_build_section(monkeypatch):
     """Every phase is in a default read, each announced with its size — so nothing is left
     out silently and no caller has to know a selector exists to see the whole log."""
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _log_with_build())
     out = execution.get_campaign_log("camp-2026-01-01-000000", limit=10_000)
@@ -647,7 +635,6 @@ def test_a_campaign_that_is_still_building_reads_its_build(monkeypatch):
     """The reason the aside was dropped: BUILD is the *only* section a campaign waiting
     for its image has, so holding it back answered "what is this doing?" with nothing."""
     from robovast.common.campaign_logs import phase_banner
-    from robovast.mcp_server.plugins import execution
 
     only_build = phase_banner("BUILD") + "waiting for image sim:v3 (build b-1)\n"
     _service_with_log(monkeypatch, only_build)
@@ -658,7 +645,6 @@ def test_a_campaign_that_is_still_building_reads_its_build(monkeypatch):
 
 
 def test_the_build_section_is_readable_on_request(monkeypatch):
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _log_with_build())
     out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build")
@@ -671,7 +657,6 @@ def test_the_build_section_is_readable_on_request(monkeypatch):
 def test_a_noisy_build_composes_with_summarize(monkeypatch):
     """400 near-identical layer lines for a handful of tokens — the intended read of a
     build that is misbehaving."""
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _log_with_build())
     out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build",
@@ -681,7 +666,6 @@ def test_a_noisy_build_composes_with_summarize(monkeypatch):
 
 
 def test_phase_all_returns_the_stream_verbatim(monkeypatch):
-    from robovast.mcp_server.plugins import execution
 
     text = _log_with_build()
     _service_with_log(monkeypatch, text)
@@ -692,7 +676,6 @@ def test_phase_all_returns_the_stream_verbatim(monkeypatch):
 
 def test_an_unknown_phase_is_reported_not_ignored(monkeypatch):
     """A silently ignored selector would read as "that phase produced nothing"."""
-    from robovast.mcp_server.plugins import execution
 
     _service_with_log(monkeypatch, _log_with_build())
     out = execution.get_campaign_log("camp-2026-01-01-000000", phase="biuld")

@@ -83,7 +83,6 @@ def test_a_failing_optional_client_check_does_not_make_the_operator_half_fatal(
     Latent until something returns one: no client check is optional today, which is why
     the bug sat in `all(c.ok for c in client)` unnoticed.
     """
-    from robovast.client import doctor as doc
 
     monkeypatch.setattr(doc, "check_client", lambda: [
         doc.Check("login", True, "https://svc.example"),

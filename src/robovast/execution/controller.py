@@ -76,7 +76,7 @@ _BAR = "=" * 60
 #: Serialises id minting and remembers the last id handed out, so back-to-back
 #: launches of the *same* campaign name never collide (see ``campaign_id_for``).
 _campaign_id_lock = threading.Lock()
-_last_campaign_id: str | None = None
+_LAST_CAMPAIGN_ID: str | None = None
 
 
 def _sanitise_campaign_name(name: str) -> str:
@@ -101,7 +101,7 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
     sanitises the name to hyphens — doing it here keeps both identical. A
     human-supplied override goes through the stricter ``_sanitise_campaign_name``.
     """
-    global _last_campaign_id
+    global _LAST_CAMPAIGN_ID  # pylint: disable=global-statement  (one counter per process)
     if name_override and name_override.strip():
         name = _sanitise_campaign_name(name_override)
     else:
@@ -116,8 +116,8 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
         while True:
             now = datetime.now()
             cid = f"{name}-{now.strftime('%Y-%m-%d-%H%M%S')}{now.microsecond // 10000:02d}"
-            if cid != _last_campaign_id:
-                _last_campaign_id = cid
+            if cid != _LAST_CAMPAIGN_ID:
+                _LAST_CAMPAIGN_ID = cid
                 return cid
             time.sleep(0.005)
 

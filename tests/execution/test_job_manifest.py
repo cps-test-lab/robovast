@@ -9,9 +9,8 @@ per-job S3 wiring and deadline — so the manifest builder can be refactored/spl
 behind a safety net instead of blind.
 """
 
-import pytest
 
-from robovast.execution.backends import RunOptions  # noqa: F401  (import parity)
+from robovast.execution.backends import RunOptions  # noqa: F401  # pylint: disable=unused-import  (import parity)
 from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
 

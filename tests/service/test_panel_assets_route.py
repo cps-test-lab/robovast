@@ -116,6 +116,5 @@ def test_unknown_package_panel_is_404(tmp_path):
 def test_custom_panel_path_escape_rejected(tmp_path):
     lt = _local_transport(tmp_path)
     _make_campaign(tmp_path)  # create the layout
-    import pytest
     with pytest.raises(ValueError):
         lt.resolve_campaign_panel_asset("camp-1", "../../secret.txt")

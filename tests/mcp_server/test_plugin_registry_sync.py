@@ -236,7 +236,7 @@ def _llm_facing_text() -> dict[str, str]:
     must not survive is the retired name in text an LLM is given and will try to call.
     """
     text = {"server instructions": create_server().instructions or ""}
-    for plugin, tools in load_registered_tool_details().items():
+    for _plugin, tools in load_registered_tool_details().items():
         for tool in tools:
             text[f"tool {tool['name']}"] = tool["name"] + "\n" + (tool["summary"] or "")
     for path, mod in _registered_plugin_modules().items():

@@ -25,7 +25,6 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 @pytest.fixture
 def cs():
-    import time as _time
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
     # reap_on_start=False: the reaper talks to the kube API, which no test has.
     svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
@@ -35,7 +34,7 @@ def cs():
     # _campaign_index), and off-cluster that opens a kubectl port-forward — which no test
     # has, and which *blocks* rather than failing. Tests that exercise discovery use the
     # ``indexed`` fixture below, which installs a fake store and clears this.
-    svc._index_cache = (_time.monotonic(), {})
+    svc._index_cache = (time.monotonic(), {})
     return svc
 
 
@@ -410,7 +409,7 @@ def test_the_ordering_pass_costs_no_object_reads(indexed):
 
 def test_an_indexed_campaign_is_marked_at_driver_start(indexed):
     """Before the image build and the run, so every later failure is still findable."""
-    cs, storage = indexed
+    cs, _storage = indexed
     cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
     assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
 
@@ -425,7 +424,7 @@ def test_indexing_failure_never_fails_the_campaign(cs, monkeypatch):
 
 def test_deleting_a_campaign_retires_its_marker(indexed):
     """Otherwise it keeps being listed with nothing behind it."""
-    cs, storage = indexed
+    cs, _storage = indexed
     cs._on_campaign_started("camp-2026-07-17-120000", "t")
     cs._unmark_campaign("camp-2026-07-17-120000")
     assert cs._durable_campaign_ids() == set()
@@ -433,7 +432,7 @@ def test_deleting_a_campaign_retires_its_marker(indexed):
 
 def test_an_unreachable_store_keeps_the_last_known_index(indexed, monkeypatch):
     """A brief outage must not make every stored campaign blink out of the list."""
-    cs, storage = indexed
+    cs, _storage = indexed
     cs._on_campaign_started("camp-2026-07-17-120000", "t")
     assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
 
@@ -454,7 +453,7 @@ def test_a_campaign_start_leaves_the_index_cache_warm(indexed):
     1 Hz campaign-list poll would then meet a cold cache on every tick until some listing
     finally returned. The marker is the one fact a listing would have added, so add it.
     """
-    cs, storage = indexed
+    cs, _storage = indexed
     cs._campaign_index()                      # populate the cache
     cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
 
@@ -506,7 +505,7 @@ def test_only_one_caller_lists_the_index_at_a_time(indexed, monkeypatch):
 
 def test_a_failed_listing_releases_the_single_flight_flag(indexed, monkeypatch):
     """Otherwise one error would wedge the index on its stale value forever."""
-    cs, storage = indexed
+    cs, _storage = indexed
     cs._campaign_index()
     cs._index_cache = (cs._index_cache[0] - 999, cs._index_cache[1])
     monkeypatch.setattr(
@@ -1434,11 +1433,9 @@ def test_the_cache_key_covers_a_campaign_worlds_contents(tmp_path):
 
 def test_a_missing_archived_world_says_so(tmp_path):
     """Rather than failing later inside the container with a path nobody can place."""
-    import pytest as _pytest
-
     from robovast.service import scene_cache
 
-    with _pytest.raises(scene_cache.SceneUnavailable, match="not archived with the campaign"):
+    with pytest.raises(scene_cache.SceneUnavailable, match="not archived with the campaign"):
         _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml", archive=False)
 
 

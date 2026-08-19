@@ -16,7 +16,6 @@ pin the three things that make the two lanes agree:
 
 import subprocess
 
-import pytest
 
 from robovast.common.config import declared_per_run_seconds
 from robovast.execution.backends import RunOptions, stage_run_script

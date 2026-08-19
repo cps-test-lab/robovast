@@ -9,7 +9,6 @@ body with **no** Content-Length, and GCS drives its resumable session with
 
 import io
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # WebDAV — chunked PUT (generator body, no Content-Length)
@@ -70,7 +69,6 @@ def test_webdav_stream_sends_chunked_no_content_length(monkeypatch):
 def test_gcs_stream_chunks_ranges_and_final_total(monkeypatch):
     monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "gcs")
     monkeypatch.setenv("ROBOVAST_GCS_BUCKET", "bucket")
-    from robovast.execution.share_providers import gcs as gcs_mod
     from robovast.execution.share_providers.gcs import GcsShareProvider
 
     provider = GcsShareProvider()

@@ -13,7 +13,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from robovast.common import simulators as S
-from robovast.common.variation.base_variation import DestinationConfig, Variation
+from robovast.common.variation.base_variation import Variation
 from robovast.common.variation.parameter_variation import ParameterVariationList
 from robovast.execution.packer import FixedK, OnePerJob, WorkItem
 

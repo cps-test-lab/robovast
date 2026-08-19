@@ -55,8 +55,8 @@ def _render_gif(rows: list[dict], out: Path) -> None:
     zs = [r["z"] for r in rows]
     margin = 0.5
     fig, ax = plt.subplots(figsize=(4, 4))
-    ax.set_xlim(min(min(xs), -PAD_RADIUS) - margin, max(max(xs), PAD_RADIUS) + margin)
-    ax.set_ylim(min(0.0, min(zs)) - 0.1, max(zs) + margin)
+    ax.set_xlim(min(*xs, -PAD_RADIUS) - margin, max(*xs, PAD_RADIUS) + margin)
+    ax.set_ylim(min(0.0, *zs) - 0.1, max(zs) + margin)
     ax.set_xlabel("x [m]")
     ax.set_ylabel("z [m]")
     ax.plot([-PAD_RADIUS, PAD_RADIUS], [0, 0], "g-", lw=4)

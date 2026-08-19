@@ -260,7 +260,7 @@ def test_run_view_degrades_to_null_host_columns_on_an_old_store(campaign):
 
     result = query_data_db(campaign, "SELECT config_name, run_id, status, job_dir, "
                                      "sysinfo_json FROM run_view ORDER BY config_name")
-    assert [c for c in result["columns"]] == [
+    assert list(result["columns"]) == [
         "config_name", "run_id", "status", "job_dir", "sysinfo_json"]
     assert len(result["rows"]) == 4
     assert all(r["job_dir"] is None and r["sysinfo_json"] is None for r in result["rows"])

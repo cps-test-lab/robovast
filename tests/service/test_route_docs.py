@@ -142,7 +142,6 @@ def test_the_dev_proxy_covers_every_served_prefix():
     service answering them correctly in production, which is the sort of gap that gets
     debugged as an app bug.
     """
-    import re
 
     config = (pathlib.Path(__file__).resolve().parents[2] / "frontend" / "ui" / "vite.config.ts") \
         .read_text(encoding="utf-8")
@@ -176,7 +175,6 @@ def test_the_generated_ui_client_is_up_to_date():
 
     from tools.dump_openapi import _mark_response_fields_required  # noqa: PLC0415
 
-    from robovast.service.app import build_app
 
     current = build_app(_Stub()).openapi()
     _mark_response_fields_required(current)

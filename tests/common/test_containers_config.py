@@ -312,7 +312,6 @@ def test_a_section_can_be_read_from_a_version_1_snapshot(tmp_path):
 def test_loading_a_whole_version_1_config_still_refuses(tmp_path):
     """The leniency is scoped to a section. A caller loading the whole config is about to
     *run* it, which is exactly where an unsupported version matters."""
-    import pytest
 
     from robovast.common.common import load_config
 
@@ -365,7 +364,6 @@ def test_a_backend_contributed_family_ref_is_resolved_for_the_build(tmp_path, mo
     BuildKit with a registry `insufficient_scope` -- three layers from the cause.
     """
     from robovast.common.execution import FAMILY_IMAGE_PREFIX, family_image_ref
-    from robovast.service.image_build import extract_build_specs
 
     class _Block(dict):
         def model_dump(self):

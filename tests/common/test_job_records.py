@@ -21,7 +21,8 @@ _SYSINFO = {"platform": {"system": "Linux"}, "cpu_name": "Intel Xeon",
             "instance_type": "n1-standard-4", "available_cpus": 4}
 
 
-def _write_run(run_dir, *, job_dir=None, sysinfo=_SYSINFO):
+# _SYSINFO is a constant; None already means 'none'
+def _write_run(run_dir, *, job_dir=None, sysinfo=_SYSINFO):  # pylint: disable=dangerous-default-value
     """A run dir with a test.xml, pointing at *job_dir* when given."""
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "test.xml").write_text(

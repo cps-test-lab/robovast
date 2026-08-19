@@ -860,7 +860,8 @@ class PanelConfigBase(BaseModel):
         return flatten_panel_shorthand(v)
 
     @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema, handler):
+    # pydantic's documented hook signature
+    def __get_pydantic_json_schema__(cls, core_schema, handler):  # pylint: disable=arguments-differ
         return panel_json_schema(core_schema, handler, surface=cls.SURFACE,
                                  builtins=cls.BUILTINS)
 

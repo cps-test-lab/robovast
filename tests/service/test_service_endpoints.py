@@ -62,9 +62,9 @@ def test_context_param_coercion():
     ctx = RunDataContext("c", {"config_name": "nav", "run_id": "3"}, "/tmp")
     assert (ctx.config_name, ctx.run_id) == ("nav", 3)
     with pytest.raises(ValueError):
-        RunDataContext("c", {"config_name": "nav"}, "/tmp").run_id          # missing
+        _ = RunDataContext("c", {"config_name": "nav"}, "/tmp").run_id      # missing
     with pytest.raises(ValueError):
-        RunDataContext("c", {"config_name": "nav", "run_id": "x"}, "/tmp").run_id  # non-int
+        _ = RunDataContext("c", {"config_name": "nav", "run_id": "x"}, "/tmp").run_id  # non-int
 
 
 def test_context_run_dir_escape_rejected(tmp_path):

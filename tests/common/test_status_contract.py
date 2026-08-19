@@ -33,7 +33,8 @@ def test_common_status_does_not_import_upper_layers():
         "assert not bad, bad\n"
         "print('clean')\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=False)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "clean" in out.stdout
 
@@ -48,7 +49,8 @@ def test_campaign_data_module_does_not_import_execution_at_load():
         "    [m for m in sys.modules if m.startswith('robovast.execution')]\n"
         "print('clean')\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=False)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "clean" in out.stdout
 

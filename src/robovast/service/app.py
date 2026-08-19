@@ -57,8 +57,10 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
 
 logger = logging.getLogger(__name__)
 
-from robovast.service.interface import \
-    DEFAULT_PORT  # noqa: F401  (re-exported: callers import it from here)
+# deliberately after the logger, see above
+# pylint: disable-next=wrong-import-position
+from robovast.service.interface import (  # noqa: F401
+    DEFAULT_PORT)  # re-exported: callers import it from here
 
 
 def _sse_pull_limiter():
@@ -282,9 +284,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: Poll cadence of the server-side tail loop. Sub-second, so lines reach the
     #: browser far faster than the old 1.5 s client poll, without N clients issuing
     #: their own HTTP round-trips.
-    _SSE_POLL_S = 0.5
+    _sse_poll_s = 0.5
     #: Disable proxy/CDN buffering so events are delivered as they are produced.
-    _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    _sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
     def _last_event_offset(request: Request) -> int:
         """Resume offset from the browser's ``Last-Event-ID`` (0 on first connect)."""
@@ -295,7 +297,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             return 0
 
     #: How often the shutdown watchdog re-checks while a pull is in flight.
-    _SSE_EXIT_POLL_S = 0.05
+    _sse_exit_poll_s = 0.05
 
     #: What a stream sends on a tick that had nothing to report.
     #:
@@ -307,7 +309,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: and never another byte. That zombie is what leaves a tab showing a campaign as
     #: still running long after it finished, so the cure is to keep saying "alive" and
     #: let the client reconnect when we stop.
-    _SSE_HEARTBEAT = "event: heartbeat\ndata: {}\n\n"
+    _sse_heartbeat = "event: heartbeat\ndata: {}\n\n"
 
     async def _pull_or_exit(pull):
         """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
@@ -340,7 +342,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
         async def _watch():
             while not app.state.should_exit():
-                await anyio.sleep(_SSE_EXIT_POLL_S)
+                await anyio.sleep(_sse_exit_poll_s)
             task_group.cancel_scope.cancel()
 
         async def _run():
@@ -369,7 +371,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         JSON-encoded so embedded newlines can never break SSE framing.
 
         A tick that produced no new bytes sends a ``heartbeat`` — see
-        :data:`_SSE_HEARTBEAT`, which is what lets the client tell a log nothing is
+        :data:`_sse_heartbeat`, which is what lets the client tell a log nothing is
         being written to from one whose connection has quietly died.
         """
         offset = max(0, start_offset)
@@ -388,14 +390,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 offset = chunk.next_offset
                 yield f"id: {offset}\ndata: {_json.dumps(chunk.text)}\n\n"
             else:
-                yield _SSE_HEARTBEAT
+                yield _sse_heartbeat
             if chunk.eof:
                 yield "event: eof\ndata: {}\n\n"
                 return
-            await anyio.sleep(_SSE_POLL_S)
+            await anyio.sleep(_sse_poll_s)
 
     #: Poll cadence of the campaign-list stream's server-side loop.
-    _SSE_LIST_POLL_S = 1.0
+    _sse_list_poll_s = 1.0
 
     async def _sse_campaign_list(request: Request):
         """SSE generator pushing the campaign list whenever it changes.
@@ -404,7 +406,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         the list has one source of truth (no second enumeration to drift). The full
         list is sent on connect — that is the client's initial state — and again on
         every change; quiet ticks send a ``heartbeat`` event (see
-        :data:`_SSE_HEARTBEAT`). A dropped connection is resumed by the browser's
+        :data:`_sse_heartbeat`). A dropped connection is resumed by the browser's
         native ``EventSource`` reconnect, which re-runs this handler and re-sends the
         list; a connection that died without the browser noticing is caught by the
         client's own heartbeat watchdog, so no polling fallback is needed either way.
@@ -432,8 +434,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 last = encoded
                 yield f"data: {encoded}\n\n"
             else:
-                yield _SSE_HEARTBEAT
-            await anyio.sleep(_SSE_LIST_POLL_S)
+                yield _sse_heartbeat
+            await anyio.sleep(_sse_list_poll_s)
 
     @app.get(Routes.HEALTHZ, tags=["meta"])
     def healthz() -> dict:
@@ -441,7 +443,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return {"ok": True}
 
     @app.get(Routes.LOGIN, tags=["meta"], include_in_schema=False)
-    def login_page(next: str = "/", token: str = ""):
+    # 'next' is the query parameter's name in the URL
+    def login_page(next: str = "/", token: str = ""):  # pylint: disable=redefined-builtin
         """The browser's way in: a password box, or a ready-made ``?token=`` link.
 
         A page rather than a bare 401 because a person who types the URL should meet
@@ -462,7 +465,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                                name=str(form.get("name", "")),
                                secure=request.url.scheme == "https")
 
-    def _login_response(token: str, *, next: str, name: str, secure: bool = False):
+    # matches login_page's query parameter
+    def _login_response(token: str, *, next: str, name: str, secure: bool = False):  # pylint: disable=redefined-builtin
         from fastapi.responses import HTMLResponse, RedirectResponse
         if not auth_token or not hmac.compare_digest(token.encode(),
                                                      auth_token.encode()):
@@ -829,7 +833,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """Server-sent events: the campaign list, pushed on every change."""
         return StreamingResponse(
             _sse_campaign_list(request),
-            media_type="text/event-stream", headers=_SSE_HEADERS)
+            media_type="text/event-stream", headers=_sse_headers)
 
     @app.get(Routes.campaign_status("{campaign_id}"), response_model=Status, tags=["campaigns"])
     def get_status(campaign_id: str) -> Status:
@@ -857,7 +861,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 request,
                 lambda off: impl.get_campaign_logs(campaign_id, off),
                 _last_event_offset(request)),
-            media_type="text/event-stream", headers=_SSE_HEADERS)
+            media_type="text/event-stream", headers=_sse_headers)
 
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
@@ -868,7 +872,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 request,
                 lambda off: impl.get_job_log(campaign_id, job_name, off),
                 _last_event_offset(request)),
-            media_type="text/event-stream", headers=_SSE_HEADERS)
+            media_type="text/event-stream", headers=_sse_headers)
 
     @app.post(Routes.campaign_stop("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])
     def stop(campaign_id: str) -> ActionResult:

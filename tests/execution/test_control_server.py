@@ -12,7 +12,6 @@ only to reach a controller that lived in its own pod. Those tests went with it;
 what remains is the state contract every surface still depends on.
 """
 
-import pytest
 
 from robovast.execution.control_server import ControllerState, Status
 
@@ -81,6 +80,7 @@ def test_error_is_part_of_the_status_contract():
     state.set_phase("failed")
     snap = state.snapshot()
     assert snap.phase == "failed"
+    # pylint: disable-next=unsupported-membership-test  -- error was set two lines up
     assert "Available configs" in snap.error
 
 

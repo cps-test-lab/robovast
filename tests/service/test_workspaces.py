@@ -336,7 +336,6 @@ def test_pinned_dir_serves_the_cluster_lane_too(pinned):
     store, wid, src = pinned
     # ClusterService inherits _resolve_project/_project_for_workspace unchanged, so
     # exercise the resolution the cluster lane would use, with the same store.
-    from robovast.service.client import LocalTransport
     transport = LocalTransport(store=store)
     project = transport._resolve_project(wid, "demo.vast")
     assert project.config_path == str(src / "demo.vast")

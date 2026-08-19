@@ -29,7 +29,8 @@ def _make_campaign(root, name, objectives):
     db = sqlite3.connect(cdir / "_execution" / "data.db")
     db.execute("CREATE TABLE runs (run_id INTEGER, objective REAL)")
     db.executemany("INSERT INTO runs VALUES (?,?)", list(enumerate(objectives)))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
     return cdir
 
 

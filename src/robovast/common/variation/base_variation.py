@@ -181,6 +181,8 @@ class DestinationConfig(VariationConfig):
         Only meaningful for :attr:`OPTIONAL_SLOTS`: a required slot is always bound, because
         validation refuses the config otherwise.
         """
+        # Guarded by the isinstance on the same line; pylint does not narrow through getattr.
+        # pylint: disable-next=unsupported-membership-test
         return any(isinstance(getattr(self, c), dict) and slot in getattr(self, c)
                    for c in (SCENARIO_CHANNEL, SIM_CHANNEL))
 
@@ -188,8 +190,9 @@ class DestinationConfig(VariationConfig):
         """``(channel, destination)`` for one output slot."""
         for channel in (SCENARIO_CHANNEL, SIM_CHANNEL):
             mapping = getattr(self, channel)
+            # pylint: disable-next=unsupported-membership-test,unsubscriptable-object
             if isinstance(mapping, dict) and slot in mapping:
-                return channel, mapping[slot]
+                return channel, mapping[slot]  # pylint: disable=unsubscriptable-object
         raise KeyError(
             f"'{slot}' is not an output of this variation; its outputs are: "
             + ", ".join((*self.SLOTS, *self.OPTIONAL_SLOTS)))
@@ -209,6 +212,8 @@ class DestinationConfig(VariationConfig):
             if isinstance(value, dict):
                 result[channel].extend(str(v) for v in value.values())
             elif isinstance(value, list):
+# the isinstance above says list
+                # pylint: disable-next=not-an-iterable
                 result[channel].extend(str(v) for v in value)
             else:
                 result[channel].append(str(value))

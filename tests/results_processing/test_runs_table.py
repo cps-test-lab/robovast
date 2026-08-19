@@ -133,7 +133,7 @@ def test_composition_failed_units_reach_the_runs_table(tmp_path):
         "SELECT config_name, run_id, status, param_wind FROM runs "
         "WHERE status='composition_failed'").fetchone()
     assert row is not None, "the failed draw vanished from the runs table"
-    config_name, run_id, status, wind = row
+    config_name, run_id, _status, wind = row
     assert config_name == "ps-2"      # falls back to the paramset id
     assert run_id is None             # there is no run to number
     assert wind == 99.0               # the parameters are the point of the row

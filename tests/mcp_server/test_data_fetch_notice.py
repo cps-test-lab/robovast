@@ -15,7 +15,6 @@ break the query they precede.
 
 import asyncio
 
-import pytest
 
 from robovast.mcp_server import data_access
 from robovast.mcp_server.plugins import results

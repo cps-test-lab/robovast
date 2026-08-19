@@ -50,7 +50,8 @@ def _resolves(monkeypatch, ok: bool):
     def fake(cmd, *a, **k):
         if cmd[:2] == ["bash", "-lc"] and "command -v vast" in cmd[2]:
             return subprocess.CompletedProcess(cmd, 0 if ok else 1, "", "")
-        return real(cmd, *a, **k)
+        # passthrough; the caller owns check=
+        return real(cmd, *a, **k)  # pylint: disable=subprocess-run-check
 
     monkeypatch.setattr(subprocess, "run", fake)
 
@@ -69,7 +70,7 @@ def test_it_links_into_local_bin_when_that_is_on_the_path(fake_env, monkeypatch)
 def test_it_never_links_into_a_directory_off_the_login_path(fake_env, monkeypatch):
     """The venv's own bin is on *this* PATH and no other — linking there is a no-op
     dressed as success, which is the failure mode this whole thing exists to avoid."""
-    home, script = fake_env
+    _home, script = fake_env
     _path_is(monkeypatch, script.parent)  # only the venv bin, which is not under HOME
     linked, message = login_config.link_cli()
     assert not linked

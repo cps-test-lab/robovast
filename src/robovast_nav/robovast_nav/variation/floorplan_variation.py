@@ -53,7 +53,8 @@ ORCID = Namespace("https://orcid.org/")
 
 
 # Custom YAML loader that keeps timestamps as strings
-class _NoDatetimeLoader(yaml.SafeLoader):
+# PyYAML's hierarchy
+class _NoDatetimeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
     pass
 
 

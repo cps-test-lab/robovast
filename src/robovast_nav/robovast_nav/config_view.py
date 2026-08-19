@@ -232,6 +232,8 @@ def trigger_contribution(config: dict) -> ConfigViewContribution:
     contribution = obstacle_contribution(config)
     pos = _xy(config.get("_spawn_trigger_point"))
     if pos:
+# pydantic field; pylint sees the FieldInfo
+        # pylint: disable-next=no-member
         contribution.markers.append(
             SceneMarker(kind="sphere", pos=pos, radius=0.15, color=OBSTACLE_COLOR,
                         label="spawn trigger"))

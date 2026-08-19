@@ -21,9 +21,9 @@ from robovast.execution.cluster_execution.registry_client import (credentials_fo
 
 
 def _buildctl(**over):
-    kwargs = dict(build_id="imgbuild-x-abc", image_ref="reg.local:5000/x:abc",
-                  campaign_label="imgbuild-x-abc", init_env=[],
-                  push_secret_name="push", namespace="ns")
+    kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
+              "campaign_label": "imgbuild-x-abc", "init_env": [],
+              "push_secret_name": "push", "namespace": "ns"}
     kwargs.update(over)
     manifest = build_job_manifest(**kwargs)
     return manifest['spec']['template']['spec']['containers'][0]['command'][-1]

@@ -53,7 +53,7 @@ OUTPUT_DIR = "/tmp/robovast-exec"
 #: A command gets a fixed cap; anything needing longer wants a campaign. Defined with the
 #: address space in ``service/interface.py``, because a client sizes its read timeout by
 #: the same number and must not import the server to learn it.
-from robovast.service.interface import COMMAND_LIMIT_S
+from robovast.service.interface import COMMAND_LIMIT_S  # pylint: disable=wrong-import-position
 
 #: Used when a scenario is asked for but the project sets no ``execution.timeout``. The
 #: cluster's 1-hour campaign fallback is deliberately not inherited: an hour of life for

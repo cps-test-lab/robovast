@@ -16,8 +16,12 @@ from robovast.client.status import failure_detail
 from robovast.common.errors import CampaignConfigError
 
 
-def _raise(exc):
-    """Return *exc* with a real ``__traceback__`` attached."""
+def _raise(exc):  # pylint: disable=inconsistent-return-statements
+    """Return *exc* with a real ``__traceback__`` attached.
+
+    The ``try`` body always raises, so the ``except`` is the only way out -- which pylint
+    cannot see, and reads as a path that falls through without returning.
+    """
     try:
         raise exc
     except type(exc) as e:
@@ -57,13 +61,15 @@ def test_chained_cause_is_preserved():
     whose source line is ``raise RuntimeError("outer failure")`` legitimately shows
     the message again, and that is the code, not a second report of the failure.
     """
-    try:
+    def _chained():
         try:
             raise KeyError("underlying_key")
         except KeyError as cause:
             raise RuntimeError("outer failure") from cause
-    except RuntimeError as e:
-        detail = failure_detail(e, tail_lines=100)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _chained()
+    detail = failure_detail(excinfo.value, tail_lines=100)
     assert detail.startswith("outer failure")
     assert "RuntimeError: outer failure" not in detail
     assert "KeyError: 'underlying_key'" in detail

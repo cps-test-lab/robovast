@@ -236,7 +236,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
         return ObstacleVariationConfig(
             scenario={"objects": "static_objects"},
             sim={"instances": "plugins.obstacles.instances"},
-            obstacle_configs=[dict(amount=1, max_distance=0.1, model="m", **oc)],
+            obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m", **oc}],
             seed=1, robot_diameter=0.35)
 
     with pytest.raises(ValueError, match="'size' is required when the 'instances' slot is bound"):
@@ -244,15 +244,15 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
 
     # Bound only to a run-time spawner, no size is needed -- that campaign compiles nothing.
     ObstacleVariationConfig(scenario={"objects": "static_objects"},
-                            obstacle_configs=[dict(amount=1, max_distance=0.1, model="m",
-                                                   xacro_arguments="radius:=0.3")],
+                            obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
+                                               "xacro_arguments": "radius:=0.3"}],
                             seed=1, robot_diameter=0.35)
 
     # A template that cannot resolve is refused rather than reaching a spawner as a literal.
     with pytest.raises(ValueError, match=r"references \{size\[\.\.\.\]\} but no 'size'"):
         ObstacleVariationConfig(scenario={"objects": "static_objects"},
-                                obstacle_configs=[dict(amount=1, max_distance=0.1, model="m",
-                                                       xacro_arguments="width:={size[0]}")],
+                                obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
+                                                   "xacro_arguments": "width:={size[0]}"}],
                                 seed=1, robot_diameter=0.35)
 
 

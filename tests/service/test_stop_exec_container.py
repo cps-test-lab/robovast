@@ -64,4 +64,5 @@ def test_passing_one_is_rejected_rather_than_ignored():
     transport = LocalTransport.__new__(LocalTransport)
 
     with pytest.raises(TypeError):
+        # pylint: disable-next=too-many-function-args  -- passing the removed argument is what this asserts
         transport.stop_exec_container("local")

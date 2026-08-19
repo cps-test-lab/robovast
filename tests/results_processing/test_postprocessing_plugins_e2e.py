@@ -40,7 +40,8 @@ def _xml(start_epoch: float, duration: float = 10.0, failures: int = 0) -> str:
             f'</testcase></testsuite>')
 
 
-def _campaign(tmp_path, *, vast=_VAST):
+# _VAST is a read-only constant
+def _campaign(tmp_path, *, vast=_VAST):  # pylint: disable=dangerous-default-value
     campaign = tmp_path / "results" / "camp-1"
     (campaign / "_config").mkdir(parents=True)
     (campaign / "_config" / "c.vast").write_text(yaml.safe_dump(vast))
@@ -140,7 +141,7 @@ def test_the_manifest_is_read_not_the_job_symlink(campaign):
     """No ``job`` symlink is created anywhere in this fixture. It must still resolve --
     the symlink is only made once a job finishes and cannot exist in an object store."""
     assert not (campaign / "cfg-a" / "0" / "job").exists()
-    ok, message, _ = ResourceUsage()(str(campaign))
+    ok, _message, _ = ResourceUsage()(str(campaign))
     assert ok and _rows(campaign / "cfg-a" / "0" / "resource_usage.csv")
 
 

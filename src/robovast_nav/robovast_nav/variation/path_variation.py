@@ -71,8 +71,11 @@ class PathVariationRandomConfig(DestinationConfig):
     robot_diameter: float
 
 
-class StartGoalSlots:
+class StartGoalSlots:  # pylint: disable=no-member
     """Resolving the ``start`` / ``goal`` output bindings, shared by both path variations.
+
+    A mixin: ``parameters`` and ``scenario_parameter_is_list`` are supplied by the config
+    class this is mixed into, so pylint sees attribute access with no attribute to find.
 
     Here rather than in each class because the two used to answer "one pose or a list?"
     *differently* -- one comparing the destination name to the literal string

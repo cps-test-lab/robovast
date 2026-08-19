@@ -343,7 +343,6 @@ _TRANSITIVE = (
 
 
 def _spec(**kwargs):
-    from robovast.service.image_build import BuildSpec
     return BuildSpec(tag="scenario", **kwargs)
 
 

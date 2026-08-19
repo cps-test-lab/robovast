@@ -50,7 +50,8 @@ CLIENT_SRC = (pathlib.Path(__file__).resolve().parents[2]
 class _CoreAbsent:
     """Make the core un-importable, as it is in a client-only install."""
 
-    def find_spec(self, name, path=None, target=None):
+    # None is how a MetaPathFinder declines a module
+    def find_spec(self, name, path=None, target=None):  # pylint: disable=useless-return
         if any(name == n or name.startswith(n + ".") for n in CORE_ONLY):
             raise ImportError(f"{name}: not installed (client-only)")
         return None

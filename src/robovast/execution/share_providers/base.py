@@ -281,7 +281,8 @@ class BaseShareProvider(ABC):
             f"Provider '{self.SHARE_TYPE}' does not support 'results list-share'."
         )
 
-    def archive_url(self, object_name: str) -> "str | None":
+    # None is the documented default
+    def archive_url(self, object_name: str) -> "str | None":  # pylint: disable=useless-return
         """Return a full, human-shareable link to *object_name* on the share.
 
         *object_name* is a value as returned by :meth:`list_campaign_archives`

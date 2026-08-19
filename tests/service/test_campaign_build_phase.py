@@ -15,7 +15,6 @@ these tests exercise it once and it holds for the local Docker build and the in-
 BuildKit Job alike.
 """
 
-import tempfile
 import threading
 import time
 
@@ -25,7 +24,7 @@ from robovast.client.status import Phase, failure_detail, is_running
 from robovast.common.errors import ImageBuildFailed
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import ControllerState
-from robovast.service.interface import ImageBuildRef, ImageBuildStatus, LogChunk
+from robovast.service.interface import ImageBuildStatus, LogChunk
 from robovast.service.local_transport import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 

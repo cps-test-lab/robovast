@@ -50,20 +50,20 @@ def get_config_schema() -> dict:
 
 # -- CLI help ----------------------------------------------------------------
 
-_cli_loaded = False
+_CLI_LOADED = False
 
 
 def _root_group():
     """Return the root ``vast`` click group with plugin subcommands attached."""
-    global _cli_loaded
+    global _CLI_LOADED  # pylint: disable=global-statement  (loaded once per process)
     from robovast.client import cli as cli_module  # pylint: disable=import-outside-toplevel
 
-    if not _cli_loaded:
+    if not _CLI_LOADED:
         try:
             cli_module.load_plugins()
         except Exception:  # noqa: BLE001 - a broken plugin must not hide the rest
             logger.debug("load_plugins() failed while building CLI reference.", exc_info=True)
-        _cli_loaded = True
+        _CLI_LOADED = True
     return cli_module.cli
 
 

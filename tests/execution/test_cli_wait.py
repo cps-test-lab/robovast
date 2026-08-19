@@ -41,7 +41,8 @@ def service(monkeypatch):
     return _install
 
 
-def _run(campaign="c1", *args):
+# both _run() and _run(name, *flags) are used
+def _run(campaign="c1", *args):  # pylint: disable=keyword-arg-before-vararg
     return CliRunner().invoke(client_cli.cli,
                               ["wait", campaign, "--interval", "0.01", *args])
 

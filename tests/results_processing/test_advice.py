@@ -168,7 +168,8 @@ def test_the_web_ui_rounds_memory_to_the_same_unit():
               / "frontend/ui/src/lib/campaignDetails.ts").read_text(encoding="utf-8")
     match = re.search(r"^export const MEM_GRANULARITY_BYTES = (.+)$", source, re.M)
     assert match, "MEM_GRANULARITY_BYTES is not declared in campaignDetails.ts"
-    assert eval(match.group(1).replace("**", "**")) == A.MEM_GRANULARITY_BYTES  # noqa: S307
+    # a TS arithmetic expression, which literal_eval cannot parse
+    assert eval(match.group(1).replace("**", "**")) == A.MEM_GRANULARITY_BYTES  # noqa: S307  # pylint: disable=eval-used
 
 
 # -- formatting ---------------------------------------------------------------------------

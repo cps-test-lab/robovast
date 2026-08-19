@@ -113,7 +113,7 @@ class _FakeS3:
         with open(path, "wb") as fh:
             fh.write(self.objects[key])
 
-    def head_object(self, Bucket=None, Key=None):  # noqa: N803 - boto3's own spelling
+    def head_object(self, Bucket=None, Key=None):  # noqa: N803 - boto3's own spelling  # pylint: disable=invalid-name
         return {"Metadata": {}}
 
 

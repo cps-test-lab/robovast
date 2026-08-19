@@ -114,7 +114,7 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     """
     from unittest import mock
 
-    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+    from robovast.execution.cluster_execution import cluster_setup
 
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
@@ -141,7 +141,7 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     a connection timeout -- because it could not read something it is only preserving."""
     from unittest import mock
 
-    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+    from robovast.execution.cluster_execution import cluster_setup
 
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
@@ -171,7 +171,7 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     an API call at all."""
     from unittest import mock
 
-    from robovast.execution.cluster_execution import cluster_setup, service_deploy
+    from robovast.execution.cluster_execution import cluster_setup
 
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
@@ -210,7 +210,7 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution import cli as cluster_cli
-    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue, service_deploy
+    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue
 
     apply_queues = mock.Mock()
     monkeypatch.setattr(kubernetes_kueue, "apply_kueue_queues", apply_queues)

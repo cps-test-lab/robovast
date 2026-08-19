@@ -125,7 +125,7 @@ def test_missing_database_is_not_an_error_here(monkeypatch, tmp_path):
     ``_open_db`` owns that decision and raises its own clear message when neither exists,
     so this layer must not pre-empt it with a fetch error.
     """
-    service, storage = _service(monkeypatch, tmp_path,
+    service, _storage = _service(monkeypatch, tmp_path,
                                 {"camp-2/campaign.db": b"CAMPAIGN-DB-ONLY"})
 
     dest = service._query_dir("camp-2")

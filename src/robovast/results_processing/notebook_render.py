@@ -167,7 +167,8 @@ def _apply_injections(notebook, data_dir: str, inject: dict | None) -> None:
                 "'DATA_DIR = ...' line to replace (see the evaluation-notebooks docs).")
 
 
-class _ProgressExecutePreprocessor(ExecutePreprocessor):
+# nbconvert's hierarchy, not ours
+class _ProgressExecutePreprocessor(ExecutePreprocessor):  # pylint: disable=too-many-ancestors
     """``ExecutePreprocessor`` that reports per-cell progress and honours a cancel check.
 
     All three hooks are optional; without them this behaves like the plain preprocessor.
@@ -188,7 +189,8 @@ class _ProgressExecutePreprocessor(ExecutePreprocessor):
         self._is_cancelled = is_cancelled
         self._total = 1
 
-    def preprocess(self, nb, resources, km=None):
+    # nbconvert's documented signature
+    def preprocess(self, nb, resources, km=None):  # pylint: disable=signature-differs
         self._total = max(1, len(nb.cells))
         return super().preprocess(nb, resources, km=km)
 

@@ -139,7 +139,7 @@ def test_a_file_is_not_a_directory(env):
 def test_a_directory_is_not_a_file(env):
     """The mirror case, and a 400 rather than a 404: the thing exists, the question
     was the wrong one — so the answer points at the listing."""
-    client, transport, _ = env
+    _client, transport, _ = env
     with pytest.raises(ValueError, match="not a file"):
         transport.read_file_bytes("/results/camp-1/nav")
     with pytest.raises(ValueError, match="not a file"):
@@ -306,7 +306,8 @@ def test_a_cluster_binary_read_fetches_only_that_object(tmp_path):
                 dst.write_bytes(b"\x00\x01\x02")
             return cache
 
-        def fetch_campaign(self, campaign_id, **_):
+        # a double that refuses whatever it is sent
+        def fetch_campaign(self, campaign_id, **_):  # pylint: disable=arguments-differ
             raise AssertionError(
                 "serving one file must not pull the whole campaign")
 

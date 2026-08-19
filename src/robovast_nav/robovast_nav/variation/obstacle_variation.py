@@ -91,6 +91,9 @@ class ObstacleConfig(BaseModel):
         """``xacro_arguments`` with ``{size[i]}`` filled in from :attr:`size`."""
         if self.xacro_arguments is None:
             return None
+        # The None case returned above; pylint reads the field's declared Optional rather
+        # than what is left here.
+        # pylint: disable-next=unsupported-membership-test
         if '{size[' not in self.xacro_arguments:
             return self.xacro_arguments
         if self.size is None:

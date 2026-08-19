@@ -66,7 +66,7 @@ def _register(monkeypatch):
 
 def _execution(mode="base", **sim):
     return {"mode": mode, "runs": 1,
-            "containers": {"simulation": dict(backend="stub", **sim)}}
+            "containers": {"simulation": {"backend": "stub", **sim}}}
 
 
 # -- what a backend contributes ----------------------------------------------------

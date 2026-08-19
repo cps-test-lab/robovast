@@ -124,7 +124,7 @@ def test_copy_out_mirrors_up_then_downloads_forcing_a_refresh(monkeypatch):
 
     (cmd, _), = rec.calls
     assert f"'{runner.workspace}/' 'mystore/" in cmd[2], "local is the source going up"
-    (bucket, prefix, local, force), = store.downloads
+    (_bucket, _prefix, local, force), = store.downloads
     assert local == runner.workspace and force is True
 
 
@@ -377,6 +377,8 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
 
     spec = ContainerSpec(image="example/img:1")
     session = AuxPodSession("c-1", [spec], "ns", core_v1=_Core())
+# entering without exiting is what this measures
+    # pylint: disable-next=unnecessary-dunder-call
     session.__enter__()
 
     assert events == ["create", "delete", "wait_gone", "create", "wait_ready"]
@@ -448,7 +450,6 @@ def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at():
 
 def test_a_runner_refuses_a_path_the_pod_never_mounted():
     """Discovering it inside the tool would look like the tool's own failure."""
-    from robovast.execution.cluster_execution.container_runner import ClusterContainerRunner
     runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
     runner._exposed = {}
     with pytest.raises(ValueError, match="AUX_MOUNTABLE_PATHS"):

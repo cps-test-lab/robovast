@@ -35,10 +35,12 @@ def campaign(tmp_path):
         ("cfg-a", '{"wind": 2.5, "mass": 1.8}', 0.9),
         ("cfg-b", '{"wind": 4.0, "mass": 1.8}', 0.4),
     ])
-    cdb.commit(); cdb.close()
+    cdb.commit()
+    cdb.close()
     # per-config run dirs with a JUnit test.xml
     for cfg, passed in [("cfg-a", True), ("cfg-b", False)]:
-        run0 = cdir / cfg / "0"; run0.mkdir(parents=True)
+        run0 = cdir / cfg / "0"
+        run0.mkdir(parents=True)
         fails = 0 if passed else 1
         (run0 / "test.xml").write_text(
             f'<testsuite tests="1" failures="{fails}" errors="0" time="12.5">'
@@ -48,7 +50,8 @@ def campaign(tmp_path):
     db.execute("CREATE TABLE _table_name_map (display_name TEXT PRIMARY KEY, sql_name TEXT)")
     _build_runs_table(db, cdir, sorted(d for d in cdir.iterdir()
                                        if d.is_dir() and not d.name.startswith("_")))
-    db.commit(); db.close()
+    db.commit()
+    db.close()
     return str(cdir)
 
 
@@ -112,7 +115,8 @@ def test_multi_campaign_cross_query(campaign, tmp_path):
     db.execute("CREATE TABLE runs (config_name TEXT, run_id INTEGER, objective REAL)")
     db.executemany("INSERT INTO runs VALUES (?,?,?)",
                    [("x", 0, 0.1), ("x", 1, 0.2), ("y", 0, 0.3)])
-    db.commit(); db.close()
+    db.commit()
+    db.close()
 
     r = query_campaign_data_sql(
         campaign,

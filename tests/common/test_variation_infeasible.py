@@ -11,7 +11,6 @@ composition entirely: a bug must never be silently absorbed as "just an
 infeasible draw".
 """
 
-import os
 import textwrap
 
 import pytest

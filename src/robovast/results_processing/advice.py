@@ -242,7 +242,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
         ("cpu", "cpu_declared", "cpu_suggested", format_cores, "cpu"),
         ("memory", "mem_declared", "mem_suggested", format_memory, "memory"),
     ):
-        sized = [c for c in containers]
+        sized = list(containers)
         pod_declared = (sum(c[declared_key] for c in sized)
                         if sized and all(c[declared_key] is not None for c in sized) else None)
         pod_suggested = sum(c[suggested_key] for c in sized)

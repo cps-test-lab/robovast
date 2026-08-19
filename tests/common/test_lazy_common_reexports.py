@@ -22,7 +22,7 @@ import textwrap
 
 import pytest
 
-import robovast.common as common
+from robovast import common
 
 #: Pulled in by ``.common``/``.config_generation``/``.execution``; a light submodule
 #: import must not reach them.
@@ -54,7 +54,7 @@ def test_every_re_exported_name_resolves(name):
 def test_an_unknown_name_still_raises_attribute_error():
     """``__getattr__`` must not turn a typo into an ImportError from somewhere else."""
     with pytest.raises(AttributeError, match="no attribute"):
-        common.definitely_not_exported  # noqa: B018, PLW0104
+        common.definitely_not_exported  # noqa: B018, PLW0104  # pylint: disable=pointless-statement
 
 
 @pytest.mark.parametrize("heavy", HEAVY)

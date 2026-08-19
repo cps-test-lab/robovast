@@ -48,7 +48,8 @@ def test_sse_stream_closes_on_shutdown_while_a_pull_is_stuck(tmp_path):
     release = threading.Event()
 
     class _Stuck(LocalTransport):
-        def list_campaigns(self, request):
+        # test double
+        def list_campaigns(self, request):  # pylint: disable=signature-differs
             entered.set()
             release.wait(_STUCK_S)  # the pull that used to hold shutdown hostage
             return super().list_campaigns(request)
