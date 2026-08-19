@@ -8,7 +8,11 @@ append-only list of steps, and an assert tying the two together so a forgotten s
 reach ``main``.
 """
 
-from . import v1_to_v2
+# Steps are imported explicitly rather than discovered, so the ladder is auditable in one
+# place. tools/new_config_migration.py appends to both this block and _MIGRATIONS below,
+# keyed on the markers -- so the insertion point is stated rather than guessed at.
+from . import v1_to_v2  # noqa: F401
+# <new-migration-import>
 
 #: The oldest version the ladder starts from. Raising this is a deliberate, announced act
 #: meaning "we no longer migrate from below here"; the fallback for such a campaign is to
@@ -24,6 +28,7 @@ SUPPORTED_CONFIG_VERSION = 2
 #: exactly that.
 _MIGRATIONS = [
     v1_to_v2.migrate,
+    # <new-migration-entry>
 ]
 
 # One step per version increment. Catches "bumped the constant, forgot the step" and its

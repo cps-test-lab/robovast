@@ -1,0 +1,791 @@
+{
+  "BatchesBudget": [
+    [
+      "type",
+      true,
+      "Literal[batches]"
+    ],
+    [
+      "value",
+      true,
+      "int"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "BoolDim": [
+    [
+      "type",
+      true,
+      "Literal[bool]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ChoiceDim": [
+    [
+      "type",
+      true,
+      "Literal[choice]"
+    ],
+    [
+      "values",
+      true,
+      "list[Any]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ConfigPanelConfig": [
+    [
+      "height",
+      false,
+      "Union[int, str, NoneType]"
+    ],
+    [
+      "hidden",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "module",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "remote",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "title",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "type",
+      true,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "allow"
+    ]
+  ],
+  "ConfigV1": [
+    [
+      "configuration",
+      false,
+      "Union[list[ConfigurationConfig], NoneType]"
+    ],
+    [
+      "execution",
+      true,
+      "ExecutionConfig"
+    ],
+    [
+      "general",
+      false,
+      "Union[GeneralConfig, NoneType]"
+    ],
+    [
+      "metadata",
+      false,
+      "Union[dict[str, Any], NoneType]"
+    ],
+    [
+      "plugins",
+      false,
+      "Union[list[str], NoneType]"
+    ],
+    [
+      "results_processing",
+      false,
+      "Union[ResultsConfig, NoneType]"
+    ],
+    [
+      "search",
+      false,
+      "Union[SearchConfig, NoneType]"
+    ],
+    [
+      "version",
+      false,
+      "int"
+    ],
+    [
+      "visualization",
+      false,
+      "Union[VisualizationConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ConfigViewConfig": [
+    [
+      "panels",
+      false,
+      "Union[list[ConfigPanelConfig], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ConfigurationConfig": [
+    [
+      "name",
+      true,
+      "str"
+    ],
+    [
+      "parameters",
+      false,
+      "Union[list[ScenarioParameterConfig], NoneType]"
+    ],
+    [
+      "sim",
+      false,
+      "Union[dict, NoneType]"
+    ],
+    [
+      "variations",
+      false,
+      "Union[list[VariationConfig], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "ContainerConfig": [
+    [
+      "backend",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "command",
+      false,
+      "Union[list[str], NoneType]"
+    ],
+    [
+      "image",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "python_packages",
+      false,
+      "Union[list[Union[str, list[str]]], NoneType]"
+    ],
+    [
+      "resources",
+      false,
+      "Union[ResourcesConfig, NoneType]"
+    ],
+    [
+      "system_packages",
+      false,
+      "Union[list[str], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "allow"
+    ]
+  ],
+  "DataBrowserConfig": [
+    [
+      "plots",
+      false,
+      "Union[list[PlotSpec], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ExecutionConfig": [
+    [
+      "bt_log",
+      false,
+      "bool"
+    ],
+    [
+      "containers",
+      true,
+      "dict[str, ContainerConfig]"
+    ],
+    [
+      "env",
+      false,
+      "Union[list[dict[str, str]], NoneType]"
+    ],
+    [
+      "generate",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "log_topics",
+      false,
+      "list[str]"
+    ],
+    [
+      "mode",
+      false,
+      "str"
+    ],
+    [
+      "run_files",
+      false,
+      "Union[list[str], NoneType]"
+    ],
+    [
+      "runs",
+      true,
+      "int"
+    ],
+    [
+      "runs_per_job",
+      false,
+      "int"
+    ],
+    [
+      "scenario_file",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "simulation",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "timeout",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "ExplorerConfig": [
+    [
+      "notebooks",
+      false,
+      "Union[list[dict[str, Any]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ExtractConfig": [
+    [
+      "params",
+      false,
+      "dict[str, Any]"
+    ],
+    [
+      "plugin",
+      true,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "FloatDim": [
+    [
+      "high",
+      true,
+      "float"
+    ],
+    [
+      "log",
+      false,
+      "bool"
+    ],
+    [
+      "low",
+      true,
+      "float"
+    ],
+    [
+      "type",
+      true,
+      "Literal[float]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "GeneralConfig": [
+    [
+      "<extra>",
+      false,
+      "allow"
+    ]
+  ],
+  "IntDim": [
+    [
+      "high",
+      true,
+      "int"
+    ],
+    [
+      "log",
+      false,
+      "bool"
+    ],
+    [
+      "low",
+      true,
+      "int"
+    ],
+    [
+      "step",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
+      "type",
+      true,
+      "Literal[int]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "MetricStop": [
+    [
+      "name",
+      true,
+      "str"
+    ],
+    [
+      "op",
+      false,
+      "Literal[>=, <=, >, <]"
+    ],
+    [
+      "type",
+      true,
+      "Literal[metric]"
+    ],
+    [
+      "value",
+      true,
+      "float"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "NoImprovementStop": [
+    [
+      "min_delta",
+      false,
+      "float"
+    ],
+    [
+      "patience",
+      true,
+      "int"
+    ],
+    [
+      "type",
+      true,
+      "Literal[no_improvement]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "ObjectiveSpec": [
+    [
+      "direction",
+      false,
+      "Literal[maximize, minimize]"
+    ],
+    [
+      "name",
+      true,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "PanelPosition": [
+    [
+      "anchor",
+      false,
+      "Union[Literal[bottom, top, left, right, top-left, top-right, bottom-left, bottom-right, top-center, bottom-center, left-center, right-center, center], NoneType]"
+    ],
+    [
+      "fill",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "height",
+      false,
+      "Union[int, str, NoneType]"
+    ],
+    [
+      "width",
+      false,
+      "Union[int, str, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "PlotSpec": [
+    [
+      "query",
+      true,
+      "str"
+    ],
+    [
+      "title",
+      false,
+      "str"
+    ],
+    [
+      "vega_lite",
+      false,
+      "dict[str, Any]"
+    ],
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "ResourcesConfig": [
+    [
+      "cpu",
+      false,
+      "Union[int, float, str, list[dict[str, Union[int, float, str]]], NoneType]"
+    ],
+    [
+      "gpu",
+      false,
+      "Union[int, list[dict[str, int]], NoneType]"
+    ],
+    [
+      "memory",
+      false,
+      "Union[str, list[dict[str, str]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "ResultsConfig": [
+    [
+      "metadata_processing",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "postprocessing",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "publication",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "ResultsViewConfig": [
+    [
+      "data_browser",
+      false,
+      "Union[DataBrowserConfig, NoneType]"
+    ],
+    [
+      "explorer",
+      false,
+      "Union[ExplorerConfig, NoneType]"
+    ],
+    [
+      "run_view",
+      false,
+      "Union[RunViewConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RunViewConfig": [
+    [
+      "panels",
+      false,
+      "Union[list[RunViewPanelConfig], NoneType]"
+    ],
+    [
+      "timeline",
+      false,
+      "Union[TimelineConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RunViewPanelConfig": [
+    [
+      "fixed",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "hidden",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "minimizable",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "minimized",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "module",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "position",
+      false,
+      "Union[PanelPosition, NoneType]"
+    ],
+    [
+      "remote",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "resizable",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
+      "title",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "type",
+      true,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "allow"
+    ]
+  ],
+  "ScenarioParameterConfig": [
+    [
+      "<extra>",
+      false,
+      "allow"
+    ]
+  ],
+  "SearchConfig": [
+    [
+      "budget",
+      false,
+      "Union[list[Annotated[Union[BatchesBudget, TimeBudget], annotation=NoneType required=True discriminator='type']], NoneType]"
+    ],
+    [
+      "extract",
+      true,
+      "ExtractConfig"
+    ],
+    [
+      "objectives",
+      true,
+      "list[ObjectiveSpec]"
+    ],
+    [
+      "parameters",
+      false,
+      "Union[list[dict[str, Any]], NoneType]"
+    ],
+    [
+      "per_batch",
+      true,
+      "int"
+    ],
+    [
+      "postprocessing",
+      false,
+      "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "search_space",
+      true,
+      "dict[str, Annotated[Union[FloatDim, IntDim, ChoiceDim, BoolDim], annotation=NoneType required=True discriminator='type']]"
+    ],
+    [
+      "seed",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
+      "stopping",
+      false,
+      "Union[list[Annotated[Union[TargetObjectiveStop, NoImprovementStop, MetricStop], annotation=NoneType required=True discriminator='type']], NoneType]"
+    ],
+    [
+      "strategy",
+      true,
+      "str"
+    ],
+    [
+      "strategy_parameters",
+      false,
+      "dict[str, Any]"
+    ],
+    [
+      "variations",
+      false,
+      "Union[list[dict[str, Any]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "TargetObjectiveStop": [
+    [
+      "type",
+      true,
+      "Literal[target_objective]"
+    ],
+    [
+      "value",
+      true,
+      "float"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "TimeBudget": [
+    [
+      "seconds",
+      true,
+      "float"
+    ],
+    [
+      "type",
+      true,
+      "Literal[time]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "TimelineConfig": [
+    [
+      "table",
+      true,
+      "str"
+    ],
+    [
+      "time_column",
+      false,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "VariationConfig": [
+    [
+      "<extra>",
+      false,
+      "ignore"
+    ]
+  ],
+  "VisualizationConfig": [
+    [
+      "config",
+      false,
+      "Union[ConfigViewConfig, NoneType]"
+    ],
+    [
+      "results",
+      false,
+      "Union[ResultsViewConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ]
+}

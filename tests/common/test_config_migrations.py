@@ -22,7 +22,20 @@ _FIXTURES = _MIGRATIONS_DIR.parent / "fixtures"
 
 
 def _load(path):
-    return list(yaml.safe_load_all(pathlib.Path(path).read_text(encoding="utf-8")))[0]
+    """Parse a fixture, telling the reader what to do when it is still a placeholder.
+
+    ``new_config_migration.py`` seeds a comments-only golden on purpose, so a scaffolded
+    step fails until its transform is implemented. Parsing that yields no documents at all,
+    and the bare IndexError said nothing about how to proceed.
+    """
+    path = pathlib.Path(path)
+    documents = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    if not documents or documents[0] is None:
+        raise AssertionError(
+            f"{path.name} has no content yet -- it is the placeholder golden a scaffolded "
+            f"step starts with. Implement the step, then:\n"
+            f"  python3 tools/new_config_migration.py --regenerate <from-version>")
+    return documents[0]
 
 
 def _step_versions():

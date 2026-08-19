@@ -109,6 +109,22 @@ poetry_reinstall:
 check-mf-runtime:
 	@python3 tools/check_mf_runtime.py
 
+.PHONY: new-config-migration
+new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
+	@python3 tools/new_config_migration.py
+
+.PHONY: config-fields
+config-fields: ## Regenerate compat/config_fields.json from the config models
+	@python3 tools/config_fields.py --write
+
+.PHONY: check-config-fields
+check-config-fields: ## Fail if compat/config_fields.json is out of date with the models
+	@python3 tools/config_fields.py --check
+
+.PHONY: check-config-version
+check-config-version: ## Fail if a config version bump is missing, or unnecessary
+	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)
+
 .PHONY: ui-stage
 ui-stage: check-mf-runtime ## Copy the built web UI into the package so the wheel carries it
 	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: cd frontend/ui && npm ci && npm run build"; exit 1; }
