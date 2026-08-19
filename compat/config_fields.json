@@ -190,6 +190,11 @@
       "Union[str, NoneType]"
     ],
     [
+      "provenance",
+      false,
+      "Union[ImageProvenanceConfig, NoneType]"
+    ],
+    [
       "python_packages",
       false,
       "Union[list[Union[str, list[str]]], NoneType]"
@@ -350,6 +355,28 @@
       "<extra>",
       false,
       "allow"
+    ]
+  ],
+  "ImageProvenanceConfig": [
+    [
+      "build_recipe",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "revision",
+      true,
+      "str"
+    ],
+    [
+      "source",
+      true,
+      "str"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
     ]
   ],
   "IntDim": [
