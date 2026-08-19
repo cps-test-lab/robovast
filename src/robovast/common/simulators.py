@@ -114,6 +114,19 @@ class SimulatorBackend:
     #: ``sim:`` value must name one of this backend's keys.
     DOTTED_ROOT: Optional[str] = None
 
+    #: Entry-point groups whose *providers* supplied this campaign's assets, as strings.
+    #:
+    #: A simulator's worlds and models often come from separate distributions resolved by
+    #: entry point -- some of them private. A campaign that used them is only reproducible by
+    #: someone who can obtain that code, so its results have to record which distribution and
+    #: at which commit; without it a published dataset silently depends on something nobody
+    #: can name. RoboVAST enumerates whatever a backend lists here and reads each provider's
+    #: version and (for a VCS install) its resolved commit, so **core still names no
+    #: simulator and no asset repository** -- the backend names its own groups, exactly as it
+    #: already declares images and environment strings. Empty means "nothing beyond this
+    #: distribution itself", which is the honest answer for a simulator with no asset plugins.
+    ASSET_ENTRY_POINT_GROUPS: tuple = ()
+
     def sim_document(self, cfg, execution: dict) -> Optional[dict]:
         """The part of *cfg* that travels as a file rather than on the command line.
 

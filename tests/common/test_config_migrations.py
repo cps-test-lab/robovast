@@ -166,6 +166,52 @@ def test_secondary_containers_both_authored_shapes():
     assert containers["sim"]["image"] == "img:1"
 
 
+def test_all_three_v1_secondary_container_shapes():
+    """v1's own reader documented three, and only two were obvious from the campaigns here.
+
+    Taken from ``normalize_secondary_containers`` at ``cdbf7da^`` -- the commit that folded
+    these into ``execution.containers`` -- rather than from the ``.vast`` files lying around,
+    some of which are interim snapshots from branches that were never a released format. A
+    permanent, append-only migration fitted to one of those would encode a shape that never
+    existed. The ``name:`` spelling is the one no campaign in this tree uses and that the
+    pydantic model nonetheless accepted.
+    """
+    upgraded, _ = upgrade_config({
+        "version": 1,
+        "execution": {
+            "image": "img:1",
+            "secondary_containers": [
+                {"name": "explicit", "resources": {"cpu": 1}},        # pydantic spelling
+                {"sibling": None, "resources": {"cpu": 2}},           # what campaigns wrote
+                {"nested": {"resources": {"cpu": 3}}},                # nested spelling
+            ],
+        },
+    })
+    containers = upgraded["execution"]["containers"]
+    assert containers["explicit"]["resources"] == {"cpu": 1}
+    assert containers["sibling"]["resources"] == {"cpu": 2}
+    assert containers["nested"]["resources"] == {"cpu": 3}
+    # v1 consumed `resources` (`sc.get('resources') or {}`), so carrying it preserves what
+    # ran; dropping it would silently give the container a different limit.
+    assert all(containers[name]["image"] == "img:1"
+               for name in ("explicit", "sibling", "nested"))
+
+
+def test_a_sibling_entry_with_more_than_one_config_key_still_finds_the_name():
+    """v1 found the name as "the first key that is not a config key". Guessing by position or
+    by null-ness diverges here, and the divergence is silent -- the container would be named
+    `command` and the real one lost."""
+    upgraded, _ = upgrade_config({
+        "version": 1,
+        "execution": {"image": "img:1",
+                      "secondary_containers": [{"nav": None, "command": ["ros2", "launch"],
+                                                "resources": {"cpu": 2}}]},
+    })
+    nav = upgraded["execution"]["containers"]["nav"]
+    assert nav["command"] == ["ros2", "launch"]
+    assert nav["resources"] == {"cpu": 2}
+
+
 def test_upgrade_config_file_preserves_comments(tmp_path):
     """A file a human will edit must keep its comments.
 

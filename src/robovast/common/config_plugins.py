@@ -211,6 +211,47 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
     return record
 
 
+def provider_provenance(groups) -> dict:
+    """``{distribution: {...}}`` for every distribution registering an entry point in *groups*.
+
+    Answers "whose code supplied this campaign's assets, and can someone else obtain it?".
+    A simulator's worlds and models often come from separate distributions -- some private --
+    so a campaign that used them is reproducible only by someone who can get that code, and a
+    published dataset that does not name it depends on something nobody can identify.
+
+    *groups* comes from the backend's :attr:`~robovast.common.simulators.SimulatorBackend.\
+ASSET_ENTRY_POINT_GROUPS`, so **core names no simulator and no asset repository**: the
+    backend names its own groups and this walks whatever it lists.
+
+    Per distribution: ``version``, the entry-point ``groups`` it contributed to, and -- for a
+    VCS install -- the resolved ``commit`` and ``url``. A distribution installed from an index
+    has no direct URL, and for one the version is a sufficient pin.
+    """
+    from importlib.metadata import distributions  # pylint: disable=import-outside-toplevel
+
+    wanted = {group for group in (groups or []) if group}
+    if not wanted:
+        return {}
+
+    record: dict = {}
+    for dist in distributions():
+        name = (dist.metadata["Name"] or "").strip() if dist.metadata else ""
+        if not name:
+            continue
+        try:
+            hit = sorted({ep.group for ep in dist.entry_points} & wanted)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        if not hit:
+            continue
+        # A duplicate name means two copies on the path; keep the first, which is the one
+        # import would win with, and merge the groups so neither copy's contribution is lost.
+        entry = record.setdefault(name, {"version": dist.version, "groups": []})
+        entry["groups"] = sorted(set(entry["groups"]) | set(hit))
+        entry.update({k: v for k, v in _direct_url_origin(dist).items() if k not in entry})
+    return record
+
+
 def _canonical(name: str) -> str:
     """PEP 503 name normalisation, so ``robovast_nav`` and ``robovast-nav`` match."""
     return re.sub(r"[-_.]+", "-", name).lower()

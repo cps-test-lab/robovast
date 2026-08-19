@@ -1125,6 +1125,48 @@ def _record_resolved_plugins(out_dir, vast_dir, campaign_data) -> None:
         logger.warning("Could not record resolved plugin versions: %s", e)
 
 
+def _record_asset_providers(out_dir, campaign_data) -> None:
+    """Write ``_execution/providers.yaml``: which distributions supplied the campaign's assets.
+
+    The groups to look in come from the simulator backend
+    (``SimulatorBackend.ASSET_ENTRY_POINT_GROUPS``), so core still names no simulator and no
+    asset repository. It matters because some providers are private: a campaign that used one
+    is reproducible only by someone who can obtain that code, and a published dataset must
+    name it and its commit rather than depending on something nobody can identify.
+
+    Provenance, so it must never stop a campaign being prepared.
+    """
+    try:
+        from robovast.common.campaign_data import \
+            write_providers_record  # pylint: disable=import-outside-toplevel
+        from robovast.common.config_plugins import \
+            provider_provenance  # pylint: disable=import-outside-toplevel
+
+        backend = _campaign_simulator_backend(campaign_data)
+        groups = getattr(backend, "ASSET_ENTRY_POINT_GROUPS", ()) if backend else ()
+        write_providers_record(out_dir, provider_provenance(groups))
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Could not record asset provider versions: %s", e)
+
+
+def _campaign_simulator_backend(campaign_data):
+    """The backend instance this campaign's ``simulation`` container names, or ``None``.
+
+    Reuses ``backend_name`` / ``resolve_backend`` rather than re-reading the container block:
+    the same resolution composition already performs, including the ``<file>.py:<Class>``
+    escape hatch. A campaign with no simulation container -- or one naming a backend this
+    deployment does not have -- simply has no asset groups to record.
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, resolve_backend)
+
+    name = backend_name(campaign_data.get("execution") or {})
+    if not name:
+        return None
+    base_dir = os.path.dirname(os.path.abspath(campaign_data.get("vast") or "")) or ""
+    return resolve_backend(name, base_dir)
+
+
 def _plugin_specs_of(campaign_data) -> list:
     """The campaign's top-level ``plugins:`` list, read back from its own ``.vast``.
 
@@ -1248,6 +1290,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # is usually not a pin ("pkg @ git+...@main"), and the only thing recorded before this
     # was a hash of the specs, which is identical across every resolution of them.
     _record_resolved_plugins(out_dir, vast_file_path, campaign_data)
+    _record_asset_providers(out_dir, campaign_data)
 
     # Copy run files
     for config_file in campaign_data.get("_run_files", []):

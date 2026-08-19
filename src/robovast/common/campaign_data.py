@@ -527,6 +527,39 @@ def write_plugins_record(campaign_root, resolved: dict) -> None:
         yaml.dump(resolved, f, default_flow_style=False, sort_keys=True)
 
 
+_PROVIDERS_FILENAME = "providers.yaml"
+
+
+def write_providers_record(campaign_root, providers: dict) -> None:
+    """Persist which asset providers supplied this campaign, to ``_execution/providers.yaml``.
+
+    Separate from plugins.yaml because they answer different questions and one can be known
+    without the other: ``plugins:`` is what the *campaign author declared*, while these are
+    distributions the *simulator backend* resolves by entry point -- a campaign that declares
+    no plugins at all still depends on whichever asset packages supplied its world.
+
+    Raises rather than swallowing; the caller decides this is best-effort.
+    """
+    if not providers:
+        return
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    with open(exec_dir / _PROVIDERS_FILENAME, "w", encoding="utf-8") as f:
+        yaml.dump(providers, f, default_flow_style=False, sort_keys=True)
+
+
+def read_providers_record(campaign_dir) -> "dict | None":
+    """Read ``_execution/providers.yaml``; ``None`` when the campaign has none.
+
+    ``None`` means *unknown*, not "no providers" -- see :func:`read_plugins_record`.
+    """
+    path = Path(campaign_dir) / "_execution" / _PROVIDERS_FILENAME
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or None
+
+
 def read_plugins_record(campaign_dir) -> "dict | None":
     """Read ``_execution/plugins.yaml``; ``None`` when the campaign has none.
 

@@ -19,6 +19,12 @@ import copy
 #: Keys a v1 ``execution`` block carried that belong to the scenario container in v2.
 _SCENARIO_KEYS = ("image", "resources")
 
+#: Keys that appear *beside* a container name in a v1 ``secondary_containers`` entry, and so
+#: cannot themselves be the name. v1 knew only ``resources``; the others are listed because
+#: the v2 vocabulary accepts them and an entry carrying one must not have it read as a name.
+_V1_SIBLING_KEYS = frozenset({"resources", "command", "image", "system_packages",
+                              "python_packages", "env"})
+
 #: Keys of a v1 ``build:`` section, mapped to their v2 container key. ``tag`` and
 #: ``base_image`` are absent on purpose: in v2 the tag is derived from the container name
 #: and ``image`` *is* the base, so both are dropped rather than carried.
@@ -32,31 +38,41 @@ _BUILD_KEY_MAP = {
 def _secondary_entries(raw_list):
     """Yield ``(name, config)`` from a v1 ``secondary_containers`` list.
 
-    Two authored shapes exist and both appear in real campaigns, so both are read:
+    Mirrors the authoritative v1 reader, ``normalize_secondary_containers`` as it stood at
+    commit ``cdbf7da^`` -- the commit that folded these into ``execution.containers``. Taken
+    from that function rather than inferred from the campaigns lying around, because some
+    ``.vast`` files reachable from here are interim snapshots from branches that were never a
+    released format, and fitting a permanent, append-only migration to one of those would
+    encode a shape that never existed.
 
-    * the documented one, ``- nav: {resources: {...}}``; and
-    * the one every campaign in this repo actually used, ``- nav:`` with ``resources:``
-      indented as a *sibling* -- which YAML parses as ``{"nav": None, "resources": {...}}``.
+    It documented **three** input shapes, all of which really occur:
 
-    The name is the key whose value is ``None`` in the second shape, so it cannot be found
-    by position. Guessing wrong here would silently drop a container's resources.
+    * ``- name: nav`` with the config beside it -- the pydantic ``SecondaryContainerConfig``
+      spelling, identified by the literal ``name`` key;
+    * ``- nav:`` with ``resources:`` as a *sibling*, which YAML parses as
+      ``{"nav": None, "resources": {...}}`` -- what every campaign in this tree actually
+      wrote. v1 found the name as "the first key that is not ``resources``", and that rule is
+      reproduced rather than replaced: guessing by position or by null-ness diverges on an
+      entry carrying more than one sibling; and
+    * ``- nav: {resources: {...}}`` -- the nested form.
+
+    ``resources`` was genuinely consumed by v1 (``sc.get('resources') or {}``), so carrying it
+    across preserves what ran instead of inventing a limit the campaign never had.
     """
     for entry in raw_list or []:
         if not isinstance(entry, dict):
             continue
-        nested = [k for k, v in entry.items() if isinstance(v, dict)]
-        sentinel = [k for k, v in entry.items() if v is None]
-        if sentinel:
-            name = sentinel[0]
-            config = {k: v for k, v in entry.items() if k != name}
-        elif len(nested) == 1:
-            name = nested[0]
-            config = dict(entry[name] or {})
+        if "name" in entry:
+            name = entry["name"]
+            config = {key: value for key, value in entry.items() if key != "name"}
         else:
-            # A single-key entry with a scalar value, or something unrecognised: pass the
-            # name through with no config rather than inventing one.
-            name = next(iter(entry), None)
-            config = {}
+            # v1's own rule: the first key that is not a config key names the container.
+            name = next((key for key in entry if key not in _V1_SIBLING_KEYS), None)
+            nested = entry.get(name) if name is not None else None
+            if isinstance(nested, dict):
+                config = dict(nested)
+            else:
+                config = {key: value for key, value in entry.items() if key != name}
         if name:
             yield name, config
 

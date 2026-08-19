@@ -128,6 +128,14 @@ class RoqsimBackend(SimulatorBackend):
     #: reached by spelling this root out.
     DOTTED_ROOT = "overrides"
 
+    #: Where roqsim's worlds and models come from. Naming these belongs HERE and nowhere else:
+    #: this distribution exists to be the one place that knows roqsim, so core stays free of
+    #: simulator names while a campaign's results still record which asset provider supplied
+    #: them. It matters because some providers are private -- a campaign using one is
+    #: reproducible only by someone who can obtain that code, and a published dataset has to
+    #: name it and its commit rather than depending on something nobody can identify.
+    ASSET_ENTRY_POINT_GROUPS = ("roqsim.models", "roqsim.worlds", "roqsim.plugins")
+
     def containers(self, cfg, execution: dict) -> dict:
         # Both shapes name the SAME family member, symbolically: only that image carries
         # roqsim *and* the RoboVAST contract (/etc/robovast_compat_version,
