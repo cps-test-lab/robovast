@@ -333,3 +333,40 @@ def test_service_rbac_can_write_the_postprocessing_configmap():
     secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
                     for v in rule["verbs"]}
     assert secret_verbs == {"get"}, "widening configmaps must not widen secrets"
+
+
+# The family variables are applied with a strategic-merge patch, whose merge key for
+# `containers[].env` is the variable NAME -- so a variable the patch omits is preserved, not
+# removed. While these were emitted only when set, an operator who once set
+# ROBOVAST_PROJECT_TAG could never unset it: deleting it from ./.env left it out of the next
+# patch and the stale value kept resolving the family. A deployment spent an afternoon pulling
+# images at a tag that appeared in no file on the machine.
+
+
+def test_family_env_is_carried_even_when_unset(monkeypatch):
+    # Empty, not absent: an absent entry is what the merge patch preserves.
+    monkeypatch.delenv("ROBOVAST_PROJECT", raising=False)
+    monkeypatch.delenv("ROBOVAST_PROJECT_TAG", raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_PROJECT"] == ""
+    assert env["ROBOVAST_PROJECT_TAG"] == ""
+
+
+def test_family_env_carries_what_the_environment_says(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_PROJECT", "freeedlabs")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2026-08-20")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_PROJECT"] == "freeedlabs"
+    assert env["ROBOVAST_PROJECT_TAG"] == "2026-08-20"
+
+
+def test_an_explicit_env_still_wins(monkeypatch):
+    # setup composes its own env; this must not overwrite a value decided upstream.
+    monkeypatch.setenv("ROBOVAST_PROJECT", "from-the-shell")
+    given = [{"name": "ROBOVAST_PROJECT", "value": "from-the-caller"}]
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x",
+                                          env=given))["containers"][0]["env"]}
+    assert env["ROBOVAST_PROJECT"] == "from-the-caller"

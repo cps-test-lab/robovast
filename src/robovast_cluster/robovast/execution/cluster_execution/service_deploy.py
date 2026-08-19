@@ -1362,11 +1362,27 @@ def service_manifests(namespace="default", image=None, env=None,
     # whole family means there is one thing to carry rather than five to forget -- and
     # this is the *site default*: a campaign may override it on its own request
     # (CreateCampaignRequest.image_project), which is what makes a dev run need no deploy.
+    # Carried UNCONDITIONALLY, empty value and all, and that is the point rather than an
+    # oversight. The Deployment is applied with a strategic-merge patch, whose merge key for
+    # `containers[].env` is the variable NAME -- so a variable the patch omits is not removed,
+    # it is preserved. While these were emitted only when set, they were write-only: an
+    # operator who set ROBOVAST_PROJECT_TAG once could never unset it again, because deleting
+    # it from ./.env (or from their shell) simply left it out of the next patch and the old
+    # value stayed in the pod. That cost an afternoon: a deployment kept resolving the family
+    # at a tag nobody could find in any file, and every campaign's build failed pulling an
+    # image at it.
+    #
+    # An empty value is safe because it is exactly what "unset" already means to every reader:
+    # they all do `os.environ.get(var, "").strip() or <default>` (see execution.default_image_
+    # project / default_image_tag), so "" resolves to the default rather than to an empty
+    # image ref. Emitting it turns removal into a reset instead of a no-op.
+    #
+    # A caller-supplied `env` still wins: setup passes what it composed, and this must not
+    # overwrite a value that was decided deliberately upstream.
     import os  # pylint: disable=import-outside-toplevel
     for var in ("ROBOVAST_PROJECT", "ROBOVAST_PROJECT_TAG"):
-        value = os.environ.get(var, "").strip()
-        if value and not any(e["name"] == var for e in env):
-            env = [*env, {"name": var, "value": value}]
+        if not any(e["name"] == var for e in env):
+            env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
     extra = []
     if git_token is None:
