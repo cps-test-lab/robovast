@@ -220,7 +220,8 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: True)
+    # Returns None on success; it raises on every non-convergence.
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
     monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
     monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path",
                         lambda **k: False)

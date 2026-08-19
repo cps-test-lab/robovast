@@ -727,11 +727,19 @@ def run_cleanup(campaign, data, force, namespace, context):
               help='Namespace the robovast-service runs in')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def upgrade(namespace, kube_context):
+@click.option('--timeout', default=180.0, show_default=True, metavar='SECONDS',
+              help='How long to wait for the new pod to take over before failing')
+def upgrade(namespace, kube_context, timeout):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
-    pod to be Ready before reporting anything.
+    *new* pod to be the one serving before reporting anything.
+
+    It fails, non-zero, if that pod does not take over: an image it cannot pull, a node it
+    cannot be scheduled on, or a container that crash-loops. The reason Kubernetes gave is
+    printed as soon as it appears, so a stuck upgrade names its cause in seconds instead of
+    looking like a hang -- and "✓ upgraded and ready" now means it. Use ``--timeout`` for a
+    registry slow enough to need longer.
 
     Always restarts the pod, even when nothing appears to have changed. That is the
     point: an image ref that is a floating tag, or a change confined to the Secrets,
@@ -796,6 +804,10 @@ def upgrade(namespace, kube_context):
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
+        # Announced because the Kueue step below can spend a silent minute inside
+        # 'kubectl wait' establishing CRDs, which reads as a hang in a command whose
+        # previous output was the line above.
+        click.echo("  reconciling RBAC and Kueue queues...")
         apply_controller_rbac(namespace=namespace, kube_context=kube_context)
         # The ClusterQueue's covered resources are coupled to what THIS version of the
         # backend asks for, and `upgrade` is the command operators use to move versions.
@@ -809,7 +821,15 @@ def upgrade(namespace, kube_context):
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
-        wait_for_service_ready(namespace=namespace, kube_context=kube_context)
+        wait_for_service_ready(namespace=namespace, kube_context=kube_context,
+                               timeout_s=timeout)
+        # No branch here, deliberately: wait_for_rollout raises on every outcome that is
+        # not convergence. It used to return a bool, and the caller printing
+        # "✓ upgraded and ready" regardless of it is how an upgrade whose pod sat in
+        # ImagePullBackOff still exited 0. Everything below this line is now reachable
+        # only when the new pod really is the one serving.
+        wait_for_rollout(namespace=namespace, kube_context=kube_context, timeout_s=timeout,
+                         report=lambda message: click.echo(f"  {message}"))
         # With a floating tag the Deployment spec is byte-identical either way, so this
         # is the only thing distinguishing "rolled onto new code" from "restarted the
         # same image" -- the question every upgrade actually asks.
@@ -817,15 +837,11 @@ def upgrade(namespace, kube_context):
         # Only once the rollout has converged, though: readiness is satisfied by the
         # *old* pod for the whole of a rolling update, and reading there reported
         # "unchanged" across a real image change.
-        if wait_for_rollout(namespace=namespace, kube_context=kube_context):
-            after = running_image_digest(namespace, kube_context)
-            if before and after and before != after:
-                click.echo(f"  image {before[:19]} -> {after[:19]}")
-            elif after:
-                click.echo(f"  image unchanged: {after[:19]}")
-        else:
-            click.echo("  (the rollout had not settled; check "
-                       f"'kubectl -n {namespace} rollout status deploy/robovast-service')")
+        after = running_image_digest(namespace, kube_context)
+        if before and after and before != after:
+            click.echo(f"  image {before[:19]} -> {after[:19]}")
+        elif after:
+            click.echo(f"  image unchanged: {after[:19]}")
         click.echo("✓ upgraded and ready")
     except click.ClickException:
         raise

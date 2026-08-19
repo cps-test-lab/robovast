@@ -420,8 +420,58 @@ def wait_for_service_ready(namespace="default", kube_context=None, timeout_s=180
         f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
 
 
-def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0) -> bool:
-    """Block until the Deployment's *new* pods are the ones running, or give up quietly.
+class RolloutNotConverged(RuntimeError):
+    """The upgrade's new pod never took over. Carries the pod's own reason for it."""
+
+    #: The pod's reason is the whole diagnosis; a traceback would only bury it.
+    include_traceback = False
+
+
+#: How long the incoming pod may stay unhealthy before the rollout is called failed.
+#:
+#: A grace window rather than an immediate abort because the two signals watched here are
+#: not certainly terminal: kubelet pull back-off does clear on its own once a rotated
+#: credential lands, and a pod that restarts once and then stabilises is a fine outcome.
+#: Matches ``kubernetes_backend.KubernetesBackend._BLOCKED_GRACE_SECONDS``, which makes the
+#: same trade for a campaign's jobs.
+UNHEALTHY_GRACE_SECONDS = 60.0
+
+#: How often to say something while the rollout is still in progress. The complaint this
+#: answers is not that an upgrade takes minutes -- pulling a controller image legitimately
+#: does -- but that it did so in total silence, which is indistinguishable from a hang.
+_HEARTBEAT_SECONDS = 15.0
+
+
+def _rollout_pod_state(core, namespace):
+    """``(pod, unhealthy)`` for the incoming pod: the newest one and why it is not fine.
+
+    Only the newest pod is judged, for the reason ``wait_for_service_ready`` gives: during
+    a rolling update the outgoing pod is still Ready, and its contentment is not the answer
+    to "why has this not rolled?".
+
+    It also makes a restart meaningful. On a pod created seconds ago, inside the rollout
+    window, ``restart_count >= 1`` *is* a crash-loop -- which it would not be for the
+    long-lived pod of a steady-state Deployment.
+
+    ``unhealthy`` is ``(reason, message)`` or ``None``. Raises whatever the API raises;
+    the caller decides what an unreadable cluster means.
+    """
+    # Deferred: this module is imported by the client-side CLI, and cluster_execution
+    # pulls in the batch lane.
+    from .cluster_execution import pod_block_reason  # pylint: disable=import-outside-toplevel
+    from .cluster_execution import pod_restarted_containers
+
+    pods = core.list_namespaced_pod(namespace,
+                                    label_selector=f"app={SERVICE_NAME}").items
+    if not pods:
+        return None, None
+    newest = max(pods, key=lambda p: p.metadata.creation_timestamp)
+    return newest, (pod_block_reason(newest) or pod_restarted_containers(newest))
+
+
+def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
+                     unhealthy_grace_s=UNHEALTHY_GRACE_SECONDS, report=None) -> None:
+    """Block until the Deployment's *new* pod is the one running, or say why it never was.
 
     ``wait_for_service_ready`` returns as soon as one replica is Ready -- which the
     **old** pod satisfies for the whole of a rolling update. Anything reading the cluster
@@ -433,8 +483,19 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0) ->
     spec (``observedGeneration``), every replica is on the new template
     (``updatedReplicas``), and none of the old ones are left (``replicas``).
 
-    Returns True if it converged, False on timeout -- the caller is reporting, and a
-    report that has not settled should be silent rather than wrong.
+    Those counters alone, however, cannot fail. This used to watch nothing else and return
+    False on timeout, so an incoming pod in ``ImagePullBackOff`` -- a reason the kubelet
+    already had -- was three minutes of silence followed by a caller that printed
+    "✓ upgraded and ready" anyway. So the incoming pod is watched too, and this raises
+    rather than returning a verdict a caller has to remember to check.
+
+    Args:
+        report: optional ``callable(str)`` for progress lines. A callback rather than
+            ``click.echo`` because only the CLI in this package speaks click.
+
+    Raises:
+        RolloutNotConverged: the incoming pod stayed unhealthy for *unhealthy_grace_s*,
+            or nothing converged within *timeout_s*.
     """
     import time  # pylint: disable=import-outside-toplevel
 
@@ -442,7 +503,14 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0) ->
 
     _load_kube_config(kube_context)
     apps = client.AppsV1Api()
-    deadline = time.monotonic() + timeout_s
+    core = client.CoreV1Api()
+    say = report or (lambda _message: None)
+
+    started = time.monotonic()
+    deadline = started + timeout_s
+    unhealthy_since = None
+    last_signal = ""
+    last_heartbeat = started
     while time.monotonic() < deadline:
         dep = apps.read_namespaced_deployment_status(SERVICE_NAME, namespace)
         want = dep.spec.replicas or 1
@@ -451,9 +519,113 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0) ->
                 and (st.updated_replicas or 0) == want
                 and (st.replicas or 0) == want
                 and (st.available_replicas or 0) == want):
-            return True
+            return
+
+        try:
+            pod, unhealthy = _rollout_pod_state(core, namespace)
+        except Exception as exc:  # noqa: BLE001 - one failed probe must not end the wait
+            # "Unknown", NOT "healthy": clearing the timer here would reset the grace
+            # window on every unreadable poll and let a permanently blocked rollout run to
+            # the full timeout. Keep whatever state we had.
+            logger.warning("Could not check the %s pod this cycle: %s", SERVICE_NAME, exc)
+            pod, unhealthy = None, None
+        else:
+            if unhealthy:
+                reason, message = unhealthy
+                signal = f"{reason}: {message}" if message else reason
+                if unhealthy_since is None:
+                    unhealthy_since = time.monotonic()
+                    last_signal = signal
+                    say(f"⚠ the new pod is not starting: {signal}")
+                    # debug, not warning: `say` has just put this in front of the operator
+                    # and the raise below repeats it. At warning level the console printed
+                    # the same 300-character kubelet message twice, back to back.
+                    logger.debug("Rollout of %s in %s: %s", SERVICE_NAME, namespace, signal)
+                elif time.monotonic() - unhealthy_since >= unhealthy_grace_s:
+                    raise RolloutNotConverged(_blocked_message(namespace, signal,
+                                                               unhealthy_grace_s))
+                else:
+                    last_signal = signal
+            else:
+                # A clean probe is the only thing that clears the timer, so a transient
+                # blip does not accumulate toward the deadline across separate stalls.
+                unhealthy_since = None
+                last_signal = ""
+
+        now = time.monotonic()
+        if now - last_heartbeat >= _HEARTBEAT_SECONDS:
+            last_heartbeat = now
+            say(_progress_line(pod, unhealthy_since, now, started, timeout_s,
+                               unhealthy_grace_s))
         time.sleep(1)
-    return False
+
+    raise RolloutNotConverged(_timeout_message(namespace, last_signal, timeout_s))
+
+
+def _progress_line(pod, unhealthy_since, now, started, timeout_s, grace_s) -> str:
+    """One heartbeat line: what the incoming pod is doing, and how long it has left.
+
+    The reason itself is deliberately not repeated. It was already reported in full when it
+    first appeared, and kubelet alternates ``ErrImagePull`` with ``ImagePullBackOff`` while
+    it backs off, so echoing it each time buried the run in five copies of the same
+    300-character message.
+
+    The budget counts toward whichever deadline will actually fire: once the pod is
+    unhealthy that is the grace window, not the overall timeout. Showing "46s/180s" of a run
+    that then died at 60s was simply wrong.
+    """
+    if unhealthy_since is not None:
+        return (f"still not starting ({int(now - unhealthy_since)}s/{int(grace_s)}s "
+                f"before this is called failed)")
+    phase = (getattr(pod.status, "phase", None) or "?") if pod is not None else "no pod yet"
+    return f"waiting for the new pod ({int(now - started)}s/{int(timeout_s)}s, {phase})"
+
+
+def _pull_credential_hint(signal) -> str:
+    """The credential paragraph, for a reason that is about fetching the image.
+
+    Only for image reasons: on an ``Unschedulable`` or a crash-loop it would send the
+    reader to audit credentials that are working fine.
+    """
+    if "Image" not in signal:
+        return ""
+    return ("\n\nAn image reason points at the pull credentials: ROBOVAST_REGISTRY_SERVER, "
+            "ROBOVAST_REGISTRY_USERNAME and ROBOVAST_REGISTRY_PASSWORD, read from './.env' "
+            "in the CURRENT directory only, then '~/.config/robovast/env'. Check them with "
+            "'vast doctor'. A tag that was never pushed looks identical from here, so check "
+            "ROBOVAST_PROJECT_TAG too.")
+
+
+#: Closing paragraph for both failures. It answers the two questions the reason itself does
+#: not: is the service down (no -- with one replica Kubernetes keeps the old pod until the
+#: new one is Available), and does a retry start over (no -- the Deployment is already
+#: patched, so the next upgrade re-rolls the same spec). Without them a failed upgrade
+#: reads as an outage.
+_STILL_SERVING = (
+    "\n\nThe previous pod is still serving -- with a single replica Kubernetes keeps it "
+    "until the new one is Available -- so the API is up on the old version. The Deployment "
+    "has already been patched, so another 'upgrade' re-rolls the same spec rather than "
+    "starting over.")
+
+
+def _blocked_message(namespace, signal, grace_s) -> str:
+    return (f"the new {SERVICE_NAME} pod did not start within {int(grace_s)}s and will not "
+            f"recover on its own. Kubernetes reports: {signal}."
+            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n"
+            f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
+
+
+def _timeout_message(namespace, signal, timeout_s) -> str:
+    # No signal means the pod never reported anything wrong -- it is simply still coming
+    # up, so the logs are where the answer is, not the pod's status.
+    detail = (f" Kubernetes last reported: {signal}." if signal else
+              " The pod reported no error, so it was still starting: a large image pull, or "
+              "a container that is up but never becomes Ready.")
+    return (f"the {SERVICE_NAME} rollout did not converge within {int(timeout_s)}s.{detail}"
+            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n"
+            f"Inspect it with 'kubectl -n {namespace} rollout status deploy/{SERVICE_NAME}' "
+            f"and 'kubectl -n {namespace} logs -l app={SERVICE_NAME} --tail=50'. "
+            f"Allow longer with '--timeout'.")
 
 
 def running_image_digest(namespace="default", kube_context=None,
