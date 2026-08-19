@@ -95,6 +95,203 @@ class RetriggerPlan:
     materialize: Callable[[], None]
     #: Delete the staged tree. Idempotent, so the failure paths can call it freely.
     discard: Callable[[], None]
+    #: ``{from, to, steps}`` when the source's config had to be migrated, else ``None``.
+    #: Carried so the new campaign can record that it is a *migrated* re-run rather than a
+    #: native one -- two runs of "the same campaign" that read different config versions are
+    #: not the same experiment, and a reader comparing their results has to be able to see it.
+    config_migration: "dict | None" = None
+
+
+#: Per-axis verdicts a pre-flight can return. A campaign is re-runnable only if every axis
+#: holds, and they fail independently -- which is why the report is per-axis rather than one
+#: boolean. Reducing five independent answers to "no" throws away the only useful part.
+AXIS_OK = "ok"                    # nothing to do
+AXIS_UPGRADABLE = "upgradable"    # not current, but the ladder can carry it forward
+AXIS_UNKNOWN = "unknown"          # predates the record; not a failure, and not a pass either
+AXIS_BLOCKED = "blocked"          # cannot proceed, and the message says what to do
+
+#: Axis verdicts that stop a retrigger. ``unknown`` deliberately does not: campaigns recorded
+#: before a given field existed are the ones this exists to rescue, and refusing them for
+#: lacking a record nobody wrote would defeat the purpose.
+BLOCKING_VERDICTS = (AXIS_BLOCKED,)
+
+
+def _axis(verdict: str, detail: str, **extra) -> dict:
+    """One axis of a pre-flight report."""
+    return {"verdict": verdict, "detail": detail, **extra}
+
+
+def check(source_dir, source_id: str) -> dict:
+    """Can this campaign be re-run? Answer without staging anything or spending compute.
+
+    :func:`prepare` can only answer this by *doing* it -- it stages a tree, then raises
+    :class:`RetriggerRefused` -- so "is this worth trying?" cost a staging directory and gave
+    one reason at a time. This walks the same records and reports **every** axis at once, so a
+    caller learns that the config needs migrating *and* that the image is gone, rather than
+    fixing one to discover the other.
+
+    Returns ``{campaign_id, runnable, blocking, axes: {...}}`` where each axis carries a
+    verdict (:data:`AXIS_OK` / :data:`AXIS_UPGRADABLE` / :data:`AXIS_UNKNOWN` /
+    :data:`AXIS_BLOCKED`) and a human-readable ``detail``. Every blocking detail must name the
+    artifact and how to obtain it; a verdict a reader cannot act on is not worth returning.
+
+    The five axes, which fail independently:
+
+    ``config``
+        Is the frozen ``.vast`` readable, and at which version.
+    ``host``
+        Does this robovast still speak the recorded image's container protocol.
+    ``images``
+        Can a new run start from the images the campaign recorded.
+    ``plugins``
+        Were third-party ``plugins:`` resolved to something re-installable.
+    ``providers``
+        Which asset-provider distributions supplied it, and can they be obtained.
+    """
+    source_dir = Path(source_dir)
+    axes = {
+        "config": _check_config(source_dir),
+        "images": _check_images(source_dir),
+        "plugins": _check_plugins(source_dir),
+        "providers": _check_providers(source_dir),
+    }
+    axes["host"] = _check_host(source_dir, axes["images"])
+    blocking = sorted(name for name, axis in axes.items()
+                      if axis["verdict"] in BLOCKING_VERDICTS)
+    return {"campaign_id": source_id, "runnable": not blocking,
+            "blocking": blocking, "axes": axes}
+
+
+def _check_config(source_dir: Path) -> dict:
+    """Whether the frozen ``.vast`` can be brought to the current config version."""
+    from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, ConfigVersionError,
+                                            config_version, upgrade_config)
+    from robovast.common.results_utils import campaign_vast
+
+    try:
+        vast_path = campaign_vast(source_dir)
+    except ValueError as e:
+        return _axis(AXIS_BLOCKED,
+                     f"no frozen configuration under _config/, so there is nothing to "
+                     f"reconstruct from ({e}). Launch it again from the workspace it came "
+                     f"from.")
+    try:
+        raw = _read_vast(vast_path)
+    except Exception as e:  # pylint: disable=broad-except
+        return _axis(AXIS_BLOCKED, f"{vast_path.name} could not be read: {e}")
+
+    version = config_version(raw)
+    if version == SUPPORTED_CONFIG_VERSION:
+        return _axis(AXIS_OK, f"config version {version} is current", version=version)
+    try:
+        _, applied = upgrade_config(raw)
+    except ConfigVersionError as e:
+        return _axis(AXIS_BLOCKED, str(e), version=version)
+    return _axis(AXIS_UPGRADABLE,
+                 f"config version {version} will be migrated to "
+                 f"{SUPPORTED_CONFIG_VERSION} in the staging copy; the archived file is not "
+                 f"modified",
+                 version=version, steps=applied)
+
+
+def _read_vast(vast_path: Path) -> dict:
+    """The first YAML document of a frozen ``.vast``, unvalidated.
+
+    Read directly rather than through ``load_config``: this is a *diagnosis* of a file that may
+    well be too old to validate, and the strict reader would raise before the report could say
+    so -- turning the answer into the failure it was asked about.
+    """
+    import yaml
+
+    with open(vast_path, "r", encoding="utf-8") as handle:
+        documents = list(yaml.safe_load_all(handle))
+    return (documents[0] if documents else None) or {}
+
+
+def _check_images(source_dir: Path) -> dict:
+    """Whether a new run can start from the images this campaign recorded."""
+    from robovast.common.campaign_data import CampaignImageUnpinnable, campaign_pinned_images
+
+    try:
+        pinned = campaign_pinned_images(source_dir)
+    except CampaignImageUnpinnable as e:
+        return _axis(AXIS_BLOCKED,
+                     f"{e} Launch it again from the workspace it came from, which still has "
+                     f"the sources the image is built out of.")
+    if not pinned:
+        return _axis(AXIS_UNKNOWN,
+                     "no container image recorded (no usable _execution/execution.yaml). If "
+                     "the campaign builds its own image there is nothing to reuse; otherwise "
+                     "the backend supplies one at launch.")
+    return _axis(AXIS_OK, f"{len(pinned)} image(s) recorded and pinnable", images=dict(pinned))
+
+
+def _check_host(source_dir: Path, images_axis: dict) -> dict:
+    """Whether this robovast still speaks the recorded image's container protocol.
+
+    Depends on the images axis rather than re-deriving the refs: if the images are not pinnable
+    there is nothing to ask about, and reporting a protocol verdict for an image nobody can
+    obtain would be noise on top of the real problem.
+    """
+    from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT, check_image_compat,
+                                           image_compat_version)
+
+    window = f"{MIN_IMAGE_COMPAT}..{COMPAT_VERSION}"
+    images = images_axis.get("images") or {}
+    if not images:
+        return _axis(AXIS_UNKNOWN,
+                     f"no recorded image to check against; this host speaks {window}")
+
+    reports = {}
+    for role, image in sorted(images.items()):
+        version, source = image_compat_version(image)
+        problem = check_image_compat(image, version=version, source=source)
+        reports[role] = {"image": image, "protocol": version, "source": source,
+                         "problem": problem}
+    blocked = {role: r for role, r in reports.items() if r["problem"] and r["protocol"] is not None}
+    if blocked:
+        return _axis(AXIS_BLOCKED,
+                     " ".join(r["problem"] for r in blocked.values()), roles=reports)
+    unknown = [role for role, r in reports.items() if r["protocol"] is None]
+    if unknown:
+        return _axis(AXIS_UNKNOWN,
+                     f"could not read the container protocol of {', '.join(sorted(unknown))} "
+                     f"-- the image is not available locally, or predates the marker. This "
+                     f"host speaks {window}.", roles=reports)
+    return _axis(AXIS_OK, f"every recorded image is within {window}", roles=reports)
+
+
+def _check_plugins(source_dir: Path) -> dict:
+    """Whether third-party ``plugins:`` resolved to something re-installable."""
+    from robovast.common.campaign_data import read_plugins_record
+
+    record = read_plugins_record(source_dir)
+    if record is None:
+        return _axis(AXIS_UNKNOWN,
+                     "no plugin resolution recorded. If the campaign declared plugins, a "
+                     "re-run resolves its specs afresh -- a floating ref such as '@main' will "
+                     "install different code than the campaign used.")
+    floating = sorted(name for name, info in record.items()
+                      if not info.get("version") and not info.get("commit"))
+    if floating:
+        return _axis(AXIS_UNKNOWN,
+                     f"declared but not resolved here: {', '.join(floating)} -- these were "
+                     f"already importable from elsewhere, so the code that ran came from a "
+                     f"location this record cannot name.", plugins=record)
+    return _axis(AXIS_OK, f"{len(record)} plugin(s) recorded with resolved versions",
+                 plugins=record)
+
+
+def _check_providers(source_dir: Path) -> dict:
+    """Which asset-provider distributions supplied the campaign."""
+    from robovast.common.campaign_data import read_providers_record
+
+    record = read_providers_record(source_dir)
+    if record is None:
+        return _axis(AXIS_UNKNOWN,
+                     "no asset providers recorded; a campaign from before this was captured "
+                     "cannot say which world and model packages supplied it.")
+    return _axis(AXIS_OK, f"{len(record)} asset provider(s) recorded", providers=record)
 
 
 def staging_root(workspaces_root) -> Path:
@@ -140,7 +337,15 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
             f"failed before its configuration was frozen has to be launched again from the "
             f"workspace it came from.") from e
 
-    campaign_config = validate_config(load_config(str(vast_path)))
+    # `upgrade=True`, and BEFORE validate_config -- this is correctness, not convenience.
+    # Everything below reads the loaded config: `_builds_an_image` inspects
+    # execution.containers, and stage_project/reconstruct_project walk it. A version-1 config
+    # has no execution.containers at all (it carried a top-level `build:`), so reading it with
+    # post-v1 expectations silently answers "builds nothing" and the retrigger takes the wrong
+    # branch. Strict loading would instead refuse outright, making every campaign older than
+    # the current version un-retriggerable -- which is the case this exists for.
+    campaign_config = validate_config(load_config(str(vast_path), upgrade=True))
+    config_migration = _config_migration_of(vast_path)
 
     # The images first: it is the refusal most likely to fire, and it needs no directory.
     try:
@@ -166,7 +371,17 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
 
     staging_dir = _make_staging_dir(workspaces_root, source_id)
     staged_vast = staging_dir / vast_path.name
+    # Copy first, then migrate the COPY. The archived _config/*.vast is the record of what its
+    # author wrote and is never rewritten; copy2 keeps their comments, and upgrading the staged
+    # file in place keeps them through the migration too -- so if anyone opens the staged
+    # config, the notes explaining it are still there.
     shutil.copy2(vast_path, staged_vast)
+    if config_migration:
+        from robovast.common.migrations import upgrade_config_file
+        upgrade_config_file(staged_vast, write=True)
+        logger.info("retrigger of %s: migrated its config %s -> %s (%s); the archived copy is "
+                    "unchanged", source_id, config_migration["from"], config_migration["to"],
+                    ", ".join(config_migration["steps"]))
 
     def _discard() -> None:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -176,9 +391,28 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
         config_path=str(staged_vast),
         request=request,
         pinned_images=pinned,
+        config_migration=config_migration,
         materialize=lambda: stage_project(source_dir, staging_dir, campaign_config),
         discard=_discard,
     )
+
+
+def _config_migration_of(vast_path: Path) -> "dict | None":
+    """``{from, to, steps}`` when the frozen config needs migrating, else ``None``.
+
+    Reported so the retriggered campaign can record that it was *migrated* rather than native.
+    Without it two runs of "the same campaign" are indistinguishable from two runs of the same
+    config, which is exactly the kind of difference a reader comparing their results has to be
+    able to see.
+    """
+    from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, config_version,
+                                            needs_upgrade, upgrade_config)
+
+    raw = _read_vast(vast_path)
+    if not needs_upgrade(raw):
+        return None
+    _, applied = upgrade_config(raw)
+    return {"from": config_version(raw), "to": SUPPORTED_CONFIG_VERSION, "steps": applied}
 
 
 def _builds_an_image(campaign_config) -> bool:

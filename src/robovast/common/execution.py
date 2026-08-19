@@ -419,17 +419,34 @@ def image_compat_version(image: str) -> "tuple[int | None, str]":
     return None, "not reported by the image (no label and no /etc/robovast_compat_version)"
 
 
+#: Seconds any docker probe here may take. These run inside a pre-flight that is supposed to
+#: answer instantly, so a wedged daemon has to become "cannot tell" rather than a hang.
+_DOCKER_PROBE_TIMEOUT = 20
+
+
+def _docker(args) -> "subprocess.CompletedProcess | None":
+    """Run a docker command for a *probe*. ``None`` when it could not be asked at all."""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, check=False,
+                              timeout=_DOCKER_PROBE_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # No docker CLI, or a daemon that did not answer. Neither is a verdict about the image.
+        return None
+
+
+def _image_present_locally(image: str) -> bool:
+    """Whether *image* is already in the local daemon."""
+    result = _docker(['docker', 'image', 'inspect', image])
+    return bool(result and result.returncode == 0)
+
+
 def _docker_label(image: str, label: str) -> str:
     """One label off a local image, or ``""``. Never raises -- absence is the answer."""
     if not image:
         return ""
-    try:
-        result = subprocess.run(
-            ['docker', 'inspect', '--format', '{{index .Config.Labels "%s"}}' % label, image],
-            capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        return ""
-    if result.returncode != 0:
+    result = _docker(['docker', 'inspect', '--format',
+                      '{{index .Config.Labels "%s"}}' % label, image])
+    if not result or result.returncode != 0:
         return ""
     value = result.stdout.strip()
     # `docker inspect` prints the Go zero value for a missing key, not an empty string.
@@ -437,15 +454,19 @@ def _docker_label(image: str, label: str) -> str:
 
 
 def _compat_version_file(image: str) -> "int | None":
-    """The legacy marker, read by starting the container. Only for images without the label."""
-    if not image:
+    """The legacy marker, read by starting the container. Only for images without the label.
+
+    **Only ever for an image already present locally.** ``docker run`` on an absent image
+    *pulls* it, so probing this way turned a pre-flight that is supposed to cost nothing into
+    a network fetch of possibly gigabytes -- and, against a registry that cannot serve it, into
+    a hang. ``--pull=never`` is passed as well, so the guard holds even if the image disappears
+    between the two calls.
+    """
+    if not image or not _image_present_locally(image):
         return None
-    try:
-        result = subprocess.run(
-            ['docker', 'run', '--rm', '--entrypoint', 'cat', image,
-             '/etc/robovast_compat_version'],
-            capture_output=True, text=True, check=False)
-    except FileNotFoundError:
+    result = _docker(['docker', 'run', '--rm', '--pull=never', '--entrypoint', 'cat', image,
+                      '/etc/robovast_compat_version'])
+    if not result:
         return None
     text = result.stdout.strip()
     return int(text) if result.returncode == 0 and text.isdigit() else None
