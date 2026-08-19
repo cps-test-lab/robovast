@@ -22,7 +22,7 @@ in one place does not require moving everything into one place — so this file 
 
 ## Adding a `.vast` config migration step
 
-```
+```sh
 make new-config-migration        # scaffolds the step file, the list entry, and a golden
 ```
 

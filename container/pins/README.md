@@ -28,7 +28,7 @@ gets a 404, not the nearest snapshot.
    trust store from a source it cannot reach. Switching sources before that step fails with
    "certificate is NOT trusted", which reads like a broken snapshot rather than an ordering bug.
 2. **The ROS snapshots are signed by a different key than the live repo.**
-   `AD19BAB3CBF125EA`, *ROS Snapshot builder \<rosbuild@ros.org\>*. The current `ros.key` does not
+   `AD19BAB3CBF125EA`, *ROS Snapshot builder* `<rosbuild@ros.org>`. The current `ros.key` does not
    verify them: `apt-get update` fails with `NO_PUBKEY AD19BAB3CBF125EA`.
 3. **Fetch that key with `curl`, not `gpg --recv-keys`.** The keyserver protocol needs `dirmngr`
    and outbound access a build container may not have; `gpg --recv-keys` exits 2 there. The HTTPS
@@ -39,7 +39,7 @@ gets a 404, not the nearest snapshot.
 
 ## Verified output
 
-```
+```text
 ubuntu-snapshot Candidate: 2.1.1-2ubuntu3.24.04.2
 ros-snapshot    Candidate: 0.11.0-1noble.20260615.174419
 ```
@@ -49,7 +49,7 @@ makes a pinned rebuild checkable: the version says which snapshot produced it.
 
 ## Refreshing the pins
 
-```
+```sh
 make refresh-build-pins            # report
 make refresh-build-pins WRITE=1    # rewrite the base digests
 ```
@@ -70,7 +70,7 @@ above deliberately does not stand in for. What is verified is the recipe and the
 
 ## Re-verifying
 
-```
+```sh
 docker build -f container/pins/snapshot-probe.Dockerfile \
   --build-arg UBUNTU_SNAPSHOT=<stamp> --build-arg ROS_SNAPSHOT=<date> container/pins
 ```
