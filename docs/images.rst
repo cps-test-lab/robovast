@@ -179,3 +179,40 @@ image, RBAC and the credential Secrets, and always restarts the pod — which is
 ``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the Kueue install, the
 object store and the registry storage, and it takes its options as arguments, so a re-run
 without the original flags re-provisions with different ones.
+
+
+What an image records about itself
+----------------------------------
+
+Every image RoboVAST builds carries two kinds of self-description, so that "what is in this
+image?" and "what was it built from?" can be answered without the build that produced it.
+
+**Labels** — read with ``docker inspect``, or ``docker buildx imagetools inspect`` for a remote
+image without pulling it:
+
+``org.opencontainers.image.revision`` / ``.source``
+   the RoboVAST commit and repository the image was built from.
+``org.robovast.roqsim-ref`` / ``.scenario-execution-ref``
+   the upstream commits baked in. These are build ``ARG``\ s and therefore invisible from
+   outside the build, so without the labels the only way to answer is to read the Dockerfile at
+   the recorded commit — and hope the ref was not overridden at build time.
+``org.robovast.compat-version``
+   the host↔container protocol version. Also written as
+   ``/etc/robovast_compat_version`` for images built before the label existed.
+
+**The build lock** — ``/etc/robovast/build-manifest/``, holding ``apt.txt`` (every package with
+its version), ``pip.txt`` (``pip freeze`` output) and, when a spec named a moving git ref,
+``vcs.txt`` mapping each requested ref to the commit it resolved to.
+
+This is what makes a rebuild reproduce rather than approximate. A campaign author writes
+*intent* — ``tree``, ``numpy<=1.13``, a branch — and should keep doing so, because a fresh
+campaign generally *should* pick up the current patch release. What must not be re-resolved is a
+**re-run**: asking for ``numpy<=1.13`` again a year later gets a different version, silently. The
+lock records what actually ran, so those specs can be replaced by exactly those versions.
+
+``vast exec check-retrigger`` reports which recorded images carry a lock, because that is what
+decides whether a rebuild would install the same software or merely something compatible.
+
+A campaign's own ``_execution/image_build_refs`` records the same facts per container, read from
+the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
+author declared. Those survive the image being deleted, which the labels do not.

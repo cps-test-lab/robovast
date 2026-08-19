@@ -603,6 +603,91 @@ def read_image_build_manifest(image: str) -> dict:
     return out
 
 
+def pin_specs_from_lock(spec: BuildSpec, lock: dict) -> "tuple[list, list]":
+    """``(system_packages, python_packages)`` rewritten to the versions *lock* records.
+
+    The half that makes a build manifest a mechanism rather than a note. The author writes intent
+    -- ``tree``, ``numpy<=1.13``, a branch -- and re-resolving that a year later gives a different
+    answer, which is exactly the silent substitution a re-run must not make. This turns the
+    intent back into what actually ran.
+
+    Only specs the lock actually names are rewritten. A spec the lock does not mention is left
+    alone rather than dropped: the lock records what the image *contained*, which includes
+    transitive dependencies the author never asked for and may omit something installed another
+    way, so treating absence as "remove it" would quietly change the build.
+
+    An apt spec that already carries ``=`` and a pip spec that already carries ``==`` are left
+    untouched, because the author pinned them deliberately and the lock is not more authoritative
+    than an explicit request.
+    """
+    apt = lock.get("apt") or {}
+    pip = lock.get("pip") or {}
+
+    system = []
+    for entry in spec.system_packages or []:
+        name = str(entry).strip()
+        version = apt.get(name)
+        system.append(f"{name}={version}" if version and "=" not in name else name)
+
+    def _pin_python(entry):
+        if isinstance(entry, list):
+            return [_pin_python(item) for item in entry]
+        text = str(entry).strip()
+        name = _requirement_name_for_lock(text)
+        if not name:
+            # A URL, a path, a wheel, or something unparseable. Left exactly as written:
+            # rewriting a distribution name over it would substitute a PyPI release for a local
+            # wheel or a git commit, which is a different build than the author asked for.
+            return entry
+        version = pip.get(name) or pip.get(_canonical_pip(name, pip))
+        return f"{name}=={version}" if version else entry
+
+    python = [_pin_python(entry) for entry in spec.python_packages or []]
+    return system, python
+
+
+def _requirement_name_for_lock(text: str) -> str:
+    """The distribution name in *text*, or ``""`` when it must not be rewritten from a lock.
+
+    A **loose constraint is the case this exists for**: ``numpy<=1.13`` is precisely the spec whose
+    re-resolution a year later yields something else. An earlier version matched only bare names
+    and therefore left every loose spec unpinned -- doing nothing while appearing to work.
+
+    Returns ``""`` for anything a lock has no business rewriting:
+
+    * a direct reference (``pkg @ git+...``, a path, a wheel) -- the author named exact code, and a
+      version from the lock would replace it with a release;
+    * an already-``==``-pinned spec -- the author pinned it deliberately, and the lock is not more
+      authoritative than an explicit request;
+    * an extras or environment-marker expression, where a bare ``name==version`` would drop the
+      extras or the marker and change what gets installed.
+    """
+    try:
+        from packaging.requirements import \
+            Requirement  # pylint: disable=import-outside-toplevel
+        requirement = Requirement(text)
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    if requirement.url or requirement.marker or requirement.extras:
+        return ""
+    if any(spec.operator in ("==", "===") for spec in requirement.specifier):
+        return ""
+    return requirement.name
+
+
+def _canonical_pip(name: str, pip: dict) -> str:
+    """The key in *pip* matching *name* under PEP 503 normalisation, or ``name``.
+
+    ``pip freeze`` reports a distribution's own spelling, which may differ from the author's in
+    case and in ``-``/``_`` -- so a literal lookup misses and the spec silently stays unpinned.
+    """
+    wanted = re.sub(r"[-_.]+", "-", name).lower()
+    for key in pip:
+        if re.sub(r"[-_.]+", "-", key).lower() == wanted:
+            return key
+    return name
+
+
 def _read_image_file(image: str, path: str) -> "str | None":
     """One file's contents from inside *image*, or ``None`` if it is not there."""
     try:

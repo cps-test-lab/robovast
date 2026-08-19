@@ -223,7 +223,38 @@ def _check_images(source_dir: Path) -> dict:
                      "no container image recorded (no usable _execution/execution.yaml). If "
                      "the campaign builds its own image there is nothing to reuse; otherwise "
                      "the backend supplies one at launch.")
-    return _axis(AXIS_OK, f"{len(pinned)} image(s) recorded and pinnable", images=dict(pinned))
+    return _axis(AXIS_OK, f"{len(pinned)} image(s) recorded and pinnable"
+                          + _lock_note(pinned), images=dict(pinned),
+                 locks=_available_locks(pinned))
+
+
+def _available_locks(pinned: dict) -> dict:
+    """``{role: {apt: n, pip: n}}`` for every recorded image whose build lock can be read.
+
+    Reported because it answers a question the digest cannot: *if this image is gone, would a
+    rebuild install the same software?* With the lock, yes -- the author's loose specs can be
+    replaced by the versions that actually ran. Without it, a rebuild re-resolves them and gets
+    whatever is current, which is a different experiment wearing the same name.
+
+    Only images already present locally can be asked, so an empty answer means "cannot tell here",
+    not "no lock" -- the same rule every probe in this pre-flight follows.
+    """
+    from robovast.service.image_build import read_image_build_manifest
+
+    out = {}
+    for role, image in sorted((pinned or {}).items()):
+        lock = read_image_build_manifest(image)
+        if lock:
+            out[role] = {kind: len(entries) for kind, entries in sorted(lock.items())}
+    return out
+
+
+def _lock_note(pinned: dict) -> str:
+    locks = _available_locks(pinned)
+    if not locks:
+        return ""
+    return (f"; {len(locks)} carry a build lock, so a rebuild could install the same "
+            f"package versions")
 
 
 def _check_host(source_dir: Path, images_axis: dict) -> dict:

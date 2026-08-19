@@ -231,3 +231,11 @@ RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge &&
     colcon build --packages-select roqsim_ros_bridge roqsim_nav2_example
 
 USER ubuntu:ubuntu
+
+# Which roqsim went in. A build ARG is invisible from outside the build, so without this the only
+# way to answer "which roqsim is in this image?" is to read the Dockerfile at the robovast commit
+# in org.opencontainers.image.revision -- which assumes that commit is still reachable and that
+# the ref was not overridden at build time. It usually is: build.sh resolves ROQSIM_REF to a sha
+# before building, precisely so the ARG is not a moving branch.
+ARG ROQSIM_REF
+LABEL org.robovast.roqsim-ref="${ROQSIM_REF}"

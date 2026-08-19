@@ -655,6 +655,60 @@ def code_provenance() -> dict:
     return record
 
 
+#: Labels a robovast image carries about its own build. The OCI names where they exist -- no
+#: reason to invent our own -- and ``org.robovast.*`` only for what OCI does not model.
+_BUILD_REF_LABELS = {
+    "revision": "org.opencontainers.image.revision",
+    "source": "org.opencontainers.image.source",
+    "roqsim_ref": "org.robovast.roqsim-ref",
+    "scenario_execution_ref": "org.robovast.scenario-execution-ref",
+}
+
+
+def image_build_refs(containers: dict, role_images: dict) -> dict:
+    """``{role: {...}}`` naming what each container's image was built from.
+
+    Answers the question a re-run asks once the image itself is gone: *rebuild it from what?*
+    A digest identifies bytes but says nothing about their origin, so a campaign holding only
+    digests is reproducible exactly as long as the registry keeps them and not one day longer.
+
+    Two independent sources, merged, because they cover different tiers:
+
+    * **labels on the image** -- for anything robovast built or publishes. The refs it was built
+      from are build ARGs, invisible from outside the build, so without the labels the only way
+      to answer is to read the Dockerfile at the recorded robovast commit *and* hope the ref was
+      not overridden at build time.
+    * **the container's declared ``provenance:``** -- for a user-supplied image, where robovast
+      cannot know and the author is the only source.
+
+    Absent entries mean "not knowable here", never "nothing to record": labels can only be read
+    for an image already present locally, and a campaign is often composed before its images are
+    pulled. Recording a guess would be worse than recording nothing, since a rebuild would follow
+    it.
+    """
+    out: dict = {}
+    for role, block in sorted((containers or {}).items()):
+        block = block or {}
+        entry = {}
+
+        image = (role_images or {}).get(role) or block.get("image")
+        for key, label in _BUILD_REF_LABELS.items():
+            value = _docker_label(image, label) if image else ""
+            if value:
+                entry[key] = value
+
+        declared = block.get("provenance")
+        if isinstance(declared, dict):
+            # The author's answer wins over anything read from the image: they are describing an
+            # image robovast did not build, so a label found there was put by somebody else and
+            # may describe a base rather than this image.
+            entry.update({key: value for key, value in declared.items() if value})
+            entry["declared"] = True
+        if entry:
+            out[role] = entry
+    return out
+
+
 def campaign_code_provenance() -> dict:
     """:func:`code_provenance` for a campaign about to run, warning when it is not reproducible.
 
@@ -678,6 +732,18 @@ def campaign_code_provenance() -> dict:
             "campaign cannot be reproduced from it -- commit first if that matters.",
             record.get("revision_source", "?"), record.get("revision", "?")[:12], count)
     return record
+
+
+def _build_refs_yaml(refs: dict) -> str:
+    """Render :func:`image_build_refs` as an ``image_build_refs:`` block, or ``""``.
+
+    Dumped with yaml rather than hand-formatted: this is nested, and the local lane emits
+    execution.yaml from a generated shell script -- where a mis-indented nested mapping produces a
+    file that parses as something else entirely and nothing notices.
+    """
+    if not refs:
+        return ""
+    return yaml.dump({"image_build_refs": refs}, default_flow_style=False, sort_keys=True)
 
 
 def _provenance_yaml(record: dict, indent: str = "") -> str:
@@ -1942,6 +2008,13 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     # process COMPOSING the campaign -- asking git from inside the generated script would
     # answer for whatever directory it happens to run in, which is not the same question.
     script += _provenance_yaml(campaign_code_provenance())
+    # Rendered at GENERATION time, not by the script: reading an image's labels needs the docker
+    # CLI and the image present, and the generated script runs inside the batch where a failed
+    # label read would be one more confusing line in a run log. Composing here also means the
+    # declared provenance -- the half robovast cannot derive -- is recorded even when no image has
+    # been pulled yet.
+    script += _build_refs_yaml(image_build_refs(execution_params.get('containers') or {},
+                                               role_images))
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     # The image that actually ran, not the .vast's raw entry: for a `build:<tag>` project the raw
@@ -2064,6 +2137,12 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # its exporter live in the SIMULATION image, not the scenario one.
     if image_digests:
         execution_data['image_revisions'] = dict(image_digests)
+
+    # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
+    # only for as long as the registry keeps it; this is what a rebuild would start from.
+    build_refs = image_build_refs(containers, images)
+    if build_refs:
+        execution_data['image_build_refs'] = build_refs
 
     # Add run_as_user if provided
     run_as_user = execution_params.get('run_as_user')

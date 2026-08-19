@@ -253,3 +253,87 @@ def test_an_absent_image_reports_unknown_rather_than_empty(monkeypatch):
 
     monkeypatch.setattr("robovast.common.execution._image_present_locally", lambda _i: False)
     assert read_image_build_manifest("img:1") == {}
+
+
+# ---------------------------------------------------------------------------
+# Installing FROM the lock: what makes the manifest a mechanism, not a note
+# ---------------------------------------------------------------------------
+
+_LOCK = {"apt": {"tree": "2.2.1-1", "curl": "8.5.0-2"},
+         "pip": {"numpy": "1.12.1", "packaging": "24.2", "shapely": "2.0.1",
+                 "scipy": "1.11.0", "uvicorn": "0.30", "tomli": "2.0"}}
+
+
+def _pin(system=(), python=()):
+    from robovast.service.image_build import pin_specs_from_lock
+
+    spec = BuildSpec(tag="t", system_packages=list(system), python_packages=list(python))
+    return pin_specs_from_lock(spec, _LOCK)
+
+
+@pytest.mark.parametrize("spec,expected", [
+    # The case this exists for. An earlier version matched only BARE names and so left every
+    # loose spec untouched -- doing nothing while appearing to work.
+    ("numpy<=1.13", "numpy==1.12.1"),
+    ("shapely>=2.0", "shapely==2.0.1"),
+    ("Packaging", "Packaging==24.2"),
+])
+def test_a_loose_python_spec_is_pinned_to_what_ran(spec, expected):
+    assert _pin(python=[spec])[1] == [expected]
+
+
+@pytest.mark.parametrize("spec", [
+    # Already pinned: the author said exactly this, and a lock is not more authoritative than an
+    # explicit request.
+    "scipy==1.10.0",
+    # Direct references name exact code. A version from the lock would swap a local wheel or a
+    # git commit for a PyPI release -- a different build than was asked for.
+    "./plugins/x.whl",
+    "pkg @ git+https://h/r@main",
+    "packages/my_pkg",
+    # Extras and markers would be dropped by a bare name==version rewrite, changing what installs.
+    "uvicorn[standard]",
+    'tomli; python_version<"3.11"',
+])
+def test_specs_a_lock_must_not_rewrite(spec):
+    assert _pin(python=[spec])[1] == [spec]
+
+
+def test_a_spec_the_lock_does_not_mention_is_kept(tmp_path):
+    """The lock records what the image CONTAINED -- transitive dependencies included, and possibly
+    missing something installed another way. Treating absence as "remove it" would quietly change
+    the build rather than reproduce it."""
+    assert _pin(python=["not-in-the-lock"])[1] == ["not-in-the-lock"]
+
+
+def test_apt_specs_are_pinned_and_explicit_pins_respected():
+    system, _python = _pin(system=["tree", "curl=8.0-1"])
+    assert system == ["tree=2.2.1-1", "curl=8.0-1"]
+
+
+def test_install_group_structure_survives_pinning():
+    """Groups are pip resolution passes and their boundaries are hashed into the image identity,
+    so rewriting must not flatten them."""
+    _system, python = _pin(python=[["numpy<=1.13", "./plugins/x.whl"], "shapely>=2.0"])
+    assert python == [["numpy==1.12.1", "./plugins/x.whl"], "shapely==2.0.1"]
+
+
+def test_name_normalisation_is_applied():
+    """`pip freeze` reports the distribution's own spelling, which may differ in case and in -/_
+    from the author's. A literal lookup misses and the spec silently stays unpinned."""
+    from robovast.service.image_build import pin_specs_from_lock
+
+    spec = BuildSpec(tag="t", python_packages=["My_Pkg"])
+    _system, python = pin_specs_from_lock(spec, {"pip": {"my-pkg": "3.1"}})
+    assert python == ["My_Pkg==3.1"]
+
+
+def test_an_empty_lock_changes_nothing():
+    """A rebuild with no lock available must produce the author's intent unchanged, not an empty
+    install list -- "cannot tell" is not "install nothing"."""
+    system, python = _pin(system=["tree"], python=["numpy<=1.13"])
+    from robovast.service.image_build import pin_specs_from_lock
+
+    spec = BuildSpec(tag="t", system_packages=["tree"], python_packages=["numpy<=1.13"])
+    assert pin_specs_from_lock(spec, {}) == (["tree"], ["numpy<=1.13"])
+    assert (system, python) != (["tree"], ["numpy<=1.13"]), "with a lock it should differ"

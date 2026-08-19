@@ -207,6 +207,13 @@ ARG ROBOVAST_GIT_REVISION=""
 LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 
+# The upstream sources baked in, so an image that has to be rebuilt can be rebuilt from the same
+# ones. These are build ARGs and therefore invisible from outside the build -- without recording
+# them, "which scenario-execution is in this image?" is answerable only by reading the Dockerfile
+# at the commit above, and only if that commit is still reachable.
+ARG SCENARIO_EXECUTION_REF
+LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
+
 ARG TARGETARCH
 RUN USER=ubuntu && \
     GROUP=ubuntu && \
