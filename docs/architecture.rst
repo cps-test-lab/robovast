@@ -1077,7 +1077,20 @@ postprocessing Jobs are the ones carrying the queue label). A prewarm admitted b
 sweep would warm the node *after* the thing that needed it, which is worse than not warming; the
 cost is a few millicores of quota Kueue has not accounted for, and no Workload object at all.
 
-Two things it deliberately does not do. It does **not** fire on the restart branch of
+It is **not** wired to the 3D panel's geometry compile, though that is the one place a human
+watches this wait and the panel names it out loud. The compile runs in
+``campaign_role_image(..., SIMULATION_CONTAINER)`` — the exact image that campaign's simulation
+container ran — so at the moment a campaign finishes, the image is by construction already on
+the node that ran it, and a prewarm there would find it present and exit in a second. The wait
+the panel reports is the *later* one: a view that lands on a node which never ran that campaign,
+or one whose kubelet has since garbage-collected the image. Neither is reachable from a
+campaign-completion hook — the first is the placement limit below, and the second would evict a
+prewarmed copy just as readily. Warming at view time is no better, since ``AuxPodSession``
+creates a pod with that image immediately anyway and a second pod would race the same pull for
+no gain. So the honest answer is that this particular latency needs multi-node warming, not
+another fire point.
+
+Two further things it deliberately does not do. It does **not** fire on the restart branch of
 ``get_image_build_status``, which holds only a ``build_id`` — and ``build_id_for`` does not
 reverse into a ref, since it lowercases and folds ``_`` to ``-`` where ``concrete_image_ref``
 does not, so a tag like ``my_sut`` would yield a ref no registry serves and a prewarm that
