@@ -150,3 +150,100 @@ def test_looks_public_is_a_short_list_not_a_guess():
     assert _looks_public("https://github.com/org/repo")
     assert not _looks_public("https://git.internal.example/org/repo")
     assert not _looks_public("")
+
+
+# ---------------------------------------------------------------------------
+# The gate: what it writes, where, and what it refuses
+# ---------------------------------------------------------------------------
+
+def _gate(campaign_root, *, allow_opaque=False):
+    """Run the publication gate, returning ``(ok, message, printed_lines)``."""
+    from robovast.results_processing.publication import _reproducibility_gate
+
+    printed: list = []
+    ok, message = _reproducibility_gate(campaign_root, printed.append, allow_opaque)
+    return ok, message, printed
+
+
+def test_the_manifest_is_grouped_with_the_other_publication_artifacts(tmp_path):
+    """The `metadata.` prefix keeps the three publication-time artifacts together.
+
+    `metadata.yaml` and `metadata.prov.json` are written at the same stage and at the same level,
+    while `campaign.db` and the `_`-prefixed directories belong to other stages. A bare
+    `reproducibility.yaml` would sort away from its siblings for no reason, so the name is pinned
+    here rather than left to be tidied.
+    """
+    from robovast.results_processing.publication import REPRODUCIBILITY_FILENAME
+
+    assert REPRODUCIBILITY_FILENAME == "metadata.reproducibility.yaml"
+
+    root = _campaign(tmp_path, _CLEAN, plugins={}, providers={})
+    ok, _, _ = _gate(root)
+    assert ok
+    written = root / REPRODUCIBILITY_FILENAME
+    assert written.exists(), sorted(p.name for p in root.iterdir())
+    assert yaml.safe_load(written.read_text(encoding="utf-8"))["counts"]["opaque"] == 0
+
+
+def test_an_opaque_input_is_refused_and_the_offender_named(tmp_path):
+    """Refusing without saying what to fix would only move the discovery later."""
+    execution = dict(_CLEAN, image_revisions={"scenario": "sha256:" + "e" * 64})
+    root = _campaign(tmp_path, execution, plugins={}, providers={})
+    ok, message, printed = _gate(root)
+    assert not ok
+    assert "image[scenario]" in " ".join(printed)
+    assert "metadata.reproducibility.yaml" in message
+
+
+def test_a_granted_exemption_is_recorded_not_merely_allowed(tmp_path):
+    """The whole point of the file: a reader can check the claim instead of trusting it.
+
+    An exemption that only changed the exit status would leave a published dataset saying
+    nothing about the fact that somebody knowingly published an unidentifiable input.
+    """
+    execution = dict(_CLEAN, image_revisions={"scenario": "sha256:" + "e" * 64})
+    root = _campaign(tmp_path, execution, plugins={}, providers={})
+    ok, _, _ = _gate(root, allow_opaque=True)
+    assert ok
+    manifest = yaml.safe_load(
+        (root / "metadata.reproducibility.yaml").read_text(encoding="utf-8"))
+    assert manifest["exemption_granted"] is True
+    assert manifest["counts"]["opaque"] == 1
+
+
+def test_no_exemption_is_recorded_when_there_was_nothing_to_exempt(tmp_path):
+    """`--allow-opaque` on a clean campaign must not stamp it as exempted."""
+    root = _campaign(tmp_path, _CLEAN, plugins={}, providers={})
+    _gate(root, allow_opaque=True)
+    manifest = yaml.safe_load(
+        (root / "metadata.reproducibility.yaml").read_text(encoding="utf-8"))
+    assert manifest["exemption_granted"] is False
+
+
+def test_a_campaign_that_declared_no_plugins_is_publishable(tmp_path):
+    """The regression that made this whole gate unusable.
+
+    Three places disagreed: the writer skipped writing an empty record because "absence already
+    means no plugins", the reader documented absence as *unknown*, and this classifier treats
+    unknown as opaque. So a campaign with no plugins -- most of them, `camera_smoke` included --
+    was refused publication with nothing its author could do about it. An empty record is now
+    written and read as `{}`, which contributes no input at all.
+    """
+    from robovast.common.campaign_data import write_plugins_record, write_providers_record
+
+    root = _campaign(tmp_path, _CLEAN)
+    write_plugins_record(root, {})
+    write_providers_record(root, {})
+
+    manifest = reproducibility_manifest(root)
+    assert manifest["publishable"] is True
+    assert manifest["opaque"] == []
+    assert not [entry for entry in manifest["inputs"]
+                if entry["input"] in ("plugins", "providers")]
+
+
+def test_a_campaign_predating_the_records_is_still_opaque(tmp_path):
+    """The other half: fixing empty must not make absence look answered."""
+    manifest = reproducibility_manifest(_campaign(tmp_path, _CLEAN))
+    assert manifest["publishable"] is False
+    assert sorted(manifest["opaque"]) == ["plugins", "providers"]

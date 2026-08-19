@@ -317,6 +317,9 @@ def _check_plugins(source_dir: Path) -> dict:
                      f"declared but not resolved here: {', '.join(floating)} -- these were "
                      f"already importable from elsewhere, so the code that ran came from a "
                      f"location this record cannot name.", plugins=record)
+    if not record:
+        return _axis(AXIS_OK, "no plugins declared, and that was recorded rather than assumed",
+                     plugins=record)
     return _axis(AXIS_OK, f"{len(record)} plugin(s) recorded with resolved versions",
                  plugins=record)
 

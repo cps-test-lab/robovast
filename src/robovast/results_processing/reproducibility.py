@@ -156,6 +156,12 @@ def _classify_plugins(record) -> list:
         return [_entry("plugins", OPAQUE,
                        "no plugin resolution recorded, so if this campaign declared any their "
                        "versions are unknown and a re-run would resolve them afresh")]
+    if not record:
+        # Recorded, and there were none. Nothing to identify, so this contributes no input at all
+        # rather than a "public" one -- counting an absence as an identified input would flatter
+        # the manifest. Distinguishable from the branch above only because the writer now records
+        # an empty set; without that, every campaign with no plugins would be refused here.
+        return []
     out = []
     for name, info in sorted(record.items()):
         commit, version, url = info.get("commit"), info.get("version"), info.get("url", "")
@@ -178,6 +184,10 @@ def _classify_providers(record) -> list:
         return [_entry("providers", OPAQUE,
                        "no asset providers recorded, so which world and model packages supplied "
                        "this campaign cannot be identified")]
+    if not record:
+        # Recorded, and there were none -- a campaign with no simulator has no asset providers.
+        # Contributes no input, for the reason _classify_plugins gives.
+        return []
     out = []
     for name, info in sorted(record.items()):
         commit, url = info.get("commit"), info.get("url", "")

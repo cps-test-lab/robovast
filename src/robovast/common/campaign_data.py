@@ -567,10 +567,11 @@ def write_plugins_record(campaign_root, resolved: dict) -> None:
     launch.yaml. Keeping that decision here would hide a real failure from the one place that
     knows whether it matters.
     """
-    if not resolved:
-        # Nothing declared. An empty file would be indistinguishable from "recorded nothing",
-        # and the absent-file case already means "no plugins" to every reader.
-        return
+    # Written even when empty. An empty record is a positive statement -- "this campaign was asked
+    # and declared none" -- and it is the ONLY thing that distinguishes that from a campaign
+    # recorded before this file existed, whose plugins are genuinely unknown. Skipping the write
+    # made the two identical, and since the publication gate treats unknown as opaque, every
+    # campaign without plugins became unpublishable with no way for its author to fix it.
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
     with open(exec_dir / _PLUGINS_FILENAME, "w", encoding="utf-8") as f:
@@ -590,8 +591,8 @@ def write_providers_record(campaign_root, providers: dict) -> None:
 
     Raises rather than swallowing; the caller decides this is best-effort.
     """
-    if not providers:
-        return
+    # Written even when empty, for the reason write_plugins_record gives: an empty record is what
+    # separates "asked, none" from a campaign predating the file, whose providers are unknown.
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
     with open(exec_dir / _PROVIDERS_FILENAME, "w", encoding="utf-8") as f:
@@ -601,28 +602,35 @@ def write_providers_record(campaign_root, providers: dict) -> None:
 def read_providers_record(campaign_dir) -> "dict | None":
     """Read ``_execution/providers.yaml``; ``None`` when the campaign has none.
 
-    ``None`` means *unknown*, not "no providers" -- see :func:`read_plugins_record`.
+    ``None`` means the file is **absent**, so *unknown* -- not "no providers". An empty file
+    returns ``{}``: asked, none. See :func:`read_plugins_record` for why the two must not collapse.
     """
     path = Path(campaign_dir) / "_execution" / _PROVIDERS_FILENAME
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or None
+        loaded = yaml.safe_load(f)
+    return {} if loaded is None else loaded
 
 
 def read_plugins_record(campaign_dir) -> "dict | None":
     """Read ``_execution/plugins.yaml``; ``None`` when the campaign has none.
 
-    ``None`` is not an error and does not mean "no plugins": campaigns recorded before this
-    file existed declared plugins without resolving them anywhere, so a caller has to treat
-    it as *unknown* rather than empty. Conflating the two would report a re-run as safely
-    pinned when nothing about its plugins was ever captured.
+    ``None`` means the file is **absent** -- and that is not an error and does not mean "no
+    plugins": campaigns recorded before this file existed declared plugins without resolving them
+    anywhere, so a caller has to treat it as *unknown*. Conflating it with empty would report a
+    re-run as safely pinned when nothing about its plugins was ever captured.
+
+    An **empty** file is the opposite answer and returns ``{}``: the campaign was asked and
+    declared none. ``or None`` here collapsed the two, which is what made every campaign without
+    plugins read as unknown.
     """
     path = Path(campaign_dir) / "_execution" / _PLUGINS_FILENAME
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or None
+        loaded = yaml.safe_load(f)
+    return {} if loaded is None else loaded
 
 
 _LAUNCH_FILENAME = "launch.yaml"

@@ -190,7 +190,17 @@ def _get_plugin_type(plugin_func: Callable) -> str:
 #: Filename of the manifest written beside the campaign's other records. Part of the published
 #: dataset, because a reader has to be able to check the reproducibility claim rather than take
 #: it on trust -- and because it is the only place a granted exemption is recorded.
-REPRODUCIBILITY_FILENAME = "reproducibility.yaml"
+#:
+#: The ``metadata.`` prefix is deliberate: this is written at publication time, like
+#: ``metadata.yaml`` and ``metadata.prov.json``, so the prefix keeps the three publication
+#: artifacts together and apart from ``campaign.db`` and the ``_``-prefixed directories, which are
+#: written at other stages. Do not "tidy" it to a bare name -- the grouping is the point.
+#:
+#: It stays a file at the campaign root rather than moving into ``campaign.db``, which is
+#: regenerable: ``build_campaign_store`` reconstructs the store from the tree, and the granted
+#: exemption is a decision derivable from nothing in it, so a rebuild would silently drop the one
+#: record saying a human knowingly published an unidentifiable input.
+REPRODUCIBILITY_FILENAME = "metadata.reproducibility.yaml"
 
 
 def _reproducibility_gate(campaign_dir, output, allow_opaque: bool) -> Tuple[bool, str]:

@@ -101,8 +101,16 @@ def test_the_record_round_trips_and_absence_means_unknown(tmp_path):
     write_plugins_record(campaign, resolved)
     assert read_plugins_record(campaign) == resolved
 
-    # No plugins declared: nothing is written, and the reader reports unknown rather than {}.
+    # No plugins declared: the record is still WRITTEN, and reads back as {} -- "asked, none".
+    # It is the only thing separating that from a campaign predating the file, and since the
+    # publication gate treats unknown as opaque, not writing it made every campaign without
+    # plugins unpublishable.
     empty = tmp_path / "campaign-2025-01-01-000000"
     write_plugins_record(empty, {})
-    assert not (empty / "_execution" / "plugins.yaml").exists()
-    assert read_plugins_record(empty) is None
+    assert (empty / "_execution" / "plugins.yaml").exists()
+    assert read_plugins_record(empty) == {}
+
+    # Absent is the other answer, and stays unknown.
+    never = tmp_path / "campaign-2024-01-01-000000"
+    never.mkdir()
+    assert read_plugins_record(never) is None
