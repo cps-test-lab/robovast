@@ -530,8 +530,9 @@ origin: a pose silently at (0, 0) is a wrong answer, an absent one is a visible 
 Declared and contributed markers are concatenated, not one overriding the other: a campaign
 can have both.
 
-See :repo_link:`configs/examples/basic_nav/basic_nav_roqsim.vast` for the declared form and
-:repo_link:`configs/navigation/navigation_variation.vast` for the contributed one.
+See :repo_link:`configs/examples/basic_nav/basic_nav_roqsim.vast` for the declared form. The
+contributed form needs no declaration at all: a ``map2d`` panel with no ``markers:`` draws
+whatever the variations contributed.
 
 Starting it
 -----------
