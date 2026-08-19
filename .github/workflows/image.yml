@@ -257,6 +257,18 @@ jobs:
             -c test-1-1 -d /tmp/vast_test_output -r 1 \
             --image "${{ steps.image.outputs.tag }}"
 
+      # A campaign has just finished against the image built in this run, so this is the one
+      # place a *real* retrigger is cheap: the records exist and the image is present. Unit
+      # tests cover the pre-flight and the staging against committed historic fixtures, but
+      # neither can prove that a campaign relaunched from its own records actually executes --
+      # which is the claim this whole path makes.
+      #
+      # It also exercises the container-protocol window against a freshly built image, so a
+      # label that disagrees with the host is caught here rather than by a user a year from now.
+      - name: Retrigger the campaign it just ran
+        run: |
+          poetry run .github/test_retrigger.py /tmp/vast_test_output
+
   build-and-push-sidecar:
     runs-on: ubuntu-latest
     permissions:
