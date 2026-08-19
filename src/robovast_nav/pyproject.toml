@@ -23,6 +23,12 @@ matplotlib = "^3.10"
 numpy = "^1.26"
 Pillow = "^12.0"
 pyyaml = "^6.0"
+# Not optional, unlike robovast's own `fair` extra: the three variation modules build their
+# PROV-O namespace constants at module scope, so `Namespace` has to resolve at import time
+# for the entry points to load at all. It read as optional because every dev venv happened
+# to carry it -- installed by hand or with `fair` -- and only a clean docs build ever
+# imported FloorplanVariation without it.
+rdflib = "^7.0"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "FloorplanVariation" = "robovast_nav.variation.floorplan_variation:FloorplanVariation"
