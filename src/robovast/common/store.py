@@ -109,7 +109,16 @@ CREATE TABLE IF NOT EXISTS campaign (
     -- nobody can prove who they are, so this answers "who says they did?" and the UI
     -- labels it as such. NULL means nobody gave a name -- a different fact from
     -- somebody anonymous, and not one to paper over with a placeholder.
-    created_by    TEXT
+    created_by    TEXT,
+    -- Which commit composed the campaign, and whether that commit describes it. Separate
+    -- from robovast_version because that falls back to a package semver when the git lookup
+    -- fails, so it can read as an answer while carrying no revision at all -- and "which
+    -- commit do I check out to re-run this?" needs a real one. robovast_dirty is the honest
+    -- half: a dirty checkout means the recorded revision does NOT describe the code that
+    -- ran, and a re-run cannot be verified against it.
+    robovast_revision        TEXT,
+    robovast_revision_source TEXT,   -- git | baked; a baked value is short, not truncated
+    robovast_dirty           INTEGER  -- 0/1, NULL when it could not be determined
 );
 CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
@@ -275,8 +284,20 @@ _MIGRATION_ADD_CREATED_BY = """
 ALTER TABLE campaign ADD COLUMN created_by TEXT;
 """
 
+# 5 -> 6: which commit composed the campaign.
+#
+# Queried across campaigns ("what else ran at this revision?", "which results came from a
+# dirty tree?"), so typed columns rather than json_extract from execution_json. Nullable and
+# never backfilled: a campaign recorded before this existed genuinely has no revision, and
+# `robovast_version` cannot be promoted into one -- it may hold a semver.
+_MIGRATION_ADD_CODE_REVISION = """
+ALTER TABLE campaign ADD COLUMN robovast_revision TEXT;
+ALTER TABLE campaign ADD COLUMN robovast_revision_source TEXT;
+ALTER TABLE campaign ADD COLUMN robovast_dirty INTEGER;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -291,6 +312,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_DESCRIPTION,
     _MIGRATION_ADD_JOB_AND_PROVENANCE,
     _MIGRATION_ADD_CREATED_BY,
+    _MIGRATION_ADD_CODE_REVISION,
 ]
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
 
@@ -525,14 +547,23 @@ class CampaignStore:
         """
         if not execution:
             return
+        # `dirty` stays None when the YAML has no such key -- a campaign recorded before the
+        # field existed did not have a clean tree, it had an unknown one, and storing 0 would
+        # assert something nobody checked.
+        dirty = execution.get("robovast_dirty")
         self._conn.execute(
             "UPDATE campaign SET robovast_version = ?, execution_type = ?, image = ?, "
-            "image_revision = ?, execution_started_at = ?, execution_json = ? "
+            "image_revision = ?, execution_started_at = ?, execution_json = ?, "
+            "robovast_revision = ?, robovast_revision_source = ?, robovast_dirty = ? "
             "WHERE id = ?",
             (execution.get("robovast_version"), execution.get("execution_type"),
              execution.get("image"), execution.get("image_revision"),
              execution.get("execution_time"),
-             json.dumps(execution, default=str), campaign_id),
+             json.dumps(execution, default=str),
+             execution.get("robovast_revision"),
+             execution.get("robovast_revision_source"),
+             None if dirty is None else int(bool(dirty)),
+             campaign_id),
         )
         self._conn.commit()
 

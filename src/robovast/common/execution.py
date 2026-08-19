@@ -367,6 +367,109 @@ def _git_revision() -> "str | None":
     return f"{sha}+dirty" if dirty else sha
 
 
+#: How many changed paths a provenance record keeps. A dirty tree can hold thousands, and a
+#: record that balloons stops being read; the count beside the sample keeps the fact intact.
+MAX_RECORDED_CHANGED_PATHS = 20
+
+
+def code_provenance() -> dict:
+    """What identifies the code that composed this campaign, for the campaign's own record.
+
+    Distinct from both :func:`code_revision` and :func:`get_app_version`, and for a reason
+    neither can serve: those answer "is my change loaded?" and "which version am I talking
+    to?", where a short sha or a semver is fine. This answers **"which commit do I check out
+    to re-run this a year from now?"** -- so it needs a *full* sha, and it must say when it
+    does not have one rather than returning something that merely looks like an identifier.
+
+    Returns a dict with only the keys it can actually answer:
+
+    ``revision``
+        Full 40-character sha when this is a source checkout; the baked value when running
+        from an image, which is short because that is what was baked. Absent when neither.
+    ``revision_source``
+        ``"git"`` or ``"baked"`` -- so a reader knows whether ``revision`` is a full sha.
+        Without it, a short baked value is indistinguishable from a truncated full one.
+    ``dirty``
+        Whether the checkout had uncommitted changes. **A dirty campaign is not
+        reproducible**, because the recorded sha does not describe the code that ran, and
+        that has to be recorded rather than inferred later from a missing field.
+    ``changed_paths`` / ``changed_count``
+        A capped sample and the true total, present only when dirty.
+
+    An empty dict is a meaningful answer: this deployment cannot tell you.
+    """
+    baked = os.environ.get(GIT_REVISION_ENV, "").strip()
+    if baked:
+        # Trusted verbatim, exactly as `code_revision` does: in a pod there is no `.git` to
+        # ask, so this is the only thing that can answer. The `+dirty` suffix is the build's
+        # own report and is unpacked rather than left inside the identifier.
+        revision, _, suffix = baked.partition("+")
+        return {"revision": revision, "revision_source": "baked",
+                "dirty": suffix == "dirty"}
+
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.STDOUT, cwd=module_dir, text=True).strip()
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            stderr=subprocess.STDOUT, cwd=module_dir, text=True)
+    except Exception:  # noqa: BLE001 - no repo, no git binary: not an error, just no answer
+        return {}
+
+    record = {"revision": sha, "revision_source": "git", "dirty": bool(status.strip())}
+    if record["dirty"]:
+        paths = [line[3:].strip() for line in status.splitlines() if len(line) > 3]
+        record["changed_count"] = len(paths)
+        record["changed_paths"] = sorted(paths)[:MAX_RECORDED_CHANGED_PATHS]
+    return record
+
+
+def campaign_code_provenance() -> dict:
+    """:func:`code_provenance` for a campaign about to run, warning when it is not reproducible.
+
+    The warning belongs here rather than at each call site so both lanes report it
+    identically and exactly once per campaign. It is a warning and not a refusal on purpose:
+    running from a dirty tree is the normal research loop, and blocking it would only teach
+    people to bypass the check. What must not happen is the campaign *looking* reproducible
+    afterwards -- so the fact is recorded either way.
+    """
+    record = code_provenance()
+    if not record:
+        logger.warning(
+            "cannot determine which robovast revision is composing this campaign (no git "
+            "checkout and no baked %s). Its results will not say what code produced them, "
+            "so re-running it later cannot be verified.", GIT_REVISION_ENV)
+    elif record.get("dirty"):
+        count = record.get("changed_count", 0)
+        logger.warning(
+            "composing this campaign from a DIRTY robovast checkout (%s at %s, %d changed "
+            "path(s)). The recorded revision does not describe the code that ran, so this "
+            "campaign cannot be reproduced from it -- commit first if that matters.",
+            record.get("revision_source", "?"), record.get("revision", "?")[:12], count)
+    return record
+
+
+def _provenance_yaml(record: dict, indent: str = "") -> str:
+    """Render :func:`code_provenance` as YAML lines with a ``robovast_`` prefix.
+
+    Shared by both execution.yaml writers -- one builds a dict and dumps it, the other emits
+    text from a shell script -- so the two lanes cannot drift into recording different keys.
+    """
+    lines = []
+    for key, value in record.items():
+        name = f"{indent}robovast_{key}"
+        if isinstance(value, list):
+            lines.append(f"{name}:\n")
+            lines.extend(f"{indent}- {item}\n" for item in value)
+        elif isinstance(value, bool):
+            lines.append(f"{name}: {str(value).lower()}\n")
+        else:
+            lines.append(f"{name}: {value}\n")
+    return "".join(lines)
+
+
 def get_app_version() -> str:
     """Return a short version string for the robovast package.
 
@@ -1518,6 +1621,10 @@ def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="
     script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
     script += "execution_time: '${EXECUTION_TIME}'\n"
     script += f'robovast_version: {get_app_version()}\n'
+    # Rendered here rather than in the script, because the provenance is a property of the
+    # process COMPOSING the campaign -- asking git from inside the generated script would
+    # answer for whatever directory it happens to run in, which is not the same question.
+    script += _provenance_yaml(campaign_code_provenance())
     script += f'runs: {runs}\n'
     script += f'execution_type: local\n'
     # The image that actually ran, not the .vast's raw entry: for a `build:<tag>` project the raw
@@ -1623,6 +1730,10 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     execution_data = {
         'execution_time': execution_time,
         'robovast_version': get_app_version(),
+        # The full sha, the dirty flag and the changed paths -- what a re-run a year from now
+        # needs and what `robovast_version` cannot give: it resolves to a semver whenever the
+        # git lookup fails, so it can read as an answer while carrying no revision at all.
+        **{f'robovast_{key}': value for key, value in campaign_code_provenance().items()},
         'runs': runs,
         'execution_type': 'cluster',
         'image': image,
