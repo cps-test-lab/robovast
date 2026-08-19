@@ -203,6 +203,19 @@ def extract_build_specs(campaign_config, base_dir=None, image_project=None,
 # python_packages classification (shared vocabulary with top-level ``plugins:``)
 # ---------------------------------------------------------------------------
 
+#: Where a built image records what it actually contains. Baked into the image rather than
+#: written beside the campaign, because that is the only form that survives every path: both
+#: lanes get it without extra plumbing, it travels with the image if the image is copied or
+#: retagged, and a rebuild a year from now can read what the original installed and install
+#: exactly that.
+BUILD_MANIFEST_DIR = "/etc/robovast/build-manifest"
+
+#: Plain text, one record per line, rather than JSON. Both are produced by a shell `RUN`, where
+#: emitting valid JSON means quoting hundreds of package names correctly and a mistake yields a
+#: file that parses as something else; `pip freeze` output is also directly re-installable.
+_MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
+
+
 #: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
 #: rather than on "the first @", because a name is optional and an ssh URL carries its own.
 _VCS_SPLIT = re.compile(r"^(?:(?P<name>[^@\s]+)\s*@\s*)?(?P<url>git\+\S+)$")
@@ -557,8 +570,93 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
                 # Nothing to copy, so it never carries a context layer.
                 args.append(f"'{entry}'")
         lines.append(f"{_PIP_INSTALL} {' '.join(args)}")
+    lines.extend(_manifest_lines(spec, resolved_vcs or {}))
     lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"
+
+
+def read_image_build_manifest(image: str) -> dict:
+    """``{apt: {...}, pip: {...}, vcs: {...}}`` recorded inside *image*, or ``{}``.
+
+    This is the lock a rebuild installs from. The author's ``.vast`` says ``tree`` and
+    ``numpy<=1.13``; the manifest says ``tree=2.2.1-1`` and ``numpy==1.12.1``. Re-resolving the
+    loose spec a year later gives a different answer, which is precisely the silent substitution
+    a re-run must not make.
+
+    Read by starting a container, and only for an image already present locally: `docker run` on
+    an absent image *pulls* it, and a caller asking "what is in this image" must not be the thing
+    that fetches gigabytes. ``{}`` means "cannot tell" -- an image built before manifests existed
+    has none, and that is a different answer from "installed nothing".
+    """
+    from robovast.common.execution import \
+        _image_present_locally  # pylint: disable=import-outside-toplevel
+
+    if not image or not _image_present_locally(image):
+        return {}
+    out = {}
+    for name in _MANIFEST_FILES:
+        text = _read_image_file(image, f"{BUILD_MANIFEST_DIR}/{name}")
+        if text is None:
+            continue
+        key = name.removesuffix(".txt")
+        out[key] = _parse_manifest(key, text)
+    return out
+
+
+def _read_image_file(image: str, path: str) -> "str | None":
+    """One file's contents from inside *image*, or ``None`` if it is not there."""
+    try:
+        result = subprocess.run(
+            ["docker", "run", "--rm", "--pull=never", "--user", "root",
+             "--entrypoint", "cat", image, path],
+            capture_output=True, text=True, check=False, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _parse_manifest(kind: str, text: str) -> dict:
+    """Parse one manifest file. ``apt`` uses ``=``, ``pip`` uses ``==``, ``vcs`` uses ``->``."""
+    separator = {"apt": "=", "pip": "==", "vcs": "->"}[kind]
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or separator not in line:
+            continue
+        left, _, right = line.partition(separator)
+        out[left.strip()] = right.strip()
+    return out
+
+
+def _manifest_lines(spec: BuildSpec, resolved_vcs: dict) -> list:
+    """Dockerfile lines that record what this image ended up containing.
+
+    The author writes intent -- a bare apt name, ``numpy<=1.13``, a branch -- and must keep
+    being able to: pinning in the source would be wrong, since a *fresh* campaign should pick up
+    the current patch release. What has to be pinned is the *re-run*, and that needs the
+    resolution written down. This is the lockfile half of that split.
+
+    Emitted last, so it observes the finished image rather than an intermediate layer, and as a
+    separate layer so it never invalidates the install layers above it.
+    """
+    lines = [f"RUN mkdir -p {BUILD_MANIFEST_DIR}"]
+    # `dpkg-query` over `apt list --installed`: stable machine format, no locale, no header.
+    lines.append(
+        f"RUN dpkg-query -W -f='${{Package}}=${{Version}}\\n' 2>/dev/null | sort "
+        f"> {BUILD_MANIFEST_DIR}/apt.txt")
+    # `|| true`: an image whose base has no pip (a slim non-Python base) is not a broken build,
+    # and failing here would turn recording a fact into a reason the campaign cannot exist.
+    lines.append(
+        f"RUN (pip list --format=freeze 2>/dev/null || true) | sort "
+        f"> {BUILD_MANIFEST_DIR}/pip.txt")
+    if resolved_vcs:
+        # Rendered from what the generator already resolved, not observed in the image: pip
+        # records a direct URL per distribution, but not which *requested* ref it came from --
+        # and "@main resolved to this commit" is the fact a reader needs to judge a re-run.
+        body = "\\n".join(f"{requested} -> {sha}"
+                            for requested, sha in sorted(resolved_vcs.items()))
+        lines.append(f"RUN printf '{body}\\n' > {BUILD_MANIFEST_DIR}/vcs.txt")
+    return lines
 
 
 # ---------------------------------------------------------------------------

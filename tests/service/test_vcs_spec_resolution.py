@@ -13,12 +13,11 @@ image was unpredictable, and nothing recorded which commit it was.
 tests pin the same behaviour for the specs a campaign author writes.
 """
 
-import pathlib
-
 import pytest
 
-from robovast.service.image_build import (BuildSpec, build_hash, generate_dockerfile,
-                                          pin_vcs_specs, resolve_floating_vcs_specs)
+from robovast.service.image_build import (_PIP_INSTALL, BuildSpec, build_hash,
+                                          generate_dockerfile, pin_vcs_specs,
+                                          resolve_floating_vcs_specs)
 
 
 def _spec(*packages) -> BuildSpec:
@@ -113,8 +112,13 @@ def test_the_rendered_dockerfile_installs_the_commit_not_the_branch(tmp_path):
     rendered = generate_dockerfile(
         spec, tmp_path, "base:1",
         resolved_vcs={"pkg @ git+https://host/repo@main": "f" * 40})
-    assert f"git+https://host/repo@{'f' * 40}" in rendered
-    assert "repo@main" not in rendered
+    install = next(l for l in rendered.splitlines() if _PIP_INSTALL in l)
+    assert f"git+https://host/repo@{'f' * 40}" in install
+    assert "repo@main" not in install, "the install must name the commit, not the branch"
+    # The branch DOES survive in the manifest, and should: the record has to show what was
+    # asked for beside what it resolved to, or nobody can tell a pin from a resolution.
+    manifest = next(l for l in rendered.splitlines() if "vcs.txt" in l)
+    assert "repo@main" in manifest and "f" * 40 in manifest
 
 
 def test_pinning_preserves_install_group_structure():
@@ -152,3 +156,100 @@ def test_a_bare_url_without_a_requirement_name_still_resolves(monkeypatch):
     spec = "git+https://host/repo@main"
     resolved = resolve_floating_vcs_specs([spec])
     assert pin_vcs_specs([spec], resolved) == [f"git+https://host/repo@{'9' * 40}"]
+
+
+# ---------------------------------------------------------------------------
+# The build manifest: what the image ended up containing
+# ---------------------------------------------------------------------------
+
+def test_the_manifest_is_recorded_after_the_installs(tmp_path):
+    """Order matters: recorded last so it observes the finished image, and in its own layers so
+    it never invalidates the install layers above it."""
+    from robovast.service.image_build import BUILD_MANIFEST_DIR
+
+    spec = _spec("numpy<=1.13")
+    spec.system_packages = ["tree"]
+    lines = generate_dockerfile(spec, tmp_path, "base:1").splitlines()
+    manifest_at = next(i for i, l in enumerate(lines) if BUILD_MANIFEST_DIR in l)
+    install_at = max(i for i, l in enumerate(lines)
+                     if _PIP_INSTALL in l or "apt-get" in l)
+    assert manifest_at > install_at
+
+
+def test_the_manifest_does_not_enter_the_cache_key(tmp_path):
+    """It is an output, not an input. Hashing it would invalidate the cache on every upstream
+    package release -- defeating the caching the key exists for."""
+    spec = _spec("numpy<=1.13")
+    before = build_hash(spec, tmp_path, "base:1")
+    rendered = generate_dockerfile(spec, tmp_path, "base:1")
+    assert "build-manifest" in rendered
+    assert build_hash(spec, tmp_path, "base:1") == before
+
+
+def test_pip_recording_cannot_fail_the_build(tmp_path):
+    """A base with no pip is not a broken build, and failing here would turn recording a fact
+    into a reason the campaign cannot exist."""
+    rendered = generate_dockerfile(_spec("numpy"), tmp_path, "base:1")
+    pip_line = next(l for l in rendered.splitlines() if "pip list" in l)
+    assert "|| true" in pip_line
+
+
+def test_vcs_resolutions_are_recorded_only_when_there_are_any(tmp_path):
+    """pip records a direct URL per distribution but not which *requested* ref it came from, and
+    "@main resolved to this commit" is the fact a reader needs -- so it is rendered from what the
+    generator resolved. An empty file would be indistinguishable from "nothing floated"."""
+    plain = generate_dockerfile(_spec("numpy"), tmp_path, "base:1")
+    assert "vcs.txt" not in plain
+
+    floating = generate_dockerfile(
+        _spec("pkg @ git+https://h/r@main"), tmp_path, "base:1",
+        resolved_vcs={"pkg @ git+https://h/r@main": "a" * 40})
+    assert "vcs.txt" in floating
+    assert "a" * 40 in floating
+
+
+@pytest.mark.parametrize("kind,text,expected", [
+    ("apt", "tree=2.2.1-1\nadduser=3.152\n", {"tree": "2.2.1-1", "adduser": "3.152"}),
+    ("pip", "numpy==1.12.1\npackaging==24.2\n", {"numpy": "1.12.1", "packaging": "24.2"}),
+    ("vcs", "pkg @ git+https://h/r@main -> " + "b" * 40 + "\n",
+     {"pkg @ git+https://h/r@main": "b" * 40}),
+    ("pip", "\n  \nbroken-line\n", {}),
+])
+def test_manifest_parsing(kind, text, expected):
+    """apt uses `=`, pip uses `==`, vcs uses `->`. A line that fits none is skipped rather than
+    guessed at -- `pip freeze` also emits `-e git+...` lines that are not `name==version`."""
+    from robovast.service.image_build import _parse_manifest
+
+    assert _parse_manifest(kind, text) == expected
+
+
+def test_reading_a_manifest_never_pulls(monkeypatch):
+    """Same rule as the pre-flight: asking what is in an image must not be the thing that
+    fetches gigabytes of it."""
+    from robovast.service import image_build
+
+    calls = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+
+        class Result:
+            returncode = 1
+            stdout = ""
+        return Result()
+
+    monkeypatch.setattr(image_build.subprocess, "run", fake_run)
+    monkeypatch.setattr("robovast.common.execution._image_present_locally", lambda _i: True)
+    image_build.read_image_build_manifest("img:1")
+    for args in calls:
+        if args[:2] == ["docker", "run"]:
+            assert "--pull=never" in args, args
+
+
+def test_an_absent_image_reports_unknown_rather_than_empty(monkeypatch):
+    """`{}` means "cannot tell". An image built before manifests existed has none, and that is a
+    different answer from "installed nothing" -- which a caller must not treat as a lock."""
+    from robovast.service.image_build import read_image_build_manifest
+
+    monkeypatch.setattr("robovast.common.execution._image_present_locally", lambda _i: False)
+    assert read_image_build_manifest("img:1") == {}
