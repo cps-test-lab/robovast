@@ -23,6 +23,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      # First, and before the install: this costs seconds and answers a question the
+      # controller image otherwise answers minutes into a build, because that image installs
+      # from the lock. It has already reached CI unrelocked twice. Poetry is installed just
+      # for this -- the job itself uses `make venv` below -- and pinned to the version the
+      # Dockerfile uses, so this is the same verdict that build will reach.
+      - name: The lock must describe the manifest
+        run: |
+          pip install --quiet poetry==1.8.2
+          make check-lock
+
       # `make venv`, not `poetry install`: this repo ships five distributions that all
       # populate the `robovast` namespace, and only three of them are path dependencies of
       # the root. `poetry install` therefore produced an environment with no execution lane

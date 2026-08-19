@@ -125,6 +125,16 @@ check-config-fields: ## Fail if compat/config_fields.json is out of date with th
 check-config-version: ## Fail if a config version bump is missing, or unnecessary
 	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)
 
+# The lock is what the controller image installs from -- it COPYs pyproject.toml and
+# poetry.lock together and runs `poetry install`, which refuses the pair outright when the
+# hash disagrees. So an unrelocked pyproject fails minutes into an image build instead of
+# next to the edit. Pinned to the version that consumes it, since a check by a different
+# poetry is not the check that matters.
+.PHONY: check-lock
+check-lock: ## Fail if poetry.lock does not describe pyproject.toml
+	@command -v poetry >/dev/null 2>&1 || { echo "❌ poetry is not installed. Install with: pip install poetry==1.8.2"; exit 1; }
+	@poetry check --lock || { echo ""; echo "Fix with: poetry lock --no-update"; exit 1; }
+
 .PHONY: ui-stage
 ui-stage: check-mf-runtime ## Copy the built web UI into the package so the wheel carries it
 	@test -f frontend/ui/dist/index.html || { echo "frontend/ui/dist is not built. Run: cd frontend/ui && npm ci && npm run build"; exit 1; }
