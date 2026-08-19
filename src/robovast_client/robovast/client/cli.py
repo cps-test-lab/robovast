@@ -393,6 +393,39 @@ def workspace_update(workspace, directory, excludes, prune, namespace, context):
         click.echo(f"workspace {wid} updated from {root} ({summary})")
 
 
+@workspace.command('download')
+@click.argument('workspace_id')
+@click.argument('directory', type=click.Path(file_okay=False))
+@click.option('--overwrite', is_flag=True,
+              help='Replace local files that already exist. Off by default: pulling over an '
+                   'edited copy of the same project would lose those edits irrecoverably.')
+@target_options
+def workspace_download(workspace_id, directory, overwrite, namespace, context):
+    """Fetch every file in WORKSPACE_ID into DIRECTORY.
+
+    The other direction of ``workspace init`` / ``update``, so a project can be taken off a
+    remote service and worked on locally -- and so a workspace somebody else authored can be
+    inspected without the web UI.
+
+    File by file over the existing calls rather than as one archive: a workspace is a source
+    project, where that is adequate. A campaign is the case that needs an archive, because it
+    holds rosbags -- see ``vast results download``.
+
+    \b
+      vast workspace download growth-sim ./growth-sim
+    """
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    with service_client(namespace, context) as (client, target):
+        _echo_target(target)
+        try:
+            counts = pull_workspace_to_directory(client, workspace_id, directory,
+                                                 overwrite=overwrite, echo=click.echo)
+        except FileExistsError as e:
+            raise click.ClickException(str(e)) from e
+    click.echo(f"fetched {counts['fetched']} file(s) into {directory}")
+
+
 @workspace.command('list')
 @target_options
 def workspace_list(namespace, context):

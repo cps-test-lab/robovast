@@ -410,3 +410,86 @@ def test_run_project_forwards_description_and_reuses_the_workspace(client, proje
     run_project_via_service(launcher, vast, feedback=lambda _: None)
     assert launcher.request.workspace_id == first
     assert _names(client) == ["myproj"]
+
+
+# ---------------------------------------------------------------------------
+# Pulling a workspace back out
+# ---------------------------------------------------------------------------
+
+def test_a_workspace_round_trips_through_a_directory(tmp_path):
+    """Push a project, pull it back, and get the same files.
+
+    The other direction of ``sync_directory_to_workspace``, so a project can be taken off a remote
+    service and worked on locally. Built on the existing per-file calls rather than a new archive
+    route: a workspace is a source project, where that is adequate -- a campaign is the case that
+    needs an archive, because it holds rosbags.
+    """
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    source = tmp_path / "project"
+    (source / "files").mkdir(parents=True)
+    (source / "campaign.vast").write_text("version: 2\n", encoding="utf-8")
+    (source / "scenario.osc").write_text("# scenario\n", encoding="utf-8")
+    (source / "files" / "params.yaml").write_text("a: 1\n", encoding="utf-8")
+
+    client = _transport(tmp_path / "store")
+    workspace = client.create_workspace(CreateWorkspaceRequest(name="round-trip"))
+    sync_directory_to_workspace(client, workspace.workspace_id, source)
+
+    target = tmp_path / "pulled"
+    counts = pull_workspace_to_directory(client, workspace.workspace_id, target)
+
+    assert counts["fetched"] == 3
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 2\n"
+    assert (target / "scenario.osc").read_text(encoding="utf-8") == "# scenario\n"
+    # Nested paths survive, rather than being flattened into the target root.
+    assert (target / "files" / "params.yaml").read_text(encoding="utf-8") == "a: 1\n"
+
+
+def test_pulling_refuses_to_overwrite_local_files(tmp_path):
+    """Pulling into a directory holding an edited copy of the same project is the likely mistake,
+    and overwriting somebody's local edits is not recoverable -- so it is refused per file rather
+    than checked once for the directory."""
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "campaign.vast").write_text("version: 2\n", encoding="utf-8")
+
+    client = _transport(tmp_path / "store")
+    workspace = client.create_workspace(CreateWorkspaceRequest(name="no-clobber"))
+    sync_directory_to_workspace(client, workspace.workspace_id, source)
+
+    target = tmp_path / "pulled"
+    target.mkdir()
+    (target / "campaign.vast").write_text("my local edits\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        pull_workspace_to_directory(client, workspace.workspace_id, target)
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "my local edits\n"
+
+    pull_workspace_to_directory(client, workspace.workspace_id, target, overwrite=True)
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 2\n"
+
+
+def test_the_executable_bit_survives_the_round_trip(tmp_path):
+    """It is carried *out* by push_file, so a run script that came back non-executable would fail
+    at the point of use rather than here -- where nothing would explain it."""
+    import os
+
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "campaign.vast").write_text("version: 2\n", encoding="utf-8")
+    script = source / "run.sh"
+    script.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    client = _transport(tmp_path / "store")
+    workspace = client.create_workspace(CreateWorkspaceRequest(name="exec-bit"))
+    sync_directory_to_workspace(client, workspace.workspace_id, source)
+
+    target = tmp_path / "pulled"
+    pull_workspace_to_directory(client, workspace.workspace_id, target)
+    assert os.access(target / "run.sh", os.X_OK)

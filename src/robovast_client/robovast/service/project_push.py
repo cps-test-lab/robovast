@@ -126,6 +126,54 @@ def _resolve_workspace_id(client, ref: str) -> str:
     return matches[0].workspace_id
 
 
+def pull_workspace_to_directory(client, workspace_id: str, directory, *,
+                                 overwrite: bool = False, echo=None) -> dict:
+    """Fetch every file in *workspace_id* into a local *directory*. Returns counts.
+
+    The other direction of :func:`sync_directory_to_workspace`, and deliberately built on the
+    existing per-file calls rather than on a new archive endpoint. A workspace is a *source*
+    project -- a ``.vast``, a scenario, some params -- so ``list_files`` plus ``read_file_bytes``
+    is adequate, and adding a service route for a convenience the client can already assemble
+    would be surface nobody needs to maintain. A campaign is the opposite case: it holds rosbags,
+    which is why *that* transfer is an archive.
+
+    The executable bit is carried back, because it is carried *out* by ``push_file`` and a run
+    script that arrives non-executable fails at the point of use rather than here.
+
+    Raises:
+        FileExistsError: a file is already present and *overwrite* is false. Refused per-file
+            rather than checked once for the directory: pulling into a directory that holds an
+            edited copy of the same project is the likely mistake, and silently overwriting
+            somebody's local edits is not recoverable.
+    """
+    target_root = Path(directory)
+    target_root.mkdir(parents=True, exist_ok=True)
+    listing = client.list_files(format_address(SOURCES, workspace_id, ""),
+                                recursive=True, detail=True, limit=100000)
+
+    # `detailed`, not `entries`: with detail=True the objects land in their own field and
+    # `entries` stays empty, while `total` still counts them -- so reading `entries` here looked
+    # like an empty workspace rather than a wrong field name.
+    counts = {"fetched": 0, "skipped": 0}
+    for entry in listing.detailed:
+        if getattr(entry, "is_dir", False):
+            continue
+        target = target_root / entry.name
+        if target.exists() and not overwrite:
+            raise FileExistsError(
+                f"{target} already exists. Pulling would overwrite a local copy that may hold "
+                f"edits this workspace does not have; pass overwrite to replace it.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(client.read_file_bytes(
+            format_address(SOURCES, workspace_id, entry.name)))
+        if getattr(entry, "executable", None):
+            target.chmod(target.stat().st_mode | 0o111)
+        counts["fetched"] += 1
+        if echo:
+            echo(f"  + {entry.name}")
+    return counts
+
+
 def sync_directory_to_workspace(client, workspace_id: str, directory, *,
                                 skip_dirs=frozenset(), prune: bool = False,
                                 echo=None) -> dict:
