@@ -109,6 +109,10 @@ poetry_reinstall:
 check-mf-runtime:
 	@python3 tools/check_mf_runtime.py
 
+.PHONY: refresh-build-pins
+refresh-build-pins: ## Re-resolve base-image digests and report the newest ROS snapshot date
+	@python3 tools/refresh_build_pins.py $(if $(WRITE),--write,)
+
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
 	@python3 tools/new_config_migration.py

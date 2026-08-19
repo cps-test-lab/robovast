@@ -224,11 +224,11 @@ def _check_images(source_dir: Path) -> dict:
                      "the campaign builds its own image there is nothing to reuse; otherwise "
                      "the backend supplies one at launch.")
     return _axis(AXIS_OK, f"{len(pinned)} image(s) recorded and pinnable"
-                          + _lock_note(pinned), images=dict(pinned),
-                 locks=_available_locks(pinned))
+                          + _lock_note(source_dir, pinned), images=dict(pinned),
+                 locks=_available_locks(source_dir, pinned))
 
 
-def _available_locks(pinned: dict) -> dict:
+def _available_locks(source_dir: Path, pinned: dict) -> dict:
     """``{role: {apt: n, pip: n}}`` for every recorded image whose build lock can be read.
 
     Reported because it answers a question the digest cannot: *if this image is gone, would a
@@ -239,18 +239,26 @@ def _available_locks(pinned: dict) -> dict:
     Only images already present locally can be asked, so an empty answer means "cannot tell here",
     not "no lock" -- the same rule every probe in this pre-flight follows.
     """
+    from robovast.common.campaign_data import read_build_manifests
     from robovast.service.image_build import read_image_build_manifest
 
-    out = {}
+    # The campaign's own copy first. It is the one that survives -- the lock is baked into the
+    # image, so reading it from there answers only while the image still exists, which is not the
+    # case this question is being asked in.
+    persisted = read_build_manifests(source_dir)
+    out = {role: {kind: len(entries) for kind, entries in sorted(lock.items())}
+           for role, lock in sorted(persisted.items()) if lock}
     for role, image in sorted((pinned or {}).items()):
+        if role in out:
+            continue
         lock = read_image_build_manifest(image)
         if lock:
             out[role] = {kind: len(entries) for kind, entries in sorted(lock.items())}
     return out
 
 
-def _lock_note(pinned: dict) -> str:
-    locks = _available_locks(pinned)
+def _lock_note(source_dir: Path, pinned: dict) -> str:
+    locks = _available_locks(source_dir, pinned)
     if not locks:
         return ""
     return (f"; {len(locks)} carry a build lock, so a rebuild could install the same "

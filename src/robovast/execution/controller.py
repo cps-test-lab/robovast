@@ -284,12 +284,42 @@ class CampaignController:
         except Exception:  # pylint: disable=broad-except
             logger.debug("Could not record elapsed time.", exc_info=True)
         try:
-            self.store.record_execution(
-                campaign_id, read_execution_metadata(Path(self.campaign_root)))
+            execution = read_execution_metadata(Path(self.campaign_root))
+            self.store.record_execution(campaign_id, execution)
         except FileNotFoundError:
             logger.debug("No execution.yaml yet; provenance not recorded.")
+            execution = {}
         except Exception:  # pylint: disable=broad-except
             logger.debug("Could not record execution provenance.", exc_info=True)
+            execution = {}
+        self._persist_build_manifests(execution)
+
+    def _persist_build_manifests(self, execution: dict) -> None:
+        """Copy each image's build lock into the campaign, while the images are still here.
+
+        Done here because this is the one point that runs in Python, on both lanes, with the
+        campaign root and the resolved images both in hand -- the local lane writes execution.yaml
+        from a generated shell script, so nothing earlier knows the directory.
+
+        And it has to happen at all because the lock is baked *into* the image: leave it there and
+        it disappears with the image, which is precisely when a rebuild would need it.
+
+        Best-effort like everything else in this method: bookkeeping must never turn a finished
+        campaign into a failed one.
+        """
+        images = execution.get("images") or {}
+        if not images:
+            return
+        try:
+            from robovast.common.campaign_data import write_build_manifests
+            from robovast.service.image_build import read_image_build_manifest
+
+            manifests = {role: read_image_build_manifest(image)
+                         for role, image in sorted(images.items())}
+            write_build_manifests(self.campaign_root,
+                                  {role: m for role, m in manifests.items() if m})
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Could not persist build manifests.", exc_info=True)
 
     # -- run-level progress poller ------------------------------------------
 

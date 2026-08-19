@@ -498,6 +498,56 @@ def killed_failure_message(entry: dict[str, Any]) -> str:
 #:
 #: Readers wanting one document get it from ``metadata.yaml``, which nests this under
 #: ``execution.launch``.
+_BUILD_MANIFEST_DIRNAME = "build_manifest"
+
+
+def write_build_manifests(campaign_root, manifests: dict) -> None:
+    """Copy each image's build lock out of the image and into ``_execution/build_manifest/``.
+
+    The lock is baked into the image, which is the right place for it -- it travels if the image
+    is copied and it is there for anyone holding it. But it is *only* there, so the moment the
+    image is deleted the lock goes with it, and "rebuild from the lock" becomes impossible exactly
+    when it is needed. A campaign's own record is what survives, so the lock is copied here too.
+
+    One file per role, holding what the image reported: the resolved apt versions, ``pip freeze``,
+    and which commit each floating git ref became.
+
+    Raises rather than swallowing, like the other writers here; the caller decides this is
+    best-effort.
+    """
+    if not manifests:
+        return
+    target = Path(campaign_root) / "_execution" / _BUILD_MANIFEST_DIRNAME
+    target.mkdir(parents=True, exist_ok=True)
+    for role, manifest in sorted(manifests.items()):
+        if not manifest:
+            continue
+        with open(target / f"{role}.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, sort_keys=True)
+
+
+def read_build_manifests(campaign_dir) -> dict:
+    """``{role: {apt: {...}, pip: {...}, vcs: {...}}}`` from ``_execution/build_manifest/``.
+
+    Empty means unknown -- either the campaign predates this record or its images carried no lock
+    -- and a caller must not read that as "installed nothing", which would make a rebuild install
+    an empty set rather than the author's intent.
+    """
+    source = Path(campaign_dir) / "_execution" / _BUILD_MANIFEST_DIRNAME
+    if not source.is_dir():
+        return {}
+    out = {}
+    for path in sorted(source.glob("*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                out[path.stem] = json.load(f)
+        except (OSError, ValueError):
+            # A record that cannot be parsed is not a record. Skipped rather than raised: this is
+            # read on paths that must not fail over provenance.
+            continue
+    return out
+
+
 _PLUGINS_FILENAME = "plugins.yaml"
 
 

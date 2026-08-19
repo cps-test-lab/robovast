@@ -47,6 +47,27 @@ ros-snapshot    Candidate: 0.11.0-1noble.20260615.174419
 The ROS version string carries the snapshot's own build stamp (`20260615.174419`), which is what
 makes a pinned rebuild checkable: the version says which snapshot produced it.
 
+## Refreshing the pins
+
+```
+make refresh-build-pins            # report
+make refresh-build-pins WRITE=1    # rewrite the base digests
+```
+
+Re-resolves every digest-pinned `FROM` from the tag kept beside it — which is why the tag is kept
+— and prints the newest snapshot date the ROS server actually offers. Deliberately manual and
+occasional, the model of `poetry.lock` or `cargo update`: pins that never move rot into an
+unbuildable state, and pins that move automatically defeat the point. CI builds only from what is
+committed.
+
+The Ubuntu stamp is derived from the ROS date rather than from today, so both archives are read at
+the same point in time — pinning Ubuntu to now against a three-month-old ROS snapshot would install
+a combination nobody tested.
+
+**Not yet applied to the Dockerfiles.** The base images are digest-pinned, but apt still resolves
+against the moving archives; switching it needs a full ROS image build to validate, which the probe
+above deliberately does not stand in for. What is verified is the recipe and the dates.
+
 ## Re-verifying
 
 ```
