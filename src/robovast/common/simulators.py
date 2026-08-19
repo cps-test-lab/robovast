@@ -784,8 +784,15 @@ def _validated_cfg(backend: SimulatorBackend, block: dict, name: str):
 
     Without one the block is handed over as-is: a backend with no keys of its own should
     not have to declare an empty model to say so.
+
+    ``None`` values are dropped, matching :func:`sim_overlay_keys`. A container model field
+    the author left unset arrives here as an explicit ``None``, and a CONFIG_CLASS forbidding
+    extras cannot tell that from a key someone typed -- so a field added to the container
+    model would break every campaign of every backend until its name reached
+    :data:`_ROBOVAST_KEYS`. Dropping unset values makes that a naming slip rather than an
+    outage.
     """
-    own = {k: v for k, v in block.items() if k not in _ROBOVAST_KEYS}
+    own = {k: v for k, v in block.items() if k not in _ROBOVAST_KEYS and v is not None}
     if backend.CONFIG_CLASS is None:
         return own
     try:
@@ -798,7 +805,14 @@ def _validated_cfg(backend: SimulatorBackend, block: dict, name: str):
 
 #: Keys that describe the *container* rather than the simulator -- what moves to the
 #: scenario block when a stepped simulator folds into it.
-_CONTAINER_KEYS = ("image", "command", "resources", "system_packages", "python_packages")
+#:
+#: ``provenance`` belongs here because it describes the ``image``: in the stepped shape the
+#: image moves to the scenario block, and a statement of where that image came from that
+#: stayed behind would describe a container that no longer names one. Leaving it out also
+#: made it a *simulator* key, which is worse than untidy -- a backend CONFIG_CLASS forbids
+#: extras, so every roqsim campaign was rejected the moment the field existed.
+_CONTAINER_KEYS = ("image", "command", "resources", "system_packages", "python_packages",
+                   "provenance")
 
 #: Keys of the ``simulation`` block that belong to RoboVAST, not to the backend. A
 #: backend's CONFIG_CLASS forbids extras, so offering it these would reject every
