@@ -267,7 +267,10 @@ jobs:
       # label that disagrees with the host is caught here rather than by a user a year from now.
       - name: Retrigger the campaign it just ran
         run: |
-          poetry run .github/test_retrigger.py /tmp/vast_test_output
+          # test_vast.py writes campaigns into <-d>/results, so the parent holds only
+          # `results/` and `.robovast_project` -- neither of which is_campaign_dir matches,
+          # and the step reported "no campaign directory" for a campaign that had just run.
+          poetry run .github/test_retrigger.py /tmp/vast_test_output/results
 
   build-and-push-sidecar:
     runs-on: ubuntu-latest
