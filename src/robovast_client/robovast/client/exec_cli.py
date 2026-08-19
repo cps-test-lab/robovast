@@ -151,8 +151,13 @@ def check_retrigger(campaign_id, namespace, context):  # pylint: disable=redefin
 @click.argument('campaign_id')
 @click.option('--force', is_flag=True,
               help='Launch even when the pre-flight reports a blocking axis.')
+@click.option('--to-workspace', 'to_workspace', default='', metavar='NAME',
+              help='Do not launch. Materialise the campaign as a workspace with its config '
+                   'migrated as far as it could be and a marker at every decision left, to '
+                   'finish by hand. For a config no ladder step can carry forward.')
 @target_options
-def retrigger(campaign_id, force, namespace, context):  # pylint: disable=redefined-outer-name
+def retrigger(campaign_id, force, to_workspace,  # pylint: disable=redefined-outer-name
+              namespace, context):
     """Launch a NEW campaign from what CAMPAIGN_ID recorded. The source is not modified.
 
     Reuses the frozen config and the image the source recorded, so it runs the same code rather
@@ -166,6 +171,9 @@ def retrigger(campaign_id, force, namespace, context):  # pylint: disable=redefi
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
+            if to_workspace:
+                _materialize_work_order(client, campaign_id, to_workspace)
+                return
             report = client.check_retrigger(campaign_id)
             if not report.runnable and not force:
                 for name in report.blocking:
@@ -188,6 +196,32 @@ def retrigger(campaign_id, force, namespace, context):  # pylint: disable=redefi
     if getattr(ref, "note", ""):
         click.echo(f"note: {ref.note}")
     click.echo(f"  next: vast wait {ref.campaign_id}")
+
+
+def _materialize_work_order(client, campaign_id: str, workspace_name: str):
+    """Hand the campaign over as a workspace to finish by hand.
+
+    Separate from the launch path because it is the opposite outcome: nothing is started, and what
+    the caller gets is a file with work left in it. Printing the markers here rather than only in
+    the service log is the point -- each one is a decision somebody has to make, and they are
+    usually in different places in the file.
+    """
+    result = client.materialize_retrigger_workspace(campaign_id, workspace_name)
+    click.echo(f"workspace '{result.workspace_id}' created from {campaign_id}")
+    click.echo(f"  {result.config_path}: migrated as far as version {result.reached}")
+    if result.capability:
+        click.echo(f"  stopped at: {result.capability}")
+    if not result.markers:
+        click.echo(click.style("  no unresolved markers — validate and launch it normally",
+                               fg="green"))
+        return
+    click.echo(click.style(f"  {len(result.markers)} decision(s) left:", fg="yellow"))
+    for marker in result.markers:
+        click.echo(f"    {marker.path}: {marker.reason}")
+    click.echo("")
+    click.echo("This will NOT validate until every marker is resolved, which is deliberate: a "
+               "partly-migrated config that loaded would run a different experiment.")
+    click.echo(f"  next: edit {result.config_path}, then 'vast configuration validate'")
 
 
 @execution.command('stop-container')

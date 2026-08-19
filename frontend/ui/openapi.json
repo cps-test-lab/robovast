@@ -80,6 +80,20 @@
         "title": "Body_edit_sources_file_sources__workspace_id___path__post",
         "type": "object"
       },
+      "Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post": {
+        "properties": {
+          "workspace_name": {
+            "default": "",
+            "title": "Workspace Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_name"
+        ],
+        "title": "Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post",
+        "type": "object"
+      },
       "Body_preview_configurations_workspaces__workspace_id__preview_post": {
         "properties": {
           "max_configs": {
@@ -1428,6 +1442,27 @@
           "text"
         ],
         "title": "LogChunk",
+        "type": "object"
+      },
+      "MigrationMarker": {
+        "description": "One decision a migration could not make, and where it is.",
+        "properties": {
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "title": "MigrationMarker",
         "type": "object"
       },
       "PanelsSource": {
@@ -2782,6 +2817,47 @@
           "sources_root"
         ],
         "title": "VersionInfo",
+        "type": "object"
+      },
+      "WorkOrder": {
+        "description": "A campaign materialised as a workspace to finish migrating by hand.\n\nReturned instead of a campaign id, because nothing was launched: what the caller gets is a file\nwith work left in it. ``markers`` is what remains to decide -- and while any of them stands the\nconfig deliberately will not validate, since a partly-migrated one that loaded would run a\ndifferent experiment than the campaign it came from.",
+        "properties": {
+          "capability": {
+            "default": "",
+            "title": "Capability",
+            "type": "string"
+          },
+          "config_path": {
+            "default": "",
+            "title": "Config Path",
+            "type": "string"
+          },
+          "markers": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationMarker"
+            },
+            "title": "Markers",
+            "type": "array"
+          },
+          "reached": {
+            "default": 0,
+            "title": "Reached",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "config_path",
+          "markers",
+          "reached",
+          "workspace_id"
+        ],
+        "title": "WorkOrder",
         "type": "object"
       },
       "WorkProgress": {
@@ -4451,6 +4527,58 @@
           }
         },
         "summary": "Check Retrigger",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/retrigger/workspace": {
+      "post": {
+        "description": "Materialise this campaign as a workspace with its config migrated as far as it could be and a marker at every decision left. Nothing is launched. For a config no migration step can carry forward.",
+        "operationId": "materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkOrder"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Materialize Retrigger Workspace",
         "tags": [
           "campaigns"
         ]

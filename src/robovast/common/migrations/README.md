@@ -62,13 +62,28 @@ change does not justify.
 ### Three kinds of breaking change
 
 - **Mechanical restructuring** — keys move, fold, or are renamed. A step handles it.
-- **A capability was removed** — nothing to map onto. The step must **refuse**, raising
-  `UnmigratableConfig` with the capability name and the last version that supported it.
-  **Never silently drop a key**: a config that loads cleanly but runs a *different
-  experiment* is the worst outcome available. The caller then offers the manual path
-  (`vast exec retrigger --to-workspace`), and the fallback for the user is to check out the
-  `robovast_revision` the campaign's results recorded — the ladder and that recorded
-  revision are complements, not alternatives.
+- **A capability was removed** — nothing to map onto. The step must **refuse**, and how it
+  refuses is a contract:
+
+  ```python
+  sut["resources"] = migration_marker(
+      "'GaussianVariation' was removed in version 4; choose a replacement",
+      was=sut.get("resources"))          # what was there, for whoever has to decide
+  ...
+  raise UnmigratableConfig("...", partial=out, reached=3, capability="GaussianVariation")
+  ```
+
+  Two obligations. Leave a `migration_marker()` **wherever** the thing was — it is invalid by
+  construction, so the file cannot validate and therefore cannot be launched from, which is the
+  point: a config that loads cleanly but runs a *different experiment* is the worst outcome
+  available. And raise with `partial=` holding the config migrated as far as you got, because the
+  caller's useful move is to hand that to a person, not to report a dead end.
+
+  **Never silently drop a key.** From there, `vast exec retrigger <campaign> --to-workspace <name>`
+  materialises the partial config in a workspace with every outstanding decision marked, to finish
+  with the ordinary authoring tools. The other fallback is to check out the `robovast_revision` the
+  campaign's results recorded and run it there — the ladder and that recorded revision are
+  complements, not alternatives.
 - **Behaviour changed with no config change** — a default, a timestep, a metric definition.
   Versioning cannot see this and no step helps. The defence is that a campaign's image is
   pinned by digest and reused rather than rebuilt.

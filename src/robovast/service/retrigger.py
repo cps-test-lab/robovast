@@ -356,6 +356,7 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
                                                read_execution_metadata, read_launch_record)
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
+    from robovast.common.migrations import UnmigratableConfig
     from robovast.common.results_utils import campaign_vast
 
     source_dir = Path(source_dir)
@@ -375,7 +376,17 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     # post-v1 expectations silently answers "builds nothing" and the retrigger takes the wrong
     # branch. Strict loading would instead refuse outright, making every campaign older than
     # the current version un-retriggerable -- which is the case this exists for.
-    campaign_config = validate_config(load_config(str(vast_path), upgrade=True))
+    try:
+        campaign_config = validate_config(load_config(str(vast_path), upgrade=True))
+    except UnmigratableConfig as e:
+        # Not a dead end: the ladder got part of the way and marked what it could not carry, so
+        # the useful move is to hand that to a person. The message names the command that does it
+        # rather than describing the situation and stopping.
+        raise RetriggerRefused(
+            f"cannot retrigger {source_id!r}: its config cannot be brought forward "
+            f"automatically. {e}\n"
+            f"  Materialise it as a workspace to finish by hand:\n"
+            f"      vast exec retrigger {source_id} --to-workspace <name>") from e
     config_migration = _config_migration_of(vast_path)
 
     # The images first: it is the refusal most likely to fire, and it needs no directory.

@@ -56,7 +56,8 @@ from robovast.service.interface import (ActionResult, CampaignRef, CampaignSumma
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
-                                        RetriggerAxis, RetriggerReport, RobovastInterface, Routes,
+                                        MigrationMarker, RetriggerAxis, RetriggerReport,
+                                        RobovastInterface, Routes, WorkOrder,
                                         UploadGrant, ValidationProblem,
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
@@ -563,8 +564,12 @@ class LocalTransport(RobovastInterface):
                 f"configuration was frozen has none to copy.") from e
 
         project_dir = self.store.registry.project_dir(workspace_id)
+        # `upgrade=True`: this reads an ARCHIVED config, which may predate the current version.
+        # The strict policy refused, so seeding a workspace from any older campaign failed -- the
+        # same mistake the retrigger path had. The archived file is not rewritten; the workspace
+        # gets the upgraded shape, which is what someone editing it should see.
         retrigger.reconstruct_project(source_dir, project_dir,
-                                      validate_config(load_config(str(vast_path))))
+                                      validate_config(load_config(str(vast_path), upgrade=True)))
         missing = retrigger.missing_run_files(source_dir, project_dir)
         if missing:
             raise ValueError(
@@ -958,6 +963,48 @@ class LocalTransport(RobovastInterface):
         target = self._resolve_project(request.workspace_id, request.config_path)
         self._admit_image_provenance(target, request)
         return self._launch_campaign(request, target)
+
+    def materialize_retrigger_workspace(self, campaign_id: str,
+                                        workspace_name: str) -> WorkOrder:
+        """See the interface.
+
+        Built on ``create_workspace(from_campaign=...)`` rather than beside it: that path already
+        reconstructs a campaign's project correctly -- and knows why a directory copy is wrong,
+        since ``_config/`` archives the scenario at its basename while the config may declare a
+        subdirectory path. What this adds is the migration afterwards, and the markers it leaves.
+        """
+        import yaml
+
+        from robovast.common.migrations import (SUPPORTED_CONFIG_VERSION, UnmigratableConfig,
+                                                find_migration_markers, upgrade_config_file)
+        from robovast.service.retrigger import _read_vast
+
+        info = self.create_workspace(CreateWorkspaceRequest(name=workspace_name,
+                                                            from_campaign=campaign_id))
+        project = self._resolve_project(info.workspace_id, "")
+        staged = Path(project.config_path)
+
+        reached, capability = SUPPORTED_CONFIG_VERSION, ""
+        try:
+            upgrade_config_file(staged, write=True)
+        except UnmigratableConfig as e:
+            reached, capability = e.reached, e.capability
+            if e.partial is not None:
+                # The step's own partial output. Written over the seeded copy, which loses comments
+                # on keys the step rebuilt -- ruamel cannot carry those through a plain dict. Worth
+                # the loss: without the partial the person gets nothing to work from.
+                with open(staged, "w", encoding="utf-8") as handle:
+                    yaml.dump(e.partial, handle, default_flow_style=False, sort_keys=False)
+
+        markers = find_migration_markers(_read_vast(staged))
+        logger.warning(
+            "materialised %s as work order in workspace %s: %d unresolved marker(s). It will not "
+            "validate until each is resolved, which is deliberate.",
+            campaign_id, info.workspace_id, len(markers))
+        return WorkOrder(
+            workspace_id=info.workspace_id, config_path=str(staged),
+            reached=reached, capability=capability,
+            markers=[MigrationMarker(path=where, reason=reason) for where, reason in markers])
 
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         """See the interface. A thin adapter over :func:`robovast.service.retrigger.check`.

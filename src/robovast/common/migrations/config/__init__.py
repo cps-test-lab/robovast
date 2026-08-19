@@ -36,6 +36,48 @@ _MIGRATIONS = [
 assert len(_MIGRATIONS) == SUPPORTED_CONFIG_VERSION - BASELINE_CONFIG_VERSION
 
 
+#: Sentinel a step leaves where it could not carry something forward. Chosen to be **invalid by
+#: construction**: it is a mapping under a reserved key, so wherever it lands the schema rejects
+#: it -- as an unexpected key where a key was expected, or as the wrong type where a value was.
+#:
+#: That is the whole point. A partly-migrated config that happened to load would run a *different
+#: experiment* silently, which is worse than any refusal. The marker makes the file a work order
+#: rather than a config, and `vast configuration validate` lists every one still outstanding.
+MIGRATION_MARKER = "TODO_MIGRATE"
+
+
+def migration_marker(reason: str, was=None) -> dict:
+    """The value a step leaves in place of something it cannot migrate.
+
+    Carries *why* and, when it helps, *what was there* -- because whoever resolves this is reading
+    a file they did not write, about a version of robovast that no longer exists. A bare "fix me"
+    would make them go and find the old schema.
+    """
+    marker = {"reason": reason}
+    if was is not None:
+        marker["was"] = was
+    return {MIGRATION_MARKER: marker}
+
+
+def find_migration_markers(raw, path: str = "") -> "list[tuple[str, str]]":
+    """``[(dotted path, reason)]`` for every unresolved marker in *raw*.
+
+    Walks rather than trusting a step to report its own locations: a step may leave several, and a
+    caller needs each one's position to tell somebody where to look.
+    """
+    found = []
+    if isinstance(raw, dict):
+        if MIGRATION_MARKER in raw and isinstance(raw[MIGRATION_MARKER], dict):
+            found.append((path or "<root>", raw[MIGRATION_MARKER].get("reason", "")))
+            return found
+        for key, value in raw.items():
+            found.extend(find_migration_markers(value, f"{path}.{key}" if path else str(key)))
+    elif isinstance(raw, list):
+        for index, value in enumerate(raw):
+            found.extend(find_migration_markers(value, f"{path}[{index}]"))
+    return found
+
+
 class ConfigVersionError(ValueError):
     """Base for every refusal this module raises."""
 
@@ -55,7 +97,8 @@ class UnmigratableConfig(ConfigVersionError):
     partially migrated config, how far it got, and what could not be carried.
     """
 
-    def __init__(self, message: str, *, partial: dict, reached: int, capability: str = ""):
+    def __init__(self, message: str, *, partial: dict = None, reached: int = 0,
+                 capability: str = ""):
         super().__init__(message)
         self.partial = partial
         self.reached = reached
@@ -107,6 +150,16 @@ def upgrade_config(raw: dict) -> "tuple[dict, list[str]]":
     applied: list[str] = []
     for step_version in range(version, SUPPORTED_CONFIG_VERSION):
         step = _MIGRATIONS[step_version - BASELINE_CONFIG_VERSION]
-        config = step(config)
+        try:
+            config = step(config)
+        except UnmigratableConfig as e:
+            # Re-raised carrying how far the ladder got and what it produced, because the caller's
+            # useful move is to hand that partial config to a human -- not to report a dead end.
+            # A step only knows its own transform; the position in the ladder is knowable here.
+            raise UnmigratableConfig(
+                str(e),
+                partial=e.partial if e.partial is not None else config,
+                reached=step_version,
+                capability=e.capability) from e
         applied.append(f"{step_version}_to_{step_version + 1}")
     return config, applied

@@ -41,7 +41,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, ServiceError, UploadGrant,
-                                        ValidationReport,
+                                        ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
@@ -339,6 +339,12 @@ class HTTPTransport(RobovastInterface):
             json=request.model_dump()))
 
     # -- validation / preview / authoring help (config editor) --------------
+
+    def materialize_retrigger_workspace(self, campaign_id: str,
+                                        workspace_name: str) -> WorkOrder:
+        return WorkOrder.model_validate(
+            self._post(Routes.campaign_retrigger_workspace(campaign_id),
+                       json={"workspace_name": workspace_name}))
 
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         return RetriggerReport.model_validate(

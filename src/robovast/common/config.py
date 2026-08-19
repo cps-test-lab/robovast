@@ -1522,7 +1522,7 @@ def validate_config(config: dict):
         ValueError: If required sections are missing
     """
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
-        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION)
+        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION, find_migration_markers)
 
     logger.debug("Validating configuration")
     version = config.get("version", None)
@@ -1544,6 +1544,19 @@ def validate_config(config: dict):
         # Raised, not logged-and-raised: every caller reports the failure it catches,
         # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")
+    # A work order is not a config. `vast configuration upgrade` and the retrigger's
+    # --to-workspace path leave a marker wherever a migration could not carry something forward,
+    # and a file still holding one describes a *different experiment* than the campaign it came
+    # from. Refusing here means it can never be launched from by any path, which is stronger than
+    # relying on the author having run the validator.
+    markers = find_migration_markers(config)
+    if markers:
+        raise ValueError(
+            f"{len(markers)} unresolved migration marker(s): this config was migrated as far as "
+            f"it could be and still needs a decision at each of these:\n"
+            + "\n".join(f"  {where}: {reason}" for where, reason in markers)
+            + "\nResolve them and remove the markers; 'vast configuration validate' lists what "
+              "is left.")
     logger.debug(f"Config version {version} is supported")
     return get_validated_config(config, ConfigV1)
 

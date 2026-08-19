@@ -840,6 +840,29 @@ class RetriggerReport(BaseModel):
     axes: dict[str, RetriggerAxis] = Field(default_factory=dict)
 
 
+class MigrationMarker(BaseModel):
+    """One decision a migration could not make, and where it is."""
+
+    path: str = ""
+    reason: str = ""
+
+
+class WorkOrder(BaseModel):
+    """A campaign materialised as a workspace to finish migrating by hand.
+
+    Returned instead of a campaign id, because nothing was launched: what the caller gets is a file
+    with work left in it. ``markers`` is what remains to decide -- and while any of them stands the
+    config deliberately will not validate, since a partly-migrated one that loaded would run a
+    different experiment than the campaign it came from.
+    """
+
+    workspace_id: str = ""
+    config_path: str = ""
+    reached: int = 0
+    capability: str = ""
+    markers: list[MigrationMarker] = Field(default_factory=list)
+
+
 class VariationRemote(BaseModel):
     """Where a variation type's Module-Federation preview bundle is served from.
 
@@ -1336,6 +1359,12 @@ class Routes:
         return f"/campaigns/{campaign_id}/retrigger"
 
     @staticmethod
+    def campaign_retrigger_workspace(campaign_id: str) -> str:
+        # Under the source campaign like the retrigger itself: the request identifies it, and what
+        # it creates is named in the response.
+        return f"/campaigns/{campaign_id}/retrigger/workspace"
+
+    @staticmethod
     def campaign_retrigger_check(campaign_id: str) -> str:
         # GET, not POST: it changes nothing and costs nothing, which is the whole point of
         # having it beside the retrigger rather than inside it.
@@ -1660,6 +1689,20 @@ class RobovastInterface(ABC):
         samples. This is a re-run, not a replay of the same trials.
 
         Returns immediately, exactly like :meth:`create_campaign`; poll :meth:`get_status`.
+        """
+
+    @abstractmethod
+    def materialize_retrigger_workspace(self, campaign_id: str,
+                                        workspace_name: str) -> WorkOrder:
+        """Materialise *campaign_id* as a workspace with its config migrated as far as possible.
+
+        For a config no ladder step can carry forward. Nothing is launched: the result is a
+        workspace holding the campaign's project, the config upgraded to the point it stopped, and
+        a marker at every decision left -- deliberately invalid until each is resolved, because a
+        partly-migrated config that loaded would run a different experiment.
+
+        A workspace rather than a bespoke editing mode, so the whole existing authoring toolchain
+        (the web editor, read/write/edit_file, validate_project) applies unchanged.
         """
 
     @abstractmethod

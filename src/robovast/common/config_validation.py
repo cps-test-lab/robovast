@@ -165,6 +165,20 @@ def _schema_problems(raw):
     return problems
 
 
+def _migration_marker_problems(raw):
+    """One problem per unresolved migration marker.
+
+    Reported individually rather than as a single "this file is a work order", because each marker
+    is a separate decision somebody has to make and they are usually in different places. A count
+    would make them go looking.
+    """
+    from robovast.common.migrations import \
+        find_migration_markers  # pylint: disable=import-outside-toplevel
+
+    return [_problem("migration", f"unresolved migration marker: {reason}", field=where)
+            for where, reason in find_migration_markers(raw)]
+
+
 def _unresolvable_image_problems(raw):
     """Refuse a container a launch could not find an image for.
 
@@ -841,6 +855,7 @@ def validate_project_file(config_path):
     problems.extend(_run_capture_problems(raw))
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
+    problems.extend(_migration_marker_problems(raw))
     # ...and a camera panel needs a step that produces the video it plays.
     problems.extend(_camera_panel_problems(raw))
 

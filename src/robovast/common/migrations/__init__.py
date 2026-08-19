@@ -10,18 +10,22 @@ Public API:
 all four version surfaces (config, campaign store, analysis DB, host<->container).
 """
 
-from .config import (BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION, ConfigTooNew,
-                     ConfigTooOld, ConfigVersionError, UnmigratableConfig, config_version,
-                     needs_upgrade, upgrade_config)
+from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG_VERSION,
+                     ConfigTooNew, ConfigTooOld, ConfigVersionError, UnmigratableConfig,
+                     config_version, find_migration_markers, migration_marker, needs_upgrade,
+                     upgrade_config)
 
 __all__ = [
     "BASELINE_CONFIG_VERSION",
+    "MIGRATION_MARKER",
     "SUPPORTED_CONFIG_VERSION",
     "ConfigTooNew",
     "ConfigTooOld",
     "ConfigVersionError",
     "UnmigratableConfig",
     "config_version",
+    "find_migration_markers",
+    "migration_marker",
     "needs_upgrade",
     "upgrade_config",
     "upgrade_config_file",

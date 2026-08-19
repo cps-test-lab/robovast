@@ -506,6 +506,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/retrigger/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Materialize Retrigger Workspace
+         * @description Materialise this campaign as a workspace with its config migrated as far as it could be and a marker at every decision left. Nothing is launched. For a config no migration step can carry forward.
+         */
+        post: operations["materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/scene": {
         parameters: {
             query?: never;
@@ -1236,6 +1256,14 @@ export interface components {
              * @default
              */
             old_string: string;
+        };
+        /** Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post */
+        Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post: {
+            /**
+             * Workspace Name
+             * @default
+             */
+            workspace_name: string;
         };
         /** Body_preview_configurations_workspaces__workspace_id__preview_post */
         Body_preview_configurations_workspaces__workspace_id__preview_post: {
@@ -2138,6 +2166,22 @@ export interface components {
             text: string;
         };
         /**
+         * MigrationMarker
+         * @description One decision a migration could not make, and where it is.
+         */
+        MigrationMarker: {
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
+        /**
          * PanelsSource
          * @description The run-view ``visualization:`` block as editable YAML text.
          */
@@ -2895,6 +2939,39 @@ export interface components {
             sources_address: string;
             /** Sources Root */
             sources_root: string | null;
+        };
+        /**
+         * WorkOrder
+         * @description A campaign materialised as a workspace to finish migrating by hand.
+         *
+         *     Returned instead of a campaign id, because nothing was launched: what the caller gets is a file
+         *     with work left in it. ``markers`` is what remains to decide -- and while any of them stands the
+         *     config deliberately will not validate, since a partly-migrated one that loaded would run a
+         *     different experiment than the campaign it came from.
+         */
+        WorkOrder: {
+            /**
+             * Capability
+             * @default
+             */
+            capability: string;
+            /**
+             * Config Path
+             * @default
+             */
+            config_path: string;
+            /** Markers */
+            markers: components["schemas"]["MigrationMarker"][];
+            /**
+             * Reached
+             * @default 0
+             */
+            reached: number;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
         };
         /**
          * WorkProgress
@@ -3980,6 +4057,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetriggerReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkOrder"];
                 };
             };
             /** @description Validation Error */

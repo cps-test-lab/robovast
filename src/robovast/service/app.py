@@ -54,6 +54,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse, VersionInfo,
+                                        WorkOrder,
                                         WorkspaceInfo, WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
@@ -884,6 +885,16 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def stop_job(campaign_id: str, job_name: str, reason: "str | None" = None,
                  source: str = "api") -> ActionResult:
         return _guard(lambda: impl.stop_job(campaign_id, job_name, reason, source))
+
+    @app.post(Routes.campaign_retrigger_workspace("{campaign_id}"), response_model=WorkOrder,
+              tags=["campaigns"],
+              description="Materialise this campaign as a workspace with its config migrated as "
+                          "far as it could be and a marker at every decision left. Nothing is "
+                          "launched. For a config no migration step can carry forward.")
+    def materialize_retrigger_workspace(
+        campaign_id: str, workspace_name: str = Body("", embed=True)
+    ) -> WorkOrder:
+        return _guard(lambda: impl.materialize_retrigger_workspace(campaign_id, workspace_name))
 
     @app.get(Routes.campaign_retrigger_check("{campaign_id}"), response_model=RetriggerReport,
              tags=["campaigns"],
