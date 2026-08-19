@@ -174,3 +174,74 @@ def warm_image(k8s_batch, namespace: str, image_ref: str,
         raise
     logger.info("prewarming %s on the cluster (Job %s)", image_ref, name)
     return True
+
+
+#: The family members worth pulling onto a node ahead of time, and the reason each is here.
+#:
+#: ``robovast`` is the ``FROM`` of every experiment image and what a campaign with no
+#: simulator runs, so warming it is also what makes the per-build base prewarm a
+#: one-second no-op most of the time. ``robovast-roqsim`` is the largest image in the
+#: family and what both roqsim shapes run. ``robovast-sidecar`` is tiny but sits on the
+#: critical path of every exec pod and build Job as their init container.
+#:
+#: ``robovast-controller`` is deliberately absent: it *is* the service Deployment, which
+#: runs ``imagePullPolicy: Always``, so the kubelet pulls it during the rollout that
+#: ``setup``/``upgrade`` already performs. Warming it would duplicate that pull.
+WARM_FAMILY_MEMBERS = ("robovast", "robovast-roqsim", "robovast-sidecar")
+
+
+def family_refs_to_warm() -> list:
+    """The concrete refs :data:`WARM_FAMILY_MEMBERS` resolve to, for this environment.
+
+    Resolved from the caller's own ``ROBOVAST_PROJECT`` / ``ROBOVAST_PROJECT_TAG``, which is
+    correct precisely because ``setup``/``upgrade`` is the command that bakes those same
+    values into the service pod -- so this warms the set the deployment is being pointed at,
+    not the set it is being pointed away from.
+    """
+    from robovast.common.execution import family_image_ref, resolve_family_image
+    return [resolve_family_image(family_image_ref(member),
+                                 role=f"prewarm of {member}")
+            for member in WARM_FAMILY_MEMBERS]
+
+
+def warm_family_images(namespace: str, kube_context=None) -> list:
+    """Prewarm the family images a campaign will run. Returns the refs it asked for.
+
+    Called from ``setup``/``upgrade`` because that is the moment every node is cold for the
+    whole family -- a tag bump or a moved project means the next campaign pays a full pull of
+    ``robovast-roqsim``, the largest image there is -- and the moment it costs nothing, since
+    the pod is being restarted anyway so no campaign is mid-flight.
+
+    Fire-and-forget: it creates Jobs and returns. An ``upgrade`` must not block for minutes
+    on a pull, and there is nothing to report back if it did -- nothing reads a prewarm.
+
+    Returns the refs regardless of whether each Job was created or already existed, because
+    the caller uses them to say what it warmed, and "already warming" is not a different
+    answer to that question. An empty list means the cluster could not be reached at all,
+    which is not this function's business to escalate: the deployment it belongs to has
+    already succeeded by the time it runs.
+    """
+    from kubernetes import client
+
+    from .kube_client import load_kube_config
+    from .service_deploy import REGISTRY_PUSH_SECRET_NAME
+
+    refs = family_refs_to_warm()
+    try:
+        load_kube_config(kube_context)
+        batch = client.BatchV1Api()
+        core = client.CoreV1Api()
+        # Looked for rather than assumed, the same way the service resolves it: naming a
+        # Secret that does not exist keeps the pod from starting, so a deployment with a
+        # public registry must warm *without* a credential rather than not at all.
+        try:
+            core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
+            pull_secret = REGISTRY_PUSH_SECRET_NAME
+        except client.exceptions.ApiException:
+            pull_secret = ""
+        for ref in refs:
+            warm_image(batch, namespace, ref, pull_secret)
+    except Exception as e:  # noqa: BLE001 - a prewarm must never fail a finished deployment
+        logger.warning("could not prewarm the family images: %s", e)
+        return []
+    return refs

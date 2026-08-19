@@ -860,7 +860,17 @@ def upgrade(namespace, kube_context, timeout):
             click.echo(f"  image {before[:19]} -> {after[:19]}")
         elif after:
             click.echo(f"  image unchanged: {after[:19]}")
+        # After a tag bump or a moved project every node is cold for the whole family, so
+        # the first campaign pays a full pull of robovast-roqsim. Here because the pod has
+        # just been restarted anyway, so nothing is mid-campaign -- and after the success
+        # line, since this must not be able to fail or stall an upgrade that has converged.
+        # The echo is free: these refs were resolved in order to create the Jobs.
         click.echo("✓ upgraded and ready")
+        from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
+        warmed = warm_family_images(namespace, kube_context)
+        if warmed:
+            click.echo("  prewarming on the nodes: "
+                       + ", ".join(ref.rsplit("/", 1)[-1] for ref in warmed))
         # The host already recovered above, not a fresh read: this runs *after* the upgrade
         # has succeeded, and a reporting line must not be able to fail or stall it -- the
         # rule `running_image_digest` states and follows. (An Ingress read here cost three

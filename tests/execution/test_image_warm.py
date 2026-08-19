@@ -290,3 +290,48 @@ def test_a_cache_hit_whose_prewarm_fails_still_reports_cached(cs, monkeypatch):
     spec = _cache_hit_setup(cs, monkeypatch, batch)
 
     assert cs._start_cluster_build(spec, "/proj", object(), object(), "bucket").cached
+
+
+# ---------------------------------------------------------------------------
+# the family images, at setup / upgrade
+# ---------------------------------------------------------------------------
+
+def test_the_family_set_warmed_is_the_three_a_campaign_runs(monkeypatch):
+    """``robovast-controller`` must stay out: it *is* the service Deployment, which runs
+    ``imagePullPolicy: Always``, so the kubelet pulls it during the rollout that
+    setup/upgrade already performs. Warming it would duplicate that pull."""
+    from robovast.common.execution import FAMILY_MEMBERS
+    from robovast.execution.cluster_execution.image_warm import (WARM_FAMILY_MEMBERS,
+                                                                 family_refs_to_warm)
+    monkeypatch.setenv("ROBOVAST_PROJECT", "harbor.example.de/robovast")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2026-08-20")
+
+    assert set(WARM_FAMILY_MEMBERS) == set(FAMILY_MEMBERS) - {"robovast-controller"}
+    assert family_refs_to_warm() == [
+        "harbor.example.de/robovast/robovast:2026-08-20",
+        "harbor.example.de/robovast/robovast-roqsim:2026-08-20",
+        "harbor.example.de/robovast/robovast-sidecar:2026-08-20",
+    ]
+
+
+def test_the_family_refs_follow_the_environment_being_deployed(monkeypatch):
+    """setup/upgrade bakes ROBOVAST_PROJECT into the service pod, so resolving from the same
+    environment is what makes this warm the set the deployment is being pointed *at*."""
+    from robovast.execution.cluster_execution.image_warm import family_refs_to_warm
+    monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/other-ns")
+    monkeypatch.delenv("ROBOVAST_PROJECT_TAG", raising=False)
+
+    assert all(r.startswith("ghcr.io/other-ns/") and r.endswith(":latest")
+               for r in family_refs_to_warm())
+
+
+def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch):
+    """This runs *after* setup/upgrade has converged. It must not be able to undo that."""
+    from robovast.execution.cluster_execution import image_warm
+    monkeypatch.setattr(image_warm, "family_refs_to_warm",
+                        lambda: ["harbor.example.de/robovast/robovast:latest"])
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config",
+                        lambda ctx=None: (_ for _ in ()).throw(RuntimeError("no cluster")))
+
+    assert image_warm.warm_family_images("ns1", None) == []

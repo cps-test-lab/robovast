@@ -464,6 +464,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Only now is the cluster actually set up. Returning at "Deployment created"
     # reported success for a pod that may never start.
     wait_for_service_ready(namespace=namespace, kube_context=kube_context)
+    # A fresh deployment is maximally cold: no node holds any family image, so the first
+    # campaign would pay a full pull of robovast-roqsim before running anything. Last,
+    # and fire-and-forget, because setup has already succeeded by this point.
+    from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
+    warm_family_images(namespace, kube_context)
 
 
 def delete_server(config_name=None, **cluster_kwargs_override):

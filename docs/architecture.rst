@@ -1043,6 +1043,19 @@ build's ``succeeded`` transition, at the two cache-hit returns, and — for the 
 concurrent with the build itself — at submit. A campaign that builds inherits all of it, because
 those fire points are on the build and not on the caller.
 
+The **family** images are warmed from a different place and for a different reason:
+``vast exec cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
+whole family — a tag bump or a moved project means the next campaign pays a full pull of
+``robovast-roqsim``, the largest image there is — and the moment it is free, since the pod is
+being restarted anyway so nothing is mid-campaign. It resolves from the caller's own
+``ROBOVAST_PROJECT`` / ``ROBOVAST_PROJECT_TAG``, which is correct precisely because those are
+the values being baked into the service pod, so it warms the set the deployment is being
+pointed *at*. ``robovast-controller`` is excluded: it *is* the Deployment, running
+``imagePullPolicy: Always``, so the kubelet pulls it during the rollout already happening.
+This also covers what the build fire points cannot — a campaign whose containers declare no
+``build:`` section runs family images that no build ever produced, so there is no
+build-completion transition to hang a warm on.
+
 Three properties, and each replaces machinery rather than adding it:
 
 * **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
