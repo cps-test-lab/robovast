@@ -50,7 +50,7 @@ def service(monkeypatch):
                 seen.append(build_id)
                 done = phase in ('succeeded', 'cached', 'failed')
                 return _Status(build_id, phase, done,
-                               error=error if phase == 'failed' else None)
+                               error=error if phase in ('failed', 'blocked') else None)
 
         @contextlib.contextmanager
         def _client(*_a, **_k):
@@ -136,3 +136,53 @@ def test_a_dropped_poll_does_not_end_the_wait():
 
     done = wait_for_image_builds(["b1"], client=_Client(), interval=0)
     assert done["b1"].phase == "succeeded"
+
+
+def test_a_service_that_never_answers_ends_the_wait_instead_of_hanging():
+    """The other half of "a dropped poll does not end the wait": taken without a bound, that
+    rule says a wait against a service that is simply *gone* should continue forever, in
+    silence, since every poll fails the same way. That is not tolerance, it is a hang."""
+    from robovast.execution.poll_health import PollsStopped
+
+    class _Client:
+        def get_image_build_status(self, build_id):
+            raise RuntimeError("connection refused")
+
+    with pytest.raises(PollsStopped) as excinfo:
+        wait_for_image_builds(["b1"], client=_Client(), interval=0,
+                              stale_limit_s=0.05)
+    # It must not read as a build problem: nothing is known about the build here -- and
+    # it must not claim the build is fine either, since an unknown id fails identically.
+    assert "connection refused" in str(excinfo.value)
+    assert "Nothing here says the work failed" in str(excinfo.value)
+    assert "service is up" in str(excinfo.value)
+
+
+def test_one_success_re_arms_the_tolerance():
+    """The window measures *continuous* failure. Counting cumulative failures instead would
+    end a long build that hiccupped once an hour."""
+    polls = iter([RuntimeError("reset"), _Status("b1", "pip", False),
+                  RuntimeError("reset"), _Status("b1", "succeeded", True)])
+
+    class _Client:
+        def get_image_build_status(self, build_id):
+            nxt = next(polls)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+    done = wait_for_image_builds(["b1"], client=_Client(), interval=0,
+                                 stale_limit_s=0.05)
+    assert done["b1"].phase == "succeeded"
+
+
+def test_a_blocked_build_reports_why_on_the_first_poll(service):
+    """The phase alone repeats the original complaint. `blocked` carries its diagnosis, so
+    the caller reads the reason without a second call."""
+    service({"b1": ['blocked', 'failed']},
+            error=_Error("builder-pod", "the build pod cannot start -- ImagePullBackOff",
+                         fixable_by="infra"))
+    result = _run("b1")
+    assert result.exit_code == 1
+    assert "ImagePullBackOff" in result.output
+    assert "fixable_by=infra" in result.output

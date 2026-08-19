@@ -104,3 +104,22 @@ def test_no_phase_at_all_is_its_own_exit_code(service):
     result = _run()
     assert result.exit_code == 3
     assert "knows no phase" in result.output
+
+
+def test_a_service_that_never_answers_ends_the_wait_instead_of_hanging():
+    """``campaign_wait``'s half of the same bound as ``image_build_wait``: one dropped read
+    is a hiccup and must not end a wait, but every read failing forever is a hang wearing
+    tolerance as a disguise. Both waits apply the rule from one place, so this and its
+    sibling in ``test_image_build_wait`` must both hold."""
+    from robovast.execution.campaign_wait import wait_for_campaign_status
+    from robovast.execution.poll_health import PollsStopped
+
+    class _Client:
+        def get_status(self, campaign_id):
+            raise RuntimeError("connection refused")
+
+    with pytest.raises(PollsStopped) as excinfo:
+        wait_for_campaign_status("c1", client=_Client(), interval=0, stale_limit_s=0.05)
+    assert "connection refused" in str(excinfo.value)
+    # Must not read as a campaign failure: nothing here knows anything about the campaign.
+    assert "Nothing here says the work failed" in str(excinfo.value)

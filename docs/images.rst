@@ -35,7 +35,10 @@ The four images
        no ROS and no GL — deliberately, so the long-lived Deployment stays small.
    * - ``robovast-sidecar``
      - An alpine helper (``mc`` + ``boto3``) for object-store init containers and the
-       postprocessing Job.
+       postprocessing Job. Also the init container of an **experiment-image build** Job,
+       which is why that Job carries the deployment's registry pull Secret: on a private
+       registry a credential-less build pod cannot fetch its own helper, and the build
+       fails before it has read a line of the project.
 
 They are four rather than fewer because their contents barely overlap. ``robovast`` and
 ``robovast-controller`` share only ``mc``, ``curl`` and the compat marker; merging them

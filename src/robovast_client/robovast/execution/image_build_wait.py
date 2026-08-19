@@ -26,8 +26,10 @@ half (``get_image_build_status``); the blocking loop was a third thing beside it
 So a build waits the way a campaign does: a shell command an agent harness can background
 and be notified about, over a shared loop, costing no MCP surface at all. The properties
 :mod:`campaign_wait` documents hold here for the same reasons — **a failed poll is not a
-failed wait** (a service restart drops one read; the build is untouched), and a timeout
-leaves the build running, so a bounded wait is safe to retry rather than a partial failure.
+failed wait, until polls stop succeeding altogether** (a service restart drops one read and
+the build is untouched; a service that is gone fails every read the same silent way, which
+is a hang rather than tolerance — see :mod:`poll_health`), and a timeout leaves the build
+running, so a bounded wait is safe to retry rather than a partial failure.
 
 What differs is arity. A project builds one image per container that adds packages, so a
 caller normally has several ids and needs *all* of them; waiting for the first says nothing
@@ -37,6 +39,8 @@ about the rest. This waits for every id and reports the first failure among them
 import logging
 import time
 from typing import Callable, Iterable, Optional
+
+from .poll_health import STALE_POLL_LIMIT_S, StalePolls
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +56,8 @@ def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
                           service_url: str = "",
                           interval: float = DEFAULT_POLL_INTERVAL_S,
                           timeout: Optional[float] = None,
-                          feedback: Optional[Callable[[str], None]] = None) -> dict:
+                          feedback: Optional[Callable[[str], None]] = None,
+                          stale_limit_s: float = STALE_POLL_LIMIT_S) -> dict:
     """Block until every id in *build_ids* is done; return ``{build_id: ImageBuildStatus}``.
 
     Args:
@@ -64,11 +69,15 @@ def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
         timeout: Overall timeout in seconds; ``None`` waits indefinitely.
         feedback: Optional ``str -> None`` sink called once per *changed* phase, so a
             caller can narrate the wait without polling for the narration.
+        stale_limit_s: How long *every* poll may fail before giving up. Exposed for tests;
+            no command line reaches it, because the default is not a preference.
 
     Raises:
         ValueError: if *build_ids* is empty. Returning "all done" for nothing to wait on
             would report success for a build that was never started.
         TimeoutError: if *timeout* elapses first. The builds are unaffected.
+        PollsStopped: if *every* poll failed for :data:`~.poll_health.STALE_POLL_LIMIT_S`.
+            Also leaves the builds running, but points at the service rather than at them.
     """
     pending = list(dict.fromkeys(bid for bid in build_ids if bid))
     if not pending:
@@ -80,6 +89,9 @@ def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
     say = feedback or (lambda _msg: None)
     last_report: dict = {}
     done: dict = {}
+    # One tracker for the whole wait, not one per build: they are read from the same
+    # service, so it is that service being gone that this is about.
+    polls = StalePolls(stale_limit_s)
 
     while pending:
         for build_id in list(pending):
@@ -90,11 +102,19 @@ def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
                 # As in campaign_wait: not fatal. One dropped read must not end a wait on
                 # a build that is still going.
                 logger.debug("build status poll for %s failed: %s", build_id, e)
+                polls.failed(e)
+            else:
+                polls.succeeded()
             if status is None:
                 continue
-            if status.phase != last_report.get(build_id):
-                say(f"{build_id}: {status.phase}")
-                last_report[build_id] = status.phase
+            # The phase alone is not the news when there is a diagnosis to give: a build
+            # whose pod cannot start reports `blocked`, and the reason for it is the whole
+            # point of reporting the phase at all.
+            detail = getattr(getattr(status, "error", None), "message", "") or ""
+            report = f"{status.phase} ({detail})" if detail else status.phase
+            if report != last_report.get(build_id):
+                say(f"{build_id}: {report}")
+                last_report[build_id] = report
             if status.done:
                 done[build_id] = status
                 pending.remove(build_id)
@@ -104,5 +124,6 @@ def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
         if deadline is not None and time.monotonic() > deadline:
             raise TimeoutError(
                 f"image builds {', '.join(pending)} did not finish within {timeout}s")
+        polls.check(f"image build(s) {', '.join(pending)}")
         time.sleep(interval)
     return done

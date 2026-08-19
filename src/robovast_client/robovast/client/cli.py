@@ -726,7 +726,8 @@ def install_completion():
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
 def wait(campaign, interval, timeout, namespace, context):
-    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 3 (no phase).
+    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
+    waiting: --timeout, or the service stopped answering), 3 (no phase).
 
     The lane-agnostic wait: the service drives every campaign, so its phase *is* the
     campaign's whichever backend the runs execute on. Prints each phase change as it
@@ -742,6 +743,7 @@ def wait(campaign, interval, timeout, namespace, context):
     """
     from robovast.client.status import Phase
     from robovast.execution.campaign_wait import wait_for_campaign_status
+    from robovast.execution.poll_health import PollsStopped
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
@@ -751,6 +753,12 @@ def wait(campaign, interval, timeout, namespace, context):
     except TimeoutError as e:
         # Not a failure of the campaign, which is still running: the caller asked to stop
         # waiting. A distinct exit code keeps the two apart for a script branching on it.
+        click.echo(str(e), err=True)
+        raise SystemExit(2) from e
+    except PollsStopped as e:
+        # Same category -- the wait ended, the campaign did not -- so the same code, but
+        # the message must not read as a campaign problem: nothing is known about the
+        # campaign here, because nothing answered.
         click.echo(str(e), err=True)
         raise SystemExit(2) from e
     except Exception as e:  # noqa: BLE001
@@ -849,12 +857,18 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
     """
     from robovast.execution.image_build_wait import (SUCCESS_PHASES,
                                                      wait_for_image_builds)
+    from robovast.execution.poll_health import PollsStopped
     try:
         done = wait_for_image_builds(build_ids, client=client, interval=interval,
                                      timeout=timeout, feedback=click.echo)
     except TimeoutError as e:
         # As `vast wait`: the caller stopped waiting, the builds did not stop building.
         # A distinct code keeps that apart from a build that actually failed.
+        click.echo(str(e), err=True)
+        raise SystemExit(2) from e
+    except PollsStopped as e:
+        # Also "stopped waiting", hence the same code -- but for the opposite reason, and
+        # exiting 1 here would report a perfectly healthy build as failed.
         click.echo(str(e), err=True)
         raise SystemExit(2) from e
     failed = False
@@ -866,9 +880,12 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         err = status.error
         if err:
             click.echo(f"✗ {build_id} failed [{err.phase}] {err.message}", err=True)
-            if err.entry:
-                click.echo(f"  offending entry: {err.entry} (fixable_by={err.fixable_by})",
-                           err=True)
+            # ``fixable_by`` used to print only alongside an ``entry``, which meant it never
+            # printed for an infra failure -- the one case where "this is not yours to fix"
+            # is the whole message. It is the more important half of the two, so it is
+            # unconditional and the entry rides along when there is one.
+            where = f", offending entry: {err.entry}" if err.entry else ""
+            click.echo(f"  fixable_by={err.fixable_by}{where}", err=True)
         else:
             click.echo(f"✗ {build_id} failed", err=True)
     if failed:
@@ -883,7 +900,12 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
 def image_wait(build_ids, interval, timeout, namespace, context):
-    """Block until every BUILD_ID is built: exit 0 (built), 1 (failed), 2 (--timeout).
+    """Block until every BUILD_ID is built: exit 0 (built), 1 (failed), 2 (stopped waiting:
+    --timeout, or the service stopped answering).
+
+    A build whose *pod* cannot start -- its own image unpullable, nowhere to schedule it --
+    is a failure (exit 1) reported within a minute, not something this waits out. It used to
+    hang here indefinitely, because Kubernetes leaves such a Job ``active`` forever.
 
     Exists so a *caller* can wait without holding a request open, and is why the MCP
     offers no image-build-wait tool — it did, and the cap on how long a tool call may

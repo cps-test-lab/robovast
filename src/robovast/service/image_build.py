@@ -937,8 +937,12 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
 # Answers about a build that no lane should phrase for itself
 # ---------------------------------------------------------------------------
 
-#: Phases in which a build is under way rather than finished, either way.
-_IN_FLIGHT = ("pending", "validating", "building", "pushing")
+#: Phases in which a build is under way rather than finished, either way -- ``blocked``
+#: included, since a pod that cannot start yet has not finished either. The one reader
+#: below tests it *after* handling ``blocked`` separately, so that membership changes
+#: nothing today; it is here because this is the set's definition, and a later reader
+#: asking "is this build over?" about a blocked build must not be told yes.
+_IN_FLIGHT = ("pending", "validating", "building", "pushing", "blocked")
 
 
 def not_built_message(container: str, build_id: str,
@@ -959,6 +963,9 @@ def not_built_message(container: str, build_id: str,
         a build is running. The common case for an agent that execs straight after starting
         one, and previously indistinguishable from "you forgot to build" -- so it must say
         *wait*, not *build again*.
+    ``blocked``
+        a build exists but its pod cannot start, so nothing is being built and nothing about
+        the project would change that. Neither "wait" nor "build again" is right.
     ``failed``
         rebuilding unchanged inputs fails identically; the diagnosis is in the status.
     done, image gone
@@ -973,6 +980,17 @@ def not_built_message(container: str, build_id: str,
     tail = (f"A cache hit reported for another container says nothing about this one. "
             f"This never builds implicitly, so a quick check cannot silently become a "
             f"full image build.")
+    if status is not None and phase == "blocked":
+        # In flight, but not in the way the branch below means: nothing is being built, the
+        # builder itself cannot start. "Wait for it" is the wrong advice -- it is what left a
+        # caller waiting on a pod that was never going to run -- and so is "build again",
+        # which is where this used to fall through to.
+        detail = getattr(getattr(status, "error", None), "message", "") or ""
+        because = f": {detail}" if detail else ""
+        return (f"the image for container '{container}' cannot be built right now{because}. "
+                f"This is the cluster, not the project -- rebuilding changes nothing. {tail}",
+                f"get_image_build_status('{build_id}') for error_detail; the build fails on "
+                f"its own shortly if the cluster does not resolve this")
     if status is not None and phase in _IN_FLIGHT:
         started = getattr(status, "started_at", None)
         since = f", started {started}" if started else ""

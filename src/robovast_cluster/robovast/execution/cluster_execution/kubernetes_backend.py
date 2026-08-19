@@ -79,7 +79,8 @@ from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
 from .cluster_context import resolve_resources
-from .cluster_execution import _label_safe_campaign, blocked_job_reasons, restarted_job_reasons
+from .cluster_execution import (BLOCKED_GRACE_SECONDS, _label_safe_campaign,
+                                blocked_job_reasons, restarted_job_reasons)
 from .kubernetes_gpu import GPU_RESOURCE
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
@@ -273,9 +274,10 @@ class BatchJobRunner:
     _deadline_killed = frozenset()
 
     #: How long a batch tolerates jobs stuck unable to start (image pull / config
-    #: error) before failing with the Kubernetes reason. A short grace absorbs a
-    #: transient registry blip while never letting a doomed image hang the campaign.
-    _BLOCKED_GRACE_SECONDS = 60.0
+    #: error) before failing with the Kubernetes reason. The shared value, because the
+    #: rollout wait and the image-build status read make the same trade -- see
+    #: :data:`~.cluster_execution.BLOCKED_GRACE_SECONDS`.
+    _BLOCKED_GRACE_SECONDS = BLOCKED_GRACE_SECONDS
 
     #: How often the wait loop re-checks the Kueue admission path and reports why jobs
     #: are still suspended. Much slower than the 2s poll: a queue does not break every

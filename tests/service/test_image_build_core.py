@@ -447,6 +447,27 @@ def test_a_build_in_flight_says_wait_not_build(phase):
     assert "build_experiment_image" not in next_step, "a second build is the wrong move"
 
 
+def test_a_blocked_build_says_neither_wait_nor_build():
+    """The state that produced the report: a build exists, but its pod cannot start. Both of
+    the neighbouring answers are wrong here -- "still building, wait for it" is what left a
+    caller waiting on a pod that was never going to run, and falling through to "no build is
+    running, build again" (which is what happened before ``blocked`` existed) sends it to
+    rebuild inputs that were never the problem."""
+    from robovast.service.interface import ImageBuildError
+    message, next_step = not_built_message(
+        "sut", "build-sut-abc123",
+        _status("blocked",
+                error=ImageBuildError(
+                    phase="builder-pod", fixable_by="infra",
+                    message="the build pod cannot start -- ImagePullBackOff: no basic "
+                            "auth credentials")))
+    assert "no basic auth credentials" in message
+    assert "the cluster, not the project" in message
+    assert "still building" not in message
+    assert "no build is running" not in message
+    assert "build_experiment_image" not in next_step, "a rebuild changes nothing here"
+
+
 def test_a_failed_build_points_at_the_diagnosis_not_a_retry():
     from robovast.service.interface import ImageBuildError
     message, next_step = not_built_message(

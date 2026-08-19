@@ -243,7 +243,8 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        init_env: list, push_secret_name: str,
                        namespace: str, insecure: bool = False,
                        ca_configmap_name: str = "",
-                       cache_ref: str = "", host_aliases: list = None) -> dict:
+                       cache_ref: str = "", host_aliases: list = None,
+                       pull_secret_name: str = "") -> dict:
     """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
@@ -251,6 +252,14 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     push credential. ``push_secret_name`` is a ``kubernetes.io/dockerconfigjson``
     Secret provisioned at ``vast exec cluster setup`` — the only place registry
     credentials live.
+
+    ``pull_secret_name`` authenticates the *pod's own* image pulls, which is the opposite
+    direction from the push above and was missing entirely: the init container is
+    ``robovast-sidecar``, which on a private-registry deployment needs credentials the
+    kubelet does not otherwise have. Without it the Job's pod sat in ``ImagePullBackOff``
+    ("no basic auth credentials") while the Job stayed ``active`` — so nothing ever failed
+    and ``vast image wait`` never returned. Campaign pods have always carried this (see
+    ``kubernetes_backend``); one Secret covers both containers of this pod.
 
     TLS to a private registry: ``ca_configmap_name`` mounts a CA (key ``ca.pem``), points
     BuildKit at it via ``buildkitd.toml`` **and** puts it on ``SSL_CERT_FILE`` — the
@@ -367,6 +376,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                     # registry fails at "lookup <host>: no such host" after the whole
                     # image has already been built.
                     **({'hostAliases': host_aliases} if host_aliases else {}),
+                    # Covers the whole pod: the private-registry sidecar init container
+                    # and the public BuildKit image alike.
+                    **({'imagePullSecrets': [{'name': pull_secret_name}]}
+                       if pull_secret_name else {}),
                     'volumes': volumes,
                     'initContainers': [{
                         'name': 'context-fetch',

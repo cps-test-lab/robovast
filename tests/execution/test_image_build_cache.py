@@ -217,3 +217,41 @@ def test_ca_path_is_passed_as_verify(monkeypatch):
     _patch_session(monkeypatch, _S([]))
     assert manifest_exists("reg.local:5000/x:abc", ca_path="/certs/ca.pem") is True
     assert seen["verify"] == "/certs/ca.pem"
+
+
+# ---------------------------------------------------------------------------
+# the pod's own credentials
+# ---------------------------------------------------------------------------
+
+def _pod_spec(**over):
+    kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
+              "campaign_label": "imgbuild-x-abc", "init_env": [],
+              "push_secret_name": "push", "namespace": "ns"}
+    kwargs.update(over)
+    return build_job_manifest(**kwargs)['spec']['template']['spec']
+
+
+def test_the_build_pod_carries_a_pull_secret_when_there_is_one():
+    """The push Secret authenticates the *output*; the pod still has to pull its own
+    images. The init container is the private-registry sidecar, so without this the Job
+    sat in ImagePullBackOff -- and, since Kubernetes leaves such a Job active, nothing
+    ever failed and the wait never returned."""
+    spec = _pod_spec(pull_secret_name="rv-registry")
+    assert spec['imagePullSecrets'] == [{'name': 'rv-registry'}]
+
+
+def test_no_pull_secret_key_at_all_when_none_is_configured():
+    """A public registry needs none, and naming a Secret that does not exist is itself
+    enough to keep the pod from starting."""
+    assert 'imagePullSecrets' not in _pod_spec()
+    assert 'imagePullSecrets' not in _pod_spec(pull_secret_name="")
+
+
+def test_the_pull_secret_covers_both_containers_of_the_pod():
+    """One pod-level entry rather than a per-container guess: the sidecar and BuildKit come
+    from different registries and either can be the one that cannot be pulled."""
+    spec = _pod_spec(pull_secret_name="rv-registry")
+    assert [c['name'] for c in spec['initContainers']] == ['context-fetch']
+    assert [c['name'] for c in spec['containers']] == ['buildkit']
+    for container in spec['initContainers'] + spec['containers']:
+        assert 'imagePullSecrets' not in container

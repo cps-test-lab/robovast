@@ -672,7 +672,9 @@ def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
     return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
-            f"(exit 0 built, 1 failed)")
+            f"(exit 0 built, 1 failed). A builder pod that cannot start -- its own image "
+            f"unpullable, or nowhere to schedule it -- fails within a minute rather than "
+            f"hanging; get_image_build_status says which")
 
 
 def build_experiment_image(workspace_id: str = "", config_path: str = "",
@@ -740,10 +742,19 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 def _status_next_step(status) -> str:
     """What to do about the build state just reported.
 
-    Three phases, three different actions, and the caller is here *because* it is deciding
-    between them: a build still running wants a wait rather than a second build; a failed one
-    wants the diagnosis rather than a retry of identical inputs; a finished one wants the run.
+    Four phases, four different actions, and the caller is here *because* it is deciding
+    between them: a build still running wants a wait rather than a second build; a *blocked*
+    one wants neither, since its pod is not running and its inputs are not the problem; a
+    failed one wants the diagnosis rather than a retry of identical inputs; a finished one
+    wants the run.
     """
+    if status.phase == "blocked":
+        # Not done, but telling the caller to wait is what wasted its time last: the builder
+        # pod cannot start, so no amount of waiting or rebuilding produces an image, and
+        # get_image_build_log has nothing in it either.
+        return ("the build pod cannot start -- read error_detail above; it names the image "
+                "or the capacity at fault. Nothing in the project's build: section is "
+                "involved, and the build fails on its own shortly if this does not clear")
     if not status.done:
         return (f"run in the background: vast image wait {status.build_id} --interval 5 "
                 f"(exit 0 built, 1 failed)")
@@ -756,22 +767,24 @@ def _status_next_step(status) -> str:
 
 
 def get_image_build_status(build_id: str) -> dict:
-    """Poll an image build. On failure, ``error_detail`` says what to change.
+    """Poll an image build. ``error_detail`` says what to change.
 
     ``error_detail`` names the ``phase`` (apt / pip / base-image / source-build /
-    base-pull / push / resource), the offending package ``entry``, a ``message``, and
-    ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (a registry
-    problem no edit will fix). Read this before reaching for the builder log.
+    base-pull / push / resource / builder-pod), the offending ``entry``, a ``message``,
+    and ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (no edit
+    will). Read this before reaching for the builder log.
 
     ``phase`` says *which* field to edit, and it is not always a package list:
 
     \b
       pip / apt   the entry is one you declared -- fix that container's
                   ``python_packages`` / ``system_packages``.
-      base-image  the entry is a dependency of something you install, missing from
-                  the image you build on. Adding it to ``python_packages`` would
-                  paper over the real problem -- re-pin
-                  ``execution.containers.<name>.image`` instead.
+      base-image  a dependency of something you install, missing from the image you
+                  build on. Adding it to ``python_packages`` papers over that --
+                  re-pin ``execution.containers.<name>.image`` instead.
+
+    ``builder-pod`` names no field: the *builder* could not start, so no rebuild helps.
+    Phase ``blocked`` is that, before it is terminal.
 
     Args:
         build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value

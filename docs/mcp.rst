@@ -675,14 +675,33 @@ exposes:
   ``cached_builds`` is the answer per container. Nothing else answers that without a
   ``build_id`` already in hand.
 * ``vast image wait <build-id>…`` — block until every build is done (exit 0 built,
-  1 failed, 2 ``--timeout``). Takes several ids because a project builds one image per
-  container that adds packages, and waiting for the first says nothing about the rest.
-* ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus, on failure,
-  a **structured** ``error_detail`` (``phase`` = apt / pip / source-build /
-  base-pull / push / resource, the offending ``build:`` ``entry``, and
-  ``fixable_by`` = ``agent`` or ``infra``). Carries a ``next_step`` for the phase it
-  reports — this is the tool that is polled while deciding what to do next, and a build
-  still running, one that failed, and one that finished want three different actions.
+  1 failed, 2 stopped waiting: ``--timeout``, or the service stopped answering). Takes
+  several ids because a project builds one image per container that adds packages, and
+  waiting for the first says nothing about the rest.
+* ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus a **structured**
+  ``error_detail`` (``phase`` = apt / pip / source-build / base-pull / push / resource /
+  builder-pod, the offending ``build:`` ``entry``, and ``fixable_by`` = ``agent`` or
+  ``infra``). Carries a ``next_step`` for the phase it reports — this is the tool that is
+  polled while deciding what to do next, and a build still running, one that cannot start,
+  one that failed, and one that finished want four different actions.
+
+.. _mcp-build-blocked:
+
+**A build whose pod cannot start fails; it is not waited out.** Kubernetes leaves such a
+Job ``active`` indefinitely — an unpullable image keeps the pod ``Pending``, and with
+``backoffLimit: 0`` and no ``activeDeadlineSeconds`` neither the ``succeeded`` nor the
+``failed`` counter ever moves. Read only as "still building", that is a wait that never
+returns and an agent that is never told anything: the reported shape of this bug was a
+backgrounded ``vast image wait`` that simply never exited.
+
+So the status read asks *why the pod is not running*, and reports ``phase="blocked"`` with
+the reason in ``error_detail`` from the first poll — then ``failed`` if the pod has been
+blocked for a minute, which is long enough for a registry blip to clear and short enough
+not to be a hang. ``fixable_by`` is ``infra`` and ``error_detail.phase`` is
+``builder-pod``: nothing about the project's ``build:`` section is involved, and the
+message names which image could not be pulled (the ``robovast-sidecar`` init container, or
+the BuildKit builder) or which resource no node could satisfy. **Neither waiting nor
+rebuilding helps** — the two things a caller would otherwise try.
 * ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
 
 .. _mcp-build-phase:

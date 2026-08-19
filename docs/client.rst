@@ -49,7 +49,8 @@ What you can do with it
    * - ``vast wait <campaign-id>``
      - Block until a campaign is genuinely over.
    * - ``vast image wait <build-id>…``
-     - Block until every named image build is done.
+     - Block until every named image build is done. A build whose pod cannot start (image
+       pull, capacity) fails within a minute rather than being waited out.
    * - ``vast exec cluster download-cleanup``
      - Remove result buckets from the service's object store.
    * - ``vast doctor``

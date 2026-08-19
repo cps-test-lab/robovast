@@ -1053,7 +1053,10 @@ class ClusterService(LocalTransport):
                 namespace=self.namespace, insecure=registry.insecure,
                 ca_configmap_name=registry.ca_configmap_name,
                 cache_ref=cache_image_ref(registry.registry_prefix, spec.tag),
-                host_aliases=cfg.get_host_aliases())
+                host_aliases=cfg.get_host_aliases(),
+                # Already resolved on this object (registry_image_store fills it from the
+                # push Secret, which serves both directions), so no second lookup.
+                pull_secret_name=registry.pull_secret_name or "")
             self._k8s_batch().create_namespaced_job(self.namespace, manifest)
         except BaseException:
             status.phase, status.done = "failed", True
@@ -1186,9 +1189,19 @@ class ClusterService(LocalTransport):
                 # transition, so this repeats per poll — a no-op list once the prefix
                 # is gone, and it beats waiting for the next build to sweep it.
                 self._retire_build_context(build_id)
+                return ImageBuildStatus(
+                    build_id=build_id, phase=phase, done=done,
+                    cached=phase == "succeeded")
+            # A restarted service must reach the same verdict about a stuck pod as the
+            # one that submitted the build; the probe below needs no record to do it.
+            blocked, failed = self._build_pod_verdict(build_id)
+            if failed is not None:
+                self._retire_build_context(build_id)
+                return ImageBuildStatus(build_id=build_id, phase="failed", done=True,
+                                        error=failed)
             return ImageBuildStatus(
-                build_id=build_id, phase=phase, done=done,
-                cached=phase == "succeeded")
+                build_id=build_id, phase="blocked" if blocked else phase, done=False,
+                error=blocked)
         status: ImageBuildStatus = record["status"]
         if status.done:
             return status
@@ -1200,12 +1213,106 @@ class ClusterService(LocalTransport):
             status.phase = "failed"
             status.done = True
             status.error = self._build_error(build_id, record.get("spec"))
+        else:
+            # Still active as far as the Job is concerned — which it will remain forever if
+            # its pod cannot start, since `backoffLimit: 0` and no `activeDeadlineSeconds`
+            # leave both counters at zero. That was a wait that never returned.
+            blocked, failed = self._build_pod_verdict(build_id)
+            if failed is not None:
+                status.phase = "failed"
+                status.done = True
+                status.error = failed
+            elif blocked is not None:
+                status.phase = "blocked"
+                status.error = blocked
+            elif status.phase == "blocked":
+                # It cleared on its own -- the transient blip the grace window is for.
+                status.phase, status.error = "building", None
         if status.done:
             # This transition is the one moment we know the context is dead, for both
             # outcomes. Cheap (a prefix delete) and it runs once, since a done record
             # returns above.
             self._retire_build_context(build_id)
         return status
+
+    def _build_pod_verdict(self, build_id: str):
+        """``(blocked, failed)`` for a build whose Job is still active, both ``ImageBuildError``.
+
+        ``(None, None)`` — the pod is fine, or there is none yet. ``(blocked, None)`` — it
+        cannot start, but not yet for long enough to call it. ``(None, failed)`` — it will
+        not recover.
+
+        **The grace window is the pod's own age, not a timer this method keeps.** Holding a
+        ``blocked_since`` stamp across calls would make the verdict depend on how often
+        someone polls, lose it whenever the service restarts, and require the "a failed probe
+        must not clear the timer" discipline the campaign batch loop has to state explicitly.
+        Kubernetes already records when the pod appeared, so asking it removes the state and
+        the hazard together. ``pod_block_reason`` never fires on ``ContainerCreating`` or
+        ``PodInitializing``, so age here does not punish a slow legitimate pull.
+        """
+        import datetime
+
+        from .cluster_execution import BLOCKED_GRACE_SECONDS, pod_block_reason
+        try:
+            pod = self._build_pod(build_id)
+        except Exception as e:  # noqa: BLE001 - one dropped read is not a verdict
+            # Explicitly not "not blocked": saying so would end the build on the next
+            # succeeded/failed check as if the pod were healthy. The next poll asks again.
+            logger.warning("could not check whether build %s can start: %s", build_id, e)
+            return None, None
+        if pod is None:
+            return None, None
+        blocked = pod_block_reason(pod)
+        if blocked is None:
+            return None, None
+        reason, message = blocked
+        # ``start_time`` is set once the kubelet accepts the pod; ``creation_timestamp``
+        # covers the window before that (an unschedulable pod never gets the former).
+        started = (getattr(pod.status, "start_time", None)
+                   or getattr(pod.metadata, "creation_timestamp", None))
+        age = None
+        if started is not None:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            age = (now - started).total_seconds()
+        detail = f"{reason}: {message}" if message else reason
+        container = self._blocked_container(pod)
+        # No timestamp at all (Kubernetes always sets one, so: a substrate we do not
+        # recognise) means the window cannot be measured. Act on the reason rather than
+        # granting an unmeasurable grace, which is the indefinite wait this replaces --
+        # the block itself was observed either way.
+        if age is not None and age < BLOCKED_GRACE_SECONDS:
+            # Reported as `blocked`, with its diagnosis, rather than silently waited out --
+            # so the reason reaches the caller on its first poll instead of a minute later.
+            logger.warning("build %s cannot start yet (%s)", build_id, detail)
+            return (self._blocked_build_error(build_id, reason, message, container,
+                                              terminal=False),
+                    None)
+        logger.error("build %s cannot start and will not recover (%s)", build_id, detail)
+        return None, self._blocked_build_error(build_id, reason, message, container,
+                                               terminal=True)
+
+    @staticmethod
+    def _blocked_container(pod) -> str:
+        """Which container of *pod* cannot pull, or ``""`` for an unschedulable pod.
+
+        Named so the error can say *which* registry is unreachable: the sidecar and BuildKit
+        come from different ones and are fixed in different places.
+
+        This re-walks the statuses ``pod_block_reason`` just matched, because that function
+        reports the reason and not where it came from -- a signature every campaign caller
+        shares and none of them needs widened. The two agree by construction: same statuses,
+        same order, same :data:`POD_BLOCKED_REASONS`. An unschedulable pod matches nothing
+        here, which is the empty string, and the caller reads that as "not a container".
+        """
+        from .cluster_execution import POD_BLOCKED_REASONS
+        statuses = list(getattr(pod.status, "init_container_statuses", None) or []) + \
+            list(getattr(pod.status, "container_statuses", None) or [])
+        for cs in statuses:
+            state = getattr(cs, "state", None)
+            waiting = getattr(state, "waiting", None) if state else None
+            if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
+                return getattr(cs, "name", None) or ""
+        return ""
 
     def _retire_build_context(self, build_id: str) -> None:
         """Discard a just-finished build's staged context, resolving the bucket."""
@@ -1230,20 +1337,107 @@ class ClusterService(LocalTransport):
         log = self._build_log_text(build_id)
         return classify_build_error(log, spec)
 
-    def _build_log_text(self, build_id: str) -> str:
-        from kubernetes import client
-        core = self._k8s()
-        pods = core.list_namespaced_pod(
+    def _build_pod(self, build_id: str):
+        """*build_id*'s builder pod, or ``None`` if it has none yet.
+
+        One lookup for the two questions asked of that pod — what did the build print, and
+        why can it not start — so they cannot disagree about which pod they mean. **Raises**
+        on an API error rather than returning ``None``: a caller deciding whether the pod is
+        blocked must not read "could not ask" as "not blocked".
+        """
+        pods = self._k8s().list_namespaced_pod(
             self.namespace, label_selector=f"build-id={build_id}")
-        if not pods.items:
-            return ""
-        pod = pods.items[0]
+        return pods.items[0] if pods.items else None
+
+    #: Containers of the build pod, and what a failed pull of each one means. The reason
+    #: Kubernetes reports is the same either way, but the fix is not, and naming the wrong
+    #: one sends the reader to the wrong registry.
+    _BUILD_CONTAINER_HINTS = {
+        "context-fetch": (
+            "the build infrastructure image (robovast-sidecar) could not be pulled. Either "
+            "it is not in the registry this deployment points at, or the build Job has no "
+            "credential for it -- check the image project/tag the service resolves "
+            "(ROBOVAST_PROJECT / ROBOVAST_PROJECT_TAG) and the registry pull Secret. "
+            "Nothing about the project's build: section is involved"),
+        "buildkit": (
+            "the BuildKit builder image could not be pulled, so the cluster has no path to "
+            "the public registry it comes from (egress, or a misconfigured pull-through "
+            "mirror). Nothing about the project's build: section is involved"),
+    }
+
+    def _blocked_build_error(self, build_id: str, reason: str, message: str,
+                             container: str, terminal: bool):
+        """The structured error for a builder pod that cannot start.
+
+        Carried while the build is still ``blocked`` as well as once it has ``failed``, so the
+        reason reaches the caller on its first poll rather than after the grace window: a
+        status that says only "blocked" repeats the original complaint, which was an agent
+        with no idea what had happened. *terminal* is what separates "not yet" from "not
+        going to".
+
+        Deliberately **not** ``classify_build_error``: that reads the builder's output, and a
+        pod that never started produced none, so every such failure classified as the generic
+        "the image build failed; see the log tail" — pointing an agent at ``build:``, which is
+        the one thing that cannot be at fault here. Kubernetes' own message names the image
+        and the registry error; the hint names the knob.
+        """
+        from robovast.service.interface import ImageBuildError
+
+        from .cluster_execution import BLOCKED_GRACE_SECONDS
+        hint = self._BUILD_CONTAINER_HINTS.get(container)
+        if hint is None:
+            # An unschedulable pod has no offending container -- the scheduler never got
+            # that far -- and its message is the per-node accounting, which is the diagnosis.
+            hint = ("the cluster could not place the build pod; the message above names the "
+                    "resource no node can satisfy. This is capacity, not the project's "
+                    "build: section")
+        detail = f"{reason}: {message}" if message else reason
+        if terminal:
+            lead = f"the build pod cannot start -- {detail}"
+            # The log is worth an extra read only here: the terminal error is what someone
+            # reads, and during the grace window this would cost two API calls per poll.
+            tail = self._build_log_text(build_id)
+        else:
+            lead = (f"the build pod cannot start yet -- {detail}. It fails if this has not "
+                    f"cleared {BLOCKED_GRACE_SECONDS:.0f}s after the pod appeared")
+            tail = ""
+        return ImageBuildError(phase="builder-pod", fixable_by="infra",
+                               message=f"{lead}. In short: {hint}", log_tail=tail)
+
+    def _build_log_text(self, build_id: str) -> str:
+        """The builder's own output, or the best available substitute.
+
+        Falls back from the build container to the init container to the reason the pod
+        cannot start, because the empty string is the one answer that is never useful: a
+        failed build sends its reader here, and a pod that never ran ``buildctl`` has no
+        ``buildkit`` log to give -- which is exactly the case where "read the log" was the
+        advice and "" was the log.
+        """
+        from kubernetes import client
+
+        from .cluster_execution import pod_block_reason
+        core = self._k8s()
         try:
-            return core.read_namespaced_pod_log(
-                name=pod.metadata.name, namespace=self.namespace,
-                container="buildkit")
-        except client.exceptions.ApiException:
+            pod = self._build_pod(build_id)
+        except Exception as e:  # noqa: BLE001 - a log read must not fail a status poll
+            logger.debug("could not find the build pod for %s: %s", build_id, e)
             return ""
+        if pod is None:
+            return ""
+        for container in ("buildkit", "context-fetch"):
+            try:
+                text = core.read_namespaced_pod_log(
+                    name=pod.metadata.name, namespace=self.namespace,
+                    container=container)
+            except client.exceptions.ApiException:
+                continue
+            if text:
+                return text
+        blocked = pod_block_reason(pod)
+        if blocked:
+            reason, message = blocked
+            return f"{reason}: {message}\n" if message else f"{reason}\n"
+        return ""
 
     def get_image_build_log(self, build_id: str, offset: int = 0):
         raw = self._build_log_text(build_id).encode("utf-8", "replace")

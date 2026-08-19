@@ -27,9 +27,11 @@ service and the MCP plugins.
 
 Two properties every caller depends on and none should re-implement:
 
-* **A failed poll is not a failed wait.** Restarting the service mid-run, or a network
-  hiccup, drops one status read; the campaign is untouched. The loop keeps going and
-  only ``timeout`` ends it.
+* **A failed poll is not a failed wait** -- until polls stop succeeding altogether.
+  Restarting the service mid-run, or a network hiccup, drops one status read; the campaign
+  is untouched, so the loop keeps going. But a service that is simply gone fails every
+  poll identically and silently, and waiting forever on that is not tolerance, it is a
+  hang: see :mod:`poll_health`.
 * **Terminal means terminal.** It became true to say so only once a campaign stopped
   publishing ``finished`` before its share and postprocessing had run — see
   ``controller.end_campaign``.
@@ -41,6 +43,8 @@ from typing import Callable, Optional
 
 from robovast.client.status import Status, is_terminal
 
+from .poll_health import STALE_POLL_LIMIT_S, StalePolls
+
 logger = logging.getLogger(__name__)
 
 #: How often to ask, when a caller expresses no preference.
@@ -51,7 +55,8 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
                              interval: float = DEFAULT_POLL_INTERVAL_S,
                              timeout: Optional[float] = None,
                              feedback: Optional[Callable[[str], None]] = None,
-                             stop_when: Optional[Callable[[Status], bool]] = None
+                             stop_when: Optional[Callable[[Status], bool]] = None,
+                             stale_limit_s: float = STALE_POLL_LIMIT_S
                              ) -> Status:
     """Block until *campaign_id* reaches a terminal phase; return its final Status.
 
@@ -63,6 +68,8 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
         timeout: Overall timeout in seconds; ``None`` waits indefinitely.
         feedback: Optional ``str -> None`` sink called once per *changed* phase, so a
             caller can narrate the wait without polling for the narration.
+        stale_limit_s: How long *every* poll may fail before giving up. Exposed for
+            tests; no command line reaches it, because the default is not a preference.
         stop_when: Optional extra predicate to return early on, for the states that are
             not terminal but are not worth waiting through either — a wedged run being
             the one that matters. The caller distinguishes the two by testing the
@@ -72,6 +79,8 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
         TimeoutError: if *timeout* elapses first. The campaign is unaffected — it is
             still running and can be waited on again, which is what makes a bounded
             wait safe to retry rather than a partial failure to recover from.
+        PollsStopped: if *every* poll failed for :data:`~.poll_health.STALE_POLL_LIMIT_S`.
+            Also leaves the campaign running, but points at the service rather than at it.
     """
     if client is None:
         from robovast.service.http_client import RobovastClient
@@ -79,6 +88,7 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
     deadline = None if timeout is None else (time.monotonic() + timeout)
     say = feedback or (lambda _msg: None)
     last_report = None
+    polls = StalePolls(stale_limit_s)
 
     while True:
         status = None
@@ -89,6 +99,9 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
             # on the attach lane, and treating it as the end of the wait would report a
             # live campaign as unreachable for the price of one dropped read.
             logger.debug("status poll for %s failed: %s", campaign_id, e)
+            polls.failed(e)
+        else:
+            polls.succeeded()
 
         if status is not None:
             report = status.phase + (f"/{status.stage}" if status.stage else "")
@@ -102,6 +115,7 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
             raise TimeoutError(
                 f"Campaign {campaign_id!r} did not finish within {timeout}s "
                 f"(last state: {last_report})")
+        polls.check(f"campaign {campaign_id!r}")
         time.sleep(interval)
 
 

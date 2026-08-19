@@ -236,6 +236,7 @@ def _submit_stubs(cs, monkeypatch, storage):
         get_host_aliases=lambda: None)
     spec = types.SimpleNamespace(tag="foo", base_image="base:1")
     registry = types.SimpleNamespace(registry_prefix="reg", push_secret_name="push",
+                                     pull_secret_name="pull",
                                      insecure=False, ca_configmap_name="",
                                      base_experiment_image="")
     return cfg, spec, registry

@@ -179,13 +179,20 @@ class ImageBuildError(BaseModel):
     registry-qualified ref (see the zero-registry-knowledge invariant).
     """
 
-    #: base-pull | base-image | apt | pip | source-build | push | resource | validate
+    #: base-pull | base-image | apt | pip | source-build | push | resource | validate |
+    #: builder-pod
     #:
     #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
     #: simply does not contain something the project's own packages depend on.
+    #:
+    #: ``builder-pod`` is not about the image being built at all: the *builder* could not
+    #: start (its own image could not be pulled, or no node could take it), so there is no
+    #: build output to classify. Distinct from every other value here because it is the one
+    #: that must not send a reader to the ``build:`` section.
     phase: str = ""
     #: ``agent`` — the failure maps to a field in the ``.vast`` the agent can change;
-    #: ``infra`` — server-side (base pull / registry push), not agent-fixable.
+    #: ``infra`` — server-side (base pull, registry push, a builder pod that cannot
+    #: start), not agent-fixable.
     #:
     #: Which field is named by ``phase`` + ``message``, and it is not always under
     #: ``build:`` — a ``base-image`` failure is fixed by re-pinning
@@ -201,13 +208,21 @@ class ImageBuildStatus(BaseModel):
 
     build_id: str
     tag: str = ""
-    #: pending | validating | building | pushing | succeeded | failed | cached
+    #: pending | validating | building | pushing | blocked | succeeded | failed | cached
+    #:
+    #: ``blocked`` is in-flight, not terminal: the build's pod cannot start (image pull,
+    #: unschedulable) and Kubernetes may still resolve it. It is reported rather than waited
+    #: out silently so a caller learns the reason -- carried in ``error`` -- on its first
+    #: poll; it becomes ``failed`` if it has not cleared shortly after the pod appeared. The
+    #: same vocabulary a job uses, for the same situation (see :class:`JobSummary`).
     phase: str = "pending"
     done: bool = False
     cached: bool = False             # early-exit: image for these inputs already existed
     #: SYMBOLIC ``build:<tag>`` only — never a registry-qualified ref.
     image_ref: str = ""
     digest: str = ""                 # optional short digest for provenance (not a ref)
+    #: The current diagnosis, which a non-terminal ``blocked`` phase also carries -- a
+    #: status saying only "blocked" would repeat the complaint this field exists to answer.
     error: Optional[ImageBuildError] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None

@@ -115,6 +115,18 @@ POD_BLOCKED_REASONS = frozenset({
 POD_UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulerError"})
 
 
+#: How long a workload tolerates a pod that cannot start (see :data:`POD_BLOCKED_REASONS`
+#: and :data:`POD_UNSCHEDULABLE_REASONS`) before the wait gives up and reports Kubernetes'
+#: own reason. A short grace absorbs a transient registry blip while never letting a doomed
+#: pull hang indefinitely.
+#:
+#: Lives here, beside the reasons it is the response to, because three waits need the same
+#: number and it was written out separately in each -- the campaign batch loop, the service
+#: rollout, and (since a blocked build Job hung ``vast image wait`` forever) the image-build
+#: status read. Three copies of a tuned constant are three chances to tune only two.
+BLOCKED_GRACE_SECONDS = 60.0
+
+
 def _pod_job_name(pod) -> "str | None":
     """The owning Job's name off a pod's label (``batch.kubernetes.io/job-name``,
     older clusters: ``job-name``)."""
