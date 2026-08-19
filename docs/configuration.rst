@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 1
+   version: 2
    metadata:
      title: "Project Title"
      description: "Project description"
@@ -34,11 +34,24 @@ Version
 
 **Required:** Yes
 
-Specifies the version of the configuration file format. Currently, only version ``1`` is supported.
+Specifies the version of the configuration file format. The current version is ``2``, and it
+is the only one a file you are authoring may declare.
 
 .. code-block:: yaml
 
-   version: 1
+   version: 2
+
+An **older** version is migrated forward rather than refused:
+
+* a campaign's archived ``_config/*.vast`` is upgraded in memory whenever it is read, so an
+  old campaign can still be displayed, imported and re-run. That file is never rewritten --
+  it is the record of what its author wrote.
+* a file you are authoring is upgraded in place by ``vast configuration upgrade``, which
+  preserves comments.
+
+A **newer** version is refused: a format from a later robovast cannot be migrated backwards,
+so the answer is to upgrade robovast. See ``src/robovast/common/migrations/README.md`` for
+the ladder itself and for when the version is bumped at all.
 
 
 Metadata Section
@@ -1371,7 +1384,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 1
+   version: 2
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc

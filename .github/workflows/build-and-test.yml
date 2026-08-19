@@ -41,3 +41,14 @@ jobs:
       - name: Run unit tests
         run: |
           . venv/bin/activate && pytest tests/ -q
+
+      # Two questions review does not reliably answer: did the config schema change without
+      # a version bump, and did the version move when nothing required it. `fetch-depth: 0`
+      # above is what makes the base-ref comparison possible.
+      - name: Check the config field snapshot is current
+        run: |
+          . venv/bin/activate && make check-config-fields
+
+      - name: Check the config version bump matches the schema change
+        run: |
+          . venv/bin/activate && make check-config-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}
