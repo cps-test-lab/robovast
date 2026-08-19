@@ -152,6 +152,49 @@ def validate(input_file):
     sys.exit(1)
 
 
+@configuration.command(name='upgrade')
+@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
+              help='.vast file to upgrade. Defaults to the project config file.')
+@click.option('--dry-run', is_flag=True,
+              help='Report what would change without writing the file.')
+def upgrade(input_file, dry_run):
+    """Bring a .vast file to the current config version, in place.
+
+    Only for a file you are AUTHORING. An archived campaign under ``<campaign>/_config/``
+    is migrated automatically when read and is deliberately never rewritten -- it is the
+    record of what its author wrote.
+
+    Comments are preserved. Exits non-zero when the file cannot be brought forward, which
+    happens when it uses something the current version cannot express; the message names
+    what.
+    """
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        SUPPORTED_CONFIG_VERSION, ConfigVersionError, config_version, upgrade_config_file)
+
+    config = input_file or get_project_config().config_path
+    try:
+        with open(config, 'r', encoding='utf-8') as handle:
+            before = (list(yaml.safe_load_all(handle)) or [{}])[0] or {}
+        was = config_version(before)
+        _, applied = upgrade_config_file(config, write=not dry_run)
+    except ConfigVersionError as e:
+        click.echo(click.style(f"✗ {e}", fg="red"))
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - reported, not raised, like every verb here
+        handle_cli_exception(e)
+        return
+
+    if not applied:
+        click.echo(f"Already at version {SUPPORTED_CONFIG_VERSION}: {config}")
+        return
+    verb = "would apply" if dry_run else "applied"
+    click.echo(click.style(
+        f"✓ {verb} {', '.join(applied)} ({was} -> {SUPPORTED_CONFIG_VERSION}): {config}",
+        fg="green"))
+    if dry_run:
+        click.echo("Nothing written (--dry-run).")
+
+
 @configuration.command(name='plugins')
 @click.option('--group', default='robovast.variation_types', show_default=True,
               help='Entry-point group to list.')

@@ -1453,9 +1453,13 @@ class ConfigV1(BaseModel):
         return self
 
 
-#: What a version 1 config has to become. There is no migration tool and no v1 reader,
-#: so this message *is* the migration path -- it has to be instructions, not a
-#: complaint. Keep each entry as "what you wrote" -> "what it becomes".
+#: What a version 1 config has to become, as human-readable instructions.
+#:
+#: This was once the *only* migration path -- there was no tool and no v1 reader. Both now
+#: exist (``robovast.common.migrations``), so the text is no longer load-bearing for
+#: recovery; it stays because it explains the restructuring in one screen, which a caller
+#: staring at a refusal still wants. ``migrations/config/v1_to_v2.py`` is the executable
+#: form and must agree with it. Keep each entry as "what you wrote" -> "what it becomes".
 _V1_MIGRATION = (
     "  execution.image: <img>          ->  execution.containers.scenario.image: <img>\n"
     "  execution.resources: {...}      ->  execution.containers.scenario.resources: {...}\n"
@@ -1482,19 +1486,26 @@ def validate_config(config: dict):
     Raises:
         ValueError: If required sections are missing
     """
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION)
+
     logger.debug("Validating configuration")
     version = config.get("version", None)
-    if version == 1:
-        # Version 1 is not read at all -- there is no dual-parse path. Say what moved
-        # where, because nothing else will: a campaign's archived _config/*.vast stays
-        # v1 forever and simply stops being re-readable.
+    # This function is the STRICT read policy: authoring and launching a new campaign must
+    # not silently accept an old version. Reading an *archived* campaign goes through
+    # ``load_config(upgrade=True)`` instead, which ladders it in memory. The refusal below
+    # therefore names that path rather than being a dead end -- see migrations/README.md.
+    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < SUPPORTED_CONFIG_VERSION:
         raise ValueError(
-            "config version 1 is no longer supported. Version 2 replaces "
-            "execution.image, execution.resources, execution.secondary_containers and "
-            "the top-level build: section with a single execution.containers mapping.\n"
-            "\n" + _V1_MIGRATION + "\n\n"
-            "Then set 'version: 2'.")
-    if version != 2:
+            f"config version {version} is not the current version "
+            f"({SUPPORTED_CONFIG_VERSION}), and authoring requires the current one.\n"
+            "\n"
+            "  Upgrade the file:   vast configuration upgrade\n"
+            "\n"
+            "An archived campaign is migrated automatically when read, so this refusal "
+            "only ever applies to a file you are authoring or launching from.\n"
+            "\n" + _V1_MIGRATION)
+    if version != SUPPORTED_CONFIG_VERSION:
         # Raised, not logged-and-raised: every caller reports the failure it catches,
         # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")

@@ -1,0 +1,22 @@
+# Baseline fixture for the config migration ladder: the oldest version the ladder starts
+# from. Deliberately small, and deliberately COMMENTED -- upgrade_config_file must keep
+# these comments, and a fixture with none could not show that it does.
+version: 1
+metadata:
+  name: ladder_fixture
+  title: Smallest v1 config that exercises the v1 -> v2 fold
+execution:
+  # One image for the whole campaign: the v1 shape that v2 has no inheritance for.
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 1
+  secondary_containers:
+  # The shape every real v1 campaign in this repo used: the name maps to null and the
+  # config keys sit beside it, which YAML reads as {"nav": None, "resources": {...}}.
+  - nav:
+    resources:
+      cpu: 2
+  # The documented nested shape, which also has to keep working.
+  - simulation: {resources: {cpu: 2}}
+  runs: 1
+  scenario_file: scenario.osc

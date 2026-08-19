@@ -127,23 +127,27 @@ def _schema_problems(raw):
     """Run the pydantic schema and return structured field problems (collect-all)."""
     from robovast.common.config import ConfigV1  # pylint: disable=import-outside-toplevel
 
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION)
+
     problems = []
     version = raw.get("version")
-    if version == 1:
-        # Report what moved where, not just the version number. There is no migration
-        # tool and no v1 reader, so this text is the migration path -- and this is the
-        # collect-all validator, the surface an agent or the web editor hits first.
+    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < SUPPORTED_CONFIG_VERSION:
+        # Name the one-command fix, then explain the restructuring. This is the collect-all
+        # validator -- the surface an agent or the web editor hits first -- so the actionable
+        # line has to come before the wall of detail.
         from robovast.common.config import _V1_MIGRATION  # pylint: disable=import-outside-toplevel
         problems.append(_problem(
             "version",
-            "config version 1 is no longer supported. Version 2 replaces "
-            "execution.image, execution.resources, execution.secondary_containers and "
-            "the top-level build: section with a single execution.containers "
-            "mapping.\n\n" + _V1_MIGRATION + "\n\nThen set 'version: 2'.",
+            f"config version {version} is not the current version "
+            f"({SUPPORTED_CONFIG_VERSION}). Upgrade it with 'vast configuration upgrade'. "
+            f"An archived campaign is migrated automatically when read, so this applies "
+            f"only to a file being authored.\n\n" + _V1_MIGRATION,
             field="version"))
-    elif version != 2:
+    elif version != SUPPORTED_CONFIG_VERSION:
         problems.append(_problem(
-            "version", f"Unsupported config version: {version!r} (expected 2).",
+            "version",
+            f"Unsupported config version: {version!r} (expected {SUPPORTED_CONFIG_VERSION}).",
             field="version"))
     try:
         ConfigV1(**raw)

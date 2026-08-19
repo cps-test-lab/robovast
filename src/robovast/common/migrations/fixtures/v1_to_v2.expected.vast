@@ -1,0 +1,24 @@
+# GENERATED GOLDEN -- do not hand-edit.
+# The exact output of migrations/config/v1_to_v2.py applied to v1.vast.
+# Regenerate ONLY when adding a new step; editing an existing golden means editing
+# history, which is what test_step_goldens exists to refuse.
+version: 2
+metadata:
+  name: ladder_fixture
+  title: Smallest v1 config that exercises the v1 -> v2 fold
+execution:
+  runs: 1
+  scenario_file: scenario.osc
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 1
+    nav:
+      resources:
+        cpu: 2
+      image: ghcr.io/cps-test-lab/robovast:latest
+    simulation:
+      resources:
+        cpu: 2
+      image: ghcr.io/cps-test-lab/robovast:latest

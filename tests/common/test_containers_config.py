@@ -141,16 +141,24 @@ def test_a_per_cluster_cpu_list_is_checked_entry_by_entry():
 
 # -- the v1 cut --------------------------------------------------------------------
 
-def test_version_1_is_refused_with_instructions():
-    """There is no migration tool and no v1 reader, so this message IS the migration
-    path. Assert it says where each removed key went, not merely that it failed."""
+def test_authoring_an_old_version_is_refused_with_instructions():
+    """A migration tool now exists, so the refusal must name it *and* still explain the
+    restructuring.
+
+    This test used to assert the opposite premise -- that the message was the only
+    migration path, because there was neither a tool nor a v1 reader. Both now exist
+    (``robovast.common.migrations``), so what matters here changed: the one-command fix has
+    to be in the text, and the key-by-key explanation has to survive alongside it, because
+    someone authoring a file still needs to know where each removed key went.
+    ``validate_config`` remains the STRICT policy -- reading an archived campaign is
+    ``load_config(upgrade=True)``, covered separately."""
     with pytest.raises(ValueError) as excinfo:
         validate_config({"version": 1, "execution": {"image": "x", "runs": 1}})
     text = str(excinfo.value)
+    assert "vast configuration upgrade" in text
     assert "execution.containers.scenario.image" in text
     assert "secondary_containers" in text
     assert "build:" in text
-    assert "version: 2" in text
 
 
 # -- the role→container map --------------------------------------------------------
@@ -317,8 +325,17 @@ def test_loading_a_whole_version_1_config_still_refuses(tmp_path):
 
     old = tmp_path / "old.vast"
     old.write_text("version: 1\nexecution: {image: ghcr.io/x/y:1, runs: 1}\n")
-    with pytest.raises(ValueError, match="config version 1 is no longer supported"):
+    with pytest.raises(ValueError, match="not the current version"):
         load_config(str(old))
+
+    # ...and the third policy is the way to read one anyway: opt in explicitly, get the
+    # config laddered in memory, and leave the file on disk untouched. Without this an
+    # archived campaign stops being readable by the tool that produced it.
+    before = old.read_text()
+    upgraded = load_config(str(old), upgrade=True)
+    assert upgraded["version"] == 2
+    assert upgraded["execution"]["containers"]["scenario"]["image"] == "ghcr.io/x/y:1"
+    assert old.read_text() == before
 
 
 def test_a_campaigns_own_config_wins_over_a_neighbours(tmp_path):

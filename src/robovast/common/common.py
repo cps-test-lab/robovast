@@ -41,20 +41,49 @@ def _warn_unsupported_version(config, config_file, subsection):
     unchanged -- but a caller should still know the file predates the current schema, in
     case what they read looks stale.
     """
+    from robovast.common.migrations import \
+        SUPPORTED_CONFIG_VERSION  # pylint: disable=import-outside-toplevel
+
     version = (config or {}).get("version")
-    if version is not None and version != 2:
+    if version is not None and version != SUPPORTED_CONFIG_VERSION:
         logger.debug(
-            "reading '%s' from %s, which declares config version %s (current is 2); the "
-            "section itself is version-independent", subsection, config_file, version)
+            "reading '%s' from %s, which declares config version %s (current is %s); the "
+            "section itself is version-independent", subsection, config_file, version,
+            SUPPORTED_CONFIG_VERSION)
 
 
-def load_config(config_file, subsection=None, allow_missing=False):
+def _upgraded(config, config_file):
+    """Ladder *config* forward in memory, logging what ran. Returns the upgraded config.
+
+    Separate from the ladder itself so the log line -- the only trace that a campaign was
+    read through a migration rather than natively -- lives with the caller that knows the
+    file name.
+    """
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        needs_upgrade, upgrade_config)
+
+    if not needs_upgrade(config):
+        return config
+    upgraded, applied = upgrade_config(config)
+    logger.info("%s declares an older config version; applied migrations %s to read it "
+                "(the file itself is unchanged)", config_file, ", ".join(applied))
+    return upgraded
+
+
+def load_config(config_file, subsection=None, allow_missing=False, upgrade=False):
     """Load and parse scenario variation file.
 
     Args:
         config_file: Path to the configuration file
         subsection: Optional subsection to extract
         allow_missing: If True, return empty dict when subsection is missing instead of raising error
+        upgrade: Run the migration ladder **in memory** before validating, so a config
+            older than the current version still loads. For reading an *archived*
+            campaign -- displaying it, importing it, staging a retrigger -- where the
+            alternative is that a campaign stops being readable by the tool that produced
+            it. Off by default: authoring and launching a new campaign must still refuse
+            an old version rather than quietly accepting one. The file on disk is never
+            rewritten; see ``migrations/README.md`` for the three policies.
 
     Returns:
         Configuration dict or subsection dict
@@ -89,6 +118,9 @@ def load_config(config_file, subsection=None, allow_missing=False):
             # where an unsupported version genuinely matters.
             if subsection:
                 _warn_unsupported_version(config, config_file, subsection)
+            elif upgrade:
+                config = _upgraded(config, config_file)
+                validate_config(config)
             else:
                 validate_config(config)
 

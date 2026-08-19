@@ -16,6 +16,12 @@ include = [{path = "src/robovast/_ui/**/*", format = "wheel"}]
 python = ">=3.12,<3.14"
 click = "^8.1"
 pyyaml = "^6.0"
+# Round-trip YAML, for ONE job: `vast configuration upgrade` and the manual-migration
+# workflow rewrite a .vast a human then edits, and pyyaml's safe_load/dump silently drops
+# every comment. The .vast files in this repo carry load-bearing ones, and handing someone
+# a decommented file to make decisions in defeats the purpose. Every *reading* path still
+# uses pyyaml -- see robovast/common/migrations/__init__.py for the split.
+"ruamel.yaml" = "^0.18"
 numpy = "^1.26"
 pandas = "^2.2"
 # Only analysis notebooks import these; nothing in robovast
