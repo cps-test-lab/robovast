@@ -7,7 +7,7 @@ nav2 + AMCL. Same world, same map, same nav2 params, same ROS graph (down to the
 
 ## Files
 
-```
+```text
 basic_nav_gazebo.vast  # one container: the scenario launches gz + TB4 + nav2 itself
 basic_nav_roqsim.vast     # three containers: roqsim, a vanilla nav2 SUT, the scenario
 scenario_gazebo.osc    # Gazebo bring-up + the measurement half

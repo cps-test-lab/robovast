@@ -11,7 +11,7 @@ skill exists to prevent: it tells the user a campaign finished when it has barel
 
 ## Wait for it, in the background
 
-```
+```text
 Bash(command="vast wait <campaign_id> --interval 10", run_in_background=true)
 ```
 
