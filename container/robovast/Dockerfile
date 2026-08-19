@@ -1,5 +1,17 @@
 ARG ROS_DISTRO=jazzy
 
+# The ROS base, pinned by digest. Declared HERE, in the global scope, because an ARG used in a
+# FROM is only substituted when it is declared before the first FROM -- mid-file it belongs to a
+# stage and resolves to empty, which docker reports as `invalid reference format` on the bare
+# trailing "@".
+#
+# Its own ARG rather than being inlined, because ROS_DISTRO is a real knob
+# (`build.sh --ros-distro`) and **docker ignores the tag when a digest is given**. Inlined, the
+# pin would silently win: `--ros-distro humble` would pull the jazzy bytes into an image whose
+# name says humble. Overriding the distro therefore has to override the digest too, and the
+# guard right after the FROM makes forgetting that loud instead of silent.
+ARG ROS_BASE_DIGEST=sha256:d16957210572c5f919f3f9bd2fb0cc24a82542647489d8b8eda7c3beda31305f
+
 # Where scenario-execution comes from, defaulted HERE so this Dockerfile builds on its own.
 #
 # The pin must be a commit on a **durable** ref -- main, or a tag. It was previously a commit
@@ -31,7 +43,21 @@ RUN git clone "$SCENARIO_EXECUTION_REPO" /src \
 FROM scratch AS scenario-execution-src
 COPY --from=scenario-execution-clone /src /
 
-FROM osrf/ros:${ROS_DISTRO}-desktop-full
+# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
+# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
+# builds of the same commit can start from different bytes. This also freezes the apt state
+# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
+# The tag is kept beside the digest because a bare digest tells a reader nothing about what
+# it is. Refresh both with: make refresh-build-pins
+FROM osrf/ros:${ROS_DISTRO}-desktop-full@${ROS_BASE_DIGEST}
+ARG ROS_DISTRO
+ARG ROS_BASE_DIGEST
+RUN test -d "/opt/ros/${ROS_DISTRO}" || { \
+      echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not an osrf/ros:${ROS_DISTRO} image."; \
+      echo "  It carries: $(ls /opt/ros 2>/dev/null | tr '\\n' ' ')"; \
+      echo "  Docker ignores the tag when a digest is given, so the digest decides. Pass a"; \
+      echo "  matching --build-arg ROS_BASE_DIGEST, or refresh both with make refresh-build-pins."; \
+      exit 1; }
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 WORKDIR /ws

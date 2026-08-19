@@ -46,7 +46,7 @@ from robovast.common.build_context import render_dockerignore
 from robovast.common.errors import ImageStoreUnavailable
 from robovast.common.execution import BUILD_IMAGE_PREFIX, resolve_build_base_image
 from robovast.service.image_build import (BuildSpec, build_hash, classify_build_error,
-                                          generate_dockerfile)
+                                         generate_dockerfile, resolve_floating_vcs_specs)
 from robovast.service.interface import (ImageBuildError, ImageBuildRef, ImageBuildStatus,
                                         LogChunk)
 
@@ -193,11 +193,33 @@ class LocalDockerImageStore(ImageBuildStore):
 
     def ref_for(self, spec: BuildSpec, project_dir: Path) -> ImageRef:
         base_ref = self._base_ref(spec)
-        image_hash = build_hash(spec, project_dir, base_ref)
+        image_hash = build_hash(spec, project_dir, base_ref,
+                                resolved_vcs=self.resolve_vcs(spec))
         return ImageRef(ref=local_image_ref(spec.tag, image_hash),
                         identity=build_identity(spec.tag, image_hash),
                         build_id=local_build_id(spec.tag, image_hash),
                         image_hash=image_hash)
+
+    def resolve_vcs(self, spec: BuildSpec) -> dict:
+        """``{spec: commit}`` for every git spec whose ref is not already a commit.
+
+        Part of *resolution*, not of the build, because the identity of the image depends on it:
+        a moving branch has to change the cache key or the first build's resolution is served
+        forever. See :func:`resolve_floating_vcs_specs` for why falling back to the bare ref is
+        refused rather than tolerated.
+
+        A resolution failure is reported as an unavailable store rather than raised as a build
+        error: the question "which image would this be?" genuinely cannot be answered without
+        network access to the ref, and answering it with a stale hash is what this removes.
+        """
+        from robovast.common.config_plugins import \
+            _read_git_token  # pylint: disable=import-outside-toplevel
+
+        try:
+            return resolve_floating_vcs_specs(spec.python_specs,
+                                              git_token=_read_git_token())
+        except ValueError as e:
+            raise ImageStoreUnavailable(str(e)) from e
 
     def present(self, ref: ImageRef) -> bool:
         try:
@@ -262,7 +284,8 @@ class LocalDockerImageStore(ImageBuildStore):
 
     def _run(self, record: _BuildRecord, spec: BuildSpec, project_dir: Path,
              base_ref: str) -> None:
-        dockerfile = generate_dockerfile(spec, project_dir, base_ref)
+        dockerfile = generate_dockerfile(spec, project_dir, base_ref,
+                                         resolved_vcs=self.resolve_vcs(spec))
         df_path = self._log_root / f"{record.build_id}.Dockerfile"
         df_path.write_text(dockerfile)
         # BuildKit reads ``<dockerfile>.dockerignore`` beside an out-of-context -f

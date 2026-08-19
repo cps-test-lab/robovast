@@ -32,7 +32,10 @@ a ``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a cli
 
 import hashlib
 import logging
+import os
 import re
+import subprocess  # nosec B404 - git ls-remote on config-declared URLs
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -200,6 +203,148 @@ def extract_build_specs(campaign_config, base_dir=None, image_project=None,
 # python_packages classification (shared vocabulary with top-level ``plugins:``)
 # ---------------------------------------------------------------------------
 
+#: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
+#: rather than on "the first @", because a name is optional and an ssh URL carries its own.
+_VCS_SPLIT = re.compile(r"^(?:(?P<name>[^@\s]+)\s*@\s*)?(?P<url>git\+\S+)$")
+
+_IMMUTABLE_REF = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _split_url_ref(url: str) -> "tuple[str, str | None]":
+    """``(url, ref)`` from a ``git+<url>[@<ref>]``.
+
+    Two ``@``-shaped traps, and each defeats the obvious rule for the other:
+
+    * an ssh URL carries a userinfo ``@`` *before* the host
+      (``git+ssh://git@host/repo@v1.2.3``), so splitting on the **first** ``@`` yields a URL of
+      ``git+ssh://git``; while
+    * a ref may contain ``/`` (``@feature/x``), so looking for the ``@`` after the **last** ``/``
+      finds nothing at all.
+
+    What separates them reliably is the URL's *authority*: userinfo lives inside it, a ref always
+    follows it. So find where the authority ends and take the first ``@`` after that. Neither
+    wrong answer would have failed loudly -- the resolution would simply never match, and the
+    stale-cache behaviour would return silently.
+    """
+    scheme_end = url.find("://")
+    authority_end = url.find("/", scheme_end + 3) if scheme_end != -1 else url.rfind("/")
+    if authority_end == -1:
+        authority_end = len(url)
+    at = url.find("@", authority_end)
+    if at == -1:
+        return url, None
+    return url[:at], url[at + 1:] or None
+
+
+def _vcs_specs(specs) -> list:
+    """``[(spec, name, url, ref)]`` for every git spec among *specs*. ``ref`` may be ``None``."""
+    out = []
+    for spec in specs:
+        match = _VCS_SPLIT.match(str(spec).strip())
+        if not match:
+            continue
+        url, ref = _split_url_ref(match.group("url"))
+        out.append((spec, (match.group("name") or "").strip(), url[len("git+"):], ref))
+    return out
+
+
+def resolve_floating_vcs_specs(specs, *, git_token: str = "") -> dict:
+    """``{spec: sha}`` for every git spec whose ref is not already a commit.
+
+    A ``plugins``/``python_packages`` entry like ``pkg @ git+https://host/repo@main`` is not a
+    pin, and the cache key hashes the spec *string* -- so the first build resolved whatever
+    ``main`` was that day and every later campaign silently reused that image. Worse than
+    "always latest", because the resolution changed only when something unrelated invalidated
+    the key (a renderer epoch bump, a new base image), and nothing recorded which commit had
+    been baked in.
+
+    Resolving here fixes both halves at once, exactly as ``container/robovast/build.sh`` already
+    does for ``ROQSIM_REF``: the sha goes into the cache key, so a moved branch rebuilds because
+    the code really is different; and it goes into the record, so the campaign can say what it
+    installed.
+
+    ``git ls-remote`` rather than a clone -- one network round trip, no history.
+
+    Raises:
+        ValueError: a ref that cannot be resolved. **Never falls back to the branch name**: that
+            would quietly restore the stale-cache behaviour this exists to remove, which is the
+            same reasoning build.sh states for refusing.
+    """
+    resolved = {}
+    for spec, _name, url, ref in _vcs_specs(specs):
+        if ref and _IMMUTABLE_REF.match(ref):
+            continue
+        wanted = ref or "HEAD"
+        sha = _ls_remote(url, wanted, git_token=git_token)
+        if not sha:
+            raise ValueError(
+                f"cannot resolve {wanted!r} in {url} (from {spec!r}).\n"
+                f"  Either the ref does not exist, or the repository needs credentials this "
+                f"deployment does not have -- a private repo needs a token from "
+                f"'vast exec cluster setup'.\n"
+                f"  Not falling back to the bare ref on purpose: that would build from whatever "
+                f"the branch points at today and record nothing, which is the behaviour this "
+                f"resolution exists to remove. Pin the spec to a commit to proceed without "
+                f"network access.")
+        resolved[spec] = sha
+    return resolved
+
+
+def _ls_remote(url: str, ref: str, *, git_token: str = "") -> str:
+    """The commit *ref* names in *url*, or ``""``.
+
+    Tries the ref verbatim first, then as a branch and a tag: ``ls-remote <url> main`` matches
+    ``refs/heads/main``, but an ambiguous or partial name can return several lines, and taking
+    the first of those is how you silently pin a tag when you meant a branch.
+    """
+    env = dict(os.environ)
+    if git_token:
+        # Same mechanism config_plugins uses for a private plugin repo: credentials via askpass
+        # rather than embedded in the URL, so they cannot leak into a build log or a cache key.
+        from robovast.common.config_plugins import \
+            _git_askpass_env  # pylint: disable=import-outside-toplevel
+        env.update(_git_askpass_env(git_token, tempfile.gettempdir()))
+    for candidate in (ref, f"refs/heads/{ref}", f"refs/tags/{ref}"):
+        try:
+            result = subprocess.run(["git", "ls-remote", url, candidate],
+                                    capture_output=True, text=True, check=False,
+                                    timeout=60, env=env)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
+        if result.returncode != 0:
+            continue
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if len(lines) == 1:
+            return lines[0].split()[0]
+        # More than one match: refuse rather than guess which of them was meant.
+        if len(lines) > 1 and candidate.startswith("refs/"):
+            return ""
+    return ""
+
+
+def pin_vcs_specs(specs, resolved: dict) -> list:
+    """*specs* with every resolved floating ref replaced by its commit.
+
+    Applied to what the Dockerfile installs, so the build itself is reproducible: without it a
+    branch that moves between resolution and ``pip install`` would install something the record
+    does not name.
+    """
+    out = []
+    for spec in specs:
+        if isinstance(spec, list):
+            out.append(pin_vcs_specs(spec, resolved))
+            continue
+        sha = resolved.get(spec)
+        if not sha:
+            out.append(spec)
+            continue
+        match = _VCS_SPLIT.match(str(spec).strip())
+        url, _ref = _split_url_ref(match.group("url"))
+        name = (match.group("name") or "").strip()
+        out.append(f"{name} @ {url}@{sha}" if name else f"{url}@{sha}")
+    return out
+
+
 def _is_source_dir(entry: str, project_dir: Path) -> bool:
     p = (project_dir / entry).resolve()
     try:
@@ -271,13 +416,22 @@ def _hash_wheel(h: "hashlib._Hash", path: Path) -> None:
             pass
 
 
-def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
+def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str,
+               resolved_vcs: "dict | None" = None) -> str:
     """A stable short hash of everything that affects the built image.
 
-    Inputs: the resolved base image, apt packages, the python_packages specs, and
-    the *contents* of every referenced source directory / context wheel. Changing
-    any of these changes the hash (a rebuild); anything else (run_files, scenario)
-    does not.
+    Inputs: the resolved base image, apt packages, the python_packages specs, the *contents* of
+    every referenced source directory / context wheel, and the commit each floating git spec
+    resolved to. Changing any of these changes the hash (a rebuild); anything else (run_files,
+    scenario) does not.
+
+    ``resolved_vcs`` is what makes a moving branch honest. Without it the key hashed the spec
+    *string*, so ``pkg @ git+...@main`` was cache-stable: the first build baked in whatever
+    ``main`` was that day, every later campaign reused that image, and the resolution changed
+    only when something unrelated invalidated the key -- silently, with nothing recording which
+    commit was in there. Hashing the resolved sha means the image rebuilds exactly when the code
+    behind the ref really changed, which is the same reasoning ``container/robovast/build.sh``
+    gives for resolving ``ROQSIM_REF`` before the build.
     """
     h = hashlib.sha256()
     # v5: source directories install NON-editably now. `-e` routed setuptools through
@@ -303,6 +457,11 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
         for entry in group:
             h.update(b"|py|")
             h.update(entry.encode())
+            sha = (resolved_vcs or {}).get(entry)
+            if sha:
+                # The resolution, not just the request: a branch that moved must rebuild.
+                h.update(b"|vcs|")
+                h.update(sha.encode())
             if _is_source_dir(entry, project_dir):
                 _hash_dir(h, (project_dir / entry).resolve())
             elif _is_context_wheel(entry, project_dir):
@@ -315,7 +474,8 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_ref: str) -> str:
 # ---------------------------------------------------------------------------
 
 def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
-                        base_user: str = DEFAULT_IMAGE_USER) -> str:
+                        base_user: str = DEFAULT_IMAGE_USER,
+                        resolved_vcs: "dict | None" = None) -> str:
     """Render a deterministic Dockerfile from *spec*.
 
     Each **install group** becomes one ``RUN``, so pip resolves the group's specs
@@ -365,6 +525,11 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
             f"&& apt-get install -y --no-install-recommends {pkgs} "
             "&& rm -rf /var/lib/apt/lists/*")
     for group in spec.install_groups:
+        # Install the RESOLVED commit, not the branch. The cache key already accounts for the
+        # resolution, but the build must too: a branch that moves between resolution and
+        # `pip install` would otherwise install something the record does not name, which is
+        # the failure this whole resolution exists to prevent.
+        group = pin_vcs_specs(group, resolved_vcs or {})
         args = []
         for entry in group:
             if _is_source_dir(entry, project_dir):

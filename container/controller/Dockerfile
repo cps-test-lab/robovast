@@ -31,7 +31,13 @@
 # service comes up API-only and the browser gets a 404 on `/`.
 
 # -- web UI (frontend/ui/dist), served by `vast serve` from this image -------
-FROM node:20-slim AS ui-build
+# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
+# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
+# builds of the same commit can start from different bytes. This also freezes the apt state
+# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
+# The tag is kept beside the digest because a bare digest tells a reader nothing about what
+# it is. Refresh both with: make refresh-build-pins
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS ui-build
 WORKDIR /ui
 # Install deps against the lockfile first so this layer caches across UI edits.
 COPY frontend/ui/package.json frontend/ui/package-lock.json ./
@@ -55,7 +61,13 @@ RUN npm run build          # -> /ui/dist
 # The directory layout is reproduced rather than flattened: the package's vite/tsconfig
 # resolve @robovast/panel-kit at ../../../frontend/panel-kit relative to web/, so the two
 # must sit where that alias points.
-FROM node:20-slim AS nav-panels-build
+# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
+# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
+# builds of the same commit can start from different bytes. This also freezes the apt state
+# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
+# The tag is kept beside the digest because a bare digest tells a reader nothing about what
+# it is. Refresh both with: make refresh-build-pins
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS nav-panels-build
 WORKDIR /build/src/robovast_nav/web
 COPY src/robovast_nav/web/package.json src/robovast_nav/web/package-lock.json ./
 RUN npm ci
@@ -63,7 +75,13 @@ COPY frontend/panel-kit/ /build/frontend/panel-kit/
 COPY src/robovast_nav/web/ ./
 RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
 
-FROM python:3.12-slim
+# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
+# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
+# builds of the same commit can start from different bytes. This also freezes the apt state
+# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
+# The tag is kept beside the digest because a bare digest tells a reader nothing about what
+# it is. Refresh both with: make refresh-build-pins
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 # BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
 # download below interpolates an empty string and 404s -- so it is declared here
