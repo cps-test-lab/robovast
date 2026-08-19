@@ -23,21 +23,16 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-
-      - name: Add Poetry to PATH
-        run: |
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install dependencies with Poetry
-        run: |
-          poetry install --no-root
-
-      - name: Install project packages
-        run: |
-          poetry install --extras "test"
+      # `make venv`, not `poetry install`: this repo ships five distributions that all
+      # populate the `robovast` namespace, and only three of them are path dependencies of
+      # the root. `poetry install` therefore produced an environment with no execution lane
+      # but `local` -- `vast exec cluster setup` did not exist and the CLI test failed on it
+      # -- and installed robovast-client as a *copy*, which tests/test_editable_installs.py
+      # exists to catch. The Makefile target is the single supported dev install and is what
+      # doc.yml already builds against; installing the same way here keeps CI testing the
+      # thing developers run.
+      - name: Install RoboVAST
+        run: make venv
 
       - name: Run CLI tests
         run: |
@@ -45,4 +40,4 @@ jobs:
 
       - name: Run unit tests
         run: |
-          poetry run pytest tests/ -q
+          . venv/bin/activate && pytest tests/ -q
