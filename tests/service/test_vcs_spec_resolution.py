@@ -133,13 +133,27 @@ def test_pinning_preserves_install_group_structure():
 
 @pytest.mark.parametrize("url,expected", [
     # userinfo @ before the host: splitting on the FIRST @ gives "git+ssh://git".
-    ("git+ssh://git@host/repo@v1.2.3", ("git+ssh://git@host/repo", "v1.2.3")),
+    ("git+ssh://git@host/repo@v1.2.3", ("git+ssh://git@host/repo", "v1.2.3", "")),
     # a ref containing /: looking for the @ after the LAST / finds nothing.
-    ("git+https://host/repo@feature/x", ("git+https://host/repo", "feature/x")),
+    ("git+https://host/repo@feature/x", ("git+https://host/repo", "feature/x", "")),
     # both at once.
-    ("git+ssh://git@host/org/repo@release/2.0", ("git+ssh://git@host/org/repo", "release/2.0")),
-    ("git+https://host/repo", ("git+https://host/repo", None)),
-    ("git+file:///srv/repo@main", ("git+file:///srv/repo", "main")),
+    ("git+ssh://git@host/org/repo@release/2.0",
+     ("git+ssh://git@host/org/repo", "release/2.0", "")),
+    ("git+https://host/repo", ("git+https://host/repo", None, "")),
+    ("git+file:///srv/repo@main", ("git+file:///srv/repo", "main", "")),
+    # pip's fragment follows the ref and is no part of it. Read as one, "main#subdirectory=pkg"
+    # matches nothing and the spec is refused as unresolvable.
+    ("git+https://host/repo@main#subdirectory=pkg",
+     ("git+https://host/repo", "main", "#subdirectory=pkg")),
+    # ... and a fragment on an ALREADY PINNED spec kept it from matching _IMMUTABLE_REF, so a
+    # pin was refused too -- the failure that reaches a multi-package repository first.
+    ("git+https://host/repo@" + "a" * 40 + "#subdirectory=pkg",
+     ("git+https://host/repo", "a" * 40, "#subdirectory=pkg")),
+    # a fragment may itself contain @, which must not be read as the ref separator.
+    ("git+https://host/repo#egg=pkg&subdirectory=a@b",
+     ("git+https://host/repo", None, "#egg=pkg&subdirectory=a@b")),
+    ("git+https://host/repo#subdirectory=pkg",
+     ("git+https://host/repo", None, "#subdirectory=pkg")),
 ])
 def test_url_and_ref_are_split_on_the_authority(url, expected):
     """Neither obvious rule works, and neither wrong answer fails loudly -- a mis-split simply
@@ -337,3 +351,54 @@ def test_an_empty_lock_changes_nothing():
     spec = BuildSpec(tag="t", system_packages=["tree"], python_packages=["numpy<=1.13"])
     assert pin_specs_from_lock(spec, {}) == (["tree"], ["numpy<=1.13"])
     assert (system, python) != (["tree"], ["numpy<=1.13"]), "with a lock it should differ"
+
+
+# A repository holding several distributions is reached with pip's `#subdirectory=`, and that is
+# the shape an asset library takes: one private repo, one package per provider. Every step below
+# mishandled the fragment by reading it as part of the ref, so such a spec could not be resolved,
+# could not be recognised as already pinned, and -- had either worked -- would have been pinned
+# into a spec installing the repository root.
+
+_SUBDIR = "roqsim_scenes @ git+https://host/roqsim@main#subdirectory=roqsim_scenes"
+
+
+def test_a_subdirectory_spec_resolves_like_any_other(monkeypatch):
+    from robovast.service import image_build
+
+    monkeypatch.setattr(image_build, "_ls_remote", lambda url, ref, **kw: "c" * 40)
+    assert image_build.resolve_floating_vcs_specs([_SUBDIR]) == {_SUBDIR: "c" * 40}
+
+
+def test_the_ref_offered_for_resolution_excludes_the_fragment(monkeypatch):
+    from robovast.service import image_build
+
+    seen = []
+
+    def _fake(url, ref, **kw):
+        seen.append((url, ref))
+        return "c" * 40
+
+    monkeypatch.setattr(image_build, "_ls_remote", _fake)
+    image_build.resolve_floating_vcs_specs([_SUBDIR])
+    # The URL is the repository, and the ref is the branch alone: `git ls-remote` matches
+    # nothing for "main#subdirectory=roqsim_scenes", and the spec was refused because of it.
+    assert seen == [("https://host/roqsim", "main")]
+
+
+def test_pinning_keeps_the_subdirectory():
+    from robovast.service.image_build import pin_vcs_specs
+
+    [pinned] = pin_vcs_specs([_SUBDIR], {_SUBDIR: "c" * 40})
+    assert pinned == ("roqsim_scenes @ git+https://host/roqsim@" + "c" * 40
+                      + "#subdirectory=roqsim_scenes")
+
+
+def test_a_pinned_subdirectory_spec_needs_no_resolution(monkeypatch):
+    from robovast.service import image_build
+
+    def _never(url, ref, **kw):
+        raise AssertionError(f"resolution attempted for an immutable ref: {ref}")
+
+    monkeypatch.setattr(image_build, "_ls_remote", _never)
+    pinned = f"roqsim_scenes @ git+https://host/roqsim@{'c' * 40}#subdirectory=roqsim_scenes"
+    assert image_build.resolve_floating_vcs_specs([pinned]) == {}

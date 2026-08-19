@@ -223,10 +223,21 @@ _VCS_SPLIT = re.compile(r"^(?:(?P<name>[^@\s]+)\s*@\s*)?(?P<url>git\+\S+)$")
 _IMMUTABLE_REF = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _split_url_ref(url: str) -> "tuple[str, str | None]":
-    """``(url, ref)`` from a ``git+<url>[@<ref>]``.
+def _split_url_ref(url: str) -> "tuple[str, str | None, str]":
+    """``(url, ref, fragment)`` from a ``git+<url>[@<ref>][#<fragment>]``.
 
-    Two ``@``-shaped traps, and each defeats the obvious rule for the other:
+    The fragment is pip's, not git's: ``#subdirectory=pkg`` says which directory of the
+    repository holds the distribution, and ``#egg=name`` names it. It follows the ref but is no
+    part of it, and reading it as one is how a repository holding several packages -- the only
+    reason to write ``#subdirectory=`` at all -- broke twice over. ``@main#subdirectory=pkg``
+    resolved as the ref ``main#subdirectory=pkg``, which matches nothing, so the spec was
+    refused as unresolvable; and ``@<sha>#subdirectory=pkg`` did not match
+    :data:`_IMMUTABLE_REF` either, so a spec that was *already pinned* was refused as well. It
+    is returned separately rather than left on either side because :func:`pin_vcs_specs` has to
+    put it back: a pinned spec that loses ``#subdirectory=`` installs the repository ROOT,
+    which for a multi-package repository is not a distribution at all.
+
+    Two further ``@``-shaped traps, and each defeats the obvious rule for the other:
 
     * an ssh URL carries a userinfo ``@`` *before* the host
       (``git+ssh://git@host/repo@v1.2.3``), so splitting on the **first** ``@`` yields a URL of
@@ -239,14 +250,20 @@ def _split_url_ref(url: str) -> "tuple[str, str | None]":
     wrong answer would have failed loudly -- the resolution would simply never match, and the
     stale-cache behaviour would return silently.
     """
+    # Taken off first, so neither the authority scan nor the ref can see it. A fragment may
+    # itself contain '@' (`#egg=pkg&subdirectory=a@b` is legal), which would otherwise be read
+    # as the ref separator.
+    url, hash_, fragment = url.partition("#")
+    fragment = f"{hash_}{fragment}"
+
     scheme_end = url.find("://")
     authority_end = url.find("/", scheme_end + 3) if scheme_end != -1 else url.rfind("/")
     if authority_end == -1:
         authority_end = len(url)
     at = url.find("@", authority_end)
     if at == -1:
-        return url, None
-    return url[:at], url[at + 1:] or None
+        return url, None, fragment
+    return url[:at], url[at + 1:] or None, fragment
 
 
 def _vcs_specs(specs) -> list:
@@ -256,7 +273,7 @@ def _vcs_specs(specs) -> list:
         match = _VCS_SPLIT.match(str(spec).strip())
         if not match:
             continue
-        url, ref = _split_url_ref(match.group("url"))
+        url, ref, _fragment = _split_url_ref(match.group("url"))
         out.append((spec, (match.group("name") or "").strip(), url[len("git+"):], ref))
     return out
 
@@ -352,9 +369,13 @@ def pin_vcs_specs(specs, resolved: dict) -> list:
             out.append(spec)
             continue
         match = _VCS_SPLIT.match(str(spec).strip())
-        url, _ref = _split_url_ref(match.group("url"))
+        # The fragment is carried across: it says WHICH package of the repository this is, so
+        # dropping it while pinning would install the repository root instead -- a different
+        # thing, and usually not a distribution at all.
+        url, _ref, fragment = _split_url_ref(match.group("url"))
         name = (match.group("name") or "").strip()
-        out.append(f"{name} @ {url}@{sha}" if name else f"{url}@{sha}")
+        pinned = f"{url}@{sha}{fragment}"
+        out.append(f"{name} @ {pinned}" if name else pinned)
     return out
 
 
