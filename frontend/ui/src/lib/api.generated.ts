@@ -1541,6 +1541,11 @@ export interface components {
          */
         CreateCampaignRequest: {
             /**
+             * Allow Opaque Image
+             * @default false
+             */
+            allow_opaque_image: boolean;
+            /**
              * Campaign Name
              * @default
              */

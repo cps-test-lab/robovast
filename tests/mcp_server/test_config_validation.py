@@ -52,7 +52,7 @@ def test_multiple_errors_collected_with_locations(tmp_path):
     vast.write_text(
         "version: 2\n"
         "execution:\n"
-        "  containers: {scenario: {image: example:latest}}\n"
+        "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  scenario_file: does_not_exist.osc\n"
         "configuration:\n"
         "  - name: c1\n"
@@ -84,7 +84,7 @@ def test_local_plugin_refs_are_interface_checked(tmp_path):
     vast.write_text(
         "version: 2\n"
         "execution:\n"
-        "  containers: {scenario: {image: example:latest}}\n"
+        "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  scenario_file: scenario.osc\n"
         "search:\n"
         "  strategy: plugins/bad_strategy.py:BadStrategy\n"
@@ -134,7 +134,7 @@ def test_valid_project_reports_counts(tmp_path):
         "      scenario: growth_rate\n"
         "      values: [0.1, 0.2, 0.3]\n"
         "execution:\n"
-        "  containers: {scenario: {image: example:latest}}\n"
+        "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  runs: 2\n"
         "  scenario_file: scenario.osc\n"
     )

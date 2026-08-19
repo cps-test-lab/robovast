@@ -139,16 +139,17 @@ def _wait_next_step(campaign_id: str) -> str:
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
+                   allow_opaque_image: bool = False,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    show_gui: bool = False, description: str = "",
                    from_campaign: str = "") -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
-    This is how a RoboVAST experiment is executed — not a ``docker compose`` or a script on
-    this host, which produce no pinned image, no provenance and no repetitions, so their
-    output compares with nothing. Size the lane first with ``get_resource_usage``, and pilot
-    one configuration before the full sweep (``config_filter`` + ``runs=1``).
+    This is how a RoboVAST experiment is executed — a ``docker compose`` or a local script
+    produces no pinned image, no provenance and no repetitions, so its output compares with
+    nothing. Size the lane with ``get_resource_usage`` first, and pilot one configuration
+    before the full sweep (``config_filter`` + ``runs=1``).
 
     **It is not over when this returns** — background the ``next_step`` command to be told
     when it truly is. Not waiting is fine if you *say* so (ntfy announces the end); stopping
@@ -157,22 +158,23 @@ def start_campaign(config_filter: str = "", runs: int = 0,
     Args:
         workspace_id: **Required unless ``from_campaign``** — the workspace holding the
             project. There is no server-side "current project".
-        from_campaign: Re-run a past campaign from its own record (frozen config + the image
-            its runs used): a NEW campaign, source untouched. **Takes no other argument** —
-            the record supplies them, so a pilot stays a pilot. Re-expands, so stochastic
-            generators redraw. An older config is migrated in the staging copy only. Can be
-            refused (image, container protocol, unmigratable config) — read
-            ``get_campaign_summary``'s ``retrigger`` key first: it costs nothing, a launch
-            does not.
+        from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
+            untouched, **taking no other argument** — the record supplies them, so a pilot
+            stays a pilot. Re-expands, so stochastic generators redraw. Can be refused; read
+            ``get_campaign_summary``'s ``retrigger`` key first, which says why and costs
+            nothing.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
         show_gui: Watch **one** run in the simulator's window (never a sweep). Local
-            ``vast serve`` on local Docker only; the window opens on that machine, not
-            yours, and needs ``execution.local.gui.parameter_overrides`` (``note`` says so
-            when missing). **Do not close it** — the run then never returns.
+            ``vast serve`` on local Docker only, and the window opens on *that* machine.
+            **Do not close it** — the run then never returns.
+        allow_opaque_image: Launch anyway when a container's own image declares no
+            ``provenance:``. Refused by default: nothing in the results could then say what
+            ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
+            ``system_packages`` and drop the image so robovast builds it. Exemption recorded.
         description: **Set this every time.** One line (≤200 chars) saying what the run is
             *for* — what tells two same-day ids apart. Good: "pilot: 5 reps DWB vs MPPI on
             open_space, new inflation radius".
@@ -180,8 +182,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
     Returns:
         ``{campaign_id, next_step}``, or ``{campaign_id, retriggered_from}`` for a
         ``from_campaign`` launch (``campaign_id`` is the NEW one). Plus ``note`` when the
-        launch was accepted but will not do what was asked, or ``{error}`` — including no
-        service reachable, which means **stop and say so**, not run it another way.
+        launch was accepted but will not do what was asked, or ``{error}``.
     """
     try:
         client = service_access.service_client()
@@ -230,6 +231,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # campaign started without an explicit count to one run per configuration — a
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
+            allow_opaque_image=allow_opaque_image,
             upload_to_share=upload_to_share, show_gui=show_gui))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}

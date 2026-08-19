@@ -51,7 +51,7 @@ def _search_project(tmp_path, *, low, high, per_batch=4):
         metadata: {{name: search-preflight}}
         execution:
           containers:
-            scenario: {{image: scen:latest}}
+            scenario: {{image: 'family:robovast'}}
           runs: 3
           scenario_file: scenario.osc
         search:

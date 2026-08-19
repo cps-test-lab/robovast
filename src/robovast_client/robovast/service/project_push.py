@@ -316,7 +316,8 @@ def run_project_via_service(client, config_path: str,
                             campaign_name: str = "", description: str = "",
                             workspace_name: str = "", on_exists=None,
                             image_project: str | None = None,
-                            image_project_tag: str | None = None) -> str:
+                            image_project_tag: str | None = None,
+                            allow_opaque_image: bool = False) -> str:
     """Push the local project through *client* and start a campaign. Returns id.
 
     ``runs=0`` means "whatever the ``.vast`` declares": the service maps a non-positive
@@ -351,7 +352,7 @@ def run_project_via_service(client, config_path: str,
         workspace_id=workspace_id, config_filter=config_filter,
         campaign_name=campaign_name, description=description,
         runs=runs if runs and runs > 0 else 0,
-        upload_to_share=upload_to_share,
+        upload_to_share=upload_to_share, allow_opaque_image=allow_opaque_image,
         image_project=image_project, image_project_tag=image_project_tag))
     return ref.campaign_id
 

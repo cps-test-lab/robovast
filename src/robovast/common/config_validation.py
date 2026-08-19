@@ -165,6 +165,26 @@ def _schema_problems(raw):
     return problems
 
 
+def _image_provenance_problems(raw):
+    """Refuse a container whose image nobody could later identify.
+
+    Reported here, in the collect-all validator, so an author learns it beside every other problem
+    and before any compute is spent -- rather than at launch, or worse, a year later when someone
+    tries to re-run the campaign and the image is a name with no meaning.
+
+    Deliberately *not* a pydantic validator on the model: that would run on every load, including
+    reading an ARCHIVED campaign, and would make exactly the historic campaigns this must keep
+    readable unreadable instead. The rule is a property of **authoring**, so it lives on the
+    authoring path.
+    """
+    from robovast.common.execution import \
+        opaque_image_containers  # pylint: disable=import-outside-toplevel
+
+    return [_problem("image-provenance", why, config=name,
+                     field=f"execution.containers.{name}.provenance")
+            for name, why in opaque_image_containers(raw.get("execution") or {})]
+
+
 def _scenario_file_problems(raw, vast_dir):
     """Validate ``execution.scenario_file``. Returns ``(problems, abs_scenario_file)``."""
     from robovast.common.config_generation import \
@@ -799,6 +819,7 @@ def validate_project_file(config_path):
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
     problems.extend(_run_capture_problems(raw))
+    problems.extend(_image_provenance_problems(raw))
     # ...and a camera panel needs a step that produces the video it plays.
     problems.extend(_camera_panel_problems(raw))
 

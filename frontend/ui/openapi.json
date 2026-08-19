@@ -580,6 +580,11 @@
       "CreateCampaignRequest": {
         "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
         "properties": {
+          "allow_opaque_image": {
+            "default": false,
+            "title": "Allow Opaque Image",
+            "type": "boolean"
+          },
           "campaign_name": {
             "default": "",
             "title": "Campaign Name",

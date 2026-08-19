@@ -135,6 +135,102 @@ FLOATING_IMAGE_TAG = "latest"
 BUILD_IMAGE_PREFIX = "build:"
 
 
+#: How much can be said about where a container's image came from. A campaign is only
+#: reproducible to the extent every one of its images can be identified, and these differ in
+#: *why* they can be:
+#:
+#: 1  robovast built it, so the base, the resolved packages and the labels are all recorded.
+#: 2  a member of the published family, or a `build:` ref -- ours, and carrying our labels.
+#: 3  a user-supplied image with an authored ``provenance:`` block naming source and revision.
+#: 4  a user-supplied image with nothing recorded anywhere. **Refused when authoring.**
+IMAGE_TIER_BUILT = 1
+IMAGE_TIER_FAMILY = 2
+IMAGE_TIER_DECLARED = 3
+IMAGE_TIER_OPAQUE = 4
+
+
+def image_provenance_tier(name: str, block: dict) -> "tuple[int, str]":
+    """``(tier, why)`` for one ``execution.containers`` entry.
+
+    Deliberately **declarative only** -- it inspects the ``.vast`` and never the image. A check
+    that read labels would answer differently depending on whether the image happened to be
+    pulled locally, which is the wrong property for the collect-all validator the web editor and
+    an agent both hit: the same file would validate on one machine and fail on another. An author
+    who has relabelled their image can still declare the block, which costs two lines and always
+    works.
+
+    Tier 1 covers a container that adds packages *even if it also names an image*: that image is
+    then the base robovast builds on, and the build records the base digest along with everything
+    it installed.
+    """
+    block = block or {}
+    image = (block.get("image") or "").strip()
+
+    if block.get("system_packages") or block.get("python_packages"):
+        return IMAGE_TIER_BUILT, "robovast builds this image, so its inputs are recorded"
+    if not image:
+        return IMAGE_TIER_FAMILY, "no image named; the backend or the role default supplies one"
+    if image.startswith(FAMILY_IMAGE_PREFIX) or is_build_image_ref(image):
+        return IMAGE_TIER_FAMILY, f"{image!r} is a robovast-published reference"
+    if names_family_member(image):
+        # A family member spelled out concretely rather than symbolically. Every real campaign in
+        # this tree predates `family:` and writes `ghcr.io/<project>/robovast:latest`, and those
+        # are OUR images -- they carry our labels and their build is in this repo. Reading only
+        # the symbolic form would refuse the very images the tiering exists to bless, which is how
+        # this was caught: the migration fixtures were flagged.
+        return IMAGE_TIER_FAMILY, f"{image!r} names a published robovast family member"
+    if block.get("provenance"):
+        return IMAGE_TIER_DECLARED, f"{image!r} is user-supplied with declared provenance"
+    return IMAGE_TIER_OPAQUE, (
+        f"container {name!r} runs {image!r}, an image robovast neither built nor publishes, and "
+        f"declares no 'provenance:'. Nothing in this campaign's results would be able to say "
+        f"what that image was, so it could never be re-run or reproduced -- and the gap only "
+        f"surfaces once it is too late to ask.\n"
+        f"  Add, under execution.containers.{name}:\n"
+        f"      provenance:\n"
+        f"        source: <repo URL or path holding the image's build definition>\n"
+        f"        revision: <the commit that built it>\n"
+        f"        build_recipe: <optional: how, if it is not obvious>\n"
+        f"  Or let robovast build it instead -- declare 'system_packages'/'python_packages' and "
+        f"drop the image -- which records everything automatically.")
+
+
+def names_family_member(image: str) -> bool:
+    """Whether *image* is a concrete reference to a member of the published family.
+
+    Matched on the repository *name* rather than the project, because the project is
+    deliberately configurable (:envvar:`ROBOVAST_PROJECT`) -- an operator publishing the same
+    family to their own registry is still running our images, built from this repo, carrying our
+    labels. Keying on ``ghcr.io/cps-test-lab`` would have blessed only the default deployment.
+    """
+    ref = (image or "").strip()
+    if not ref:
+        return False
+    # Strip a digest, then a tag, then take the last path segment: `<project>/<member>` is the
+    # shape, and only the member identifies what the image *is*.
+    ref = ref.split("@", 1)[0]
+    head, _, tail = ref.rpartition("/")
+    repository = (tail or head).split(":", 1)[0]
+    return repository in FAMILY_MEMBERS
+
+
+def opaque_image_containers(execution: dict) -> "list[tuple[str, str]]":
+    """``[(container, why)]`` for every container whose image cannot be identified.
+
+    One place, so the collect-all validator and the launch path cannot disagree about what counts
+    -- a config that validated and then would not launch is worse than either answer alone.
+    """
+    containers = (execution or {}).get("containers") or {}
+    if not isinstance(containers, dict):
+        return []
+    out = []
+    for name, block in sorted(containers.items()):
+        tier, why = image_provenance_tier(name, block if isinstance(block, dict) else {})
+        if tier == IMAGE_TIER_OPAQUE:
+            out.append((name, why))
+    return out
+
+
 def is_build_image_ref(image: str | None) -> bool:
     """True if *image* is a symbolic ``build:<tag>`` ref (an unresolved build)."""
     return bool(image) and image.strip().startswith(BUILD_IMAGE_PREFIX)

@@ -138,7 +138,12 @@ def _confirm_overwrite(name, workspace_id):
 @click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',
               help='Tag to take those images at (default: ROBOVAST_PROJECT_TAG, else '
                    'latest).')
+@click.option('--allow-opaque-image', is_flag=True,
+              help='Launch even though a container names an image that declares no '
+                   "provenance:. Refused by default because nothing in the results "
+                   'could then say what ran; the exemption is recorded on the campaign.')
 def run(config, runs, log_tree, namespace, context, wait_and_download,
+        allow_opaque_image,
         poll_interval, campaign_name, upload_to_share,
         description, workspace_name, image_project,
         image_project_tag):  # pylint: disable=function-redefined,redefined-outer-name
@@ -196,6 +201,7 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
                 runs=runs or 0, feedback=click.echo, upload_to_share=upload_to_share,
                 campaign_name=campaign_name or "", description=description or "",
                 workspace_name=workspace_name or "", on_exists=_confirm_overwrite,
+                allow_opaque_image=allow_opaque_image,
                 # The flag beats ROBOVAST_PROJECT; unset here means "whatever the .env
                 # said", which project_push reads. Resolved client-side into the request
                 # because the images are resolved *service*-side — a client that could

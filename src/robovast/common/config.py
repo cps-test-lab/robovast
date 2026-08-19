@@ -183,6 +183,33 @@ SUT_CONTAINER = 'sut'
 CONTAINER_ROLES = (SCENARIO_CONTAINER, SIMULATION_CONTAINER, SUT_CONTAINER)
 
 
+class ImageProvenanceConfig(BaseModel):
+    """Where a user-supplied image came from, stated by the author.
+
+    Only meaningful on a container whose ``image`` robovast did not build. For anything robovast
+    builds, or any member of the published family, the provenance is known by construction and
+    this block is redundant -- declaring it there would invite it to drift from the truth.
+
+    It exists because that one field otherwise makes a whole campaign untraceable: nothing in the
+    results can say what the image was, and the gap surfaces a year later when it is too late to
+    ask. robovast cannot derive this, so the author is the only source.
+
+    **Not to be confused with the generated provenance** in ``_execution/``. That records what
+    robovast observed; this records what only the author knows. Which is also why it lives in the
+    ``.vast``: it is intent, and intent belongs with the rest of the intent.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    #: Where the image's build definition lives -- a repository URL, or a path inside a repo.
+    source: str
+    #: The commit that built it. A tag or branch is accepted but is not a pin, and a re-run a
+    #: year from now will say so rather than pretending the ref still means the same thing.
+    revision: str
+    #: How it was built, for a human who has to reproduce it. Optional, because a repo at a
+    #: commit is often enough; useful when the build is not the obvious one.
+    build_recipe: Optional[str] = None
+
+
 class ContainerConfig(BaseModel):
     """One container of a campaign: what it starts from, and what it adds.
 
@@ -200,6 +227,14 @@ class ContainerConfig(BaseModel):
     #: Image to start from. Optional for a known role whose default comes from a
     #: simulator backend; required otherwise.
     image: Optional[str] = None
+    #: Where a user-supplied ``image`` came from. Required when the image is one robovast
+    #: neither built nor publishes, because otherwise the campaign records nothing that could
+    #: identify what it ran -- see :class:`ImageProvenanceConfig`.
+    #:
+    #: Declared rather than left to ``extra='allow'``: an undeclared key is accepted silently
+    #: here, so a typo like ``provenence:`` would look exactly like compliance while providing
+    #: nothing.
+    provenance: Optional[ImageProvenanceConfig] = None
     #: apt packages installed into the image (``apt-get install -y``).
     system_packages: Optional[list[str]] = None
     #: Python packages installed into the image, as **install groups**. Same vocabulary

@@ -956,6 +956,7 @@ class LocalTransport(RobovastInterface):
         # serve host with no display, must refuse rather than launch a windowless run.
         self._admit_show_gui(request)
         target = self._resolve_project(request.workspace_id, request.config_path)
+        self._admit_image_provenance(target, request)
         return self._launch_campaign(request, target)
 
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
@@ -1011,6 +1012,41 @@ class LocalTransport(RobovastInterface):
         except BaseException:
             plan.discard()
             raise
+
+    def _admit_image_provenance(self, target, request: CreateCampaignRequest) -> None:
+        """Refuse to launch a campaign whose image nobody could later identify.
+
+        Here rather than in :meth:`_launch_campaign`, and that placement is the whole point:
+        ``_launch_campaign`` is shared with the retrigger path, and a *recorded* campaign is a
+        different question. Its image digest already is provenance for "these bytes ran", so
+        refusing it would make exactly the archived campaigns this must keep re-runnable
+        un-re-runnable. The rule belongs to **authoring a new campaign**, which is this method.
+
+        The same classifier the validator uses, so a config cannot validate and then refuse to
+        launch.
+        """
+        from robovast.common.common import load_config
+        from robovast.common.execution import opaque_image_containers
+
+        if request.allow_opaque_image:
+            logger.warning(
+                "launching with allow_opaque_image: an image in this campaign cannot be "
+                "identified, so its results will not say what ran. The exemption is recorded.")
+            return
+        try:
+            raw = load_config(target.config_path)
+        except Exception:  # noqa: BLE001 - a broken config is the validator's problem, not this one
+            return
+        opaque = opaque_image_containers(raw.get("execution") or {})
+        if not opaque:
+            return
+        detail = "\n".join(why for _name, why in opaque)
+        raise ValueError(
+            f"refusing to launch: {len(opaque)} container(s) name an image that could not be "
+            f"identified later.\n\n{detail}\n\n"
+            f"Run 'vast configuration validate' to see this alongside anything else, or pass "
+            f"allow_opaque_image to launch anyway -- the exemption is recorded on the campaign "
+            f"so it is visible to whoever reads the results.")
 
     def _launch_campaign(self, request: CreateCampaignRequest,
                          target: WorkspaceTarget) -> CampaignRef:

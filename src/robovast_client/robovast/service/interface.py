@@ -87,6 +87,13 @@ class CreateCampaignRequest(BaseModel):
     #: Self-declared either way: with one shared secret nobody can prove who they are.
     created_by: str = Field("", max_length=64)
     runs: int = 1                    # runs per configuration
+    #: Launch even though a container names an image nobody could later identify.
+    #:
+    #: The refusal exists because that one field makes the whole campaign untraceable, and the
+    #: gap surfaces a year later when it is too late to ask. An override is offered anyway, and
+    #: recorded on the campaign, because a hard wall with no escape gets worked around in ways
+    #: that leave no trace at all -- whereas an exemption that is written down can be found.
+    allow_opaque_image: bool = False
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
     #: Put the simulator's window on the serve host's X display. Honoured **only** by a

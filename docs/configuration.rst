@@ -363,6 +363,35 @@ Every block takes the same keys:
    which is the normal case; write ``family:<member>`` to base a container of yours on a
    RoboVAST image while still following the deployment's project. :doc:`images` has the
    whole story.
+``provenance``
+   **Required when ``image`` is one RoboVAST neither built nor publishes.** Two fields,
+   ``source`` (the repository or path holding the image's build definition) and ``revision``
+   (the commit that built it), plus an optional ``build_recipe`` for a build that is not the
+   obvious one.
+
+   .. code-block:: yaml
+
+      containers:
+        sut:
+          image: my-registry/experiment-sut:humble
+          provenance:
+            source: https://github.com/org/experiment-images
+            revision: 4f2a1c9e8b7d6a5f4e3c2b1a0f9e8d7c6b5a4938
+            build_recipe: cd compose && docker compose build
+
+   Without it, **validation and launch both refuse the campaign.** That one field otherwise
+   makes the whole campaign untraceable: nothing in its results could say what the image was,
+   so it could never be re-run or audited — and the gap only surfaces once it is too late to
+   ask. RoboVAST cannot derive this, which is why the author has to state it.
+
+   Not needed for anything RoboVAST can identify itself: an image it builds (you declared
+   ``system_packages`` or ``python_packages``), a ``family:`` reference, a ``build:`` reference,
+   a container with no ``image`` at all, or a concrete reference to a published family member
+   such as ``ghcr.io/<project>/robovast-roqsim:latest``.
+
+   If you would rather not track this, declaring ``system_packages``/``python_packages`` and
+   dropping ``image`` lets RoboVAST build the container and record everything automatically.
+   ``--allow-opaque-image`` launches anyway and records the exemption on the campaign.
 ``system_packages``
    apt packages (``apt-get install -y``).
 ``python_packages``
