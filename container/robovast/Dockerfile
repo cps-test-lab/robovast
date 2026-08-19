@@ -164,7 +164,22 @@ RUN mkdir -p /out && chmod 777 /out
 # Compatibility version — must match COMPAT_VERSION in
 # src/robovast/common/execution.py.  Read by all execution contexts
 # (local, cluster, postprocessing) to detect host/container mismatches.
+#
+# Written TWICE, on purpose. The label is what readers should use: `docker inspect` gets it
+# without starting a container, and `buildx imagetools inspect` gets it from a *remote* image
+# without pulling — which is what a pre-flight on a year-old campaign needs, since the question
+# is whether those bytes are still obtainable at all. The file stays because every image built
+# before the label existed carries only the file, and those are exactly the campaigns worth
+# re-running; dropping it would make them unreadable to the very check meant to rescue them.
 RUN echo "2" > /etc/robovast_compat_version
+LABEL org.robovast.compat-version="2"
+
+# Standard OCI provenance. These are the spec'd names — no reason to invent our own — and they
+# are what lets a campaign's results say which commit its image was built from, so an image
+# that has since been deleted can be rebuilt from the same source rather than guessed at.
+ARG ROBOVAST_GIT_REVISION=""
+LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
+LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 
 ARG TARGETARCH
 RUN USER=ubuntu && \

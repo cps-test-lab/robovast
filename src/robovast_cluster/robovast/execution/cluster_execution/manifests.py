@@ -28,15 +28,29 @@ spec:
           command: ["/bin/bash", "-c"]
           args:
             - |
-              EXPECTED="{compat_version}"
+              # Runs INSIDE the image, so the label is not reachable here -- `docker inspect`
+              # is a host-side call and a pod has no daemon socket. The file is the right
+              # marker for this one site; the host-side checks prefer the label.
+              MAX="{compat_version}"
+              MIN="{min_compat_version}"
               ACTUAL=$(cat /etc/robovast_compat_version 2>/dev/null || echo "")
-              if [ -z "$ACTUAL" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
-                echo "ERROR: Compatibility version mismatch!"
-                echo "  Host robovast expects compat version: $EXPECTED"
-                echo "  Container image provides: ${{ACTUAL:-<missing>}}"
+              # A RANGE, not equality: this pod may be running an image a year-old campaign
+              # recorded, and equality refused every one of those after the first bump.
+              if [ -z "$ACTUAL" ]; then
+                echo "ERROR: this image reports no container protocol version"
+                echo "  (/etc/robovast_compat_version is missing); host speaks $MIN..$MAX."
+                exit 1
+              elif [ "$ACTUAL" -gt "$MAX" ] || [ "$ACTUAL" -lt "$MIN" ]; then
+                echo "ERROR: image speaks container protocol $ACTUAL, host speaks $MIN..$MAX."
+                if [ "$ACTUAL" -gt "$MAX" ]; then
+                  echo "  The image is NEWER than this robovast -- upgrade robovast."
+                else
+                  echo "  Check out the robovast revision the campaign recorded"
+                  echo "  (_execution/execution.yaml: robovast_revision) and run it there."
+                fi
                 exit 1
               fi
-              echo "Compat version check passed: $ACTUAL"
+              echo "Container protocol check passed: $ACTUAL (host speaks $MIN..$MAX)"
       containers:
         - name: robovast
           image: {image}

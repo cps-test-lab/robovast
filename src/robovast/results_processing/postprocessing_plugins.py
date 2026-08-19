@@ -55,7 +55,8 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common import log_summary, scenario_markers
-from robovast.common.execution import COMPAT_VERSION, is_campaign_dir
+from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
+                                       is_campaign_dir)
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr,
                                                    column_def, infer_column_types, sql_value, widen,
                                                    widest)
@@ -342,7 +343,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
         config_json = json.dumps({"plugins": plugins})
 
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION)]
+        cmd = [script_path, "--compat-version", str(COMPAT_VERSION),
+               "--min-compat-version", str(MIN_IMAGE_COMPAT)]
         if execution_image:
             cmd.extend(["--image", execution_image])
         if provenance_file:

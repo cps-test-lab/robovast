@@ -52,15 +52,27 @@ jobs:
         uses: docker/setup-qemu-action@v3
       - name: Validate compat version consistency
         run: |
-          PYTHON_VER=$(grep -oP 'COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          # Three places now state the protocol version, and a reader may consult any of
+          # them: the host's max, the legacy file, and the label a remote inspect can read
+          # without pulling. Two agreeing while the third drifts is the failure that would
+          # make a pre-flight answer differently depending on which it happened to read.
+          PYTHON_VER=$(grep -oP '^COMPAT_VERSION\s*=\s*\K\d+' src/robovast/common/execution.py)
+          PYTHON_MIN=$(grep -oP '^MIN_IMAGE_COMPAT\s*=\s*\K\d+' src/robovast/common/execution.py)
           DOCKER_FILE=$(grep -oP 'echo "\K\d+(?=" > /etc/robovast_compat_version)' container/robovast/Dockerfile)
-          echo "Python COMPAT_VERSION: $PYTHON_VER"
-          echo "Dockerfile /etc file: $DOCKER_FILE"
-          if [ "$PYTHON_VER" != "$DOCKER_FILE" ]; then
-            echo "::error::Compat version mismatch! Python=$PYTHON_VER, File=$DOCKER_FILE"
+          DOCKER_LABEL=$(grep -oP 'org\.robovast\.compat-version="\K\d+' container/robovast/Dockerfile)
+          echo "Python COMPAT_VERSION: $PYTHON_VER  (min supported: $PYTHON_MIN)"
+          echo "Dockerfile /etc file:  $DOCKER_FILE"
+          echo "Dockerfile label:      $DOCKER_LABEL"
+          if [ "$PYTHON_VER" != "$DOCKER_FILE" ] || [ "$PYTHON_VER" != "$DOCKER_LABEL" ]; then
+            echo "::error::Compat version mismatch! Python=$PYTHON_VER, File=$DOCKER_FILE, Label=$DOCKER_LABEL"
             exit 1
           fi
-          echo "Compat version check passed: $PYTHON_VER"
+          # The window has to be a real range, and the right way round.
+          if [ -z "$PYTHON_MIN" ] || [ "$PYTHON_MIN" -gt "$PYTHON_VER" ]; then
+            echo "::error::MIN_IMAGE_COMPAT ($PYTHON_MIN) must be set and <= COMPAT_VERSION ($PYTHON_VER)"
+            exit 1
+          fi
+          echo "Compat version check passed: window $PYTHON_MIN..$PYTHON_VER"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

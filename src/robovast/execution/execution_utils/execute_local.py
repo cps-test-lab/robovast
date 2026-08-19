@@ -24,9 +24,10 @@ import tempfile
 import yaml
 
 from robovast.client.project_config import get_project_config
-from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
-                             get_execution_env_variables, load_config, plan_containers,
-                             prepare_campaign_configs, scenario_env)
+from robovast.common import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COMPAT,
+                             generate_execution_yaml_script, get_execution_env_variables,
+                             load_config, plan_containers, prepare_campaign_configs,
+                             scenario_env)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
                                     declared_per_run_seconds)
@@ -352,23 +353,59 @@ if [ "$START_ONLY" != true ]; then
     exec > >(tee -a "${RESULTS_DIR}/_execution/controller.log") 2>&1
 fi
 
-# Pull image if not available locally
+# Pull image if not available locally.
+#
+# A failed pull is FATAL and says so here. It used to fall through to the protocol check, which
+# could then only report the secondary symptom -- "the image reports no version" -- while the
+# actual fact was that the image does not exist or is not reachable. For a re-run of an archived
+# campaign that distinction is the whole answer: an image that cannot be obtained needs its
+# recorded build refs, not a protocol conversation.
 if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
     echo "Docker image '$DOCKER_IMAGE' not found locally. Downloading..."
-    docker pull "$DOCKER_IMAGE"
+    if ! docker pull "$DOCKER_IMAGE"; then
+        echo ""
+        echo "ERROR: could not obtain the image '$DOCKER_IMAGE'."
+        echo "  It is neither present locally nor pullable from its registry."
+        echo ""
+        echo "  If this is a re-run of an archived campaign, the image it recorded is gone:"
+        echo "  see _execution/execution.yaml for what it was built from, and rebuild from"
+        echo "  that revision. Pulling a newer tag would run different code."
+        exit 1
+    fi
     echo ""
 fi
 
-# Compatibility version check (reads /etc/robovast_compat_version inside the container)
-IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
-if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" != "@@COMPAT_VERSION@@" ]; then
-    echo "ERROR: Compatibility version mismatch!"
-    echo "  Host robovast expects compat version: @@COMPAT_VERSION@@"
-    echo "  Container image provides: ${IMAGE_COMPAT:-<missing>}"
-    echo "  Image: $DOCKER_IMAGE"
+# Container protocol check. The label first: `docker inspect` reads it without starting
+# anything, where the legacy file costs a whole container to read one integer. The file is
+# still consulted, because an image built before the label carries only that -- and those are
+# exactly the campaigns worth re-running.
+IMAGE_COMPAT=$(docker inspect --format '{{index .Config.Labels "@@COMPAT_LABEL@@"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
+COMPAT_SOURCE="label"
+if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
+    IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
+    COMPAT_SOURCE="file"
+fi
+# A RANGE, not equality. Equality meant the first bump orphaned every published image, so a
+# campaign pinning one by digest could never be re-run -- refusing the case this exists for.
+if [ -z "$IMAGE_COMPAT" ]; then
+    echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."
+    echo "  This host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@."
+    echo "  The image reports neither the @@COMPAT_LABEL@@ label nor /etc/robovast_compat_version,"
+    echo "  so it is either not a robovast image or predates both markers."
+    exit 1
+elif [ "$IMAGE_COMPAT" -gt "@@COMPAT_VERSION@@" ]; then
+    echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"
+    echo "  but this host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@."
+    echo "  The image is NEWER than this robovast -- upgrade robovast, do not rebuild the image."
+    exit 1
+elif [ "$IMAGE_COMPAT" -lt "@@MIN_IMAGE_COMPAT@@" ]; then
+    echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"
+    echo "  but this host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@ and no longer supports it."
     echo ""
-    echo "  Fix: Pull the latest image with 'docker pull $DOCKER_IMAGE'"
-    echo "       or rebuild with the matching robovast version."
+    echo "  Either check out the robovast revision the campaign recorded"
+    echo "  (_execution/execution.yaml: robovast_revision) and run it there, or rebuild the"
+    echo "  image from that revision. Do NOT pull a newer image: a re-run needs the bytes the"
+    echo "  campaign recorded, not today's."
     exit 1
 fi
 """
@@ -898,6 +935,10 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         f'RESULTS_DIR="{results_dir}/${{CAMPAIGN_ID}}"', 1
     ).replace(
         '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
+    ).replace(
+        '@@MIN_IMAGE_COMPAT@@', str(MIN_IMAGE_COMPAT),
+    ).replace(
+        '@@COMPAT_LABEL@@', COMPAT_VERSION_LABEL,
     )
 
     if step_timeout_s:

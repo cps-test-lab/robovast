@@ -35,12 +35,37 @@ from .config_identifier import compute_config_identifier, hash_file_content, has
 from .errors import CampaignConfigError, missing_input_error
 from .simulators import SIM_CONFIG_FILE
 
-# Compatibility version between host robovast code and the container image.
-# Bump this integer when the contract between host scripts and the container
-# changes (e.g. new required package, ROS distro change, script interface
-# change).  The same value must appear in the Dockerfile as
-# /etc/robovast_compat_version.
+# The host <-> container protocol: what host scripts assume about an image's entrypoint,
+# paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
+# package, a ROS distro change, a script interface change). The same value must appear in the
+# Dockerfile as /etc/robovast_compat_version and as the org.robovast.compat-version label.
+#
+# A **window**, not a single value, and that is the whole point. This was compared with `!=`
+# at every site, so the first bump orphaned every image already published: a campaign whose
+# results pin an image by digest could never be re-run again, even with those exact bytes
+# still sitting in the registry. Since re-running a year-old campaign is a thing robovast is
+# supposed to support, equality was refusing the case it exists for.
+#
+# So the host declares the RANGE it can drive. Bumping the max is now cheap and harmless.
+# Dropping support becomes a separate, deliberate act -- raising the min -- which is also
+# where "we stopped speaking protocol N" gets recorded.
+#
+# The honesty requirement: the window is a CLAIM. Raise the min when support is genuinely
+# dropped, or this replaces a safe refusal with a broken run. Equality was wrong for the use
+# case, but it was wrong in the safe direction. configs/examples/camera_smoke is the cheap
+# way to keep the claim true -- it runs a container and produces an artifact in seconds.
 COMPAT_VERSION = 2
+
+#: The oldest image protocol this host still knows how to drive. Equal to
+#: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
+MIN_IMAGE_COMPAT = 2
+
+#: Image label carrying the protocol version. Preferred over /etc/robovast_compat_version
+#: because reading that file costs a `docker run` -- a whole container started to read one
+#: integer -- and cannot inspect a remote image at all without pulling it first. The file is
+#: still written, and still read as a fallback, because images built before this label exists
+#: carry only the file.
+COMPAT_VERSION_LABEL = "org.robovast.compat-version"
 
 # The unprivileged user a robovast execution image runs as (fixuid is configured for it). Experiment
 # image builds step up to root for apt/pip and must drop back to this, or a cluster pod -- which
@@ -370,6 +395,93 @@ def _git_revision() -> "str | None":
 #: How many changed paths a provenance record keeps. A dirty tree can hold thousands, and a
 #: record that balloons stops being read; the count beside the sample keeps the fact intact.
 MAX_RECORDED_CHANGED_PATHS = 20
+
+
+def image_compat_version(image: str) -> "tuple[int | None, str]":
+    """``(version, source)`` for *image*'s protocol version. ``(None, reason)`` when unknown.
+
+    Tries the label first and the file second, because the label is strictly cheaper and
+    strictly more capable: ``docker inspect`` reads it without starting anything, and
+    ``buildx imagetools inspect`` reads it from a **remote** image without pulling -- which is
+    what a pre-flight on a year-old campaign needs, since the whole question is whether those
+    bytes are still obtainable. The file needs a container started to read one integer.
+
+    The file remains the fallback rather than being dropped: every image built before the
+    label existed carries only the file, and those are exactly the campaigns worth re-running.
+    ``source`` is returned so a caller can say which answered.
+    """
+    labelled = _docker_label(image, COMPAT_VERSION_LABEL)
+    if labelled and labelled.strip().isdigit():
+        return int(labelled.strip()), "label"
+    from_file = _compat_version_file(image)
+    if from_file is not None:
+        return from_file, "file"
+    return None, "not reported by the image (no label and no /etc/robovast_compat_version)"
+
+
+def _docker_label(image: str, label: str) -> str:
+    """One label off a local image, or ``""``. Never raises -- absence is the answer."""
+    if not image:
+        return ""
+    try:
+        result = subprocess.run(
+            ['docker', 'inspect', '--format', '{{index .Config.Labels "%s"}}' % label, image],
+            capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    value = result.stdout.strip()
+    # `docker inspect` prints the Go zero value for a missing key, not an empty string.
+    return "" if value in ("", "<no value>") else value
+
+
+def _compat_version_file(image: str) -> "int | None":
+    """The legacy marker, read by starting the container. Only for images without the label."""
+    if not image:
+        return None
+    try:
+        result = subprocess.run(
+            ['docker', 'run', '--rm', '--entrypoint', 'cat', image,
+             '/etc/robovast_compat_version'],
+            capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return None
+    text = result.stdout.strip()
+    return int(text) if result.returncode == 0 and text.isdigit() else None
+
+
+def check_image_compat(image: str, *, version: "int | None" = None,
+                       source: str = "") -> "str | None":
+    """``None`` when this host can drive *image*, else a message saying what to do.
+
+    One function for a decision three call sites each spelled out for themselves, with three
+    slightly different messages -- and the one they shared told the reader to "pull the latest
+    image", which is the *opposite* of what a re-run wants: it needs the recorded bytes, not
+    today's. So the message names the window, what the image reports, and the two real ways
+    out.
+
+    *version* / *source* let a caller that already inspected the image avoid a second probe.
+    """
+    if version is None and not source:
+        version, source = image_compat_version(image)
+
+    if version is None:
+        return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
+                f"This host speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION}. An image that "
+                f"reports nothing is either not a robovast image or predates the marker.")
+    if MIN_IMAGE_COMPAT <= version <= COMPAT_VERSION:
+        return None
+    if version > COMPAT_VERSION:
+        return (f"{image!r} speaks container protocol {version} (from its {source}), but this "
+                f"host speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION}. The image is NEWER than "
+                f"this robovast -- upgrade robovast rather than rebuilding the image.")
+    return (f"{image!r} speaks container protocol {version} (from its {source}), but this host "
+            f"speaks {MIN_IMAGE_COMPAT}..{COMPAT_VERSION} and no longer supports {version}.\n"
+            f"Either check out the robovast revision the campaign's results recorded "
+            f"(_execution/execution.yaml: robovast_revision) and run it there, or rebuild the "
+            f"image from that revision. Do NOT pull a newer image: a re-run needs the bytes "
+            f"the campaign recorded, not today's.")
 
 
 def code_provenance() -> dict:

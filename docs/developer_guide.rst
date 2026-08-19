@@ -257,22 +257,41 @@ sides are out of sync (e.g. after updating one without the other).
 How it works
 ^^^^^^^^^^^^
 
-A single integer ``COMPAT_VERSION`` is defined in
-``src/robovast/common/execution.py``.  The same value is baked into the
-container image as the file ``/etc/robovast_compat_version``.
+The host declares a **window** of protocol versions it can drive:
+``MIN_IMAGE_COMPAT .. COMPAT_VERSION``, both in
+``src/robovast/common/execution.py``.  ``COMPAT_VERSION`` is baked into the
+container image twice — as the label ``org.robovast.compat-version`` and, for
+backwards compatibility, as the file ``/etc/robovast_compat_version``.
 
-Before any container starts, the version is checked by reading
-``/etc/robovast_compat_version`` from inside the container:
+A window rather than a single value, because this was previously compared with
+``!=``: the first bump orphaned every image already published, so a campaign whose
+results pin an image by digest could never be re-run again — even with those exact
+bytes still in the registry.  Bumping the maximum is now harmless; **dropping**
+support is a separate, deliberate act of raising the minimum.
 
-- **Local execution**: the generated ``run.sh`` script checks the file
-  before ``docker-compose up``.
-- **Cluster execution**: a Kubernetes init container reads the file and
-  compares it to the expected value.
-- **Postprocessing**: ``docker_exec.sh`` checks the file before
-  ``docker run``.
+Readers prefer the label, because ``docker inspect`` reads it without starting a
+container and ``docker buildx imagetools inspect`` reads it from a *remote* image
+without pulling.  The file is still consulted as a fallback: images built before
+the label carry only the file, and those are exactly the archived campaigns worth
+re-running.
 
-If the versions do not match (or the file is missing), execution fails
-immediately with a clear error message.
+- **Local execution**: the generated ``run.sh`` checks before ``docker-compose up``.
+- **Cluster execution**: a Kubernetes init container checks the file — a pod has no
+  daemon socket, so the label is not reachable from inside the image.
+- **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
+
+Outside the window, execution fails immediately, and the message differs by
+direction because the fixes are not interchangeable: an image **older** than the
+window means "check out the revision the campaign recorded
+(``_execution/execution.yaml``) and run it there", while one **newer** means
+"upgrade robovast".  Neither ever advises pulling a newer image — a re-run needs the
+bytes the campaign recorded, not today's.
+
+.. warning::
+
+   The window is a *claim*.  Raise ``MIN_IMAGE_COMPAT`` when support is genuinely
+   dropped, or it replaces a safe refusal with a broken run.
+   ``configs/examples/camera_smoke`` is the cheap way to keep the claim true.
 
 When to bump the version
 ^^^^^^^^^^^^^^^^^^^^^^^^

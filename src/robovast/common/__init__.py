@@ -43,6 +43,10 @@ _LAZY = {
     "CampaignConfigError": ".errors",
     "missing_input_error": ".errors",
     "COMPAT_VERSION": ".execution",
+    "MIN_IMAGE_COMPAT": ".execution",
+    "COMPAT_VERSION_LABEL": ".execution",
+    "check_image_compat": ".execution",
+    "image_compat_version": ".execution",
     "check_campaign_inputs": ".execution",
     "create_execution_yaml": ".execution",
     "generate_execution_yaml_script": ".execution",
@@ -84,9 +88,10 @@ if TYPE_CHECKING:  # the real imports, for type checkers and IDEs only
     from .config_generation import execute_variation, generate_scenario_variations
     from .containers import ContainerPlan, PlannedContainer, plan_containers
     from .errors import CampaignConfigError, missing_input_error
-    from .execution import (COMPAT_VERSION, check_campaign_inputs, create_execution_yaml,
+    from .execution import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COMPAT,
+                            check_campaign_inputs, check_image_compat, create_execution_yaml,
                             generate_execution_yaml_script, get_campaign, get_campaign_timestamp,
-                            get_execution_env_variables, is_campaign_dir, prepare_campaign_configs,
-                            scenario_env)
+                            get_execution_env_variables, image_compat_version, is_campaign_dir,
+                            prepare_campaign_configs, scenario_env)
     from .file_cache import FileCache
     from .progress import ProgressBar, fmt_size, make_download_progress_callback

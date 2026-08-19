@@ -64,8 +64,8 @@ import time
 import yaml
 from kubernetes import client
 
-from robovast.common import (COMPAT_VERSION, get_execution_env_variables, plan_containers,
-                             prepare_campaign_configs, scenario_env)
+from robovast.common import (COMPAT_VERSION, MIN_IMAGE_COMPAT, get_execution_env_variables,
+                             plan_containers, prepare_campaign_configs, scenario_env)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents, create_job_links,
@@ -874,7 +874,8 @@ class BatchJobRunner:
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
         yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
-                                       compat_version=COMPAT_VERSION)
+                                       compat_version=COMPAT_VERSION,
+                                       min_compat_version=MIN_IMAGE_COMPAT)
         manifest = yaml.safe_load(yaml_str)
 
         # Kueue keys queue membership off the label (not an annotation); an
