@@ -108,7 +108,12 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
     vast_files = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
     if vast_files:
         try:
-            config_json = load_config(str(vast_files[0]))
+            # `upgrade=True`: this reads an ARCHIVED config, which may predate the current
+            # version. The strict policy would raise, and the except below would swallow it into
+            # an empty config -- so an old campaign's store rebuilt fine and silently lost the
+            # visualization block the GUI reads from it, for exactly the campaigns whose store
+            # had to be reconstructed. The archived file itself is not rewritten.
+            config_json = load_config(str(vast_files[0]), upgrade=True)
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Could not load %s for campaign store: %s", vast_files[0], e)
 

@@ -19,6 +19,7 @@
 
 import fnmatch
 import os
+import shutil
 import sys
 import tarfile
 import time
@@ -222,6 +223,92 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
         click.echo(f"\u2717 {message}", err=True)
         sys.exit(1)
     click.echo(f"\u2713 {message}")
+
+
+#: How an ingest stage is shown. Symbols so a four-line report scans at a glance; the word stays
+#: because a symbol alone is not something anyone can act on or search a log for.
+_STAGE_MARKS = {
+    "ok": ("ok", "green"),
+    "migrated": ("migrated", "yellow"),
+    "absent": ("absent", "yellow"),
+    "degraded": ("degraded", "yellow"),
+    "newer": ("NEWER", "red"),
+    "failed": ("FAILED", "red"),
+}
+
+
+@results.command(name='import')
+@click.argument('archive', type=click.Path(exists=True))
+@click.option('--output', default=None, type=click.Path(),
+              help='Where to extract. Defaults to the project results directory.')
+@click.option('--force', is_flag=True, help='Overwrite an existing campaign of the same name.')
+@click.option('--rebuild-store', is_flag=True,
+              help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
+def import_cmd(archive, output, force, rebuild_store):
+    """Take in a campaign archive somebody else produced, and report what happened.
+
+    Extracts ARCHIVE, then registers the campaign so it appears in listings and the web UI --
+    which answer from campaign.db, not from the results tree, so extraction alone leaves a
+    campaign invisible. That is what the old ``import-results`` did.
+
+    Ingestion is several steps and each can fail differently, so the report is per stage with a
+    recovery for anything that is not ok. Most failures are recoverable: an absent store is
+    reconstructed from the results tree, a corrupt one with --rebuild-store, and an older config
+    migrates when read. Only something from a NEWER robovast cannot be brought back, because a
+    schema cannot be migrated downwards.
+    """
+    from robovast.service.ingest import \
+        ingest_campaign  # pylint: disable=import-outside-toplevel
+
+    if output is None:
+        try:
+            output = get_project_config().results_dir
+        except Exception as e:  # noqa: BLE001
+            handle_cli_exception(e)
+            return
+
+    root = Path(output)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(archive, 'r:*') as tar:
+            names = tar.getnames()
+            tops = {name.split('/')[0] for name in names if name and not name.startswith('/')}
+            if len(tops) != 1:
+                click.echo(click.style(
+                    f"✗ archive holds {len(tops)} top-level entries; expected one campaign "
+                    f"directory: {sorted(tops)[:5]}", fg="red"), err=True)
+                sys.exit(1)
+            campaign_name = tops.pop()
+            target = root / campaign_name
+            if target.exists():
+                if not force:
+                    click.echo(click.style(
+                        f"✗ {target} already exists. Refusing to overwrite a campaign that is "
+                        f"already here -- its records are evidence. Use --force to replace it.",
+                        fg="red"), err=True)
+                    sys.exit(1)
+                shutil.rmtree(target)
+            # `filter='data'` refuses absolute paths and ../ escapes. An archive from elsewhere is
+            # untrusted input, and the default became an error in newer Pythons for that reason.
+            tar.extractall(path=root, filter='data')
+    except (tarfile.TarError, OSError) as e:
+        click.echo(click.style(f"✗ could not read {archive}: {e}", fg="red"), err=True)
+        sys.exit(1)
+
+    click.echo(f"extracted {campaign_name} to {root}")
+    report = ingest_campaign(target, rebuild_store=rebuild_store)
+    for name, stage in report["stages"].items():
+        word, colour = _STAGE_MARKS.get(stage["verdict"], (stage["verdict"], None))
+        click.echo(f"  {name:<15} {click.style(word, fg=colour):<20} {stage['detail']}")
+    click.echo("")
+    if report["ok"]:
+        click.echo(click.style(f"✓ imported {campaign_name}", fg="green"))
+        click.echo(f"  next: vast exec check-retrigger {campaign_name}")
+        return
+    click.echo(click.style(
+        f"✗ {campaign_name} could not be ingested: {', '.join(report['blocking'])}", fg="red"),
+        err=True)
+    sys.exit(1)
 
 
 @results.command(name='backfill-provenance')

@@ -31,12 +31,11 @@ import logging
 import os
 import shutil
 import sys
-import tarfile
 
 import click
 
 from robovast.client.logging_config import get_logger
-from robovast.client.project_config import ProjectConfig, get_project_config
+from robovast.client.project_config import ProjectConfig
 from robovast.client.service_target import _service_alive
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.service.interface import DEFAULT_PORT
@@ -340,104 +339,3 @@ def ui(port, no_browser):
     click.echo(f"✓ robovast-service: {url}   (web UI + REST API + /docs)")
     if not no_browser:
         webbrowser.open(url)
-
-
-@click.command()
-@click.argument('archive', type=click.Path(exists=True))
-@click.option('--output', '-o', default=None,
-              help='Directory where results will be extracted (uses project results dir if not specified)')
-@click.option('--force', '-f', is_flag=True,
-              help='Force extraction even if campaign directory already exists')
-def import_results(archive, output, force):
-    """Import results from a downloaded archive.
-
-    Extracts a tar.gz archive (created by ``vast execution cluster download``)
-    to the results directory. This is useful for importing results that were
-    downloaded on a different machine or for re-importing previously downloaded results.
-
-    The archive should be in the format ``<campaign-name>-<timestamp>.tar.gz`` and contain
-    a campaign directory with all run results.
-
-    Requires project initialization with ``vast init`` first (unless ``--output`` is specified).
-    """
-    # Get output directory
-    project_config = None
-    if output is None:
-        # Get from project configuration
-        try:
-            project_config = get_project_config()
-            output = project_config.results_dir
-        except Exception as e:
-            click.echo("Error: Could not load project configuration.", err=True)
-            click.echo(f"Details: {e}", err=True)
-            click.echo("Use --output to specify the extraction directory.", err=True)
-            sys.exit(1)
-
-    # Validate output parameter
-    if not output:
-        click.echo("Error: --output parameter is required (or use 'vast init' to set default)", err=True)
-        click.echo("Use --help for usage information", err=True)
-        sys.exit(1)
-
-    # Create output directory
-    os.makedirs(output, exist_ok=True)
-
-    try:
-        archive_path = os.path.abspath(archive)
-        click.echo(f"Importing results from: {archive_path} to results directory '{output}'...")
-
-        # Validate the archive
-        click.echo(f"Validating archive...")
-        try:
-            with tarfile.open(archive_path, 'r:gz') as tar:
-                # Get the list of members to check structure
-                members = tar.getnames()
-                if not members:
-                    click.echo("Error: Archive is empty", err=True)
-                    sys.exit(1)
-
-                # Extract run ID from archive contents
-                top_level_dirs = set()
-                for member in members:
-                    parts = member.split('/')
-                    if parts:
-                        top_level_dirs.add(parts[0])
-
-                if len(top_level_dirs) != 1:
-                    click.echo(f"Warning: Archive contains multiple top-level directories: {top_level_dirs}")
-
-                campaign = list(top_level_dirs)[0] if top_level_dirs else None
-                from ..execution import is_campaign_dir  # pylint: disable=import-outside-toplevel
-                if campaign and not is_campaign_dir(campaign):
-                    click.echo(
-                        f"Warning: Archive does not contain a recognized campaign directory "
-                        f"(expected '<campaign-name>-YYYY-MM-DD-HHMMSS', found '{campaign}')")
-            click.echo(f"Archive validation successful")
-        except (tarfile.TarError, OSError) as e:
-            click.echo(f"Error: Archive validation failed: {e}", err=True)
-            sys.exit(1)
-
-        # Check if campaign directory already exists
-        if campaign:
-            campaign_output_dir = os.path.join(output, campaign)
-            if os.path.exists(campaign_output_dir):
-                if not force:
-                    click.echo(f"Error: Campaign directory already exists: {campaign_output_dir}", err=True)
-                    click.echo(f"Use --force to overwrite existing run", err=True)
-                    sys.exit(1)
-                else:
-                    click.echo(f"Removing existing campaign directory...")
-                    shutil.rmtree(campaign_output_dir)
-
-        # Extract the archive
-        logger.debug(f"Extracting archive...")
-        with tarfile.open(archive_path, 'r:gz') as tar:
-            tar.extractall(path=output)
-
-        logger.debug(f"Successfully extracted to: {output}")
-
-        click.echo(f"✓ Import completed successfully!")
-
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)

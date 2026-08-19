@@ -135,7 +135,6 @@ env-file = "robovast.common.env_file:load_env_file"
 init = "robovast.common.cli.core_commands:init"
 serve = "robovast.common.cli.core_commands:serve"
 ui = "robovast.common.cli.core_commands:ui"
-"import-results" = "robovast.common.cli.core_commands:import_results"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 results = "robovast.results_processing.cli:results"
 # No `execution` here: `vast exec` is the client's group now, because the launch path

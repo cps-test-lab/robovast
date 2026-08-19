@@ -1389,7 +1389,11 @@ Who writes it
   (mtime-guarded; ``force=True`` to rebuild). Controller-written stores are left
   untouched. It has **no CLI entry point**: ``vast eval index`` was the only caller and
   went with the desktop tools, so a tree that has no store keeps none. The function
-  itself stays because ``import-results`` and the tests use it.
+  itself is the register step of ``vast results import``: an archive somebody else produced
+  usually has no store, and extraction alone leaves the campaign invisible to every
+  store-driven view. (This paragraph previously said it stayed because ``import-results``
+  and the tests used it -- stale on both counts: that command did not call it, and it had
+  no caller at all, so a routine dead-code sweep would have taken the primitive with it.)
 
 Store-driven results views
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
