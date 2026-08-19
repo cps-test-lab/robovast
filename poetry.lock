@@ -5165,9 +5165,9 @@ optuna = ["optuna"]
 qd = ["ribs", "shapely"]
 roqsim = ["robovast-sim-roqsim"]
 sftp = ["paramiko"]
-test = ["optuna", "pytest", "ribs", "shapely"]
+test = ["ipykernel", "lxml-html-clean", "nbconvert", "nbformat", "optuna", "pyld", "pytest", "rdflib", "ribs", "shapely"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "3aefbc6dd0c9dbd8acd1ca1beb304b455d253e9d81c0fe4e4c411f05fbcb1d2f"
+content-hash = "8c5b272444159a6fb0667577c428287e6b5fb0ef30e30fd633f28e0c2356b80f"
