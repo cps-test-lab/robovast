@@ -100,7 +100,17 @@ sftp = ["paramiko"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
 optuna = ["optuna"]
-test = ["pytest", "ribs", "shapely", "optuna"]
+# The suite imports the modules these belong to, so they are test requirements even
+# though the runtime treats them as optional: tests/results_processing imports
+# fair_metadata (rdflib, pyld at module scope) and notebook_render (nbformat,
+# nbconvert, plus the kernel and sanitizer they render through). ribs/shapely/optuna
+# were already here for the same reason. Leaving them out did not fail visibly --
+# every dev venv had them from some earlier install, and robovast-nav supplies
+# matplotlib, scipy and rdflib as hard dependencies -- so only a clean CI run ever
+# hit the collection error. Deliberately NOT paramiko: test_cli_startup_weight lists
+# it as forbidden at CLI startup.
+test = ["pytest", "ribs", "shapely", "optuna", "rdflib", "pyld", "nbformat",
+        "nbconvert", "ipykernel", "lxml-html-clean"]
 
 # No [tool.poetry.scripts] here: the `vast` entry point belongs to robovast-client, which
 # owns the root command group. Declaring it in both would have two distributions racing to
