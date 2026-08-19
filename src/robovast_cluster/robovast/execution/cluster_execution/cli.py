@@ -710,6 +710,12 @@ def run_cleanup(campaign, data, force, namespace, context):
                     raise click.ClickException(res.message or "cleanup-data failed")
                 click.echo(f"✓ {res.message}")
 
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:

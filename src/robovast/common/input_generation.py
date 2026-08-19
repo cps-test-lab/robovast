@@ -403,6 +403,9 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
     # the host, and the key would then reduce to the generator's own name and parameters --
     # constant, so the first stamp would satisfy every later composition no matter what
     # changed. Unverifiable inputs mean regenerate, the same rule as no manifest at all.
+    # `prior and` already establishes the list; pylint reads the Optional from the assignment
+    # above and does not narrow through the `and`.
+    # pylint: disable-next=not-an-iterable
     if prior and not all(os.path.isfile(p) for p in prior):
         logger.debug("input generator '%s': manifest names paths not visible here "
                      "(a containerized run?); regenerating rather than trusting a key "

@@ -116,6 +116,9 @@ def test_a_plugin_that_declares_nothing_is_undeclared_not_empty():
 
 def test_update_slots_routes_each_output_to_its_channel():
     """The atomicity that matters: both channels written by one call, from one set of values."""
+    # `__new__` takes the class as its first argument, which is what is passed here. pylint
+    # only reads it as unfilled because pydantic is not installed in super-linter's container.
+    # pylint: disable-next=no-value-for-parameter
     variation = _Slotted.__new__(_Slotted)
     variation.parameters = TwoOutputs(scenario={"map": "map_file"},
                                       sim={"mesh": "plugins.floorplan.mesh"})

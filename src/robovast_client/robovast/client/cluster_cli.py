@@ -218,6 +218,12 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
             # The service streams the campaign from the object store — no external
             # share needed for delivery.
             download_campaign_via_service(client, cid, os.getcwd(), feedback=click.echo)
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
@@ -249,6 +255,12 @@ def stop(campaign, namespace, context):
                            "The campaign will end after the current batch.")
             else:
                 click.echo(f"Stop failed: {result.message}")
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
@@ -285,6 +297,12 @@ def stop_job(job_name, campaign, reason, namespace, context):
                 click.echo(f"Stopped job '{job_name}' of '{campaign_id}'. {result.message}")
             else:
                 click.echo(f"Stop failed: {result.message}")
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
@@ -353,6 +371,12 @@ def log(campaign, follow, namespace, context):
                 campaign_dir = os.path.join(cfg.results_dir, campaign)
             text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
             click.echo(text, nl=False)
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
@@ -387,6 +411,12 @@ def download_cleanup(campaign, force, namespace, context):
             if not res.ok:
                 raise click.ClickException(res.message or "cleanup-data failed")
             click.echo(f"✓ {res.message}")
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
+    # usage and setting the exit code, so they must pass the broad handler below rather than be
+    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
+    # with none of the project's dependencies installed, leaving click's types unresolvable --
+    # the same reason .pylintrc already disables import-error.
+    # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
     except Exception as e:
