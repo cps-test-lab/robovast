@@ -221,13 +221,19 @@ def _submit_stubs(cs, monkeypatch, storage):
     # Installing a store is how a lane supplies one, so a test supplies one the same way.
     monkeypatch.setattr(
         cs, "_image_store",
-        types.SimpleNamespace(ref_for=lambda spec_, dir_: ImageRef(
-            ref="reg/foo:h", identity="build:foo@h", build_id="imgbuild-foo-h",
-            image_hash="h")), raising=False)
+        types.SimpleNamespace(
+            ref_for=lambda spec_, dir_: ImageRef(
+                ref="reg/foo:h", identity="build:foo@h", build_id="imgbuild-foo-h",
+                image_hash="h"),
+            # The submit renders the Dockerfile with the git refs already resolved to
+            # commits. Empty here: this spec declares no git specs, and these tests are
+            # about the staged context rather than about what the Dockerfile installs.
+            resolve_vcs=lambda spec_: {}),
+        raising=False)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _batch_with())
     monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
-                        lambda spec, project_dir, base_ref: "FROM base")
+                        lambda spec, project_dir, base_ref, resolved_vcs=None: "FROM base")
     monkeypatch.setattr(cluster_image_build, "build_job_manifest",
                         lambda **kw: {"metadata": {"name": kw["build_id"]}})
     cfg = types.SimpleNamespace(
