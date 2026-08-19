@@ -138,7 +138,10 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
               help='Only publish a single campaign directory '
                    '(e.g. navigation-2026-03-20-153630). '
                    'Without this, all campaigns are published.')
-def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
+@click.option('--allow-opaque', is_flag=True,
+              help='Publish even when an input cannot be identified. The exemption is recorded '
+                   'in the dataset, so it is visible to whoever reads it rather than untraceable.')
+def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -210,6 +213,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
 
     # Run publication
     success, message = run_publication(
+        allow_opaque=allow_opaque,
         results_dir=results_dir,
         output_callback=click.echo,
         vast_file=vast_file,
