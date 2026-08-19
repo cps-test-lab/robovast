@@ -52,13 +52,13 @@ COPY --from=scenario-execution-clone /src /
 FROM osrf/ros:${ROS_DISTRO}-desktop-full@${ROS_BASE_DIGEST}
 ARG ROS_DISTRO
 ARG ROS_BASE_DIGEST
+SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 RUN test -d "/opt/ros/${ROS_DISTRO}" || { \
       echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not an osrf/ros:${ROS_DISTRO} image."; \
       echo "  It carries: $(ls /opt/ros 2>/dev/null | tr '\\n' ' ')"; \
       echo "  Docker ignores the tag when a digest is given, so the digest decides. Pass a"; \
       echo "  matching --build-arg ROS_BASE_DIGEST, or refresh both with make refresh-build-pins."; \
       exit 1; }
-SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 WORKDIR /ws
 
