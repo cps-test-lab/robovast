@@ -21,6 +21,11 @@ from robovast.service.image_build import BuildSpec
 from robovast.service.image_store import (ImageBuildStore, ImageRef, LocalDockerImageStore,
                                           build_identity, local_build_id)
 
+try:
+    from robovast.execution.cluster_execution.registry_image_store import RegistryImageStore
+except ImportError:                                     # robovast_cluster not installed
+    RegistryImageStore = None
+
 SPEC = BuildSpec(tag="sut", base_image="ghcr.io/x/robovast:latest",
                  python_packages=["shapely==2.0.1"])
 
@@ -172,3 +177,36 @@ def test_the_local_build_id_is_the_one_start_records(tmp_path):
     found = store.ref_for(SPEC, tmp_path)
     assert found.build_id == local_build_id("sut", found.image_hash)
     assert found.identity == build_identity("sut", found.image_hash)
+
+
+def test_every_store_folds_the_vcs_resolution_into_its_hash(tmp_path, monkeypatch):
+    """A moving ref must change the key on EVERY lane, not just the one that remembered.
+
+    The cluster lane hashed without the resolution, so a spec naming a branch was
+    cache-stable there: the first build's commit was served for ever, and because the same
+    omission left the Dockerfile unpinned, the image installed whatever the branch pointed at
+    when the Job ran -- with nothing recording which commit that was. The local lane did it
+    correctly, which is precisely why nothing failed and nobody noticed.
+    """
+    from robovast.service import image_build
+
+    spec = BuildSpec(tag="sut", base_image="ghcr.io/x/robovast:latest",
+                     python_packages=["pkg @ git+https://host/repo@main"])
+
+    def _hash_when_the_branch_points_at(store, sha):
+        monkeypatch.setattr(image_build, "_ls_remote", lambda *_a, **_kw: sha)
+        return store.ref_for(spec, tmp_path).image_hash
+
+    for store in _stores(tmp_path):
+        before = _hash_when_the_branch_points_at(store, "a" * 40)
+        after = _hash_when_the_branch_points_at(store, "b" * 40)
+        assert before != after, (
+            f"{type(store).__name__}.ref_for ignores the resolution: a moved branch is a "
+            f"cache hit, so the first build is served for ever")
+
+
+def test_the_resolution_is_shared_rather_than_reimplemented_per_lane():
+    """Concrete on the ABC, because "which commit does this ref name?" is not a property of
+    where images are stored. While it lived on one store, the other simply did without it."""
+    for store_cls in (LocalDockerImageStore, *([RegistryImageStore] if RegistryImageStore else [])):
+        assert store_cls.resolve_vcs is ImageBuildStore.resolve_vcs

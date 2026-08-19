@@ -317,6 +317,8 @@ def monitor(interval, once, kube_context, namespace):
 
         def _build_run_lines(label, ctx, per_run):
             """Return (lines, all_done) for a single context."""
+            from .cluster_execution import \
+                JOB_PHASE_COUNTERS  # pylint: disable=import-outside-toplevel
             ctx_initial = initial_total.setdefault(ctx, {})
             ctx_ok = max_ok.setdefault(ctx, {})
             ctx_fail = max_fail.setdefault(ctx, {})
@@ -330,9 +332,15 @@ def monitor(interval, once, kube_context, namespace):
             now = time.time()
 
             for campaign in all_campaigns:
-                c = per_run.get(campaign, {"completed": 0, "failed": 0, "running": 0, "pending": 0,
-                                           "total_job_num": None})
-                current_total = c["completed"] + c["failed"] + c["running"] + c["pending"]
+                empty = dict.fromkeys(JOB_PHASE_COUNTERS, 0)
+                empty["total_job_num"] = None
+                c = per_run.get(campaign, empty)
+                # A job that is blocked (cannot pull its image) or waiting (no Kueue quota
+                # yet) is submitted and unfinished, so it belongs in both sums below --
+                # otherwise this loop reaches "All jobs finished" while such jobs sit in
+                # the cluster, and stops watching them.
+                unstarted = c["pending"] + c.get("blocked", 0) + c.get("waiting", 0)
+                current_total = c["completed"] + c["failed"] + c["running"] + unstarted
                 if campaign not in ctx_initial:
                     ctx_initial[campaign] = current_total
                 # Prefer annotation-based total so the monitor shows the full run size
@@ -341,7 +349,7 @@ def monitor(interval, once, kube_context, namespace):
                 total = annotated_total if annotated_total else ctx_initial[campaign]
                 ctx_ok[campaign] = max(ctx_ok.get(campaign, 0), c["completed"])
                 ctx_fail[campaign] = max(ctx_fail.get(campaign, 0), c["failed"])
-                still_in_cluster = c["running"] + c["pending"]
+                still_in_cluster = c["running"] + unstarted
                 # Once all jobs have been seen in the cluster at least once, it's safe
                 # to infer finished count from total - still_in_cluster (which handles
                 # TTL-deleted Job objects). Before that point, jobs are still being
@@ -385,10 +393,19 @@ def monitor(interval, once, kube_context, namespace):
                             eta_dt = datetime.datetime.fromtimestamp(now + eta_secs)
                             eta_str = f"  ETA ~{eta_dt.strftime('%H:%M')}"
 
+                # Blocked and waiting are named only when non-zero: waiting is every
+                # cluster batch's normal first state, and a permanent "Waiting: 0" is how
+                # a reader learns to stop reading the line. A blocked count is the one
+                # number here that means someone has to do something.
+                extra = ""
+                if c.get("waiting"):
+                    extra += f"  Waiting: {c['waiting']}"
+                if c.get("blocked"):
+                    extra += f"  Blocked: {c['blocked']}"
                 lines.append(
                     f"{indent}{campaign}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
-                    f"Running: {c['running']}  Pending: {c['pending']}"
+                    f"Running: {c['running']}  Pending: {c['pending']}{extra}"
                     f"{rate_str}{eta_str}"
                 )
             if not lines:

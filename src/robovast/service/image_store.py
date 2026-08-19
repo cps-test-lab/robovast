@@ -133,6 +133,35 @@ class ImageBuildStore(ABC):
                 absence -- see the class docstring.
         """
 
+    def resolve_vcs(self, spec: BuildSpec) -> dict:
+        """``{spec: commit}`` for every git spec whose ref is not already a commit.
+
+        Part of *resolution*, not of the build, because the identity of the image depends on it:
+        a moving branch has to change the cache key or the first build's resolution is served
+        forever. See :func:`resolve_floating_vcs_specs` for why falling back to the bare ref is
+        refused rather than tolerated.
+
+        Concrete and defined HERE rather than per lane, because "which commit does this ref
+        name?" has nothing to do with where an image is stored -- and because a lane that
+        simply never called it lost the whole feature silently. The cluster lane did: it hashed
+        and rendered without the resolution, so `@main` stayed cache-stable, the Dockerfile
+        installed the branch rather than the commit, and no vcs.txt was written. Nothing failed;
+        the record was just empty. Both callers a lane must not forget are the ones that take
+        ``resolved_vcs``: :func:`build_hash` and :func:`generate_dockerfile`.
+
+        A resolution failure is reported as an unavailable store rather than raised as a build
+        error: the question "which image would this be?" genuinely cannot be answered without
+        network access to the ref, and answering it with a stale hash is what this removes.
+        """
+        from robovast.common.config_plugins import \
+            _read_git_token  # pylint: disable=import-outside-toplevel
+
+        try:
+            return resolve_floating_vcs_specs(spec.python_specs,
+                                              git_token=_read_git_token())
+        except ValueError as e:
+            raise ImageStoreUnavailable(str(e)) from e
+
 
 # ---------------------------------------------------------------------------
 # The local docker daemon
@@ -200,27 +229,6 @@ class LocalDockerImageStore(ImageBuildStore):
                         identity=build_identity(spec.tag, image_hash),
                         build_id=local_build_id(spec.tag, image_hash),
                         image_hash=image_hash)
-
-    def resolve_vcs(self, spec: BuildSpec) -> dict:
-        """``{spec: commit}`` for every git spec whose ref is not already a commit.
-
-        Part of *resolution*, not of the build, because the identity of the image depends on it:
-        a moving branch has to change the cache key or the first build's resolution is served
-        forever. See :func:`resolve_floating_vcs_specs` for why falling back to the bare ref is
-        refused rather than tolerated.
-
-        A resolution failure is reported as an unavailable store rather than raised as a build
-        error: the question "which image would this be?" genuinely cannot be answered without
-        network access to the ref, and answering it with a stale hash is what this removes.
-        """
-        from robovast.common.config_plugins import \
-            _read_git_token  # pylint: disable=import-outside-toplevel
-
-        try:
-            return resolve_floating_vcs_specs(spec.python_specs,
-                                              git_token=_read_git_token())
-        except ValueError as e:
-            raise ImageStoreUnavailable(str(e)) from e
 
     def present(self, ref: ImageRef) -> bool:
         try:

@@ -726,11 +726,27 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
         logger.warning("Failed to clean up aux pods: %s", exc)
 
 
+#: One counter per phase :func:`list_jobs_with_phase` can report.
+#:
+#: Spelled out because the loop below used to do ``per_run[campaign][phase] += 1`` against
+#: a dict seeded with four names -- which quietly made the classifier's vocabulary this
+#: function's schema. Both phases added there since (``blocked``, then ``waiting``) were
+#: therefore a ``KeyError`` here, and the monitor's caller catches everything and prints
+#: "(unreachable)", so a healthy cluster reported as an unreachable one.
+JOB_PHASE_COUNTERS = ("completed", "failed", "running", "pending", "blocked", "waiting")
+
+
 def get_cluster_job_counts_per_campaign(namespace="default", context=None):
     """Get status counts per campaign for scenario run jobs.
 
-    Returns a dict mapping campaign (or "<legacy>" for jobs without campaign-id label)
-    to counts dict with keys completed, failed, running, pending.
+    Returns a dict mapping campaign (or "<legacy>" for jobs without campaign-id label) to
+    a counts dict with one key per :data:`JOB_PHASE_COUNTERS`, plus ``total_job_num``.
+
+    ``blocked`` and ``waiting`` are reported separately rather than folded into
+    ``pending``: they are the two ways a job can sit unstarted for a reason of its own --
+    an image it cannot pull, or quota it has not been granted -- and a consumer that adds
+    them to ``pending`` loses exactly the distinction worth having. A consumer asking "is
+    this batch still going?" must count them as unfinished, though; see the monitor.
 
     Args:
         namespace: Kubernetes namespace.
@@ -748,14 +764,17 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
 
     per_run = {}
 
-    for job, phase in jobs:
+    # ``detail`` (the third element) is per-job prose -- why a job is blocked, what Kueue
+    # is waiting for -- which a per-campaign count has nowhere to put. Unpacking two from
+    # a three-tuple is what raised ValueError on every call.
+    for job, phase, _detail in jobs:
         campaign = "<legacy>"
         if job.metadata.labels and "campaign-id" in job.metadata.labels:
             campaign = job.metadata.labels["campaign-id"]
 
         if campaign not in per_run:
-            per_run[campaign] = {"completed": 0, "failed": 0, "running": 0, "pending": 0,
-                                 "total_job_num": None}
+            per_run[campaign] = dict.fromkeys(JOB_PHASE_COUNTERS, 0)
+            per_run[campaign]["total_job_num"] = None
 
         # Read total-job-num annotation from the first job that has it
         if per_run[campaign]["total_job_num"] is None and job.metadata.annotations:
@@ -766,6 +785,13 @@ def get_cluster_job_counts_per_campaign(namespace="default", context=None):
                 except (ValueError, TypeError):
                     pass
 
-        per_run[campaign][phase] += 1
+        if phase in JOB_PHASE_COUNTERS:
+            per_run[campaign][phase] += 1
+        else:
+            # A phase the classifier grew and this function has not been taught. Counted
+            # as unfinished, which is the direction that cannot become a premature "all
+            # jobs finished", and said out loud so the next one does not go unnoticed.
+            logger.warning("unknown scenario-job phase %r counted as pending", phase)
+            per_run[campaign]["pending"] += 1
 
     return per_run

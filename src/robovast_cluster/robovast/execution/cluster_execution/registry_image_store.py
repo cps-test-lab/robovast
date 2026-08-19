@@ -80,7 +80,11 @@ class RegistryImageStore(ImageBuildStore):
         # lane's for the same spec, and why re-deriving it anywhere else would drift.
         base_ref = (spec.base_image or registry.base_experiment_image
                     or resolve_build_base_image())
-        image_hash = build_hash(spec, project_dir, base_ref)
+        # The resolution belongs in the key, exactly as on the local lane: without it a spec
+        # naming a branch is cache-stable, so the first build's commit is served forever and
+        # the record cannot say which one it was.
+        image_hash = build_hash(spec, project_dir, base_ref,
+                                resolved_vcs=self.resolve_vcs(spec))
         return ImageRef(
             ref=concrete_image_ref(registry.registry_prefix, spec.tag, image_hash),
             identity=build_identity(spec.tag, image_hash),

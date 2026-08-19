@@ -1039,7 +1039,12 @@ class ClusterService(LocalTransport):
             # that does not.
             if dataclasses.is_dataclass(spec):
                 state[build_id]["spec"] = dataclasses.replace(spec, base_image=base_ref)
-            dockerfile = generate_dockerfile(spec, project_dir, base_ref)
+            # The same resolution the hash was taken over, so the Dockerfile installs the
+            # commit rather than the branch. Rendering without it left the build installing
+            # whatever the ref pointed at when the Job ran -- which the campaign's record then
+            # could not name, the failure the resolution exists to prevent.
+            dockerfile = generate_dockerfile(spec, project_dir, base_ref,
+                                             resolved_vcs=self._images.resolve_vcs(spec))
             build_prefix = context_prefix(build_id)
             storage = in_pod_storage.storage_client_for(cfg)
             stage_context_to_s3(storage, bucket, build_prefix, project_dir, dockerfile)
