@@ -188,7 +188,7 @@ def main() -> int:
         print(f"unresolved: {problem}", file=sys.stderr)
 
     if not changes:
-        print("every base digest is already current")
+        print("every pin is already current")
     elif not args.write:
         print(f"\n{len(changes)} pin(s) would change. Nothing written -- add --write.")
     else:

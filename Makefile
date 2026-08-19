@@ -110,7 +110,7 @@ check-mf-runtime:
 	@python3 tools/check_mf_runtime.py
 
 .PHONY: refresh-build-pins
-refresh-build-pins: ## Re-resolve base-image digests and report the newest ROS snapshot date
+refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives (WRITE=1 to apply)
 	@python3 tools/refresh_build_pins.py $(if $(WRITE),--write,)
 
 .PHONY: new-config-migration
