@@ -838,11 +838,29 @@ def upgrade(namespace, kube_context, timeout):
         # *old* pod for the whole of a rolling update, and reading there reported
         # "unchanged" across a real image change.
         after = running_image_digest(namespace, kube_context)
-        if before and after and before != after:
+        rolled_onto_new_bytes = bool(before and after and before != after)
+        if rolled_onto_new_bytes:
             click.echo(f"  image {before[:19]} -> {after[:19]}")
         elif after:
             click.echo(f"  image unchanged: {after[:19]}")
         click.echo("✓ upgraded and ready")
+        # The host already recovered above, not a fresh read: this runs *after* the upgrade
+        # has succeeded, and a reporting line must not be able to fail or stall it -- the
+        # rule `running_image_digest` states and follows. (An Ingress read here cost three
+        # tests a 10s timeout each against an unreachable cluster, which is the same fault
+        # arriving as a hang instead of an error.)
+        if ingress_host:
+            click.echo(f"  Published at {ingress_host}; "
+                       f"'vast exec cluster token' prints the URL and access token.")
+        if not rolled_onto_new_bytes and after:
+            # Not a warning: an upgrade run to make the pod re-read a changed Secret is
+            # *supposed* to land here, since that is the only thing that re-reads them
+            # (envFrom is read once, at container start). But it is also what an operator
+            # who expected new code sees, and those two need telling apart.
+            click.echo("  Same bytes as before: the pod restarted, so changed Secrets and "
+                       "config took effect. If you expected new code, nothing newer has "
+                       "been pushed to the tag this resolves -- set ROBOVAST_PROJECT_TAG "
+                       "to pin a specific one.")
     except click.ClickException:
         raise
     except Exception as e:

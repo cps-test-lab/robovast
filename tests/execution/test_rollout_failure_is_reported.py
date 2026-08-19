@@ -313,3 +313,59 @@ def test_a_healthy_slow_pull_still_reports_progress(monkeypatch):
 
     assert any(line.startswith("waiting for the new pod") for line in said), said
     assert any("Pending" in line for line in said), "say what it is doing, not just that it is"
+
+
+# --- what to do next -------------------------------------------------------------------
+#
+# A suggested command has to be one that runs. These pin the two ways that goes wrong: a
+# command aimed at the wrong cluster, and one generic hint offered for every failure.
+
+def test_a_suggested_kubectl_names_the_cluster_it_means():
+    """Without --context it targets the kubeconfig's current-context, not this cluster.
+
+    Not hypothetical: on this host the active context is a remote cluster that is not
+    reachable, so the pasted command hangs for 30s and then blames the wrong cluster --
+    while the upgrade it was diagnosing ran against '-x local' all along.
+    """
+    hint = service_deploy._next_step("ImagePullBackOff: nope", "default", "local")
+
+    assert "kubectl --context local -n default" in hint, hint
+
+
+def test_a_suggested_kubectl_omits_the_flag_when_there_is_no_context():
+    """`-x` is optional, and `--context ''` is not a valid command."""
+    hint = service_deploy._next_step("ImagePullBackOff: nope", "default", None)
+
+    assert "kubectl -n default" in hint
+    assert "--context" not in hint
+
+
+@pytest.mark.parametrize("signal,expected,forbidden", [
+    # An image fault is a config question, so it leads with the vast command that checks
+    # the config -- running an upgrade proves the reader has vast, not a kubeconfig.
+    ("ImagePullBackOff: no pull access", "vast doctor", "--previous"),
+    # The crash is in the container that already died, so the current pod's log is empty of
+    # it. This is the one hint whose omission sends the reader to look at nothing.
+    ("ContainerRestarted: container robovast-service restarted 3x", "--previous", "vast doctor"),
+    # Capacity, not configuration: the scheduler already named the resource, and there is
+    # nothing on this host to check.
+    ("Unschedulable: 0/1 nodes are available: 1 Insufficient nvidia.com/gpu",
+     "names what no node could satisfy", "vast doctor"),
+])
+def test_each_failure_gets_the_action_that_fits_it(signal, expected, forbidden):
+    """Four states, four actions -- as `_status_next_step` in the MCP layer branches.
+
+    One generic "inspect the pod" is a dead end for the reader who already did.
+    """
+    hint = service_deploy._next_step(signal, "default", "local")
+
+    assert expected in hint, hint
+    assert forbidden not in hint, f"{signal} must not be sent down the {forbidden} path: {hint}"
+
+
+def test_only_an_image_fault_talks_about_credentials():
+    """Auditing working credentials is a waste of the reader's time."""
+    assert "ROBOVAST_REGISTRY_PASSWORD" in service_deploy._blocked_message(
+        "default", "ErrImagePull: unauthorized", 60.0, "local")
+    assert "ROBOVAST_REGISTRY_PASSWORD" not in service_deploy._blocked_message(
+        "default", "Unschedulable: no node has 96 CPUs", 60.0, "local")

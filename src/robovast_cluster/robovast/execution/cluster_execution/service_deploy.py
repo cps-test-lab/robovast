@@ -42,6 +42,8 @@ import logging
 from robovast.common.config_plugins import GIT_TOKEN_ENVS
 from robovast.service.interface import DEFAULT_PORT
 
+from .cluster_execution import BLOCKED_GRACE_SECONDS
+
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "robovast-service"
@@ -433,8 +435,10 @@ class RolloutNotConverged(RuntimeError):
 #: not certainly terminal: kubelet pull back-off does clear on its own once a rotated
 #: credential lands, and a pod that restarts once and then stabilises is a fine outcome.
 #: Matches ``kubernetes_backend.KubernetesBackend._BLOCKED_GRACE_SECONDS``, which makes the
-#: same trade for a campaign's jobs.
-UNHEALTHY_GRACE_SECONDS = 60.0
+#: same trade for a campaign's jobs, and with the image-build status read -- so all three
+#: take the value from one place (:data:`~.cluster_execution.BLOCKED_GRACE_SECONDS`) rather
+#: than each restating it and drifting apart.
+UNHEALTHY_GRACE_SECONDS = BLOCKED_GRACE_SECONDS
 
 #: How often to say something while the rollout is still in progress. The complaint this
 #: answers is not that an upgrade takes minutes -- pulling a controller image legitimately
@@ -542,8 +546,9 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
                     # the same 300-character kubelet message twice, back to back.
                     logger.debug("Rollout of %s in %s: %s", SERVICE_NAME, namespace, signal)
                 elif time.monotonic() - unhealthy_since >= unhealthy_grace_s:
-                    raise RolloutNotConverged(_blocked_message(namespace, signal,
-                                                               unhealthy_grace_s))
+                    raise RolloutNotConverged(
+                        _blocked_message(namespace, signal, unhealthy_grace_s,
+                                         kube_context))
                 else:
                     last_signal = signal
             else:
@@ -559,7 +564,8 @@ def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
                                unhealthy_grace_s))
         time.sleep(1)
 
-    raise RolloutNotConverged(_timeout_message(namespace, last_signal, timeout_s))
+    raise RolloutNotConverged(_timeout_message(namespace, last_signal, timeout_s,
+                                               kube_context))
 
 
 def _progress_line(pod, unhealthy_since, now, started, timeout_s, grace_s) -> str:
@@ -581,6 +587,57 @@ def _progress_line(pod, unhealthy_since, now, started, timeout_s, grace_s) -> st
     return f"waiting for the new pod ({int(now - started)}s/{int(timeout_s)}s, {phase})"
 
 
+def _vast_doctor(namespace, kube_context) -> str:
+    """``vast doctor`` for this cluster, as a command that can be pasted."""
+    context = f" -x {kube_context}" if kube_context else ""
+    namespace_flag = f" -n {namespace}" if namespace != "default" else ""
+    return f"vast doctor{context}{namespace_flag}"
+
+
+def _kubectl(namespace, kube_context) -> str:
+    """The ``kubectl`` prefix for *this* cluster, as a command that can be pasted.
+
+    ``--context`` whenever one was given, because the point of a suggested command is that
+    it runs. Without it the command silently targets whatever the kubeconfig's
+    current-context happens to be -- and on a host that also talks to a remote cluster,
+    that is a command which hangs against the wrong one and blames this cluster for it.
+    """
+    context = f" --context {kube_context}" if kube_context else ""
+    return f"kubectl{context} -n {namespace}"
+
+
+def _next_step(signal, namespace, kube_context) -> str:
+    """The one thing to do about *signal*, as a runnable command.
+
+    Four states, four different actions -- the same reason ``_status_next_step`` in the MCP
+    layer branches rather than offering one generic hint: a credential fault wants the
+    config checked, a crash-loop wants the dead container's log, and telling either to
+    "inspect the pod" is a dead end for the reader who already did.
+
+    A ``vast`` command leads wherever one covers the state, since running an upgrade proves
+    the reader has ``vast`` but not that they have a kubeconfig pointed at this cluster.
+    ``kubectl`` is offered as the deeper look, not as the instruction.
+    """
+    pods = f"-l app={SERVICE_NAME}"
+    kubectl = _kubectl(namespace, kube_context)
+    if "Image" in signal:
+        return (f"Next: '{_vast_doctor(namespace, kube_context)}' checks the registry config "
+                f"and credentials this pull uses. With cluster access, "
+                f"'{kubectl} describe pod {pods}' shows the kubelet's own account.")
+    if "Unschedulable" in signal or "SchedulerError" in signal:
+        # The scheduler's message is already quoted above and names the resource
+        # ("0/1 nodes are available: 1 Insufficient nvidia.com/gpu"), so this is about
+        # capacity, not configuration -- there is nothing to check on this host.
+        return ("Next: the scheduler's message above names what no node could satisfy. Free "
+                "that resource, or deploy where it exists.")
+    if "Restarted" in signal:
+        return (f"Next: with cluster access, '{kubectl} logs {pods} --previous --tail=50' -- "
+                f"the container that died is the *previous* one, so the current pod's log "
+                f"does not hold the crash.")
+    return (f"Next: with cluster access, '{kubectl} logs {pods} --tail=50' and "
+            f"'{kubectl} rollout status deploy/{SERVICE_NAME}'.")
+
+
 def _pull_credential_hint(signal) -> str:
     """The credential paragraph, for a reason that is about fetching the image.
 
@@ -591,9 +648,8 @@ def _pull_credential_hint(signal) -> str:
         return ""
     return ("\n\nAn image reason points at the pull credentials: ROBOVAST_REGISTRY_SERVER, "
             "ROBOVAST_REGISTRY_USERNAME and ROBOVAST_REGISTRY_PASSWORD, read from './.env' "
-            "in the CURRENT directory only, then '~/.config/robovast/env'. Check them with "
-            "'vast doctor'. A tag that was never pushed looks identical from here, so check "
-            "ROBOVAST_PROJECT_TAG too.")
+            "in the CURRENT directory only, then '~/.config/robovast/env'. A tag that was "
+            "never pushed looks identical from here, so check ROBOVAST_PROJECT_TAG too.")
 
 
 #: Closing paragraph for both failures. It answers the two questions the reason itself does
@@ -608,24 +664,23 @@ _STILL_SERVING = (
     "starting over.")
 
 
-def _blocked_message(namespace, signal, grace_s) -> str:
+def _blocked_message(namespace, signal, grace_s, kube_context=None) -> str:
     return (f"the new {SERVICE_NAME} pod did not start within {int(grace_s)}s and will not "
             f"recover on its own. Kubernetes reports: {signal}."
-            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n"
-            f"Inspect it with 'kubectl -n {namespace} describe pod -l app={SERVICE_NAME}'.")
+            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n\n"
+            f"{_next_step(signal, namespace, kube_context)}")
 
 
-def _timeout_message(namespace, signal, timeout_s) -> str:
+def _timeout_message(namespace, signal, timeout_s, kube_context=None) -> str:
     # No signal means the pod never reported anything wrong -- it is simply still coming
     # up, so the logs are where the answer is, not the pod's status.
     detail = (f" Kubernetes last reported: {signal}." if signal else
               " The pod reported no error, so it was still starting: a large image pull, or "
               "a container that is up but never becomes Ready.")
     return (f"the {SERVICE_NAME} rollout did not converge within {int(timeout_s)}s.{detail}"
-            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n"
-            f"Inspect it with 'kubectl -n {namespace} rollout status deploy/{SERVICE_NAME}' "
-            f"and 'kubectl -n {namespace} logs -l app={SERVICE_NAME} --tail=50'. "
-            f"Allow longer with '--timeout'.")
+            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n\n"
+            f"{_next_step(signal, namespace, kube_context)} If this cluster simply needs "
+            f"longer than {int(timeout_s)}s, raise it with '--timeout'.")
 
 
 def running_image_digest(namespace="default", kube_context=None,

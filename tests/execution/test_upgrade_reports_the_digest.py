@@ -158,3 +158,27 @@ def test_a_clean_failure_is_printed_without_a_traceback():
 
     assert "RolloutNotConverged" not in result.output, result.output
     assert "full traceback" not in result.output, result.output
+
+
+def test_an_unchanged_upgrade_says_what_that_means():
+    """"image unchanged" is two different situations and the operator cannot tell which.
+
+    An upgrade run to make the pod re-read a rotated Secret is *supposed* to land here --
+    that restart is the only thing that re-reads them, since envFrom is read once at
+    container start. It is also exactly what someone who expected new code sees. Reporting
+    the digest alone left them to guess.
+    """
+    result = _run_upgrade("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:aaaaaaaaaaaaaaaaaaaa")
+
+    assert result.exit_code == 0, result.output
+    assert "Same bytes as before" in result.output
+    assert "Secrets" in result.output, "the legitimate reason to be here must come first"
+    assert "ROBOVAST_PROJECT_TAG" in result.output, "and what to do if new code was expected"
+
+
+def test_an_upgrade_onto_new_bytes_does_not_explain_itself():
+    """Nothing ambiguous happened, so the note would be noise on the normal success path."""
+    result = _run_upgrade("sha256:aaaaaaaaaaaaaaaaaaaa", "sha256:bbbbbbbbbbbbbbbbbbbb")
+
+    assert result.exit_code == 0, result.output
+    assert "Same bytes as before" not in result.output
