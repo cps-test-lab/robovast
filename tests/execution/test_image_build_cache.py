@@ -255,3 +255,33 @@ def test_the_pull_secret_covers_both_containers_of_the_pod():
     assert [c['name'] for c in spec['containers']] == ['buildkit']
     for container in spec['initContainers'] + spec['containers']:
         assert 'imagePullSecrets' not in container
+
+
+# ---------------------------------------------------------------------------
+# the git token a private python_packages spec installs with
+# ---------------------------------------------------------------------------
+
+def test_a_git_token_reaches_the_build_as_a_secret():
+    """A BuildKit secret, not a build arg: it is readable only by the RUN that installs, so it
+    is in no layer and no image history -- which a build arg would be, permanently."""
+    assert "--secret id=git_token,src=/var/run/secrets/robovast-git/token" in _buildctl(
+        git_secret_name="robovast-git-credentials")
+
+
+def test_the_secret_is_mounted_read_only_from_the_service_s_own_secret():
+    pod = _pod_spec(git_secret_name="robovast-git-credentials")
+    volume = next(v for v in pod["volumes"] if v["name"] == "git-credentials")
+    assert volume["secret"]["secretName"] == "robovast-git-credentials"
+    assert volume["secret"]["defaultMode"] == 0o400
+    build = pod["containers"][0]
+    mount = next(m for m in build["volumeMounts"] if m["name"] == "git-credentials")
+    assert mount["mountPath"] == "/var/run/secrets/robovast-git"
+    assert mount["readOnly"] is True
+
+
+def test_no_token_configured_builds_without_one():
+    """`--secret` naming a Secret that does not exist keeps the pod from starting, and a
+    deployment with no private spec must not need a credential to build at all. The private
+    case has already failed by here, at resolution, where the message names the fix."""
+    assert "--secret" not in _buildctl()
+    assert all(v["name"] != "git-credentials" for v in _pod_spec()["volumes"])

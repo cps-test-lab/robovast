@@ -38,6 +38,7 @@ import tempfile
 from pathlib import Path
 
 from robovast.common.execution import resolve_sidecar_image
+from robovast.service.image_build import GIT_TOKEN_SECRET_ID
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ BUILDKIT_IMAGE = "moby/buildkit:rootless"
 _CONTEXT_MOUNT = "/context"
 #: Where the push credential (dockerconfigjson) is mounted for BuildKit.
 _DOCKER_CONFIG_MOUNT = "/docker"
+#: Where the git token Secret is mounted in the build pod, and the BuildKit secret id the
+#: rendered Dockerfile mounts it under. The path mirrors the service pod's own mount, so one
+#: Secret -- `robovast-git-credentials`, provisioned at `vast exec cluster setup` -- serves the
+#: composer's plugin clone and a build's private pip install alike.
+_GIT_TOKEN_MOUNT = "/var/run/secrets/robovast-git"
 #: The build image's own CA bundle, and the writable copy we extend with the registry CA
 #: (see the ``SSL_CERT_FILE`` note where the build command is assembled).
 _SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
@@ -244,7 +250,7 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        namespace: str, insecure: bool = False,
                        ca_configmap_name: str = "",
                        cache_ref: str = "", host_aliases: list = None,
-                       pull_secret_name: str = "") -> dict:
+                       pull_secret_name: str = "", git_secret_name: str = "") -> dict:
     """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
@@ -260,6 +266,11 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     ("no basic auth credentials") while the Job stayed ``active`` — so nothing ever failed
     and ``vast image wait`` never returned. Campaign pods have always carried this (see
     ``kubernetes_backend``); one Secret covers both containers of this pod.
+
+    ``git_secret_name`` is the token a **private** ``python_packages`` git spec needs. It
+    reaches the build as a BuildKit secret, so it is readable only by the RUN that installs and
+    is in no layer and no image history -- and it is the same Secret the service already holds
+    for cloning a private plugin repo, rather than a second credential to configure.
 
     TLS to a private registry: ``ca_configmap_name`` mounts a CA (key ``ca.pem``), points
     BuildKit at it via ``buildkitd.toml`` **and** puts it on ``SSL_CERT_FILE`` — the
@@ -301,6 +312,20 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     build_env = [
         {'name': 'BUILDKITD_FLAGS', 'value': '--oci-worker-no-process-sandbox'},
     ]
+    if git_secret_name:
+        # A BuildKit *secret*, not a build arg or an env: it is mounted for the single RUN
+        # that installs, never committed to a layer, and absent from the image's history.
+        # `--secret` with no such Secret would fail the build, so a deployment without a
+        # token simply builds without one -- which is right, since only a private spec
+        # needs it and that case already failed earlier, at resolution.
+        volumes.append({
+            'name': 'git-credentials',
+            'secret': {'secretName': git_secret_name, 'defaultMode': 0o400},
+        })
+        build_mounts.append({
+            'name': 'git-credentials', 'mountPath': _GIT_TOKEN_MOUNT, 'readOnly': True})
+        buildctl += f" --secret id={GIT_TOKEN_SECRET_ID},src={_GIT_TOKEN_MOUNT}/token"
+
     if push_secret_name:
         volumes.append({
             'name': 'docker-config',

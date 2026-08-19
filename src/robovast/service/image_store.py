@@ -46,8 +46,9 @@ from robovast.common.build_context import render_dockerignore
 from robovast.common.errors import ImageStoreUnavailable
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, local_image_id,
                                        resolve_build_base_image)
-from robovast.service.image_build import (BuildSpec, build_hash, classify_build_error,
-                                         generate_dockerfile, resolve_floating_vcs_specs)
+from robovast.service.image_build import (GIT_TOKEN_SECRET_ID, BuildSpec, build_hash,
+                                         classify_build_error, generate_dockerfile,
+                                         resolve_floating_vcs_specs)
 from robovast.service.interface import (ImageBuildError, ImageBuildRef, ImageBuildStatus,
                                         LogChunk)
 
@@ -55,6 +56,10 @@ logger = logging.getLogger(__name__)
 
 #: Local docker tag namespace for agent-built experiment images.
 _LOCAL_TAG_NS = "robovast-build"
+#: Environment variable carrying the git token into `docker buildx --secret ...,env=`. Named
+#: with a double underscore like the one config_plugins uses for its askpass helper: it exists
+#: for the length of one subprocess and is nothing a user configures.
+_GIT_TOKEN_ENV = "ROBOVAST__GIT_TOKEN"
 #: The buildx builder to build experiment images with. Pinned rather than inheriting whichever
 #: builder the operator has selected, because only the ``docker`` driver runs inside dockerd and so
 #: shares the daemon's image store and build cache. On a ``docker-container`` builder (a multi-arch
@@ -322,13 +327,28 @@ class LocalDockerImageStore(ImageBuildStore):
             render_dockerignore())
         cmd = ["docker", "buildx", "build", "--builder", _LOCAL_BUILDER, "--load",
                "-f", str(df_path), "-t", record.local_ref, str(project_dir)]
+        # The token for a private git spec, handed to BuildKit as a secret rather than a build
+        # arg: a secret is mounted for one RUN and never lands in a layer or in the image's
+        # history. Passed by ENV so it is not on the command line either -- this argv is logged
+        # below, and `ps` would show it besides.
+        #
+        # Only when there is one: `--secret id=...,env=VAR` with the variable unset is an error,
+        # and a project with no private spec must not need a token to build.
+        from robovast.common.config_plugins import \
+            _read_git_token  # pylint: disable=import-outside-toplevel
+
+        env = os.environ.copy()
+        token = _read_git_token()
+        if token:
+            env[_GIT_TOKEN_ENV] = token
+            cmd += ["--secret", f"id={GIT_TOKEN_SECRET_ID},env={_GIT_TOKEN_ENV}"]
         logger.info("Building image %s: %s", record.local_ref, " ".join(cmd))
         try:
             with open(record.log_path, "wb") as log:
                 log.write((dockerfile + "\n---\n").encode())
                 log.flush()
                 proc = subprocess.Popen(  # noqa: S603
-                    cmd, stdout=log, stderr=subprocess.STDOUT, env=os.environ.copy())
+                    cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
                 rc = proc.wait()
         except OSError as e:
             record.status.error = ImageBuildError(

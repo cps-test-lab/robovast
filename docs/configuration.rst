@@ -122,13 +122,27 @@ cluster; the execution pods do not install or clone anything.
 .. note::
 
    **Private git repositories.** A ``git+https`` URL to a private repository needs
-   credentials. For the ``robovast-service`` / MCP flow, provide a GitHub token at
-   deployment time — set ``ROBOVAST_GIT_TOKEN`` (or ``GITHUB_TOKEN`` / ``GH_TOKEN``)
-   in your project's ``.env`` file (or the environment) when you run
-   ``vast exec cluster setup``; it is stored as a Kubernetes Secret and the service
-   uses it to authenticate the clone. Alternatively, upload a pre-built wheel into
-   the project and reference it by its workspace-relative path (form 3 above) — this
-   needs no credentials at all.
+   credentials. Provide a GitHub token at deployment time — set ``ROBOVAST_GIT_TOKEN``
+   (or ``GITHUB_TOKEN`` / ``GH_TOKEN``) in your project's ``.env`` file (or the
+   environment) when you run ``vast exec cluster setup`` **or**
+   ``vast exec cluster upgrade``; it is stored as a Kubernetes Secret, and removing
+   the variable and upgrading again deletes it.
+
+   That one token serves **both** places a private repository is reached, so there is
+   nothing per-project to configure: the service uses it to clone a top-level
+   ``plugins:`` entry, and a container's ``python_packages`` git spec installs with it
+   inside the image build (as a BuildKit secret — mounted for the install step only,
+   so it is in no image layer and no build history, and no ``.vast`` ever carries a
+   credential).
+
+   One token covers every repository its account can read; nothing has to be declared
+   per repository. It is reachable by any build this deployment runs, so prefer a
+   read-only, org-scoped fine-grained PAT over a personal classic one.
+
+   A missing token fails **before** the build, when the ref is resolved to a commit:
+   ``cannot resolve … the repository needs credentials this deployment does not have``.
+   Alternatively, upload a pre-built wheel into the project and reference it by its
+   workspace-relative path (form 3 above) — this needs no credentials at all.
 
 .. tip::
 

@@ -183,6 +183,34 @@ class RegistryImageStore(ImageBuildStore):
 
     # -- registry object discovery -----------------------------------------
 
+    def git_secret_name(self) -> str:
+        """The git-token Secret, when this deployment has one; ``""`` otherwise.
+
+        Looked for rather than assumed, for the reason :meth:`_resolve_registry_objects` gives
+        about the registry objects: referencing a Secret that does not exist keeps the build
+        pod from starting, so "is it there?" is the only safe question. A deployment set up
+        without a token then builds without one, which is right -- only a private spec needs
+        it, and that case has already failed earlier, at resolution.
+        """
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from .service_deploy import GIT_SECRET_NAME  # pylint: disable=import-outside-toplevel
+
+        try:
+            self._k8s().read_namespaced_secret(GIT_SECRET_NAME, self._namespace)
+            return GIT_SECRET_NAME
+        except client.exceptions.ApiException as e:
+            if e.status not in (403, 404):
+                raise
+            if e.status == 403:
+                # Not permitted to look: say so rather than reading it as "no token
+                # configured", which would turn a permissions gap into a build that fails
+                # much later, in a clone, naming credentials nobody removed.
+                logger.warning(
+                    "not permitted to read %r in %s; building without a git token",
+                    GIT_SECRET_NAME, self._namespace)
+            return ""
+
     def _resolve_registry_objects(self, registry):
         """Fill in the push/pull Secret and CA ConfigMap by *looking for them*.
 

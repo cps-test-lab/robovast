@@ -1061,7 +1061,12 @@ class ClusterService(LocalTransport):
                 host_aliases=cfg.get_host_aliases(),
                 # Already resolved on this object (registry_image_store fills it from the
                 # push Secret, which serves both directions), so no second lookup.
-                pull_secret_name=registry.pull_secret_name or "")
+                pull_secret_name=registry.pull_secret_name or "",
+                # The token a private `python_packages` git spec installs with. Looked up
+                # rather than assumed: naming a Secret that does not exist would keep the
+                # build pod from starting, which is a worse failure than building without
+                # a credential no spec here needs.
+                git_secret_name=self._images.git_secret_name())
             self._k8s_batch().create_namespaced_job(self.namespace, manifest)
         except BaseException:
             status.phase, status.done = "failed", True
@@ -1330,6 +1335,27 @@ class ClusterService(LocalTransport):
                            build_id, e)
             return
         self._discard_build_context(cfg, bucket, build_id)
+
+    def _warm(self, image_ref: str) -> None:
+        """Pull *image_ref* onto a node now, so the next pod to run it does not wait.
+
+        A built image is in the registry and on no node, so whoever runs it first pays the
+        whole pull -- and that is usually ``exec_in_container``, which exists to answer a
+        question in seconds. See :mod:`.image_warm`; this method is only the seam that keeps
+        the call sites one line each and makes the failure mode uniform.
+
+        **Best-effort by construction, and that is not laziness.** A failed prewarm leaves
+        exactly the situation that held before it existed: a slow first pod. Raising here
+        would turn a missed optimization into a failed build, so the bare ``except`` is the
+        correct trade -- but it warns, because a prewarm that never works is invisible
+        otherwise (nothing reads it back, by design).
+        """
+        from .image_warm import warm_image
+        try:
+            warm_image(self._k8s_batch(), self.namespace, image_ref,
+                       self._registry_pull_secret())
+        except Exception as e:  # noqa: BLE001 - a prewarm must never fail its caller
+            logger.warning("could not prewarm %s: %s", image_ref, e)
 
     def _build_error(self, build_id: str, spec=None):
         """Classify a failed build. *spec* is what the build was asked to install.

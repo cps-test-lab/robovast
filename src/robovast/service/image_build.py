@@ -96,6 +96,36 @@ _VENV_SETUP = (
 #: serialises concurrent builds sharing the mount instead of letting them corrupt the cache.
 _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
                 f"pip --python {_VENV}/bin/python3 install")
+
+#: BuildKit secret id for the git token, and where it appears inside the build. The same id
+#: ``container/robovast/Dockerfile.roqsim`` and ``build.sh`` already use for their own clone --
+#: one convention, so an operator configures a token once.
+GIT_TOKEN_SECRET_ID = "git_token"
+_GIT_TOKEN_SECRET_PATH = f"/run/secrets/{GIT_TOKEN_SECRET_ID}"
+
+#: What a pip install of a **private** git spec needs, prepended to the install command.
+#:
+#: Scoped to ``https://github.com`` rather than answering every prompt: an askpass helper hands the
+#: token to whatever asks, so the first spec naming a second host would send a GitHub credential to
+#: it. Configured through ``GIT_CONFIG_COUNT`` (git >= 2.31), which is environment-only -- no
+#: ``.gitconfig`` is written, so nothing about the credential can survive into a layer.
+#:
+#: Harmless when no secret is mounted: a public clone is never challenged, so the helper is not
+#: invoked, and BuildKit leaves the mount point simply absent. Which is why this rides on every
+#: install group carrying a VCS spec rather than being decided per repository -- nothing here can
+#: tell a private repository from a public one, and guessing would be the failure.
+_GIT_CREDENTIAL_ENV = (
+    "GIT_CONFIG_COUNT=1 "
+    "GIT_CONFIG_KEY_0=credential.https://github.com.helper "
+    "GIT_CONFIG_VALUE_0='!f(){ echo username=x-access-token; "
+    f'echo "password=$(cat {_GIT_TOKEN_SECRET_PATH})"; ' + "}; f' "
+    "GIT_TERMINAL_PROMPT=0 "
+)
+_PIP_INSTALL_VCS = (
+    "RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
+    f"--mount=type=secret,id={GIT_TOKEN_SECRET_ID} "
+    f"{_GIT_CREDENTIAL_ENV}"
+    f"pip --python {_VENV}/bin/python3 install")
 #: Files/dirs never hashed or copied into the build context. Sourced from
 #: ``common`` so the in-cluster staging path skips exactly the same set (a
 #: mismatch would break the context hash — see build_context).
@@ -596,7 +626,10 @@ def generate_dockerfile(spec: BuildSpec, project_dir: Path, base_ref: str,
                 # index pin or git URL — reused verbatim from plugins: vocabulary.
                 # Nothing to copy, so it never carries a context layer.
                 args.append(f"'{entry}'")
-        lines.append(f"{_PIP_INSTALL} {' '.join(args)}")
+        # A group holding a git spec gets the credential mount; the rest keep the plain form,
+        # so an ordinary install layer is byte-identical to what it always was.
+        install = _PIP_INSTALL_VCS if _vcs_specs(group) else _PIP_INSTALL
+        lines.append(f"{install} {' '.join(args)}")
     lines.extend(_manifest_lines(spec, resolved_vcs or {}))
     lines.append(f"USER {base_user}")
     return "\n".join(lines) + "\n"

@@ -112,7 +112,10 @@ def test_the_rendered_dockerfile_installs_the_commit_not_the_branch(tmp_path):
     rendered = generate_dockerfile(
         spec, tmp_path, "base:1",
         resolved_vcs={"pkg @ git+https://host/repo@main": "f" * 40})
-    install = next(l for l in rendered.splitlines() if _PIP_INSTALL in l)
+    # Found by the install verb rather than by the plain _PIP_INSTALL prefix: a group holding a
+    # git spec renders the credential-mounting form, which shares the prefix only up to its
+    # first mount.
+    install = next(l for l in rendered.splitlines() if " install " in l)
     assert f"git+https://host/repo@{'f' * 40}" in install
     assert "repo@main" not in install, "the install must name the commit, not the branch"
     # The branch DOES survive in the manifest, and should: the record has to show what was
@@ -402,3 +405,63 @@ def test_a_pinned_subdirectory_spec_needs_no_resolution(monkeypatch):
     monkeypatch.setattr(image_build, "_ls_remote", _never)
     pinned = f"roqsim_scenes @ git+https://host/roqsim@{'c' * 40}#subdirectory=roqsim_scenes"
     assert image_build.resolve_floating_vcs_specs([pinned]) == {}
+
+
+# ---------------------------------------------------------------------------
+# credentials for a private git spec
+# ---------------------------------------------------------------------------
+
+def _install_lines(spec, tmp_path):
+    from robovast.service.image_build import generate_dockerfile
+
+    return [ln for ln in generate_dockerfile(spec, tmp_path, "base:1").splitlines()
+            if " install " in ln]
+
+
+def test_a_git_group_mounts_the_token_secret(tmp_path):
+    from robovast.service.image_build import BuildSpec
+
+    spec = BuildSpec(tag="sim", base_image="base:1",
+                     python_packages=[["pkg @ git+https://host/repo@" + "a" * 40]])
+    [line] = _install_lines(spec, tmp_path)
+    assert "--mount=type=secret,id=git_token" in line
+    # Bound to the host rather than answering every prompt: an askpass helper hands the token
+    # to whatever asks, so the first spec naming a second host would be given a GitHub one.
+    assert "credential.https://github.com.helper" in line
+    # Environment-only git config: no .gitconfig is written, so nothing can survive in a layer.
+    assert "GIT_CONFIG_COUNT=1" in line
+
+
+def test_an_ordinary_group_is_left_exactly_as_it_was(tmp_path):
+    """The mount rides only on groups that clone. An install layer that needs no credential
+    must render byte-identically, or every cached image would rebuild for nothing."""
+    from robovast.service.image_build import BuildSpec
+
+    spec = BuildSpec(tag="sim", base_image="base:1", python_packages=["shapely==2.0.1"])
+    [line] = _install_lines(spec, tmp_path)
+    assert "--mount=type=secret" not in line
+    assert "GIT_CONFIG" not in line
+
+
+def test_the_token_itself_never_reaches_the_dockerfile(tmp_path, monkeypatch):
+    """The Dockerfile is written to the build log and staged to S3. What it may contain is the
+    PATH the secret is mounted at, never the secret."""
+    from robovast.service.image_build import BuildSpec, generate_dockerfile
+
+    monkeypatch.setenv("ROBOVAST_GIT_TOKEN", "ghp_secretvalue")
+    spec = BuildSpec(tag="sim", base_image="base:1",
+                     python_packages=[["pkg @ git+https://host/repo@" + "a" * 40]])
+    assert "ghp_secretvalue" not in generate_dockerfile(spec, tmp_path, "base:1")
+
+
+def test_a_token_does_not_change_the_image_hash(tmp_path, monkeypatch):
+    """BuildKit secrets are outside the cache key by design, and the hash must agree: the same
+    inputs are the same image whether or not a credential was needed to fetch them."""
+    from robovast.service.image_build import BuildSpec, build_hash
+
+    spec = BuildSpec(tag="sim", base_image="base:1",
+                     python_packages=[["pkg @ git+https://host/repo@" + "a" * 40]])
+    monkeypatch.delenv("ROBOVAST_GIT_TOKEN", raising=False)
+    without = build_hash(spec, tmp_path, "base:1")
+    monkeypatch.setenv("ROBOVAST_GIT_TOKEN", "ghp_secretvalue")
+    assert build_hash(spec, tmp_path, "base:1") == without
