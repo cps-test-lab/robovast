@@ -331,8 +331,29 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
     else:
         container["args"] = args
 
-    pod_spec = {"containers": [container], "volumes": volumes,
-                "tolerations": _tolerations()}
+    # The store has to be writable by uid 1000 before buildkitd touches it, and nothing else
+    # will make it so. A `DirectoryOrCreate` hostPath is created by the kubelet as root:root
+    # 0755, and `fsGroup` -- the usual answer -- does not apply to hostPath: Kubernetes does
+    # ownership management only for volume types that support it, and that is not one. Without
+    # this the daemon dies at startup with "open .../buildkitd.lock: permission denied", which
+    # reads like a bug in the image rather than a property of the mount.
+    #
+    # Not recursive, deliberately. The directory is empty when it is first created, and
+    # everything under it after that is written by the daemon as 1000 -- so a `chown -R` would
+    # buy nothing and walk a store that is meant to grow to a hundred gigabytes on every single
+    # start. It uses the buildkit image rather than pulling another, since that one is by
+    # definition already on the node.
+    init_container = {
+        "name": "store-permissions",
+        "image": BUILDKIT_IMAGE,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["chown", "1000:1000", BUILDKITD_STORE_DIR],
+        "securityContext": {"runAsUser": 0, "runAsGroup": 0},
+        "volumeMounts": [{"name": _STORE_VOLUME, "mountPath": BUILDKITD_STORE_DIR}],
+    }
+
+    pod_spec = {"containers": [container], "initContainers": [init_container],
+                "volumes": volumes, "tolerations": _tolerations()}
     node_selector = buildkitd_node_selector(node_name)
     if node_selector:
         pod_spec["nodeSelector"] = node_selector
@@ -388,6 +409,7 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
                     pull_secret_name: str = "", ca_configmap_name: str = "",
                     registry_host: str = "", host_aliases=None,
                     cpu_request: str = "", memory_request: str = "",
+                    gc_reserved: str = "", gc_max_used: str = "", gc_min_free: str = "",
                     stamp: str = "") -> None:
     """Create or converge the daemon: its claim, its config, its Deployment and its Service.
 
@@ -418,7 +440,11 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
             # something an upgrade should take on its own.
             logger.info("buildkitd volume claim already exists in %s; left as it is", namespace)
 
-    cfg = buildkitd_configmap_manifest(namespace, registry_host=registry_host)
+    cfg = buildkitd_configmap_manifest(
+        namespace, registry_host=registry_host,
+        gc_reserved=gc_reserved or DEFAULT_BUILDKITD_GC_RESERVED,
+        gc_max_used=gc_max_used or DEFAULT_BUILDKITD_GC_MAX_USED,
+        gc_min_free=gc_min_free or DEFAULT_BUILDKITD_GC_MIN_FREE)
     try:
         core.create_namespaced_config_map(namespace, cfg)
     except client.exceptions.ApiException as e:

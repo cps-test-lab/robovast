@@ -790,7 +790,16 @@ def run_cleanup(campaign, data, force, namespace, context):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--timeout', default=180.0, show_default=True, metavar='SECONDS',
               help='How long to wait for the new pod to take over before failing')
-def upgrade(namespace, kube_context, timeout):
+@click.option('--buildkit-cache-max', default='', metavar='SIZE',
+              help='Resize the build cache ceiling. Without this the daemon keeps whatever '
+                   'it was set up with -- an upgrade is not the place to quietly re-size a '
+                   'store somebody bounded on purpose.')
+@click.option('--buildkit-cache-min-free', default='', metavar='SIZE',
+              help='Change the free space kept on the cache filesystem. See setup.')
+@click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
+              help='Change the cache kept even when old. See setup.')
+def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
+            buildkit_cache_min_free, buildkit_cache_reserved):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -892,8 +901,16 @@ def upgrade(namespace, kube_context, timeout):
         # worth fixing separately.
         from .buildkitd_deploy import (apply_buildkitd,  # pylint: disable=import-outside-toplevel
                                        buildkitd_storage_from_cluster)
-        apply_buildkitd(namespace, kube_context=kube_context,
-                        **buildkitd_storage_from_cluster(namespace, kube_context))
+        settings = buildkitd_storage_from_cluster(namespace, kube_context)
+        # An explicitly passed budget wins over the recovered one -- otherwise the setting
+        # would be write-once at setup, changeable only by tearing the daemon down. Recovery
+        # is the default, not a lock: it exists so an upgrade that says nothing changes
+        # nothing, which is a different thing from an upgrade that cannot change it.
+        settings.update({k: v for k, v in (
+            ("gc_max_used", buildkit_cache_max),
+            ("gc_min_free", buildkit_cache_min_free),
+            ("gc_reserved", buildkit_cache_reserved)) if v})
+        apply_buildkitd(namespace, kube_context=kube_context, **settings)
         click.echo("  converged the shared build daemon")
         wait_for_service_ready(namespace=namespace, kube_context=kube_context,
                                timeout_s=timeout)

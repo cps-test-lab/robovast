@@ -487,3 +487,61 @@ def test_an_upgrade_keeps_the_budget_the_deployment_was_given(monkeypatch):
 
     # And what is recovered is what re-renders, unchanged.
     assert buildkitd_toml(**recovered) == tuned
+
+
+def test_apply_accepts_every_setting_that_can_be_handed_to_it():
+    """The call `upgrade` actually makes is `apply_buildkitd(**recovered)`, and nothing else
+    checks that those two agree.
+
+    This has now failed twice in the same way. `apply_buildkitd` is mocked in every test that
+    drives setup or upgrade -- which is right, since it talks to a cluster -- but a mock accepts
+    any keyword, so a recovery that returns a name the real function does not take passes every
+    test and raises TypeError against a live cluster, partway through an upgrade that has
+    already rolled the service.
+
+    So this asserts the contract between the two rather than either side's behaviour: every key
+    the recovery can produce, and every key the CLI puts in `buildkit_kwargs`, must be a
+    parameter of the real function.
+    """
+    import inspect
+
+    from robovast.execution.cluster_execution import buildkitd_deploy
+
+    accepted = set(inspect.signature(buildkitd_deploy.apply_buildkitd).parameters)
+
+    recoverable = set(buildkitd_deploy._GC_KEYS.values()) | {
+        "storage_class", "storage_path", "storage_size", "node_name"}
+    assert recoverable <= accepted, (
+        f"buildkitd_storage_from_cluster can return {sorted(recoverable - accepted)}, which "
+        "apply_buildkitd does not accept -- upgrade would raise TypeError")
+
+    # The same contract on the other side: what `vast exec cluster setup` collects.
+    from_cli = {"storage_class", "storage_path", "storage_size", "node_name",
+                "gc_max_used", "gc_min_free", "gc_reserved"}
+    assert from_cli <= accepted, (
+        f"the --buildkit-* flags supply {sorted(from_cli - accepted)}, which apply_buildkitd "
+        "does not accept -- setup would raise TypeError")
+
+
+def test_the_store_is_made_writable_before_the_daemon_opens_it():
+    """A `DirectoryOrCreate` hostPath is created by the kubelet as root:root, and the daemon
+    runs as uid 1000 -- so without this it dies at startup on
+    "open .../buildkitd.lock: permission denied", which reads like a broken image rather than a
+    property of the mount. Observed on a real deployment; no unit test could have shown it,
+    which is why the remedy is pinned here.
+
+    `fsGroup` is not the fix: Kubernetes does ownership management only for volume types that
+    support it, and hostPath is not one.
+    """
+    dep = _dep(storage_path="/data/robovast-buildkit")
+    inits = dep["spec"]["template"]["spec"]["initContainers"]
+    chown = next(c for c in inits if c["name"] == "store-permissions")
+
+    assert chown["securityContext"]["runAsUser"] == 0, "only root can chown the store"
+    assert chown["command"] == ["chown", "1000:1000", BUILDKITD_STORE_DIR]
+    assert [m["mountPath"] for m in chown["volumeMounts"]] == [BUILDKITD_STORE_DIR]
+    # Not recursive: the store is meant to reach ~100 GB, and everything under it after the
+    # first start is already written as 1000.
+    assert "-R" not in chown["command"]
+    # It must precede the daemon, which is what an initContainer means.
+    assert dep["spec"]["template"]["spec"]["containers"][0]["name"] == "buildkitd"
