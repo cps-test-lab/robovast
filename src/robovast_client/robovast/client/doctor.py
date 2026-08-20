@@ -292,7 +292,43 @@ def check_deployment(namespace: str = "default",
 
     checks = [Check("build registry", True, prefix)]
     checks.extend(_check_registry_route(namespace, context))
+    checks.extend(_check_build_daemon(namespace, context))
     return checks
+
+
+def _check_build_daemon(namespace: str, context: str | None) -> list[Check]:
+    """Whether there is anything to build *with*.
+
+    Images are solved by one long-lived BuildKit daemon rather than by a builder spawned inside
+    each build pod, which is what lets the base image stay pulled and the pip download cache
+    survive between builds. It is also a component that can be absent -- and when it is, every
+    campaign that builds is refused at submit. That refusal names it, but a deployment should
+    be able to find out before a campaign does.
+
+    Reported next to the registry checks because it is the same kind of fact: infrastructure a
+    build needs, that the service cannot repair for itself.
+    """
+    try:
+        from robovast.execution.cluster_execution import buildkitd_deploy
+        from robovast.execution.cluster_execution.kube_client import load_kube_config
+    except ImportError:
+        return []  # client-only install; see check_deployment's note
+
+    try:
+        load_kube_config(context)
+        ready = buildkitd_deploy.buildkitd_ready(namespace)
+    except Exception:  # noqa: BLE001 - an unreachable cluster is check_cluster's to report
+        return []
+
+    if ready:
+        return [Check("build daemon", True, buildkitd_deploy.BUILDKITD_NAME)]
+    return [Check(
+        "build daemon", False, f"{buildkitd_deploy.BUILDKITD_NAME} has no ready pod",
+        "Nothing can build until it is back: campaigns whose containers add packages are "
+        "refused at submit. 'vast exec cluster upgrade' re-applies it. If it is there but "
+        "not ready, its store may be on a node it is pinned to and cannot reach -- check "
+        f"'kubectl -n {namespace} describe deploy/{buildkitd_deploy.BUILDKITD_NAME}'.",
+        optional=True)]
 
 
 def _check_registry_route(namespace: str, context: str | None) -> list[Check]:

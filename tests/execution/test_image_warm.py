@@ -395,6 +395,11 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
     monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
     monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
                         lambda spec, project_dir, base_ref, resolved_vcs=None: "FROM base")
+    # A ready build daemon: these tests are about what a submit does, and without one the
+    # submit correctly refuses before it does any of it.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.buildkitd_deploy.buildkitd_ready",
+        lambda namespace: True)
     monkeypatch.setattr(cluster_image_build, "stage_context_to_s3",
                         lambda *a, **kw: None)
     monkeypatch.setattr(cluster_image_build, "build_job_manifest",

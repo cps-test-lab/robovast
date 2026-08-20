@@ -298,7 +298,8 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 
 
 def setup_server(config_name=None, list_configs=False, force=False,
-                 service_kwargs=None, gpu_replicas=None, no_gpu=False, **cluster_kwargs):
+                 service_kwargs=None, gpu_replicas=None, no_gpu=False,
+                 buildkit_kwargs=None, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
@@ -308,6 +309,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
             ``None`` provisions GPUs opportunistically (the default) and never fails over
             a cluster that has none; a value makes GPU support an explicit requirement.
         no_gpu (bool): Skip GPU provisioning entirely.
+        buildkit_kwargs (dict, optional): Storage and sizing for the shared build daemon
+            (see ``buildkitd_deploy.apply_buildkitd``). Its own channel rather than a
+            ``cluster_kwargs`` entry for the reason below: these are not provider options and
+            must not be splatted into ``setup_cluster``.
         **cluster_kwargs: Cluster-specific options to pass to setup_cluster()
 
     Named parameters rather than ``cluster_kwargs`` entries on purpose: ``cluster_kwargs``
@@ -461,6 +466,18 @@ def setup_server(config_name=None, list_configs=False, force=False,
                    **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
+    # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull
+    # Secret, and `deploy_service` is what creates both. Nothing can be built without it, so it
+    # is part of setup rather than something a first campaign discovers is missing.
+    #
+    # The ordering has one honest cost. `apply_kueue_queues` above sized the ClusterQueue from
+    # node allocatable minus the requests of pods Kueue does not manage, and the daemon was not
+    # one of them yet -- so a fresh setup grants marginally more quota than it should, until the
+    # next `apply_kueue_queues` (i.e. the next upgrade) counts it. Applying the daemon earlier
+    # would trade that for a worse bug: it would come up with no CA and no pull credential.
+    from .buildkitd_deploy import apply_buildkitd  # pylint: disable=import-outside-toplevel
+    apply_buildkitd(namespace, kube_context=kube_context, **(buildkit_kwargs or {}))
+
     # Only now is the cluster actually set up. Returning at "Deployment created"
     # reported success for a pod that may never start.
     wait_for_service_ready(namespace=namespace, kube_context=kube_context)
@@ -528,8 +545,13 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     # Before the service, and unconditionally: teardown deletes named objects rather than the
     # namespace, so an image-warm DaemonSet left behind keeps a pod on every node indefinitely,
     # holding multi-GB images for a deployment that no longer exists.
+    from .buildkitd_deploy import delete_buildkitd  # pylint: disable=import-outside-toplevel
     from .image_warm import delete_warm_daemonset  # pylint: disable=import-outside-toplevel
     delete_warm_daemonset(namespace, kube_context)
+    # Same reasoning, and the same reason it is unconditional: a Deployment left behind holds a
+    # pod and its reservation forever for a deployment that no longer exists. Its volume claim
+    # is deliberately kept -- see `delete_buildkitd`.
+    delete_buildkitd(namespace, kube_context)
 
     # Remove the persistent robovast-service (Deployment + Service + RBAC).
     # Never touches the object store (the durable data home).

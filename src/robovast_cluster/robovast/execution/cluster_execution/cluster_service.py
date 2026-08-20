@@ -962,6 +962,9 @@ class ClusterService(LocalTransport):
         from robovast.service.image_build import cache_scope, generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
 
+        from robovast.common.errors import ImageBuildFailed
+
+        from .buildkitd_deploy import BUILDKITD_NAME, buildkitd_address, buildkitd_ready
         from .cluster_image_build import (build_job_manifest, cache_image_ref,
                                           context_prefix, s3_init_env, stage_context_to_s3)
 
@@ -1020,6 +1023,20 @@ class ClusterService(LocalTransport):
             # on an unhandled 409 AlreadyExists from create_namespaced_job — a 500 with
             # no message, for what is a perfectly reasonable "try again".
             self._delete_build_job(build_id)
+
+        # Before staging anything: a build cannot happen without the daemon, and every step
+        # from here on costs something (a full copy of the project tree, an upload, a Job).
+        # Refusing loudly here is also the only way this failure gets named -- past this point
+        # it surfaces as a gRPC dial error inside the build log, which reads like the project's
+        # own build configuration being wrong and sends whoever hit it to edit a `.vast`.
+        if not buildkitd_ready(self.namespace):
+            raise ImageBuildFailed(
+                f"the shared build daemon ({BUILDKITD_NAME}) has no ready pod in namespace "
+                f"'{self.namespace}', so there is nothing to build with. Images are built by a "
+                f"long-lived BuildKit daemon rather than per build, so this is a cluster fault "
+                f"and not a problem with this project. Check it with "
+                f"`kubectl -n {self.namespace} get deploy/{BUILDKITD_NAME}`; "
+                f"`vast exec cluster upgrade` re-applies it if it is missing.")
 
         # Registered *before* staging so a concurrent build's context sweep can see
         # this build is in flight — its context exists in the object store for the
@@ -1085,7 +1102,10 @@ class ClusterService(LocalTransport):
                 # rather than assumed: naming a Secret that does not exist would keep the
                 # build pod from starting, which is a worse failure than building without
                 # a credential no spec here needs.
-                git_secret_name=self._images.git_secret_name())
+                git_secret_name=self._images.git_secret_name(),
+                # Which builder this client dials. A Service name, so a daemon replaced
+                # between submit and start is still reachable at the same address.
+                daemon_addr=buildkitd_address(self.namespace))
             self._k8s_batch().create_namespaced_job(self.namespace, manifest)
         except BaseException:
             status.phase, status.done = "failed", True
@@ -1505,7 +1525,40 @@ class ClusterService(LocalTransport):
         if blocked:
             reason, message = blocked
             return f"{reason}: {message}\n" if message else f"{reason}\n"
-        return ""
+        # Nothing from the client, so the reason is somewhere the client cannot see. Since the
+        # solve happens in the shared daemon, a whole class of failure -- GC, a full store, a
+        # solve killed for memory -- leaves the client's log empty and its own log holding the
+        # only account of it. Without this the reader gets "" for a build that failed for a
+        # reason that was written down.
+        return self._daemon_log_tail()
+
+    def _daemon_log_tail(self, lines: int = 50) -> str:
+        """The build daemon's recent output, labelled as its own.
+
+        Labelled because it is not this build's log and must not read as one: the daemon is
+        shared, so what is in here may belong to a concurrent build. It is offered as the last
+        resort it is -- a lead, not an account.
+        """
+        from kubernetes import client
+
+        from .buildkitd_deploy import BUILDKITD_NAME
+
+        try:
+            pods = self._k8s().list_namespaced_pod(
+                self.namespace, label_selector=f"app={BUILDKITD_NAME}")
+            if not pods.items:
+                return (f"no output from the build client, and no {BUILDKITD_NAME} pod to ask "
+                        f"-- the shared build daemon is not running.\n")
+            text = self._k8s().read_namespaced_pod_log(
+                name=pods.items[0].metadata.name, namespace=self.namespace,
+                container="buildkitd", tail_lines=lines)
+        except client.exceptions.ApiException as e:
+            logger.debug("could not read the build daemon's log: %s", e)
+            return ""
+        if not text:
+            return ""
+        return (f"--- no output from the build client; last {lines} lines from the shared "
+                f"build daemon ({BUILDKITD_NAME}), which may include other builds ---\n{text}")
 
     def get_image_build_log(self, build_id: str, offset: int = 0):
         raw = self._build_log_text(build_id).encode("utf-8", "replace")

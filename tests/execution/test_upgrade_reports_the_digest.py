@@ -106,7 +106,11 @@ def _run_upgrade(before, after, rollout_error=None):
             patch("robovast.execution.cluster_execution.cluster_setup."
                   "apply_controller_rbac", MagicMock()), \
             patch("robovast.execution.cluster_execution.kubernetes_kueue."
-                  "apply_kueue_queues", MagicMock()):
+                  "apply_kueue_queues", MagicMock()), \
+            patch("robovast.execution.cluster_execution.buildkitd_deploy."
+                  "apply_buildkitd", MagicMock()), \
+            patch("robovast.execution.cluster_execution.buildkitd_deploy."
+                  "buildkitd_storage_from_cluster", MagicMock(return_value={})):
         return CliRunner().invoke(upgrade, ["-n", "default"])
 
 

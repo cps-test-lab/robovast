@@ -236,6 +236,11 @@ def _submit_stubs(cs, monkeypatch, storage):
             # tests are about.
             git_secret_name=lambda: ""),
         raising=False)
+    # A ready build daemon: these tests are about what a submit does, and without one the
+    # submit correctly refuses before it does any of it.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.buildkitd_deploy.buildkitd_ready",
+        lambda namespace: True)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _batch_with())
     monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
@@ -316,3 +321,35 @@ def test_a_submit_that_dies_before_its_job_exists_takes_its_context_with_it(
     assert storage.deleted == [("bkt", context_prefix("imgbuild-foo-h"))]
     # And the record no longer holds the sweep back.
     assert cs.get_image_build_status("imgbuild-foo-h").done
+
+
+def test_a_submit_is_refused_before_it_stages_anything(cs, monkeypatch):
+    """A build that cannot happen must cost nothing, and must say why.
+
+    The refusal has to come before staging -- that is a full copy of the project tree and an
+    upload. It is also the only place this fault gets named: past here it surfaces as a gRPC
+    dial error inside a build log, which reads as the project's own build configuration being
+    wrong and sends whoever hit it to edit a `.vast` over a cluster fault.
+    """
+    from robovast.common.errors import ImageBuildFailed
+    from robovast.execution.cluster_execution import cluster_image_build
+    from robovast.execution.cluster_execution.buildkitd_deploy import BUILDKITD_NAME
+
+    storage = _FakeStorage()
+    cfg, spec, registry = _submit_stubs(cs, monkeypatch, storage)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
+
+    staged = []
+    monkeypatch.setattr(cluster_image_build, "stage_context_to_s3",
+                        lambda *a, **kw: staged.append(True))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.buildkitd_deploy.buildkitd_ready",
+        lambda namespace: False)
+
+    with pytest.raises(ImageBuildFailed) as excinfo:
+        cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
+
+    message = str(excinfo.value)
+    assert BUILDKITD_NAME in message, "the refusal must name what is missing"
+    assert "not a problem with this project" in message
+    assert not staged, "nothing should be staged for a build that cannot run"

@@ -37,8 +37,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from robovast.common.execution import resolve_sidecar_image
-from robovast.service.image_build import GIT_TOKEN_SECRET_ID
+from robovast.common.execution import GIT_TOKEN_SECRET_ID, resolve_sidecar_image
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +313,6 @@ def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix,
 #: Where the registry CA (for a self-signed / private-CA registry) is mounted.
 _CA_MOUNT = "/certs"
 #: Rootless BuildKit reads its config from ``$HOME/.config/buildkit`` (HOME=/home/user).
-_BUILDKIT_CONF_DIR = "/home/user/.config/buildkit"
 
 
 def _registry_host(image_ref: str) -> str:
@@ -327,8 +325,9 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                        namespace: str, insecure: bool = False,
                        ca_configmap_name: str = "",
                        cache_ref: str = "", host_aliases: list = None,
-                       pull_secret_name: str = "", git_secret_name: str = "") -> dict:
-    """A rootless BuildKit Job that fetches the S3 context and builds+pushes *image_ref*.
+                       pull_secret_name: str = "", git_secret_name: str = "",
+                       daemon_addr: str) -> dict:
+    """A Job that fetches the S3 context and has the shared daemon build+push *image_ref*.
 
     An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
     BuildKit container builds ``Dockerfile`` from it and pushes with the mounted
@@ -371,8 +370,17 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
     # trusted, so the flag is neither needed nor wanted then.
     reg_insecure = ",registry.insecure=true" if insecure and not ca_configmap_name else ""
     output = f"type=image,name={image_ref},push=true{reg_insecure}"
+    # Required rather than defaulted: an empty address renders `buildctl --addr  build`, which
+    # fails somewhere inside the client with a message about the address rather than about the
+    # caller that forgot it. There is no sensible default -- the daemon's Service name depends
+    # on the namespace.
+    #
+    # A CLIENT of the shared daemon, not a builder. `--local` paths are resolved and streamed
+    # from *here*, so the staged context in this pod's own emptyDir is still exactly right --
+    # which is what lets the whole Job (init container, status, logs, idempotent name) stay as
+    # it was while the build itself moves somewhere that keeps its store between builds.
     buildctl = (
-        "buildctl-daemonless.sh build "
+        f"buildctl --addr {daemon_addr} build "
         "--frontend dockerfile.v0 "
         f"--local context={_CONTEXT_MOUNT} "
         f"--local dockerfile={_CONTEXT_MOUNT} "
@@ -386,9 +394,11 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         )
     volumes = [{'name': 'context', 'emptyDir': {}}]
     build_mounts = [{'name': 'context', 'mountPath': _CONTEXT_MOUNT}]
-    build_env = [
-        {'name': 'BUILDKITD_FLAGS', 'value': '--oci-worker-no-process-sandbox'},
-    ]
+    # No BUILDKITD_FLAGS: that is read by `buildctl-daemonless.sh` when it spawns a daemon, and
+    # this pod spawns nothing. Same reason the Unconfined seccomp/AppArmor profiles are gone
+    # from the container below -- they existed for rootlesskit's mount namespace, which only
+    # the daemon creates.
+    build_env = []
     if git_secret_name:
         # A BuildKit *secret*, not a build arg or an env: it is mounted for the single RUN
         # that installs, never committed to a layer, and absent from the image's history.
@@ -423,29 +433,24 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
 
     command = ['sh', '-c', buildctl]
     if ca_configmap_name:
-        # Mount the CA and generate a buildkitd.toml pointing the registry at it, so
-        # BuildKit trusts the self-signed/private-CA registry (data plane + token
-        # endpoint). Heredoc keeps the shell quoting trivial.
         volumes.append({'name': 'registry-ca',
                         'configMap': {'name': ca_configmap_name}})
         build_mounts.append({'name': 'registry-ca', 'mountPath': _CA_MOUNT,
                              'readOnly': True})
-        toml = (f'[registry."{_registry_host(image_ref)}"]\n'
-                f'  ca=["{_CA_MOUNT}/ca.pem"]\n')
-        # Two mechanisms, because they cover different requests:
+        # The per-registry ``ca`` that used to be written here has moved to the daemon's own
+        # buildkitd.toml, which is where it belongs: the daemon resolves, pulls and pushes, so
+        # it is the side making the TLS connection to the registry API.
         #
-        # * buildkitd.toml's per-registry ``ca`` — the registry API (blobs, manifests).
-        # * SSL_CERT_FILE — Go's *system* cert pool. The registry's OAuth **token
-        #   endpoint** (the realm from WWW-Authenticate, e.g. /service/token) is fetched
-        #   by the auth transport, which does not consult the per-registry ``ca`` at all:
-        #   with only the toml in place the build failed at "failed to fetch oauth token:
-        #   … x509: certificate signed by unknown authority", having already built and
-        #   exported the image. Appending to the image's bundle in /tmp keeps this working
-        #   for rootless BuildKit, which cannot write /etc/ssl/certs.
+        # SSL_CERT_FILE stays HERE as well, and the duplication is deliberate. It covers Go's
+        # *system* pool, which is what fetches the OAuth token from the realm named in
+        # WWW-Authenticate -- and with only the toml in place that fetch once failed with
+        # "x509: certificate signed by unknown authority" *after* the image had been built and
+        # exported. That evidence was gathered when client and daemon were one process, so it
+        # cannot say which of them made the request, and BuildKit has paths for both depending
+        # on what the session negotiates. Splitting the process is exactly what would turn that
+        # ambiguity into a failure, so both sides carry the bundle; one of them may be
+        # redundant and there is no way to tell which from what we know.
         command = ['sh', '-c',
-                   f"mkdir -p {_BUILDKIT_CONF_DIR} && "
-                   f"cat > {_BUILDKIT_CONF_DIR}/buildkitd.toml <<'BKEOF'\n"
-                   f"{toml}BKEOF\n"
                    f"{{ cat {_SYSTEM_CA_BUNDLE} 2>/dev/null || true; "
                    f"cat {_CA_MOUNT}/ca.pem; }} > {_CA_BUNDLE} && "
                    f"export SSL_CERT_FILE={_CA_BUNDLE} && "
@@ -463,19 +468,19 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         'spec': {
             'backoffLimit': 0,
             'ttlSecondsAfterFinished': 3600,
+            # A hard stop, needed only since the build moved out of this pod. `ttl` starts
+            # when a Job is *terminal*, and with backoffLimit 0 a client wedged against an
+            # unreachable or hung daemon leaves both counters at zero -- so the Job stays
+            # `active` forever and the TTL never fires. The build was self-contained before
+            # and could not hang on anything but itself. Generous: a cold cache legitimately
+            # takes many minutes.
+            'activeDeadlineSeconds': 3600,
             'template': {
+                # No AppArmor/seccomp exemption here any more: those existed for
+                # rootlesskit's mount namespace, and this pod no longer creates one.
+                # They moved to the daemon, which does.
                 'metadata': {
                     'labels': {'jobgroup': 'image-builds', 'build-id': build_id},
-                    # Rootless BuildKit needs AppArmor unconfined for its
-                    # rootlesskit mount namespace, or it dies with
-                    # "failed to share mount point: /: permission denied" (seen on
-                    # RKE2/containerd). The legacy per-container annotation covers
-                    # nodes < 1.30; the modern securityContext.appArmorProfile below
-                    # covers >= 1.30.
-                    'annotations': {
-                        'container.apparmor.security.beta.kubernetes.io/buildkit':
-                            'unconfined',
-                    },
                 },
                 'spec': {
                     'restartPolicy': 'Never',
@@ -502,11 +507,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                         'image': BUILDKIT_IMAGE,
                         'command': command,
                         'env': build_env,
-                        'securityContext': {
-                            'runAsUser': 1000, 'runAsGroup': 1000,
-                            'seccompProfile': {'type': 'Unconfined'},
-                            'appArmorProfile': {'type': 'Unconfined'},
-                        },
+                        # uid 1000 is the rootless image's own user, and the git
+                        # Secret's 0444 mode below is chosen for it. Nothing else is
+                        # relaxed: a client needs no privilege the daemon has.
+                        'securityContext': {'runAsUser': 1000, 'runAsGroup': 1000},
                         'volumeMounts': build_mounts,
                     }],
                 },

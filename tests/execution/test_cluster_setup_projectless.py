@@ -14,6 +14,7 @@ from unittest import mock
 
 import pytest
 
+from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import cluster_setup
 from robovast.execution.cluster_execution.cluster_setup import (
     get_kubernetes_node_labels_from_config, setup_server)
@@ -57,6 +58,8 @@ def _deploy_stubs(monkeypatch):
     for name in ("install_kueue_helm", "verify_kueue_admission_ready",
                  "apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     queues = mock.Mock()
     monkeypatch.setattr(cluster_setup, "apply_kueue_queues", queues)
     config = mock.Mock()
@@ -165,6 +168,8 @@ def test_gpus_are_provisioned_before_the_queues_are_sized(monkeypatch):
                         lambda **k: order.append("kueue-queues"))
     monkeypatch.setattr(cluster_setup, "verify_kueue_admission_ready", mock.Mock())
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     cluster_setup.setup_server(config_name="rke2", namespace="default")
@@ -185,6 +190,8 @@ def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkey
                         lambda **k: touched.append("gpu"))
     monkeypatch.setattr(cluster_setup, "install_kueue_helm",
                         lambda **k: touched.append("kueue"))
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     with pytest.raises(ValueError, match="contradictory"):

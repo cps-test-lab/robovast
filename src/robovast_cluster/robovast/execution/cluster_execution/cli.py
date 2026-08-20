@@ -539,11 +539,29 @@ def monitor(interval, once, kube_context, namespace):
               help='Pin the service pod to this node. Needed with hostPath storage on a '
                    'multi-node cluster: the registry blobs live on one node\'s disk, so '
                    'a pod rescheduled elsewhere comes up with an empty registry.')
+@click.option('--buildkit-storage-class', default='', metavar='NAME',
+              help='Back the shared build daemon\'s cache with a PVC from this '
+                   'StorageClass instead of a hostPath. Prefer an SSD class: BuildKit\'s '
+                   'snapshotter is small-file heavy and a slow disk becomes the bottleneck '
+                   'the cache was meant to remove.')
+@click.option('--buildkit-storage-path', default='', metavar='PATH',
+              help='Host directory backing the build cache when using hostPath '
+                   '(default: /data/robovast-buildkit). This is what makes a base image '
+                   'pulled once stay pulled.')
+@click.option('--buildkit-storage-size', default='', metavar='SIZE',
+              help='Size of the build cache PVC (default: 200Gi). Ignored with hostPath, '
+                   'where the node\'s disk and the daemon\'s GC ceiling bound it instead.')
+@click.option('--buildkit-node', default='', metavar='NODE',
+              help='Pin the build daemon to this node. Needed with hostPath storage on a '
+                   'multi-node cluster, or a reschedule starts again from an empty cache. '
+                   'Keep it OFF the registry\'s node: these are the deployment\'s two '
+                   'large on-disk tenants, and the service pod is pinned to that one.')
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, registry_node,
-          cluster_config):
+          buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
+          buildkit_node, cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
@@ -625,6 +643,15 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'registry_storage_path': registry_storage_path,
         'registry_node': registry_node,
     }
+    # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
+    # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
+    # manifest per kind, so a second Deployment would silently replace the service's own.
+    buildkit_kwargs = {
+        'storage_class': buildkit_storage_class,
+        'storage_path': buildkit_storage_path,
+        'storage_size': buildkit_storage_size,
+        'node_name': buildkit_node,
+    }
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's
         # `-o` channel and is persisted as the cluster's recorded config, and it swallows
@@ -632,7 +659,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # stored, and do nothing. A click option answers "no such option" instead.
         setup_server(config_name=cluster_config, list_configs=False, force=force,
                      service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
-                     no_gpu=no_gpu, **cluster_kwargs)
+                     no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs, **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
@@ -838,6 +865,19 @@ def upgrade(namespace, kube_context, timeout):
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
+        # Converge the build daemon too, or an upgrade would leave the cluster running a
+        # service that has nothing to build with.
+        #
+        # Its storage settings are recovered from the live Deployment rather than defaulted:
+        # they arrived as `setup` flags, nothing records them, and re-rendering from defaults
+        # would silently move a PVC-backed cache back to a hostPath -- the same trap
+        # `deploy_service` already falls into with the registry's, which is why that one is
+        # worth fixing separately.
+        from .buildkitd_deploy import (apply_buildkitd,  # pylint: disable=import-outside-toplevel
+                                       buildkitd_storage_from_cluster)
+        apply_buildkitd(namespace, kube_context=kube_context,
+                        **buildkitd_storage_from_cluster(namespace, kube_context))
+        click.echo("  converged the shared build daemon")
         wait_for_service_ready(namespace=namespace, kube_context=kube_context,
                                timeout_s=timeout)
         # No branch here, deliberately: wait_for_rollout raises on every outcome that is

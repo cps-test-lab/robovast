@@ -645,8 +645,19 @@ tag — one tag per build tag, overwritten in place.
 Caching in-cluster
 ^^^^^^^^^^^^^^^^^^
 
-Every build gets a **fresh** BuildKit pod, so nothing on a node's disk is reused
-between builds. Two registry-backed mechanisms replace that:
+Builds are solved by **one long-lived BuildKit daemon** (``robovast-buildkitd``), not by a
+BuildKit spawned inside each build pod. The build Job still exists and still stages its own
+context -- it is now a *client* that dials the daemon, which works because ``buildctl --local``
+resolves its paths on the client and streams them over the session.
+
+That daemon keeps its store on a volume, and the store is the point. When every build got a
+fresh BuildKit, two costs were paid every single time and neither looked like anything but a
+slow build: the base image was pulled again (measured at 95-110 s per container, on builds
+where every layer was a cache hit), and ``RUN --mount=type=cache`` was discarded, so a pip
+layer that missed re-downloaded its wheels in full. No registry-side cache can help with
+either -- a cold builder has to materialise the base whatever the registry holds.
+
+Two registry-backed mechanisms remain, and now sit *above* the daemon's own store:
 
 * **Is it already built?** The service asks the registry whether
   ``<prefix>/<tag>:<hash>`` already has a manifest, and skips the build if so. This
@@ -689,10 +700,55 @@ set. Grouping the ``python_packages`` list by change frequency is what makes the
 cache pay off — see :ref:`containers <config-containers>` — and the scope is what makes
 that grouping survive other projects building alongside it.
 
+The build daemon
+^^^^^^^^^^^^^^^^
+
+``robovast-buildkitd`` is applied by ``setup`` and converged by ``upgrade``, one replica with
+``Recreate``. Its storage is chosen the same way the registry's is:
+
+.. code-block:: bash
+
+   vast exec cluster setup rke2 --buildkit-storage-path /data/robovast-buildkit
+   vast exec cluster setup gcp  --buildkit-storage-class premium-rwo --buildkit-storage-size 200Gi
+
+A **hostPath** by default, because a stock RKE2 cluster ships no StorageClass and a PVC there
+stays ``Pending`` forever. That makes the cache node-local, so ``--buildkit-node`` pins the
+daemon; keep it off the registry's node, since those are the deployment's two large on-disk
+tenants and the service pod is pinned to that one. On a cluster that can provision volumes,
+prefer an **SSD** class: BuildKit's snapshotter is small-file heavy, and a slow disk becomes
+the bottleneck the cache was meant to remove.
+
+The store is **bounded** — a component whose whole purpose is that state survives is also the
+one that fills a disk. The daemon's ``buildkitd.toml`` sets ``reservedSpace`` / ``maxUsedSpace``
+/ ``minFreeSpace`` (the keys the pinned BuildKit understands; the older ``gckeepstorage`` is
+gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all).
+
+Three consequences worth knowing before they surprise you:
+
+* **An upgrade kills builds in flight.** ``Recreate`` replaces the daemon pod, and a campaign
+  waiting on a build *detaches* rather than cancels — so a sibling campaign can be waiting on
+  a build a restart destroys. Nothing drains.
+* **The endpoint is unauthenticated.** BuildKit offers mTLS and nothing else, and this ships
+  with neither mTLS nor a NetworkPolicy. It is a ClusterIP with no Ingress, but that is not a
+  boundary: campaign pods run images a ``.vast`` chose and can reach it. The pip download cache
+  is shared across every build and now *persists*, so anything that can dial the daemon can
+  leave something in it for the next build to install. The registry's "deliberately
+  unauthenticated" note does not transfer — that one is excused by sharing a token-gated
+  hostname, and this has no hostname at all.
+* **A wedged cache has no remote remedy.** Changing a cache scope fixes a bad *registry* cache;
+  a bad local store needs the daemon restarted or its volume cleared, on the node that holds
+  it.
+
+If the daemon is not ready, a campaign is **refused at submit**, naming it — before staging a
+context or creating a Job. A daemon that dies mid-build is classified as an infrastructure
+failure rather than a problem with the project's packages, and the daemon's own recent log is
+appended when the client produced none.
+
 .. note::
 
-   Rootless BuildKit needs AppArmor **and** seccomp ``Unconfined`` (the build Job
-   sets both). On nodes whose container runtime cannot pull from the registry
+   Rootless BuildKit needs AppArmor **and** seccomp ``Unconfined``, for rootlesskit's mount
+   namespace. That is now set on the **daemon**; the build Job creates no such namespace and
+   carries no exemption. On nodes whose container runtime cannot pull from the registry
    without host trust (e.g. an in-cluster registry over plain HTTP on RKE2/k3s
    containerd), the node must be configured to trust it (``registries.yaml``) for
    campaign pods to pull the built image — an external registry with valid TLS

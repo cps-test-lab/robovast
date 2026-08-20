@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Optional
 
 from robovast.common.build_context import BUILD_CONTEXT_IGNORE
+from robovast.common.execution import GIT_TOKEN_SECRET_ID as _GIT_TOKEN_SECRET_ID
 from robovast.common.containers import plan_containers
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
                                        FAMILY_IMAGE_PREFIX)
@@ -97,10 +98,9 @@ _VENV_SETUP = (
 _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
                 f"pip --python {_VENV}/bin/python3 install")
 
-#: BuildKit secret id for the git token, and where it appears inside the build. The same id
-#: ``container/robovast/Dockerfile.roqsim`` and ``build.sh`` already use for their own clone --
-#: one convention, so an operator configures a token once.
-GIT_TOKEN_SECRET_ID = "git_token"
+#: Re-exported: the id itself lives in ``robovast.common.execution`` because it is a contract
+#: shared with the execution lane, which must not import this module (see the note there).
+GIT_TOKEN_SECRET_ID = _GIT_TOKEN_SECRET_ID
 _GIT_TOKEN_SECRET_PATH = f"/run/secrets/{GIT_TOKEN_SECRET_ID}"
 
 #: What a pip install of a **private** git spec needs, prepended to the install command.
@@ -905,6 +905,16 @@ def _declares(spec: Optional[BuildSpec], requirement: str) -> bool:
         _canonical_name(entry) for entry in spec.python_specs}
 
 
+#: How a client reports that the shared daemon is not there. Matched broadly on purpose --
+#: these come from gRPC's transport layer rather than from BuildKit, so the wording is not ours
+#: to rely on, and the cost of a false positive (an infra message for a real build failure that
+#: happened to mention "connection refused") is far lower than the cost of the miss it replaces.
+_BUILDER_UNREACHABLE = re.compile(
+    r"failed to dial|connection refused|transport: Error while dialing|"
+    r"context deadline exceeded|no such host|connection reset by peer",
+    re.IGNORECASE)
+
+
 def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBuildError:
     """Map raw builder output to a structured, actionable error.
 
@@ -919,6 +929,22 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     it is available.
     """
     tail = "\n".join(log.splitlines()[-40:])
+
+    # FIRST, because it is the one failure that is about neither the project nor its packages.
+    # Builds are solved by a long-lived daemon the client dials, so a daemon that is down,
+    # rolling or unreachable surfaces as a transport error part-way through what otherwise
+    # looks like a normal build. Left unclassified it fell through to the generic
+    # "the image build failed" advice, which points at `build:` -- sending someone to edit a
+    # `.vast` over a cluster fault. The submit-time preflight catches the common case; this
+    # catches a daemon that died mid-build, which the preflight cannot.
+    if _BUILDER_UNREACHABLE.search(log):
+        return ImageBuildError(
+            phase="builder", fixable_by="infra",
+            message="lost the connection to the shared build daemon. Nothing about this "
+                    "project's packages is implicated: the builder itself was unreachable or "
+                    "went away mid-build (an upgrade replaces it, and that kills builds in "
+                    "flight). Check the daemon, then submit again.",
+            log_tail=tail)
 
     m = _APT_MISS.search(log)
     if m:

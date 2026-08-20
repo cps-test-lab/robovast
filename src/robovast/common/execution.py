@@ -428,6 +428,20 @@ def resolve_controller_image(explicit: str | None = None,
                           config_image=config_image, role="controller image")
 
 
+#: BuildKit secret id for the git token, and the one name both sides of a build agree on: the
+#: service renders ``--mount=type=secret,id=...`` into the Dockerfile, and the execution lane
+#: passes the matching ``--secret id=...`` to the builder. The same id
+#: ``container/robovast/Dockerfile.roqsim`` and ``build.sh`` use for their own clone -- one
+#: convention, so an operator configures a token once.
+#:
+#: It lives in ``common`` because it is a contract *between* the two layers, and the engine
+#: importing it from ``service`` was the last remaining ``execution -> service`` dependency at
+#: module load -- the inversion ``tests/execution/test_layering.py`` exists to catch. Same
+#: reasoning, and the same move, as ``common/build_context.py``'s docstring records for the
+#: ignore set.
+GIT_TOKEN_SECRET_ID = "git_token"
+
+
 def resolve_sidecar_image(explicit: str | None = None) -> str:
     """Resolve the robovast-sidecar image (object-store init + postprocessing Job).
 

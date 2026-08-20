@@ -16,6 +16,7 @@ until something forces a restart.
 A pod-template annotation that differs on every deploy is what forces it.
 """
 
+from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import service_deploy
 
 
@@ -127,6 +128,8 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
                  "apply_controller_rbac", "apply_kueue_queues",
                  "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -157,6 +160,8 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
                  "apply_controller_rbac", "apply_kueue_queues",
                  "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -187,6 +192,8 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
                  "apply_controller_rbac", "apply_kueue_queues",
                  "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Setup applies the shared build daemon too; without this the test reaches a cluster.
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
                         lambda name: mock.Mock(get_cluster_kwargs=lambda: {}))
 
@@ -219,6 +226,8 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
                         lambda *a, **k: ("rke2", {"namespace": "default"}))
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     # Returns None on success; it raises on every non-convergence.
     monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)

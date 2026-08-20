@@ -25,7 +25,10 @@ from robovast.execution.cluster_execution.registry_client import (credentials_fo
 def _buildctl(**over):
     kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
               "campaign_label": "imgbuild-x-abc", "init_env": [],
-              "push_secret_name": "push", "namespace": "ns"}
+              "push_secret_name": "push", "namespace": "ns",
+              # Required: the build pod is a client of the shared daemon, and there is no
+              # sensible default for an address that depends on the namespace.
+              "daemon_addr": "tcp://robovast-buildkitd.ns.svc:1234"}
     kwargs.update(over)
     manifest = build_job_manifest(**kwargs)
     return manifest['spec']['template']['spec']['containers'][0]['command'][-1]
@@ -281,7 +284,10 @@ def test_ca_path_is_passed_as_verify(monkeypatch):
 def _pod_spec(**over):
     kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
               "campaign_label": "imgbuild-x-abc", "init_env": [],
-              "push_secret_name": "push", "namespace": "ns"}
+              "push_secret_name": "push", "namespace": "ns",
+              # Required: the build pod is a client of the shared daemon, and there is no
+              # sensible default for an address that depends on the namespace.
+              "daemon_addr": "tcp://robovast-buildkitd.ns.svc:1234"}
     kwargs.update(over)
     return build_job_manifest(**kwargs)['spec']['template']['spec']
 
