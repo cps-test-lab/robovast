@@ -533,10 +533,21 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: absent from the surface while ``test_every_plugin_class_is_registered`` failed. Fixing
 #: that registration added all four at once and put the surface 240 over.
 #:
-#: Where the fat is now: ``start_campaign`` (~670), ``exec_in_container`` (~654) and
-#: ``get_campaign_log`` (~578). The next capability should still be paid for out of those
-#: — this raise bought ~260 of headroom, not a new habit.
-_SURFACE_TOKEN_BUDGET = 13_500
+#: Where the fat is now: ``start_campaign`` (~696), ``get_campaign_log`` (~578) and
+#: ``get_service_info`` (~530).
+#:
+#: Raised 13_500 → 13_800 for ``get_job_state`` and ``exec_in_job``, which together are one
+#: capability: reading a live job's state, and running something in it. **Partly** paid for by
+#: compression rather than not at all -- ``exec_in_container`` went 821 → 678 by dropping a
+#: four-states clause its own ``next_step`` already carries and a pointer to ``describe_world``
+#: -- and the remainder is recorded here as the second deliberate exception rather than hidden.
+#:
+#: Why it was not paid in full: the three largest descriptions are dense rather than padded. Their
+#: bulk is per-argument documentation and the "start with summarize=True" kind of guidance that
+#: exists because an agent got it wrong without it. Cutting that to fund a new tool would trade a
+#: shared resource everybody uses for one two callers use, which is a worse deal than the 300
+#: tokens.
+_SURFACE_TOKEN_BUDGET = 13_800
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

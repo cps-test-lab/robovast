@@ -565,6 +565,37 @@ def get_job_state(campaign_id: str, job_name: str) -> dict:
         return service_access.error_result(e)
 
 
+def exec_in_job(campaign_id: str, job_name: str, command: str,
+                container: str = "scenario") -> dict:
+    """Run a command **inside a live job**. Recorded against the run — see below.
+
+    Only for what a copy cannot answer. Reproduce with ``exec_in_container`` first: it stages the
+    same configuration and perturbs nothing, and a fault that does **not** reproduce there is
+    itself the finding that sends you here (contention, a particular draw, a long warm-up).
+
+    **This marks the run as probed** (``runs.probed`` in ``data.db``), recorded before the command
+    runs. Confirming a cause is the point; making a wedged run go green is not -- the fix belongs
+    in the ``.vast`` and the number to a clean relaunch, with this run dropped.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        job_name: A ``job_name`` from ``list_campaign_jobs``. Must be running.
+        command: Shell, so ``|``, ``grep`` and ``tail`` are already available.
+        container: The role to enter -- ``scenario`` (default), ``simulation`` or ``sut``.
+
+    Returns:
+        ``{exit_code, stdout, stderr, timed_out, limit_s, limit_source}``, or ``{error}``.
+    """
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {"error": NO_SERVICE}
+        result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
+        return result.model_dump()
+    except Exception as e:  # noqa: BLE001
+        return service_access.error_result(e)
+
+
 def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
@@ -1011,6 +1042,7 @@ _TOOLS = [
     list_campaign_jobs,
     get_job_log,
     get_job_state,
+    exec_in_job,
     stop_campaign,
     stop_job,
     get_resource_usage,

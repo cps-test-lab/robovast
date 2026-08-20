@@ -848,13 +848,27 @@ usable verbatim in the command either way. In-cluster the staging goes through t
 store, exactly as a campaign job's does, so anything a campaign can stage this can stage
 too — there is no separate size ceiling to run into.
 
-**A running campaign is never a target.** There is no way from here to a job's container
-or pod. A campaign in flight is provenance-recorded, reproducible compute, and attaching
-to it would perturb the thing it exists to produce. To inspect a live stack, start that
-stack here instead — and to ask why a *campaign* is wedged, use
-``get_campaign_status`` (``stalled`` / ``stall_reason``), ``get_campaign_log``,
-``get_job_log`` and — to *see* what a finished run did — ``get_camera_frame`` or
-``get_simulation_screenshot``.
+**A running campaign is never a target of this tool.** There is no way from here to a
+job's container or pod, and the argument for that has not changed: a campaign in flight is
+provenance-recorded, reproducible compute, and attaching to it perturbs the thing it exists
+to produce.
+
+What changed is that the perturbation is now *recordable* rather than forbidden. Two tools
+reach a live job, and the difference between them is who chooses the command:
+
+* ``get_job_state`` runs a **fixed** command the service chose — the simulator's own health
+  read — so nothing arbitrary can ride in, nothing is perturbed, and nothing is recorded.
+* ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
+  campaign instead: every run the job covers is marked ``probed`` in ``data.db``.
+
+That makes this tool the right *first* move rather than the only one, because it answers the
+same question against a copy at no cost to the campaign. A fault that does not reproduce here
+is itself the finding — it is environmental, timing-dependent or draw-specific — and that is
+when the live job earns its record.
+
+To ask why a *campaign* is wedged: ``get_campaign_status`` (``stalled`` / ``stall_reason``),
+then ``get_job_state``, then ``get_campaign_log`` / ``get_job_log``; and to *see* what a
+finished run did, ``get_camera_frame`` or ``get_simulation_screenshot``.
 
 **At most one container exists at a time.** That is what keeps this from growing session
 ids, a listing tool, and a leak class. ``keep_alive=True`` holds it open; every result

@@ -869,6 +869,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def get_job_state(campaign_id: str, job_name: str) -> JobState:
         return _guard(lambda: impl.get_job_state(campaign_id, job_name))
 
+    @app.post(Routes.job_exec("{campaign_id}"), response_model=ExecResult, tags=["campaigns"])
+    def exec_in_job(campaign_id: str, job_name: str, command: str,
+                    container: str = "scenario", source: str = "api") -> ExecResult:
+        return _guard(lambda: impl.exec_in_job(campaign_id, job_name, command, container, source))
+
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
         """Server-sent events: one running job's log, tailed live (``Last-Event-ID``

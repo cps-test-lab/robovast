@@ -250,6 +250,15 @@ class HTTPTransport(RobovastInterface):
         return JobState.model_validate(
             self._get(Routes.job_state(campaign_id), job_name=job_name))
 
+    def exec_in_job(self, campaign_id: str, job_name: str, command: str,
+                    container: str = "scenario", source: str = "api") -> "ExecResult":
+        # Imported here, as ``exec_in_container`` below does: the module-level import list is
+        # already the client's whole surface and this model is only needed on two paths.
+        from robovast.service.interface import ExecResult
+        return ExecResult.model_validate(
+            self._post(Routes.job_exec(campaign_id), job_name=job_name, command=command,
+                       container=container, source=source))
+
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
 

@@ -379,6 +379,11 @@ class WorkspaceTarget:
 #: tail of two records, which answers in well under a second when anything is answering at all.
 _JOB_STATE_LIMIT_S = 20
 
+#: How long a caller's own command may run in a live job. Longer than a state read -- a caller may
+#: legitimately watch a topic for a few seconds -- but still a cap: this holds a request open, and a
+#: command that needs longer wants ``exec_in_container``, where nothing is waiting on it.
+_PROBE_LIMIT_S = 60
+
 
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
@@ -2286,6 +2291,51 @@ class LocalTransport(RobovastInterface):
             state.unavailable.append(
                 f"{command!r} exited {exit_code} but its output was not JSON")
         return state
+
+    def exec_in_job(self, campaign_id: str, job_name: str, command: str,
+                    container: str = "scenario", source: str = "api") -> "ExecResult":
+        """Run *command* in the live job's container, recording the probe first.
+
+        Locally the scenario runs in a container of a fixed name and every sidecar takes its role's
+        name, which is the same mapping ``logs/system_<name>.log`` follows.
+        """
+        from robovast.common.campaign_data import KIND_PROBED, record_intervention
+        from robovast.common.execution import job_artifact_dir
+        from robovast.service.interface import ExecResult
+
+        if not (command or "").strip():
+            raise ValueError("exec_in_job needs a command: there is no scenario to start here, "
+                             "only a live job to look at.")
+        campaign_dir = self._campaigns_root() / campaign_id
+        self._require_running_job(campaign_id, job_name)
+        try:
+            job_dir = os.path.relpath(job_artifact_dir(campaign_dir, job_name), campaign_dir)
+        except (FileNotFoundError, OSError, ValueError):
+            # The documented startup race, as in stop_job: no manifest entry yet. The run key below
+            # is this lane's own job identity, so resolution does not depend on it.
+            job_dir = ""
+        # Before the command, not after: it may change the run or wedge it, and a crash in between
+        # must not leave perturbed data with nothing saying why.
+        record_intervention(campaign_dir, kind=KIND_PROBED, job_dir=job_dir, job_name=job_name,
+                            source=source, detail=command, runs=(job_name,))
+        target = self._job_container(container)
+        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            target, ["/bin/bash", "-lc", command], _PROBE_LIMIT_S)
+        return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr,
+                          timed_out=timed_out, limit_s=_PROBE_LIMIT_S, limit_source="command")
+
+    def _job_container(self, role: str) -> str:
+        """The container a role runs in on this lane.
+
+        The scenario's container has a fixed name; a sidecar's is its role. Mapped rather than taken
+        verbatim so a caller names the role it means and the lane resolves it -- the cluster answers
+        the same question with a pod and a container, which is why the callers never build one.
+        """
+        from robovast.common.config import CONTAINER_ROLES, SCENARIO_CONTAINER
+        if role not in CONTAINER_ROLES:
+            raise ValueError(f"unknown container role {role!r}; expected one of "
+                             f"{', '.join(CONTAINER_ROLES)}")
+        return self._CONTAINER_NAME if role == SCENARIO_CONTAINER else role
 
     def _require_running_job(self, campaign_id: str, job_name: str):
         """The named job, or raise — shared by both lanes' :meth:`stop_job` preconditions.

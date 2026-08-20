@@ -1528,6 +1528,11 @@ class Routes:
         return f"/campaigns/{campaign_id}/job-state"
 
     @staticmethod
+    def job_exec(campaign_id: str) -> str:
+        # POST: it changes the run, unlike ``job_state``. Same ``job_name``-as-query reason.
+        return f"/campaigns/{campaign_id}/job-exec"
+
+    @staticmethod
     def job_log_stream(campaign_id: str) -> str:
         # SSE transport over ``job_log`` (same ``job_name`` query param + offset seam).
         return f"/campaigns/{campaign_id}/job-log/stream"
@@ -1907,6 +1912,44 @@ class RobovastInterface(ABC):
         del campaign_id, job_name
         raise NotImplementedError("this service cannot read a running job's state")
 
+    def exec_in_job(self, campaign_id: str, job_name: str, command: str,
+                    container: str = "scenario", source: str = "api") -> "ExecResult":
+        """Run *command* inside a **running** job. Recorded against the run.
+
+        The escape hatch for what a copy cannot answer. ``exec_in_container`` stages the same
+        configuration and is the right first move precisely because it perturbs nothing -- but a
+        fault that only appears under contention, a particular random draw, or a long warm-up does
+        not reproduce there, and its *failure* to reproduce is itself the finding that sends you
+        here.
+
+        **This is a probe and it is written down.** The run is no longer untouched, so
+        :func:`~robovast.common.campaign_data.record_intervention` records it *before* the command
+        runs -- the same ordering :meth:`stop_job` uses, and for the same reason: a crash in
+        between must not leave perturbed data with no explanation. Every run the job covers is
+        marked, which surfaces as ``runs.probed`` in ``data.db``.
+
+        That is the whole line between this and :meth:`get_job_state`: there the service chooses a
+        fixed read, so nothing arbitrary can ride in and nothing needs recording. Here the *caller*
+        chooses, which cannot be bounded -- so it is recorded instead of refused.
+
+        Confirming a cause is the point; making a wedged run go green is not. The fix belongs in the
+        ``.vast`` and the number belongs to a clean relaunch, with the probed run dropped.
+
+        Args:
+            container: A **role** (``scenario`` / ``simulation`` / ``sut``), not a container name
+                -- the concrete name differs by lane, so naming one here would make the same call
+                mean different things on the two. Spelled literally rather than imported from
+                ``robovast.common.config``: this package deliberately does not depend on the core
+                (see ``test_client_needs_no_core``).
+            source: Which surface asked, for the ledger. Not an identity: the service is
+                unauthenticated.
+
+        Not abstract, for the reason :meth:`get_job_state` is not: a transport that cannot do this
+        inherits a refusal rather than being made to write one.
+        """
+        del campaign_id, job_name, command, container, source
+        raise NotImplementedError("this service cannot exec into a running job")
+
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop of a running campaign."""
@@ -2029,11 +2072,16 @@ class RobovastInterface(ABC):
         ``ros2 pkg list``, file checks); named, that config staged as a campaign would
         stage it, where an empty ``command`` starts its scenario.
 
-        **A running campaign is never a target.** There is no path from here to a job's
-        container or pod: a campaign in flight is provenance-recorded, reproducible
-        compute, and attaching to it would perturb the thing it exists to produce. To
-        inspect a live stack, start it here with ``keep_alive`` and exec into your own
-        container.
+        **A running campaign is never a target *of this call*.** There is no path from here to
+        a job's container or pod, and the reason has not changed: a campaign in flight is
+        provenance-recorded, reproducible compute, and attaching to it perturbs the thing it
+        exists to produce. What changed is that the perturbation can now be *recorded* instead
+        of forbidden -- :meth:`exec_in_job` enters the live job and marks every run it covers as
+        probed, and :meth:`get_job_state` reads one without perturbing it at all.
+
+        So this stays the right first move rather than the only one: it answers the same
+        question against a copy, at no cost to the campaign. Reach for the live job when a fault
+        does not reproduce here, which is itself the finding.
 
         At most one exec container exists at a time (see :class:`ExecContainerState`);
         ``keep_alive=False`` also stops a held one. Raises ``ValueError`` when the

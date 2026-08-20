@@ -743,3 +743,120 @@ def test_get_job_state_refuses_a_job_that_is_not_running(transport, monkeypatch)
 
     with pytest.raises(RuntimeError, match="not running"):
         transport.get_job_state(cid, "cfgA/0")
+
+
+# -- exec_in_job: the probe, and the record it leaves ---------------------------------------------
+
+
+def _probe_transport(transport, monkeypatch, *, exec_result=(0, "out", "", False)):
+    class _Lane:
+        calls: list = []
+
+        def exec_in(self, target, argv, limit_s, env=None):
+            _Lane.calls.append((target, argv, limit_s))
+            return exec_result
+
+    _Lane.calls = []
+    monkeypatch.setattr(transport, "_exec_lane", lambda: _Lane())
+    return _Lane
+
+
+def _probed(campaign_dir):
+    from robovast.common.campaign_data import probed_runs
+    return probed_runs(campaign_dir)
+
+
+def test_exec_in_job_records_the_probe_before_running_it(transport, monkeypatch):
+    """Recorded first, not after: the command may wedge the run or the service may die, and
+    perturbed data with nothing saying why is the case this ledger exists for."""
+    cid = "campaign-2026-08-20-130000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    order = []
+
+    class _Lane:
+        def exec_in(self, target, argv, limit_s, env=None):
+            # By the time the command runs, the ledger is already on disk.
+            order.append(sorted(_probed(cdir)))
+            return (0, "ok", "", False)
+
+    monkeypatch.setattr(transport, "_exec_lane", lambda: _Lane())
+
+    result = transport.exec_in_job(cid, "cfgA/1", "ros2 node list", source="mcp")
+
+    assert result.exit_code == 0 and result.stdout == "ok"
+    assert order == [["cfgA/1"]], "the probe was not recorded before the command ran"
+    entry = _probed(cdir)["cfgA/1"]
+    assert (entry["kind"], entry["source"], entry["detail"]) == \
+        ("probed", "mcp", "ros2 node list")
+
+
+def test_exec_in_job_enters_the_role_the_caller_named(transport, monkeypatch):
+    """A role, not a container name: the concrete name differs by lane, so the caller names what
+    it means and the lane resolves it."""
+    cid = "campaign-2026-08-20-131000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    lane = _probe_transport(transport, monkeypatch)
+
+    transport.exec_in_job(cid, "cfgA/1", "true", container="simulation")
+    transport.exec_in_job(cid, "cfgA/1", "true", container="scenario")
+
+    targets = [c[0] for c in lane.calls]
+    assert targets == ["simulation", transport._CONTAINER_NAME]
+
+
+def test_exec_in_job_refuses_an_unknown_role(transport, monkeypatch):
+    """Naming the roles that exist beats a container that silently does not."""
+    cid = "campaign-2026-08-20-132000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _probe_transport(transport, monkeypatch)
+
+    with pytest.raises(ValueError, match="unknown container role"):
+        transport.exec_in_job(cid, "cfgA/1", "true", container="sidecar")
+
+
+def test_exec_in_job_refuses_a_job_that_is_not_running(transport, monkeypatch):
+    """And records nothing: a refused probe did not touch the run."""
+    cid = "campaign-2026-08-20-133000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML)
+    _run(cdir, "cfgA", "1", log="running\n", job_index=1)
+    _live(transport, cid, "running", total=2, completed=1)
+    _probe_transport(transport, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="not running"):
+        transport.exec_in_job(cid, "cfgA/0", "true")
+    assert _probed(cdir) == {}
+
+
+def test_exec_in_job_refuses_an_empty_command(transport, monkeypatch):
+    """Unlike exec_in_container, an empty command has no meaning here: there is no scenario to
+    start, only a live one to look at -- and it would record a probe that did nothing."""
+    cid = "campaign-2026-08-20-134000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _probe_transport(transport, monkeypatch)
+
+    with pytest.raises(ValueError, match="needs a command"):
+        transport.exec_in_job(cid, "cfgA/1", "   ")
+    assert _probed(cdir) == {}
+
+
+def test_a_probe_does_not_change_the_run_s_status(transport, monkeypatch):
+    """The whole reason probed is a separate column: a probed run keeps whatever verdict it
+    reached, and folding it into status would put a human's action into the measurement."""
+    cid = "campaign-2026-08-20-135000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _probe_transport(transport, monkeypatch)
+
+    transport.exec_in_job(cid, "cfgA/1", "true")
+
+    assert transport.list_jobs(cid).jobs[0].status == "running"

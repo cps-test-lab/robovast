@@ -1691,7 +1691,6 @@ class ClusterService(LocalTransport):
         from robovast.common.simulators import health_command
         from robovast.service.interface import JobState
 
-        from .cluster_execution import _label_safe_campaign
         self._require_running_job(campaign_id, job_name)
         state = JobState(job_name=job_name, status="running")
         try:
@@ -1704,20 +1703,73 @@ class ClusterService(LocalTransport):
                 "this campaign's simulator does not report its own state, so there is nothing to "
                 "read from a live run")
             return state
-        core = self._k8s()
-        label = (f"jobgroup=scenario-runs,"
-                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
-        pods = core.list_namespaced_pod(self.namespace, label_selector=label)
-        if not pods.items:
-            state.unavailable.append(
-                f"no pod for job {job_name!r}: it is between scheduling and running, or already gone")
+        try:
+            target = self._job_pod_target(campaign_id, job_name)
+        except KeyError as err:
+            state.unavailable.append(str(err))
             return state
-        pod = pods.items[0]
-        container = pod.spec.containers[0].name
         from robovast.service.local_transport import _JOB_STATE_LIMIT_S
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            (pod.metadata.name, container), shlex.split(command), _JOB_STATE_LIMIT_S)
+            target, shlex.split(command), _JOB_STATE_LIMIT_S)
         return self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+
+    def _job_pod_target(self, campaign_id: str, job_name: str, role: str = "scenario"):
+        """``(pod, container)`` for one running job's *role*, or raise saying why not.
+
+        The scenario is the pod's first container and the sidecars follow it in declaration order,
+        so a role resolves to a position rather than to a name assembled here. Read from the live
+        pod for the same reason the log tail reads it: the manifest owns those names.
+        """
+        from robovast.common.config import CONTAINER_ROLES, SCENARIO_CONTAINER
+
+        from .cluster_execution import _label_safe_campaign
+        if role not in CONTAINER_ROLES:
+            raise ValueError(f"unknown container role {role!r}; expected one of "
+                             f"{', '.join(CONTAINER_ROLES)}")
+        label = (f"jobgroup=scenario-runs,"
+                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
+        pods = self._k8s().list_namespaced_pod(self.namespace, label_selector=label)
+        if not pods.items:
+            raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}: it is "
+                           f"between scheduling and running, or already gone")
+        pod = pods.items[0]
+        names = [c.name for c in pod.spec.containers]
+        if role == SCENARIO_CONTAINER:
+            return pod.metadata.name, names[0]
+        if role in names:
+            return pod.metadata.name, role
+        raise KeyError(f"this job runs no {role!r} container; it has: {', '.join(names)}")
+
+    def exec_in_job(self, campaign_id: str, job_name: str, command: str,
+                    container: str = "scenario", source: str = "api") -> "ExecResult":
+        """The inherited probe, pointed at this job's pod.
+
+        Same recording, same ordering, same refusal for a job that is not running -- only the target
+        differs, which is what ``exec_in`` exists for. The container is resolved from the pod rather
+        than from a name built here: a role maps to a *position* in the pod spec (the scenario runs
+        first), and the concrete names are the manifest's business.
+        """
+        from robovast.common.campaign_data import KIND_PROBED, record_intervention
+        from robovast.service.interface import ExecResult
+
+        if not (command or "").strip():
+            raise ValueError("exec_in_job needs a command: there is no scenario to start here, "
+                             "only a live job to look at.")
+        self._require_running_job(campaign_id, job_name)
+        campaign_root = self._campaigns_root() / campaign_id
+        record_intervention(campaign_root, kind=KIND_PROBED,
+                            job_dir=self._job_artifact_dir(job_name), job_name=job_name,
+                            source=source, detail=command)
+        # Mirrored at once, for the reason the kill is: postprocessing runs as its own in-cluster
+        # Job before the campaign root is uploaded, so a probe recorded only on pod disk would be
+        # lost exactly when the results are assembled.
+        self._publish_interventions(campaign_id, campaign_root)
+        from robovast.service.local_transport import _PROBE_LIMIT_S
+        pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
+        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            (pod, pod_container), ["/bin/bash", "-lc", command], _PROBE_LIMIT_S)
+        return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr,
+                          timed_out=timed_out, limit_s=_PROBE_LIMIT_S, limit_source="command")
 
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: "str | None" = None, source: str = "api") -> ActionResult:
