@@ -28,6 +28,7 @@ from robovast.execution.cluster_execution.image_warm import (WARM_DEADLINE_SECON
                                                              warm_job_manifest)
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from robovast.service.image_build import BuildSpec
 
 BUILD = "imgbuild-sut-abc123"
 REF = "harbor.example.de/robovast/sut:abc123"
@@ -269,7 +270,7 @@ def _cache_hit_setup(cs, monkeypatch, batch):
     monkeypatch.setattr(cs, "_sweep_build_contexts", lambda cfg, bucket: None)
     monkeypatch.setattr(cs, "_registry_has_image", lambda f: True)
     _wire(cs, monkeypatch, batch)
-    return types.SimpleNamespace(tag="sut", base_image="")
+    return BuildSpec(tag="sut", base_image="")
 
 
 def test_a_cache_hit_still_warms(cs, monkeypatch):
@@ -365,7 +366,7 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
     cfg = types.SimpleNamespace(get_s3_credentials=lambda: ("ak", "sk"),
                                 get_s3_endpoint=lambda: "http://robovast:9000",
                                 get_host_aliases=lambda: None)
-    spec = types.SimpleNamespace(tag="sut", base_image=base_image)
+    spec = BuildSpec(tag="sut", base_image=base_image)
     registry = types.SimpleNamespace(registry_prefix="harbor.example.de/robovast",
                                      push_secret_name="push", pull_secret_name="reg-push",
                                      insecure=False, ca_configmap_name="",

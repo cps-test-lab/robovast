@@ -79,7 +79,7 @@ def build_id_for(tag: str, image_hash: str) -> str:
     return f"imgbuild-{name}-{image_hash}"
 
 
-def cache_image_ref(registry_prefix: str, tag: str) -> str:
+def cache_image_ref(registry_prefix: str, tag: str, scope: str) -> str:
     """Registry ref holding the *layer* cache for a build tag.
 
     Deliberately **not** hash-qualified: the point is for the build of hash B to import
@@ -87,9 +87,21 @@ def cache_image_ref(registry_prefix: str, tag: str) -> str:
     same tag. Each BuildKit Job's build pod is fresh, so a cache mount or emptyDir buys
     nothing across builds — a registry-backed cache is the only layer reuse available
     in-cluster, and it works across nodes and service restarts too.
+
+    ``scope`` is what keeps that sharing from reaching *too* far. The tag is the container's
+    name, which is ``sut``/``simulation``/``scenario`` for nearly every project there is, so
+    keying on it alone put every project in a deployment on the same three tags — each
+    exporting ``mode=max``, overwritten in place, evicting the others' layers. A campaign
+    whose large stable group had been built an hour ago found it gone because an unrelated
+    campaign with a container of the same name had built in between. Pass
+    :func:`~robovast.service.image_build.cache_scope`, which hashes the chain's *shape* and
+    so stays equal across exactly the iterations that should reuse each other.
+
+    The registry therefore holds one cache tag per (container, chain) rather than per
+    container.
     """
     name = tag.replace(":", "-")
-    return f"{registry_prefix.rstrip('/')}/{name}:buildcache"
+    return f"{registry_prefix.rstrip('/')}/{name}-{scope}:buildcache"
 
 
 #: Key prefix all staged build contexts live under, inside :func:`build_context_bucket`.
@@ -130,35 +142,82 @@ def discard_context(storage_client, bucket: str, build_id: str) -> int:
     return storage_client.delete_prefix(bucket, context_prefix(build_id))
 
 
+#: Staged-context size above which the build reports what it is carrying. Not a limit --
+#: a project may legitimately be large -- but past this the transfer is a visible part of
+#: every build's wall time, and a context that grew by accident (see
+#: :func:`~robovast.common.build_context.is_campaign_output`) looks exactly like a slow
+#: build with no reason given.
+CONTEXT_WARN_BYTES = 50 * 1024 * 1024
+
+
 def stage_context_to_s3(storage_client, bucket: str, prefix: str,
-                        project_dir: Path, dockerfile: str) -> None:
+                        project_dir: Path, dockerfile: str) -> int:
     """Upload the build context (project dir + generated Dockerfile) to S3.
 
     The Dockerfile is written into a temp copy of the tree root so it lands at the
     context root the BuildKit Job reads. Uses the storage client's ``upload_dir``.
+
+    Returns the staged size in bytes, so the caller can put it where someone looking at a
+    slow build will see it. This is copied, uploaded and mirrored back down once per
+    container per build, and it was invisible: the one project that had accidentally
+    grown a 600 MB context paid it on every build for two days with nothing naming it.
     """
     project_dir = Path(project_dir)
     with tempfile.TemporaryDirectory() as tmp:
         staging = Path(tmp) / "context"
-        _copy_tree(project_dir, staging)
+        staged_bytes, staged_files = _copy_tree(project_dir, staging)
         (staging / "Dockerfile").write_text(dockerfile)
+        if staged_bytes >= CONTEXT_WARN_BYTES:
+            logger.warning(
+                "Build context for %s is %.0f MB in %d files, transferred on every build. "
+                "The largest directories are: %s. Campaign outputs and the names in "
+                "BUILD_CONTEXT_IGNORE are already skipped, so what is left is being sent "
+                "on purpose or by accident -- if by accident, move it out of the project.",
+                project_dir, staged_bytes / 1e6, staged_files,
+                _largest_dirs(staging))
+        else:
+            logger.info("Staged build context: %.1f MB in %d files",
+                        staged_bytes / 1e6, staged_files)
         storage_client.upload_dir(str(staging), bucket, prefix)
+    return staged_bytes
 
 
-def _copy_tree(src: Path, dst: Path) -> None:
+def _largest_dirs(root: Path, top: int = 3) -> str:
+    """The heaviest top-level entries of *root*, for a context-size warning."""
+    sizes = []
+    for child in root.iterdir():
+        if child.is_dir():
+            total = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+        else:
+            total = child.stat().st_size
+        sizes.append((total, child.name))
+    sizes.sort(reverse=True)
+    return ", ".join(f"{name} ({size / 1e6:.0f} MB)" for size, name in sizes[:top]) or "(none)"
+
+
+def _copy_tree(src: Path, dst: Path) -> tuple:
     """Copy *src* into *dst*, skipping the heavy/irrelevant dirs.
 
     Uses the shared :data:`~robovast.common.build_context.BUILD_CONTEXT_IGNORE` so
     this staging skips exactly what the local build path hashes over — a mismatch
     would break the context hash.
+
+    Returns ``(bytes, files)`` actually staged.
     """
     import shutil
 
-    from robovast.common.build_context import BUILD_CONTEXT_IGNORE
+    from robovast.common.build_context import BUILD_CONTEXT_IGNORE, campaign_outputs_in
     dst.mkdir(parents=True, exist_ok=True)
+    # Recognised by structure rather than by name, so a campaign directory sitting beside
+    # the sources is skipped whatever it is called. Collected once: `is_campaign_output`
+    # stats the filesystem, and asking it per file would do so once per staged file.
+    campaigns = set(campaign_outputs_in(src))
+    staged_bytes = staged_files = 0
     for path in src.rglob("*"):
         rel = path.relative_to(src)
         if any(part in BUILD_CONTEXT_IGNORE for part in rel.parts):
+            continue
+        if any(parent in campaigns for parent in (rel, *rel.parents)):
             continue
         target = dst / rel
         if path.is_dir():
@@ -166,6 +225,9 @@ def _copy_tree(src: Path, dst: Path) -> None:
         elif path.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
+            staged_bytes += path.stat().st_size
+            staged_files += 1
+    return staged_bytes, staged_files
 
 
 def context_fetch_command() -> str:

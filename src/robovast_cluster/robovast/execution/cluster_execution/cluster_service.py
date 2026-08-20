@@ -959,7 +959,7 @@ class ClusterService(LocalTransport):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
         from robovast.common.execution import BUILD_IMAGE_PREFIX, resolve_build_base_image
         from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.service.image_build import generate_dockerfile
+        from robovast.service.image_build import cache_scope, generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
 
         from .cluster_image_build import (build_job_manifest, cache_image_ref,
@@ -1055,7 +1055,18 @@ class ClusterService(LocalTransport):
                                              resolved_vcs=self._images.resolve_vcs(spec))
             build_prefix = context_prefix(build_id)
             storage = in_pod_storage.storage_client_for(cfg)
-            stage_context_to_s3(storage, bucket, build_prefix, project_dir, dockerfile)
+            context_bytes = stage_context_to_s3(storage, bucket, build_prefix,
+                                                project_dir, dockerfile)
+
+            # Scoped to this build's layer-chain shape, not just the container name:
+            # every project's `sut` used to share one tag and evict the others' layers.
+            # `base_ref` is the resolution the hash was taken over, so the scope and the
+            # build agree on what they are built on.
+            cache_ref = cache_image_ref(registry.registry_prefix, spec.tag,
+                                        cache_scope(spec, base_ref))
+            # The two fixed costs BuildKit's output never names — see the header
+            # `_await_build_image` writes into the campaign's build.log.
+            status.context_bytes, status.cache_ref = context_bytes or 0, cache_ref
 
             access_key, secret_key = cfg.get_s3_credentials()
             init_env = s3_init_env(cfg.get_s3_endpoint(), access_key, secret_key,
@@ -1065,7 +1076,7 @@ class ClusterService(LocalTransport):
                 init_env=init_env, push_secret_name=registry.push_secret_name,
                 namespace=self.namespace, insecure=registry.insecure,
                 ca_configmap_name=registry.ca_configmap_name,
-                cache_ref=cache_image_ref(registry.registry_prefix, spec.tag),
+                cache_ref=cache_ref,
                 host_aliases=cfg.get_host_aliases(),
                 # Already resolved on this object (registry_image_store fills it from the
                 # push Secret, which serves both directions), so no second lookup.

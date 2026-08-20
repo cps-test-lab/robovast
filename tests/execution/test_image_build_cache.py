@@ -16,6 +16,7 @@ import pytest
 from robovast.execution.cluster_execution.cluster_image_build import (build_job_manifest,
                                                                       cache_image_ref,
                                                                       concrete_image_ref)
+from robovast.service.image_build import BuildSpec, cache_scope
 from robovast.execution.cluster_execution.registry_client import (credentials_for, manifest_exists,
                                                                   split_image_ref)
 
@@ -38,13 +39,66 @@ def test_cache_ref_is_not_hash_qualified():
     a = concrete_image_ref("reg.local:5000/rv", "sim", "aaaaaaaaaaaa")
     b = concrete_image_ref("reg.local:5000/rv", "sim", "bbbbbbbbbbbb")
     assert a != b
-    cache = cache_image_ref("reg.local:5000/rv", "sim")
-    assert cache == "reg.local:5000/rv/sim:buildcache"
+    cache = cache_image_ref("reg.local:5000/rv", "sim", "scope00")
+    assert cache == "reg.local:5000/rv/sim-scope00:buildcache"
     assert "aaaaaaaaaaaa" not in cache
 
 
 def test_cache_ref_folds_tag_version_like_the_image_ref():
-    assert cache_image_ref("reg/rv", "sim:v2") == "reg/rv/sim-v2:buildcache"
+    assert cache_image_ref("reg/rv", "sim:v2", "s0") == "reg/rv/sim-v2-s0:buildcache"
+
+
+# ---------------------------------------------------------------------------
+# cache SCOPE — which builds are allowed to share a cache ref
+#
+# The tag is the container's name, so it is `sut`/`simulation`/`scenario` for nearly every
+# project. Keyed on that alone, every project in a deployment exported ``mode=max`` to the
+# same three tags and evicted each other's layers in place. These four tests fix the two
+# boundaries that has to sit between: iterations of one project must share, unrelated
+# projects must not.
+# ---------------------------------------------------------------------------
+
+_BASE = "reg/rv/robovast@sha256:2edbf546"
+
+
+def _sut(wheel="ma_edge_sensors-0.1.24-py3-none-any.whl", apt=("ros-jazzy-cv-bridge",)):
+    return BuildSpec(tag="sut", system_packages=list(apt), python_packages=[
+        ["torch==2.5.1", "SAM-2 @ git+https://github.com/facebookresearch/sam2@2b90b9f5"],
+        [f"./plugins/{wheel}", "scipy"]])
+
+
+def test_a_wheel_version_bump_keeps_the_cache_scope():
+    """The case the whole scope exists to survive.
+
+    A project bumps its own wheel on nearly every iteration -- pip treats a same-version
+    wheel as already satisfied, so the bump is not optional. If that moved the namespace,
+    every iteration would start from an empty cache: the collision this replaced, one
+    level up and harder to see.
+    """
+    assert (cache_scope(_sut(), _BASE)
+            == cache_scope(_sut("ma_edge_sensors-0.1.25-py3-none-any.whl"), _BASE))
+
+
+def test_an_unrelated_project_named_sut_gets_its_own_scope():
+    """The collision itself. Both are called `sut`; neither may evict the other."""
+    other = BuildSpec(tag="sut", system_packages=["ros-jazzy-cv-bridge"],
+                      python_packages=["numpy"])
+    assert cache_scope(_sut(), _BASE) != cache_scope(other, _BASE)
+
+
+def test_apt_and_base_changes_retire_the_scope():
+    """Both sit *above* every pip layer, so layers cached under them cannot be reused."""
+    assert cache_scope(_sut(), _BASE) != cache_scope(_sut(apt=("ros-jazzy-tf2-ros",)), _BASE)
+    assert cache_scope(_sut(), _BASE) != cache_scope(_sut(), _BASE + "-other")
+
+
+def test_group_boundaries_and_order_are_part_of_the_scope():
+    """Same specs in one pass and in two render different layers, so different chains."""
+    one = BuildSpec(tag="sut", python_packages=["a", "b"])
+    two = BuildSpec(tag="sut", python_packages=[["a"], ["b"]])
+    flipped = BuildSpec(tag="sut", python_packages=[["b"], ["a"]])
+    assert cache_scope(one, _BASE) != cache_scope(two, _BASE)
+    assert cache_scope(two, _BASE) != cache_scope(flipped, _BASE)
 
 
 # ---------------------------------------------------------------------------

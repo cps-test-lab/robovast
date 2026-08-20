@@ -23,6 +23,7 @@ from robovast.execution.cluster_execution.cluster_image_build import (BUILD_CONT
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from robovast.service.image_build import BuildSpec
 
 
 class _FakeStorage:
@@ -228,7 +229,12 @@ def _submit_stubs(cs, monkeypatch, storage):
             # The submit renders the Dockerfile with the git refs already resolved to
             # commits. Empty here: this spec declares no git specs, and these tests are
             # about the staged context rather than about what the Dockerfile installs.
-            resolve_vcs=lambda spec_: {}),
+            resolve_vcs=lambda spec_: {},
+            # The submit asks the store for the git credential a private `python_packages`
+            # spec would install with. None here -- but the stub has to answer, or the
+            # submit dies on an AttributeError well before the context handling these
+            # tests are about.
+            git_secret_name=lambda: ""),
         raising=False)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _batch_with())
@@ -240,7 +246,7 @@ def _submit_stubs(cs, monkeypatch, storage):
         get_s3_credentials=lambda: ("ak", "sk"),
         get_s3_endpoint=lambda: "http://robovast:9000",
         get_host_aliases=lambda: None)
-    spec = types.SimpleNamespace(tag="foo", base_image="base:1")
+    spec = BuildSpec(tag="foo", base_image="base:1")
     registry = types.SimpleNamespace(registry_prefix="reg", push_secret_name="push",
                                      pull_secret_name="pull",
                                      insecure=False, ca_configmap_name="",
@@ -272,6 +278,7 @@ def test_a_build_is_in_flight_before_its_context_is_staged(cs, monkeypatch):
         record = cs._image_build_state().get("imgbuild-foo-h")
         seen["in_flight"] = bool(record) and not record["status"].done
         seen["prefix"] = prefix
+        return 1234
     monkeypatch.setattr(cluster_image_build, "stage_context_to_s3", fake_stage)
 
     class _Batch:

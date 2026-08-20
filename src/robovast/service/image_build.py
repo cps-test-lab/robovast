@@ -539,6 +539,68 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_identity: str,
     return h.hexdigest()[:12]
 
 
+def _cache_scope_entry(entry: str) -> str:
+    """One spec, reduced to what it contributes to the *shape* of the layer chain.
+
+    A local wheel is reduced to its distribution name: ``./plugins/ma_edge_sensors-0.1.24
+    -py3-none-any.whl`` -> ``ma_edge_sensors``. That reduction is the whole point of the
+    scope. A project bumps its own wheel on nearly every iteration, and if the version
+    moved the cache namespace with it, every iteration would start from an empty cache --
+    which is the failure this scope exists to prevent, reintroduced one level up.
+
+    Everything else is kept verbatim, versions included. A ``torch==2.5.1`` -> ``2.5.2``
+    bump is rare and deliberate, so paying one cold build for it is a good trade for a
+    scope sharp enough that two unrelated projects do not land on it.
+    """
+    name = entry.rsplit("/", 1)[-1]
+    if not name.endswith(".whl"):
+        return entry
+    # PEP 427: {distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+    return name.split("-", 1)[0]
+
+
+def cache_scope(spec: BuildSpec, base_identity: str) -> str:
+    """Short hash of a build's *layer chain shape* — the namespace its layer cache lives in.
+
+    The registry layer cache is deliberately not hash-qualified (see
+    ``cluster_image_build.cache_image_ref``): the build of hash B must import the layers
+    hash A produced, or a wheel bump would rebuild everything above it. But the tag it was
+    keyed on -- the *container name* -- is ``sut``/``simulation``/``scenario`` for nearly
+    every project there is, so one deployment's projects all exported ``mode=max`` to the
+    same three tags and evicted each other's layers in place. A campaign carrying a large,
+    stable install group would find it gone because some unrelated campaign with a
+    container of the same name had built in between, and the group the author had ordered
+    first precisely to protect it was rebuilt from scratch.
+
+    So this hashes what decides *which layers exist*, with the per-iteration churn taken
+    out: the resolved base image, the apt set, and the install groups in order with local
+    wheels reduced to their distribution names (:func:`_cache_scope_entry`).
+
+    Deliberately **not** inputs:
+
+    ``resolved_vcs``
+        A moved branch changes a layer's content, not the chain's shape. Including it
+        would retire the whole namespace on every upstream commit, throwing away the
+        layers *below* the one that actually changed.
+    wheel and source-directory *contents*
+        That is :func:`build_hash`'s job -- it decides whether to build at all. This
+        decides where the build looks for layers to start from, and must stay equal
+        across exactly the iterations that should reuse each other.
+    """
+    h = hashlib.sha256()
+    h.update(b"scope-v1")
+    h.update(base_identity.encode())
+    for pkg in sorted(spec.system_packages):
+        h.update(b"|apt|")
+        h.update(pkg.encode())
+    for group in spec.install_groups:  # order matters (install order) -> not sorted
+        h.update(b"|grp|")
+        for entry in group:
+            h.update(b"|py|")
+            h.update(_cache_scope_entry(entry).encode())
+    return h.hexdigest()[:10]
+
+
 # ---------------------------------------------------------------------------
 # Dockerfile generation — one pip pass per install group
 # ---------------------------------------------------------------------------
