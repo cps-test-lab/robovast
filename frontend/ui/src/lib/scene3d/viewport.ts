@@ -106,6 +106,9 @@ export class SceneViewport {
   // The loaded world's bounding sphere, in three (Y-up) world coords: what the far plane must enclose.
   private sceneRadius = MIN_SCENE_RADIUS_M
   private sceneCenter = new Vector3()
+  // The view last framed, so `resetView` has a home to return to. It starts as the empty spec the
+  // constructor frames with, which is exactly where a descriptor carrying no baked camera stands.
+  private view: SceneViewSpec = {}
   private onWheel: (event: WheelEvent) => void
 
   constructor(container: HTMLElement, opts: ViewportOptions = {}) {
@@ -191,10 +194,23 @@ export class SceneViewport {
 
   /** Frame the camera per the descriptor's baked view (or defaults for missing fields). */
   setView(view: SceneViewSpec): void {
+    this.view = view
     const { position, target } = cameraFromView(view)
     this.camera.position.copy(position)
     this.controls.target.copy(target)
     this.controls.update()
+  }
+
+  /** Put the camera back where the scene opened -- the descriptor's baked view, or the default one.
+   *
+   *  The way *out* of a lost view, and it exists because there is no way back by hand: the wheel
+   *  flies rather than orbiting, so a few notches at a wall can leave the camera inside geometry or
+   *  far enough out that the world is a dot, with the pivot carried along and no bound to undo it.
+   *  Re-applying the opening view rather than fitting the scene's bounds, because that view is the
+   *  one the world's author chose and the one the panel already framed on load -- a fit would answer
+   *  a different, and to a reader unexpected, question. */
+  resetView(): void {
+    this.setView(this.view)
   }
 
   /**

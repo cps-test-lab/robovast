@@ -835,7 +835,21 @@ where the trial ended.
 
 A menu rather than a bare icon because it is a *view-wide* setting, the same shape the campaign
 row's gear uses: the header is otherwise a row of labeled controls, and each further such
-setting would add another icon to decode. One entry today, named in words, with room to grow.
+setting would add another icon to decode. The entries are named in words, and the menu grows
+without widening the header.
+
+.. _reset-3d-view:
+
+**Reset 3D view** is the same menu's second entry, below a divider because it is an action rather
+than a setting: it puts the :ref:`3D scene <scene3d-panel>` panel's camera back where the scene
+opened — the world's own baked view — and is over. It is the way back from a lost view, and it
+exists because there is no way back by hand: the wheel *flies*, so a few notches aimed at a wall
+can leave the camera inside geometry or far enough out that the world is a dot. It is enabled while
+such a view is mounted and disabled, with that reason on hover, in a run view that has no 3D panel.
+
+It sits in the header rather than on the panel for the mirror image of the reason above: the camera
+belongs to one panel, but that panel is the full-bleed base layer and carries no header of its own,
+and a button floating over the world would sit in front of the very thing it acts on.
 
 The moment itself is read from ``scenario_timestamps``, written once by postprocessing —
 the same row ``search_run_logs`` cuts on, so the web UI and the MCP tools cannot disagree
@@ -1133,7 +1147,9 @@ The mouse bindings:
 - **right-drag** — pan sideways and vertically.
 
 The wheel deliberately does not shrink an orbit radius toward a fixed center, which is the usual
-default and is what makes such a view freeze a short way from its center.
+default and is what makes such a view freeze a short way from its center. Because it flies without
+bound, the way back is the header gear's :ref:`Reset 3D view <reset-3d-view>` entry, which re-frames
+the camera at the view the world was authored with.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **capture** names the world it used and the service builds the matching **geometry** on demand. Both

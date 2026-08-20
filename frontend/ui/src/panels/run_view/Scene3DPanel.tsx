@@ -46,6 +46,7 @@ import { openRunCapture } from '@/lib/scene3d/runCapture'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
+import { registerSceneReset } from './sceneReset'
 
 /** Where a run's capture manifest lives unless the panel says otherwise. Exported because RunView
  *  needs the same answer to find the run's time base -- a `scene3d` panel implies a capture whether or
@@ -119,12 +120,18 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
 
   // One viewport per mount. PanelHost remounts the panel per run, so switching run or campaign builds
   // a fresh one and disposes this.
+  //
+  // The viewport's lifetime is also what the header's "Reset 3D view" entry follows: registering here
+  // rather than once per panel *type* means the entry is offered while a camera exists to re-frame,
+  // and withdrawn the moment this mount goes away.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const viewport = new SceneViewport(el)
     viewportRef.current = viewport
+    const unregister = registerSceneReset(() => viewport.resetView())
     return () => {
+      unregister()
       viewportRef.current = null
       viewport.dispose()
     }

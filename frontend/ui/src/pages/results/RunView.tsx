@@ -16,6 +16,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
 import CircularProgress from '@mui/material/CircularProgress'
+import Divider from '@mui/material/Divider'
 import Paper from '@mui/material/Paper'
 import Popover from '@mui/material/Popover'
 import IconButton from '@mui/material/IconButton'
@@ -27,6 +28,7 @@ import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
+import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
@@ -38,19 +40,25 @@ import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { DEFAULT_CAPTURE_PATH } from '@/panels/run_view/Scene3DPanel'
+import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
 import '@/panels/run_view' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
 // The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
 const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 
-/** The run view's settings menu. One entry so far: does the run end at its scenario's verdict,
- *  or run on through the teardown?
+/** The run view's settings menu: does the run end at its scenario's verdict or run on through the
+ *  teardown, and -- when a 3D view is mounted -- put its camera back where the scene opened.
  *
- *  That setting lives here rather than in the playback bar or the log panel because it is not
+ *  The setting lives here rather than in the playback bar or the log panel because it is not
  *  either panel's -- it says what "this run" means, and both of them follow. The state rides on
  *  the clock because that is the only object every panel already receives, and because the
  *  question is a time one: the timeline ends at the verdict unless the shutdown phase is shown.
+ *
+ *  The reset is here for the mirror-image reason: the camera *is* one panel's, but the panel is
+ *  frameless by design (it is the full-bleed base layer, so it carries no header to hang a button
+ *  in), and a control floating over the world would sit in front of the thing it acts on. It
+ *  reaches the viewport through the small registry in panels/run_view/sceneReset.ts.
  *
  *  A gear rather than the setting's own icon, matching the campaign row's menu: the header is a
  *  row of labelled controls, and each further view-wide setting would otherwise add another bare
@@ -63,6 +71,7 @@ const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   const { verdict, hideShutdown } = useClock(clock)
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
+  const canResetView = useSceneResetAvailable()
   const noVerdict = verdict == null
   const reason = noVerdict
     ? 'This run recorded no scenario verdict, so there is no shutdown to separate.'
@@ -93,9 +102,10 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
             >
               {/* A checkbox rather than MUI's `selected` tint. This is a setting, not an
                   action like the campaign menu's entries, and the tint is a background shade
-                  a reader has to already know the meaning of -- with one entry there is not
-                  even a second row to compare it against. An empty box says both that the
-                  entry toggles and that it is currently off, before anything is clicked. */}
+                  a reader has to already know the meaning of -- the only other row here is an
+                  action, so there is no second setting to compare a shade against. An empty box
+                  says both that the entry toggles and that it is currently off, before anything
+                  is clicked. */}
               <ListItemIcon>
                 <Checkbox
                   size="small"
@@ -107,6 +117,34 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
                 />
               </ListItemIcon>
               <ListItemText>Include shutdown phase</ListItemText>
+            </MenuItem>
+          </span>
+        </Tooltip>
+        {/* An action below the setting, with the divider saying which is which: the entry above
+            leaves a tick behind, this one happens and is over. The two share the icon gutter, so a
+            glyph where the neighbour has a checkbox is itself the difference between them -- no
+            second reading needed once you know which row you are on. */}
+        <Divider />
+        <Tooltip
+          title={
+            canResetView
+              ? 'Put the 3D camera back where the scene opened.'
+              : 'This view has no 3D scene panel, so there is no camera to re-frame.'
+          }
+          placement="left"
+        >
+          <span>
+            <MenuItem
+              disabled={!canResetView}
+              onClick={() => {
+                resetSceneViews()
+                setAnchor(null)
+              }}
+            >
+              <ListItemIcon>
+                <CenterFocusStrongRoundedIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Reset 3D view</ListItemText>
             </MenuItem>
           </span>
         </Tooltip>
