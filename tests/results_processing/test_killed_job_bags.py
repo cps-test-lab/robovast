@@ -20,9 +20,11 @@ from robovast.results_processing.postprocessing_plugins import _killed_job_dirs
 
 
 def _ledger(campaign, entries):
+    """One ledger for every kind of intervention, so each entry declares which it is."""
     exec_dir = campaign / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
-    (exec_dir / "killed_jobs.json").write_text(json.dumps(entries))
+    tagged = [{"kind": "killed", **e} for e in entries]
+    (exec_dir / "interventions.json").write_text(json.dumps(tagged))
 
 
 def test_no_ledger_means_nothing_to_tolerate(tmp_path):

@@ -577,9 +577,20 @@ follow the rule.
 ``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
 already written a valid ``test.xml`` keeps its real verdict. That matters when a job packs
 several runs (``runs_per_job`` > 1), where the earlier ones routinely finish before anyone
-stops the job — their results are measurement and are never overwritten. The kills
-themselves are recorded in ``_execution/killed_jobs.json``, which exists only for a
-campaign somebody intervened in.
+stops the job — their results are measurement and are never overwritten.
+
+The kills themselves are recorded in ``_execution/interventions.json``, which exists only for a
+campaign somebody intervened in. **One ledger holds every kind of intervention**, each entry
+carrying a ``kind`` -- ``killed`` for a job stopped by hand, ``probed`` for a run somebody read
+into while it was going -- because "what was done to this run?" is one question and answering it
+should not mean knowing to ask twice. What *follows* differs by kind and that is why the readers
+do: a kill becomes a run status, while ``probed`` is a separate ``runs`` column in ``data.db`` and
+never touches the verdict. Putting an intervention into the measured outcome is the same mistake
+that keeping ``killed`` out of ``num_failed`` avoids.
+
+A probe's granularity follows the job: with ``runs_per_job`` > 1 the whole packed job is marked,
+because which of its runs was in flight cannot be recovered afterwards. That over-excludes rather
+than admitting a perturbed run, which is the safe direction.
 
 .. note::
 

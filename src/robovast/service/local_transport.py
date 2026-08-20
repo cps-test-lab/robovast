@@ -2186,7 +2186,7 @@ class LocalTransport(RobovastInterface):
         killing a *different* run than the caller named, which is the one outcome worse
         than refusing.
         """
-        from robovast.common.campaign_data import record_killed_job
+        from robovast.common.campaign_data import KIND_KILLED, record_intervention
         from robovast.common.execution import job_artifact_dir
         campaign_dir = self._campaigns_root() / campaign_id
         with self._lock:
@@ -2203,8 +2203,8 @@ class LocalTransport(RobovastInterface):
             # No manifest entry yet (the documented startup race). The run key below is
             # this lane's own job identity, so resolution does not depend on it.
             job_dir = ""
-        record_killed_job(campaign_dir, job_dir=job_dir, job_name=job_name,
-                          source=source, reason=reason, runs=(job_name,))
+        record_intervention(campaign_dir, kind=KIND_KILLED, job_dir=job_dir, job_name=job_name,
+                            source=source, detail=reason, runs=(job_name,))
         self._kill_scenario_container()
         return ActionResult(
             ok=True,

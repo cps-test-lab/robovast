@@ -38,8 +38,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (read_execution_metadata, read_launch_record,
-                                           read_sysinfo, read_test_result)
+from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
+                                           read_launch_record, read_sysinfo, read_test_result)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
@@ -170,6 +170,15 @@ class MetadataGenerator:
         launch = read_launch_record(self.campaign_dir)
         if launch is not None:
             metadata["execution"]["launch"] = launch
+        # What a human did to this campaign while it ran -- kills and probes alike. Present only
+        # when something was done, so the overwhelming majority of campaigns say nothing here
+        # rather than carrying an empty key readers learn to skip. It belongs in the published
+        # document because a reader deciding whether to trust a number has to be able to see that
+        # somebody reached into the run that produced it, and the results tree is the only place
+        # that outlives the session which did it.
+        interventions = read_interventions(self.campaign_dir)
+        if interventions:
+            metadata["execution"]["interventions"] = interventions
 
         # --- campaign-level postprocessing provenance ------------------
         pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"

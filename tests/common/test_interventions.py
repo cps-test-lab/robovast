@@ -1,10 +1,13 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The manual-kill ledger, and the one run status it produces.
+"""The intervention ledger: what a human did to a campaign while it ran.
 
-``_execution/killed_jobs.json`` records the jobs an operator stopped by hand (see
-``RobovastInterface.stop_job``). :func:`killed_runs` resolves each entry to the runs it
-covers, and :func:`read_run_outcome` turns that into ``status == "killed"``.
+``_execution/interventions.json`` records both kinds -- a job an operator stopped by hand (see
+``RobovastInterface.stop_job``) and a run somebody read into while it was going. One file because
+"what was done to this run?" is one question, and :func:`intervened_runs` answers it in one call;
+:func:`killed_runs` and :func:`probed_runs` are the kind-filtered views their callers want,
+because the *consequence* differs even though the resolution does not. :func:`read_run_outcome`
+turns a kill into ``status == "killed"``; a probe leaves the verdict alone.
 
 The three properties that define the feature, one test each:
 
@@ -19,8 +22,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from robovast.common.campaign_data import (killed_runs, read_killed_jobs, read_run_outcome,
-                                           read_run_outcomes, record_killed_job)
+from robovast.common.campaign_data import (KIND_KILLED, killed_runs, read_interventions,
+                                           read_run_outcome, read_run_outcomes,
+                                           record_intervention)
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
 
 _PASS_XML = ('<testsuite errors="0" failures="0" tests="1">'
@@ -56,8 +60,8 @@ def campaign(tmp_path):
 
 def test_a_resultless_run_of_a_killed_job_is_killed_not_unknown(campaign):
     _run(campaign, "cfgA", "0")  # no test.xml: the kill cut it short
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
-                      source="webui", reason="stuck in nav recovery")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
+                      source="webui", detail="stuck in nav recovery")
 
     outcome = read_run_outcome(campaign / "cfgA" / "0", campaign)
     assert outcome["status"] == "killed"
@@ -76,8 +80,8 @@ def test_a_finished_run_of_a_killed_job_keeps_its_real_verdict(campaign):
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
     _run(campaign, "cfgA", "1", xml=_FAIL_XML, job_index=0)
     _run(campaign, "cfgA", "2", job_index=0)  # the one actually in flight
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-0",
-                      job_name="batch-0-job-0", source="mcp", reason="wedged")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0",
+                      job_name="batch-0-job-0", source="mcp", detail="wedged")
 
     statuses = {o["run_id"]: o["status"] for o in read_run_outcomes(campaign / "cfgA",
                                                                    campaign)}
@@ -90,7 +94,7 @@ def test_no_ledger_leaves_outcomes_exactly_as_they_were(campaign):
     _run(campaign, "cfgA", "1", xml=_FAIL_XML)
     _run(campaign, "cfgA", "2")  # genuinely lost its result, nobody killed it
 
-    assert read_killed_jobs(campaign) == []
+    assert read_interventions(campaign) == []
     assert killed_runs(campaign) == {}
     outcomes = read_run_outcomes(campaign / "cfgA", campaign)
     assert [o["status"] for o in outcomes] == ["passed", "failed", "unknown"]
@@ -102,8 +106,8 @@ def test_only_the_killed_jobs_runs_are_affected(campaign):
     """A sibling job's runs are untouched — the kill is scoped to one job."""
     _run(campaign, "cfgA", "0", job_index=0)
     _run(campaign, "cfgB", "0", job_index=1)
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
-                      source="cli", reason=None)
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
+                      source="cli", detail=None)
 
     assert sorted(killed_runs(campaign)) == ["cfgA/0"]
     assert read_run_outcome(campaign / "cfgA" / "0", campaign)["status"] == "killed"
@@ -112,8 +116,8 @@ def test_only_the_killed_jobs_runs_are_affected(campaign):
 
 def test_a_kill_with_no_reason_still_names_the_surface(campaign):
     _run(campaign, "cfgA", "0")
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
-                      source="cli", reason=None)
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
+                      source="cli", detail=None)
 
     outcome = read_run_outcome(campaign / "cfgA" / "0", campaign)
     assert outcome["failure_message"] == "manually stopped via cli"
@@ -127,8 +131,8 @@ def test_the_local_lanes_run_hint_resolves_without_a_manifest(campaign):
     already *is* the run key, so it passes it as a hint.
     """
     (campaign / "cfgA" / "0").mkdir(parents=True)
-    record_killed_job(campaign, job_dir="", job_name="cfgA/0", source="webui",
-                      reason="never started properly", runs=("cfgA/0",))
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="", job_name="cfgA/0", source="webui",
+                      detail="never started properly", runs=("cfgA/0",))
 
     assert sorted(killed_runs(campaign)) == ["cfgA/0"]
     assert read_run_outcome(campaign / "cfgA" / "0", campaign)["status"] == "killed"
@@ -138,15 +142,15 @@ def test_several_kills_accumulate(campaign):
     """Each stop is its own event with its own reason; the ledger appends."""
     _run(campaign, "cfgA", "0", job_index=0)
     _run(campaign, "cfgB", "0", job_index=1)
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
-                      source="webui", reason="first")
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-1", job_name="cfgB/0",
-                      source="mcp", reason="second")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0", job_name="cfgA/0",
+                      source="webui", detail="first")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1", job_name="cfgB/0",
+                      source="mcp", detail="second")
 
-    assert len(read_killed_jobs(campaign)) == 2
+    assert len(read_interventions(campaign)) == 2
     resolved = killed_runs(campaign)
-    assert resolved["cfgA/0"]["reason"] == "first"
-    assert resolved["cfgB/0"]["reason"] == "second"
+    assert resolved["cfgA/0"]["detail"] == "first"
+    assert resolved["cfgB/0"]["detail"] == "second"
 
 
 def test_a_corrupt_ledger_does_not_take_the_results_down(campaign):
@@ -156,7 +160,7 @@ def test_a_corrupt_ledger_does_not_take_the_results_down(campaign):
     exec_dir.mkdir(parents=True, exist_ok=True)
     (exec_dir / "killed_jobs.json").write_text('[{"job_dir": "_jobs/bat')
 
-    assert read_killed_jobs(campaign) == []
+    assert read_interventions(campaign) == []
     assert read_run_outcome(campaign / "cfgA" / "0", campaign)["status"] == "passed"
 
 
@@ -190,8 +194,8 @@ def test_a_killed_run_is_counted_apart_from_the_failures(campaign):
     _run(campaign, "cfgA", "1", xml=_FAIL_XML, job_index=1)
     _run(campaign, "cfgA", "2", job_index=2)  # killed
     _run(campaign, "cfgA", "3", job_index=3)  # genuinely lost its result
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-2", job_name="cfgA/2",
-                      source="webui", reason="wedged")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-2", job_name="cfgA/2",
+                      source="webui", detail="wedged")
 
     with CampaignStore(campaign / STORE_FILENAME) as store:
         cid = store.create_campaign("c", {}, mode="batch")
@@ -217,8 +221,8 @@ def test_run_view_exposes_the_kill_and_its_reason(campaign):
 
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
     _run(campaign, "cfgA", "1", job_index=1)
-    record_killed_job(campaign, job_dir="_jobs/batch-0/job-1", job_name="cfgA/1",
-                      source="mcp", reason="never converged")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1", job_name="cfgA/1",
+                      source="mcp", detail="never converged")
 
     with CampaignStore(campaign / STORE_FILENAME) as store:
         cid = store.create_campaign("c", {}, mode="batch")
@@ -234,3 +238,58 @@ def test_run_view_exposes_the_kill_and_its_reason(campaign):
     assert len(rows) == 1
     assert rows[0]["run_id"] == 1
     assert rows[0]["failure_message"] == "manually stopped via mcp: never converged"
+
+
+# -- probes: the same ledger, a different consequence ---------------------------------------------
+
+
+def test_a_probe_and_a_kill_share_one_ledger_but_not_one_meaning(campaign):
+    """One file answers "what was done to this run?" in one read. What follows differs by kind and
+    the callers act on that: a kill becomes a status, a probe leaves the verdict alone."""
+    from robovast.common.campaign_data import (KIND_PROBED, intervened_runs, probed_runs)
+    _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
+    _run(campaign, "cfgB", "0", job_index=1)
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1",
+                        job_name="cfgB/0", source="webui", detail="wedged",
+                        runs=("cfgB/0",))
+    record_intervention(campaign, kind=KIND_PROBED, job_dir="_jobs/batch-0/job-0",
+                        job_name="cfgA/0", source="mcp", detail="ros2 node list",
+                        runs=("cfgA/0",))
+
+    assert sorted(intervened_runs(campaign)) == ["cfgA/0", "cfgB/0"]
+    assert sorted(killed_runs(campaign)) == ["cfgB/0"]
+    assert sorted(probed_runs(campaign)) == ["cfgA/0"]
+    # The probed run keeps the verdict it reached: an intervention is not an outcome.
+    assert read_run_outcome(campaign / "cfgA" / "0", campaign)["status"] == "passed"
+
+
+def test_a_probed_run_is_flagged_in_data_db_without_changing_its_status(campaign, tmp_path):
+    """`probed` is a separate column for the reason `killed` is kept out of num_failed: putting a
+    human's action into the measured outcome makes the result unreadable."""
+    import sqlite3
+
+    from robovast.common.campaign_data import KIND_PROBED
+    from robovast.results_processing.postprocessing_plugins import _build_runs_table
+    _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
+    _run(campaign, "cfgA", "1", xml=_PASS_XML, job_index=1)
+    record_intervention(campaign, kind=KIND_PROBED, job_dir="_jobs/batch-0/job-0",
+                        job_name="cfgA/0", source="mcp", detail="uptime",
+                        runs=("cfgA/0",))
+
+    conn = sqlite3.connect(tmp_path / "data.db")
+    _build_runs_table(conn, campaign, [campaign / "cfgA"])
+    rows = dict(conn.execute("SELECT run_id, probed FROM runs").fetchall())
+    statuses = dict(conn.execute("SELECT run_id, status FROM runs").fetchall())
+    conn.close()
+
+    assert rows == {0: 1, 1: 0}
+    assert statuses == {0: "passed", 1: "passed"}, "a probe must not touch the verdict"
+
+
+def test_a_campaign_nobody_touched_has_no_ledger_at_all(campaign):
+    """The default path, and the one worth pinning: no file, no manifest read, and every run
+    reported exactly as before this record existed."""
+    _run(campaign, "cfgA", "0", xml=_PASS_XML)
+    assert not (campaign / "_execution" / "interventions.json").exists()
+    assert read_interventions(campaign) == []
+    assert killed_runs(campaign) == {}

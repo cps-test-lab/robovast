@@ -274,9 +274,9 @@ def _killed_job_dirs(results_dir: str) -> list:
     campaign is (in-cluster, against the object-store mount), and its plugins take their
     inputs from ``results_dir``; there is no caller in that process holding the kill.
     """
-    from robovast.common.campaign_data import read_killed_jobs
+    from robovast.common.campaign_data import KIND_KILLED, read_interventions
     try:
-        entries = read_killed_jobs(results_dir)
+        entries = read_interventions(results_dir, KIND_KILLED)
     except Exception:  # noqa: BLE001 - never let the ledger break postprocessing
         return []
     return sorted({e["job_dir"] for e in entries if e.get("job_dir")})
@@ -823,6 +823,13 @@ _STATIC_COLUMN_NOTES: dict[tuple[str, str], str] = {
     ("resource_usage", "memory_rss_bytes"): (
         "summed RSS, so pages shared between a process and its forks are counted more than "
         "once. An upper bound — read it as a trend, not as an absolute footprint."),
+    ("runs", "probed"): (
+        "1 when a human read into this run WHILE IT RAN, which is a fact about the run's "
+        "provenance and not about its outcome — a probed run can still pass, so this is a "
+        "separate column and never folded into status. Exclude these rows from anything a "
+        "published number rests on. Granularity follows the job: with runs_per_job > 1 the "
+        "whole packed job is marked, since which of its runs was in flight cannot be "
+        "recovered — it over-excludes rather than admitting a perturbed run."),
 }
 
 
@@ -1118,6 +1125,11 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             pass  # v1 store: no ``run``/``job`` table — fall back to test.xml below
         cc.close()
 
+    # Resolved once: the ledger is absent for every campaign nobody touched, and then this is
+    # an empty dict and no manifest is read at all.
+    from robovast.common.campaign_data import probed_runs
+    probed = probed_runs(campaign_path)
+
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
                  "start_time", "end_time",
@@ -1126,7 +1138,13 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                  # NULL in run_log needs to know whether the run was not aligned or simply
                  # logged nothing before the clock started, and "which source said so" is
                  # the difference. See results_processing.clock_map.
-                 "clock_map_source", "clock_map_samples", "clock_map_wall_span_s"]
+                 "clock_map_source", "clock_map_samples", "clock_map_wall_span_s",
+                 # Whether a human read into this run while it was still going. A SEPARATE
+                 # column and never folded into ``status``: a probed run can still pass, and
+                 # putting an intervention into the measured outcome is the same mistake
+                 # keeping ``killed`` out of ``num_failed`` avoids. Analysis that must not
+                 # rest on a perturbed cell filters on this.
+                 "probed"]
     param_keys = sorted({k for p in (*params_by_config.values(),
                                      *(p for _, p in composition_failed))
                          for k in p if f"param_{k}" not in base_cols})
@@ -1140,7 +1158,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     # cores, and an INTEGER column would silently truncate a 0.5-core reservation to 0 — which
     # then reads as "this run had no CPU" in every query that joins to it.
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
-                                  "available_mem_bytes", "clock_map_samples")
+                                  "available_mem_bytes", "clock_map_samples", "probed")
                  else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s",
                                     "available_cpus")
                  else TEXT)
@@ -1189,7 +1207,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                          errors, failures, objective,
                          start_time, end_time,
                          instance_type, cpu_name, avail_cpus, avail_mem,
-                         clock_info.source, clock_info.samples, clock_info.wall_span_s]
+                         clock_info.source, clock_info.samples, clock_info.wall_span_s,
+                         1 if f"{config_name}/{run_id}" in probed else 0]
             param_vals = [params.get(k) for k in param_keys]
             conn.execute(insert_sql, [sql_value(v, types[c])
                                       for c, v in zip(all_cols, base_vals + param_vals)])
@@ -1202,7 +1221,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                      None, None, None,
                      None, None,
                      None, None, None, None,
-                     None, None, None]
+                     None, None, None, 0]
         param_vals = [params.get(k) for k in param_keys]
         conn.execute(insert_sql, [sql_value(v, types[c])
                                   for c, v in zip(all_cols, base_vals + param_vals)])

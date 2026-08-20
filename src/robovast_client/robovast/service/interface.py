@@ -1926,7 +1926,7 @@ class RobovastInterface(ABC):
         job has not started (there is nothing wedged to kill), and a ``blocked`` one has a
         problem — no quota, an unpullable image — that deleting it does not fix.
 
-        The kill is recorded durably (:func:`~robovast.common.campaign_data.record_killed_job`),
+        The kill is recorded durably (:func:`~robovast.common.campaign_data.record_intervention`),
         so the runs it cut short report ``status == "killed"`` rather than being
         indistinguishable from runs whose results went missing on their own. That record
         is permanent and is *not* a trial failure: a killed run is excluded from a

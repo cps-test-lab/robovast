@@ -418,7 +418,7 @@ def test_stop_job_kills_the_running_job_without_stopping_the_campaign(transport,
     # difference between this and stop(); setting it here would end the sweep.
     assert transport._campaigns[cid].state.stop_requested is False
     assert sorted(_killed(cdir)) == ["cfgA/1"]
-    assert _killed(cdir)["cfgA/1"]["reason"] == "wedged in recovery"
+    assert _killed(cdir)["cfgA/1"]["detail"] == "wedged in recovery"
     assert _killed(cdir)["cfgA/1"]["source"] == "webui"
     # What the results actually report: the killed run is `killed`, and the one that had
     # already delivered keeps its verdict.
@@ -526,7 +526,7 @@ def test_job_stop_route_kills_the_job_and_records_the_reason(transport, monkeypa
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     entry = _killed(cdir)["cfgA/0"]
-    assert (entry["reason"], entry["source"]) == ("wedged", "webui")
+    assert (entry["detail"], entry["source"]) == ("wedged", "webui")
 
 
 def test_job_stop_route_refusing_a_finished_job_is_a_409(transport, monkeypatch):
@@ -615,9 +615,10 @@ def test_a_killed_job_that_had_already_delivered_keeps_its_verdict(transport, mo
     cdir = transport._campaigns_root() / cid
     _run(cdir, "goal-2", "0", xml=_PASS_XML, job_index=0)
     _live(transport, cid, "running", total=1)
-    from robovast.common.campaign_data import record_killed_job
-    record_killed_job(cdir, job_dir="_jobs/batch-0/job-0", job_name="goal-2/0",
-                      source="webui", reason="late kill", runs=("goal-2/0",))
+    from robovast.common.campaign_data import KIND_KILLED, record_intervention
+    record_intervention(cdir, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0",
+                        job_name="goal-2/0", source="webui", detail="late kill",
+                        runs=("goal-2/0",))
 
     assert transport.list_jobs(cid).jobs[0].status == "completed"
 
@@ -628,9 +629,10 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
     cdir = transport._campaigns_root() / cid
     _run(cdir, "goal-2", "0", job_index=0)
     _run(cdir, "goal-3", "0", job_index=1)  # simply lost its result
-    from robovast.common.campaign_data import record_killed_job
-    record_killed_job(cdir, job_dir="_jobs/batch-0/job-0", job_name="goal-2/0",
-                      source="cli", reason=None, runs=("goal-2/0",))
+    from robovast.common.campaign_data import KIND_KILLED, record_intervention
+    record_intervention(cdir, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0",
+                        job_name="goal-2/0", source="cli", detail=None,
+                        runs=("goal-2/0",))
 
     by_name = {j.job_name: j.status for j in transport.list_jobs(cid).jobs}
     assert by_name == {"goal-2/0": "killed", "goal-3/0": "failed"}

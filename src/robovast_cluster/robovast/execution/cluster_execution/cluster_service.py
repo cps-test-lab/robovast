@@ -1735,7 +1735,7 @@ class ClusterService(LocalTransport):
         """
         from kubernetes import client
 
-        from robovast.common.campaign_data import record_killed_job
+        from robovast.common.campaign_data import KIND_KILLED, record_intervention
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is None:
@@ -1745,9 +1745,9 @@ class ClusterService(LocalTransport):
         # Recorded before the delete: the pod dies asynchronously, and a failure in
         # between must not leave a cut-short run with no record of why.
         campaign_root = self._campaigns_root() / campaign_id
-        record_killed_job(campaign_root, job_dir=job_dir, job_name=job_name,
-                          source=source, reason=reason)
-        self._publish_killed_jobs(campaign_id, campaign_root)
+        record_intervention(campaign_root, kind=KIND_KILLED, job_dir=job_dir, job_name=job_name,
+                            source=source, detail=reason)
+        self._publish_interventions(campaign_id, campaign_root)
         try:
             self._k8s_batch().delete_namespaced_job(
                 job_name, self.namespace,
@@ -1763,7 +1763,7 @@ class ClusterService(LocalTransport):
             message=(f"deleted job {job_name}; the campaign continues with its remaining "
                      f"jobs and this job's unfinished runs are recorded as 'killed'"))
 
-    def _publish_killed_jobs(self, campaign_id: str, campaign_root) -> None:
+    def _publish_interventions(self, campaign_id: str, campaign_root) -> None:
         """Push the kill ledger to the object store **now**, not at finalize.
 
         Postprocessing runs as its own in-cluster Job reading the campaign from the object
@@ -1775,15 +1775,15 @@ class ClusterService(LocalTransport):
         mirrored still took effect and is still on local disk, and the run is still
         recorded as ``killed`` by the controller, which reads that disk.
         """
-        from robovast.common.campaign_data import _KILLED_FILENAME
+        from robovast.common.campaign_data import _INTERVENTIONS_FILENAME
         from robovast.execution.cluster_execution import in_pod_storage
-        path = campaign_root / "_execution" / _KILLED_FILENAME
+        path = campaign_root / "_execution" / _INTERVENTIONS_FILENAME
         try:
             cfg = self._cluster_config()
             storage = in_pod_storage.storage_client_for(cfg)
             bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
             storage.upload_file(str(path), bucket,
-                                f"{prefix}_execution/{_KILLED_FILENAME}")
+                                f"{prefix}_execution/{_INTERVENTIONS_FILENAME}")
         except Exception as e:  # noqa: BLE001 - never block the stop on the mirror
             logger.warning("Could not publish the kill ledger for %s: %s", campaign_id, e)
 

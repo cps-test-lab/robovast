@@ -645,11 +645,13 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        through ``campaign.unit``, so a second copy would be a second source of truth
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
-   * - ``_execution/killed_jobs.json``
-     - File — the jobs an operator stopped by hand (``stop_job``), keyed by job artifact
-       dir. It *becomes* DB content: ``read_run_outcome`` turns each entry into
-       ``campaign.run.status = 'killed'`` for the runs it cut short, so the queryable fact
-       has one home. The file stays because the two writers differ — the **service**
+   * - ``_execution/interventions.json``
+     - File — what a human did to a campaign *while it ran*, keyed by job artifact
+       dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a live read).
+       It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
+       ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
+       the separate ``runs.probed`` column in ``data.db`` — orthogonal on purpose, since a
+       probed run can still pass. The file stays because the two writers differ — the **service**
        records the kill, the **controller** writes ``campaign.db``, and a SQLite file
        shared between them would be a race. It exists only for a campaign somebody
        intervened in, which is what keeps every other campaign's read path unchanged.

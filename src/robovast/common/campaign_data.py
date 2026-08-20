@@ -398,8 +398,10 @@ def read_execution_outcome(campaign_dir: Path):
     return Status.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-#: Manual-kill ledger — the jobs an operator stopped by hand, so a run that was cut short
-#: deliberately can be told apart from one that failed on its own. Its own file in
+#: Intervention ledger — what a human did to a campaign *while it ran*. One file for every
+#: kind, because "what was done to this run?" is one question and answering it should not mean
+#: knowing to ask twice: a kill and a probe are the same sort of fact (a person reached into
+#: reproducible compute) and differ only in what followed. Its own file in
 #: ``_execution/`` because the *service* writes it (that is where a stop request lands) while
 #: the run's own records are written by the run, and because it must survive: the run status
 #: is re-derived from disk by ``campaign_index`` long after the process that did the killing
@@ -408,88 +410,98 @@ def read_execution_outcome(campaign_dir: Path):
 #: Not a column on the ``job`` table, which is keyed by the same job dir and looks like the
 #: natural home: the killer (the service) and the writer of ``campaign.db`` (the controller)
 #: are different writers, and sharing one SQLite file between them is a race, not a design.
-_KILLED_FILENAME = "killed_jobs.json"
+_INTERVENTIONS_FILENAME = "interventions.json"
+
+#: The kinds recorded. ``killed`` ends a run; ``probed`` only observed one, but both mean the run
+#: is no longer untouched, which is why they share a file rather than a status.
+KIND_KILLED = "killed"
+KIND_PROBED = "probed"
 
 
-def record_killed_job(campaign_root: Path, *, job_dir: str, job_name: str,
-                      source: str, reason: str | None = None,
-                      runs: "tuple[str, ...]" = ()) -> None:
-    """Append a manually-stopped job to ``_execution/killed_jobs.json``.
+def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_name: str,
+                        source: str, detail: str | None = None,
+                        runs: "tuple[str, ...]" = ()) -> None:
+    """Append one human intervention to ``_execution/interventions.json``.
 
     Args:
+        kind: :data:`KIND_KILLED` or :data:`KIND_PROBED`. One file rather than one per kind, so a
+            reader asking "what was done to this run?" makes one call -- and so a kind added later
+            needs no new file, no new reader and no new doc section.
         campaign_root: The campaign's results directory.
         job_dir: The job's artifact dir, campaign-root-relative (``_jobs/batch-0/job-3``).
-            The durable identity of what was stopped, and what
-            :func:`killed_runs` resolves through the job-link manifest.
-        job_name: The job as the caller named it — ``<config>/<run>`` locally, the
-            Kubernetes Job name on the cluster. Recorded for the audit trail; it is
-            lane-specific, so it is not what resolution keys on.
-        source: Which surface requested it — ``"webui"``, ``"mcp"`` or ``"cli"``. Not a
-            user identity: the service is unauthenticated (see ``service/app.py``'s
-            ``serve``), so a name here would be invented rather than known.
-        reason: The operator's optional explanation.
-        runs: Run keys (``<config>/<run>``) the caller already knows this job was
-            executing. The local lane knows exactly one and passes it; the cluster lane
-            passes none and lets the manifest answer. It is a *hint*, never the only
-            source — see :func:`killed_runs`.
+            The durable identity of what was touched, and what :func:`intervened_runs` resolves
+            through the job-link manifest.
+        job_name: The job as the caller named it -- ``<config>/<run>`` locally, the Kubernetes Job
+            name on the cluster. Recorded for the audit trail; it is lane-specific, so it is not
+            what resolution keys on.
+        source: Which surface did it -- ``"webui"``, ``"mcp"`` or ``"cli"``. Not a user identity:
+            the service is unauthenticated (see ``service/app.py``'s ``serve``), so a name here
+            would be invented rather than known.
+        detail: The operator's optional explanation, or what was run.
+        runs: Run keys (``<config>/<run>``) the caller already knows this job was executing. The
+            local lane knows exactly one and passes it; the cluster lane passes none and lets the
+            manifest answer. A *hint*, never the only source -- see :func:`intervened_runs`.
 
-    Appends rather than replaces: several jobs of one campaign may be stopped over its
-    lifetime, and each is a separate event with its own reason.
+    Appends rather than replaces: several things may be done to one campaign over its lifetime,
+    and each is a separate event with its own reason.
     """
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
-    path = exec_dir / _KILLED_FILENAME
-    entries = read_killed_jobs(campaign_root)
+    path = exec_dir / _INTERVENTIONS_FILENAME
+    entries = read_interventions(campaign_root)
     entries.append({
+        "kind": kind,
         "job_dir": job_dir,
         "job_name": job_name,
         "runs": list(runs),
         "source": source,
-        "reason": reason,
+        "detail": detail,
         "at": datetime.now(timezone.utc).isoformat(),
     })
     path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
-def read_killed_jobs(campaign_dir: Path) -> list[dict[str, Any]]:
-    """The campaign's manual-kill ledger; ``[]`` when nothing was ever killed.
+def read_interventions(campaign_dir: Path, kind: str = "") -> list[dict[str, Any]]:
+    """The campaign's intervention ledger, optionally only one *kind*; ``[]`` when there is none.
 
-    An empty list is the overwhelmingly common case — the file does not exist unless
-    someone stopped a job — and every caller is on a path that otherwise behaves exactly
-    as it did before this record existed.
+    An empty list is the overwhelmingly common case -- the file does not exist unless someone
+    reached into a campaign -- and every caller is on a path that otherwise behaves exactly as it
+    did before this record existed.
     """
-    path = Path(campaign_dir) / "_execution" / _KILLED_FILENAME
+    path = Path(campaign_dir) / "_execution" / _INTERVENTIONS_FILENAME
     if not path.is_file():
         return []
     try:
         entries = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        # A truncated ledger must not take the whole result read down with it: the runs
-        # are still readable and their verdicts still true, minus the kill annotation.
+        # A truncated ledger must not take the whole result read down with it: the runs are still
+        # readable and their verdicts still true, minus the annotation.
         return []
-    return entries if isinstance(entries, list) else []
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if not kind or e.get("kind") == kind]
 
 
-def killed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
-    """Which runs a manual kill cut short: ``{"<config>/<run>": ledger entry}``.
+def intervened_runs(campaign_dir: Path, kind: str = "") -> dict[str, dict[str, Any]]:
+    """Which runs an intervention touched: ``{"<config>/<run>": ledger entry}``.
 
     Resolves each ledger entry to the runs it covers from **two** sources, unioned:
 
-    * the entry's own ``runs`` hint, which the local lane fills because there
-      ``job_name`` *is* the run key; and
-    * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact
-      dir — the only way to answer it for a cluster Job, and the way that also covers a
-      packed job's remaining runs without the killer having to enumerate them.
+    * the entry's own ``runs`` hint, which the local lane fills because there ``job_name`` *is*
+      the run key; and
+    * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact dir -- the
+      only way to answer it for a cluster Job, and the way that also covers a packed job's
+      remaining runs without the caller having to enumerate them.
 
-    The manifest, not the ``job`` symlink :func:`read_run_job` follows: that symlink is
-    created when a job *finishes*, so it is missing for precisely the jobs this function
-    is asked about. The manifest is written before the first job starts (see
+    The manifest, not the ``job`` symlink :func:`read_run_job` follows: that symlink is created
+    when a job *finishes*, so it is missing for precisely the jobs this is asked about. The
+    manifest is written before the first job starts (see
     :func:`~robovast.common.execution.job_artifact_dir`).
 
-    Returns ``{}`` without touching the manifest when the ledger is empty, which is the
-    default for every campaign nobody intervened in.
+    Returns ``{}`` without touching the manifest when the ledger is empty, which is the default
+    for every campaign nobody intervened in.
     """
-    entries = read_killed_jobs(campaign_dir)
+    entries = read_interventions(campaign_dir, kind)
     if not entries:
         return {}
     from robovast.common.execution import read_job_links
@@ -499,14 +511,33 @@ def killed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
         for run_key in entry.get("runs") or ():
             out[run_key] = entry
     for link, target in read_job_links(campaign_dir).items():
-        # ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``; normalizing the
-        # target against the link's own directory yields the campaign-relative job dir
-        # the ledger records.
+        # ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``; normalizing the target
+        # against the link's own directory yields the campaign-relative job dir the ledger records.
         run_key = link[:-len("/job")] if link.endswith("/job") else link
         entry = by_job_dir.get(os.path.normpath(os.path.join(run_key, target)))
         if entry is not None:
             out.setdefault(run_key, entry)
     return out
+
+
+def killed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
+    """Which runs a manual kill cut short. :func:`intervened_runs`, filtered to kills.
+
+    Its own name because the *consequence* differs by kind and its callers act on that: a killed
+    run gets a status, a probed one keeps whatever verdict it reached. Sharing the resolution and
+    splitting the meaning is the whole point of one ledger.
+    """
+    return intervened_runs(campaign_dir, KIND_KILLED)
+
+
+def probed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
+    """Which runs were read from while they ran. :func:`intervened_runs`, filtered to probes.
+
+    Orthogonal to a run's outcome, unlike :func:`killed_runs`: a probed run can still pass, and
+    folding this into ``status`` would put a human's action into the campaign's measured result --
+    the same reason ``killed`` is kept out of ``num_failed``.
+    """
+    return intervened_runs(campaign_dir, KIND_PROBED)
 
 
 def killed_failure_message(entry: dict[str, Any]) -> str:
@@ -515,7 +546,7 @@ def killed_failure_message(entry: dict[str, Any]) -> str:
     One phrasing, built here, so the reason a reader sees is the same in the ``run``
     table, the SQL views and the web UI rather than three near-identical strings.
     """
-    reason = (entry.get("reason") or "").strip()
+    reason = (entry.get("detail") or "").strip()
     where = entry.get("source") or "unknown surface"
     return (f"manually stopped via {where}: {reason}" if reason
             else f"manually stopped via {where}")
