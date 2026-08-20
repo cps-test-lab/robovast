@@ -634,3 +634,110 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
 
     by_name = {j.job_name: j.status for j in transport.list_jobs(cid).jobs}
     assert by_name == {"goal-2/0": "killed", "goal-3/0": "failed"}
+
+
+# -- get_job_state: what a running job is doing, from the run's own tools -------------------------
+
+
+def _job_state_transport(transport, monkeypatch, *, command, exec_result):
+    """A transport whose campaign has *command* as its simulator's health command."""
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": command)
+    monkeypatch.setattr(transport, "_campaign_execution", lambda cid: {"containers": {}})
+
+    class _Lane:
+        def __init__(self):
+            self.calls = []
+
+        def exec_in(self, target, argv, limit_s, env=None):
+            self.calls.append((target, argv, limit_s))
+            return exec_result
+
+    lane = _Lane()
+    monkeypatch.setattr(transport, "_exec_lane", lambda: lane)
+    return lane
+
+
+def test_get_job_state_passes_the_simulator_s_json_through(transport, monkeypatch):
+    """RoboVAST parses no simulator's file format: the tool that owns the records reads them, and
+    what it says travels unreshaped. A vocabulary of our own here would be a second definition of
+    someone else's data."""
+    cid = "campaign-2026-08-20-120000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    reply = '{"findings": [], "state": {"sim_ts": 12.5, "entities": []}}'
+    lane = _job_state_transport(transport, monkeypatch,
+                                command="roqsim health --json /out/cfgA/1",
+                                exec_result=(0, reply, "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator == {"findings": [], "state": {"sim_ts": 12.5, "entities": []}}
+    assert state.unavailable == []
+    # The run dir is derived from the run, not read from RUN_OUTPUT_DIR -- the backends set that
+    # only for a job that is exactly one run, so a packed job would have none.
+    target, argv, _limit = lane.calls[0]
+    assert target == transport._CONTAINER_NAME
+    assert argv == ["roqsim", "health", "--json", "/out/cfgA/1"]
+
+
+def test_get_job_state_says_when_the_simulator_cannot_report(transport, monkeypatch):
+    """A simulator RoboVAST merely launches cannot be asked how it is doing. That is a normal
+    answer and must never render as a healthy run."""
+    cid = "campaign-2026-08-20-121000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _job_state_transport(transport, monkeypatch, command=None, exec_result=(0, "", "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator is None
+    assert any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_get_job_state_reports_a_timeout_without_asserting_a_cause(transport, monkeypatch):
+    """A wedged container is itself a finding -- but this call cannot confirm it, and saying so is
+    the difference between a diagnosis and a guess."""
+    cid = "campaign-2026-08-20-122000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _job_state_transport(transport, monkeypatch, command="roqsim health --json /out/cfgA/1",
+                         exec_result=(0, "", "", True))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator is None
+    assert any("did not answer" in line for line in state.unavailable)
+
+
+def test_get_job_state_reports_unreadable_output_rather_than_swallowing_it(transport, monkeypatch):
+    """A tool whose output cannot be parsed is a different problem from a misbehaving run.
+    Conflating them hides both."""
+    cid = "campaign-2026-08-20-123000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _job_state_transport(transport, monkeypatch, command="roqsim health --json /out/cfgA/1",
+                         exec_result=(1, "Traceback: boom", "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator is None
+    assert any("not JSON" in line for line in state.unavailable)
+
+
+def test_get_job_state_refuses_a_job_that_is_not_running(transport, monkeypatch):
+    """Same precondition as stop_job, and checked against the status the caller was shown: only a
+    job that is underway has a state to read."""
+    cid = "campaign-2026-08-20-124000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "0", xml=_PASS_XML)   # completed
+    _run(cdir, "cfgA", "1", log="running\n", job_index=1)
+    _live(transport, cid, "running", total=2, completed=1)
+    _job_state_transport(transport, monkeypatch, command="x", exec_result=(0, "{}", "", False))
+
+    with pytest.raises(RuntimeError, match="not running"):
+        transport.get_job_state(cid, "cfgA/0")

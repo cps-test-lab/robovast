@@ -460,6 +460,32 @@ class ListCampaignsResponse(BaseModel):
     total: int = 0
 
 
+class JobState(BaseModel):
+    """What one **running** job is doing right now, as opposed to what it has logged.
+
+    The sibling of :meth:`RobovastInterface.get_job_log`: that answers "what did it say",
+    this answers "where is it". A caller diagnosing a wedged campaign wants the second first
+    -- a log tells you what is repeating, not what the simulator is doing while it repeats.
+
+    Every field beyond ``job_name`` is optional and **absent rather than empty** when it could
+    not be read, with :attr:`unavailable` saying which and why. That asymmetry is the point: an
+    empty world and a world nobody could look at must not render the same, because the first
+    reads as "nothing is happening" and would be believed.
+    """
+
+    job_name: str
+    #: ``running`` -- the only state this is asked about -- or what was found instead.
+    status: str = "running"
+    #: Whatever the campaign's simulator reports about itself: findings, and the last poses
+    #: and clock. Shape belongs to the simulator (see
+    #: :meth:`~robovast.common.simulators.SimulatorBackend.health_command`), so RoboVAST
+    #: passes it through rather than reshaping it into a vocabulary of its own.
+    simulator: Optional[dict] = None
+    #: One line per source that could not be read, saying which and why. Never a silent gap:
+    #: a diagnostic that omits its own failures is one that reports a broken run as a fine one.
+    unavailable: list = Field(default_factory=list)
+
+
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
@@ -1497,6 +1523,11 @@ class Routes:
         return f"/campaigns/{campaign_id}/job-log"
 
     @staticmethod
+    def job_state(campaign_id: str) -> str:
+        # Same ``job_name``-as-query-param reason as ``job_log``: it may contain '/'.
+        return f"/campaigns/{campaign_id}/job-state"
+
+    @staticmethod
     def job_log_stream(campaign_id: str) -> str:
         # SSE transport over ``job_log`` (same ``job_name`` query param + offset seam).
         return f"/campaigns/{campaign_id}/job-log/stream"
@@ -1849,6 +1880,32 @@ class RobovastInterface(ABC):
         own), and their output only explains a failure when read together. Each line is
         tagged ``[<container>]`` when there is more than one.
         """
+
+    def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
+        """What a **running** job is doing right now, from the run's own tools.
+
+        The sibling of :meth:`get_job_log`, and the first thing to reach for on a wedged
+        campaign: the log says what is repeating, this says what the simulator is doing while
+        it repeats.
+
+        Read by running the simulator's own **fixed** health command inside the job (see
+        :meth:`~robovast.common.simulators.SimulatorBackend.health_command`) and passing its
+        JSON through. Two consequences worth stating, because they are what make this safe to
+        offer at all:
+
+        * **RoboVAST parses no simulator's file format.** The tool that owns the records is the
+          only thing that reads them, so a simulator is free to reshape its own recording
+          without breaking this.
+        * **The command is the service's, never the caller's.** That is the line between this
+          and ``exec_in_container``: a fixed read cannot be turned into arbitrary execution by
+          choosing its arguments, so it needs no provenance record. A caller-supplied command
+          in a live job would be a different thing and would have to be recorded as one.
+
+        Not abstract: a transport that cannot do this inherits a refusal rather than being
+        forced to implement one, which is the same courtesy :meth:`share` gets.
+        """
+        del campaign_id, job_name
+        raise NotImplementedError("this service cannot read a running job's state")
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:

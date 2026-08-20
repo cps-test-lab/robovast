@@ -9,6 +9,7 @@ replaced the old controller-pod sidecar.
 """
 
 import tempfile
+import types
 import time
 
 import pytest
@@ -1489,3 +1490,68 @@ def test_a_packaged_world_fetches_the_vast_and_nothing_else():
                       lambda *a, **k: ("identity", "key")):
         svc._scene_identity("camp", "goal-1", "0")
     assert fetched == ["_config/p.vast"]
+
+
+# -- get_job_state on the cluster: same read, a pod instead of a container ------------------------
+
+
+class _Pod:
+    def __init__(self, name, container="robovast"):
+        self.metadata = types.SimpleNamespace(name=name)
+        self.spec = types.SimpleNamespace(containers=[types.SimpleNamespace(name=container)])
+
+
+def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False)):
+    monkeypatch.setattr(cs, "_require_running_job", lambda cid, job: None)
+    monkeypatch.setattr(cs, "_campaign_execution", lambda cid: {"containers": {}})
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": f"tool --json {run_dir}")
+
+    class _Core:
+        def list_namespaced_pod(self, namespace, label_selector=""):
+            self.selector = label_selector
+            return types.SimpleNamespace(items=pods)
+
+    core = _Core()
+    monkeypatch.setattr(cs, "_k8s", lambda: core)
+
+    class _Lane:
+        calls: list = []
+
+        def exec_in(self, target, argv, limit_s, env=None):
+            _Lane.calls.append((target, argv))
+            return exec_result
+
+    _Lane.calls = []
+    monkeypatch.setattr(cs, "_exec_lane", lambda: _Lane())
+    return core, _Lane
+
+
+def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
+    """The lane difference is the target and nothing else. ``/out`` is *this pod's* emptyDir, so
+    naming it is exact even though a Kubernetes Job may pack several runs and its ``job_name`` is
+    not a run key."""
+    core, lane = _cluster_job_state(
+        cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+        exec_result=(0, '{"findings": [], "state": {"sim_ts": 4.0}}', "", False))
+
+    state = cs.get_job_state("camp-1", "scenario-abc")
+
+    assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
+    assert state.unavailable == []
+    (target, argv), = lane.calls
+    # The container comes from the pod, not from a constant repeated here.
+    assert target == ("scenario-abc-x9", "robovast")
+    assert argv == ["tool", "--json", "/out"]
+    assert "job-name=scenario-abc" in core.selector
+
+
+def test_cluster_get_job_state_says_when_there_is_no_pod_yet(cs, monkeypatch):
+    """Between scheduling and running there is a Job but no pod. That is a reason, not an empty
+    answer -- and not a crash on ``items[0]``."""
+    _cluster_job_state(cs, monkeypatch, pods=[])
+
+    state = cs.get_job_state("camp-1", "scenario-abc")
+
+    assert state.simulator is None
+    assert any("no pod for job" in line for line in state.unavailable)

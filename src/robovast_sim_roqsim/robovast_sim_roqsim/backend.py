@@ -348,6 +348,20 @@ class RoqsimBackend(SimulatorBackend):
         del cfg, execution
         return _RECORD_FILE
 
+    def health_command(self, cfg, execution: dict, *, run_dir: str) -> str:
+        """``roqsim health``, judging the records this run is streaming as it goes.
+
+        Cheap by construction, which is what lets the service poll it: the three checks read the
+        tail of the clock and pose records, and the ``state`` block in the same reply is the last
+        sample of those same reads. Nothing here folds a whole file.
+
+        Deliberately no ``--robot``: the pose record names root bodies without saying which are
+        robots, so naming them would mean this backend guessing per world. The motion check
+        reports itself as skipped instead, which is the honest answer and visible in the reply.
+        """
+        del cfg, execution
+        return f"roqsim health --json {shlex.quote(run_dir)}"
+
     def simulation_screenshot(self, cfg, execution: dict, *, state: str,
                               at=None, view=None, focus=None, camera=None,
                               size: str = "960x720") -> str:

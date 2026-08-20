@@ -38,7 +38,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         CreateWorkspaceRequest, EditFileRequest, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        ListJobsResponse, ListWorkspacesResponse, LogChunk,
+                                        JobState, ListJobsResponse, ListWorkspacesResponse,
+                                        LogChunk,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, ServiceError, UploadGrant,
                                         ValidationReport, WorkOrder,
@@ -244,6 +245,10 @@ class HTTPTransport(RobovastInterface):
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
         return LogChunk.model_validate(
             self._get(Routes.job_log(campaign_id), job_name=job_name, offset=offset))
+
+    def get_job_state(self, campaign_id: str, job_name: str) -> JobState:
+        return JobState.model_validate(
+            self._get(Routes.job_state(campaign_id), job_name=job_name))
 
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))

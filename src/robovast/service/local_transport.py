@@ -30,8 +30,10 @@ Split out of the former single ``client`` module; ``client`` now re-exports
 """
 
 import contextlib
+import json
 import logging
 import os
+import shlex
 import subprocess
 import threading
 import time
@@ -370,6 +372,12 @@ class WorkspaceTarget:
     #: image cannot be named fails the *request* with the reason instead of becoming a failed
     #: campaign someone has to go and inspect.
     pinned_images: Optional[dict] = None
+
+
+#: How long a job-state read may take. Short on purpose: this runs on the status path, so a wedged
+#: container must cost a bounded wait and then say so, never hold a caller. The command it runs is a
+#: tail of two records, which answers in well under a second when anything is answering at all.
+_JOB_STATE_LIMIT_S = 20
 
 
 class LocalTransport(RobovastInterface):
@@ -2202,6 +2210,82 @@ class LocalTransport(RobovastInterface):
             ok=True,
             message=(f"killed job {job.display_name or job_name}; the campaign continues "
                      f"with its remaining runs and this run is recorded as 'killed'"))
+
+    def _campaign_execution(self, campaign_id: str) -> dict:
+        """The ``execution`` block of the campaign's own frozen configuration.
+
+        Read from ``_config/`` rather than from whatever the workspace holds now: the question is
+        what *this* campaign is running, and a workspace edited since it launched would answer for
+        a different one. ``upgrade=True`` for the reason :meth:`_seed_from_campaign` gives -- this
+        is an archived file and may predate the current version.
+        """
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.common.results_utils import campaign_vast
+        source = Path(self._retrigger_source_dir(campaign_id))
+        config = validate_config(load_config(str(campaign_vast(source)), upgrade=True))
+        return (config or {}).get("execution") or {}
+
+    def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
+        """Ask the run's own simulator what it is doing, by a fixed command inside the job.
+
+        The container's tool reads its records and prints JSON; nothing here parses a simulator's
+        file format, so a simulator can reshape its own recording without breaking this.
+
+        Locally ``job_name`` *is* the run key (``<config>/<run>``), which is also where the run
+        writes inside the container -- ``/out/<config>/<run>``, the same path both lanes mount.
+        Derived from the run rather than read from ``RUN_OUTPUT_DIR``, which the backends set only
+        for a job that is exactly one run and so is absent from a packed one.
+        """
+        from robovast.common.simulators import health_command
+        from robovast.service.interface import JobState
+
+        job = self._require_running_job(campaign_id, job_name)
+        state = JobState(job_name=job_name, status=job.status)
+        try:
+            command = health_command(self._campaign_execution(campaign_id),
+                                     run_dir=f"/out/{job_name}")
+        except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
+            state.unavailable.append(f"could not read this campaign's configuration: {err}")
+            return state
+        if not command:
+            # A normal answer, and the same kind `simulation_screenshot` gives: this campaign's
+            # simulator does not report on itself. Never rendered as a healthy run.
+            state.unavailable.append(
+                "this campaign's simulator does not report its own state, so there is nothing to "
+                "read from a live run")
+            return state
+        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            self._CONTAINER_NAME, shlex.split(command), _JOB_STATE_LIMIT_S)
+        return self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+
+    @staticmethod
+    def _job_state_from_output(state, command: str, exit_code: int, stdout: str,
+                               stderr: str, timed_out: bool):
+        """Turn one health command's result into a :class:`JobState`, or into a stated reason.
+
+        Shared by both lanes deliberately: what the reply *means* is not lane-specific, and the
+        subclass overriding :meth:`get_job_state` differs only in which container it entered. Two
+        lanes interpreting the same output separately is how they drift.
+        """
+        if timed_out:
+            state.unavailable.append(
+                f"{command!r} did not answer within {_JOB_STATE_LIMIT_S}s. The container may be "
+                "wedged, which is itself a finding -- but this call cannot confirm it.")
+            return state
+        text = (stdout or "").strip()
+        if not text:
+            detail = (stderr or "").strip().splitlines()[-1:] or ["no output"]
+            state.unavailable.append(f"{command!r} exited {exit_code}: {detail[0]}")
+            return state
+        try:
+            state.simulator = json.loads(text)
+        except ValueError:
+            # Reported rather than swallowed: a tool whose output cannot be read is a different
+            # problem from a run that is misbehaving, and conflating them hides both.
+            state.unavailable.append(
+                f"{command!r} exited {exit_code} but its output was not JSON")
+        return state
 
     def _require_running_job(self, campaign_id: str, job_name: str):
         """The named job, or raise — shared by both lanes' :meth:`stop_job` preconditions.

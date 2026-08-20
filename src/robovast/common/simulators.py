@@ -282,6 +282,30 @@ class SimulatorBackend:
         """
         return None
 
+    def health_command(self, cfg, execution: dict, *, run_dir: str) -> Optional[str]:
+        """Command that reports whether a **live** run is healthy, and where everything is.
+
+        The other side of :meth:`simulation_screenshot`: that renders a moment of a *finished*
+        recording, this asks a run that is still going what state it is in. Only the simulator
+        can answer either, and only it knows what its own records are called -- which is why the
+        command is named here rather than assembled by the service from a second copy of those
+        names.
+
+        Expected to print JSON on stdout and to be cheap enough to poll: the service runs it
+        while a campaign is live, so a command that folds a whole file is the wrong shape for
+        this hook.
+
+        ``None`` -- the default -- is a normal answer, and the same kind Gazebo gives to
+        :meth:`scene_export`: a simulator RoboVAST merely launches cannot be asked how it is
+        doing. The caller reports that as a capability this campaign's simulator lacks, never as
+        a healthy run.
+
+        *run_dir* is where this run's records are **inside the container** (``/out/<config>/<run>``
+        on both lanes). Returned as a **string** run through ``shlex.split``, as
+        :meth:`simulation_screenshot` is, so a backend writes the command it would type.
+        """
+        return None
+
     def run_state_file(self, cfg, execution: dict) -> Optional[str]:
         """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
 
@@ -362,6 +386,22 @@ def run_state_filename(execution: dict, base_dir: str = "") -> Optional[str]:
     backend = resolve_backend(name, base_dir)
     block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
     return backend.run_state_file(_validated_cfg(backend, block, name), execution)
+
+
+def health_command(execution: dict, *, run_dir: str, base_dir: str = "") -> Optional[str]:
+    """The configured backend's :meth:`SimulatorBackend.health_command`, or ``None``.
+
+    Same seam as :func:`simulation_screenshot_command`, and ``None`` means the same kind of
+    thing: this campaign's simulator does not report its own health, rather than the run being
+    fine. **Core names no simulator here** -- the backend names its own command, exactly as it
+    already names its images and its recording.
+    """
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    cfg = _validated_cfg(backend, block, name)
+    return backend.health_command(cfg, execution, run_dir=run_dir)
 
 
 def simulation_screenshot_command(execution: dict, *, state: str, at: Optional[float],

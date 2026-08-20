@@ -45,7 +45,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         EditFileRequest, ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
-                                        ListCampaignsResponse, ListJobsResponse,
+                                        JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk, PanelsSource,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
@@ -864,6 +864,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 lambda off: impl.get_campaign_logs(campaign_id, off),
                 _last_event_offset(request)),
             media_type="text/event-stream", headers=_sse_headers)
+
+    @app.get(Routes.job_state("{campaign_id}"), response_model=JobState, tags=["campaigns"])
+    def get_job_state(campaign_id: str, job_name: str) -> JobState:
+        return _guard(lambda: impl.get_job_state(campaign_id, job_name))
 
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):

@@ -541,6 +541,30 @@ def _log_response(base: dict, view: dict, *, report_shutdown: bool = False) -> d
     return {**merged, "text": view["content"], "truncated": view["truncated"]}
 
 
+def get_job_state(campaign_id: str, job_name: str) -> dict:
+    """Where is one **running** job right now? Call this before its log on a wedge.
+
+    A log says what is *repeating*; this says what the simulator is *doing*. Runs the
+    simulator's own fixed command in the job and returns its JSON. Perturbs nothing and needs no
+    record: the command is ours, not yours.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        job_name: A ``job_name`` from ``list_campaign_jobs``.
+
+    Returns:
+        ``{job_name, status, simulator, unavailable}``, or ``{error}``. ``unavailable`` names what
+        could not be read and why, rather than rendering it as empty.
+    """
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {"error": NO_SERVICE}
+        return client.get_job_state(campaign_id, job_name).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return service_access.error_result(e)
+
+
 def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
@@ -887,34 +911,23 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
                       tail: int = 200, container: str = "") -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
-    **Produces no campaign data** — nothing durable, no provenance, no repetitions, no
-    entry in ``list_campaigns``, and no results to compare with anything. To run the
-    experiment, use ``start_campaign``.
+    **Produces no campaign data** — nothing durable, no provenance, no repetitions. To run the
+    experiment use ``start_campaign``; to see inside a running job, ``get_job_state``.
 
-    Three questions it answers: is the image set up right (omit ``config_name`` — imports,
-    ``ros2 pkg list``, file checks; build first if it declares packages); does one config run
-    (name a ``config_name``; an empty ``command`` starts that config's scenario, detached);
-    what does bring-up look like (the same, plus ``keep_alive`` and ``show_gui``).
+    Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``, file
+    checks); does one config run (name a ``config_name``; an empty ``command`` starts its
+    scenario, detached); what does bring-up look like (add ``keep_alive``, ``show_gui``).
 
-    **Which image you get depends on the source you name, and they answer different
-    questions.** A ``workspace_id`` runs the image that project would build *now*: a container
-    declaring ``system_packages``/``python_packages`` must have that image built already —
-    this never builds implicitly, so ``build_experiment_image`` first, and wait for it. A
-    ``campaign_id`` runs the exact image that campaign recorded, so it is what you exec
-    against to ask "what did that run actually see?", and it stays right even after the
-    workspace has moved on.
+    **The source you name decides which image, and they answer different questions.** A
+    ``workspace_id`` runs what that project would build *now* — and never builds implicitly, so
+    ``build_experiment_image`` first and wait for it. A ``campaign_id`` runs the exact image that
+    campaign recorded, so it answers "what did that run actually see?" even after the workspace
+    has moved on. A refusal over an unbuilt image hands back the ``next_step`` for its state.
 
-    A refusal over an unbuilt image says which of four states it is in — nothing started, one
-    building, one failed, or one built whose image has since been pruned — and hands back the
-    ``next_step`` for that state, because the four need four different actions.
-
-    **At most one container exists at a time**, so ``reused: false`` means a fresh one —
-    anything the previous container was running is gone. ``stop_container`` ends it. A started
-    scenario logs to ``log_path`` *inside* the container, not ``stdout``: read it with a
-    follow-up ``command="tail -200 <log_path>"``.
-
-    What a *world* offers — its plugins, its overridable model values — is ``describe_world``
-    rather than a command here.
+    **At most one container exists at a time**, so ``reused: false`` means a fresh one and
+    anything the previous was running is gone; ``stop_container`` ends it. A started scenario logs
+    to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
+    ``command="tail -200 <log_path>"``.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
@@ -997,6 +1010,7 @@ _TOOLS = [
     get_campaign_log,
     list_campaign_jobs,
     get_job_log,
+    get_job_state,
     stop_campaign,
     stop_job,
     get_resource_usage,

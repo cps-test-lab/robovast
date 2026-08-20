@@ -48,6 +48,7 @@ import dataclasses
 import json
 import logging
 import os
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -1670,6 +1671,53 @@ class ClusterService(LocalTransport):
         entry.state.request_stop()
         self._teardown_campaign_jobs(campaign_id)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
+
+    def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
+        """The inherited read, pointed at this job's pod instead of a local container.
+
+        Everything that decides *what* is asked -- the simulator's own command, the JSON passed
+        through unreshaped, what "unavailable" means -- is :class:`LocalTransport`'s and shared. Only
+        the target differs, which is the whole reason ``exec_in`` takes one.
+
+        Two lane facts shape the arguments. ``job_name`` here is the **Kubernetes Job** name rather
+        than a run key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack
+        several runs, so there is no single run dir to name even in principle. But ``/out`` is *this
+        pod's own* emptyDir, holding only this job's runs -- so naming it is exact rather than vague,
+        and the tool finds the run still being written underneath it.
+
+        The container is read from the pod rather than assumed: the scenario runs in the first
+        container of the pod spec, and hardcoding a name here would be a second place to change.
+        """
+        from robovast.common.simulators import health_command
+        from robovast.service.interface import JobState
+
+        from .cluster_execution import _label_safe_campaign
+        self._require_running_job(campaign_id, job_name)
+        state = JobState(job_name=job_name, status="running")
+        try:
+            command = health_command(self._campaign_execution(campaign_id), run_dir="/out")
+        except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
+            state.unavailable.append(f"could not read this campaign's configuration: {err}")
+            return state
+        if not command:
+            state.unavailable.append(
+                "this campaign's simulator does not report its own state, so there is nothing to "
+                "read from a live run")
+            return state
+        core = self._k8s()
+        label = (f"jobgroup=scenario-runs,"
+                 f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}")
+        pods = core.list_namespaced_pod(self.namespace, label_selector=label)
+        if not pods.items:
+            state.unavailable.append(
+                f"no pod for job {job_name!r}: it is between scheduling and running, or already gone")
+            return state
+        pod = pods.items[0]
+        container = pod.spec.containers[0].name
+        from robovast.service.local_transport import _JOB_STATE_LIMIT_S
+        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            (pod.metadata.name, container), shlex.split(command), _JOB_STATE_LIMIT_S)
+        return self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
 
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: "str | None" = None, source: str = "api") -> ActionResult:
