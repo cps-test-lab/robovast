@@ -1220,10 +1220,20 @@
             "title": "Build Id",
             "type": "string"
           },
+          "cache_ref": {
+            "default": "",
+            "title": "Cache Ref",
+            "type": "string"
+          },
           "cached": {
             "default": false,
             "title": "Cached",
             "type": "boolean"
+          },
+          "context_bytes": {
+            "default": 0,
+            "title": "Context Bytes",
+            "type": "integer"
           },
           "digest": {
             "default": "",
@@ -1285,7 +1295,9 @@
         },
         "required": [
           "build_id",
+          "cache_ref",
           "cached",
+          "context_bytes",
           "digest",
           "done",
           "error",

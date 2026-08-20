@@ -2047,10 +2047,20 @@ export interface components {
             /** Build Id */
             build_id: string;
             /**
+             * Cache Ref
+             * @default
+             */
+            cache_ref: string;
+            /**
              * Cached
              * @default false
              */
             cached: boolean;
+            /**
+             * Context Bytes
+             * @default 0
+             */
+            context_bytes: number;
             /**
              * Digest
              * @default
