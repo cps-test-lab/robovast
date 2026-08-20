@@ -1448,6 +1448,20 @@ def _record_asset_providers(out_dir, campaign_data) -> None:
     name it and its commit rather than depending on something nobody can identify.
 
     Provenance, so it must never stop a campaign being prepared.
+
+    **Three states, not two.** Populated is "these providers"; an empty record is "asked, and
+    there were none"; and *no file at all* is "could not be asked" -- which
+    :func:`read_providers_record` already documents as unknown. Writing an empty record for the
+    third case is the one outcome that must not happen, and it did: this runs in whichever
+    process prepares the campaign, and on a cluster lane that is the service pod, which carries
+    no simulator at all. So the walk found nothing, an empty record was written, and the
+    publication gate read it as a campaign depending on no asset providers -- while the image
+    it ran had three private ones installed from a private repository. A false clean is worse
+    than a refusal: a refusal is examined.
+
+    Groups declared with nothing found is therefore treated as unobserved rather than empty. It
+    cannot be a real "none" for any simulator worth recording: a roqsim campaign always has at
+    least the substrate's own public providers on the path of a process that can see them.
     """
     try:
         from robovast.common.campaign_data import \
@@ -1457,7 +1471,16 @@ def _record_asset_providers(out_dir, campaign_data) -> None:
 
         backend = _campaign_simulator_backend(campaign_data)
         groups = getattr(backend, "ASSET_ENTRY_POINT_GROUPS", ()) if backend else ()
-        write_providers_record(out_dir, provider_provenance(groups))
+        providers = provider_provenance(groups)
+        if groups and not providers:
+            logger.warning(
+                "Not recording asset providers: none of %s is registered by any distribution "
+                "in this process, so what supplied the campaign's assets cannot be observed "
+                "here -- the simulator's packages live in the campaign's image, not in "
+                "whatever prepares it. Leaving the record ABSENT (unknown) rather than empty, "
+                "which would claim there were none.", ", ".join(groups))
+            return
+        write_providers_record(out_dir, providers)
     except Exception as e:  # pylint: disable=broad-except
         logger.warning("Could not record asset provider versions: %s", e)
 
