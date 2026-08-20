@@ -123,28 +123,83 @@ SIDECAR_TAG="${PROJECT}robovast-sidecar:${TAG}"
 SRC_FLAG=()
 [[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
 
-echo "== base + roqsim =="
-ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
-  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS
+# shellcheck source=container/platforms.env
+. "$BASEDIR/platforms.env"
 
-echo
-echo "== controller =="
+# Three jobs, not four steps. Only robovast-roqsim depends on anything: it is FROM the base,
+# so those two are one chain. The controller (two npm builds plus poetry over the scientific
+# stack) and the sidecar depend on nothing here, and running them after the ROS chain added
+# their whole duration to a release for no reason.
+#
+# The chain keeps the terminal, because it is the long pole and a release with no output for
+# ten minutes reads as hung. The other two are captured to logs and replayed in a fixed order
+# when they finish, so the transcript is the same every run rather than three builds
+# interleaving their lines unreadably.
+#
+# `wait <pid>` per job rather than a bare `wait`: a bare one returns the status of the LAST
+# job only, so a controller failure behind a passing sidecar would vanish -- and with `-e`
+# never firing on it, the script would sail on to report a published family that is missing a
+# member. Each status is collected and checked explicitly below. `set -e` does not apply
+# inside a background job's own subshell either, which is why nothing here relies on it.
+LOG_DIR=$(mktemp -d)
+trap 'rm -rf "$LOG_DIR"' EXIT
+
+echo "== controller + sidecar (in the background; logs replayed below) =="
+
 # No "--" separator here: unlike robovast/build.sh, controller/build.sh has no case for
 # it -- an unrecognized "--" would fall through to its own EXTRA_ARGS and get injected
 # into its docker build call raw, corrupting the argument list.
-"$BASEDIR/controller/build.sh" -t "$CONTROLLER_TAG" "${PUSH_FLAG[@]}" $EXTRA_ARGS
+( "$BASEDIR/controller/build.sh" -t "$CONTROLLER_TAG" "${PUSH_FLAG[@]}" $EXTRA_ARGS ) \
+  >"$LOG_DIR/controller.log" 2>&1 &
+CONTROLLER_PID=$!
 
-echo
-echo "== sidecar =="
 # Built here rather than only in CI so a dev-registry release is complete. It was the one
 # image release_images.sh did not publish, which meant an operator pointing PROJECT at
 # their own registry got three dev images and silently kept the published sidecar, with
 # nothing to notice it by. A release must publish the whole family, because ROBOVAST_PROJECT
 # moves the whole family. Buildx directly: there is no container/sidecar/build.sh.
-# shellcheck source=container/platforms.env
-. "$BASEDIR/platforms.env"
-docker buildx build --platform "$PLATFORMS_SIDECAR" \
-  -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "$BASEDIR/sidecar" $EXTRA_ARGS
+( docker buildx build --platform "$PLATFORMS_SIDECAR" \
+    -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "$BASEDIR/sidecar" $EXTRA_ARGS ) \
+  >"$LOG_DIR/sidecar.log" 2>&1 &
+SIDECAR_PID=$!
+
+echo
+echo "== base + roqsim =="
+# The one real dependency: --image all builds the base, then roqsim FROM the resolved base
+# tag. Left in the foreground on purpose (see above). A failure here still has to wait for
+# the background jobs before exiting, or `-e` would kill the script and orphan two builds
+# mid-push; FAILED collects it instead.
+CHAIN_STATUS=0
+ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
+  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${PUSH_FLAG[@]}" -- $EXTRA_ARGS \
+  || CHAIN_STATUS=$?
+
+CONTROLLER_STATUS=0
+wait "$CONTROLLER_PID" || CONTROLLER_STATUS=$?
+SIDECAR_STATUS=0
+wait "$SIDECAR_PID" || SIDECAR_STATUS=$?
+
+echo
+echo "== controller =="
+cat "$LOG_DIR/controller.log"
+echo
+echo "== sidecar =="
+cat "$LOG_DIR/sidecar.log"
+
+# Every failure named, not just the first: three builds ran, so "it failed" without saying
+# which one sends the reader to the wrong log. Reported before the digest resolution below,
+# because a build that did not happen has no digest to resolve and its "no digest" line
+# would otherwise be the only symptom.
+FAILED=()
+[[ $CHAIN_STATUS -eq 0 ]] || FAILED+=("base + roqsim (exit $CHAIN_STATUS)")
+[[ $CONTROLLER_STATUS -eq 0 ]] || FAILED+=("controller (exit $CONTROLLER_STATUS)")
+[[ $SIDECAR_STATUS -eq 0 ]] || FAILED+=("sidecar (exit $SIDECAR_STATUS)")
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo >&2
+  echo "ERROR: build failed:" >&2
+  printf '  %s\n' "${FAILED[@]}" >&2
+  exit 1
+fi
 
 # The digest for a repo:tag, as repo@sha256:... -- reported below, and used to verify that a
 # --push actually landed. Not the configuration: one ROBOVAST_PROJECT_TAG covers all four
