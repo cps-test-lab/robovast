@@ -69,23 +69,24 @@ DEFAULT_BUILDKITD_STORAGE_SIZE = "200Gi"
 #: service pod may also be pinned to, and a full one means DiskPressure evictions rather than a
 #: failed build.
 #:
-#: The budget is expressed **relative to the filesystem** rather than as a fixed number of
-#: gigabytes, and that is the safer default rather than the vaguer one.
+#: What the daemon may keep. **Not optional**: the point of this component is that state
+#: survives, which is exactly what makes an unbounded store fill a disk shared with other
+#: things. On the hostPath default that disk belongs to a node the service pod may also be
+#: pinned to, and a full one means DiskPressure evictions rather than a failed build.
 #:
-#: On a PVC we chose the size, so an absolute ceiling would be knowable. On the hostPath
-#: default we did not: the directory is on a node disk of unknown size, shared with whatever
-#: else lives there. A fixed "180GB" on a disk smaller than that is not a ceiling at all -- the
-#: store simply grows until the *node* runs out, and the kubelet's answer to that is
-#: DiskPressure, which evicts pods rather than failing a build. Since the daemon is pinned to
-#: one node, and the service pod may be pinned to the same one, the blast radius of getting
-#: this wrong is the API going down for a reason with no obvious connection to a build.
+#: The three keys do different jobs, and ``minFreeSpace`` is the one that makes the other two
+#: safe to state in absolute terms. A fixed ceiling is only a ceiling on a disk at least that
+#: large -- on a smaller one the store simply grows until the *node* runs out. ``minFreeSpace``
+#: is measured against the filesystem rather than the cache, so it forces pruning long before
+#: an oversized ceiling is reached, whatever the disk turns out to be. That is what lets these
+#: be chosen for the deployment in front of us (500 GB free) without becoming a trap on a
+#: deployment that is not.
 #:
-#: A percentage cannot be wrong that way on any disk, and ``minFreeSpace`` is the backstop that
-#: makes it safe even when the disk is nearly full of something else. Absolute values remain
-#: available for a deployment that knows its disk.
-DEFAULT_BUILDKITD_GC_RESERVED = "20%"
-DEFAULT_BUILDKITD_GC_MAX_USED = "70%"
-DEFAULT_BUILDKITD_GC_MIN_FREE = "20GB"
+#: ``reservedSpace`` is a floor, not a target: cache below it is kept even when old, which is
+#: what stops a quiet week from evicting the base image this exists to hold.
+DEFAULT_BUILDKITD_GC_RESERVED = "100GB"
+DEFAULT_BUILDKITD_GC_MAX_USED = "150GB"
+DEFAULT_BUILDKITD_GC_MIN_FREE = "50GB"
 
 #: What the daemon reserves. Unlike the warm DaemonSet's near-nothing, this is a real workload:
 #: it compiles, unpacks and compresses layers, and a solve holds gigabytes.
@@ -491,7 +492,11 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
         return {}
 
     pod_spec = dep.spec.template.spec
-    settings = {}
+    # The budget belongs to the same recovery: it is a `setup` flag recorded nowhere but the
+    # daemon's own config, so an upgrade re-rendering from defaults would silently re-size a
+    # store an operator had deliberately bounded -- on the deployment whose disk was the reason
+    # they bounded it. Merged before the branches below, both of which return.
+    settings = _gc_budget_from_cluster(namespace, core)
 
     node_selector = pod_spec.node_selector or {}
     if node_selector.get("kubernetes.io/hostname"):
@@ -539,6 +544,37 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
     if requested.get("storage"):
         settings["storage_size"] = requested["storage"]
     return settings
+
+
+#: ``buildkitd.toml`` GC key -> the ``apply_buildkitd`` keyword that sets it.
+_GC_KEYS = {"reservedSpace": "gc_reserved", "maxUsedSpace": "gc_max_used",
+            "minFreeSpace": "gc_min_free"}
+
+
+def _gc_budget_from_cluster(namespace: str, core) -> dict:
+    """The GC budget a deployed daemon is already running with, as ``apply_buildkitd`` kwargs.
+
+    Parsed from the ConfigMap rather than tracked beside it, so there is one source of truth,
+    and read with a real TOML parser rather than by matching text -- what is being read is the
+    file the daemon itself reads.
+
+    ``{}`` when there is no config or it cannot be understood: the caller then applies its own
+    defaults, which is the right answer for a daemon that predates this setting. Unlike the
+    storage recovery below, guessing wrong here costs disk rather than the whole cache, so it
+    does not refuse.
+    """
+    import tomllib
+
+    from kubernetes import client
+
+    try:
+        cfg = core.read_namespaced_config_map(f"{BUILDKITD_NAME}-config", namespace)
+        policy = tomllib.loads(cfg.data["buildkitd.toml"])["worker"]["oci"]["gcpolicy"][0]
+    except (client.exceptions.ApiException, KeyError, IndexError, TypeError,
+            tomllib.TOMLDecodeError) as e:
+        logger.debug("no buildkitd GC budget to recover from %s: %s", namespace, e)
+        return {}
+    return {kw: str(policy[key]) for key, kw in _GC_KEYS.items() if key in policy}
 
 
 def delete_buildkitd(namespace: str, kube_context=None) -> bool:

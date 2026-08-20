@@ -721,7 +721,26 @@ the bottleneck the cache was meant to remove.
 The store is **bounded** — a component whose whole purpose is that state survives is also the
 one that fills a disk. The daemon's ``buildkitd.toml`` sets ``reservedSpace`` / ``maxUsedSpace``
 / ``minFreeSpace`` (the keys the pinned BuildKit understands; the older ``gckeepstorage`` is
-gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all).
+gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all), and each has a flag:
+
+.. code-block:: bash
+
+   vast exec cluster setup rke2 \
+     --buildkit-cache-max 150GB \        # ceiling on the cache
+     --buildkit-cache-min-free 50GB \    # free space kept on the filesystem
+     --buildkit-cache-reserved 100GB      # cache kept even when old
+
+**Size these for the disk the store lands on.** The defaults suit a large one. The load-bearing
+one is ``--buildkit-cache-min-free``: it is measured against the *filesystem* rather than the
+cache, so it forces pruning long before an oversized ceiling is reached and is what keeps a
+fixed ceiling honest on a disk smaller than the ceiling. Without it a fixed ceiling is not a
+ceiling at all — the store grows until the node runs out, and the kubelet answers DiskPressure
+by evicting pods, on the node the daemon is pinned to and the service pod may share. On a disk
+whose size you do not know, a percentage (``70%``) is accepted for any of the three.
+
+All three are recovered from the running daemon by ``upgrade``, like the storage settings: they
+are set by a flag and recorded nowhere else, so re-rendering from defaults would silently
+re-size a store somebody had bounded on purpose.
 
 Three consequences worth knowing before they surprise you:
 

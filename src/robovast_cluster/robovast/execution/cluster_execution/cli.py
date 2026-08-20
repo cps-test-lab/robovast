@@ -556,12 +556,26 @@ def monitor(interval, once, kube_context, namespace):
                    'multi-node cluster, or a reschedule starts again from an empty cache. '
                    'Keep it OFF the registry\'s node: these are the deployment\'s two '
                    'large on-disk tenants, and the service pod is pinned to that one.')
+@click.option('--buildkit-cache-max', default='', metavar='SIZE',
+              help='Ceiling on the build cache, e.g. 150GB or 70%. Sized for the disk it '
+                   'lands on: the default suits a large one, and a deployment whose /data is '
+                   'smaller should say so here rather than rely on --buildkit-cache-min-free '
+                   'to hold the line.')
+@click.option('--buildkit-cache-min-free', default='', metavar='SIZE',
+              help='Free space to keep on the cache\'s filesystem, e.g. 50GB. Measured '
+                   'against the disk rather than the cache, so it is what keeps any ceiling '
+                   'safe on a disk smaller than the ceiling -- and what stops a full builder '
+                   'disk from becoming DiskPressure evictions on that node.')
+@click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
+              help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
+                   'stops a quiet week from evicting the base image the cache exists to hold.')
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, registry_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
-          buildkit_node, cluster_config):
+          buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
+          buildkit_cache_reserved, cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
@@ -651,6 +665,9 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'storage_path': buildkit_storage_path,
         'storage_size': buildkit_storage_size,
         'node_name': buildkit_node,
+        'gc_max_used': buildkit_cache_max,
+        'gc_min_free': buildkit_cache_min_free,
+        'gc_reserved': buildkit_cache_reserved,
     }
     try:
         # Named arguments, never folded into cluster_kwargs: that dict is the provider's

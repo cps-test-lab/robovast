@@ -8,6 +8,8 @@ whole component not existing except that the base image keeps being pulled. So t
 are pinned rather than left to a review that cannot see them either.
 """
 
+import types
+
 import pytest
 
 from robovast.execution.cluster_execution.buildkitd_deploy import (
@@ -100,9 +102,15 @@ def test_the_default_budget_cannot_overrun_a_disk_it_did_not_choose():
     from robovast.execution.cluster_execution.buildkitd_deploy import (
         DEFAULT_BUILDKITD_GC_MAX_USED, DEFAULT_BUILDKITD_GC_MIN_FREE)
 
-    assert DEFAULT_BUILDKITD_GC_MAX_USED.endswith("%"), (
-        "an absolute default ceiling is only safe on a disk we sized ourselves")
-    assert DEFAULT_BUILDKITD_GC_MIN_FREE, "the backstop for a disk already full of other things"
+    # `minFreeSpace` is what makes an absolute ceiling safe, and it is the assertion that
+    # matters: it is measured against the FILESYSTEM rather than the cache, so on a disk
+    # smaller than the ceiling it forces pruning long before the ceiling is reached. Without
+    # it a fixed ceiling is not a ceiling at all on a disk we did not choose -- the store grows
+    # until the node runs out, and the kubelet answers DiskPressure by evicting pods, on the
+    # node the daemon is pinned to and the service pod may share.
+    assert DEFAULT_BUILDKITD_GC_MIN_FREE, (
+        "without a free-space floor, an absolute ceiling is unbounded on a smaller disk")
+    assert DEFAULT_BUILDKITD_GC_MAX_USED, "the store must have a ceiling at all"
 
 
 def test_the_generated_config_is_valid_toml():
@@ -310,6 +318,12 @@ def _reader(monkeypatch, *, dep=None, dep_error=None, pvc=None, pvc_error=None):
                 raise pvc_error
             return pvc
 
+        def read_namespaced_config_map(self, name, namespace):
+            # The recovery reads the GC budget out of the daemon's own config too. A
+            # deployment that predates that setting simply has no ConfigMap, which is the
+            # case this models -- the caller then falls back to its defaults.
+            raise _api_error(404)
+
     monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
     monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: _Apps())
     monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: _Core())
@@ -423,3 +437,53 @@ def test_the_module_exports_everything_its_callers_import():
         assert callable(getattr(buildkitd_deploy, name))
 
     importlib.reload(buildkitd_deploy)  # and it survives a reload, i.e. it is really defined
+
+
+# ---------------------------------------------------------------------------
+# The GC budget, and other deployments
+# ---------------------------------------------------------------------------
+
+def test_the_budget_is_configurable_not_baked_in():
+    """The defaults suit the disk in front of us; another deployment's may be much smaller.
+
+    Sizing it should not require editing the source, so the values reach `buildkitd.toml`
+    from `apply_buildkitd`'s arguments, which the `--buildkit-cache-*` flags supply.
+    """
+    toml = buildkitd_toml(gc_reserved="10GB", gc_max_used="20GB", gc_min_free="5GB")
+    assert 'reservedSpace = "10GB"' in toml
+    assert 'maxUsedSpace = "20GB"' in toml
+    assert 'minFreeSpace = "5GB"' in toml
+
+
+def test_a_percentage_budget_is_expressible_for_a_disk_of_unknown_size():
+    """The other way to be safe on a disk you did not choose, and BuildKit accepts it."""
+    import tomllib
+
+    parsed = tomllib.loads(buildkitd_toml(gc_max_used="70%", gc_min_free="10%"))
+    policy = parsed["worker"]["oci"]["gcpolicy"][0]
+    assert policy["maxUsedSpace"] == "70%"
+    assert policy["minFreeSpace"] == "10%"
+
+
+def test_an_upgrade_keeps_the_budget_the_deployment_was_given(monkeypatch):
+    """The same trap as the storage settings: set by a flag, recorded nowhere else.
+
+    An upgrade that re-rendered the config from defaults would silently re-size a store an
+    operator had bounded deliberately -- on the deployment whose disk was the reason for it.
+    """
+    from kubernetes import client as kclient
+
+    from robovast.execution.cluster_execution import buildkitd_deploy
+
+    tuned = buildkitd_toml(gc_reserved="10GB", gc_max_used="20GB", gc_min_free="5GB")
+
+    class _Core:
+        def read_namespaced_config_map(self, name, namespace):
+            return types.SimpleNamespace(data={"buildkitd.toml": tuned})
+
+    monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: _Core())
+    recovered = buildkitd_deploy._gc_budget_from_cluster("ns", _Core())
+    assert recovered == {"gc_reserved": "10GB", "gc_max_used": "20GB", "gc_min_free": "5GB"}
+
+    # And what is recovered is what re-renders, unchanged.
+    assert buildkitd_toml(**recovered) == tuned
