@@ -1402,6 +1402,56 @@ export interface components {
             transfer: "none" | "cluster-network" | "port-forward";
         };
         /**
+         * CampaignOrigin
+         * @description Where a campaign's configuration came from. **A record, never a link.**
+         *
+         *     Campaigns stay workspace-independent: nothing in the execution path reads this back, a
+         *     re-run still relaunches from the frozen ``_config/`` (see
+         *     :mod:`robovast.service.retrigger`), and the workspace named here may have been edited,
+         *     renamed or deleted since -- or, for an ingested campaign, may never have existed on this
+         *     deployment at all. It answers "where did this come from?", which is a fact about the past,
+         *     and not "where do I relaunch it from?", which is always the campaign's own snapshot.
+         *
+         *     **The workspace fields name where the configuration ORIGINATES, not what the launch read.**
+         *     For a re-run they are copied from the parent's own origin at launch, so a chain of re-runs
+         *     keeps naming the workspace at its root. Denormalised rather than resolved by walking
+         *     ``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not
+         *     hold the parent at all; a parent is routinely deleted, and provenance that evaporates with it
+         *     is provenance nobody can rely on; and a chain then costs no recursion.
+         *
+         *     :attr:`kind` is the single authority on which shape this is. It is *currently* derivable
+         *     (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
+         *     have to be revisited the first time an origin appears that is neither -- so switch on
+         *     ``kind`` and never on whether ``from_campaign`` is empty.
+         */
+        CampaignOrigin: {
+            /**
+             * Config Path
+             * @default
+             */
+            config_path: string;
+            /**
+             * From Campaign
+             * @default
+             */
+            from_campaign: string;
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
+            /**
+             * Workspace Name
+             * @default
+             */
+            workspace_name: string;
+        };
+        /**
          * CampaignPanelsResponse
          * @description The run-view panels declared for a campaign (its snapshot ``.vast``
          *     top-level ``visualization.panels``). Each entry is the raw panel dict
@@ -1447,7 +1497,10 @@ export interface components {
          * CampaignSummary
          * @description One row of :meth:`RobovastInterface.list_campaigns`.
          *
-         *     Campaigns are workspace-independent, so this carries no ``workspace_id``.
+         *     Campaigns are workspace-independent: this carries no binding to a workspace, and nothing
+         *     here is read back to run anything. It does carry an :class:`CampaignOrigin` *record* of
+         *     where the configuration came from -- a fact about the past, which is a different thing
+         *     from a link (see that class).
          */
         CampaignSummary: {
             /** Campaign Id */
@@ -1489,6 +1542,7 @@ export interface components {
              * @default 0
              */
             num_runs: number;
+            origin: components["schemas"]["CampaignOrigin"] | null;
             /**
              * Phase
              * @default unknown

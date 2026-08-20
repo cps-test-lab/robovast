@@ -49,7 +49,8 @@ from robovast.common.host_display import require_host_display
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
-from robovast.service.interface import (ActionResult, CampaignRef, CampaignSummary,
+from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+                                        CampaignSummary, OriginKind,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText, ImageBuildRef, JobCounts,
@@ -287,11 +288,11 @@ class _LocalCampaign:
     """Bookkeeping for one in-process campaign: its live state + worker thread."""
 
     __slots__ = ("campaign_id", "results_dir", "state", "thread", "error", "created_at",
-                 "description", "created_by", "workspace_id")
+                 "description", "created_by", "workspace_id", "origin")
 
     def __init__(self, campaign_id: str, results_dir: str, state: ControllerState,
                  description: str = "", workspace_id: str = "",
-                 created_by: str = ""):
+                 created_by: str = "", origin=None):
         from datetime import datetime, timezone
         self.campaign_id = campaign_id
         self.results_dir = results_dir
@@ -302,6 +303,14 @@ class _LocalCampaign:
         # is workspace-independent, and that stays true. Empty for a launch with no
         # workspace behind it (a retrigger runs from its own staged copy).
         self.workspace_id = workspace_id
+        # Kept beside ``workspace_id`` rather than folded into it, because the two answer
+        # different questions and only happen to agree for a plain workspace launch. That
+        # field is a *liveness* reading -- "is a campaign reading this workspace right now?"
+        # -- and is correctly empty for a retrigger, which runs from its own staged copy.
+        # This is the *record* of where the configuration came from, and a retrigger has one
+        # (the lineage it was re-run from). Merging them would put the record/link conflation
+        # this whole field is careful about inside a single attribute.
+        self.origin = origin
         # Held here as well as in campaign.db: the store row is written by the
         # controller, so between accepting the launch and that write (an image build
         # can make it minutes) this is the only copy — and for a campaign that fails
@@ -339,6 +348,12 @@ class WorkspaceTarget:
     """
 
     config_path: str
+    #: Where this project's configuration came from, recorded on the campaign and never read
+    #: back to run anything (see ``interface.CampaignOrigin``). Here for the reason the
+    #: docstring gives above: this object already *is* the launch path's knowledge of the
+    #: project, so the record travels with it rather than through a second channel. ``None``
+    #: when the launch path cannot say.
+    origin: Optional[CampaignOrigin] = None
     #: Finish putting the project tree on disk. Called once, at the top of the campaign's
     #: worker thread — not in the request handler — so that a slow or doomed materialization
     #: becomes an inspectable ``failed`` campaign rather than a hung POST, which is the same
@@ -410,6 +425,7 @@ class LocalTransport(RobovastInterface):
         # the start-time cache: write-once values only, so no invalidation is needed.
         self._description_cache: dict[str, str] = {}
         self._created_by_cache: dict[str, str] = {}
+        self._origin_cache: dict[str, CampaignOrigin] = {}
         # Prime psutil's non-blocking CPU sampler so the first resource_usage()
         # reading reflects real load instead of the 0.0 a cold sampler returns.
         import psutil  # pylint: disable=import-outside-toplevel
@@ -494,7 +510,8 @@ class LocalTransport(RobovastInterface):
         directly rather than reading it off a per-call object where it was always the
         same constant.
         """
-        workspace_id = self.store.registry.require(workspace_id)["workspace_id"]
+        entry = self.store.registry.require(workspace_id)
+        workspace_id = entry["workspace_id"]
         project_dir = self.store.registry.project_dir(workspace_id)
         if vast_path:
             # Confine to the workspace (reject ..\/absolute), exactly like the file ops.
@@ -521,7 +538,17 @@ class LocalTransport(RobovastInterface):
                     f"workspace {workspace_id!r} has {len(vasts)} .vast files ({rel}); "
                     "specify which with the path/config_path argument")
             config_path = vasts[0]
-        return WorkspaceTarget(config_path=str(config_path))
+        # The origin is recorded from what was just resolved, not from the request: the
+        # request may name no .vast at all (the sole-file case above), and the name is the
+        # registry's rather than whatever alias the caller passed. Relative to the project
+        # root because the campaign's own _config/ keeps only the basename, so a project
+        # holding several .vast files in subdirectories would otherwise be ambiguous.
+        origin = CampaignOrigin(
+            kind=OriginKind.WORKSPACE,
+            workspace_id=workspace_id,
+            workspace_name=entry.get("name") or "",
+            config_path=Path(config_path).relative_to(project_dir).as_posix())
+        return WorkspaceTarget(config_path=str(config_path), origin=origin)
 
     # -- workspaces ---------------------------------------------------------
 
@@ -1053,12 +1080,39 @@ class LocalTransport(RobovastInterface):
             self._guard_new_campaign()
             return self._launch_campaign(plan.request, WorkspaceTarget(
                 config_path=plan.config_path,
+                origin=self._retrigger_origin(campaign_id),
                 materialize=plan.materialize,
                 discard=plan.discard,
                 pinned_images=plan.pinned_images))
         except BaseException:
             plan.discard()
             raise
+
+    def _retrigger_origin(self, source_id: str) -> CampaignOrigin:
+        """The origin to record for a re-run of *source_id*.
+
+        Built here rather than in :mod:`robovast.service.retrigger`, which deliberately
+        does not import the service interface.
+
+        The workspace fields are **copied from the source's own origin**, so they keep
+        naming the workspace the configuration came from originally -- and a re-run of a
+        re-run inherits it transitively, because the parent's record already holds it.
+        Copied rather than resolved by walking ``from_campaign`` later, because the listing
+        is paginated (a reader may not hold the parent at all) and because a parent is
+        routinely deleted -- lineage that evaporates with it is lineage nobody can rely on.
+
+        None of this is a link: the re-run runs from the source's frozen ``_config/``
+        (:mod:`robovast.service.retrigger` says why), never from the workspace named here,
+        which may be long gone. A source that recorded no origin leaves the workspace
+        fields empty; ``from_campaign`` is still the answer to where this one came from.
+        """
+        parent = self._origin_for(source_id)
+        return CampaignOrigin(
+            kind=OriginKind.RETRIGGER,
+            from_campaign=source_id,
+            workspace_id=parent.workspace_id if parent else "",
+            workspace_name=parent.workspace_name if parent else "",
+            config_path=parent.config_path if parent else "")
 
     def _admit_image_provenance(self, target, request: CreateCampaignRequest) -> None:
         """Refuse to launch a campaign whose image nobody could later identify.
@@ -1153,7 +1207,8 @@ class LocalTransport(RobovastInterface):
         entry = _LocalCampaign(campaign_id, results_dir, state,
                                description=request.description,
                                workspace_id=request.workspace_id,
-                               created_by=request.created_by)
+                               created_by=request.created_by,
+                               origin=target.origin)
         runs = request.runs if request.runs and request.runs > 0 else None
         options = self._run_options(request)
         # Who ends the campaign. The builders' finish tail is outermost only when
@@ -1276,14 +1331,14 @@ class LocalTransport(RobovastInterface):
                             backend=backend, options=options,
                             campaign_id=campaign_id, state=state,
                             notifier=notifier, description=request.description,
-                            created_by=request.created_by)
+                            created_by=request.created_by, origin=target.origin)
                     else:
                         run_batch_campaign(
                             target.config_path, campaign_config, results_dir, runs,
                             config_filter=config_filter, backend=backend,
                             options=options, campaign_id=campaign_id, state=state,
                             notifier=notifier, description=request.description,
-                            created_by=request.created_by)
+                            created_by=request.created_by, origin=target.origin)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
                 # phase "stopped". Not a failure — no error, no traceback. Persist the
@@ -1447,9 +1502,17 @@ class LocalTransport(RobovastInterface):
             status = self.get_image_build_status(build_id)
             if first:
                 first = False
+                # The context size and cache ref go in the header because they are the
+                # two costs BuildKit's own output never names: a build whose every vertex
+                # says CACHED can still spend minutes on them.
+                detail = ""
+                if getattr(status, "context_bytes", 0):
+                    detail += f", context {status.context_bytes / 1e6:.1f} MB"
+                if getattr(status, "cache_ref", ""):
+                    detail += f", layer cache {status.cache_ref}"
                 self._append_build_log(
                     log_path,
-                    f"waiting for image {status.tag or '?'} (build {build_id})\n")
+                    f"waiting for image {status.tag or '?'} (build {build_id}){detail}\n")
             offset = self._tee_build_log(build_id, log_path, offset)
             if status.done:
                 break
@@ -3273,6 +3336,7 @@ class LocalTransport(RobovastInterface):
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
             description=self._description_for(cid) or "",
             created_by=self._created_by_for(cid) or "",
+            origin=self._origin_for(cid),
             started_at=started_at,
             # The store is consulted behind the snapshot rather than instead of it: a
             # reconstructed Status can carry no mode at all, because the `outcome.json`
@@ -3345,74 +3409,86 @@ class LocalTransport(RobovastInterface):
     def _started_at_for(self, cid: str) -> Optional[str]:
         """Start time of *cid* as an ISO-8601 UTC string, or None if unknown.
 
-        Same precedence as :meth:`_summary_for`: a campaign this service is driving
-        reports its in-memory launch time, so it is ordered correctly from t=0 — before
-        the controller has written the ``campaign`` row seconds later. Otherwise the
-        durable record in ``campaign.db`` is read.
-
-        Memoised because listing has to know every candidate's start time to order them,
-        and the SSE stream re-lists once a second. A recorded start time never changes
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        What is specific here: a campaign this service is driving reports its in-memory
+        launch time, so it is ordered correctly from t=0 — before the controller has
+        written the ``campaign`` row seconds later. Listing has to know every candidate's
+        start time to order them, and a recorded one never changes
         (``CampaignStore.create_campaign`` stamps it once, and the post-hoc indexer
-        preserves it across rebuilds), so a cached value cannot go stale. ``None`` is
-        deliberately *not* cached: a campaign whose store does not exist yet must be
-        re-read on the next poll.
+        preserves it across rebuilds), so caching it is safe.
         """
-        with self._lock:
-            entry = self._campaigns.get(cid)
-        if entry is not None:
-            return entry.created_at
-        cached = self._started_at_cache.get(cid)
-        if cached is not None:
-            return cached
-        started = read_campaign_created_at(self._record_dir(cid))
-        if started is not None:
-            self._started_at_cache[cid] = started
-        return started
+        return self._campaign_fact(
+            cid, lambda entry: entry.created_at,
+            read_campaign_created_at, self._started_at_cache)
 
     def _description_for(self, cid: str) -> Optional[str]:
         """The campaign's description, or None when it was launched without one.
 
-        Same precedence and caching rationale as :meth:`_started_at_for`: the live
-        entry answers for a campaign this process launched (its store row may not
-        exist yet), the durable ``campaign.db`` answers for every other one, and the
-        value is memoised because the SSE stream re-lists once a second. A description
-        is written once with the campaign row and never edited, so a cached value
-        cannot go stale; ``None`` is not cached, since a campaign whose store is not
-        written yet must be re-read on the next poll.
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        A description is written once with the campaign row and never edited, so caching
+        it is safe.
         """
-        with self._lock:
-            entry = self._campaigns.get(cid)
-        if entry is not None:
-            return entry.description or None
-        cached = self._description_cache.get(cid)
-        if cached is not None:
-            return cached
-        description = read_campaign_description(self._record_dir(cid))
-        if description is not None:
-            self._description_cache[cid] = description
-        return description
+        return self._campaign_fact(
+            cid, lambda entry: entry.description or None,
+            read_campaign_description, self._description_cache)
 
     def _created_by_for(self, cid: str) -> Optional[str]:
         """Who says they launched *cid*, or None when nobody gave a name.
 
-        Sibling of :meth:`_description_for`, with the same precedence and the same
-        reason for caching: the live entry answers for a campaign this process
-        launched, the durable ``campaign.db`` for every other one, and the SSE stream
-        re-lists once a second. Written once with the campaign row and never edited, so
-        a cached value cannot go stale.
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        Written once with the campaign row and never edited, so caching it is safe.
         """
         from robovast.common.store import read_campaign_created_by
+        return self._campaign_fact(
+            cid, lambda entry: entry.created_by or None,
+            read_campaign_created_by, self._created_by_cache)
+
+    def _origin_for(self, cid: str):
+        """Where *cid*'s configuration came from, or None when it was not recorded.
+
+        Read through :meth:`_campaign_fact`, which owns the precedence and the caching.
+        Written once with the campaign row and never edited, so caching it is safe.
+
+        ``None`` is the honest answer for a campaign that ran before the origin was kept.
+        Nothing is reconstructed from its frozen ``_config/``: that holds a ``.vast``
+        basename and says nothing about which workspace, so it would fill in half the
+        answer -- and reading it would cost a per-campaign glob (an object-store lookup on
+        the cluster lane) on the listing's hot path.
+        """
+        from robovast.common.store import read_campaign_origin
+        return self._campaign_fact(
+            cid, lambda entry: entry.origin,
+            read_campaign_origin, self._origin_cache)
+
+    def _campaign_fact(self, cid: str, from_entry, from_disk, cache: dict):
+        """One campaign fact, read live-then-durable and memoised.
+
+        The shared body of :meth:`_started_at_for`, :meth:`_description_for`,
+        :meth:`_created_by_for` and :meth:`_origin_for`, which differ only in which
+        attribute, which reader and which cache they use.
+
+        The precedence is the point: a campaign **this process is driving** answers from
+        its in-memory entry, because the controller writes the ``campaign`` row seconds
+        later (minutes, if an image has to build) and until then the entry is the only
+        copy. Every other campaign is read from its durable record.
+
+        Memoised because the SSE stream re-lists once a second and each of these is
+        written once with the campaign row and never edited, so a cached value cannot go
+        stale. ``None`` is deliberately **not** cached: a campaign whose store does not
+        exist yet must be re-read on the next poll, or it would be remembered as absent
+        for the life of the process.
+        """
         with self._lock:
             entry = self._campaigns.get(cid)
         if entry is not None:
-            return entry.created_by or None
-        cached = self._created_by_cache.get(cid)
+            return from_entry(entry)
+        cached = cache.get(cid)
         if cached is not None:
             return cached
-        created_by = read_campaign_created_by(self._record_dir(cid))
-        if created_by is not None:
-            self._created_by_cache[cid] = created_by
-        return created_by
+        value = from_disk(self._record_dir(cid))
+        if value is not None:
+            cache[cid] = value
+        return value
 
     def _status_from_disk(self, campaign_id: str) -> Status:
         from robovast.execution.status_recovery import reconstruct_status_from_disk

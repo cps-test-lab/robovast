@@ -247,6 +247,15 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
+A campaign does **record** which workspace and ``.vast`` it was launched from, on its
+``campaign`` row (``origin_*``, see :mod:`robovast.common.store`) and on
+``CampaignSummary.origin``. That is a *record*, not a link, and the difference is the whole
+of it: nothing resolves it to run anything — a retrigger relaunches from the campaign's own
+frozen ``_config/`` — so deleting the workspace it names still takes nothing with it. It
+answers "where did this come from?", which is a fact about the past; it does not answer
+"where do I re-run it from?", which is always the campaign itself. See
+:ref:`web-ui-origin`.
+
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
 ``config_path`` selects among several ``.vast`` files in that workspace. There is no

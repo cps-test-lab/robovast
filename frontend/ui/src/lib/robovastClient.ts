@@ -30,6 +30,10 @@ export type ResourceUsage = Schemas['ResourceUsage']
 
 export type CampaignSummary = Schemas['CampaignSummary']
 
+// Where a campaign's configuration came from. A record, not a link: the workspace named
+// may be gone, and nothing re-runs from it. `null` means it was never recorded.
+export type CampaignOrigin = Schemas['CampaignOrigin']
+
 export type ListCampaignsResponse = Schemas['ListCampaignsResponse']
 
 // Campaign lists arrive newest-first: the service orders them by recorded start time

@@ -344,6 +344,45 @@
         "title": "CampaignDataStatus",
         "type": "object"
       },
+      "CampaignOrigin": {
+        "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.",
+        "properties": {
+          "config_path": {
+            "default": "",
+            "title": "Config Path",
+            "type": "string"
+          },
+          "from_campaign": {
+            "default": "",
+            "title": "From Campaign",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          },
+          "workspace_name": {
+            "default": "",
+            "title": "Workspace Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_path",
+          "from_campaign",
+          "kind",
+          "workspace_id",
+          "workspace_name"
+        ],
+        "title": "CampaignOrigin",
+        "type": "object"
+      },
       "CampaignPanelsResponse": {
         "description": "The run-view panels declared for a campaign (its snapshot ``.vast``\ntop-level ``visualization.panels``). Each entry is the raw panel dict\n(``type`` + ``position`` + panel-specific data bindings), rendered by the\nweb run-view against the campaign's ``data.db``. ``timeline`` (optional,\n``visualization.timeline``) names the table + column that defines the\nplayback range for non-ROS runs.",
         "properties": {
@@ -421,7 +460,7 @@
         "type": "object"
       },
       "CampaignSummary": {
-        "description": "One row of :meth:`RobovastInterface.list_campaigns`.\n\nCampaigns are workspace-independent, so this carries no ``workspace_id``.",
+        "description": "One row of :meth:`RobovastInterface.list_campaigns`.\n\nCampaigns are workspace-independent: this carries no binding to a workspace, and nothing\nhere is read back to run anything. It does carry an :class:`CampaignOrigin` *record* of\nwhere the configuration came from -- a fact about the past, which is a different thing\nfrom a link (see that class).",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -473,6 +512,16 @@
             "title": "Num Runs",
             "type": "integer"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "phase": {
             "default": "unknown",
             "title": "Phase",
@@ -515,6 +564,7 @@
           "num_failed",
           "num_passed",
           "num_runs",
+          "origin",
           "phase",
           "postprocessed",
           "postprocessing_error",

@@ -635,10 +635,14 @@ def read_plugins_record(campaign_dir) -> "dict | None":
 
 _LAUNCH_FILENAME = "launch.yaml"
 
-#: Request fields that describe the *launch* rather than the workspace it came from.
-#: ``workspace_id``/``config_path`` are deliberately absent: they are workspace-relative, and
-#: campaigns are workspace-independent (see ``service/workspaces.py``), so recording them
-#: would preserve a binding that means nothing once the campaign exists.
+#: Request fields a **retrigger replays**. ``workspace_id``/``config_path`` are deliberately
+#: absent, and stay absent: a retrigger runs from the campaign's own frozen ``_config/``, so
+#: replaying a workspace binding would point it at a tree that may have moved on or be gone
+#: (see ``service/retrigger.py``).
+#:
+#: That is not the same as the fact being unrecorded. Where the configuration *came from* is
+#: kept on the campaign row as ``origin_*`` (see ``common/store.py``) -- a record of the past,
+#: which nothing reads back to run anything. This file is the replay; that is the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
                   "upload_to_share", "show_gui")
 

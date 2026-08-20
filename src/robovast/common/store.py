@@ -118,7 +118,22 @@ CREATE TABLE IF NOT EXISTS campaign (
     -- ran, and a re-run cannot be verified against it.
     robovast_revision        TEXT,
     robovast_revision_source TEXT,   -- git | baked; a baked value is short, not truncated
-    robovast_dirty           INTEGER  -- 0/1, NULL when it could not be determined
+    robovast_dirty           INTEGER,  -- 0/1, NULL when it could not be determined
+    -- Where the configuration came from. A RECORD, never a link: nothing reads these back,
+    -- and a re-run still relaunches from the frozen _config/. The workspace named may have
+    -- been renamed or deleted since -- or, for an ingested campaign, may never have existed
+    -- on this deployment. Typed columns rather than a JSON blob by the same rule as the
+    -- execution provenance above: each is compared ACROSS campaigns ("what else came from
+    -- this workspace / ran this .vast / descends from this campaign"). Unlike execution_json
+    -- there is no larger document behind them -- these five ARE the record -- so a blob
+    -- beside them would be a second source of truth rather than a home for the remainder.
+    -- For a re-run the workspace columns name the ROOT of the chain, copied from the parent
+    -- at launch, so lineage survives the parent's deletion and needs no walking.
+    origin_kind           TEXT,   -- workspace | retrigger; open vocabulary
+    origin_workspace_id   TEXT,
+    origin_workspace_name TEXT,
+    origin_config_path    TEXT,   -- workspace-relative; _config/ keeps only the basename
+    origin_from_campaign  TEXT    -- the immediate parent, for origin_kind='retrigger'
 );
 CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
@@ -296,8 +311,24 @@ ALTER TABLE campaign ADD COLUMN robovast_revision_source TEXT;
 ALTER TABLE campaign ADD COLUMN robovast_dirty INTEGER;
 """
 
+# 6 -> 7: where the campaign's configuration came from.
+#
+# Typed rather than a JSON document because each column answers a cross-campaign question;
+# see the comment on the columns in _SCHEMA for why there is no origin_json beside them.
+# Nullable and never backfilled, for the same reason as created_by: a campaign recorded
+# before this existed genuinely has no origin, and the .vast basename recoverable from its
+# _config/ is not one -- it says nothing about which workspace, and inventing the rest would
+# make the column lie about the past.
+_MIGRATION_ADD_ORIGIN = """
+ALTER TABLE campaign ADD COLUMN origin_kind           TEXT;
+ALTER TABLE campaign ADD COLUMN origin_workspace_id   TEXT;
+ALTER TABLE campaign ADD COLUMN origin_workspace_name TEXT;
+ALTER TABLE campaign ADD COLUMN origin_config_path    TEXT;
+ALTER TABLE campaign ADD COLUMN origin_from_campaign  TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -313,8 +344,16 @@ _MIGRATIONS = [
     _MIGRATION_ADD_JOB_AND_PROVENANCE,
     _MIGRATION_ADD_CREATED_BY,
     _MIGRATION_ADD_CODE_REVISION,
+    _MIGRATION_ADD_ORIGIN,
 ]
+
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
+
+#: The origin columns, in the order :func:`read_campaign_origin` maps them onto
+#: ``CampaignOrigin``'s fields and :meth:`CampaignStore.create_campaign` binds them. One
+#: list so the INSERT, the SELECT and the mapping cannot drift apart.
+_ORIGIN_COLUMNS = ("origin_kind", "origin_workspace_id", "origin_workspace_name",
+                   "origin_config_path", "origin_from_campaign")
 
 
 class CampaignStore:
@@ -375,7 +414,8 @@ class CampaignStore:
 
     def create_campaign(self, name: str, config: dict, mode: str = "search",
                         config_dir: str = "", created_at: Any = _STAMP_NOW,
-                        description: str = "", created_by: str = "") -> int:
+                        description: str = "", created_by: str = "",
+                        origin=None) -> int:
         """Insert the campaign row. ``created_at`` is the campaign's START time.
 
         Omitting it stamps now, which is correct for the live path: the controller calls
@@ -394,13 +434,24 @@ class CampaignStore:
         secret is a claim rather than a fact. Empty is stored as NULL, because "nobody
         said" and "somebody called themselves X" are different answers and the UI shows
         them differently.
+
+        ``origin`` is a :class:`robovast.service.interface.CampaignOrigin` recording where
+        the configuration came from, or ``None`` when the caller does not know -- a campaign
+        rebuilt after the fact by :mod:`robovast.common.campaign_index` cannot know, and
+        stores NULL rather than a guess. Empty fields are stored as NULL by the same rule as
+        ``created_by``. Nothing reads these back to run anything; see the class.
         """
+        origin_values = (
+            (origin.kind or None, origin.workspace_id or None, origin.workspace_name or None,
+             origin.config_path or None, origin.from_campaign or None)
+            if origin is not None else (None,) * len(_ORIGIN_COLUMNS))
         cur = self._conn.execute(
             "INSERT INTO campaign (name, mode, config_dir, config_json, created_at, "
-            "description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            f"description, created_by, {', '.join(_ORIGIN_COLUMNS)}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?, {', '.join('?' * len(_ORIGIN_COLUMNS))})",
             (name, mode, config_dir, json.dumps(config, default=str),
              time.time() if created_at is _STAMP_NOW else created_at,
-             description or None, created_by or None),
+             description or None, created_by or None, *origin_values),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -737,6 +788,38 @@ def read_campaign_created_by(campaign_dir: str | Path) -> Optional[str]:
     except sqlite3.Error:
         return None
     return row[0] if row and row[0] else None
+
+
+def read_campaign_origin(campaign_dir: str | Path):
+    """Best-effort read of where the campaign's configuration came from, or ``None``.
+
+    Returns a :class:`robovast.service.interface.CampaignOrigin`. ``None`` means the origin
+    is **not recorded** -- a store written before schema 7, or one whose columns are all
+    empty -- which is deliberately the same answer either way: neither knows where the
+    campaign came from, and there is nothing to show for it.
+
+    Read-only, like its neighbours, so listing never migrates or locks a store a running
+    campaign is still writing. That is also why a pre-7 store must not raise here: the
+    ``sqlite3.Error`` for the unknown column is the expected path for an old campaign, not a
+    failure.
+    """
+    from robovast.service.interface import CampaignOrigin
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                f"SELECT {', '.join(_ORIGIN_COLUMNS)} FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or not any(row):
+        return None
+    kind, workspace_id, workspace_name, config_path, from_campaign = row
+    return CampaignOrigin(
+        kind=kind or "", workspace_id=workspace_id or "",
+        workspace_name=workspace_name or "", config_path=config_path or "",
+        from_campaign=from_campaign or "")
 
 
 def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:

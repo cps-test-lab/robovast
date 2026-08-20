@@ -234,6 +234,23 @@ def get_campaign_summary(campaign_id: str) -> dict:
         # "not known yet".
         result.update({k: v for k, v in provenance[0].items() if v is not None})
 
+    # Where the campaign came from -- the same kind of question as the block above, asked of
+    # the same row, but read SEPARATELY on purpose: these columns arrived in store schema 7,
+    # and `rows()` turns any error (including "no such column" on an older or downloaded
+    # campaign) into []. Folded into the query above, one old campaign would silently lose
+    # its robovast_version and image as well. Two reads fail independently, so an old
+    # campaign loses only what it genuinely does not have.
+    #
+    # Deliberately NOT added to list_campaigns: that listing is for triage, already drops
+    # created_by and mode, and a `running_only` walk renders hundreds of entries.
+    origin = data_access.rows(campaign_id, """
+        SELECT origin_kind, origin_workspace_id, origin_workspace_name,
+               origin_config_path, origin_from_campaign
+        FROM campaign.campaign LIMIT 1
+    """)
+    if origin:
+        result.update({k: v for k, v in origin[0].items() if v is not None})
+
     # Whether this campaign can be re-run. Additive, like `advice` above: an agent that
     # ignores the key loses nothing, and one that reads it can decide whether to call
     # start_campaign(from_campaign=...) instead of burning a launch to find out. Extended

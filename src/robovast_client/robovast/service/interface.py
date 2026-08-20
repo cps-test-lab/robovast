@@ -40,6 +40,7 @@ operations extend :class:`RobovastInterface` in later phases.
 """
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -226,6 +227,13 @@ class ImageBuildStatus(BaseModel):
     error: Optional[ImageBuildError] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    #: What this build carried and where it looked for layers. Both are fixed costs that
+    #: are invisible in BuildKit's own output: the context is copied, uploaded and
+    #: mirrored back down once per container per build, and the cache ref decides whether
+    #: any layer is reused at all. A build that is slow for either reason used to look
+    #: exactly like one that was slow for no reason. Zero/empty means "not reported".
+    context_bytes: int = 0
+    cache_ref: str = ""
 
 
 class ExecRequest(BaseModel):
@@ -337,10 +345,67 @@ class ImageResolution(BaseModel):
     image: str = ""
 
 
+class OriginKind(StrEnum):
+    """The vocabulary carried by :attr:`CampaignOrigin.kind`.
+
+    A ``StrEnum`` for the same reason as :class:`~robovast.client.status.Phase`: members
+    *are* their string value, so the wire format is plain JSON and comparisons against raw
+    strings keep working. The field stays typed ``str`` -- this is the *known* vocabulary,
+    not a lock on it, so a reader must treat an unfamiliar value as "some other way" rather
+    than as an error.
+    """
+
+    WORKSPACE = "workspace"   # launched from a workspace's .vast
+    RETRIGGER = "retrigger"   # re-run of an earlier campaign, from its frozen _config/
+
+
+class CampaignOrigin(BaseModel):
+    """Where a campaign's configuration came from. **A record, never a link.**
+
+    Campaigns stay workspace-independent: nothing in the execution path reads this back, a
+    re-run still relaunches from the frozen ``_config/`` (see
+    :mod:`robovast.service.retrigger`), and the workspace named here may have been edited,
+    renamed or deleted since -- or, for an ingested campaign, may never have existed on this
+    deployment at all. It answers "where did this come from?", which is a fact about the past,
+    and not "where do I relaunch it from?", which is always the campaign's own snapshot.
+
+    **The workspace fields name where the configuration ORIGINATES, not what the launch read.**
+    For a re-run they are copied from the parent's own origin at launch, so a chain of re-runs
+    keeps naming the workspace at its root. Denormalised rather than resolved by walking
+    ``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not
+    hold the parent at all; a parent is routinely deleted, and provenance that evaporates with it
+    is provenance nobody can rely on; and a chain then costs no recursion.
+
+    :attr:`kind` is the single authority on which shape this is. It is *currently* derivable
+    (a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would
+    have to be revisited the first time an origin appears that is neither -- so switch on
+    ``kind`` and never on whether ``from_campaign`` is empty.
+    """
+
+    #: One of :class:`OriginKind`, as a plain string. Open vocabulary.
+    kind: str = ""
+    #: The workspace the configuration originates from. ``""`` when it came from none.
+    workspace_id: str = ""
+    #: That workspace's name when the campaign was launched -- a label from the past, which
+    #: may since have been renamed or reused. Carried beside the id because an id is
+    #: unreadable and a name alone is not an identity.
+    workspace_name: str = ""
+    #: The ``.vast`` as launched, relative to the workspace root (so a project holding several
+    #: in subdirectories is unambiguous). The campaign's frozen ``_config/`` keeps only the
+    #: basename, which is why this is worth recording.
+    config_path: str = ""
+    #: The campaign this one was re-run from -- the *immediate* parent, not the root of the
+    #: chain. Only meaningful for ``kind == "retrigger"``.
+    from_campaign: str = ""
+
+
 class CampaignSummary(BaseModel):
     """One row of :meth:`RobovastInterface.list_campaigns`.
 
-    Campaigns are workspace-independent, so this carries no ``workspace_id``.
+    Campaigns are workspace-independent: this carries no binding to a workspace, and nothing
+    here is read back to run anything. It does carry an :class:`CampaignOrigin` *record* of
+    where the configuration came from -- a fact about the past, which is a different thing
+    from a link (see that class).
     """
 
     campaign_id: str
@@ -351,6 +416,11 @@ class CampaignSummary(BaseModel):
     #: ``""`` means nobody gave a name -- a different fact from an anonymous someone,
     #: which is why it is not filled in with a placeholder.
     created_by: str = ""
+    #: Where the configuration came from. ``None`` means **not recorded** -- a campaign that
+    #: ran before this was kept -- which is a different fact from an origin that is recorded
+    #: and empty, and the reason it is never backfilled with a guess. A record, not a link:
+    #: see :class:`CampaignOrigin`.
+    origin: Optional[CampaignOrigin] = None
     postprocessed: bool = False      # configured postprocessing pipelines have run
     #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
     #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,

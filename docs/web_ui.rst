@@ -19,6 +19,9 @@ It provides four views:
   immediately — with its true live phase and its **start time** (shown in your
   browser's locale and timezone) — and every phase change is pushed within a second.
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
+  Each card also names **where the campaign came from** — ``ros2demo / basic_nav.vast``, or
+  ``rerun of <campaign id>`` — with the workspace id and the full path on hover; see
+  `Where a campaign came from`_.
   The phase reflects the whole lifecycle, including the two pre-run steps that used to
   be invisible: ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
@@ -131,6 +134,37 @@ snapshot of the campaign list and adopt a new one only when you ask (see
 `Results viewer`_) — a finished campaign is immutable, so reshuffling its tree under
 someone mid-read would cost attention and return nothing. Freshness applies to what is
 still changing.
+
+.. _web-ui-origin:
+
+Where a campaign came from
+--------------------------
+
+A campaign card names the workspace and the ``.vast`` it was launched from, and hovering that
+label gives the workspace id and the file's full, workspace-relative path — the campaign's
+frozen ``_config/`` keeps only the basename, so a project holding several ``.vast`` files in
+subdirectories would otherwise be ambiguous.
+
+**It is a record, not a link, and it is deliberately not clickable.** A campaign is
+workspace-independent (:ref:`architecture`): the workspace named may since have been edited,
+renamed or deleted, and for an ingested campaign it may never have existed on this deployment
+at all. Nothing resolves it — **Retrigger campaign** still relaunches from the campaign's own
+``_config/``, which is the honest thing to re-run. A link would promise the workspace is still
+there, and the one thing this label cannot promise is that.
+
+A **re-run** shows ``rerun of <campaign id>`` and, beneath it, the workspace the configuration
+originally came from — copied forward at launch rather than looked up, so it survives the
+parent campaign being deleted and a re-run of a re-run still names the root. The campaign
+listing is paged, so a label that had to find its parent in the list would answer differently
+depending on where you had scrolled.
+
+A campaign that ran **before this was recorded** shows no label at all. Its ``.vast`` basename
+could be read out of its snapshot, but that says nothing about which workspace, and a label
+that filled in half the answer would read as though it knew the rest.
+
+The same record reaches an agent through the MCP ``get_campaign_summary`` tool, beside the
+image and code provenance it already reports. It is deliberately **not** on
+``list_campaigns``, which is a triage listing.
 
 .. _web-ui-details:
 

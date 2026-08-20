@@ -24,6 +24,12 @@ self-contained campaign directory (it snapshots its project into ``_config/``),
 addressed by ``campaign_id`` alone. Editing or deleting a workspace afterwards
 never affects an existing campaign, and there is no campaign→workspace link.
 
+A campaign does *record* which workspace and which ``.vast`` it was launched from
+(``origin_*`` on its ``campaign`` row -- see :mod:`robovast.common.store`), but that is a
+historical fact and not a link: nothing resolves it, a retrigger relaunches from the frozen
+``_config/`` rather than from it, and the workspace it names may since have been renamed or
+deleted. Deleting a workspace therefore still takes nothing with it.
+
 Token economics drive the file API (see the plan):
 
 * **Inline writes are restricted to ``.vast``/``.osc``** — the small text an LLM

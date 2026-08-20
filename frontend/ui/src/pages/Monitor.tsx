@@ -44,6 +44,7 @@ import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
 import { ErrorText, StatusView } from '@/components/StatusView'
+import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { LaunchedBy } from '@/components/LaunchedBy'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
@@ -474,6 +475,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
         <LaunchedBy name={summary.created_by} />
+        <CampaignOrigin origin={summary.origin} />
         {summary.description ? (
           <Typography variant="body2" color="text.secondary">
             {summary.description}
