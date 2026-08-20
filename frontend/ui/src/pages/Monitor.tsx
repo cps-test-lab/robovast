@@ -638,7 +638,12 @@ export function Monitor() {
   const { data, error, live, reconnect } = useCampaignStream()
 
   return (
-    <Stack spacing={2}>
+    // `cursor` is inherited, so this one rule covers the whole view: nothing here is
+    // editable, and a text caret over a campaign's name, its phase or its timestamp offers
+    // an edit the card does not have. The exceptions set their own and are unaffected --
+    // MUI gives inputs `text` and buttons `pointer`, and the Details hovers ask for `help`.
+    // Selection still works everywhere; only the invitation is withdrawn.
+    <Stack spacing={2} sx={{ cursor: 'default' }}>
       <LaunchBar />
 
       <Stack direction="row" alignItems="center" spacing={1}>
