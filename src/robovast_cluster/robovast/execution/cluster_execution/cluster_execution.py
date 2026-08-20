@@ -134,6 +134,42 @@ def _pod_job_name(pod) -> "str | None":
     return labels.get("batch.kubernetes.io/job-name") or labels.get("job-name")
 
 
+def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
+    """The Secret a pod needs to pull ITS OWN images, or ``""`` when none is configured.
+
+    The opposite direction from the push credential, and easy to forget for exactly that
+    reason: a Job may build or run perfectly while its pod cannot start, because the images it
+    is made of -- the sidecar that mirrors a context, the campaign's own execution image --
+    live in a registry the kubelet has no credential for. That failure leaves the pod
+    ``ImagePullBackOff`` and the Job ``active``, so a waiter polling ``status.failed`` learns
+    nothing and reports a timeout.
+
+    Falls back to the push Secret when no pull Secret is named, because ``vast exec cluster
+    setup`` writes one dockerconfigjson that serves both directions; the lookup is what proves
+    it exists, since naming an absent Secret keeps the pod from starting.
+
+    Everything optional: a deployment on a public registry needs no credential, so any failure
+    to determine one yields ``""`` rather than an error.
+
+    The run, exec and warm paths each carry this logic inline (``kubernetes_backend``,
+    ``kube_exec_lane``, ``image_warm``). They predate this helper and can move onto it; nothing
+    is gained by leaving a fifth copy for the next pod spec that needs one.
+    """
+    from .service_deploy import REGISTRY_PUSH_SECRET_NAME  # noqa: PLC0415
+
+    try:
+        named = cluster_config.get_registry_config().pull_secret_name
+        if named:
+            return named
+    except Exception:  # noqa: BLE001 - registry config is optional
+        return ""
+    try:
+        k8s_core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
+        return REGISTRY_PUSH_SECRET_NAME
+    except Exception:  # noqa: BLE001 - absent, or not readable from here
+        return ""
+
+
 def pod_block_reason(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if *pod* cannot start on its own, else ``None``.
 

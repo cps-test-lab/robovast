@@ -372,8 +372,26 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
     }
 
 
+def _blocked_reason(core, namespace: str, job_name: str) -> str:
+    """``"<reason>: <message>"`` when this Job's pod cannot start, else ``""``.
+
+    Reuses the signal the run loop and the image build already act on rather than reading pod
+    status again here, so all three agree about what "blocked" means. Advisory: a pod list that
+    cannot be read must not turn a running conversion into a reported failure, so an error here
+    yields ``""`` and the wait continues to its own deadline.
+    """
+    from .cluster_execution import blocked_job_reasons  # noqa: PLC0415
+
+    try:
+        return blocked_job_reasons(core, namespace, f"job-name={job_name}").get(job_name, "")
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not check whether %s is blocked: %s", job_name, e)
+        return ""
+
+
 def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
-                   namespace: str, force: bool = False) -> dict:
+                   namespace: str, force: bool = False,
+                   pull_secret_name: str = "") -> dict:
     """Build the conversion Job manifest.
 
     Args:
@@ -384,6 +402,11 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         s3: ``(endpoint, access_key, secret_key, bucket, campaign_prefix)``.
         namespace: Kubernetes namespace.
         force: Bypass the per-rosbag caches.
+        pull_secret_name: Secret for this pod's OWN image pulls -- the sidecar that mirrors
+            the bags, and the campaign's execution image. Missing entirely until a
+            private-registry deployment sat in ``ImagePullBackOff`` while the Job stayed
+            ``active``, so the wait below reported a timeout and named neither the image nor
+            the registry. Same omission the build Job had, in the same direction.
 
     The ``/scripts`` come from a per-campaign ConfigMap (see
     :func:`scripts_configmap_manifest`) built from the driver's own
@@ -423,6 +446,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                 },
                 "spec": {
                     "restartPolicy": "Never",
+                    **({"imagePullSecrets": [{"name": pull_secret_name}]}
+                       if pull_secret_name else {}),
                     "volumes": [
                         # The driver's own conversion scripts, executable (0755).
                         {"name": "scripts",
@@ -518,10 +543,14 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
         logger.warning("Cannot verify the Kueue admission path (%s); submitting "
                        "postprocessing anyway.", e)
 
-    manifest = build_manifest(campaign_id, image, rosbag_cmds, s3, namespace, force=force)
-    name = manifest["metadata"]["name"]
+    from .cluster_execution import resolve_pull_secret  # noqa: PLC0415
+
     core = client.CoreV1Api()
     batch = client.BatchV1Api()
+    manifest = build_manifest(
+        campaign_id, image, rosbag_cmds, s3, namespace, force=force,
+        pull_secret_name=resolve_pull_secret(cluster_config, core, namespace))
+    name = manifest["metadata"]["name"]
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
@@ -562,6 +591,19 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
                     return False, (f"postprocessing job {name} failed — see the "
                                    f"POSTPROCESSING section of the campaign log for the "
                                    f"conversion error (kubectl logs job/{name} -n {namespace})")
+            # A pod that CANNOT start leaves the Job `active` forever, so the polling above
+            # never sees a verdict and this returns "timed out" -- naming a duration where the
+            # cause was an unpullable image or an unschedulable pod. Same reasoning as the
+            # Kueue admission check before submission, and the same signal the run loop and the
+            # image build already act on.
+            blocked = _blocked_reason(core, namespace, name)
+            if blocked:
+                return False, (
+                    f"postprocessing job {name} cannot start: {blocked}. The conversion runs "
+                    f"in the campaign's own execution image and mirrors its bags with the "
+                    f"sidecar, so this is about pulling or scheduling those -- not about the "
+                    f"conversion, which has not run. Nothing about the campaign's results is "
+                    f"wrong; re-run postprocessing once the pod can start.")
             time.sleep(_POLL_SECONDS)
         return False, f"postprocessing job {name} timed out after {timeout}s"
     finally:
