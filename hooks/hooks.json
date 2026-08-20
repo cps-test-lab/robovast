@@ -30,6 +30,16 @@
             "statusMessage": "Noting a backgrounded campaign waiter"
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__get_campaign_status",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py rearm",
+            "statusMessage": "Noting a campaign reported as stalled"
+          }
+        ]
       }
     ],
     "Stop": [

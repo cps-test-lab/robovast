@@ -126,7 +126,7 @@ merely past its last run:
 
 .. code-block:: bash
 
-   vast wait basic-nav-2026-08-16-101500 --interval 10
+   vast wait basic-nav-2026-08-16-101500
 
 **The exit code is the answer:**
 

@@ -12,6 +12,7 @@ anything, and "the campaign failed" must not look like "I stopped waiting".
 """
 
 import contextlib
+import time
 
 import pytest
 from click.testing import CliRunner
@@ -123,3 +124,63 @@ def test_a_service_that_never_answers_ends_the_wait_instead_of_hanging():
     assert "connection refused" in str(excinfo.value)
     # Must not read as a campaign failure: nothing here knows anything about the campaign.
     assert "Nothing here says the work failed" in str(excinfo.value)
+
+
+def _stalled_status(campaign_id, age, deadline=300):
+    """A live campaign whose progress last advanced *age* seconds ago."""
+    return Status(phase=Phase.RUNNING, campaign_id=campaign_id,
+                  progress_since=time.time() - age, progress_deadline_s=deadline)
+
+
+@pytest.fixture
+def statuses(monkeypatch):
+    """Point the command at a fake service that yields prepared Status objects."""
+    def _install(sequence):
+        seen = []
+
+        class _Client:
+            def get_status(self, campaign_id):  # pylint: disable=unused-argument
+                status = sequence[min(len(seen), len(sequence) - 1)]
+                seen.append(status)
+                return status
+
+        @contextlib.contextmanager
+        def _client(*_a, **_k):
+            yield _Client(), "fake service"
+
+        monkeypatch.setattr(client_cli, "service_client", _client)
+        return seen
+    return _install
+
+
+def test_a_stall_ends_the_wait_with_its_own_code(statuses):
+    """The defect this exists for: a stalled campaign never reaches a terminal phase, so a
+    waiter that stopped only on terminality never returned and nobody was told. Exit 4 is
+    distinct because every other exit here means the campaign is over or unreachable."""
+    statuses([_stalled_status("c1", 10), _stalled_status("c1", 10),
+              _stalled_status("c1", 999)])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 4
+    assert "no progress for" in result.output
+    # "the waiter returned" must not read as "the run ended".
+    assert "STILL RUNNING" in result.output
+
+
+def test_a_stall_that_was_already_true_is_not_news(statuses):
+    """Only a *rising edge* exits. Otherwise the design eats itself: the exit-4 message
+    tells the caller to re-run this command after diagnosing, and a fresh waiter would
+    re-observe the same stall on its first poll and exit instantly -- forever -- leaving
+    no way to resume waiting on the very state it reports."""
+    statuses([_stalled_status("c1", 999)])
+    result = _run("c1", "--timeout", "0.2")
+    # 2 == "stopped waiting" (--timeout), i.e. it kept waiting rather than exiting on it.
+    assert result.exit_code == 2
+
+
+def test_a_campaign_with_no_declared_timeout_never_exits_four(statuses):
+    """``stalled`` is ``None`` without ``execution.timeout``, and None is not a verdict.
+    Treating it as one would exit on every campaign that declared no budget."""
+    statuses([_stalled_status("c1", 10, deadline=None),
+              _stalled_status("c1", 99999, deadline=None)])
+    result = _run("c1", "--timeout", "0.2")
+    assert result.exit_code == 2

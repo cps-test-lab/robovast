@@ -134,8 +134,8 @@ def _wait_next_step(campaign_id: str) -> str:
     and be notified when it exits. Same poll loop either way (``execution.campaign_wait``);
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
-    return (f"run in the background: vast wait {campaign_id} --interval 10 "
-            f"(exit 0 finished, 1 failed/stopped)")
+    return (f"run in the background: vast wait {campaign_id} "
+            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
@@ -242,6 +242,28 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         return {"error": str(e)}
 
 
+def _campaign_next_step(result: dict) -> str:
+    """What to do about the campaign state just reported, or "" when nothing is obvious.
+
+    The same reason :func:`_status_next_step` exists for builds: a caller reads this to
+    decide, and the decision was previously something to *remember* -- which is the defect
+    :data:`~robovast.client.status.STALL_NEXT_STEP` was written against. Empty when the
+    campaign is simply progressing, per AGENTS.md: a hint on every reply is a field callers
+    learn to skip.
+
+    Ordered cheapest-first where a stall is reported, because the untainted options come
+    before anything that perturbs the run.
+    """
+    if result.get("stalled") is True:
+        return result.get("stall_reason", "")
+    if result.get("status") == "finished" and result.get("postprocessed") is False:
+        # A campaign can finish green with no CSVs and no data.db; saying "finished" alone
+        # sends the caller looking for results that were never written.
+        return ("finished, but postprocessing did not run: there are no CSVs and no "
+                "data.db yet. run_postprocessing fixes that without re-running trials")
+    return ""
+
+
 def get_campaign_status(campaign_id: str) -> dict:
     """Is it progressing, is it wedged, and are there results? One read, no waiting.
 
@@ -272,6 +294,8 @@ def get_campaign_status(campaign_id: str) -> dict:
         batch_runs_failed, batch_runs_no_result}``, plus ``progress_deadline_s`` +
         ``stall_reason`` or ``stall_verdict``, plus search fields (``best_objective``,
         ``budget``, ``batches_done``, ``stop``) when they apply; or ``{error}``.
+        ``next_step`` when there is something to do about the state -- absent when the
+        campaign is simply progressing.
 
         Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
         completion cannot honestly be known). ``phase_age_s`` is the only signal for a
@@ -284,6 +308,9 @@ def get_campaign_status(campaign_id: str) -> dict:
         st = client.get_status(campaign_id)
         result = _status_to_dict(campaign_id, "service", st)
         result["stage"] = st.stage or ""  # a live marker string, not a log tail
+        next_step = _campaign_next_step(result)
+        if next_step:
+            result["next_step"] = next_step
         return result
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}

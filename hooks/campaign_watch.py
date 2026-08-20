@@ -165,7 +165,7 @@ def check(_payload, path):
     # silent data loss: start three campaigns, get told about one, and the other two are
     # recorded as handled without anyone ever hearing of them.
     listed = ", ".join(pending)
-    waits = "\n".join(f"    vast wait {cid} --interval 10" for cid in pending)
+    waits = "\n".join(f"    vast wait {cid}" for cid in pending)
     plural = "campaigns were" if len(pending) > 1 else "campaign was"
     print(json.dumps({
         "decision": "block",
@@ -181,7 +181,37 @@ def check(_payload, path):
     }))
 
 
-ACTIONS = {"record": record, "clear": clear, "delegated": delegated, "check": check}
+def rearm(payload, path):
+    """A campaign reported as stalled is unattended again, so let the guard stop once more.
+
+    `delegated` marks a campaign handed off at *launch*, which is right for a waiter that
+    will see it out -- but `vast wait` now exits 4 on a stall, leaving the campaign alive
+    and still marked handed-off. Without this the turn guard is spent and the agent can
+    stop silently on a wedged campaign, which is the exact failure it exists to prevent.
+
+    Deliberately narrow: only a response that *itself reports* `stalled: true`. Still pure
+    bookkeeping -- the verdict is the tool's, read from what it already returned, never
+    computed or fetched here. Re-arming on any status read would nag about healthy sweeps a
+    waiter is legitimately watching, and a guard that fires when nothing is wrong is one
+    agents learn to ignore.
+    """
+    response = _tool_response(payload)
+    if response.get("stalled") is not True:
+        return
+    campaign_id = str(response.get("campaign_id") or
+                      (payload.get("tool_input") or {}).get("campaign_id") or "")
+    if not campaign_id:
+        return
+    data = _live(_read(path))
+    entry = data.get(campaign_id)
+    if entry is None or not entry.get("warned"):
+        return
+    entry["warned"] = False
+    _write(path, data)
+
+
+ACTIONS = {"record": record, "clear": clear, "delegated": delegated,
+           "rearm": rearm, "check": check}
 
 
 def main():

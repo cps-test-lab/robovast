@@ -720,14 +720,15 @@ def install_completion():
 
 @cli.command()
 @click.argument('campaign')
-@click.option('--interval', default=5.0, show_default=True,
+@click.option('--interval', default=10.0, show_default=True,
               help='Seconds between status polls.')
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
 def wait(campaign, interval, timeout, namespace, context):
     """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
-    waiting: --timeout, or the service stopped answering), 3 (no phase).
+    waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
+    still running, but no longer being waited on).
 
     The lane-agnostic wait: the service drives every campaign, so its phase *is* the
     campaign's whichever backend the runs execute on. Prints each phase change as it
@@ -740,16 +741,35 @@ def wait(campaign, interval, timeout, namespace, context):
     the conversation for as long as the campaign ran — and still not outlive the session.
     The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
     shared with every other surface that waits.
+
+    **A stall ends the wait too** (exit 4), because a stalled campaign never reaches a
+    terminal phase: it holds ``running`` for its whole life, so a waiter that stopped only
+    on terminality would never return and nobody would be told. The verdict is
+    :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
+
+    Only a **new** stall exits. A campaign already stalled when this command starts is not
+    news -- whoever ran it has just been told -- and exiting on the first poll would make
+    ``vast wait`` unusable for exactly the state it reports: the message says to re-run it
+    after diagnosing, and a fresh waiter would exit immediately, forever. So the first
+    observation is recorded and only a rising edge stops the wait.
     """
-    from robovast.client.status import Phase
+    from robovast.client.status import Phase, is_terminal, stall_report
     from robovast.execution.campaign_wait import wait_for_campaign_status
     from robovast.execution.poll_health import PollsStopped
+
+    seen = {"stalled": None}
+
+    def stop_when(current):
+        stalled = stall_report(current).get("stalled") is True
+        previous, seen["stalled"] = seen["stalled"], stalled
+        return stalled and previous is False
+
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
             status = wait_for_campaign_status(
                 campaign, client=client, interval=interval, timeout=timeout,
-                feedback=click.echo)
+                feedback=click.echo, stop_when=stop_when)
     except TimeoutError as e:
         # Not a failure of the campaign, which is still running: the caller asked to stop
         # waiting. A distinct exit code keeps the two apart for a script branching on it.
@@ -764,6 +784,17 @@ def wait(campaign, interval, timeout, namespace, context):
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
+    if not is_terminal(status.phase):
+        # stop_when fired: the campaign is alive and stalled. Distinct from every other
+        # exit here, all of which mean the campaign is over or unreachable -- and the
+        # message has to say so, or "the waiter returned" reads as "the run ended".
+        report = stall_report(status)
+        click.echo(f"{campaign}: {report.get('stall_reason', 'no progress')}", err=True)
+        click.echo(
+            f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
+            f"When you are done diagnosing, background `vast wait {campaign}` again, or "
+            f"end it with stop_campaign.", err=True)
+        raise SystemExit(4)
     click.echo(f"{campaign}: {status.phase}")
     if status.phase == Phase.UNKNOWN:
         # `unknown` is terminal, so the wait ends -- but it does not mean the campaign

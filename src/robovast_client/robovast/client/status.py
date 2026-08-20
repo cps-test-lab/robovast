@@ -240,7 +240,9 @@ class Status(BaseModel):
 #: the interim procedure lived in a skill, and a check that must be remembered is a
 #: check that will be skipped.
 STALL_NEXT_STEP = ("read what the run is repeating with summarize=True on its log "
-                   "(get_job_log / get_campaign_log, or `vast exec log`)")
+                   "(get_job_log / get_campaign_log, or `vast exec log`), then reproduce "
+                   "the configuration with exec_in_container -- a fault that does not "
+                   "reproduce there is environmental rather than in the config")
 
 
 #: Told to a caller whose campaign declared no budget, so "I cannot judge" is never

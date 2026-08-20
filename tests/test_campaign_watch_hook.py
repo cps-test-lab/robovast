@@ -143,3 +143,41 @@ def test_sessions_do_not_block_each_other(hook, capsys):
     _start(hook, "camp-a", session="s1")
     assert _check(hook, capsys, session="s2") is None
     assert _check(hook, capsys, session="s1") is not None
+
+
+def _rearm(hook, campaign, stalled, session="s1"):
+    hook.rearm({"session_id": session,
+                "tool_response": {"campaign_id": campaign, "stalled": stalled}},
+               _ledger(hook, session))
+
+
+def test_a_stall_re_arms_a_campaign_the_waiter_handed_off(hook, capsys):
+    """`vast wait` exits 4 on a stall, which leaves the campaign alive and still marked
+    handed-off. Without re-arming, the guard is spent and the agent can stop silently on a
+    wedged campaign — the exact failure this hook exists to prevent."""
+    _start(hook, "camp-a")
+    hook.delegated({"session_id": "s1",
+                    "tool_input": {"command": "vast wait camp-a"}}, _ledger(hook))
+    assert _check(hook, capsys) is None          # handed off: nothing to say
+    _rearm(hook, "camp-a", True)
+    decision = _check(hook, capsys)
+    assert decision is not None and "camp-a" in decision["reason"]
+
+
+def test_a_healthy_status_read_does_not_re_arm(hook, capsys):
+    """The narrowness is the property worth pinning: re-arming on any status read would nag
+    about healthy sweeps a waiter is legitimately watching, and a guard that fires when
+    nothing is wrong is one agents learn to ignore."""
+    _start(hook, "camp-a")
+    hook.delegated({"session_id": "s1",
+                    "tool_input": {"command": "vast wait camp-a"}}, _ledger(hook))
+    assert _check(hook, capsys) is None
+    for verdict in (False, None):                # inside budget / no verdict possible
+        _rearm(hook, "camp-a", verdict)
+        assert _check(hook, capsys) is None
+
+
+def test_re_arming_an_unknown_campaign_is_harmless(hook, capsys):
+    """A status read for a campaign this session never started must not invent an entry."""
+    _rearm(hook, "camp-elsewhere", True)
+    assert _check(hook, capsys) is None

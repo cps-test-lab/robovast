@@ -58,7 +58,7 @@ the service and exits when the campaign is genuinely finished — past postproce
 merely past its last run:
 
 ```bash
-vast wait basic-nav-2026-08-16-101500 --interval 10
+vast wait basic-nav-2026-08-16-101500
 ```
 
 Its **exit code is the answer**: `0` finished, `1` failed, `2` you interrupted the wait,
