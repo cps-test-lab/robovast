@@ -152,27 +152,48 @@ def test_no_dockerfile_hardcodes_a_download_architecture():
         f"Dockerfiles hard-code linux-amd64 downloads: {offenders} — use $TARGETARCH")
 
 
-#: Registry hosts a shipped example must never name. Matched as a pattern rather than a
-#: literal: the first offender was ``harbor.example.org``, and when that host was retired
-#: for ``harbor.example.org`` this test still passed while pointing at a dead name — it
-#: guarded one spelling instead of the property. Anything under the site's private domain
-#: is unreachable to someone who cloned the repo, whatever it is called this year.
-PRIVATE_REGISTRY_RE = re.compile(r"\bharbor\.example\.[a-z0-9.-]+", re.IGNORECASE)
+#: A registry host in an image ref: the part before the first ``/``, recognised by having a
+#: dot (a bare ``ubuntu:24.04`` names no registry and Docker Hub resolves it).
+IMAGE_REGISTRY_RE = re.compile(
+    r"\bimage:\s*[\"']?([a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?)/", re.IGNORECASE)
+
+#: The only registries a shipped example may name, plus the RFC 2606 placeholder domains a
+#: doc example should use.
+#:
+#: An ALLOWLIST rather than a denylist of the site's own hosts, and that is the point. This
+#: guarded one literal host; when that host was retired for its successor the test still
+#: passed while pointing at a dead name, so it was widened to a pattern for that site's
+#: domain -- which guarded one *site*, and put that site's internal naming into a public
+#: repository to do it. The property has nothing to do with any particular site: an example
+#: must be runnable by whoever cloned the repo, so it may only name a registry they can
+#: actually reach. Inverting it also means a new site's harbor is caught the first time,
+#: with no pattern to extend, and this file names no infrastructure at all.
+PUBLIC_REGISTRIES = frozenset({
+    "docker.io", "index.docker.io", "registry-1.docker.io",
+    "ghcr.io", "quay.io", "gcr.io", "public.ecr.aws", "registry.k8s.io",
+    "example.com", "example.org", "example.net",
+})
 
 
-def test_no_shipped_example_pins_a_private_registry():
+def test_no_shipped_example_pins_an_unreachable_registry():
     """A shipped example must be runnable by anyone who clones the repo.
 
-    ``basic_nav_roqsim.vast`` pinned ``harbor.example.org`` by digest, so the example
-    only ran at one site.
+    The first offender pinned a site-internal harbor host by digest, so the example only
+    ran at the one site that could resolve it.
     """
     examples = Path(__file__).resolve().parents[2] / "configs" / "examples"
-    offenders = {
-        str(path.relative_to(examples)): sorted(set(found))
-        for path in examples.rglob("*.vast")
-        if (found := PRIVATE_REGISTRY_RE.findall(path.read_text()))
-    }
-    assert not offenders, f"examples pin an unreachable private registry: {offenders}"
+    offenders = {}
+    for path in examples.rglob("*.vast"):
+        bad = sorted({
+            host for host in IMAGE_REGISTRY_RE.findall(path.read_text())
+            if host.lower() not in PUBLIC_REGISTRIES
+            and not host.lower().endswith((".example.com", ".example.org", ".example.net"))
+        })
+        if bad:
+            offenders[str(path.relative_to(examples))] = bad
+    assert not offenders, (
+        f"examples name a registry a fresh clone cannot reach: {offenders} — "
+        f"use one of {sorted(PUBLIC_REGISTRIES)} or drop the image and let the family resolve it")
 
 
 def test_a_push_publishes_only_the_prefixed_tag():
