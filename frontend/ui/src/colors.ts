@@ -79,6 +79,10 @@ export interface Style {
     readonly axis: string
   }
   readonly scene: {
+    /** The 3D ground grid's axis lines, and its ordinary lines. Opaque hexes rather than white at
+     *  an alpha like `data.grid` / `data.axis`: they are painted by a three LineBasicMaterial over
+     *  `surface.canvas`, so a style keeping the grid in family with every other hairline in the UI
+     *  states the *blend* here — the same reading, without a per-frame alpha composite. */
     readonly gridCenter: string
     readonly grid: string
     /** A scene marker naming no colour of its own. Outside the accent's family on purpose — a
@@ -129,8 +133,11 @@ export const midnightMint: Style = {
     axis: 'rgba(255, 255, 255, 0.2)',
   },
   scene: {
-    gridCenter: '#54c6b4',
-    grid: '#30524d',
+    // data.axis and data.grid (white at 20% / 8%) composited over surface.canvas: the 3D grid reads
+    // as the same hairline as a chart's, and the scene keeps the accent and the status colours as
+    // the only hues in it.
+    gridCenter: '#41454c',
+    grid: '#252a31',
     marker: '#38bdf8',
     mark: '#a8ffcf',
   },
