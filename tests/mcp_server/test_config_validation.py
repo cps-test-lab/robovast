@@ -189,3 +189,48 @@ def test_the_capture_check_stays_quiet_without_a_backend():
     raw = {"execution": {"containers": {"scenario": {"image": "a"}}},
            "visualization": {"results": {"run_view": {"panels": [{"scene3d": {}}]}}}}
     assert _run_capture_problems(raw) == []
+
+
+# ---------------------------------------------------------------------------
+# Build-context advisory
+#
+# The context is copied, uploaded and mirrored back down once per built container on every
+# build, and BuildKit's output never names it — so a project that grows one by accident
+# just gets slow builds with no reason given. Pre-flight is the last point where the cost
+# is still avoidable, so it is reported here — as an advisory, since a project may
+# legitimately be large and this cannot tell the difference.
+# ---------------------------------------------------------------------------
+
+def _fat(path, mb):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\0" * (mb * 1024 * 1024))
+
+
+def test_a_large_build_context_is_advised_but_still_valid(tmp_path):
+    from robovast.common.config_validation import _build_context_advisories
+    _fat(tmp_path / "bags" / "big.bag", 60)
+    problems = _build_context_advisories(tmp_path / "x.vast")
+    assert len(problems) == 1
+    assert problems[0]["stage"] == "build-context"
+    assert "bags" in problems[0]["message"]
+
+
+def test_a_small_project_is_not_advised(tmp_path):
+    from robovast.common.config_validation import _build_context_advisories
+    _fat(tmp_path / "plugins" / "pkg.whl", 1)
+    assert _build_context_advisories(tmp_path / "x.vast") == []
+
+
+def test_weight_inside_a_campaign_directory_is_not_advised(tmp_path):
+    """It is already excluded from the context, so advising on it would be a false alarm."""
+    from robovast.common.config_validation import _build_context_advisories
+    (tmp_path / "camp-1" / "_execution").mkdir(parents=True)
+    _fat(tmp_path / "camp-1" / "run.bag", 60)
+    assert _build_context_advisories(tmp_path / "x.vast") == []
+
+
+def test_results_are_not_advised(tmp_path):
+    """`results/` is ignored wholesale; a downloaded campaign there is not a context cost."""
+    from robovast.common.config_validation import _build_context_advisories
+    _fat(tmp_path / "results" / "camp-1" / "run.bag", 60)
+    assert _build_context_advisories(tmp_path / "x.vast") == []

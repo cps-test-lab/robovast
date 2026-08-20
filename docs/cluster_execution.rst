@@ -602,6 +602,28 @@ lowercased with underscores replaced, which cannot be reversed. Unlike a staged 
 context this is **not** scratch: it is retired only when the campaign's data is deleted
 (``vast results delete``, or the bucket cleanup below). See :ref:`campaign-discovery`.
 
+What is *not* copied
+^^^^^^^^^^^^^^^^^^^^
+
+The context skips ``BUILD_CONTEXT_IGNORE`` (``robovast.common.build_context``) —
+``.git``, ``results/``, ``__pycache__``, ``build/``, ``.venv`` and the rest — by exact
+name, on both lanes: the cluster prunes while it stages, the local lane writes the
+equivalent ``.dockerignore``.
+
+It also skips **campaign output directories**, and those are recognised by *structure*
+rather than by name: a directory holding an ``_execution/`` child. There is no name to
+list, because a campaign directory is named after its campaign id. ``results/`` was
+already excluded, but ``exec cluster run --wait-and-download`` extracts a campaign
+*beside* the sources rather than into ``results/`` — so a project that had used it a few
+times was staging several hundred megabytes of rosbags around a fifteen-megabyte tree,
+uploaded and mirrored back down once per container on every build, with nothing reporting
+it. Structure means the rule cannot go stale on a project nobody had in mind when it was
+written.
+
+This changes what is *copied*, never what is *hashed*: a campaign output is not a
+``python_packages`` entry, so ``build_hash`` never saw it and the context hash is
+unchanged either way.
+
 A staged context is **scratch, and is cleaned up** — it is a full copy of the project
 directory, so a build per experiment would otherwise pile up copies in the bucket
 indefinitely. Nothing reads it after the build: a rebuild re-stages, the layer cache
@@ -635,17 +657,37 @@ between builds. Two registry-backed mechanisms replace that:
   image counts as absent and is rebuilt, because a wrong cache hit would leave the
   campaign pods in ``ImagePullBackOff``.
 * **Layer reuse across hashes.** The build imports from and exports to
-  ``<prefix>/<tag>:buildcache`` (``mode=max``, so intermediate layers are kept too).
-  This tag is *not* hash-qualified — that is the point: the build for a new hash
+  ``<prefix>/<tag>-<scope>:buildcache`` (``mode=max``, so intermediate layers are kept
+  too). This tag is *not* hash-qualified — that is the point: the build for a new hash
   reuses the layers of the previous one, so changing one late ``python_packages``
   group no longer rebuilds the ones before it. A failing cache **export** never fails
   the build (the image is already pushed by then); a failing **import** just makes the
   build slower. Both refs inherit the deployment's ``INSECURE`` / CA settings, since
   they address the same registry as the push.
 
-The registry therefore needs room for one extra tag per built container. Grouping the
-``python_packages`` list by change frequency is what makes the layer cache pay off —
-see :ref:`containers <config-containers>`.
+.. _build-cache-scope:
+
+The ``<scope>`` segment is what keeps that reuse from reaching too far. ``<tag>`` is the
+*container's name*, so it is ``sut``, ``simulation`` or ``scenario`` for very nearly every
+project there is. Keyed on the name alone, every project in a deployment exported
+``mode=max`` to the same three tags, overwritten in place — so a campaign whose large,
+stable install group had been built an hour ago found it gone, because an unrelated
+campaign with a container of the same name had built in between. The group an author had
+deliberately ordered *first* to protect was the one that kept being rebuilt.
+
+``cache_scope`` (``robovast.service.image_build``) therefore hashes what decides *which
+layers exist* — the resolved base image, the apt set, and the install groups in order —
+with the per-iteration churn removed: a local wheel counts as its **distribution name**,
+not its filename, so bumping ``pkg-0.1.24`` to ``pkg-0.1.25`` keeps the namespace it is
+meant to reuse. A resolved VCS commit is deliberately *not* an input: a moved branch
+changes a layer's content, not the chain's shape, and retiring the namespace for it would
+throw away the layers *below* the one that actually changed.
+
+The registry therefore needs room for one extra tag per built container **per chain** —
+a project retires its own old scope whenever it changes its base image or its package
+set. Grouping the ``python_packages`` list by change frequency is what makes the layer
+cache pay off — see :ref:`containers <config-containers>` — and the scope is what makes
+that grouping survive other projects building alongside it.
 
 .. note::
 

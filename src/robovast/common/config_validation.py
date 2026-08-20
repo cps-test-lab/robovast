@@ -42,6 +42,7 @@ import inspect
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
@@ -82,6 +83,59 @@ def _collect_warnings(logger_name):
         yield handler.messages
     finally:
         target.removeHandler(handler)
+
+
+def _build_context_advisories(config_path):
+    """Advise when the build context this project would stage is unexpectedly large.
+
+    An **advisory**, never an error: a project may legitimately be large, and this cannot
+    tell the difference. But the context is copied, uploaded and mirrored back down once
+    per built container on *every* build, and nothing in BuildKit's output names it — so a
+    project that grew one by accident just gets slow builds with no reason given. Reported
+    here because a pre-flight check is the one place the cost is still avoidable: after
+    this, the next thing that happens is the compute.
+
+    Cheap by construction -- ``stat`` only, and the ignored names (and campaign outputs,
+    which are the usual cause) are skipped before anything is measured.
+    """
+    from robovast.common.build_context import BUILD_CONTEXT_IGNORE, campaign_outputs_in
+
+    # Same threshold the staging path warns at, imported lazily so core does not depend
+    # on the cluster package.
+    warn_bytes = 50 * 1024 * 1024
+    root = Path(config_path).parent
+    try:
+        campaigns = set(campaign_outputs_in(root))
+    except OSError:
+        return []
+    sizes = {}
+    total = 0
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if any(part in BUILD_CONTEXT_IGNORE for part in rel.parts):
+            continue
+        if any(parent in campaigns for parent in (rel, *rel.parents)):
+            continue
+        try:
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+        except OSError:
+            continue
+        total += size
+        sizes[rel.parts[0]] = sizes.get(rel.parts[0], 0) + size
+    if total < warn_bytes:
+        return []
+    biggest = ", ".join(
+        f"{name} ({size / 1e6:.0f} MB)"
+        for size, name in sorted(((v, k) for k, v in sizes.items()), reverse=True)[:3])
+    return [_problem(
+        "build-context",
+        f"This project would stage a {total / 1e6:.0f} MB build context, copied and "
+        f"transferred once per built container on every build. The largest entries are: "
+        f"{biggest}. Campaign outputs and the standard ignored names are already "
+        f"excluded, so anything left is going into the image build on purpose or by "
+        f"accident -- if by accident, move it out of the project directory.")]
 
 
 def _problem(stage, message, config=None, field=None):
@@ -907,7 +961,7 @@ def _batch_composition_report(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-    return {"valid": True, "problems": [],
+    return {"valid": True, "problems": _build_context_advisories(config_path),
             "configs": len(configs), "runs_per_config": runs_per_config,
             "total_trials": len(configs) * runs_per_config}
 
@@ -950,6 +1004,6 @@ def _search_composition_report(config_path):
     # infeasible, neither of which is knowable before it runs.
     configs = sample["composed"]
     runs_per_config = sample["runs_per_config"]
-    return {"valid": True, "problems": problems,
+    return {"valid": True, "problems": problems + _build_context_advisories(config_path),
             "configs": configs, "runs_per_config": runs_per_config,
             "total_trials": configs * runs_per_config}

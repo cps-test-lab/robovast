@@ -423,6 +423,13 @@ Every block takes the same keys:
    ``--allow-opaque-image`` launches anyway and records the exemption on the campaign.
 ``system_packages``
    apt packages (``apt-get install -y``).
+
+   Rendered as a single ``RUN`` **above every** ``python_packages`` group, because a pip
+   install may need what apt provides. So adding one entry here invalidates every python
+   layer below it — including the large, stable group an author put first precisely to
+   protect it. Worth knowing before the change rather than after: on one campaign here,
+   adding a single ROS package cost ~350 s of rebuilding and re-exporting a torch layer
+   that was otherwise cached. Settle this list early; it is not a place to iterate.
 ``python_packages``
    Python packages, as **install groups**. Same vocabulary as the top-level ``plugins:``
    field — an index pin (``shapely>=2.0``), a git URL
@@ -437,7 +444,13 @@ Every block takes the same keys:
    all, because pip sees every local wheel at once and resolves an inter-package
    dependency against its sibling instead of against PyPI. Nest as soon as you want to
    choose the layer boundaries: order *of* groups is install order, and is what the layer
-   cache keys on.
+   cache keys on. Put the large and stable first, the small and frequently-bumped last —
+   a group that changes invalidates every group after it, so the ordering is the whole
+   difference between a five-second rebuild and a five-minute one.
+
+   The grouping only pays off if the cached layers are still there when the next build
+   asks for them, which is what the cache *scope* protects — see
+   :ref:`Caching in-cluster <build-cache-scope>`.
 ``command``
    What the container runs. Omitted for the roles RoboVAST drives itself — the scenario
    runner, and a sidecar's scenario-execution server (which is what makes it drivable
