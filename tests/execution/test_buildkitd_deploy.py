@@ -273,3 +273,153 @@ def test_a_real_package_failure_is_still_the_projects_fault():
     assert err.phase == "apt"
     assert err.fixable_by == "agent"
 
+
+
+# ---------------------------------------------------------------------------
+# Recovering the store on an upgrade — the settings nothing else records
+# ---------------------------------------------------------------------------
+
+def _deserialize(manifest, kind):
+    """The manifest as the API would hand it back: a typed object, not the dict."""
+    import json
+
+    from kubernetes.client import ApiClient
+
+    class _Response:  # what ApiClient.deserialize reads
+        def __init__(self, data):
+            self.data = json.dumps(data)
+
+    return ApiClient().deserialize(_Response(manifest), kind)
+
+
+def _reader(monkeypatch, *, dep=None, dep_error=None, pvc=None, pvc_error=None):
+    """Point `buildkitd_storage_from_cluster` at a canned cluster."""
+    from kubernetes import client as kclient
+
+    from robovast.execution.cluster_execution import kube_client
+
+    class _Apps:
+        def read_namespaced_deployment(self, name, namespace):
+            if dep_error is not None:
+                raise dep_error
+            return dep
+
+    class _Core:
+        def read_namespaced_persistent_volume_claim(self, name, namespace):
+            if pvc_error is not None:
+                raise pvc_error
+            return pvc
+
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: _Apps())
+    monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: _Core())
+
+
+def _pod_kwargs(settings):
+    """Just the settings the Deployment renders; the size belongs to the claim."""
+    return {k: v for k, v in settings.items() if k != "storage_size"}
+
+
+def _api_error(status):
+    from kubernetes.client.exceptions import ApiException
+    return ApiException(status=status, reason="canned")
+
+
+@pytest.mark.parametrize("rendered,recovered", [
+    ({"storage_class": "fast", "storage_size": "300Gi", "node_name": "node-a"},
+     {"storage_class": "fast", "storage_size": "300Gi", "node_name": "node-a"}),
+    ({"storage_path": "/data/elsewhere", "node_name": "node-b"},
+     {"storage_path": "/data/elsewhere", "node_name": "node-b"}),
+])
+def test_an_upgrade_re_renders_the_store_it_found(monkeypatch, rendered, recovered):
+    """The point of the reader: converge the daemon without moving its cache.
+
+    These four settings arrive as `setup` flags and are recorded nowhere else, so an upgrade
+    that re-rendered from defaults would hand a PVC-backed store a hostPath -- an empty cache
+    on an arbitrary node, while the old claim still holds its space. Asserted as a round-trip
+    through the manifest, because that is the property that has to hold rather than any
+    particular shape of the dict in between.
+    """
+    from robovast.execution.cluster_execution.buildkitd_deploy import (
+        buildkitd_storage_from_cluster)
+
+    # storage_size is the claim's, not the pod's -- the deployment manifest does not take it.
+    original = buildkitd_deployment_manifest(namespace="ns", **_pod_kwargs(rendered))
+    pvc = buildkitd_pvc_manifest("ns", rendered.get("storage_class", ""),
+                                 rendered.get("storage_size", ""))
+    _reader(monkeypatch, dep=_deserialize(original, "V1Deployment"),
+            pvc=_deserialize(pvc, "V1PersistentVolumeClaim") if pvc else None)
+
+    settings = buildkitd_storage_from_cluster("ns")
+
+    assert settings == recovered
+    # And the manifest that produces -- not just the kwargs -- is the one already deployed.
+    again = buildkitd_deployment_manifest(namespace="ns", **_pod_kwargs(settings))
+    assert (again["spec"]["template"]["spec"]["volumes"]
+            == original["spec"]["template"]["spec"]["volumes"])
+    assert (again["spec"]["template"]["spec"].get("nodeSelector")
+            == original["spec"]["template"]["spec"].get("nodeSelector"))
+
+
+def test_no_daemon_yet_reads_as_nothing_to_preserve(monkeypatch):
+    """A deployment predating this component has no daemon, and that is not an error: the
+    caller creates one from its own defaults. Only a 404 means that."""
+    from robovast.execution.cluster_execution.buildkitd_deploy import (
+        buildkitd_storage_from_cluster)
+
+    _reader(monkeypatch, dep_error=_api_error(404))
+
+    assert buildkitd_storage_from_cluster("ns") == {}
+
+
+def test_a_cluster_that_cannot_answer_is_not_read_as_defaults(monkeypatch):
+    """The failure this function exists to prevent, reached the other way.
+
+    Swallowing a 403 or a 500 into `{}` would converge the daemon onto default storage --
+    silently migrating a PVC-backed cache to a hostPath because of a permissions error. An
+    upgrade must fail instead.
+    """
+    from robovast.execution.cluster_execution.buildkitd_deploy import (
+        buildkitd_storage_from_cluster)
+    from kubernetes.client.exceptions import ApiException
+
+    _reader(monkeypatch, dep_error=_api_error(403))
+
+    with pytest.raises(ApiException):
+        buildkitd_storage_from_cluster("ns")
+
+
+def test_a_claim_that_vanished_is_refused_rather_than_downgraded(monkeypatch):
+    """A store whose class cannot be recovered must stop the upgrade, not become a hostPath."""
+    from robovast.execution.cluster_execution.buildkitd_deploy import (
+        buildkitd_storage_from_cluster)
+
+    dep = buildkitd_deployment_manifest(namespace="ns", storage_class="fast")
+    _reader(monkeypatch, dep=_deserialize(dep, "V1Deployment"), pvc_error=_api_error(404))
+
+    with pytest.raises(RuntimeError, match="storage-class"):
+        buildkitd_storage_from_cluster("ns")
+
+
+def test_the_module_exports_everything_its_callers_import():
+    """A deferred import fails at the moment it runs, not at load, and this one runs inside
+    `vast exec cluster upgrade` -- so a missing name here is an ImportError partway through an
+    upgrade rather than anything a test of this module would notice.
+
+    It has already happened once: a cleanup that removed an unused helper truncated the file at
+    that helper and took the two functions after it with it. Every test still passed, because
+    the tests that exercise the upgrade path patch these names, and patching had run against a
+    module that still had them.
+    """
+    import importlib
+
+    from robovast.execution.cluster_execution import buildkitd_deploy
+
+    # The names `cluster_setup` and `cli` import from this module, deferred, at call time.
+    for name in ("apply_buildkitd", "delete_buildkitd", "buildkitd_ready",
+                 "buildkitd_storage_from_cluster", "buildkitd_address"):
+        assert hasattr(buildkitd_deploy, name), (
+            f"{name} is imported by cluster_setup/cli at call time and is missing here")
+        assert callable(getattr(buildkitd_deploy, name))
+
+    importlib.reload(buildkitd_deploy)  # and it survives a reload, i.e. it is really defined

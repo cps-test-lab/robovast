@@ -31,7 +31,6 @@ session, so the staged context in the Job's own emptyDir still works untouched.
 """
 
 import logging
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +455,90 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
         # carrying no clusterIP is rejected.
         core.patch_namespaced_service(BUILDKITD_NAME, namespace,
                                       {"spec": {"ports": svc["spec"]["ports"]}})
+
+
+def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
+    """Recover the daemon's storage settings from the live objects, as ``apply_buildkitd`` kwargs.
+
+    These arrive as ``setup`` flags and **nothing records them**: they exist only in the
+    Deployment and the claim that Deployment produced. So an ``upgrade`` re-rendering the daemon
+    from defaults would move a PVC-backed store back to a hostPath -- a new empty cache, on
+    whichever node the pod next lands on, while the old claim still holds its space and nothing
+    says so. The symptom is the one this component exists to remove: base images pulled again,
+    which looks exactly like the daemon not being there.
+
+    ``node_name`` is here despite the name because it is a property of the store rather than of
+    scheduling: a hostPath store lives on the node the pod landed on, so losing the pin loses the
+    cache as thoroughly as losing the path does (see :func:`buildkitd_node_selector`).
+
+    Returns ``{}`` when there is no Deployment -- the honest answer for a deployment that
+    predates the daemon, and the caller then creates it from its own defaults. A cluster that
+    *fails* to answer is not that answer and is not swallowed: defaulting there is precisely the
+    silent migration above, so the exception propagates.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(kube_context)
+    apps, core = client.AppsV1Api(), client.CoreV1Api()
+    try:
+        dep = apps.read_namespaced_deployment(BUILDKITD_NAME, namespace)
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+        logger.debug("no buildkitd Deployment in %s; nothing to recover", namespace)
+        return {}
+
+    pod_spec = dep.spec.template.spec
+    settings = {}
+
+    node_selector = pod_spec.node_selector or {}
+    if node_selector.get("kubernetes.io/hostname"):
+        settings["node_name"] = node_selector["kubernetes.io/hostname"]
+
+    store = next((v for v in (pod_spec.volumes or []) if v.name == _STORE_VOLUME), None)
+    if store is not None and store.host_path is not None:
+        settings["storage_path"] = store.host_path.path or ""
+        return settings
+
+    # Everything below defends one invariant: a PVC-backed store must never be re-rendered as a
+    # hostPath. `buildkitd_volume` takes the PVC branch only for a non-empty storage class, so
+    # recovering an empty one -- or no identifiable store at all -- would do exactly that.
+    claim = store.persistent_volume_claim if store is not None else None
+    if claim is None:
+        raise RuntimeError(
+            f"the {BUILDKITD_NAME} Deployment in {namespace} has no identifiable "
+            f"'{_STORE_VOLUME}' store (neither a hostPath nor a claim), so converging it would "
+            "have to guess where its cache lives. Delete the Deployment and re-run 'vast exec "
+            "cluster setup' with the --buildkit-storage-* flags this deployment wants.")
+
+    # The class and the size live on the claim; the pod spec only names it. Both are recovered:
+    # the class is what selects the PVC branch at all, and re-rendering without the size would
+    # ask for a different one.
+    try:
+        pvc = core.read_namespaced_persistent_volume_claim(claim.claim_name, namespace)
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+        # A claim deleted from under a running daemon. `delete_buildkitd` invites an operator to
+        # delete it for the space, but only once the Deployment is gone; this state is that done
+        # in the wrong order, and it leaves the pod unschedulable anyway.
+        raise RuntimeError(
+            f"the {BUILDKITD_NAME} Deployment in {namespace} mounts claim '{claim.claim_name}', "
+            "which does not exist, so its storage class cannot be recovered. Re-run 'vast exec "
+            "cluster setup' with --buildkit-storage-class to state it.") from e
+
+    if not pvc.spec.storage_class_name:
+        raise RuntimeError(
+            f"claim '{claim.claim_name}' in {namespace} names no storage class, so the "
+            f"{BUILDKITD_NAME} store cannot be re-rendered as the claim it is. Re-run 'vast exec "
+            "cluster setup' with --buildkit-storage-class to state it.")
+    settings["storage_class"] = pvc.spec.storage_class_name
+    requested = (pvc.spec.resources.requests if pvc.spec.resources else None) or {}
+    if requested.get("storage"):
+        settings["storage_size"] = requested["storage"]
+    return settings
 
 
 def delete_buildkitd(namespace: str, kube_context=None) -> bool:
