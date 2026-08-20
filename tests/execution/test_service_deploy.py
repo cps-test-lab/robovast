@@ -362,6 +362,56 @@ def test_family_env_carries_what_the_environment_says(monkeypatch):
     assert env["ROBOVAST_PROJECT_TAG"] == "2026-08-20"
 
 
+def test_the_pod_carries_the_setup_hosts_timezone(monkeypatch):
+    # Campaign ids are minted from datetime.now() in this pod, so without TZ every
+    # campaign directory is named in UTC (see _host_timezone).
+    monkeypatch.setattr(sd, "_host_timezone", lambda: "Europe/Berlin")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["TZ"] == "Europe/Berlin"
+
+
+def test_an_undeterminable_timezone_is_carried_as_empty_not_omitted(monkeypatch):
+    # "" is UTC to libc; an omitted entry is what the merge patch preserves, so a host
+    # that cannot name its zone must still be able to reset a pod back to UTC.
+    monkeypatch.setattr(sd, "_host_timezone", lambda: "")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["TZ"] == ""
+
+
+def test_host_timezone_prefers_the_localtime_symlink(monkeypatch, tmp_path):
+    etc = tmp_path / "etc"
+    zone = tmp_path / "usr/share/zoneinfo/Europe/Berlin"
+    zone.parent.mkdir(parents=True)
+    zone.write_bytes(b"")
+    etc.mkdir()
+    (etc / "localtime").symlink_to(zone)
+    (etc / "timezone").write_text("Etc/UTC\n")
+    monkeypatch.setattr(sd, "_TZ_PATHS", (etc / "localtime", etc / "timezone"))
+    assert sd._host_timezone() == "Europe/Berlin"
+
+
+def test_host_timezone_falls_back_to_etc_timezone(monkeypatch, tmp_path):
+    # /etc/localtime is a copy, not a link — Debian's /etc/timezone is all that is left.
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "localtime").write_bytes(b"")
+    (etc / "timezone").write_text("Europe/Berlin\n")
+    monkeypatch.setattr(sd, "_TZ_PATHS", (etc / "localtime", etc / "timezone"))
+    assert sd._host_timezone() == "Europe/Berlin"
+
+
+def test_an_unresolvable_zone_name_is_utc_rather_than_a_broken_tz(monkeypatch, tmp_path):
+    # libc would silently fall back to UTC for a name the pod cannot resolve, leaving a
+    # configured-looking TZ producing the very UTC names it was meant to replace.
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "timezone").write_text("Mars/Olympus_Mons\n")
+    monkeypatch.setattr(sd, "_TZ_PATHS", (etc / "localtime", etc / "timezone"))
+    assert sd._host_timezone() == ""
+
+
 def test_an_explicit_env_still_wins(monkeypatch):
     # setup composes its own env; this must not overwrite a value decided upstream.
     monkeypatch.setenv("ROBOVAST_PROJECT", "from-the-shell")

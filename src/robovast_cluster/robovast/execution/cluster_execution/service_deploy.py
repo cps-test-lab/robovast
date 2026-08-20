@@ -38,6 +38,7 @@ run a dev build — it moves the whole image family, this one included.
 
 import datetime
 import logging
+import pathlib
 
 from robovast.common.config_plugins import GIT_TOKEN_ENVS
 from robovast.service.interface import DEFAULT_PORT
@@ -1314,6 +1315,59 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     return env
 
 
+#: ``(/etc/localtime, /etc/timezone)`` — where :func:`_host_timezone` reads the setup
+#: host's zone from. A constant so a test can point it at a fixture tree instead of
+#: needing the machine running the suite to be in some particular zone.
+_TZ_PATHS = (pathlib.Path("/etc/localtime"), pathlib.Path("/etc/timezone"))
+
+
+# A campaign id is minted from wall-clock time in whatever process names the campaign
+# (``controller.campaign_id_for`` -> ``datetime.now()``, which is naive/process-local).
+# For a cluster campaign that process is this pod, so with no zone set every campaign
+# directory is named in UTC while the people reading those names are not. The zone of the
+# host that ran setup is the best available stand-in for where those people are.
+#
+# This pod only: campaign Job pods get an env list built explicitly by
+# ``KubernetesBackend`` and inherit nothing from here, so their logs stay UTC. Recorded
+# times are unaffected either way -- ``store`` keeps epoch seconds and renders them UTC.
+def _host_timezone():
+    """IANA zone name of the host running setup, or ``""`` when it cannot be determined.
+
+    ``/etc/localtime``'s symlink target first (any systemd distro, and macOS),
+    ``/etc/timezone`` second (Debian/Ubuntu only, and the only one left when
+    ``/etc/localtime`` is a copy rather than a link).
+
+    Validated against the local tz database before it is written into a manifest, because
+    a name the pod cannot resolve is not an error there: libc falls back to UTC, which
+    would leave a configured-looking ``TZ`` producing exactly the UTC names it was meant
+    to replace. An empty return is the honest version of that fallback. That check is also
+    the sanitiser -- an absolute or non-normalised key is a ``ValueError`` -- so nothing
+    odd on disk reaches the manifest.
+    """
+    import zoneinfo  # pylint: disable=import-outside-toplevel
+
+    localtime, timezone_file = _TZ_PATHS
+    candidates = []
+    if localtime.is_symlink():
+        parts = localtime.resolve().parts
+        if "zoneinfo" in parts:
+            candidates.append("/".join(parts[parts.index("zoneinfo") + 1:]))
+    try:
+        candidates.append(timezone_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+
+    for name in candidates:
+        try:
+            zoneinfo.ZoneInfo(name)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            continue  # not a zone this tz database knows, so not one the pod would either
+        return name
+    logger.warning("Could not determine this host's timezone; the service will name "
+                   "campaigns in UTC. Set TZ in the service Deployment's env to override.")
+    return ""
+
+
 def service_manifests(namespace="default", image=None, env=None,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
@@ -1383,6 +1437,12 @@ def service_manifests(namespace="default", image=None, env=None,
     for var in ("ROBOVAST_PROJECT", "ROBOVAST_PROJECT_TAG"):
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
+
+    # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
+    # as the family env above: "" is UTC to libc -- what an unset TZ already means -- so an
+    # empty value resets the pod to UTC instead of being a value the merge patch preserves.
+    if not any(e["name"] == "TZ" for e in env):
+        env = [*env, {"name": "TZ", "value": _host_timezone()}]
 
     extra = []
     if git_token is None:

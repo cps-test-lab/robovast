@@ -156,6 +156,18 @@ To read it back later, ``vast exec cluster token`` prints the URL, the token and
 three ways to connect (``-q`` for the token alone). Each cluster mints its own token, so
 the URL it names is the only one that token opens.
 
+Setup also stamps the **timezone of the host it ran on** into the service pod's ``TZ``,
+read from ``/etc/localtime``'s symlink target (or ``/etc/timezone``) and validated against
+that host's tz database first. Campaign ids are minted from wall-clock time in the process
+that names the campaign — the service pod, for a cluster campaign — so without this every
+campaign directory is named in UTC while the people reading those names are not. An
+``upgrade`` re-stamps it from the machine running the upgrade; a host whose zone cannot be
+determined logs a warning and leaves the pod in UTC, which is the pre-existing behaviour.
+Only this pod is affected: campaign Jobs get an env list built explicitly for them and
+inherit nothing from it, so their logs stay UTC, as do recorded timestamps everywhere
+(``store`` keeps epoch seconds). A mode-1/2 ``vast serve`` already runs in its host's zone
+and needs none of this.
+
 Everybody else, from a machine with no kubeconfig:
 
 .. code-block:: bash
