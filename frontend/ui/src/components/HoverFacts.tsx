@@ -17,8 +17,9 @@ import type { TooltipProps } from '@mui/material/Tooltip'
  * the fact exists and is empty; leaving it out says the panel never had it. Those are
  * different, and only one of them is true.
  *
- * **The trigger carries a dotted underline and a help cursor**, matching the meta hovers in
- * `DetailsBox`, so there is something to aim at. A hover nobody discovers is not a feature.
+ * **The trigger's appearance is the caller's business.** This attaches to whatever element it
+ * is handed and changes nothing about it, so a caller may mark it (the dotted underline and
+ * help cursor `DetailsBox` uses) or leave it looking exactly as it did.
  *
  * **No colours of its own.** It inherits the tooltip's surface (the theme's `MuiPaper`
  * override already styles it) and uses semantic roles for text, so it holds up in both
@@ -41,7 +42,8 @@ export function HoverFacts({
   title?: string
   facts: Fact[]
   placement?: TooltipProps['placement']
-  /** The trigger. Wrapped as-is; give it the affordance with {@link hoverTriggerSx}. */
+  /** The trigger. Attached to as-is — neither its markup, its layout nor its cursor
+   *  changes, so any affordance is the caller's to add. */
   children: React.ReactElement
 }) {
   const shown = facts.filter((f) => f.value)
@@ -73,10 +75,3 @@ export function HoverFacts({
     </Tooltip>
   )
 }
-
-/** The trigger affordance: dotted underline + help cursor, as used by `DetailsBox`'s meta. */
-export const hoverTriggerSx = {
-  cursor: 'help',
-  textDecoration: 'underline dotted',
-  textUnderlineOffset: 3,
-} as const

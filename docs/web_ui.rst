@@ -146,9 +146,12 @@ several ``.vast`` files in subdirectories would otherwise be ambiguous.
 
 It is on the name rather than in a line of its own because it answers a question *about* a
 campaign the reader has already found by its name: a card is read for what the campaign is
-doing, and a permanent second line spends that space on something wanted occasionally. The
-name is **underlined** exactly where there is something to read, so the marking means "this
-one has an origin" rather than "this is a campaign name".
+doing, and a permanent second line spends that space on something wanted occasionally.
+
+**The name itself is unchanged** — same type, same weight, no underline, no cursor change,
+nothing that moves by a pixel. So the hover is not advertised: it is a detail for whoever
+goes looking, and it is documented here rather than marked on a card that is read at a
+glance for something else.
 
 **It is a record, not a link, and it is deliberately not clickable.** A campaign is
 workspace-independent (:ref:`architecture`): the workspace named may since have been edited,
@@ -163,9 +166,9 @@ survives the parent campaign being deleted and a re-run of a re-run still names 
 campaign listing is paged, so a hover that had to find its parent in the list would answer
 differently depending on where you had scrolled.
 
-A campaign that ran **before this was recorded** has no hover at all, and its name is not
-underlined. Its ``.vast`` basename could be read out of its snapshot, but that says nothing
-about which workspace, and filling in half the answer would read as though it knew the rest.
+A campaign that ran **before this was recorded** has no hover at all. Its ``.vast`` basename
+could be read out of its snapshot, but that says nothing about which workspace, and filling in
+half the answer would read as though it knew the rest.
 
 The same record reaches an agent through the MCP ``get_campaign_summary`` tool, beside the
 image and code provenance it already reports. It is deliberately **not** on
