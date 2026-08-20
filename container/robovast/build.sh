@@ -51,6 +51,8 @@ PLATFORM=""
 
 # shellcheck source=../platforms.env
 . "$BASEDIR/../platforms.env"
+# shellcheck source=../buildcache.sh
+. "$BASEDIR/../buildcache.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -153,6 +155,13 @@ buildx_args() {
       BUILDX_ARGS+=(-t "$published_tag")
     fi
   fi
+
+  # The registry layer cache, keyed on the PUBLISHED repo rather than the local name: the
+  # cache lives beside the image it caches, and a bare local name has no registry to hold it
+  # (buildcache.sh returns no flags for one). Import on both paths, export only on a --push --
+  # see buildcache.sh for why that asymmetry is a driver constraint.
+  buildcache_args "$published_tag" "${PUSH:-}" || return $?
+  BUILDX_ARGS+=("${BUILDCACHE_ARGS[@]}")
 }
 
 echo "Using Dockerfile: $BASEDIR"

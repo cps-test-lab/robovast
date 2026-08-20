@@ -23,6 +23,8 @@ PLATFORM=""
 
 # shellcheck source=../platforms.env
 . "$ROOT/container/platforms.env"
+# shellcheck source=../buildcache.sh
+. "$ROOT/container/buildcache.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -73,8 +75,14 @@ else
   BUILDX_ARGS+=(--load)
 fi
 
+# Registry layer cache for this image's own repo. It protects the two node stages and the
+# poetry pass over the scientific stack, which is the bulk of this build and is rebuilt from
+# scratch whenever the local builder has lost its cache.
+buildcache_args "$TAG" "${PUSH:-}"
+
 docker buildx build \
   "${BUILDX_ARGS[@]}" \
+  "${BUILDCACHE_ARGS[@]}" \
   $EXTRA_ARGS \
   -t "$TAG" \
   -f "$BASEDIR/Dockerfile" \

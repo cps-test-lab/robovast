@@ -125,6 +125,8 @@ SRC_FLAG=()
 
 # shellcheck source=container/platforms.env
 . "$BASEDIR/platforms.env"
+# shellcheck source=container/buildcache.sh
+. "$BASEDIR/buildcache.sh"
 
 # Three jobs, not four steps. Only robovast-roqsim depends on anything: it is FROM the base,
 # so those two are one chain. The controller (two npm builds plus poetry over the scientific
@@ -158,8 +160,10 @@ CONTROLLER_PID=$!
 # their own registry got three dev images and silently kept the published sidecar, with
 # nothing to notice it by. A release must publish the whole family, because ROBOVAST_PROJECT
 # moves the whole family. Buildx directly: there is no container/sidecar/build.sh.
+buildcache_args "$SIDECAR_TAG" "$PUSH"
 ( docker buildx build --platform "$PLATFORMS_SIDECAR" \
-    -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "$BASEDIR/sidecar" $EXTRA_ARGS ) \
+    -t "$SIDECAR_TAG" "${PUSH_FLAG[@]}" "${BUILDCACHE_ARGS[@]}" \
+    "$BASEDIR/sidecar" $EXTRA_ARGS ) \
   >"$LOG_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
 
