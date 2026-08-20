@@ -864,7 +864,7 @@ def upgrade(namespace, kube_context, timeout):
         # the first campaign pays a full pull of robovast-roqsim. Here because the pod has
         # just been restarted anyway, so nothing is mid-campaign -- and after the success
         # line, since this must not be able to fail or stall an upgrade that has converged.
-        # The echo is free: these refs were resolved in order to create the Jobs.
+        # The echo is free: these refs were resolved in order to declare the DaemonSet.
         click.echo("✓ upgraded and ready")
         from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
         warmed = warm_family_images(namespace, kube_context)

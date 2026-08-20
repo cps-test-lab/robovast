@@ -1068,7 +1068,31 @@ This also covers what the build fire points cannot — a campaign whose containe
 ``build:`` section runs family images that no build ever produced, so there is no
 build-completion transition to hang a warm on.
 
-Three properties, and each replaces machinery rather than adding it:
+They are also warmed with a different *shape*, and the asymmetry is the point. A Job schedules
+one pod and therefore warms one node, which is the right answer for an experiment image: the pod
+that wants it is the next one to run, and the only one that will. Any node may run any cell of a
+sweep, so for the family that leaves every other node to pay the pull — so the family gets a
+**DaemonSet** instead, one container per image, each asleep. An exited container's image is
+collectable again, so init containers would warm a node and then let it go cold; a running
+container is what stops the kubelet reclaiming the bytes. The cost is a few millicores and tens
+of mebibytes per image per node, against nodes sized for a simulator.
+
+Its containers run ``imagePullPolicy: Always`` while every campaign pod runs ``IfNotPresent``,
+which is deliberately backwards and is the whole reason the DaemonSet earns its place. A floating
+tag is never re-pulled under ``IfNotPresent`` once a node holds bytes for it, and campaign pods
+keep ``IfNotPresent`` precisely so that a sweep does not depend on the registry being reachable
+at every pod start — which leaves this DaemonSet as the only place a re-pushed ``:latest`` can
+reach a node at all. It buys freshness, not reproducibility: a pinned ``ROBOVAST_PROJECT_TAG`` is
+still what makes two runs comparable, and with a floating tag ``Always`` can just as well drift
+new bytes into the middle of a sweep. The pod template carries the same restart annotation the
+service Deployment does, because without it a re-pushed floating tag leaves every field
+byte-identical, so the patch rolls nothing and ``Always`` never gets a container to start.
+
+Being a DaemonSet, it gives up the self-collection below: it is meant to persist, so teardown
+removes it explicitly. Skipping that would leave a pod on every node holding multi-GB images for
+a deployment that no longer exists.
+
+Three properties of the **Job** shape, and each replaces machinery rather than adding it:
 
 * **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
   a 409 meaning "already warming". No in-process record, and a service restart changes nothing —
@@ -1099,8 +1123,9 @@ or one whose kubelet has since garbage-collected the image. Neither is reachable
 campaign-completion hook — the first is the placement limit below, and the second would evict a
 prewarmed copy just as readily. Warming at view time is no better, since ``AuxPodSession``
 creates a pod with that image immediately anyway and a second pod would race the same pull for
-no gain. So the honest answer is that this particular latency needs multi-node warming, not
-another fire point.
+no gain. So the honest answer is that this particular latency needs multi-node warming rather
+than another fire point — which the family DaemonSet now provides for a campaign that ran a
+family image directly, and still does not for one that built its own.
 
 Two further things it deliberately does not do. It does **not** fire on the restart branch of
 ``get_image_build_status``, which holds only a ``build_id`` — and ``build_id_for`` does not
@@ -1113,10 +1138,14 @@ byte earlier.
 
 **The registry stays authoritative.** Warmth is an optimization on top of it, never a source of
 truth: ``present()`` still asks the registry, a node holding an image is not evidence it was
-pushed, and nothing about digests or provenance changes. Its own limit is placement — the
-prewarm Job carries no ``nodeSelector``, and neither does the exec pod, so on a single-node
-cluster they are necessarily the same node and on a larger one this is best-effort until it
-becomes a DaemonSet over the Kueue flavor's ``nodeLabels``.
+pushed, and nothing about digests or provenance changes. Placement is where the Job shape is
+still best-effort — it carries no ``nodeSelector``, and neither does the exec pod, so on a
+single-node cluster they are necessarily the same node and on a larger one an experiment image
+may be warm on a node the exec pod does not get. The family DaemonSet has no such limit by
+construction, and carries no ``nodeSelector`` either for the opposite reason: it wants every
+node. It does mirror the ResourceFlavor's toleration, read from where that flavor is written, because a
+warm pod that does not tolerate what campaign pods tolerate would skip exactly the nodes worth
+warming — and report success doing it.
 
 **The pod env is the site default; the request overrides it.** That ordering is the whole
 reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables

@@ -38,6 +38,15 @@ Three properties every caller relies on:
 * **Never fatal.** A prewarm that fails costs a slow pod later, which is exactly what the
   situation was before it existed, so callers log and move on.
 
+**Two shapes, because "warm" means two different things here.** A Job schedules one pod and
+therefore warms exactly one node, which is the right answer for an experiment image: the pod
+that wants it is the next one to run, and it is the only pod that will. The *family* images
+are the opposite case -- any node may run any cell of a sweep -- so one warmed node leaves
+every other one to pay the pull. Those get a DaemonSet instead (:func:`warm_daemonset_manifest`),
+which is the only way Kubernetes expresses "on every node". It gives up the self-collection
+below in exchange: a DaemonSet is meant to persist, so it is removed explicitly at teardown
+(:func:`delete_warm_daemonset`) rather than by a TTL.
+
 Deliberately **not** submitted to Kueue: a prewarm admitted behind a full sweep warms the
 node after the thing that needed it, which is worse than not warming at all. That follows
 the build Job, which carries no queue label either; campaign and postprocessing Jobs are
@@ -67,6 +76,13 @@ WARM_DEADLINE_SECONDS = 900
 #: How long a finished prewarm Job sticks around. Long enough that a repeated call lands on
 #: the existing object (a cheap 409) instead of recreating it -- ``get_image_build_status``
 #: has one path that re-fires per poll by design.
+#:
+#: The flip side bounds what ``Always`` below can do for a *Job*: a repeat inside this window
+#: is a 409, so nothing is re-pulled even if the tag moved. Harmless where the Job is used --
+#: an experiment ref is content-addressed, so the same ref is the same bytes by construction --
+#: and it is why the family images, whose refs float, are declared by a DaemonSet whose restart
+#: stamp forces a roll instead. A time-varying Job name would not be the fix: idempotency by
+#: name is what removes the need for any in-process record at all.
 WARM_TTL_SECONDS = 600
 
 #: Infrastructure, not workload: enough to schedule, not enough to matter against a node's
@@ -136,9 +152,19 @@ def warm_job_manifest(*, image_ref: str, namespace: str,
                         "name": "warm",
                         "image": image_ref,
                         # The pull is the work; this just has to be something the kubelet
-                        # will start. `IfNotPresent` so an already-warm node does nothing.
+                        # will start.
                         "command": ["/bin/true"],
-                        "imagePullPolicy": "IfNotPresent",
+                        # `Always`, and this is the only container here that wants it. A
+                        # floating tag is never re-pulled once a node holds bytes for it, so
+                        # `IfNotPresent` would make this confirm a stale cache rather than
+                        # refresh it -- and since every campaign pod runs `IfNotPresent` so
+                        # that a sweep does not depend on the registry, this Job is the only
+                        # place a re-pushed `:latest` reaches a node at all. The cost is one
+                        # manifest check: `Always` re-transfers no layer whose digest the
+                        # node already has. Affordable *here* because a prewarm never fails
+                        # its caller, so an unreachable registry leaves exactly the situation
+                        # that held before the feature existed.
+                        "imagePullPolicy": "Always",
                         "resources": {"requests": {"cpu": WARM_CPU_REQUEST,
                                                    "memory": WARM_MEMORY_REQUEST}},
                     }],
@@ -187,7 +213,28 @@ def warm_image(k8s_batch, namespace: str, image_ref: str,
 #: ``robovast-controller`` is deliberately absent: it *is* the service Deployment, which
 #: runs ``imagePullPolicy: Always``, so the kubelet pulls it during the rollout that
 #: ``setup``/``upgrade`` already performs. Warming it would duplicate that pull.
+#:
 WARM_FAMILY_MEMBERS = ("robovast", "robovast-roqsim", "robovast-sidecar")
+
+#: Name of the DaemonSet holding the family images on the nodes. Fixed, not derived: it is one
+#: object per deployment, and a stable name is what makes an ``upgrade`` patch the existing one
+#: instead of standing a second one up beside it.
+WARM_DAEMONSET_NAME = "robovast-image-warm"
+
+#: What the resident containers sleep for. A plain integer of seconds rather than
+#: ``sleep infinity``: the latter is a GNU coreutils extension, and ``robovast-sidecar`` is
+#: alpine, where busybox rejects it and the pod would crash-loop on every node. ~68 years,
+#: which also fits a 32-bit int.
+WARM_SLEEP_SECONDS = 2147483647
+
+def _warm_tolerations() -> list:
+    """What the warm pod must tolerate, and it is not optional: a pod that does not tolerate
+    what campaign pods tolerate skips exactly the nodes worth warming -- and reports success
+    while doing it. Read from where the ResourceFlavor granting it is written rather than
+    restated here, so there is one place to change if the taint ever does.
+    """
+    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS
+    return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
 
 
 def family_refs_to_warm() -> list:
@@ -204,24 +251,163 @@ def family_refs_to_warm() -> list:
             for member in WARM_FAMILY_MEMBERS]
 
 
+def warm_daemonset_manifest(*, image_refs: list, namespace: str, pull_secret_name: str = "",
+                            stamp: str = "") -> dict:
+    """A DaemonSet that holds every ref in *image_refs* on every node, one container each.
+
+    One container per image, each one asleep. That is the whole design, and the
+    two obvious economies are both worse: init containers that exit leave their images
+    collectable again, and a single container can only pin one image. Running them all costs
+    :data:`WARM_CPU_REQUEST` / :data:`WARM_MEMORY_REQUEST` per image per node -- millicores
+    against a node sized for a simulator -- and buys the property the Job cannot have, that an
+    image in use by a running container is an image the kubelet will not garbage-collect. It
+    also keeps :data:`WARM_FAMILY_MEMBERS` a plain list where no entry's position means
+    anything.
+
+    Sleeping rather than the Job's ``/bin/true`` is the one place in this module
+    where the image's *contents* matter: a DaemonSet pod may only carry
+    ``restartPolicy: Always``, so a container that exits is restarted forever. The Job can
+    point at an arbitrary experiment image precisely because it does not care; this cannot,
+    which is why it is used only for the family images we build.
+
+    *stamp* goes into the pod template's restart annotation, and without it this mechanism
+    silently does nothing in the case it exists for. A floating tag makes every field here
+    byte-identical across pushes, so patching would change no field, roll no pod and re-pull
+    nothing -- the trap ``service_deploy`` documents at
+    :data:`~.service_deploy.RESTART_ANNOTATION`. The stamp forces the roll; the roll plus
+    ``imagePullPolicy: Always`` is what makes the bytes current.
+
+    No ``nodeSelector``. Every node that can run a pod is a node that may run a cell, and an
+    untainted node the campaigns happen not to use costs one pull it never reads -- while a
+    missing selector cannot make it *skip* a node, which is the failure that matters.
+    """
+    from .service_deploy import RESTART_ANNOTATION
+
+    refs = list(image_refs)
+    if not refs:
+        # Never a silent no-op: an empty set means the family failed to resolve, and the API
+        # server's own complaint about a container-less pod names none of that.
+        raise ValueError("a warm DaemonSet needs at least one image ref")
+
+    labels = {"jobgroup": WARM_JOBGROUP, "name": WARM_DAEMONSET_NAME}
+    pod_spec = {
+        "containers": [{
+            "name": _warm_container_name(ref),
+            "image": ref,
+            "command": ["sleep", str(WARM_SLEEP_SECONDS)],
+            # `Always`, for the reason the Job's own comment gives.
+            "imagePullPolicy": "Always",
+            "resources": {"requests": {"cpu": WARM_CPU_REQUEST,
+                                       "memory": WARM_MEMORY_REQUEST}},
+        } for ref in refs],
+        "tolerations": _warm_tolerations(),
+    }
+    if pull_secret_name:
+        pod_spec["imagePullSecrets"] = [{"name": pull_secret_name}]
+
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "DaemonSet",
+        "metadata": {"name": WARM_DAEMONSET_NAME, "namespace": namespace,
+                     "labels": {"jobgroup": WARM_JOBGROUP}},
+        "spec": {
+            "selector": {"matchLabels": {"name": WARM_DAEMONSET_NAME}},
+            # Nothing consumes these pods, so there is no availability to preserve and rolling
+            # one node at a time would only make the refresh slower than what wants it.
+            "updateStrategy": {"type": "RollingUpdate",
+                               "rollingUpdate": {"maxUnavailable": "100%"}},
+            "template": {
+                "metadata": {"labels": labels,
+                             **({"annotations": {RESTART_ANNOTATION: stamp}} if stamp else {})},
+                "spec": pod_spec,
+            },
+        },
+    }
+
+
+def _warm_container_name(image_ref: str) -> str:
+    """Readable, DNS-1123-safe container name for *image_ref*.
+
+    Derived from the repository alone, with the tag deliberately dropped: a container name is
+    a merge key to Kubernetes, so a name carrying the tag would make a tag bump look like a
+    *different* container -- adding one beside the old rather than replacing it. Unlike
+    :func:`warm_id_for`, which needs the full ref because two tags of one repo are two
+    different things to warm, this one wants exactly the opposite.
+    """
+    repo = image_ref.rsplit("/", 1)[-1].split(":")[0]
+    stem = re.sub(r"[^a-z0-9]+", "-", repo.lower()).strip("-")
+    return f"pull-{stem[:40].strip('-')}" if stem else "pull"
+
+
+def apply_warm_daemonset(k8s_apps, namespace: str, manifest: dict) -> bool:
+    """Create the warm DaemonSet, or replace the existing one with *manifest*. True if created.
+
+    An update rather than a delete-and-recreate: the DaemonSet controller then rolls the pods
+    itself, so a refresh never leaves the nodes with nothing warm in between.
+
+    A **replace** rather than a patch, and the difference is not cosmetic. A patch is a
+    strategic merge, which merges the container list by name -- so a family member whose set
+    changed would be added beside the old entry instead of superseding it, and a removed member
+    would linger forever. A replace says what this function means: make it look like this.
+    ``spec.selector`` is the one immutable field and it is a constant here, so there is nothing
+    a replace can be rejected for.
+    """
+    from kubernetes import client
+
+    try:
+        k8s_apps.create_namespaced_daemon_set(namespace, manifest)
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+        k8s_apps.replace_namespaced_daemon_set(WARM_DAEMONSET_NAME, namespace, manifest)
+        logger.info("refreshed the image-warm DaemonSet in %s", namespace)
+        return False
+    logger.info("created the image-warm DaemonSet in %s", namespace)
+    return True
+
+
+def delete_warm_daemonset(namespace: str, kube_context=None) -> bool:
+    """Remove the warm DaemonSet. True if one was there to remove.
+
+    Teardown deletes named objects rather than the namespace, so without this the warm pods
+    outlive the deployment they belong to -- on every node, indefinitely. Never raises: this
+    runs inside a teardown, where a failure to clean up one object must not abandon the rest.
+    """
+    from kubernetes import client
+
+    from .kube_client import load_kube_config
+
+    try:
+        load_kube_config(kube_context)
+        client.AppsV1Api().delete_namespaced_daemon_set(
+            WARM_DAEMONSET_NAME, namespace,
+            body=client.V1DeleteOptions(propagation_policy="Foreground"))
+    except Exception as e:  # noqa: BLE001 - absent is the common case, and is success
+        logger.debug("no image-warm DaemonSet to remove from %s: %s", namespace, e)
+        return False
+    logger.info("removed the image-warm DaemonSet from %s", namespace)
+    return True
+
+
 def warm_family_images(namespace: str, kube_context=None) -> list:
-    """Prewarm the family images a campaign will run. Returns the refs it reached.
+    """Hold the family images on every node. Returns the refs covered.
 
     Called from ``setup``/``upgrade`` because that is the moment every node is cold for the
     whole family -- a tag bump or a moved project means the next campaign pays a full pull of
     ``robovast-roqsim``, the largest image there is -- and the moment it costs nothing, since
     the pod is being restarted anyway so no campaign is mid-flight.
 
-    Fire-and-forget: it creates Jobs and returns. An ``upgrade`` must not block for minutes
-    on a pull, and there is nothing to report back if it did -- nothing reads a prewarm.
+    Fire-and-forget: it declares the DaemonSet and returns. An ``upgrade`` must not block for
+    minutes on a pull, and there is nothing to report back if it did -- nothing reads a
+    prewarm. Which is also why the return value is what was *declared*, not what has landed:
+    the DaemonSet controller is what makes it true, node by node, after this returns.
 
-    A ref counts as reached whether its Job was created or already existed: "already
-    warming" is the same answer to "will this be on the node" as "now warming". One member
-    failing does **not** abandon the rest -- they are independent pulls, and the largest
-    image is the one most worth warming even if a smaller one just failed. So the return
-    value is what was actually reached rather than what was intended, and a caller reporting
-    it cannot overstate what happened.
+    One object rather than a Job per member, so unlike the Job path there is no partial
+    outcome to report: the whole family is declared or none of it is. That is the trade for
+    covering every node, and the cost is bounded by this never being able to fail its caller.
     """
+    from datetime import datetime, timezone
+
     from kubernetes import client
 
     from .kube_client import load_kube_config
@@ -229,7 +415,7 @@ def warm_family_images(namespace: str, kube_context=None) -> list:
 
     try:
         load_kube_config(kube_context)
-        batch = client.BatchV1Api()
+        apps = client.AppsV1Api()
         core = client.CoreV1Api()
         refs = family_refs_to_warm()
     except Exception as e:  # noqa: BLE001 - a prewarm must never fail a finished deployment
@@ -245,12 +431,11 @@ def warm_family_images(namespace: str, kube_context=None) -> list:
     except Exception:  # noqa: BLE001 - absent, or unreadable; either way, no credential
         pull_secret = ""
 
-    reached = []
-    for ref in refs:
-        try:
-            warm_image(batch, namespace, ref, pull_secret)
-        except Exception as e:  # noqa: BLE001 - one member must not abandon the others
-            logger.warning("could not prewarm %s: %s", ref, e)
-            continue
-        reached.append(ref)
-    return reached
+    try:
+        apply_warm_daemonset(apps, namespace, warm_daemonset_manifest(
+            image_refs=refs, namespace=namespace, pull_secret_name=pull_secret,
+            stamp=datetime.now(timezone.utc).isoformat()))
+    except Exception as e:  # noqa: BLE001 - as above: a slow first pod, not a failed deploy
+        logger.warning("could not prewarm the family images: %s", e)
+        return []
+    return refs

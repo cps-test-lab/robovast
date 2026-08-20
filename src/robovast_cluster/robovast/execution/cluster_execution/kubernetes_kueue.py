@@ -44,6 +44,12 @@ KUEUE_WORKLOAD_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
 KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
 
+#: The taint a campaign node may carry, and so what anything that has to run *where campaigns
+#: run* must tolerate. Named here because this is where the ResourceFlavor granting it is
+#: written; ``image_warm`` reads it so its DaemonSet cannot drift from the flavor and skip
+#: precisely the nodes worth warming.
+KUEUE_JOB_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "NoSchedule"},)
+
 #: Duplicated from :mod:`.kubernetes_gpu` rather than imported, to keep the dependency
 #: one-way (that module imports this one for the helm and quantity helpers).
 GPU_RESOURCE = "nvidia.com/gpu"
@@ -96,11 +102,7 @@ controllerManager:
 def _queue_manifests(namespace, queue_name, cluster_queue, cpu_quota, memory_quota,
                      node_labels=None, gpu_quota=0):
     """The ResourceFlavor + ClusterQueue + LocalQueue trio, as manifest dicts."""
-    flavor_spec = {
-        "tolerations": [
-            {"key": "dedicated", "value": "batch", "effect": "NoSchedule"},
-        ],
-    }
+    flavor_spec = {"tolerations": [dict(x) for x in KUEUE_JOB_TOLERATIONS]}
     if node_labels:
         # Label VALUES are strings to Kubernetes; a bare YAML `true` or `3` is rejected
         # by the API server, and str() here is what keeps a `.vast` from having to quote.

@@ -21,9 +21,12 @@ import types
 import pytest
 
 from robovast.execution.cluster_execution.cluster_service import ClusterService
-from robovast.execution.cluster_execution.image_warm import (WARM_DEADLINE_SECONDS,
+from robovast.execution.cluster_execution.image_warm import (WARM_DAEMONSET_NAME,
+                                                             WARM_DEADLINE_SECONDS,
                                                              WARM_JOBGROUP,
+                                                             WARM_SLEEP_SECONDS,
                                                              WARM_TTL_SECONDS,
+                                                             warm_daemonset_manifest,
                                                              warm_id_for,
                                                              warm_job_manifest)
 from robovast.service.interface import ImageBuildStatus
@@ -32,6 +35,42 @@ from robovast.service.image_build import BuildSpec
 
 BUILD = "imgbuild-sut-abc123"
 REF = "harbor.example.de/robovast/sut:abc123"
+
+
+class _Apps:
+    """An apps API that records the DaemonSet it was asked to create or patch."""
+
+    def __init__(self, exists=False, fail_with=None):
+        self.created = []
+        self.patched = []
+        self.deleted = []
+        self._exists = exists
+        self._fail_with = fail_with
+
+    def create_namespaced_daemon_set(self, namespace, manifest):
+        if self._fail_with is not None:
+            raise self._fail_with
+        if self._exists:
+            raise _api_exception(409)
+        self.created.append((namespace, manifest))
+
+    def replace_namespaced_daemon_set(self, name, namespace, manifest):
+        self.patched.append((name, namespace, manifest))
+
+    def delete_namespaced_daemon_set(self, name, namespace, body=None):
+        self.deleted.append((name, namespace))
+
+    @property
+    def applied(self):
+        """The manifest that was applied, whichever verb got it there."""
+        if self.created:
+            return self.created[0][1]
+        return self.patched[0][2]
+
+    @property
+    def images(self):
+        return [c["image"] for c in
+                self.applied["spec"]["template"]["spec"]["containers"]]
 
 
 @pytest.fixture
@@ -121,7 +160,6 @@ def test_the_pod_carries_the_registry_pull_secret():
     spec = warm_job_manifest(image_ref=REF, namespace="ns1",
                              pull_secret_name="reg-push")["spec"]["template"]["spec"]
     assert spec["imagePullSecrets"] == [{"name": "reg-push"}]
-    assert spec["containers"][0]["imagePullPolicy"] == "IfNotPresent"
 
 
 def test_no_pull_secret_means_no_empty_reference():
@@ -407,64 +445,162 @@ def test_a_submit_whose_base_prewarm_fails_still_submits_the_build(cs, monkeypat
     assert batch.names == [BUILD]
 
 
-def test_warming_the_family_creates_one_job_per_member_with_the_pull_secret(monkeypatch):
+def test_the_warm_pods_pull_rather_than_trusting_what_the_node_has(monkeypatch):
+    """The whole point of the DaemonSet. A floating tag is never re-pulled under
+    ``IfNotPresent`` once a node holds bytes for it, and every campaign pod runs
+    ``IfNotPresent`` so a sweep does not depend on the registry -- which leaves this as the
+    only place a re-pushed ``:latest`` can reach a node at all."""
+    manifest = warm_daemonset_manifest(image_refs=["r/a:latest", "r/b:latest"], namespace="ns1")
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+
+    assert [c["imagePullPolicy"] for c in containers] == ["Always", "Always"]
+    # And the Job path too: it is the same argument, and it never fails its caller either.
+    assert (warm_job_manifest(image_ref=REF, namespace="ns1")["spec"]["template"]["spec"]
+            ["containers"][0]["imagePullPolicy"]) == "Always"
+
+
+def test_a_floating_tag_still_rolls_the_daemonset(monkeypatch):
+    """Without the restart annotation this mechanism silently does nothing in exactly the case
+    it exists for: a re-pushed ``:latest`` leaves every field byte-identical, so a patch would
+    change nothing, roll no pod, and re-pull nothing -- the trap ``service_deploy`` documents.
+    ``Always`` only helps a container that *starts*."""
+    from robovast.execution.cluster_execution.service_deploy import RESTART_ANNOTATION
+    first = warm_daemonset_manifest(image_refs=["r/a:latest"], namespace="ns1", stamp="t1")
+    second = warm_daemonset_manifest(image_refs=["r/a:latest"], namespace="ns1", stamp="t2")
+
+    annotations = first["spec"]["template"]["metadata"]["annotations"]
+    assert annotations[RESTART_ANNOTATION] == "t1"
+    assert first["spec"]["template"] != second["spec"]["template"]
+
+
+def test_every_image_gets_a_sleeping_container_so_the_kubelet_cannot_collect_it(monkeypatch):
+    """An exited container's image is collectable again, so init containers would warm the node
+    and then let it go cold. A running container is what pins the bytes -- which is the one
+    property the Job shape cannot have."""
+    refs = ["r/a:t", "r/b:t", "r/c:t"]
+    containers = (warm_daemonset_manifest(image_refs=refs, namespace="ns1")
+                  ["spec"]["template"]["spec"]["containers"])
+
+    assert [c["image"] for c in containers] == refs
+    assert all(c["command"] == ["sleep", str(WARM_SLEEP_SECONDS)] for c in containers)
+    # A plain integer, not `sleep infinity`: that is a GNU extension and robovast-sidecar is
+    # alpine, where busybox rejects it and the pod would crash-loop on every node.
+    assert str(WARM_SLEEP_SECONDS).isdigit()
+
+
+def test_the_warm_pods_tolerate_what_campaign_pods_tolerate(monkeypatch):
+    """A warm pod that does not tolerate the campaign nodes' taint skips precisely the nodes
+    worth warming -- and reports success while doing it. Read from where the ResourceFlavor
+    granting it is written, so the two cannot drift."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import KUEUE_JOB_TOLERATIONS
+    spec = warm_daemonset_manifest(image_refs=["r/a:t"], namespace="ns1")["spec"]["template"]["spec"]
+
+    assert spec["tolerations"] == [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    # No nodeSelector: missing a node that runs a cell is the failure that matters, while an
+    # extra warmed node costs one pull nobody reads.
+    assert "nodeSelector" not in spec
+
+
+def test_warming_the_family_declares_one_daemonset_with_the_pull_secret(monkeypatch):
     from robovast.execution.cluster_execution import image_warm
     refs = ["harbor.example.de/robovast/robovast:t",
             "harbor.example.de/robovast/robovast-roqsim:t",
             "harbor.example.de/robovast/robovast-sidecar:t"]
-    batch = _Batch()
+    apps = _Apps()
     monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: refs)
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
                         "load_kube_config", lambda ctx=None: None)
-    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: object()))
 
     assert image_warm.warm_family_images("ns1", None) == refs
-    assert batch.images == refs
-    assert all(m["spec"]["template"]["spec"]["imagePullSecrets"]
-               == [{"name": "robovast-registry-push"}] for _ns, m in batch.created)
+    assert apps.images == refs
+    assert (apps.applied["spec"]["template"]["spec"]["imagePullSecrets"]
+            == [{"name": "robovast-registry-push"}])
+
+
+def test_an_upgrade_refreshes_the_existing_daemonset_instead_of_standing_up_a_second(monkeypatch):
+    """Idempotency here is the fixed name, not a hash of the refs: one object per deployment,
+    updated in place so the controller rolls the pods itself and the nodes are never left with
+    nothing warm in between."""
+    from robovast.execution.cluster_execution import image_warm
+    apps = _Apps(exists=True)
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: ["ghcr.io/x/robovast:1"])
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_secret=lambda name, ns: object()))
+
+    assert image_warm.warm_family_images("ns1", None) == ["ghcr.io/x/robovast:1"]
+    assert apps.created == []
+    assert [name for name, _ns, _m in apps.patched] == [WARM_DAEMONSET_NAME]
 
 
 def test_a_public_registry_warms_without_a_credential(monkeypatch):
     """Naming a Secret that does not exist keeps the pod from starting, so an absent one
     must mean "warm without a credential", not "do not warm"."""
     from robovast.execution.cluster_execution import image_warm
-    batch = _Batch()
+    apps = _Apps()
     monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: ["ghcr.io/x/robovast:1"])
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
                         "load_kube_config", lambda ctx=None: None)
-    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: (_ for _ in ()).throw(
             _api_exception(404))))
 
     assert image_warm.warm_family_images("ns1", None) == ["ghcr.io/x/robovast:1"]
-    assert "imagePullSecrets" not in batch.created[0][1]["spec"]["template"]["spec"]
+    assert "imagePullSecrets" not in apps.applied["spec"]["template"]["spec"]
 
 
-def test_one_family_member_failing_does_not_abandon_the_others(monkeypatch):
-    """They are independent pulls, and the largest image is the one most worth warming even
-    if a smaller one just failed. The return value must then say what was *reached*, so a
-    caller reporting it cannot overstate what happened."""
+def test_a_daemonset_that_cannot_be_declared_does_not_fail_the_deployment(monkeypatch):
+    """One object means no partial outcome to report -- the trade for covering every node. It
+    is bounded by this still never being able to fail an upgrade that has already converged,
+    and by the return value saying nothing was covered rather than overstating it."""
     from robovast.execution.cluster_execution import image_warm
-    refs = ["harbor.example.de/robovast/robovast:t",
-            "harbor.example.de/robovast/robovast-roqsim:t",
-            "harbor.example.de/robovast/robovast-sidecar:t"]
-
-    class _FirstFails(_Batch):
-        def create_namespaced_job(self, namespace, manifest):
-            if manifest["metadata"]["name"] == warm_id_for(refs[0]):
-                raise _api_exception(500)
-            super().create_namespaced_job(namespace, manifest)
-
-    batch = _FirstFails()
-    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: refs)
+    apps = _Apps(fail_with=_api_exception(403))
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: ["ghcr.io/x/robovast:1"])
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
                         "load_kube_config", lambda ctx=None: None)
-    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: object()))
 
-    assert image_warm.warm_family_images("ns1", None) == refs[1:]
-    assert batch.images == refs[1:]
+    assert image_warm.warm_family_images("ns1", None) == []
+
+
+def test_an_empty_family_is_an_error_rather_than_an_empty_daemonset(monkeypatch):
+    """A family that failed to resolve must not become a DaemonSet the API server rejects for
+    an unrelated-sounding reason."""
+    with pytest.raises(ValueError):
+        warm_daemonset_manifest(image_refs=[], namespace="ns1")
+
+
+def test_teardown_removes_the_daemonset(monkeypatch):
+    """Teardown deletes named objects rather than the namespace, so without this the warm pods
+    outlive the deployment -- on every node, indefinitely."""
+    from robovast.execution.cluster_execution import image_warm
+    apps = _Apps()
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
+    monkeypatch.setattr("kubernetes.client.V1DeleteOptions",
+                        lambda **kw: kw, raising=False)
+
+    assert image_warm.delete_warm_daemonset("ns1", None) is True
+    assert apps.deleted == [(WARM_DAEMONSET_NAME, "ns1")]
+
+
+def test_a_tag_bump_replaces_the_containers_instead_of_piling_them_up(monkeypatch):
+    """A container name is a merge key. Carrying the tag in it would make a tag bump look like
+    a different container, so the family would accumulate one entry per tag ever deployed."""
+    before = warm_daemonset_manifest(image_refs=["r/robovast:1", "r/robovast-roqsim:1"],
+                                     namespace="ns1")
+    after = warm_daemonset_manifest(image_refs=["r/robovast:2", "r/robovast-roqsim:2"],
+                                    namespace="ns1")
+
+    names = lambda m: [c["name"] for c in m["spec"]["template"]["spec"]["containers"]]
+    assert names(before) == names(after)
+    assert len(set(names(before))) == 2

@@ -525,6 +525,12 @@ def delete_server(config_name=None, **cluster_kwargs_override):
     except Exception as e:
         logger.warning(f"Failed to clean up scenario run jobs during cluster cleanup: {e}")
 
+    # Before the service, and unconditionally: teardown deletes named objects rather than the
+    # namespace, so an image-warm DaemonSet left behind keeps a pod on every node indefinitely,
+    # holding multi-GB images for a deployment that no longer exists.
+    from .image_warm import delete_warm_daemonset  # pylint: disable=import-outside-toplevel
+    delete_warm_daemonset(namespace, kube_context)
+
     # Remove the persistent robovast-service (Deployment + Service + RBAC).
     # Never touches the object store (the durable data home).
     from .service_deploy import delete_service
