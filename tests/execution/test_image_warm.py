@@ -335,3 +335,135 @@ def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch)
                         lambda ctx=None: (_ for _ in ()).throw(RuntimeError("no cluster")))
 
     assert image_warm.warm_family_images("ns1", None) == []
+
+
+def _submit_stubs(cs, monkeypatch, batch, base_image="",
+                  deployment_base="harbor.example.de/robovast/robovast:t"):
+    """Stub a submit far enough that it reaches Job creation, so the base fire point runs."""
+    from robovast.execution.cluster_execution import cluster_image_build, in_pod_storage
+    from robovast.service.image_store import ImageRef
+
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: object())
+    monkeypatch.setattr(cs, "_image_store", types.SimpleNamespace(
+        ref_for=lambda spec_, dir_: ImageRef(ref=REF, identity="build:sut@abc123",
+                                             build_id=BUILD, image_hash="abc123"),
+        resolve_vcs=lambda spec_: {},
+        git_secret_name=lambda: "",
+        pull_secret_name=lambda: "reg-push"), raising=False)
+    monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
+    monkeypatch.setattr(cs, "_sweep_build_contexts", lambda cfg, bucket: None)
+    monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
+    monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
+                        lambda spec, project_dir, base_ref, resolved_vcs=None: "FROM base")
+    monkeypatch.setattr(cluster_image_build, "stage_context_to_s3",
+                        lambda *a, **kw: None)
+    monkeypatch.setattr(cluster_image_build, "build_job_manifest",
+                        lambda **kw: {"metadata": {"name": kw["build_id"]},
+                                      "spec": {"template": {"spec": {"containers": [
+                                          {"image": kw["image_ref"]}]}}}})
+    cfg = types.SimpleNamespace(get_s3_credentials=lambda: ("ak", "sk"),
+                                get_s3_endpoint=lambda: "http://robovast:9000",
+                                get_host_aliases=lambda: None)
+    spec = types.SimpleNamespace(tag="sut", base_image=base_image)
+    registry = types.SimpleNamespace(registry_prefix="harbor.example.de/robovast",
+                                     push_secret_name="push", pull_secret_name="reg-push",
+                                     insecure=False, ca_configmap_name="",
+                                     base_experiment_image=deployment_base)
+    return cfg, spec, registry
+
+
+def test_a_submit_warms_the_resolved_base_alongside_the_build(cs, monkeypatch):
+    """The base is most of the built image, and a build takes minutes -- so this pull runs
+    concurrently with it and is off the critical path entirely. Asserted on the *resolved*
+    base, because `spec.base_image` is often empty and the default supplied it."""
+    batch = _Batch()
+    cfg, spec, registry = _submit_stubs(cs, monkeypatch, batch)
+
+    ref = cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
+    assert ref.cached is False
+    # The deployment default, since this spec declares no base of its own -- the common
+    # case, and the one a test asserting `spec.base_image` would silently miss.
+    base = "harbor.example.de/robovast/robovast:t"
+    # The build Job, then the prewarm: the prewarm must not replace or precede it.
+    assert batch.names == [BUILD, warm_id_for(base)]
+    assert batch.images[1] == base
+
+
+def test_a_submit_whose_base_prewarm_fails_still_submits_the_build(cs, monkeypatch):
+    """The build is the thing that was asked for; the prewarm is not."""
+    class _OnlyBuildWorks(_Batch):
+        def create_namespaced_job(self, namespace, manifest):
+            if manifest["metadata"]["name"].startswith("imgwarm-"):
+                raise _api_exception(403)
+            super().create_namespaced_job(namespace, manifest)
+
+    batch = _OnlyBuildWorks()
+    cfg, spec, registry = _submit_stubs(cs, monkeypatch, batch,
+                                        base_image="harbor.example.de/robovast/robovast:t")
+
+    assert cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt").cached is False
+    assert batch.names == [BUILD]
+
+
+def test_warming_the_family_creates_one_job_per_member_with_the_pull_secret(monkeypatch):
+    from robovast.execution.cluster_execution import image_warm
+    refs = ["harbor.example.de/robovast/robovast:t",
+            "harbor.example.de/robovast/robovast-roqsim:t",
+            "harbor.example.de/robovast/robovast-sidecar:t"]
+    batch = _Batch()
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: refs)
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_secret=lambda name, ns: object()))
+
+    assert image_warm.warm_family_images("ns1", None) == refs
+    assert batch.images == refs
+    assert all(m["spec"]["template"]["spec"]["imagePullSecrets"]
+               == [{"name": "robovast-registry-push"}] for _ns, m in batch.created)
+
+
+def test_a_public_registry_warms_without_a_credential(monkeypatch):
+    """Naming a Secret that does not exist keeps the pod from starting, so an absent one
+    must mean "warm without a credential", not "do not warm"."""
+    from robovast.execution.cluster_execution import image_warm
+    batch = _Batch()
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: ["ghcr.io/x/robovast:1"])
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_secret=lambda name, ns: (_ for _ in ()).throw(
+            _api_exception(404))))
+
+    assert image_warm.warm_family_images("ns1", None) == ["ghcr.io/x/robovast:1"]
+    assert "imagePullSecrets" not in batch.created[0][1]["spec"]["template"]["spec"]
+
+
+def test_one_family_member_failing_does_not_abandon_the_others(monkeypatch):
+    """They are independent pulls, and the largest image is the one most worth warming even
+    if a smaller one just failed. The return value must then say what was *reached*, so a
+    caller reporting it cannot overstate what happened."""
+    from robovast.execution.cluster_execution import image_warm
+    refs = ["harbor.example.de/robovast/robovast:t",
+            "harbor.example.de/robovast/robovast-roqsim:t",
+            "harbor.example.de/robovast/robovast-sidecar:t"]
+
+    class _FirstFails(_Batch):
+        def create_namespaced_job(self, namespace, manifest):
+            if manifest["metadata"]["name"] == warm_id_for(refs[0]):
+                raise _api_exception(500)
+            super().create_namespaced_job(namespace, manifest)
+
+    batch = _FirstFails()
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: refs)
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_secret=lambda name, ns: object()))
+
+    assert image_warm.warm_family_images("ns1", None) == refs[1:]
+    assert batch.images == refs[1:]

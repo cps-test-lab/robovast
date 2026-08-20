@@ -205,7 +205,7 @@ def family_refs_to_warm() -> list:
 
 
 def warm_family_images(namespace: str, kube_context=None) -> list:
-    """Prewarm the family images a campaign will run. Returns the refs it asked for.
+    """Prewarm the family images a campaign will run. Returns the refs it reached.
 
     Called from ``setup``/``upgrade`` because that is the moment every node is cold for the
     whole family -- a tag bump or a moved project means the next campaign pays a full pull of
@@ -215,33 +215,42 @@ def warm_family_images(namespace: str, kube_context=None) -> list:
     Fire-and-forget: it creates Jobs and returns. An ``upgrade`` must not block for minutes
     on a pull, and there is nothing to report back if it did -- nothing reads a prewarm.
 
-    Returns the refs regardless of whether each Job was created or already existed, because
-    the caller uses them to say what it warmed, and "already warming" is not a different
-    answer to that question. An empty list means the cluster could not be reached at all,
-    which is not this function's business to escalate: the deployment it belongs to has
-    already succeeded by the time it runs.
+    A ref counts as reached whether its Job was created or already existed: "already
+    warming" is the same answer to "will this be on the node" as "now warming". One member
+    failing does **not** abandon the rest -- they are independent pulls, and the largest
+    image is the one most worth warming even if a smaller one just failed. So the return
+    value is what was actually reached rather than what was intended, and a caller reporting
+    it cannot overstate what happened.
     """
     from kubernetes import client
 
     from .kube_client import load_kube_config
     from .service_deploy import REGISTRY_PUSH_SECRET_NAME
 
-    refs = family_refs_to_warm()
     try:
         load_kube_config(kube_context)
         batch = client.BatchV1Api()
         core = client.CoreV1Api()
-        # Looked for rather than assumed, the same way the service resolves it: naming a
-        # Secret that does not exist keeps the pod from starting, so a deployment with a
-        # public registry must warm *without* a credential rather than not at all.
-        try:
-            core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
-            pull_secret = REGISTRY_PUSH_SECRET_NAME
-        except client.exceptions.ApiException:
-            pull_secret = ""
-        for ref in refs:
-            warm_image(batch, namespace, ref, pull_secret)
+        refs = family_refs_to_warm()
     except Exception as e:  # noqa: BLE001 - a prewarm must never fail a finished deployment
         logger.warning("could not prewarm the family images: %s", e)
         return []
-    return refs
+
+    # Looked for rather than assumed, the same way the service resolves it: naming a Secret
+    # that does not exist keeps the pod from starting, so a deployment on a public registry
+    # must warm *without* a credential rather than not at all.
+    try:
+        core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
+        pull_secret = REGISTRY_PUSH_SECRET_NAME
+    except Exception:  # noqa: BLE001 - absent, or unreadable; either way, no credential
+        pull_secret = ""
+
+    reached = []
+    for ref in refs:
+        try:
+            warm_image(batch, namespace, ref, pull_secret)
+        except Exception as e:  # noqa: BLE001 - one member must not abandon the others
+            logger.warning("could not prewarm %s: %s", ref, e)
+            continue
+        reached.append(ref)
+    return reached
