@@ -28,6 +28,9 @@ classmethods
 codebase
 codec
 colcon
+colour
+colourless
+colours
 combinatorially
 compat
 config
@@ -67,6 +70,7 @@ exec'ing
 Executability
 extractor
 extractors
+favicon
 fieldname
 filesystem
 findable
@@ -79,12 +83,14 @@ getter
 GiB
 glyphs
 Graphviz
+grey
 gui
 gz
 gzip
 gzipped
 hardcoded
 hardcoding
+Harmonising
 hconcat
 heightless
 hostname
@@ -126,7 +132,9 @@ loopback
 losslessly
 lossy
 lowercased
+lowercases
 macOS
+Materialise
 materialised
 mcap
 MCP
@@ -136,6 +144,7 @@ memoryless
 MiB
 middleware
 millicore
+millicores
 minikube
 misconfigured
 misdescribe
@@ -187,6 +196,8 @@ preflight
 preload
 preloading
 preprocess
+prewarm
+prewarmed
 prober
 pushdown
 px
@@ -206,6 +217,7 @@ rclpy
 rdflib
 reachability
 realtime
+recognised
 reconstructable
 reimplement
 reimplementing
@@ -228,6 +240,7 @@ retriggers
 revolute
 rjsf
 robovast
+rollout
 rollups
 roqsim
 ROS
@@ -246,6 +259,7 @@ selectable
 semver
 sendfile
 serviceless
+severities
 SNI
 sqlite
 stderr
@@ -255,6 +269,7 @@ stdout
 struct
 Subclasses
 subcommand
+subdirectories
 subdirectory
 substring
 SUT
@@ -274,6 +289,7 @@ trigger
 triggerable
 triggered
 TTL
+tz
 ubuntu
 unbuilt
 uncontended
