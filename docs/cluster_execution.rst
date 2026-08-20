@@ -752,6 +752,90 @@ campaign — the campaign stays ``finished`` with the reason on
    start at once and can overload the cluster.
 
 
+How the quota is sized, and why it is not the whole cluster
+-----------------------------------------------------------
+
+The ClusterQueue may only promise capacity the scheduler can actually hand out. Kueue
+accounts for the workloads it admits and for nothing else, so everything sharing the
+nodes — its own controller, the CNI and ingress DaemonSets, MinIO, the RoboVAST service
+— holds CPU and memory that the scheduler has already subtracted and the queue knows
+nothing about. ``setup`` therefore sizes the quota as **allocatable minus what pods
+outside the queue reserve**, and logs all three numbers:
+
+.. code-block:: text
+
+   Cluster allocatable: 96.0 CPU(s), 125 GiB across 1 node(s); reserved by pods Kueue
+   does not manage: 2.2 CPU(s), 6 GiB; quota: 93 CPU(s), 119Gi
+
+Sized at 100 % of allocatable instead, the queue admits one job more than the nodes can
+hold as soon as anything else runs — the extra pod is admitted, the scheduler has
+nowhere to put it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the
+failure a single campaign rarely reaches and several concurrent ones reach reliably,
+which is what makes it look like a concurrency bug rather than an arithmetic one.
+
+Campaign pods are deliberately *not* subtracted: those are Kueue's to account for, and
+taking off the ones that happen to be running would shrink the quota permanently to fit
+one moment's load. Re-run ``vast execution cluster setup`` (or ``upgrade``) after adding
+or removing anything long-lived on the nodes — the quota is a snapshot, not a watch.
+
+**Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
+``capacity`` minus what the kubelet was told to hold back for the OS, the kubelet and
+the container runtime. Distributions differ: where nothing is reserved, ``allocatable``
+equals ``capacity`` and a full cluster leaves the machine's own processes competing with
+pods for the last core — ``setup`` warns when it sees a node like that, because nothing
+it can do reaches the setting that fixes it. On RKE2/k3s, reserve it in
+``/etc/rancher/rke2/config.yaml`` (k3s: ``/etc/rancher/k3s/config.yaml``) on each node:
+
+.. code-block:: yaml
+
+   kubelet-arg:
+     - "system-reserved=cpu=1,memory=2Gi"
+     - "kube-reserved=cpu=1,memory=2Gi"
+
+Applying it restarts the kubelet, which restarts every pod on the node: do it in a
+maintenance window, not while campaigns are running. Afterwards re-run ``vast execution
+cluster setup`` so the quota follows the new ``allocatable`` (``kubectl get node <name>
+-o jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of
+the subtraction above and complements it: the kubelet reservation protects the machine,
+the subtraction protects the schedule.
+
+
+Waiting, blocked, and merely busy
+---------------------------------
+
+Three things a job that has not started can be doing, and the run loop treats them
+differently:
+
+``waiting``
+   Kueue has not admitted it. Normal, and unbounded — see above.
+
+busy
+   Admitted, but the scheduler cannot place it *yet*: the resource exists on a node and
+   something else is holding it, usually another campaign's run. It starts by itself
+   when a neighbour finishes, so the batch waits **15 minutes** (``CONTENDED_GRACE_SECONDS``)
+   before giving up, and repeats the reason in the log each minute meanwhile. Failing
+   this on the short timer threw campaigns away for the one condition that resolves
+   itself.
+
+``blocked``
+   It will not start on its own: a bad image reference or missing pull credentials, or a
+   reservation no node can satisfy — one larger than the biggest machine, or a GPU that
+   no node advertises because its device plugin is down. These look the same in ten
+   minutes as in one, so the batch fails after **60 seconds** (``BLOCKED_GRACE_SECONDS``)
+   with Kubernetes' own message.
+
+The job *listing* (``vast execution cluster monitor``, the web UI, ``list_campaign_jobs``)
+reports the last two alike, as ``blocked`` with Kubernetes' message as the detail — the
+distinction is about how long to wait, and it lives in the run loop and its log.
+
+The split is made per job, from the scheduler's message plus what the nodes advertise:
+``Insufficient <resource>`` counts as busy only when the pod's own requests fit inside
+some node's ``allocatable``. Any other stated cause — an untolerated taint, an unmatched
+node selector — is blocked. If a batch reaches the 15-minute limit, the cluster is
+oversubscribed rather than busy: check what else is running, and whether the queue
+admits more than the nodes can hold.
+
+
 Selecting a Cluster Context
 ---------------------------
 

@@ -26,6 +26,7 @@ toolkit that actually builds/submits Jobs lives in
 
 import contextlib
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -125,6 +126,21 @@ POD_UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulerError"})
 #: rollout, and (since a blocked build Job hung ``vast image wait`` forever) the image-build
 #: status read. Three copies of a tuned constant are three chances to tune only two.
 BLOCKED_GRACE_SECONDS = 60.0
+
+
+#: The same tolerance, for the one unschedulable cause that *does* recover on its own:
+#: a pod the scheduler refused because the resource it asks for is momentarily held by
+#: something else (see :func:`unschedulable_is_contention`). The job fits a node, so it
+#: starts as soon as a neighbour finishes — most often a neighbour in a *different*
+#: campaign, which is why this shows up when several run at once and never when one does.
+#: Sixty seconds is sized for a registry blip and failed such campaigns for the single
+#: condition that fixes itself; fifteen minutes outlasts a typical trial.
+#:
+#: Deliberately finite. A pod nobody reports on hangs the batch until
+#: ``activeDeadlineSeconds`` fires and then blames a scenario timeout for what was an
+#: infrastructure fault — the failure mode :data:`POD_UNSCHEDULABLE_REASONS` exists to
+#: prevent. Waiting longer than this means the cluster is oversubscribed, not busy.
+CONTENDED_GRACE_SECONDS = 900.0
 
 
 def _pod_job_name(pod) -> "str | None":
@@ -402,9 +418,72 @@ class PodLogTail:
 _POD_PHASE_RANK = {"Pending": 0, "Failed": 1, "Succeeded": 2, "Running": 3}
 
 
+#: A scheduler "N/M nodes are available" clause, e.g. ``1 Insufficient cpu`` or
+#: ``2 node(s) had untolerated taint``. The leading number is how many nodes that clause
+#: applies to; what matters here is the text after it.
+_UNAVAILABLE_CLAUSE = re.compile(r"^\s*\d+\s+(?P<cause>.+?)\s*$")
+
+
+def unschedulable_is_contention(message: str) -> bool:
+    """Is *message* an Unschedulable reason that could clear with no intervention?
+
+    True only when **every** cause the scheduler lists is ``Insufficient <resource>`` —
+    the node has the resource and something else is holding it. Anything else (an
+    untolerated taint, an unmatched node selector, a missing volume) describes a cluster
+    that will look identical in an hour, and gets no extra patience.
+
+    Kubernetes does not distinguish "busy" from "too big to ever fit": both read
+    ``Insufficient cpu``. So this is only half the test — the caller must also check the
+    pod against what a node actually advertises (:func:`pod_fits_any_node`).
+
+    The message shape is ``0/1 nodes are available: 1 Insufficient cpu. no new claims to
+    deallocate, preemption: 0/1 nodes are available: ...``, so the preemption report and
+    anything past the first sentence are dropped before the causes are read.
+    """
+    head = message.split("preemption:")[0]
+    _, sep, detail = head.partition(":")
+    if not sep:
+        return False
+    detail = detail.split(". ")[0].strip().rstrip(".")
+    causes = [c.strip() for c in detail.split(",") if c.strip()]
+    if not causes:
+        return False
+    for cause in causes:
+        match = _UNAVAILABLE_CLAUSE.match(cause)
+        text = match.group("cause") if match else cause
+        if not text.startswith("Insufficient "):
+            return False
+    return True
+
+
+def pod_fits_any_node(pod, nodes) -> bool:
+    """Could *pod* be placed on some node in *nodes* if that node were empty?
+
+    Compares the pod's effective requests (native sidecars included) against each node's
+    ``allocatable``. Capacity a node never advertises — a GPU whose device plugin is down,
+    a reservation larger than the biggest machine — is not contention and no amount of
+    waiting produces it, so the caller must fail such a job rather than sit on it.
+    """
+    from .kubernetes_kueue import _parse_resource  # noqa: PLC0415 - avoids a cycle
+    from .kube_client import pod_workload_containers  # noqa: PLC0415
+
+    required = {}
+    for container in pod_workload_containers(pod):
+        requests = (container.resources.requests
+                    if container.resources else None) or {}
+        for name, value in requests.items():
+            required[name] = required.get(name, 0.0) + _parse_resource(value)
+    for node in nodes:
+        allocatable = (node.status.allocatable or {}) if node.status else {}
+        if all(amount <= _parse_resource(allocatable.get(name))
+               for name, amount in required.items()):
+            return True
+    return False
+
+
 def _pod_signals(k8s_core, namespace,
-                 label_selector) -> "tuple[dict, dict, dict, dict]":
-    """One pod list → ``(pod_phases, blocked, terminated, restarted)``.
+                 label_selector) -> "tuple[dict, dict, dict, dict, dict]":
+    """One pod list → ``(pod_phases, blocked, terminated, restarted, contended)``.
 
     ``pod_phases``: Job name → its pod's phase — the truth a Job's ``status`` can't
     give, in both directions. ``status.active`` counts Pending pods as active, and it
@@ -415,7 +494,14 @@ def _pod_signals(k8s_core, namespace,
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
     a *failed* job can explain itself. ``restarted``: Job name → reason string for a pod
     whose container the kubelet restarted (see :func:`pod_restarted_containers`) -- the
-    one signal here that condemns a job which still looks healthy.
+    one signal here that condemns a job which still looks healthy. ``contended``: the
+    subset of ``blocked`` that is only waiting for a busy cluster (see
+    :func:`unschedulable_is_contention` and :func:`pod_fits_any_node`) and would start
+    on its own -- a distinction the caller needs because it is the difference between a
+    campaign that is slow and one that is broken.
+
+    A node list that cannot be read leaves ``contended`` empty, so an unreadable cluster
+    yields the stricter answer: every blocked job is treated as one that will not recover.
 
     Raises on a pod-list error rather than returning empties: a silent empty result
     is indistinguishable from "nothing is blocked", which let the run loop's grace
@@ -425,7 +511,8 @@ def _pod_signals(k8s_core, namespace,
     never as "unblocked".
     """
     pods = k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items
-    phases, blocked, terminated, restarted = {}, {}, {}, {}
+    phases, blocked, terminated, restarted, contended = {}, {}, {}, {}, {}
+    nodes = None  # listed lazily: only an unschedulable pod needs to know node sizes
     for pod in pods:
         name = _pod_job_name(pod)
         if not name:
@@ -440,6 +527,16 @@ def _pod_signals(k8s_core, namespace,
         if reason:
             r, msg = reason
             blocked[name] = f"{r}: {msg}" if msg else r
+            if r == "Unschedulable" and msg and unschedulable_is_contention(msg):
+                if nodes is None:
+                    try:
+                        nodes = k8s_core.list_node().items
+                    except Exception as exc:  # noqa: BLE001 - stay on the strict side
+                        logger.warning("Could not list nodes to tell a busy cluster from "
+                                       "an impossible request: %s", exc)
+                        nodes = []
+                if nodes and pod_fits_any_node(pod, nodes):
+                    contended[name] = blocked[name]
         term = pod_termination_reason(pod)
         if term:
             r, msg = term
@@ -448,7 +545,7 @@ def _pod_signals(k8s_core, namespace,
         if restart:
             r, msg = restart
             restarted[name] = f"{r}: {msg}" if msg else r
-    return phases, blocked, terminated, restarted
+    return phases, blocked, terminated, restarted, contended
 
 
 def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
@@ -464,6 +561,19 @@ def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
     :func:`_pod_signals`. Empty when nothing is blocked, so a truthy result means
     "these jobs will never start on their own"."""
     return _pod_signals(k8s_core, namespace, label_selector)[1]
+
+
+def blocked_and_contended_reasons(k8s_core, namespace,
+                                  label_selector) -> "tuple[dict, dict]":
+    """``(blocked, contended)`` from a single pod list — :func:`blocked_job_reasons` plus
+    the subset of it that is merely waiting for a busy cluster.
+
+    ``contended`` is always a subset of ``blocked``; ``blocked - contended`` is what will
+    not recover on its own. One call because the escalation loop needs both every couple
+    of seconds and two calls would double the pod listing.
+    """
+    _, blocked, _, _, contended = _pod_signals(k8s_core, namespace, label_selector)
+    return blocked, contended
 
 
 def restarted_job_reasons(k8s_core, namespace, label_selector) -> dict:
@@ -529,7 +639,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
-        phases, blocked, terminated, restarted = _pod_signals(
+        phases, blocked, terminated, restarted, _contended = _pod_signals(
             k8s_core, namespace, label_selector)
     except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
         # A transient pod-list hiccup: report Job-level phases for this listing only

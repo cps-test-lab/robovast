@@ -60,12 +60,19 @@ KUEUE_HELM_VALUES = """
 controllerManager:
   manager:
     resources:
+      # Requests are a RESERVATION the scheduler subtracts from the node for as long as
+      # the controller exists; limits are only a ceiling it may burst to. Reserving 4
+      # cores / 16Gi for the controller made the largest single hole in the capacity the
+      # quota below is sized from -- on a one-node cluster it is 4 of the ~6 cores that
+      # campaign pods can never have, while the queue happily admitted work for all of
+      # them. The burst headroom (and the QPS/concurrency tuning under it, which is what
+      # clears a large event backlog) is unchanged: only the reservation shrinks.
       limits:
         cpu: "6"
         memory: "24Gi"
       requests:
-        cpu: "4000m"
-        memory: "16Gi"
+        cpu: "500m"
+        memory: "4Gi"
     configuration:
       clientConnection:
         qps: 1000      # High QPS to clear the 10,000 event backlog
@@ -677,6 +684,69 @@ def cleanup_kueue_cluster_resources(kube_context=None):
                 )
 
 
+def _kueue_managed_jobs():
+    """``{(namespace, job_name)}`` for every Job submitted to a Kueue queue, or ``None``
+    when the cluster-wide Job list is not readable.
+
+    ``None`` is not "no such jobs": the caller must then treat *every* Job-owned pod as
+    Kueue's, which under-counts the reservation rather than over-counting it. Sizing the
+    quota too small only makes jobs queue; sizing it too large is the over-admission this
+    whole subtraction exists to prevent. A read-only service account without cluster-wide
+    batch access is the realistic case, so it warns and continues instead of failing.
+    """
+    try:
+        jobs = client.BatchV1Api().list_job_for_all_namespaces(
+            label_selector=f"kueue.x-k8s.io/queue-name={KUEUE_QUEUE_NAME}")
+    except Exception as exc:  # noqa: BLE001 - optional refinement, see docstring
+        logger.warning(
+            "Could not list Kueue-managed Jobs (%s); treating every Job-owned pod as "
+            "Kueue's when sizing the quota.", exc)
+        return None
+    return {(job.metadata.namespace, job.metadata.name) for job in jobs.items}
+
+
+def _unmanaged_pod_reservations(v1, node_names):
+    """CPU cores and memory bytes held on *node_names* by pods Kueue does not manage.
+
+    These are the reservations the ClusterQueue cannot see: the scheduler has already
+    subtracted them from every node, but no Workload accounts for them, so quota granted
+    on top of them is quota the scheduler cannot honor.
+
+    Counts the same containers as the capacity report — native sidecars included, since
+    Kubernetes adds their requests to the pod's effective total.
+
+    Args:
+        v1: A ``CoreV1Api`` with the kubeconfig already loaded.
+        node_names: Names of the nodes the quota is being sized from.
+
+    Returns:
+        tuple: ``(cpu_cores: float, memory_bytes: int)``.
+    """
+    from .cluster_execution import _pod_job_name  # noqa: PLC0415 - avoids a cycle
+    from .kube_client import pod_workload_containers  # noqa: PLC0415
+
+    kueue_jobs = _kueue_managed_jobs()
+    cpu = 0.0
+    mem = 0
+    pods = v1.list_pod_for_all_namespaces(
+        field_selector="status.phase!=Succeeded,status.phase!=Failed")
+    for pod in pods.items:
+        if getattr(pod.spec, "node_name", None) not in node_names:
+            continue
+        job_name = _pod_job_name(pod)
+        if job_name is not None:
+            if kueue_jobs is None:
+                continue
+            if (pod.metadata.namespace, job_name) in kueue_jobs:
+                continue
+        for container in pod_workload_containers(pod):
+            requests = (container.resources.requests
+                        if container.resources else None) or {}
+            cpu += _parse_resource(requests.get("cpu"))
+            mem += int(_parse_resource(requests.get("memory")))
+    return cpu, mem
+
+
 def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
     """Return total allocatable CPU and memory for Kueue quota.
 
@@ -687,8 +757,18 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
        A provider-specific override (e.g. GCP) can query the autoscaler for
        the true *maximum* capacity, which is correct for autoscaling clusters.
     2. Otherwise query the Kubernetes node API: sums the **total allocatable**
-       resources across all current nodes (no subtracting of current pod
-       requests — Kueue manages quota itself).
+       resources across all current nodes, minus what pods Kueue does *not*
+       manage already reserve (see :func:`_unmanaged_pod_reservations`).
+
+    Kueue manages the quota for the workloads it admits, and only for those. Everything
+    else on the nodes — its own controller, the ingress and CNI DaemonSets, MinIO, the
+    RoboVAST service — holds CPU and memory the scheduler has already subtracted and the
+    ClusterQueue knows nothing about. Sizing the quota at 100% of allocatable therefore
+    over-admits by exactly that much: the queue lets in one job too many, the scheduler
+    has nowhere to put it, and the pod sits ``Unschedulable`` ("Insufficient cpu") until
+    the batch loop gives up on it. Campaign pods are excluded from the subtraction —
+    those *are* Kueue's to account for, and subtracting the ones that happen to be
+    running at setup time would shrink the quota permanently to fit one moment's load.
 
     Fails loudly if capacity cannot be determined. There is deliberately no
     hard-coded default: silently provisioning a tiny quota (the previous 8 CPU /
@@ -732,10 +812,18 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
         total_allocatable_mem = 0  # bytes
 
         nodes = v1.list_node()
+        node_names = set()
+        unreserved = []
         for node in nodes.items:
             alloc = node.status.allocatable or {}
+            capacity = getattr(node.status, "capacity", None) or {}
             total_allocatable_cpu += _parse_resource(alloc.get("cpu"))
             total_allocatable_mem += int(_parse_resource(alloc.get("memory")))
+            node_names.add(node.metadata.name)
+            if (capacity.get("cpu")
+                    and _parse_resource(alloc.get("cpu")) >= _parse_resource(
+                        capacity.get("cpu"))):
+                unreserved.append(node.metadata.name)
 
         if total_allocatable_cpu <= 0:
             raise RuntimeError(
@@ -743,15 +831,34 @@ def get_cluster_allocatable_resources(kube_context=None, cluster_config=None):
                 "node(s); cannot size the Kueue quota."
             )
 
-        cpu_quota = max(1, int(total_allocatable_cpu))
-        memory_gi = max(1, total_allocatable_mem // (1024**3))
+        # allocatable == capacity means the kubelet holds nothing back: the quota below
+        # can be handed out down to the last core, leaving the OS, the kubelet and the
+        # container runtime to compete with pods for it. Worth saying once at setup --
+        # it is invisible otherwise, and the remedy is a node-side setting no RoboVAST
+        # command can reach.
+        if unreserved:
+            logger.warning(
+                "%d node(s) reserve nothing for the system (allocatable == capacity): "
+                "%s. Consider kubelet --system-reserved/--kube-reserved so the node's "
+                "own processes are not scheduled against, then re-run cluster setup.",
+                len(unreserved), ", ".join(sorted(unreserved)))
+
+        reserved_cpu, reserved_mem = _unmanaged_pod_reservations(v1, node_names)
+
+        cpu_quota = max(1, int(total_allocatable_cpu - reserved_cpu))
+        memory_gi = max(1, (total_allocatable_mem - reserved_mem) // (1024**3))
         memory_quota = f"{memory_gi}Gi"
 
         logger.info(
-            "Cluster total allocatable: %d CPU(s), %s (from %d node(s))",
+            "Cluster allocatable: %.1f CPU(s), %d GiB across %d node(s); reserved by "
+            "pods Kueue does not manage: %.1f CPU(s), %d GiB; quota: %d CPU(s), %s",
+            total_allocatable_cpu,
+            total_allocatable_mem // (1024**3),
+            len(nodes.items),
+            reserved_cpu,
+            reserved_mem // (1024**3),
             cpu_quota,
             memory_quota,
-            len(nodes.items),
         )
         return cpu_quota, memory_quota
 

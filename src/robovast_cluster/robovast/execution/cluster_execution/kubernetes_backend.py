@@ -79,8 +79,9 @@ from robovast.execution.packer import build_jobs
 
 from . import in_pod_storage
 from .cluster_context import resolve_resources
-from .cluster_execution import (BLOCKED_GRACE_SECONDS, _label_safe_campaign,
-                                blocked_job_reasons, restarted_job_reasons)
+from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
+                                _label_safe_campaign, blocked_and_contended_reasons,
+                                restarted_job_reasons)
 from .kubernetes_gpu import GPU_RESOURCE
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
@@ -279,10 +280,17 @@ class BatchJobRunner:
     #: :data:`~.cluster_execution.BLOCKED_GRACE_SECONDS`.
     _BLOCKED_GRACE_SECONDS = BLOCKED_GRACE_SECONDS
 
+    #: The longer tolerance for a job that only waits for a busy cluster -- see
+    #: :data:`~.cluster_execution.CONTENDED_GRACE_SECONDS`.
+    _CONTENDED_GRACE_SECONDS = CONTENDED_GRACE_SECONDS
+
     #: How often the wait loop re-checks the Kueue admission path and reports why jobs
     #: are still suspended. Much slower than the 2s poll: a queue does not break every
     #: two seconds, and a normal quota wait must not spam the campaign log.
     _SUSPEND_CHECK_INTERVAL_SECONDS = 30.0
+    #: How often a batch that is blocked repeats why, so a long wait for
+    #: capacity stays visible in the log instead of scrolling past.
+    _BLOCKED_LOG_INTERVAL_SECONDS = 60.0
 
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
@@ -1159,6 +1167,7 @@ class BatchJobRunner:
 
         job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
         blocked_since = None
+        last_blocked_log = 0.0
         last_suspend_check = time.monotonic()
         while True:
             if self._state is not None and self._state.stop_requested:
@@ -1169,11 +1178,13 @@ class BatchJobRunner:
                 break
             # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
             # "active" with a Pending pod forever, so this loop would otherwise spin
-            # indefinitely with no progress. Detect it and, after a short grace window
-            # (a transient registry blip may clear on its own), fail the batch with
-            # Kubernetes' own message so the campaign reports *why* instead of hanging.
+            # indefinitely with no progress. Detect it and, once its grace window is
+            # spent, fail the batch with Kubernetes' own message so the campaign reports
+            # *why* instead of hanging. How long that window is depends on what the pod
+            # is waiting for -- see below.
             try:
-                blocked = blocked_job_reasons(self.k8s_client, self.namespace, job_label)
+                blocked, contended = blocked_and_contended_reasons(
+                    self.k8s_client, self.namespace, job_label)
             except Exception as exc:  # noqa: BLE001 - probe failed this iteration
                 # Could not check pods this cycle. Treat as "unknown", NOT as
                 # "nothing blocked": clearing blocked_since here would silently reset
@@ -1181,21 +1192,52 @@ class BatchJobRunner:
                 # deadline hard-kill. Keep any existing blocked state and retry.
                 logger.warning("Batch %s: could not check for blocked jobs: %s",
                                self._batch_tag, exc)
-                blocked = None
+                blocked, contended = None, {}
             if blocked:
                 reasons = "; ".join(sorted(set(blocked.values())))
+                # Two tolerances, because "cannot start" covers two different futures.
+                # A pod refused for capacity that a node does advertise starts by itself
+                # the moment a neighbour finishes -- and the neighbour is usually another
+                # campaign, which is why this appears only when several run at once.
+                # Failing it on the registry-blip timer threw away campaigns for the one
+                # condition that recovers. Anything else here (a bad image, a request no
+                # node can hold) looks the same in ten minutes as in one, and still fails
+                # on the short timer.
+                unrecoverable = {job for job in blocked if job not in contended}
+                grace = (self._BLOCKED_GRACE_SECONDS if unrecoverable
+                         else self._CONTENDED_GRACE_SECONDS)
                 if blocked_since is None:
                     blocked_since = time.monotonic()
-                    logger.warning("Batch %s: %d job(s) cannot start: %s",
-                                   self._batch_tag, len(blocked), reasons)
-                elif time.monotonic() - blocked_since >= self._BLOCKED_GRACE_SECONDS:
+                    last_blocked_log = blocked_since
+                    logger.warning("Batch %s: %d job(s) cannot start%s: %s",
+                                   self._batch_tag, len(blocked),
+                                   "" if unrecoverable else " yet (cluster busy)",
+                                   reasons)
+                elif time.monotonic() - blocked_since >= grace:
+                    if unrecoverable:
+                        raise CampaignConfigError(
+                            f"{len(blocked)} scenario job(s) cannot start after "
+                            f"{grace:.0f}s and will not recover — "
+                            f"Kubernetes reports: {reasons}. An image reason points at "
+                            f"the execution image reference and pull credentials; an "
+                            f"Unschedulable one at cluster capacity or a resource no node "
+                            f"can satisfy (the message above names it).")
                     raise CampaignConfigError(
-                        f"{len(blocked)} scenario job(s) cannot start after "
-                        f"{self._BLOCKED_GRACE_SECONDS:.0f}s and will not recover — "
-                        f"Kubernetes reports: {reasons}. An image reason points at the "
-                        f"execution image reference and pull credentials; an "
-                        f"Unschedulable one at cluster capacity or a resource no node "
-                        f"can satisfy (the message above names it).")
+                        f"{len(blocked)} scenario job(s) waited {grace:.0f}s for capacity "
+                        f"that never came free — Kubernetes reports: {reasons}. The "
+                        f"reservation fits a node, so this is contention rather than a "
+                        f"run too large to place: other work is holding the resource for "
+                        f"longer than a trial takes. Check what else the cluster is "
+                        f"running, and whether the queue admits more than the nodes can "
+                        f"hold (`vast execution cluster setup` re-sizes it).")
+                elif time.monotonic() - last_blocked_log >= self._BLOCKED_LOG_INTERVAL_SECONDS:
+                    # Re-state it periodically: at 2s per iteration the "still running"
+                    # line below otherwise buries a 15-minute wait under 450 lines that
+                    # look like progress.
+                    last_blocked_log = time.monotonic()
+                    logger.warning("Batch %s: %d job(s) still cannot start after %.0fs "
+                                   "(of %.0fs): %s", self._batch_tag, len(blocked),
+                                   time.monotonic() - blocked_since, grace, reasons)
             elif blocked is not None:
                 # A successful probe that found nothing blocked clears the timer.
                 blocked_since = None
