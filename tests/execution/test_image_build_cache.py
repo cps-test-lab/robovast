@@ -10,6 +10,7 @@ was never pushed.
 """
 
 import json
+import re
 
 import pytest
 
@@ -355,3 +356,23 @@ def test_the_build_user_can_actually_read_the_token():
     assert mode & 0o004, (
         f"mode {mode:#o} is not world-readable, and the file is root-owned: uid {uid} "
         f"cannot read it")
+
+
+# ---------------------------------------------------------------------------
+# The builder's own version
+# ---------------------------------------------------------------------------
+
+def test_the_buildkit_image_is_pinned():
+    """A floating builder tag makes two runs unable to claim they built the same way.
+
+    Asserted rather than left to review because the failure is invisible: a moved tag
+    changes nothing observable until it changes a result, and nothing in a campaign's
+    record would name the version that did it. It also guards the daemon's on-disk
+    state -- BuildKit's snapshotter format is version-coupled and downgrades are
+    unsupported, so a tag that moves under a persistent store is an unattended upgrade.
+    """
+    from robovast.execution.cluster_execution.cluster_image_build import BUILDKIT_IMAGE
+
+    assert "@sha256:" in BUILDKIT_IMAGE or re.search(r":v\d+\.\d+\.\d+", BUILDKIT_IMAGE), (
+        f"BUILDKIT_IMAGE is {BUILDKIT_IMAGE!r} — pin a version tag or a digest. "
+        "A bare tag like 'rootless' or 'latest' moves under us.")

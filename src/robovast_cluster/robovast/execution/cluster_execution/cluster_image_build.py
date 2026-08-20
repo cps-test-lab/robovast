@@ -43,7 +43,22 @@ from robovast.service.image_build import GIT_TOKEN_SECRET_ID
 logger = logging.getLogger(__name__)
 
 #: Rootless BuildKit — builds + pushes from within Kubernetes, no docker daemon.
-BUILDKIT_IMAGE = "moby/buildkit:rootless"
+#:
+#: PINNED, unlike ``REGISTRY_IMAGE`` beside it, and for the opposite reason. The registry is
+#: infrastructure a result never depends on, so a major tag is enough there. This image *is*
+#: the builder: which version solved a Dockerfile is part of how an image came to be, and a
+#: floating tag means two runs a month apart cannot be said to have built the same way.
+#:
+#: It also stops being safe the moment the daemon keeps state across builds. BuildKit's
+#: on-disk snapshotter format is version-coupled and downgrades are not supported, so a tag
+#: that moves under a persistent store is a silent, unattended upgrade of a database — and
+#: the ``buildkitd.toml`` GC keys it is configured with have themselves changed across
+#: releases (``gckeepstorage`` -> ``reservedSpace``/``maxUsedSpace``/``minFreeSpace``), so
+#: the config and the binary have to be chosen together.
+#:
+#: v0.32.2 is what ``:rootless`` resolved to when this was pinned, so pinning changed
+#: nothing that day — which is the point at which to do it.
+BUILDKIT_IMAGE = "moby/buildkit:v0.32.2-rootless"
 
 #: Where the staged context (incl. the generated Dockerfile) is mirrored in the Job.
 _CONTEXT_MOUNT = "/context"
