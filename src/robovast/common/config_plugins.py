@@ -211,50 +211,66 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
     return record
 
 
-def provider_provenance(groups) -> dict:
-    """``{distribution: {...}}`` for every distribution registering an entry point in *groups*.
-
-    Answers "whose code supplied this campaign's assets, and can someone else obtain it?".
-    A simulator's worlds and models often come from separate distributions -- some private --
-    so a campaign that used them is reproducible only by someone who can get that code, and a
-    published dataset that does not name it depends on something nobody can identify.
-
-    *groups* comes from the backend's :attr:`~robovast.common.simulators.SimulatorBackend.\
-ASSET_ENTRY_POINT_GROUPS`, so **core names no simulator and no asset repository**: the
-    backend names its own groups and this walks whatever it lists.
-
-    Per distribution: ``version``, the entry-point ``groups`` it contributed to, and -- for a
-    VCS install -- the resolved ``commit`` and ``url``. A distribution installed from an index
-    has no direct URL, and for one the version is a sufficient pin.
-    """
-    from importlib.metadata import distributions  # pylint: disable=import-outside-toplevel
-
-    wanted = {group for group in (groups or []) if group}
-    if not wanted:
-        return {}
-
-    record: dict = {}
-    for dist in distributions():
-        name = (dist.metadata["Name"] or "").strip() if dist.metadata else ""
-        if not name:
-            continue
-        try:
-            hit = sorted({ep.group for ep in dist.entry_points} & wanted)
-        except Exception:  # pylint: disable=broad-except
-            continue
-        if not hit:
-            continue
-        # A duplicate name means two copies on the path; keep the first, which is the one
-        # import would win with, and merge the groups so neither copy's contribution is lost.
-        entry = record.setdefault(name, {"version": dist.version, "groups": []})
-        entry["groups"] = sorted(set(entry["groups"]) | set(hit))
-        entry.update({k: v for k, v in _direct_url_origin(dist).items() if k not in entry})
-    return record
-
-
 def _canonical(name: str) -> str:
     """PEP 503 name normalisation, so ``robovast_nav`` and ``robovast-nav`` match."""
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def providers_from_records(records, groups) -> dict:
+    """``{distribution: {...}}`` for the providers in *records*, filtered to *groups*.
+
+    *records* are the per-container ``distributions_<name>.json`` files a run's containers
+    wrote -- every distribution they hold, with its version, the entry-point groups it
+    registers, and its PEP 610 direct URL. This reduces them to the shape the publication gate
+    and the retrigger check already read, so neither learns where the record came from.
+
+    A UNION across containers, because providers legitimately differ per role: a ``sut`` image
+    has none and the simulation image has them all, and in the ROS shape they are not even the
+    same image. The question the record answers is campaign-level -- can someone else obtain
+    the code this campaign depended on -- so a provider used by any container belongs in it.
+    The per-container files stay beside the record for anyone who needs the detail.
+
+    Where two containers disagree about a version, the first wins and the merge is not
+    reported: that would be a campaign running two images built from different asset commits,
+    which is worth knowing but is not what this record is for.
+    """
+    wanted = {group for group in (groups or []) if group}
+    if not wanted:
+        return {}
+    out: dict = {}
+    for record in records or []:
+        for name, info in sorted((record or {}).items()):
+            if not isinstance(info, dict):
+                continue
+            hit = sorted(set(info.get("groups") or []) & wanted)
+            if not hit:
+                continue
+            entry = out.setdefault(name, {"version": info.get("version") or "",
+                                          "groups": []})
+            entry["groups"] = sorted(set(entry["groups"]) | set(hit))
+            for key, value in _origin_from_direct_url(info.get("direct_url")).items():
+                entry.setdefault(key, value)
+    return out
+
+
+def _origin_from_direct_url(data) -> dict:
+    """``{commit, url}`` from an already-parsed PEP 610 mapping.
+
+    The same reduction :func:`_direct_url_origin` performs on a distribution installed in
+    *this* process -- kept beside it deliberately, because the two must agree: that one reads
+    the file through importlib for a plugin installed here, this one reads a copy a container
+    wrote, and a reader of either record cannot tell which produced it and must not need to.
+    """
+    if not isinstance(data, dict):
+        return {}
+    origin = {}
+    url = data.get("url")
+    if url:
+        origin["url"] = url
+    commit = (data.get("vcs_info") or {}).get("commit_id")
+    if commit:
+        origin["commit"] = commit
+    return origin
 
 
 def _direct_url_origin(dist) -> dict:

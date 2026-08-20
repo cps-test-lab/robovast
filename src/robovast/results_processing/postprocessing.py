@@ -832,6 +832,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
 
+    _record_campaign_providers(campaign_dir, output)
+
+
     # Build SQLite data.db for the campaign
     if skip_db:
         output("Skipping data.db creation")
@@ -863,3 +866,77 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
     return False, (f"Postprocessing failed: {len(failures)} of {len(commands)} step(s) — "
                    f"{detail}{more}")
+
+
+def _campaign_provider_records(campaign_dir) -> list:
+    """Every container's distributions record from this campaign's job dirs.
+
+    ``_jobs/[<batch>/]job-N/`` is the shared job-artifact layout -- see
+    ``run_slices.iter_run_slices`` for its authority, and ``resource_usage`` for the sibling
+    that reads ``resource_usage_<container>.csv`` out of the same directories. The batch level
+    is optional (the cluster lane has one, the local lane does not), so the walk is recursive
+    rather than assuming either shape.
+
+    Per CONTAINER, because that is how they were written: in the ROS shape the simulator runs
+    in a container of its own, so a record from the main container alone would name none of the
+    campaign's asset providers.
+    """
+    import glob  # pylint: disable=import-outside-toplevel
+
+    pattern = os.path.join(str(campaign_dir), "_jobs", "**", "distributions_*.json")
+    records = []
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue          # one unreadable container's record is not the campaign's answer
+        if isinstance(data, dict):
+            records.append(data)
+    return records
+
+
+def _record_campaign_providers(campaign_dir, output) -> None:
+    """Write ``_execution/providers.yaml``: which distributions supplied this campaign's assets.
+
+    Derived here, in stage 2, rather than when the campaign was prepared. The question is
+    "which installed distributions register a provider group", and only a container can answer
+    it -- the packages are in its image and nowhere else. Prepared instead by walking the
+    preparing process's own interpreter, the answer was right on a local lane (roqsim is
+    installed beside the service) and empty on a cluster one (the service pod carries no
+    simulator), so a campaign that used three private providers recorded none.
+
+    Stage 2 is the one place both lanes run: ``run_host_postprocessing`` delegates here for the
+    cluster, and the CLI and controller come here directly, "so there is no second
+    implementation of the postprocessing sequence".
+
+    Three states, and the distinction is the point. Populated is "these providers"; empty is
+    "asked, and there were none"; ABSENT is "could not ask", which
+    :func:`read_providers_record` documents as unknown and the publication gate classifies as
+    opaque. No records, or no groups to filter by, means the question was never put -- so the
+    record is left absent rather than written empty, because an empty one claims a campaign
+    depended on nothing.
+    """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        campaign_asset_groups, write_providers_record)
+    from robovast.common.config_plugins import \
+        providers_from_records  # pylint: disable=import-outside-toplevel
+
+    try:
+        records = _campaign_provider_records(campaign_dir)
+        groups = campaign_asset_groups(campaign_dir)
+        if not records or not groups:
+            output(
+                "Not recording asset providers: "
+                + ("no container recorded its distributions (a campaign whose runs predate "
+                   "that record, or never started)" if not records else
+                   "this campaign's simulator backend could not be resolved here, so there is "
+                   "no set of provider groups to filter by")
+                + " -- leaving the record absent (unknown) rather than empty.")
+            return
+        providers = providers_from_records(records, groups)
+        write_providers_record(campaign_dir, providers)
+        output(f"✓ recorded {len(providers)} asset provider(s) from "
+               f"{len(records)} container record(s)")
+    except Exception as e:  # pylint: disable=broad-except
+        output(f"Warning: could not record asset providers: {e}")

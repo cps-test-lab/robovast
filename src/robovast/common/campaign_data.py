@@ -69,6 +69,41 @@ def _is_digest(image: str) -> bool:
     return image.startswith("sha256:") and len(image) >= 20
 
 
+def campaign_asset_groups(campaign_dir) -> tuple:
+    """The entry-point groups this campaign's simulator resolves asset providers through.
+
+    Read from the frozen ``.vast`` and its backend, the same way
+    :func:`campaign_container_plan` reads the container plan -- so a campaign carries the
+    question its providers must be filtered by, and core still names no simulator.
+
+    ``()`` when the backend cannot be resolved here, which a caller must treat as "cannot
+    filter" rather than "no groups": recording an unfiltered record, or an empty one, would
+    both claim something nobody checked.
+    """
+    from robovast.common.results_utils import \
+        campaign_vast  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        backend_name, resolve_backend)
+
+    try:
+        vast_path = campaign_vast(campaign_dir)
+        with open(vast_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return ()
+    execution = (raw or {}).get("execution") or {}
+    if not isinstance(execution, dict):
+        return ()
+    try:
+        name = backend_name(execution)
+        if not name:
+            return ()
+        backend = resolve_backend(name, str(Path(vast_path).parent))
+        return tuple(getattr(backend, "ASSET_ENTRY_POINT_GROUPS", ()) or ())
+    except Exception:  # noqa: BLE001 - an unresolvable backend is "cannot filter"
+        return ()
+
+
 def campaign_container_plan(campaign_dir: Path):
     """The container plan of a campaign's frozen ``.vast``, or ``None`` if unreadable.
 
