@@ -356,9 +356,12 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             {stalled ? `stalled ${progressAge}` : progressAge}
           </Typography>
         ) : null}
-        <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
-          {id}
-        </Typography>
+        <CampaignOrigin origin={summary.origin}>
+          <Typography variant="subtitle2" sx={{ fontFamily: 'monospace' }}>
+            {id}
+          </Typography>
+        </CampaignOrigin>
+        <LaunchedBy name={summary.created_by} />
         {summary.started_at ? (
           <Typography variant="caption" color="text.secondary">
             {formatLocalTime(summary.started_at)}
@@ -473,15 +476,11 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         ) : null}
       </Stack>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
-        <LaunchedBy name={summary.created_by} />
-        <CampaignOrigin origin={summary.origin} />
-        {summary.description ? (
-          <Typography variant="body2" color="text.secondary">
-            {summary.description}
-          </Typography>
-        ) : null}
-      </Stack>
+      {summary.description ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          {summary.description}
+        </Typography>
+      ) : null}
 
       {/* The headline stays one line and the backend's own text goes below it in ErrorText — a
           traceback spliced into the middle of a sentence buries the advice that follows it. */}

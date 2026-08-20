@@ -19,9 +19,8 @@ It provides four views:
   immediately — with its true live phase and its **start time** (shown in your
   browser's locale and timezone) — and every phase change is pushed within a second.
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
-  Each card also names **where the campaign came from** — ``ros2demo / basic_nav.vast``, or
-  ``rerun of <campaign id>`` — with the workspace id and the full path on hover; see
-  `Where a campaign came from`_.
+  Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
+  it was launched from; see `Where a campaign came from`_.
   The phase reflects the whole lifecycle, including the two pre-run steps that used to
   be invisible: ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
@@ -140,27 +139,33 @@ still changing.
 Where a campaign came from
 --------------------------
 
-A campaign card names the workspace and the ``.vast`` it was launched from, and hovering that
-label gives the workspace id and the file's full, workspace-relative path — the campaign's
-frozen ``_config/`` keeps only the basename, so a project holding several ``.vast`` files in
-subdirectories would otherwise be ambiguous.
+**Hover a campaign's name** on its card and it says which workspace and which ``.vast`` the
+campaign was launched from, with the workspace id and the file's full, workspace-relative
+path — the campaign's frozen ``_config/`` keeps only the basename, so a project holding
+several ``.vast`` files in subdirectories would otherwise be ambiguous.
+
+It is on the name rather than in a line of its own because it answers a question *about* a
+campaign the reader has already found by its name: a card is read for what the campaign is
+doing, and a permanent second line spends that space on something wanted occasionally. The
+name is **underlined** exactly where there is something to read, so the marking means "this
+one has an origin" rather than "this is a campaign name".
 
 **It is a record, not a link, and it is deliberately not clickable.** A campaign is
 workspace-independent (:ref:`architecture`): the workspace named may since have been edited,
 renamed or deleted, and for an ingested campaign it may never have existed on this deployment
 at all. Nothing resolves it — **Retrigger campaign** still relaunches from the campaign's own
 ``_config/``, which is the honest thing to re-run. A link would promise the workspace is still
-there, and the one thing this label cannot promise is that.
+there, and that is the one thing this cannot promise.
 
-A **re-run** shows ``rerun of <campaign id>`` and, beneath it, the workspace the configuration
-originally came from — copied forward at launch rather than looked up, so it survives the
-parent campaign being deleted and a re-run of a re-run still names the root. The campaign
-listing is paged, so a label that had to find its parent in the list would answer differently
-depending on where you had scrolled.
+A **re-run** adds a ``Rerun of`` row naming the campaign it came from, above the workspace the
+configuration originally came from — copied forward at launch rather than looked up, so it
+survives the parent campaign being deleted and a re-run of a re-run still names the root. The
+campaign listing is paged, so a hover that had to find its parent in the list would answer
+differently depending on where you had scrolled.
 
-A campaign that ran **before this was recorded** shows no label at all. Its ``.vast`` basename
-could be read out of its snapshot, but that says nothing about which workspace, and a label
-that filled in half the answer would read as though it knew the rest.
+A campaign that ran **before this was recorded** has no hover at all, and its name is not
+underlined. Its ``.vast`` basename could be read out of its snapshot, but that says nothing
+about which workspace, and filling in half the answer would read as though it knew the rest.
 
 The same record reaches an agent through the MCP ``get_campaign_summary`` tool, beside the
 image and code provenance it already reports. It is deliberately **not** on

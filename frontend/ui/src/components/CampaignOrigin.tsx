@@ -1,38 +1,47 @@
-import Typography from '@mui/material/Typography'
+import Box from '@mui/material/Box'
 
 import { HoverFacts, hoverTriggerSx } from '@/components/HoverFacts'
-import { originFacts, originLabel } from '@/lib/campaignOrigin'
+import { originFacts } from '@/lib/campaignOrigin'
 import type { CampaignOrigin as Origin } from '@/lib/robovastClient'
 
 /**
- * Where a campaign's configuration came from.
+ * Wraps a campaign's name so hovering it says where the campaign came from.
  *
- * Three decisions worth keeping (the label and row logic itself is in `lib/campaignOrigin`):
+ * A wrapper rather than a label of its own: the origin answers a question *about* the
+ * campaign a reader has already found by its name, so it costs a row of the card to show it
+ * standing alone, and the name is the thing already on screen to aim at.
  *
- * **Not a link.** The workspace named here is a fact about the past: it may have been
- * renamed, edited or deleted since, and for an ingested campaign it may never have existed
- * on this deployment at all. Nothing here is clickable, because anything clickable would
- * promise it is still there — and a re-run does not relaunch from it either (it runs from
- * the campaign's own frozen `_config/`).
+ * Three decisions worth keeping (the rows themselves are in `lib/campaignOrigin`):
  *
- * **Nothing at all when the origin was not recorded.** Campaigns that ran before this was
- * kept genuinely have no origin, and the `.vast` basename recoverable from their snapshot is
- * not one — it says nothing about which workspace. An absent label is the honest rendering;
- * one reading "unknown" would just be a row nobody can act on.
+ * **Not a link.** The workspace named is a fact about the past: it may have been renamed,
+ * edited or deleted since, and for an ingested campaign it may never have existed on this
+ * deployment at all. Nothing here is clickable, because anything clickable would promise it
+ * is still there — and a re-run does not relaunch from it either (it runs from the
+ * campaign's own frozen `_config/`).
  *
- * **The label is the summary, the hover is the detail.** The label is what you scan a list
- * with, so it is short; the ids and the full path go in the hover, where they cost nothing
- * until asked for.
+ * **Children pass through untouched when the origin was not recorded.** Campaigns that ran
+ * before this was kept genuinely have no origin, so their name renders exactly as it always
+ * did — no hover, and no underline promising one. The `.vast` basename in their snapshot is
+ * not an origin: it says nothing about which workspace.
+ *
+ * **The underline is the whole discoverability budget.** A hover nobody knows about is not a
+ * feature, and it appears only where there is something to read — so the marking means "this
+ * one has an origin", not "this is a campaign name".
  */
-export function CampaignOrigin({ origin }: { origin?: Origin | null }) {
-  const label = originLabel(origin)
-  if (!origin || !label) return null
+export function CampaignOrigin({
+  origin,
+  children,
+}: {
+  origin?: Origin | null
+  children: React.ReactNode
+}) {
+  if (!origin) return <>{children}</>
 
   return (
     <HoverFacts title="Launched from" facts={originFacts(origin)}>
-      <Typography variant="caption" color="text.secondary" noWrap sx={hoverTriggerSx}>
-        {label}
-      </Typography>
+      <Box component="span" sx={hoverTriggerSx}>
+        {children}
+      </Box>
     </HoverFacts>
   )
 }

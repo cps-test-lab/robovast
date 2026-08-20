@@ -412,9 +412,10 @@ class CampaignSummary(BaseModel):
     phase: str = Phase.UNKNOWN       # open vocabulary; see the Phase enum
     description: str = ""            # the launcher's free text; "" when none was given
     #: Who *says* they started it. With one shared secret nobody can prove who they are,
-    #: so this is a label, not an identity, and the UI presents it as self-declared.
-    #: ``""`` means nobody gave a name -- a different fact from an anonymous someone,
-    #: which is why it is not filled in with a placeholder.
+    #: so this is a label rather than an identity, and a consumer must not treat it as one.
+    #: ``""`` means nobody gave a name -- a different fact from an anonymous someone, which
+    #: is why it is not filled in with a placeholder, and why the web UI shows no chip at
+    #: all for it rather than one reading "unattributed".
     created_by: str = ""
     #: Where the configuration came from. ``None`` means **not recorded** -- a campaign that
     #: ran before this was kept -- which is a different fact from an origin that is recorded

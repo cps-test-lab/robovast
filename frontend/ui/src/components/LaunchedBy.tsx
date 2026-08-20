@@ -1,6 +1,4 @@
 import Chip from '@mui/material/Chip'
-import Tooltip from '@mui/material/Tooltip'
-import Typography from '@mui/material/Typography'
 
 /**
  * Who says they started a campaign.
@@ -17,9 +15,11 @@ import Typography from '@mui/material/Typography'
  * for "which of these are mine", not the information itself. That is also what keeps it
  * readable for colour-blind viewers and in both themes.
  *
- * **No name is a real state, not a fallback.** A campaign launched without one renders a
- * neutral, uncoloured placeholder, so "nobody said" stays visibly different from
- * "someone called themselves X". Inventing a name here would erase that distinction.
+ * **No name renders nothing at all.** A campaign launched without one shows no chip, rather
+ * than a placeholder reading "unattributed": the row is scanned for the names that are
+ * there, and a card per campaign saying nobody said is noise on every one of them. Absence
+ * is still visible as absence, which is the part that mattered — what must never happen is
+ * inventing a name.
  */
 
 /**
@@ -48,31 +48,22 @@ function colourFor(name: string): string {
 
 export function LaunchedBy({ name }: { name?: string | null }) {
   const trimmed = (name ?? '').trim()
-
-  if (!trimmed) {
-    return (
-      <Typography variant="caption" color="text.disabled" component="span">
-        unattributed
-      </Typography>
-    )
-  }
+  if (!trimmed) return null
 
   const colour = colourFor(trimmed)
   return (
-    <Tooltip title="Self-declared — RoboVAST cannot verify who started a campaign">
-      <Chip
-        size="small"
-        label={trimmed}
-        variant="outlined"
-        sx={{
-          borderColor: colour,
-          color: colour,
-          // The tint carries the scanning cue; the text carries the information.
-          bgcolor: `${colour}14`,
-          height: 20,
-          '& .MuiChip-label': { px: 0.75, fontSize: '0.75rem' },
-        }}
-      />
-    </Tooltip>
+    <Chip
+      size="small"
+      label={trimmed}
+      variant="outlined"
+      sx={{
+        borderColor: colour,
+        color: colour,
+        // The tint carries the scanning cue; the text carries the information.
+        bgcolor: `${colour}14`,
+        height: 20,
+        '& .MuiChip-label': { px: 0.75, fontSize: '0.75rem' },
+      }}
+    />
   )
 }
