@@ -320,7 +320,13 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         # needs it and that case already failed earlier, at resolution.
         volumes.append({
             'name': 'git-credentials',
-            'secret': {'secretName': git_secret_name, 'defaultMode': 0o400},
+            # 0444, NOT the 0400 the service pod mounts this same Secret with. BuildKit here is
+            # rootless and runs as uid 1000 (see securityContext below), while a Secret volume's
+            # files are owned by root -- so an owner-only mode is unreadable and the build dies
+            # with `failed to solve: open /var/run/secrets/robovast-git/token: permission
+            # denied`, which reads like a mount problem rather than a mode. The push Secret
+            # beside it works because it leaves the mode at Kubernetes' readable default.
+            'secret': {'secretName': git_secret_name, 'defaultMode': 0o444},
         })
         build_mounts.append({
             'name': 'git-credentials', 'mountPath': _GIT_TOKEN_MOUNT, 'readOnly': True})

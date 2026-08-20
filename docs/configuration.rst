@@ -137,7 +137,22 @@ cluster; the execution pods do not install or clone anything.
 
    One token covers every repository its account can read; nothing has to be declared
    per repository. It is reachable by any build this deployment runs, so prefer a
-   read-only, org-scoped fine-grained PAT over a personal classic one.
+   read-only, org-scoped fine-grained PAT over a personal classic one:
+
+   #. go to GitHub → Settings → Developer settings → **Fine-grained tokens**;
+   #. **Generate new token**;
+   #. set **Resource owner** to your organization — not your personal account, or the
+      token cannot see the organization's repositories;
+   #. choose **All repositories**, or select the ones the campaigns install from;
+   #. set **Contents** to **Read-only** — nothing here writes;
+   #. generate it and store it securely; put it in ``.env`` as above.
+
+   Check it before deploying, because the failure mode is misleading — a fine-grained
+   token returns **404 Not Found** for a private repository it was not granted, and
+   ``git`` reports ``Write access to repository not granted`` for what is only a *read*
+   it may not do::
+
+      GH_TOKEN=<token> gh api repos/<org>/<repo> -q .full_name
 
    A missing token fails **before** the build, when the ref is resolved to a commit:
    ``cannot resolve … the repository needs credentials this deployment does not have``.

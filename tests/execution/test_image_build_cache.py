@@ -272,7 +272,6 @@ def test_the_secret_is_mounted_read_only_from_the_service_s_own_secret():
     pod = _pod_spec(git_secret_name="robovast-git-credentials")
     volume = next(v for v in pod["volumes"] if v["name"] == "git-credentials")
     assert volume["secret"]["secretName"] == "robovast-git-credentials"
-    assert volume["secret"]["defaultMode"] == 0o400
     build = pod["containers"][0]
     mount = next(m for m in build["volumeMounts"] if m["name"] == "git-credentials")
     assert mount["mountPath"] == "/var/run/secrets/robovast-git"
@@ -285,3 +284,20 @@ def test_no_token_configured_builds_without_one():
     case has already failed by here, at resolution, where the message names the fix."""
     assert "--secret" not in _buildctl()
     assert all(v["name"] != "git-credentials" for v in _pod_spec()["volumes"])
+
+
+def test_the_build_user_can_actually_read_the_token():
+    """Asserted as a property of the pod, not as a literal mode, because the literal is what
+    went wrong: mounted 0400 -- copied from the service pod, which reads it as root -- the file
+    is owned by root and this container runs as uid 1000, so the build died with `failed to
+    solve: open /var/run/secrets/robovast-git/token: permission denied`. A test pinning 0400
+    passed while the build could not read a byte."""
+    pod = _pod_spec(git_secret_name="robovast-git-credentials")
+    build = pod["containers"][0]
+    uid = build["securityContext"]["runAsUser"]
+    volume = next(v for v in pod["volumes"] if v["name"] == "git-credentials")
+    mode = volume["secret"].get("defaultMode", 0o644)  # Kubernetes' default when unset
+    assert uid != 0, "this test only means something while the build runs unprivileged"
+    assert mode & 0o004, (
+        f"mode {mode:#o} is not world-readable, and the file is root-owned: uid {uid} "
+        f"cannot read it")
