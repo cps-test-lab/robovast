@@ -162,6 +162,38 @@ release-images:
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",)
 
+# One family member at a time -- the targets the dev loop uses.
+#
+# `release-images` above stays the RELEASE path and publishes all four, because
+# ROBOVAST_PROJECT moves all four. These two exist because iterating does not need that:
+# `vast exec cluster upgrade` rolls only robovast-controller, and the other three members are
+# pulled by campaign job pods. So a change to robovast's own source needs the controller image
+# and nothing else, and a roqsim change needs robovast-roqsim and nothing else -- which is the
+# difference between publishing 0.56 GB and publishing 4.35 GB.
+#
+# The cost of that, and the reason both usage texts say so: a partial publish is only valid when
+# the other members ALREADY exist at this PROJECT/TAG, since ROBOVAST_PROJECT resolves the family
+# as a set. `make image-digests PROJECT=... TAG=...` is the check for it.
+.PHONY: release-image-controller
+release-image-controller:
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast exec cluster upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; exit 1; }
+	./container/controller/build.sh \
+		-t "$(patsubst %/,%,$(PROJECT))/robovast-controller:$(if $(TAG),$(TAG),latest)" \
+		$(if $(PUSH),--push,)
+
+# ROQSIM_REF is passed in the ENVIRONMENT rather than as a flag, because
+# container/robovast/build.sh has no --roqsim-ref option and reads it from there -- where it
+# resolves it to a sha before building, which is what keeps the clone layer's cache key honest.
+# release_images.sh passes it the same way; a flag here would be silently ignored.
+.PHONY: release-image-roqsim
+release-image-roqsim:
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-roqsim PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_SRC=<path> | ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>]"; echo "Builds ONLY robovast-roqsim. It is FROM <PROJECT>/robovast:<TAG>, so that base must already be published there -- the build fails loudly if it is not."; echo "The rest of the family must already exist at this PROJECT/TAG; 'make image-digests' is the check."; exit 1; }
+	$(if $(ROQSIM_REF),ROQSIM_REF="$(ROQSIM_REF)",) ./container/robovast/build.sh --image roqsim \
+		--project "$(PROJECT)" --tag "$(if $(TAG),$(TAG),latest)" \
+		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",) \
+		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
+		$(if $(PUSH),--push,)
+
 .PHONY: image-digests
 image-digests:
 	@test -n "$(PROJECT)" || { echo "Usage: make image-digests PROJECT=docker.io/<namespace> [TAG=<tag>]"; echo "Reports whether that project holds a complete, pullable family at that tag, and what each member currently resolves to. Fails if any member is missing -- ROBOVAST_PROJECT moves all four at once, so a partial set cannot serve a campaign."; echo "Builds nothing: it reads the registry, so it works on a machine that has never built an image."; exit 1; }
