@@ -1673,26 +1673,32 @@ class ClusterService(LocalTransport):
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
-        """The inherited read, pointed at this job's pod instead of a local container.
+        """The inherited reads, pointed at this job's pod instead of a local container.
 
-        Everything that decides *what* is asked -- the simulator's own command, the JSON passed
-        through unreshaped, what "unavailable" means -- is :class:`LocalTransport`'s and shared. Only
-        the target differs, which is the whole reason ``exec_in`` takes one.
+        Everything that decides *what* is asked -- the simulator's own command, the scenario's own
+        tree reader, the JSON passed through unreshaped, what "unavailable" means -- is
+        :class:`LocalTransport`'s and shared. Only the target differs, which is the whole reason
+        ``exec_in`` takes one.
 
         Two lane facts shape the arguments. ``job_name`` here is the **Kubernetes Job** name rather
         than a run key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack
         several runs, so there is no single run dir to name even in principle. But ``/out`` is *this
         pod's own* emptyDir, holding only this job's runs -- so naming it is exact rather than vague,
-        and the tool finds the run still being written underneath it.
-
-        The container is read from the pod rather than assumed: the scenario runs in the first
-        container of the pod spec, and hardcoding a name here would be a second place to change.
+        and both readers find the run still being written underneath it.
         """
         from robovast.common.simulators import health_command
         from robovast.service.interface import JobState
 
         self._require_running_job(campaign_id, job_name)
         state = JobState(job_name=job_name, status="running")
+        try:
+            target = self._job_pod_target(campaign_id, job_name)
+        except KeyError as err:
+            state.unavailable.append(str(err))
+            return state
+        # Independent of the simulator's, as locally: the scenario's tree is there whatever the
+        # simulator is, and coupling them would let the absence of one hide the other.
+        self._read_scenario_state(state, target, "/out")
         try:
             command = health_command(self._campaign_execution(campaign_id), run_dir="/out")
         except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
@@ -1702,11 +1708,6 @@ class ClusterService(LocalTransport):
             state.unavailable.append(
                 "this campaign's simulator does not report its own state, so there is nothing to "
                 "read from a live run")
-            return state
-        try:
-            target = self._job_pod_target(campaign_id, job_name)
-        except KeyError as err:
-            state.unavailable.append(str(err))
             return state
         from robovast.service.local_transport import _JOB_STATE_LIMIT_S
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(

@@ -641,11 +641,18 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
 # -- get_job_state: what a running job is doing, from the run's own tools -------------------------
 
 
-def _job_state_transport(transport, monkeypatch, *, command, exec_result):
-    """A transport whose campaign has *command* as its simulator's health command."""
+def _job_state_transport(transport, monkeypatch, *, command, exec_result, tree_result=None):
+    """A transport whose campaign has *command* as its simulator's health command.
+
+    The two reads are answered separately, as the real container does: the scenario's tree comes
+    from scenario-execution's reader and the rest from the simulator's. A single canned reply for
+    both would let one read's output be mistaken for the other's.
+    """
     monkeypatch.setattr("robovast.common.simulators.health_command",
                         lambda execution, *, run_dir, base_dir="": command)
     monkeypatch.setattr(transport, "_campaign_execution", lambda cid: {"containers": {}})
+    tree = tree_result if tree_result is not None else (0, '{"found": false, "error": "none"}',
+                                                       "", False)
 
     class _Lane:
         def __init__(self):
@@ -653,6 +660,8 @@ def _job_state_transport(transport, monkeypatch, *, command, exec_result):
 
         def exec_in(self, target, argv, limit_s, env=None):
             self.calls.append((target, argv, limit_s))
+            if "scenario_execution.tree_state" in argv:
+                return tree
             return exec_result
 
     lane = _Lane()
@@ -669,19 +678,22 @@ def test_get_job_state_passes_the_simulator_s_json_through(transport, monkeypatc
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
     _live(transport, cid, "running", total=1, completed=0)
     reply = '{"findings": [], "state": {"sim_ts": 12.5, "entities": []}}'
+    tree = '{"found": true, "running": {"name": "drive_to"}, "counts": {"RUNNING": 1}}'
     lane = _job_state_transport(transport, monkeypatch,
                                 command="roqsim health --json /out/cfgA/1",
-                                exec_result=(0, reply, "", False))
+                                exec_result=(0, reply, "", False),
+                                tree_result=(0, tree, "", False))
 
     state = transport.get_job_state(cid, "cfgA/1")
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 12.5, "entities": []}}
+    assert state.scenario["running"]["name"] == "drive_to"
     assert state.unavailable == []
     # The run dir is derived from the run, not read from RUN_OUTPUT_DIR -- the backends set that
     # only for a job that is exactly one run, so a packed job would have none.
-    target, argv, _limit = lane.calls[0]
-    assert target == transport._CONTAINER_NAME
-    assert argv == ["roqsim", "health", "--json", "/out/cfgA/1"]
+    sim_call = [c for c in lane.calls if "roqsim" in c[1]][0]
+    assert sim_call[0] == transport._CONTAINER_NAME
+    assert sim_call[1] == ["roqsim", "health", "--json", "/out/cfgA/1"]
 
 
 def test_get_job_state_says_when_the_simulator_cannot_report(transport, monkeypatch):
@@ -860,3 +872,40 @@ def test_a_probe_does_not_change_the_run_s_status(transport, monkeypatch):
     transport.exec_in_job(cid, "cfgA/1", "true")
 
     assert transport.list_jobs(cid).jobs[0].status == "running"
+
+
+def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(transport, monkeypatch):
+    """The stuck action is the more useful half and it does not depend on the simulator, so a
+    campaign whose simulator reports nothing must still get it. Coupling the two reads would let
+    the absence of one hide the other."""
+    cid = "campaign-2026-08-20-126000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    tree = '{"found": true, "running": {"name": "drive_to", "since": 31.4}}'
+    _job_state_transport(transport, monkeypatch, command=None,
+                         exec_result=(0, "", "", False), tree_result=(0, tree, "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator is None
+    assert state.scenario["running"]["name"] == "drive_to"
+    assert any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_a_run_without_bt_log_says_so_rather_than_showing_an_empty_tree(transport, monkeypatch):
+    """The reader's own phrasing is carried through: it already names the reason (a run with
+    bt_log off, or one that has not ticked), which is more use than "unavailable" and is already
+    written for a reader."""
+    cid = "campaign-2026-08-20-127000"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    reason = '{"found": false, "error": "no behaviors.jsonl in or below \'/out/cfgA/1\'"}'
+    _job_state_transport(transport, monkeypatch, command="tool --json /out/cfgA/1",
+                         exec_result=(0, "{}", "", False), tree_result=(0, reason, "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.scenario is None
+    assert any("behaviors.jsonl" in line for line in state.unavailable)

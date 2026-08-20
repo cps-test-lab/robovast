@@ -481,6 +481,14 @@ class JobState(BaseModel):
     #: :meth:`~robovast.common.simulators.SimulatorBackend.health_command`), so RoboVAST
     #: passes it through rather than reshaping it into a vocabulary of its own.
     simulator: Optional[dict] = None
+    #: Where the scenario has got to: the action executing and the state of every node, as
+    #: scenario-execution reports it from the log its own behaviour tree wrote. Passed through
+    #: for the same reason ``simulator`` is -- the shape belongs to whoever owns the record.
+    #:
+    #: The expensive half of this call, and deliberately so: the log holds one line per status
+    #: change, so the current tree is a fold over the whole file rather than a tail read. That is
+    #: why it is here, asked for when someone wants it, and not in whatever the service polls.
+    scenario: Optional[dict] = None
     #: One line per source that could not be read, saying which and why. Never a silent gap:
     #: a diagnostic that omits its own failures is one that reports a broken run as a fine one.
     unavailable: list = Field(default_factory=list)

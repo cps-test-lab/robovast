@@ -1520,6 +1520,8 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
 
         def exec_in(self, target, argv, limit_s, env=None):
             _Lane.calls.append((target, argv))
+            if "scenario_execution.tree_state" in argv:
+                return (0, '{"found": true, "running": {"name": "drive_to"}}', "", False)
             return exec_result
 
     _Lane.calls = []
@@ -1538,8 +1540,9 @@ def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
     state = cs.get_job_state("camp-1", "scenario-abc")
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
+    assert state.scenario["running"]["name"] == "drive_to"
     assert state.unavailable == []
-    (target, argv), = lane.calls
+    target, argv = [c for c in lane.calls if "tool" in c[1]][0]
     # The container comes from the pod, not from a constant repeated here.
     assert target == ("scenario-abc-x9", "robovast")
     assert argv == ["tool", "--json", "/out"]
@@ -1555,3 +1558,18 @@ def test_cluster_get_job_state_says_when_there_is_no_pod_yet(cs, monkeypatch):
 
     assert state.simulator is None
     assert any("no pod for job" in line for line in state.unavailable)
+
+
+def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, monkeypatch):
+    """The two readers are independent on purpose: a scenario's tree is there whatever the
+    simulator is, and the stuck action is the more useful half. Coupling them would let the
+    absence of one hide the other."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": None)
+
+    state = cs.get_job_state("camp-1", "scenario-abc")
+
+    assert state.simulator is None
+    assert state.scenario["running"]["name"] == "drive_to"
+    assert any("does not report its own state" in line for line in state.unavailable)

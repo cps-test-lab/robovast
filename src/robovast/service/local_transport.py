@@ -2232,10 +2232,14 @@ class LocalTransport(RobovastInterface):
         return (config or {}).get("execution") or {}
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
-        """Ask the run's own simulator what it is doing, by a fixed command inside the job.
+        """What a running job is doing, from the run's own tools by fixed commands.
 
-        The container's tool reads its records and prints JSON; nothing here parses a simulator's
-        file format, so a simulator can reshape its own recording without breaking this.
+        Two readers, asked independently on purpose: the scenario's tree is there whatever the
+        simulator is, so a campaign whose simulator cannot report on itself still gets the more
+        useful half. Coupling them would have made the absence of one hide the other.
+
+        Neither parses another component's file format. The tool that owns each record reads it
+        and prints JSON, so a record can be reshaped by its owner without breaking this.
 
         Locally ``job_name`` *is* the run key (``<config>/<run>``), which is also where the run
         writes inside the container -- ``/out/<config>/<run>``, the same path both lanes mount.
@@ -2247,9 +2251,10 @@ class LocalTransport(RobovastInterface):
 
         job = self._require_running_job(campaign_id, job_name)
         state = JobState(job_name=job_name, status=job.status)
+        run_dir = f"/out/{job_name}"
+        self._read_scenario_state(state, self._CONTAINER_NAME, run_dir)
         try:
-            command = health_command(self._campaign_execution(campaign_id),
-                                     run_dir=f"/out/{job_name}")
+            command = health_command(self._campaign_execution(campaign_id), run_dir=run_dir)
         except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
             state.unavailable.append(f"could not read this campaign's configuration: {err}")
             return state
@@ -2262,7 +2267,43 @@ class LocalTransport(RobovastInterface):
             return state
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
             self._CONTAINER_NAME, shlex.split(command), _JOB_STATE_LIMIT_S)
-        return self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+        self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+        return state
+
+    #: How scenario-execution reports where a scenario has got to. A *fixed* command, so this is
+    #: a read and not a probe -- and named here rather than derived from a backend because the
+    #: scenario runs in every campaign whatever the simulator is.
+    _TREE_STATE_ARGV = ("python3", "-m", "scenario_execution.tree_state")
+
+    def _read_scenario_state(self, state, target, run_dir: str) -> None:
+        """Fold the run's behaviour-tree log into ``state.scenario``, or say why not.
+
+        Asked of scenario-execution's own reader rather than parsed here: the log's shape is
+        its record to change, and a second implementation of someone else's format in this repo
+        would be the thing that breaks when it does.
+        """
+        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            target, [*self._TREE_STATE_ARGV, run_dir], _JOB_STATE_LIMIT_S)
+        if timed_out:
+            state.unavailable.append(
+                f"reading the scenario's tree did not finish within {_JOB_STATE_LIMIT_S}s")
+            return
+        text = (stdout or "").strip()
+        if not text:
+            detail = (stderr or "").strip().splitlines()[-1:] or ["no output"]
+            state.unavailable.append(f"could not read the scenario's tree: {detail[0]}")
+            return
+        try:
+            reply = json.loads(text)
+        except ValueError:
+            state.unavailable.append("the scenario's tree reader did not return JSON")
+            return
+        if not reply.get("found"):
+            # Its own stated reason -- a run with bt_log off, or one that has not ticked yet --
+            # which is more use than "unavailable" and is already phrased for a reader.
+            state.unavailable.append(reply.get("error", "the scenario reported no tree"))
+            return
+        state.scenario = reply
 
     @staticmethod
     def _job_state_from_output(state, command: str, exit_code: int, stdout: str,
