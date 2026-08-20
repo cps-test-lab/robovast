@@ -165,6 +165,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/job-exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Exec In Job */
+        post: operations["exec_in_job_campaigns__campaign_id__job_exec_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/job-log": {
         parameters: {
             query?: never;
@@ -195,6 +212,23 @@ export interface paths {
          *     resumes). A finished job whose pod was garbage-collected has no live log.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/job-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job State */
+        get: operations["get_job_state_campaigns__campaign_id__job_state_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2163,6 +2197,38 @@ export interface components {
             waiting: number;
         };
         /**
+         * JobState
+         * @description What one **running** job is doing right now, as opposed to what it has logged.
+         *
+         *     The sibling of :meth:`RobovastInterface.get_job_log`: that answers "what did it say",
+         *     this answers "where is it". A caller diagnosing a wedged campaign wants the second first
+         *     -- a log tells you what is repeating, not what the simulator is doing while it repeats.
+         *
+         *     Every field beyond ``job_name`` is optional and **absent rather than empty** when it could
+         *     not be read, with :attr:`unavailable` saying which and why. That asymmetry is the point: an
+         *     empty world and a world nobody could look at must not render the same, because the first
+         *     reads as "nothing is happening" and would be believed.
+         */
+        JobState: {
+            /** Job Name */
+            job_name: string;
+            /** Scenario */
+            scenario: {
+                [key: string]: unknown;
+            } | null;
+            /** Simulator */
+            simulator: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Status
+             * @default running
+             */
+            status: string;
+            /** Unavailable */
+            unavailable: unknown[];
+        };
+        /**
          * JobSummary
          * @description One execution unit of a campaign's current batch.
          *
@@ -3448,6 +3514,42 @@ export interface operations {
             };
         };
     };
+    exec_in_job_campaigns__campaign_id__job_exec_post: {
+        parameters: {
+            query: {
+                job_name: string;
+                command: string;
+                container?: string;
+                source?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_job_log_campaigns__campaign_id__job_log_get: {
         parameters: {
             query: {
@@ -3502,6 +3604,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_state_campaigns__campaign_id__job_state_get: {
+        parameters: {
+            query: {
+                job_name: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobState"];
                 };
             };
             /** @description Validation Error */

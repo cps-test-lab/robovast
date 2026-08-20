@@ -1382,6 +1382,58 @@
         "title": "JobCounts",
         "type": "object"
       },
+      "JobState": {
+        "description": "What one **running** job is doing right now, as opposed to what it has logged.\n\nThe sibling of :meth:`RobovastInterface.get_job_log`: that answers \"what did it say\",\nthis answers \"where is it\". A caller diagnosing a wedged campaign wants the second first\n-- a log tells you what is repeating, not what the simulator is doing while it repeats.\n\nEvery field beyond ``job_name`` is optional and **absent rather than empty** when it could\nnot be read, with :attr:`unavailable` saying which and why. That asymmetry is the point: an\nempty world and a world nobody could look at must not render the same, because the first\nreads as \"nothing is happening\" and would be believed.",
+        "properties": {
+          "job_name": {
+            "title": "Job Name",
+            "type": "string"
+          },
+          "scenario": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario"
+          },
+          "simulator": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulator"
+          },
+          "status": {
+            "default": "running",
+            "title": "Status",
+            "type": "string"
+          },
+          "unavailable": {
+            "items": {},
+            "title": "Unavailable",
+            "type": "array"
+          }
+        },
+        "required": [
+          "job_name",
+          "scenario",
+          "simulator",
+          "status",
+          "unavailable"
+        ],
+        "title": "JobState",
+        "type": "object"
+      },
       "JobSummary": {
         "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a single **run** on the\nlocal Docker backend (sequential, so at most one is ``running``), or a\n**Kubernetes Job** on the cluster backend (which may pack several runs).\n``job_name`` is the id :meth:`RobovastInterface.get_job_log` takes; ``display_name``\nis an optional human-friendly label (config/run locally, batch/job-index on the\ncluster).",
         "properties": {
@@ -3510,6 +3562,86 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/job-exec": {
+      "post": {
+        "operationId": "exec_in_job_campaigns__campaign_id__job_exec_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_name",
+            "required": true,
+            "schema": {
+              "title": "Job Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "command",
+            "required": true,
+            "schema": {
+              "title": "Command",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "container",
+            "required": false,
+            "schema": {
+              "default": "scenario",
+              "title": "Container",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "api",
+              "title": "Source",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Exec In Job",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/job-log": {
       "get": {
         "operationId": "get_job_log_campaigns__campaign_id__job_log_get",
@@ -3616,6 +3748,57 @@
           }
         },
         "summary": "Stream Job Log",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/job-state": {
+      "get": {
+        "operationId": "get_job_state_campaigns__campaign_id__job_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_name",
+            "required": true,
+            "schema": {
+              "title": "Job Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job State",
         "tags": [
           "campaigns"
         ]
