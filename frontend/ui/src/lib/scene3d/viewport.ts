@@ -51,6 +51,30 @@ const UP_MATRIX = new Matrix4().makeRotationX(-Math.PI / 2)
 // should still see the grid it stands on, and an empty one has no bounds to measure at all.
 const MIN_SCENE_RADIUS_M = 20
 
+// The closest the near plane is ever put (see updateFrustum): the worst depth precision the scene is
+// ever rendered with, which is what gridDepthOffset has to clear.
+const NEAR_FLOOR_M = 0.01
+
+/**
+ * How far below z=0 to sink the ground grid so a descriptor's floor plane hides it, when the plane
+ * the two share is `viewDistance` metres from the camera.
+ *
+ * A fixed millimetre does not do it. A 24-bit depth buffer resolves roughly z^2 / (near * 2^24)
+ * metres at distance z, so an offset that separates grid from floor on a tabletop is far under the
+ * buffer's resolution once the camera sits tens of metres out -- and the two planes then z-fight,
+ * which is what the grid showing *through* the floor in mottled patches is.
+ *
+ * It cannot be sized off the scene instead: `sceneRadius` is floored at MIN_SCENE_RADIUS_M, so the
+ * decimetre a warehouse needs would also apply to an empty world holding one small robot, whose
+ * wheels would then visibly float above the grid. Keyed on the view distance, the offset stays
+ * sub-millimetre while anything is close enough for it to be seen, and by the range where it reaches
+ * a decimetre a decimetre is about a pixel.
+ */
+function gridDepthOffset(viewDistance: number): number {
+  const depthResolution = (viewDistance * viewDistance) / (NEAR_FLOOR_M * 2 ** 24)
+  return Math.max(0.001, 3 * depthResolution)
+}
+
 /** Camera pose from a MuJoCo free-camera spec: position = lookat - distance * forward. */
 function cameraFromView(view: SceneViewSpec): { position: Vector3; target: Vector3 } {
   const [lx, ly, lz] = view.lookat ?? [0, 0, 0]
@@ -75,6 +99,7 @@ export class SceneViewport {
   private camera: PerspectiveCamera
   private controls: OrbitControls
   private zUpGroup = new Group()
+  private grid: GridHelper
   private root: Group | null = null
   private resizeObserver: ResizeObserver
   private container: HTMLElement
@@ -107,15 +132,15 @@ export class SceneViewport {
     fill.position.set(-2.2, 2.0, -1.8)
     this.scene.add(fill)
 
-    // Ground grid just below z=0 so a descriptor floor plane doesn't z-fight it.
-    const grid = new GridHelper(
+    // Ground grid below z=0, so a descriptor's floor plane covers it rather than fighting it; how
+    // far below is a function of where the camera is (updateGridDepth, every frame).
+    this.grid = new GridHelper(
       40,
       40,
       new Color(opts.gridCenterColor ?? GRID_CENTER),
       new Color(opts.gridColor ?? GRID),
     )
-    grid.position.y = -0.001
-    this.scene.add(grid)
+    this.scene.add(this.grid)
 
     // Scene content is authored Z-up; render it under the Y-up wrapper.
     this.zUpGroup.matrixAutoUpdate = false
@@ -145,6 +170,7 @@ export class SceneViewport {
     this.renderer.setAnimationLoop(() => {
       this.controls.update()
       this.updateFrustum()
+      this.updateGridDepth()
       this.renderer.render(this.scene, this.camera)
     })
   }
@@ -179,7 +205,8 @@ export class SceneViewport {
    * *scene*, not from its pivot -- the wheel carries the pivot along, so the pivot distance is
    * constant by design and a frustum keyed on it would never grow. Enclosing the scene's bounding
    * sphere is exactly the condition for nothing to be clipped; near follows far so the depth-buffer
-   * ratio stays fixed rather than z-fighting once far grows large.
+   * ratio stays fixed rather than z-fighting once far grows large -- though the clamp is the usual
+   * case: far has to pass 2 km before the ratio moves near off NEAR_FLOOR_M.
    */
   private updateFrustum(): void {
     const reach = this.camera.position.distanceTo(this.sceneCenter) + this.sceneRadius
@@ -187,8 +214,17 @@ export class SceneViewport {
     // Rebuilding the projection matrix for a sub-percent change every frame is wasted work.
     if (Math.abs(far - this.camera.far) < this.camera.far * 0.01) return
     this.camera.far = far
-    this.camera.near = Math.max(0.01, far / 2e5)
+    this.camera.near = Math.max(NEAR_FLOOR_M, far / 2e5)
     this.camera.updateProjectionMatrix()
+  }
+
+  /** Re-sink the ground grid for how far the camera currently is from the world.
+   *
+   *  Measured against the scene, not the orbit pivot, for the reason updateFrustum gives: the wheel
+   *  carries the pivot along, so pivot distance barely moves however far out the camera flies.
+   */
+  private updateGridDepth(): void {
+    this.grid.position.y = -gridDepthOffset(this.camera.position.distanceTo(this.sceneCenter))
   }
 
   private resize(): void {
