@@ -9,9 +9,49 @@ on:
 permissions: read-all
 
 jobs:
+  # First: `robovast` depends on it, so the version this tag releases has to be on the
+  # index before the wheel that requires it is uploaded. It has no dependency of ours in
+  # the other direction -- that is the property the split exists to keep -- so nothing
+  # precedes it.
+  publish-robovast-client:
+    name: Build and publish robovast-client to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/robovast-client
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Add Poetry to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Set version from tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          cd src/robovast_client && poetry version "$TAG"
+
+      - name: Build package
+        run: cd src/robovast_client && poetry build
+
+      - name: Publish to PyPI
+        env:
+          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
+        run: cd src/robovast_client && poetry publish
+
   publish-robovast:
     name: Build and publish robovast to PyPI
     runs-on: ubuntu-latest
+    needs: publish-robovast-client
     environment:
       name: pypi
       url: https://pypi.org/p/robovast
@@ -36,8 +76,52 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           poetry version "$TAG"
 
+      # A path dependency reaches the built metadata as a *direct reference*
+      # (`robovast-client @ file:///home/...`), which PyPI refuses to accept and which
+      # would name a directory on the build machine even if it did. The siblings are
+      # developed in this tree and released by this workflow from the same tag, so the
+      # version to require is the one being published. Fails if a name stops matching:
+      # a rewrite that silently does nothing hands the upload straight back to the bug.
+      - name: Require the released siblings, not the paths they are developed at
+        run: |
+          python - "${GITHUB_REF_NAME#v}" <<'EOF'
+          import pathlib, re, sys
+
+          tag = sys.argv[1]
+          manifest = pathlib.Path("pyproject.toml")
+          text = manifest.read_text(encoding="utf-8")
+          for name in ("robovast-client", "robovast-nav", "robovast-sim-roqsim"):
+              pattern = re.compile(
+                  rf'^(?P<head>{re.escape(name)} = \{{[^}}\n]*?)path = "[^"]+"', re.M)
+              text, count = pattern.subn(rf'\g<head>version = "=={tag}"', text)
+              if count != 1:
+                  sys.exit(f"{name}: expected one path dependency, rewrote {count}")
+              print(next(line for line in text.splitlines()
+                         if line.startswith(f"{name} = ")))
+          manifest.write_text(text, encoding="utf-8")
+          EOF
+
       - name: Build package
         run: poetry build
+
+      # The check the rewrite above exists to pass, asked of the artifact rather than of
+      # the manifest: an upload rejected by PyPI is found here, before the client half of
+      # the release has already gone out and cannot be taken back.
+      - name: The wheel names no directory on this machine
+        run: |
+          python - <<'EOF'
+          import glob, zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          archive = zipfile.ZipFile(wheel)
+          metadata = archive.read(next(n for n in archive.namelist()
+                                       if n.endswith(".dist-info/METADATA"))).decode()
+          direct = [line for line in metadata.splitlines()
+                    if line.startswith("Requires-Dist") and "@" in line]
+          if direct:
+              raise SystemExit("direct references PyPI will reject:\n" + "\n".join(direct))
+          print(f"{wheel}: no direct references")
+          EOF
 
       - name: Publish to PyPI
         env:
