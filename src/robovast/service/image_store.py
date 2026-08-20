@@ -324,7 +324,7 @@ class LocalDockerImageStore(ImageBuildStore):
         # Dockerfile, which is the only place to put one here: writing a .dockerignore
         # into the project dir would mutate the user's workspace.
         df_path.with_name(df_path.name + ".dockerignore").write_text(
-            render_dockerignore())
+            render_dockerignore(project_dir))
         cmd = ["docker", "buildx", "build", "--builder", _LOCAL_BUILDER, "--load",
                "-f", str(df_path), "-t", record.local_ref, str(project_dir)]
         # The token for a private git spec, handed to BuildKit as a secret rather than a build

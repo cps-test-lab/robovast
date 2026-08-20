@@ -28,6 +28,8 @@ previously reached up into ``service.image_build`` for this private constant —
 lone engine-level ``execution → service`` dependency — which inverted the layering.
 """
 
+from pathlib import Path
+
 #: Directory/file names never hashed into or copied as part of a build context.
 #:
 #: The second line is Python build output, and it is excluded for correctness rather than
@@ -49,7 +51,61 @@ BUILD_CONTEXT_IGNORE: frozenset[str] = frozenset({
 })
 
 
-def render_dockerignore() -> str:
+#: The child that marks a directory as a campaign's output rather than project source.
+#: Every campaign writes one; nothing a project authors does.
+_CAMPAIGN_MARKER = "_execution"
+
+
+def is_campaign_output(path) -> bool:
+    """Is *path* a downloaded campaign's directory?
+
+    Answered by **structure** -- it holds an ``_execution/`` child -- rather than by a name
+    pattern. A campaign directory is named after its campaign id, so there is no fixed name
+    to list, and the pattern that would match one is the pattern a project happens to use
+    for its campaigns today. ``results/`` was ignored and this was not, so a
+    ``--wait-and-download`` that lands its output beside the sources (rather than under
+    ``results/``) put the whole campaign -- rosbags included -- into every build context
+    from then on. One project was staging 592 MB of them around a 15 MB tree, on every
+    build of every container, and nothing said so.
+
+    Structure also means this cannot go stale: a campaign directory is recognised whatever
+    it is called, in a project nobody thought about when this was written.
+    """
+    path = Path(path)
+    return path.is_dir() and (path / _CAMPAIGN_MARKER).is_dir()
+
+
+def campaign_outputs_in(root) -> list:
+    """Campaign directories under *root*, as paths relative to it.
+
+    Not recursive into a campaign once found (its insides are all output), and never
+    descends into an already-ignored name -- so this walks the project, not the results
+    it is trying to skip.
+    """
+    root = Path(root)
+    found, stack = [], [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            # Symlinked directories are not descended into: a link back to an ancestor
+            # would make this walk forever, and docker does not follow one into a build
+            # context either, so there is nothing behind it to find.
+            if child.is_symlink() or not child.is_dir():
+                continue
+            if child.name in BUILD_CONTEXT_IGNORE:
+                continue
+            if is_campaign_output(child):
+                found.append(child.relative_to(root))
+            else:
+                stack.append(child)
+    return sorted(found)
+
+
+def render_dockerignore(project_dir=None) -> str:
     """:data:`BUILD_CONTEXT_IGNORE` as ``.dockerignore`` patterns.
 
     The local build hands the project dir to the daemon as-is, so without this the
@@ -60,9 +116,20 @@ def render_dockerignore() -> str:
     Each name is emitted twice: bare (a ``.dockerignore`` pattern is anchored at the
     context root) and ``**/``-prefixed, to match the *any path component* rule the
     hashing and staging code applies.
+
+    *project_dir* adds the campaign outputs found under it (:func:`campaign_outputs_in`).
+    They have to be listed by path because they are recognised by structure and a
+    ``.dockerignore`` cannot express "a directory containing ``_execution/``" -- so this
+    is the one part of the two lanes' agreement that is computed rather than declared.
+    Omitting it yields the static set alone, which is a *larger* context and never a
+    wrong one.
     """
     lines = []
     for name in sorted(BUILD_CONTEXT_IGNORE):
         lines.append(name)
         lines.append(f"**/{name}")
+    if project_dir is not None:
+        for rel in campaign_outputs_in(project_dir):
+            # A .dockerignore pattern is always '/'-separated, whatever the host uses.
+            lines.append(rel.as_posix())
     return "\n".join(lines) + "\n"
