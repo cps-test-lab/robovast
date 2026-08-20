@@ -199,10 +199,21 @@ class KubeExecLane:
             logger.warning("could not discard the staged exec tree: %s", e)
             return 0
 
+    def exec_in(self, target, argv: list, limit_s: int,
+                env: dict | None = None) -> tuple[int, str, str, bool]:
+        """Exec into *target*, a ``(pod, container)`` pair.
+
+        *env* is accepted for one signature across lanes and ignored here: a pod bakes its
+        environment at creation, so there is nothing per-exec to carry — unlike ``docker
+        exec``, where each call carries it.
+        """
+        from .kube_client import exec_stream
+        pod, container = target
+        return exec_stream(self._client(), pod, self._namespace, container,
+                           list(argv), limit_s=limit_s)
+
     def exec_in_held(self, spec: ExecSpec, limit_s: int,
                      detach: bool) -> tuple[int, str, str, bool]:
-        from .kube_client import exec_stream
-
         # Both forms come from the spec, so the liveness check a detached start needs
         # cannot be present on one lane and missing on the other — which is exactly how
         # it was, until a scenario silently failed to start.
@@ -210,10 +221,7 @@ class KubeExecLane:
             argv = ["/bin/bash", "-c", spec.detached_start_script()]
         else:
             argv = spec.foreground_argv()
-        # The env is baked into the pod at creation, so it is not re-sent per exec —
-        # unlike docker exec, where each call carries it.
-        return exec_stream(self._client(), _pod_name(), self._namespace, _CONTAINER,
-                           argv, limit_s=limit_s)
+        return self.exec_in((_pod_name(), _CONTAINER), argv, limit_s)
 
     def stop_held(self) -> bool:
         """Delete the pod, **wait until it is gone**, and drop the staged tree.

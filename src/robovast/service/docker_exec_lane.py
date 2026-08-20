@@ -51,6 +51,16 @@ class DockerExecLane:
             raise RuntimeError(
                 f"could not start exec container: {done.stderr.strip() or done.stdout.strip()}")
 
+    def exec_in(self, target, argv: list, limit_s: int,
+                env: dict | None = None) -> tuple[int, str, str, bool]:
+        """``docker exec`` into *target*, which is a container name."""
+        cmd = ["docker", "exec"]
+        for key, value in (env or {}).items():
+            cmd += ["-e", f"{key}={value}"]
+        cmd.append(target)
+        cmd += list(argv)
+        return _capture(cmd, limit_s)
+
     def exec_in_held(self, spec: ExecSpec, limit_s: int,
                      detach: bool) -> tuple[int, str, str, bool]:
         """Run the command inside the held container.
@@ -59,15 +69,11 @@ class DockerExecLane:
         next call can inspect it. ``setsid`` puts it in its own session, without which
         it would be torn down with the exec that started it.
         """
-        cmd = ["docker", "exec"]
-        for key, value in spec.env.items():
-            cmd += ["-e", f"{key}={value}"]
-        cmd.append(CONTAINER_NAME)
         if detach:
-            cmd += ["/bin/bash", "-c", spec.detached_start_script()]
-            return _capture(cmd, _PROBE_TIMEOUT_S)
-        cmd += spec.foreground_argv()
-        return _capture(cmd, limit_s)
+            return self.exec_in(CONTAINER_NAME,
+                                ["/bin/bash", "-c", spec.detached_start_script()],
+                                _PROBE_TIMEOUT_S, env=spec.env)
+        return self.exec_in(CONTAINER_NAME, spec.foreground_argv(), limit_s, env=spec.env)
 
     def stop_held(self) -> bool:
         """Remove the container. True when one was actually there.

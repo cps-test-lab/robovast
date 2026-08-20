@@ -86,9 +86,27 @@ class ExecLane(Protocol):
     def start_held(self, spec: "ExecSpec", deadline_s: int) -> None:
         """Start the held container, idle, so commands can be exec'd into it."""
 
+    def exec_in(self, target, argv: list, limit_s: int,
+                env: dict | None = None) -> tuple[int, str, str, bool]:
+        """Run *argv* in an **already-running** container named by *target*.
+
+        The lane-specific half of every exec, with the container to enter as a parameter
+        rather than a constant. *target* is opaque and lane-shaped -- a container name on
+        docker, a ``(pod, container)`` pair on Kubernetes -- so a caller obtains one from
+        the lane rather than constructing it.
+
+        Both docker and the Kubernetes API require that argument regardless, so naming it
+        is not a new capability: it is the same call with the constant lifted out. That is
+        what lets one primitive serve the held diagnostic container *and* a live job's,
+        instead of a second exec path growing beside this one.
+
+        *env* is applied where the lane can: ``docker exec`` carries it per call, while a
+        pod bakes its environment at creation and ignores it here.
+        """
+
     def exec_in_held(self, spec: "ExecSpec", limit_s: int,
                      detach: bool) -> tuple[int, str, str, bool]:
-        """Run the command inside the held container."""
+        """Run the command inside the held container -- :meth:`exec_in` at its own target."""
 
     def stop_held(self) -> bool:
         """Stop the held container. True if one was there."""
