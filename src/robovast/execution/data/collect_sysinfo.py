@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import platform
 from typing import Any, Dict, Optional
@@ -182,6 +183,67 @@ def build_sysinfo(custom: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def get_distributions() -> Dict[str, Any]:
+    """Every installed distribution, with what it registers and where it came from.
+
+    Runs HERE, in the container, because that is the only place the answer exists: the
+    packages are installed in this image and in no other. A service that walked its own
+    interpreter instead reported "no asset providers" for a campaign whose image had three
+    private ones -- the record was written by whichever process prepared the campaign, and on a
+    cluster lane that process carries no simulator at all.
+
+    Per distribution: ``version``, the entry-point ``groups`` it contributes to, and its
+    ``direct_url`` -- which for a VCS install carries the commit, and is what turns "a private
+    provider" into "this private provider, at this commit". A published dataset is judged on
+    exactly that difference.
+
+    Every group of every distribution, with no notion of which ones matter: which groups make a
+    provider is the simulator backend's to say (``ASSET_ENTRY_POINT_GROUPS``), so this records
+    the facts and the reader filters them -- and a second simulator needs no change here.
+    """
+    try:
+        from importlib.metadata import distributions
+    except ImportError:                                   # pragma: no cover - Python < 3.8
+        return {}
+
+    out: Dict[str, Any] = {}
+    for dist in distributions():
+        try:
+            name = ((dist.metadata or {}).get("Name") or "").strip()
+        except Exception:                                 # noqa: BLE001 - broken metadata
+            continue
+        if not name:
+            continue
+        # A duplicate name means two copies on the path: keep the first, which is the one an
+        # import wins with, and merge the groups so neither copy's contribution is lost.
+        entry = out.setdefault(name, {"version": dist.version or "", "groups": []})
+        try:
+            groups = {ep.group for ep in dist.entry_points}
+        except Exception:                                 # noqa: BLE001 - broken metadata
+            groups = set()
+        entry["groups"] = sorted(set(entry["groups"]) | groups)
+        try:
+            origin = dist.read_text("direct_url.json")
+        except Exception:                                 # noqa: BLE001 - unreadable
+            origin = None
+        if origin and "direct_url" not in entry:
+            try:
+                entry["direct_url"] = json.loads(origin)
+            except ValueError:
+                pass
+    return out
+
+
+def write_distributions(path: str) -> None:
+    """Write :func:`get_distributions` as JSON. Never raises: this records a fact about a run
+    and must not become the reason one fails."""
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(get_distributions(), handle, indent=2, sort_keys=True)
+    except Exception as exc:                              # noqa: BLE001 - best effort
+        print(f"could not record installed distributions: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -206,6 +268,23 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--distributions",
+        metavar="PATH",
+        help=(
+            "Also write the installed distributions (version, entry-point groups, direct URL) "
+            "as JSON here. A secondary container passes ONLY this: the pod's host facts are "
+            "already recorded by the main container, while the packages differ per container -- "
+            "which is the whole point, since in the ROS shape the simulator (and so every asset "
+            "provider) lives in a container of its own."
+        ),
+    )
+    parser.add_argument(
+        "--no-sysinfo",
+        action="store_true",
+        help="Skip the sysinfo output. For a container that only reports its distributions.",
+    )
+
     args = parser.parse_args()
 
     try:
@@ -213,8 +292,11 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
-    sysinfo = build_sysinfo(external)
-    write_yaml(sysinfo, args.output)
+    if not args.no_sysinfo:
+        sysinfo = build_sysinfo(external)
+        write_yaml(sysinfo, args.output)
+    if args.distributions:
+        write_distributions(args.distributions)
 
 
 if __name__ == "__main__":

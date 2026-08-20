@@ -82,6 +82,15 @@ export PYTHONUNBUFFERED=1
 
 SOCKET="/ipc/${CONTAINER_NAME}"
 
+# Which distributions this container holds -- ONLY that, not the pod's host facts, which the
+# main container already recorded and which are the same pod. The packages are what differ, and
+# in the ROS shape they differ where it matters most: the simulator runs here, so every asset
+# provider a campaign used is installed in this container and in no other. `|| true` because a
+# record about a run must never be the reason the run fails, and an older image may not mount
+# the script at all.
+python3 /config/collect_sysinfo.py --no-sysinfo \
+  --distributions "${OUTPUT_DIR}/distributions_${CONTAINER_NAME}.json" || true
+
 # Start resource monitor
 python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &
 _monitor_pid=$!
