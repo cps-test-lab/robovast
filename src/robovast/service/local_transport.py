@@ -2818,46 +2818,51 @@ class LocalTransport(RobovastInterface):
         # Raw-load (not full validation) — reading declared panels must not depend on
         # the rest of the snapshot config being re-validatable. Reads the *effective*
         # .vast so in-place run-view visualization edits are reflected.
-        from robovast.common.config import CUSTOM_PANEL_TYPE, visualization_block
+        from robovast.common.config import (CUSTOM_PANEL_TYPE, flatten_panel_shorthand,
+                                            visualization_block)
         from robovast.common.config_validation import _safe_load
         from robovast.common.simulators import merge_default_panels
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import campaign_vast
         cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
         run_view = visualization_block(cfg, "results", "run_view") or {}
-        # The simulator backend contributes the panels that replay what it always records
-        # (roqsim's `scene3d`), so a campaign never declares one it could not do without.
-        # Merged here rather than in the UI, so validation and the view agree.
-        raw = merge_default_panels(run_view.get("panels") or [], (cfg or {}).get("execution") or {})
-        # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``playback:``
-        # for a bare panel); flatten to the ``{type, ...fields}`` the web UI consumes.
-        # A bare ``- playback`` (no colon) parses to the plain string ``"playback"``.
+        authored = run_view.get("panels") or []
+        # Contributed panels: the transport bar every run view needs, plus the ones that replay
+        # what the configured simulator always records (roqsim's `scene3d`) -- so a campaign never
+        # declares a panel it could not do without. Merged here rather than in the UI, so the
+        # served list and the view cannot disagree. `authored_panels` keeps the author's own count,
+        # which is the only way the view can still tell an empty visualization block apart.
+        raw = merge_default_panels(authored, (cfg or {}).get("execution") or {})
+        # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``log:`` for a bare
+        # panel), or the plain string ``"log"`` for a bare ``- log`` with no colon; flatten to the
+        # ``{type, ...fields}`` the web UI consumes, through the same function that decides that
+        # shape everywhere else.
         # Attach a Module-Federation ``remote`` descriptor to panels rendered as remotes:
         # package panels (entry-point types shipping WEB_PANEL) and user ``custom`` panels.
         pkg_remotes = _panel_remotes()
         panels = []
         for i, entry in enumerate(raw):
-            if isinstance(entry, str):
-                ptype, props = entry, None
-            else:
-                (ptype, props), = entry.items()
-            props = props or {}
-            panel = {"type": ptype, **props}
+            # Copied, because the flattened form of an already-flat entry is the entry itself --
+            # and attaching a `remote` below would then write into the loaded config, or worse
+            # into the module-level contributed list.
+            panel = dict(flatten_panel_shorthand(entry))
+            ptype = panel.get("type")
             if ptype == CUSTOM_PANEL_TYPE:
-                remote = props.get("remote")
+                remote = panel.get("remote")
                 if remote:
                     rel = remote if remote.endswith(".js") \
                         else f"{remote.rstrip('/')}/remoteEntry.js"
                     panel["remote"] = {
                         "name": f"panel_{i}",
                         "remote_entry_url": Routes.campaign_panel_asset(campaign_id, rel),
-                        "module": props.get("module") or "./panel",
+                        "module": panel.get("module") or "./panel",
                     }
             elif ptype in pkg_remotes:
                 panel["remote"] = pkg_remotes[ptype]
             panels.append(panel)
         return CampaignPanelsResponse(
-            campaign_id=campaign_id, panels=panels, timeline=run_view.get("timeline"))
+            campaign_id=campaign_id, panels=panels, timeline=run_view.get("timeline"),
+            authored_panels=len(authored))
 
     def resolve_campaign_panel_asset(self, campaign_id: str, rel_path: str) -> str:
         """Resolve a ``custom`` panel's staged bundle file, confined to the campaign's

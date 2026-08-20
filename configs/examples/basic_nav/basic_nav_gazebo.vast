@@ -59,7 +59,6 @@ visualization:
     # Web Run view: replay one run over its rosbag timeline.
     run_view:
       panels:
-      - playback:
       # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
       # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
       # half the column each; both claiming `left` would stack them on top of each other.

@@ -44,7 +44,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from robovast.common.config import SCENARIO_CONTAINER, SIMULATION_CONTAINER, SUT_CONTAINER
+from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+                                    SUT_CONTAINER, flatten_panel_shorthand)
 
 #: Entry-point group backends register in.
 SIMULATOR_GROUP = "robovast.simulators"
@@ -244,6 +245,10 @@ class SimulatorBackend:
         Gazebo has no scene-descriptor export, so it has no 3D panel to offer and must not
         claim one.
 
+        What *every* campaign gets regardless of simulator is
+        :data:`~robovast.common.config.ALWAYS_ON_PANELS`, not this: a backend contributes only
+        what it alone knows.
+
         Contributed *defaults*: a campaign that declares the same panel type itself keeps its
         own entry, exactly as ``execution.env`` wins over :meth:`env`. A backend supplies what
         it knows, not decisions it takes away.
@@ -400,38 +405,41 @@ def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
 
 
 def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:
-    """*raw_panels* with the configured backend's contributed panels prepended.
+    """*raw_panels* with the contributed panels prepended: the always-on set plus the
+    configured backend's own.
 
-    One seam for every reader of a campaign's panel list -- the service that serves it, the
-    validation that checks it, the preview -- so a contributed panel cannot be visible in one
-    and absent in another. Doing it in the web UI instead would mean validation rejecting a
-    panel the run view then shows anyway.
+    Two sources, one rule. :data:`~robovast.common.config.ALWAYS_ON_PANELS` is what no campaign
+    can do without (the ``playback`` transport); a backend adds what it alone knows it always
+    records (roqsim's ``scene3d``). Merged here, where the service reads the list, rather than in
+    the web UI -- doing it there would mean the run view showing a panel the served list does not
+    contain.
 
     Precedence follows ``execution.env``'s documented rule: a campaign that declares the type
-    itself keeps its own entry. Contributed panels go *first* because the one there is to
-    contribute (``scene3d``) is the full-bleed base layer the others float over, which is also
-    the order a ``.vast`` wrote it in by hand.
+    itself keeps its own entry, at its own position and with its own props. Contributed panels go
+    *first* because ``playback`` docks flush against the bottom edge (the first ``bottom`` bar in
+    the list takes the edge) and ``scene3d`` is the full-bleed base layer the others float over --
+    which is also the order a ``.vast`` wrote them in by hand.
 
-    A backend that cannot be resolved contributes nothing rather than failing: the panel list
-    is read to *show* a campaign, including one whose backend package is not installed here.
+    A backend that cannot be resolved contributes nothing rather than failing: the panel list is
+    read to *show* a campaign, including one whose backend package is not installed here. The
+    always-on set stands either way -- an unresolvable backend must not take the transport bar
+    with it.
     """
-    if not (name := backend_name(execution or {})):
-        return list(raw_panels)
-    try:
-        backend = resolve_backend(name, base_dir)
-        cfg = ((execution.get("containers") or {}).get("simulation") or {})
-        contributed = backend.default_panels(cfg, execution) or []
-    except Exception:  # pylint: disable=broad-except
-        return list(raw_panels)
+    contributed = list(ALWAYS_ON_PANELS)
+    if name := backend_name(execution or {}):
+        try:
+            backend = resolve_backend(name, base_dir)
+            cfg = ((execution.get("containers") or {}).get("simulation") or {})
+            contributed += backend.default_panels(cfg, execution) or []
+        except Exception:  # pylint: disable=broad-except
+            pass
 
-    declared = set()
-    for entry in raw_panels:
-        if isinstance(entry, str):
-            declared.add(entry)
-        elif isinstance(entry, dict) and len(entry) == 1:
-            declared.add(next(iter(entry)))
+    # Through `flatten_panel_shorthand` rather than a walk of its own, so "which type is this
+    # entry" cannot come to mean one thing here and another where the list is validated or served.
+    declared = {flatten_panel_shorthand(entry).get("type") for entry in raw_panels
+                if isinstance(entry, (str, dict))}
     extra = [p for p in contributed
-             if not (isinstance(p, dict) and len(p) == 1 and next(iter(p)) in declared)]
+             if flatten_panel_shorthand(p).get("type") not in declared]
     return extra + list(raw_panels)
 
 

@@ -536,6 +536,14 @@ BUILTIN_PANEL_TYPES = frozenset({
     "camera",
 })
 
+#: Run-view panels every campaign gets, whatever its ``.vast`` declares and whatever simulator it
+#: runs. The transport bar is not a visualization choice: without it a run view has no clock to
+#: scrub and every other panel has nothing to follow, so there is nothing for a ``.vast`` to decide
+#: and nothing it should have to write. Contributed by :func:`~robovast.common.simulators.merge_default_panels`
+#: alongside the configured backend's own panels, and deduplicated the same way -- a campaign that
+#: declares ``playback`` itself keeps its own entry, so moving or re-titling the bar still works.
+ALWAYS_ON_PANELS = [{"playback": {}}]
+
 #: Core built-in *config-view* panel types (``frontend/ui/src/panels/config``). A second
 #: vocabulary rather than a second mechanism: the two surfaces take different props (a config
 #: panel gets a resolved configuration, a run panel a playback clock and a run-scoped data

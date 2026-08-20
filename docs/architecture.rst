@@ -787,10 +787,13 @@ reworking the core. It has four decoupled contracts, and panels only ever see th
 three:
 
 * **Declaration** — the campaign's ``.vast`` carries a top-level ``visualization.results.run_view.panels``
-  list (:class:`robovast.common.config.VisualizationConfig`), served verbatim to the UI by
-  ``list_campaign_panels`` (the same raw-load pattern as ``list_campaign_plots``). The
-  frontend normalizes it against each panel type's registry defaults
-  (``frontend/ui/src/lib/dashboard/parseVastPanels.ts``).
+  list (:class:`robovast.common.config.VisualizationConfig`), served to the UI by
+  ``list_campaign_panels`` (the same raw-load pattern as ``list_campaign_plots``) with the
+  *contributed* panels merged in: ``config.ALWAYS_ON_PANELS`` (the ``playback`` transport, which
+  no run view can do without) and the configured simulator's ``default_panels``. Merged there
+  rather than in the UI, so the served list and the view cannot disagree; a campaign that
+  declares the type itself keeps its own entry. The frontend normalizes the result against each
+  panel type's registry defaults (``frontend/ui/src/lib/panels/parsePanels.ts``).
 * **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/dashboard/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.

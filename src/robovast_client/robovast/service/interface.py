@@ -1266,16 +1266,23 @@ class PlaybackTimeline(BaseModel):
 
 
 class CampaignPanelsResponse(BaseModel):
-    """The run-view panels declared for a campaign (its snapshot ``.vast``
-    top-level ``visualization.panels``). Each entry is the raw panel dict
-    (``type`` + ``position`` + panel-specific data bindings), rendered by the
-    web run-view against the campaign's ``data.db``. ``timeline`` (optional,
-    ``visualization.timeline``) names the table + column that defines the
-    playback range for non-ROS runs."""
+    """The run-view panels for a campaign: the ones its snapshot ``.vast``
+    declares under ``visualization.results.run_view.panels``, plus the
+    contributed ones no ``.vast`` has to write (the ``playback`` transport
+    always, a ``scene3d`` for a simulator that records a capture). Each entry
+    is the flattened panel dict (``type`` + ``position`` + panel-specific data
+    bindings), rendered by the web run-view against the campaign's ``data.db``.
+    ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
+    the table + column that defines the playback range for non-ROS runs."""
 
     campaign_id: str
     panels: list[dict] = Field(default_factory=list)
     timeline: Optional["PlaybackTimeline"] = None
+    #: How many panels the ``.vast`` declared *itself*, before the contributed ones were merged in
+    #: (the ``playback`` transport, and a ``scene3d`` for a backend that records a capture). The run
+    #: view needs the author's count, not the served one, to tell "this campaign has no
+    #: visualization block" from "this campaign has panels" -- the served list is never empty.
+    authored_panels: int = 0
 
 
 # NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +

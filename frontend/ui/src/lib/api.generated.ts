@@ -1453,14 +1453,21 @@ export interface components {
         };
         /**
          * CampaignPanelsResponse
-         * @description The run-view panels declared for a campaign (its snapshot ``.vast``
-         *     top-level ``visualization.panels``). Each entry is the raw panel dict
-         *     (``type`` + ``position`` + panel-specific data bindings), rendered by the
-         *     web run-view against the campaign's ``data.db``. ``timeline`` (optional,
-         *     ``visualization.timeline``) names the table + column that defines the
-         *     playback range for non-ROS runs.
+         * @description The run-view panels for a campaign: the ones its snapshot ``.vast``
+         *     declares under ``visualization.results.run_view.panels``, plus the
+         *     contributed ones no ``.vast`` has to write (the ``playback`` transport
+         *     always, a ``scene3d`` for a simulator that records a capture). Each entry
+         *     is the flattened panel dict (``type`` + ``position`` + panel-specific data
+         *     bindings), rendered by the web run-view against the campaign's ``data.db``.
+         *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
+         *     the table + column that defines the playback range for non-ROS runs.
          */
         CampaignPanelsResponse: {
+            /**
+             * Authored Panels
+             * @default 0
+             */
+            authored_panels: number;
             /** Campaign Id */
             campaign_id: string;
             /** Panels */

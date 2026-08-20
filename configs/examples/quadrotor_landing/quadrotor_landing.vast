@@ -50,7 +50,6 @@ visualization:
     # that render nav runs render this one -- no source-specific code.
     run_view:
       panels:
-      - playback:
       - scene:
           title: Descent (x vs altitude)
           position: {anchor: center, width: 460, height: 420}

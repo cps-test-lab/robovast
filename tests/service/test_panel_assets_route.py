@@ -48,7 +48,8 @@ def _local_transport(results_root) -> LocalTransport:
 
 def _make_campaign(tmp_path):
     # Minimal campaign snapshot: _config/<name>.vast with a package (costmap) panel and a
-    # user-authored custom panel whose bundle is staged under _config/panels/my/.
+    # user-authored custom panel whose bundle is staged under _config/panels/my/. It declares
+    # no `playback` -- that one is contributed, and the served list must still carry it.
     cfg = tmp_path / "camp-1" / "_config"
     (cfg / "panels" / "my").mkdir(parents=True)
     (cfg / "camp.vast").write_text(
@@ -57,7 +58,6 @@ def _make_campaign(tmp_path):
         "  results:\n"
         "    run_view:\n"
         "      panels:\n"
-        "      - playback:\n"
         "      - costmap:\n"
         "          title: Nav2\n"
         "      - custom:\n"
@@ -75,8 +75,11 @@ def test_panels_carry_remote_descriptors(tmp_path):
         assert resp.status_code == 200
         panels = {p["type"]: p for p in resp.json()["panels"]}
 
-        # Built-in: no remote descriptor (host-native).
+        # Built-in, and contributed rather than declared: still served, no remote descriptor
+        # (host-native). `authored_panels` is the two the .vast wrote, which is how the run
+        # view tells "no visualization block" from "panels" now that the list is never empty.
         assert "remote" not in panels["playback"]
+        assert resp.json()["authored_panels"] == 2
 
         # Package-provided: robovast_nav's costmap resolves to a /panel_types asset. All
         # robovast_nav panels share one MF container ("robovast_nav"), but the asset URL is
@@ -118,3 +121,15 @@ def test_custom_panel_path_escape_rejected(tmp_path):
     _make_campaign(tmp_path)  # create the layout
     with pytest.raises(ValueError):
         lt.resolve_campaign_panel_asset("camp-1", "../../secret.txt")
+
+
+def test_a_campaign_with_no_visualization_block_still_gets_the_transport(tmp_path):
+    """The bar is not a thing a .vast can forget. `authored_panels: 0` is what lets the run
+    view say the campaign declared nothing while still showing a working transport."""
+    cfg = tmp_path / "camp-2" / "_config"
+    cfg.mkdir(parents=True)
+    (cfg / "camp.vast").write_text("version: 2\n")
+    with TestClient(build_app(_local_transport(tmp_path))) as client:
+        body = client.get("/campaigns/camp-2/panels").json()
+        assert [p["type"] for p in body["panels"]] == ["playback"]
+        assert body["authored_panels"] == 0

@@ -227,6 +227,11 @@ export function RunView({
     () => (panels.data ? parsePanels(panels.data.panels) : []),
     [panels.data],
   )
+  // The served list is never empty -- the playback transport is contributed for every campaign, and
+  // a capture-recording simulator adds its scene3d -- so "nothing to look at here" is the *author's*
+  // count, which the service reports separately. Filtering the served list by type instead would
+  // call a roqsim campaign empty when it has a full-bleed 3D panel.
+  const unauthored = panels.data?.authored_panels === 0
 
   // Discover the timeline range and set it on the clock, in order of authority:
   //   1. a run capture's own time base -- the run's ground truth, and available with no data.db;
@@ -445,25 +450,32 @@ export function RunView({
           This campaign has no store to read: no <code>campaign.db</code> and no{' '}
           <code>data.db</code>, so it either never started or ended before recording anything.
         </Alert>
-      ) : !specs.length ? (
-        <Alert severity="info" variant="outlined">
-          This campaign's <code>.vast</code> declares no <code>visualization.panels</code>. Use{' '}
-          <b>Edit visualization</b> to add a <code>visualization:</code> block.
-        </Alert>
       ) : !provider ? (
         <Alert severity="info" variant="outlined">
           This campaign has no runs to replay.
         </Alert>
       ) : (
-        <Box
-          // The panels are the point of this view, so they get the whole window rather than
-          // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main
-          // Box on the three sides that touch the window (the header row above keeps its
-          // padding), so keep them in step with that padding.
-          sx={{ flexGrow: 1, minHeight: 0, mx: -3, mb: -3 }}
-        >
-          <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
-        </Box>
+        <>
+          {/* Said alongside the view rather than instead of it: the transport bar is there for
+              every campaign, so replacing the whole host would now hide a working panel to
+              explain that there are none. */}
+          {unauthored && (
+            <Alert severity="info" variant="outlined">
+              This campaign's <code>.vast</code> declares no{' '}
+              <code>visualization.results.run_view.panels</code>, so the run view has only the
+              playback transport. Use <b>Edit visualization</b> to add panels.
+            </Alert>
+          )}
+          <Box
+            // The panels are the point of this view, so they get the whole window rather than
+            // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main
+            // Box on the three sides that touch the window (the header row above keeps its
+            // padding), so keep them in step with that padding.
+            sx={{ flexGrow: 1, minHeight: 0, mx: -3, mb: -3 }}
+          >
+            <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
+          </Box>
+        </>
       )}
     </Stack>
   )

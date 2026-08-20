@@ -853,7 +853,6 @@ the view once and every run of the campaign replays through it:
      results:
        run_view:
          panels:
-           - playback:                        # transport bar; defaults to full-width bottom
            - costmap:
                title: Nav2 costmaps
                position: { anchor: top-right, width: 440, height: 440 }
@@ -878,8 +877,17 @@ panel plugin) and its value holds that panel's fields: an optional ``title``, a
 ``width``/``height`` in pixels or a ``"40%"`` string; or ``fill: true`` *instead of* an
 anchor), the toggles ``minimizable``/``minimized``/``hidden``/``fixed``, and panel-specific
 **data bindings** (which ``data.db`` table or recorded topic each piece of data comes from).
-Any field you omit falls back to the panel type's built-in default, so a bare ``playback:``
+Any field you omit falls back to the panel type's built-in default, so a bare ``log:``
 on its own is a complete panel.
+
+**Two panels are there without being declared.** The ``playback`` transport bar always: a run
+view without it has no clock to scrub and every other panel nothing to follow, so it is not a
+decision a ``.vast`` gets to make or a line it should have to copy. And a ``scene3d`` for a
+simulator that records a run capture (roqsim does; Gazebo has no scene export and so offers
+none) — the panel that replays what those runs always write. Declare either one explicitly only
+to change it: an entry of your own keeps its position and its fields, exactly as an authored
+``execution.env`` wins over a backend's. A campaign with no ``visualization`` block at all still
+opens on a working transport bar.
 
 **Docked panels reserve the space they occupy, and everything else is placed in what is
 left.** A ``top``/``bottom`` bar reserves its height and spans the full width; a
@@ -965,7 +973,8 @@ The built-in panels:
 
 **Playback** (``playback``) — a transport bar spanning the bottom: a click-to-seek
 progress bar, an icon play/pause, a **2×** fast-forward toggle, and a ``current / total``
-time label. It owns the clock; every other panel follows it. The timeline range comes from the run
+time label. It owns the clock; every other panel follows it, which is why it is contributed
+to every campaign rather than declared — see above. The timeline range comes from the run
 capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
 before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
 postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.

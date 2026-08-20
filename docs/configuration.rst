@@ -1377,7 +1377,7 @@ each block shows up.
                                    #   (see :ref:`config-view` for the panel reference)
      results:                      # the Results tab
        run_view:
-         panels: [...]             #   the replay panels
+         panels: [...]             #   the replay panels (the playback bar comes for free)
          timeline: {...}           #   which table defines the playback clock
        explorer:
          notebooks: [...]          #   analysis notebooks, one tab each

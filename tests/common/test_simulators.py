@@ -55,11 +55,19 @@ class RosOnlyBackend(SimulatorBackend):
         return {"simulation": {"image": "gz:harmonic", "command": ["gz", "sim", "-s"]}}
 
 
+class PanelBackend(StubBackend):
+    """A backend that contributes a panel, as roqsim contributes its ``scene3d``."""
+
+    def default_panels(self, cfg, execution):
+        return [{"scene3d": {}}]
+
+
 @pytest.fixture(autouse=True)
 def _register(monkeypatch):
-    """Resolve 'stub'/'rosonly' without installing an entry point."""
+    """Resolve 'stub'/'rosonly'/'panels' without installing an entry point. An unknown name
+    raises, which is also how a campaign whose backend package is not installed here behaves."""
     import robovast.common.simulators as mod
-    backends = {"stub": StubBackend, "rosonly": RosOnlyBackend}
+    backends = {"stub": StubBackend, "rosonly": RosOnlyBackend, "panels": PanelBackend}
     monkeypatch.setattr(mod, "resolve_backend",
                         lambda name, base_dir="": backends[name]())
 
@@ -299,3 +307,62 @@ def test_no_backend_means_no_extra_run_files(tmp_path):
 
     params = {"execution": {"containers": {"scenario": {"image": "img:1"}}}}
     assert _backend_run_files(str(tmp_path), params) == []
+
+
+# -- the panels no .vast has to write -----------------------------------------------
+
+def _panel_types(merged):
+    from robovast.common.config import flatten_panel_shorthand
+    return [flatten_panel_shorthand(p)["type"] for p in merged]
+
+
+@pytest.mark.parametrize("execution", [
+    {},
+    {"mode": "ros2"},
+    {"mode": "ros2", "containers": {"scenario": {"image": "img:1"}}},
+    {"mode": "ros2", "containers": {"simulation": {"backend": "notinstalled"}}},
+])
+def test_the_transport_bar_is_contributed_whatever_the_simulator(execution):
+    """Including with no backend at all and with one that cannot be resolved.
+
+    A run view without the transport has no clock to scrub and every other panel has nothing
+    to follow, so it is not a thing a campaign can be missing -- and an unresolvable backend
+    must not take it away, since the list is read to *show* a campaign whose simulator package
+    is not installed here.
+    """
+    from robovast.common.simulators import merge_default_panels
+
+    assert _panel_types(merge_default_panels([], execution)) == ["playback"]
+
+
+def test_a_backend_contributes_on_top_of_the_always_on_set():
+    """Order matters: the transport docks flush against the bottom edge, which the first
+    ``bottom`` bar in the list takes, and the declared panels come last."""
+    from robovast.common.simulators import merge_default_panels
+
+    merged = merge_default_panels([{"log": {}}], _execution("ros2", stage="s", backend="panels"))
+    assert _panel_types(merged) == ["playback", "scene3d", "log"]
+
+
+@pytest.mark.parametrize("declared", [
+    "playback",
+    {"playback": None},
+    {"playback": {"title": "Transport"}},
+])
+def test_a_campaign_that_declares_the_transport_keeps_its_own_entry(declared):
+    """Every shorthand shape, because the dedup reads the type through the same function the
+    service and the validation do -- a spelling it did not recognize would show the bar twice."""
+    from robovast.common.simulators import merge_default_panels
+
+    merged = merge_default_panels([{"log": {}}, declared], {})
+    assert _panel_types(merged) == ["log", "playback"]
+    assert merged[-1] == declared
+
+
+def test_a_declared_transport_keeps_its_position_among_the_contributed_panels():
+    from robovast.common.simulators import merge_default_panels
+
+    declared = [{"playback": {"position": {"anchor": "top", "height": 32}}}]
+    merged = merge_default_panels(declared, _execution("ros2", stage="s", backend="panels"))
+    assert _panel_types(merged) == ["scene3d", "playback"]
+    assert merged[-1] == declared[0]
