@@ -9,6 +9,7 @@ import ListItemText from '@mui/material/ListItemText'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import { accent } from '@/colors'
 import { robovast } from '@/lib/robovastClient'
 import {
   bytesToGiB,
@@ -16,6 +17,7 @@ import {
   formatCpuUsed,
   formatMemUsed,
 } from '@/lib/format'
+import { BrandMark } from './BrandMark'
 import { MeterBar } from './MeterBar'
 
 export interface NavView {
@@ -37,10 +39,13 @@ export interface NavTopic {
 
 export const SIDEBAR_WIDTH = 172
 
+// The accent at low alpha — the one place outside the brand mark where it appears. A touch
+// weaker than the teal this replaced ran at, because the accent is the lighter colour and reads
+// brighter at equal alpha.
 const selectedSx = {
   '&.Mui-selected, &.Mui-selected:hover': {
-    backgroundColor: 'rgba(45, 212, 191, 0.14)',
-    border: '1px solid rgba(45, 212, 191, 0.28)',
+    backgroundColor: accent(0.12),
+    border: `1px solid ${accent(0.28)}`,
   },
   borderRadius: 1,
   border: '1px solid transparent',
@@ -79,9 +84,15 @@ export function Sidebar({
         },
       }}
     >
-      <Typography variant="h6" sx={{ color: 'primary.main', px: 1 }}>
-        RoboVAST
-      </Typography>
+      {/* Wordmark in the text colour, mark in the accent: the accent then appears exactly twice
+          in the rail — here and on the selected entry — so it still reads as "this one" rather
+          than as decoration. */}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1 }}>
+        <BrandMark sx={{ color: 'primary.main', fontSize: 26 }} />
+        <Typography variant="h6" sx={{ color: 'text.primary' }}>
+          RoboVAST
+        </Typography>
+      </Stack>
 
       <List sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', p: 0 }}>
         {topics.map((topic) => {

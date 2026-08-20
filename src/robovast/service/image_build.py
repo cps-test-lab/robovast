@@ -31,6 +31,7 @@ a ``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a cli
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -243,7 +244,7 @@ BUILD_MANIFEST_DIR = "/etc/robovast/build-manifest"
 #: Plain text, one record per line, rather than JSON. Both are produced by a shell `RUN`, where
 #: emitting valid JSON means quoting hundreds of package names correctly and a mistake yields a
 #: file that parses as something else; `pip freeze` output is also directly re-installable.
-_MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt")
+_MANIFEST_FILES = ("apt.txt", "pip.txt", "vcs.txt", "distributions.json")
 
 
 #: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
@@ -658,7 +659,7 @@ def read_image_build_manifest(image: str) -> dict:
         text = _read_image_file(image, f"{BUILD_MANIFEST_DIR}/{name}")
         if text is None:
             continue
-        key = name.removesuffix(".txt")
+        key = name.removesuffix(".txt").removesuffix(".json")
         out[key] = _parse_manifest(key, text)
     return out
 
@@ -761,7 +762,17 @@ def _read_image_file(image: str, path: str) -> "str | None":
 
 
 def _parse_manifest(kind: str, text: str) -> dict:
-    """Parse one manifest file. ``apt`` uses ``=``, ``pip`` uses ``==``, ``vcs`` uses ``->``."""
+    """Parse one manifest file. ``apt`` uses ``=``, ``pip`` uses ``==``, ``vcs`` uses ``->``,
+    and ``distributions`` is JSON -- a mapping, not a line format, because what it records per
+    distribution (entry-point groups, a direct URL with a commit) does not fit a single value.
+    A file that will not parse is reported as absent: "cannot tell" is a state its readers
+    already handle, where half a record is not."""
+    if kind == "distributions":
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     separator = {"apt": "=", "pip": "==", "vcs": "->"}[kind]
     out = {}
     for line in text.splitlines():
@@ -801,7 +812,60 @@ def _manifest_lines(spec: BuildSpec, resolved_vcs: dict) -> list:
         body = "\\n".join(f"{requested} -> {sha}"
                             for requested, sha in sorted(resolved_vcs.items()))
         lines.append(f"RUN printf '{body}\\n' > {BUILD_MANIFEST_DIR}/vcs.txt")
+    lines.append(_DISTRIBUTIONS_MANIFEST)
     return lines
+
+
+#: Every distribution in the image, with what it registers and where it came from.
+#:
+#: ``pip.txt`` beside it answers "which versions", which is enough to re-install but not enough
+#: to say *whose code supplied a campaign's assets*. That question is answered by entry points --
+#: a world or a model comes from whichever distribution registers a provider group -- and only
+#: the image can answer it: the packages are installed there and nowhere else. A service that
+#: walked its own interpreter instead found nothing and recorded "no providers", for a campaign
+#: whose image had three private ones.
+#:
+#: Deliberately GENERIC: every group of every distribution, with no notion of which groups
+#: matter. A simulator's group names belong to its backend (``ASSET_ENTRY_POINT_GROUPS``), and
+#: this module must keep naming no simulator -- so the image records the facts and the reader
+#: filters them.
+#:
+#: A heredoc rather than a one-line ``python3 -c``: the program has to survive being embedded in
+#: a Dockerfile, and quoting a nested dict comprehension through two layers of shell is how a
+#: manifest silently becomes an empty file.
+#:
+#: ``|| true`` for the same reason as ``pip.txt``: on a base with no Python this records nothing
+#: rather than failing a build over a note. An absent file already means "cannot tell" to every
+#: reader of it.
+_DISTRIBUTIONS_MANIFEST = f"""RUN (python3 - <<'ROBOVAST_MANIFEST' || true) \\
+  > {BUILD_MANIFEST_DIR}/distributions.json
+import json
+from importlib.metadata import distributions
+
+out = {{}}
+for dist in distributions():
+    name = ((dist.metadata or {{}}).get("Name") or "").strip()
+    if not name:
+        continue
+    # A duplicate name means two copies on the path -- keep the first, which is the one an
+    # import wins with, and merge the groups so neither copy's contribution is lost.
+    entry = out.setdefault(name, {{"version": dist.version or "", "groups": []}})
+    try:
+        groups = {{ep.group for ep in dist.entry_points}}
+    except Exception:
+        groups = set()
+    entry["groups"] = sorted(set(entry["groups"]) | groups)
+    try:
+        origin = dist.read_text("direct_url.json")
+    except Exception:
+        origin = None
+    if origin and "direct_url" not in entry:
+        try:
+            entry["direct_url"] = json.loads(origin)
+        except ValueError:
+            pass
+print(json.dumps(out, sort_keys=True))
+ROBOVAST_MANIFEST"""
 
 
 # ---------------------------------------------------------------------------

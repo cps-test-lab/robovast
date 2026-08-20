@@ -53,9 +53,10 @@ const OVERSCAN = 12
 /** How many lines word wrap will take on. Wrapping gives up the fixed row height windowing
  *  depends on, so it renders every filtered row at once; past this the tab would stall, so the
  *  toggle is disabled with the reason on it instead. */
+import { ERROR, WARNING } from '@/colors'
 const WRAP_MAX_ROWS = 5000
 
-const SEVERITY_COLOR = { warn: '#b58900', error: '#d32f2f' } as const
+const SEVERITY_COLOR = { warn: WARNING, error: ERROR } as const
 
 /** One line for an unwrapped row, saying what it left out.
  *

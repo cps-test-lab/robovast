@@ -465,3 +465,43 @@ def test_a_token_does_not_change_the_image_hash(tmp_path, monkeypatch):
     without = build_hash(spec, tmp_path, "base:1")
     monkeypatch.setenv("ROBOVAST_GIT_TOKEN", "ghp_secretvalue")
     assert build_hash(spec, tmp_path, "base:1") == without
+
+
+# ---------------------------------------------------------------------------
+# the distributions manifest: what the image records about its own packages
+# ---------------------------------------------------------------------------
+
+def test_the_image_records_its_distributions(tmp_path):
+    """pip.txt answers "which versions", which is enough to reinstall and not enough to say
+    WHOSE code supplied a campaign's assets. That is an entry-point question, and only the
+    image can answer it -- a service walking its own interpreter found nothing and recorded
+    "no providers" for a campaign whose image had three private ones."""
+    from robovast.service.image_build import BUILD_MANIFEST_DIR, BuildSpec, generate_dockerfile
+
+    rendered = generate_dockerfile(BuildSpec(tag="sim", base_image="b:1"), tmp_path, "b:1")
+    assert f"{BUILD_MANIFEST_DIR}/distributions.json" in rendered
+    # Recorded per distribution, not per package name: the groups are what identify a provider.
+    assert "entry_points" in rendered and "direct_url.json" in rendered
+
+
+def test_the_manifest_names_no_simulator(tmp_path):
+    """The recipe must keep knowing no simulator: a group's meaning belongs to the backend
+    (ASSET_ENTRY_POINT_GROUPS), so the image records every group and the reader filters."""
+    from robovast.service.image_build import BuildSpec, generate_dockerfile
+
+    rendered = generate_dockerfile(BuildSpec(tag="sim", base_image="b:1"), tmp_path, "b:1")
+    assert "roqsim" not in rendered.lower()
+
+
+@pytest.mark.parametrize("text,expected", [
+    ('{"pkg": {"version": "1.0", "groups": ["roqsim.models"]}}',
+     {"pkg": {"version": "1.0", "groups": ["roqsim.models"]}}),
+    # Unparseable is reported as absent: "cannot tell" is a state every reader of this already
+    # handles, where half a record is not.
+    ("truncated {", {}),
+    ("[1, 2]", {}),
+])
+def test_distribution_manifest_parsing(text, expected):
+    from robovast.service.image_build import _parse_manifest
+
+    assert _parse_manifest("distributions", text) == expected

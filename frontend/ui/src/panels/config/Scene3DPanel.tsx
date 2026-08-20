@@ -27,6 +27,7 @@ import Typography from '@mui/material/Typography'
 import { declaredMarkers, type ConfigPanelProps, type SceneMarker } from '@robovast/panel-kit'
 import { registerConfigPanel } from '@/lib/panels/registry'
 import { robovast } from '@/lib/robovastClient'
+import { CANVAS } from '@/colors'
 import { buildMarkers, type MarkerLayer } from '@/lib/scene3d/markers'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
@@ -130,7 +131,7 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
   const failure = resolveError || loadError || status?.error
 
   return (
-    <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: '#12171f' }}>
+    <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
 
       {buildingText ? (

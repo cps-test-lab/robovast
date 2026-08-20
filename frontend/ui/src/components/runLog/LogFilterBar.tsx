@@ -29,6 +29,7 @@ import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRound
 import PowerSettingsNewRoundedIcon from '@mui/icons-material/PowerSettingsNewRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import WrapTextRoundedIcon from '@mui/icons-material/WrapTextRounded'
+import { WARNING, withAlpha } from '@/colors'
 import type { Facets, HighlightMode, LogFilter } from './logFilter'
 
 /** off -> on -> only -> off. One control for two questions ("colour these" / "show only these")
@@ -168,10 +169,10 @@ export function LogFilterBar({
           sx={{
             flexShrink: 0,
             p: 0.25,
-            color: filter.highlight === 'off' ? 'text.disabled' : '#b58900',
-            bgcolor: filter.highlight === 'only' ? '#b5890022' : undefined,
+            color: filter.highlight === 'off' ? 'text.disabled' : WARNING,
+            bgcolor: filter.highlight === 'only' ? withAlpha(WARNING, 0.13) : undefined,
             border: filter.highlight === 'only' ? '1px solid' : '1px solid transparent',
-            borderColor: filter.highlight === 'only' ? '#b58900' : 'transparent',
+            borderColor: filter.highlight === 'only' ? WARNING : 'transparent',
           }}
         >
           <WarningAmberRoundedIcon sx={{ fontSize: 16 }} />

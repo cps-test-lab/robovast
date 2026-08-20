@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
+import { CANVAS } from '@/colors'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { registerPanel } from '@/lib/panels/registry'
 import { useTimeSeries, type TimeSeriesBinding } from '@/lib/panels/timeSeries'
@@ -185,7 +186,7 @@ function VegaPanel({ spec, clock, data }: PanelProps) {
     )
 
   return (
-    <Box sx={{ width: '100%', height: '100%', overflow: 'auto', bgcolor: '#12171f', p: 0.5 }}>
+    <Box sx={{ width: '100%', height: '100%', overflow: 'auto', bgcolor: CANVAS, p: 0.5 }}>
       {/* A clipped chart read as a complete one is worse than no chart, so say so rather than
           quietly plotting the run's first `maxRows` samples. Read from the query rather than from
           `rows.length >= maxRows`: the row count is a guess that misses exactly this case, because

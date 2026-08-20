@@ -11,6 +11,7 @@ import Typography from '@mui/material/Typography'
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
 import FastForwardRoundedIcon from '@mui/icons-material/FastForwardRounded'
+import { ERROR, WARNING } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
 import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
@@ -141,7 +142,7 @@ function PlaybackPanel({ clock, data }: PanelProps) {
                     // Not pointer-events:none by accident -- clicks must reach the bar
                     // underneath, so a mark is a target for scrubbing rather than a dead spot.
                     pointerEvents: 'none',
-                    bgcolor: row.severity === 'error' ? '#d32f2f' : '#b58900',
+                    bgcolor: row.severity === 'error' ? ERROR : WARNING,
                   }}
                 />
               ),

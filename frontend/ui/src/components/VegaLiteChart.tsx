@@ -8,23 +8,26 @@
 //                the run-view `vega` panel move a playback cursor at clock rate.
 //
 // Pass one or the other; `datasets` wins if both are given.
+import { CHART_AXIS, CHART_GRID, CHART_LABEL, CHART_TITLE, SERIES } from '@/colors'
 import { VegaLite } from 'react-vega'
 import type { VisualizationSpec } from 'react-vega'
 
-// Dark theme matching the app (teal/amber), applied unless the spec overrides it.
+// The app's scheme as a Vega config, applied unless the spec overrides it. `background` and the
+// view stroke stay transparent so a chart sits on whatever Paper hosts it rather than painting a
+// second card inside one.
 const DARK_CONFIG = {
   background: 'transparent',
   axis: {
-    labelColor: '#cfd8dc',
-    titleColor: '#cfd8dc',
-    gridColor: 'rgba(255,255,255,0.08)',
-    domainColor: 'rgba(255,255,255,0.2)',
-    tickColor: 'rgba(255,255,255,0.2)',
+    labelColor: CHART_LABEL,
+    titleColor: CHART_LABEL,
+    gridColor: CHART_GRID,
+    domainColor: CHART_AXIS,
+    tickColor: CHART_AXIS,
   },
-  legend: { labelColor: '#cfd8dc', titleColor: '#cfd8dc' },
-  title: { color: '#cfd8dc' },
+  legend: { labelColor: CHART_LABEL, titleColor: CHART_LABEL },
+  title: { color: CHART_TITLE },
   view: { stroke: 'transparent' },
-  range: { category: ['#2dd4bf', '#f0b429', '#4ade80', '#f48fb1', '#60a5fa', '#c084fc'] },
+  range: { category: [...SERIES] },
 }
 
 // `width`/`height` are properties of a unit or layer spec -- Vega-Lite warns "Width \"container\"

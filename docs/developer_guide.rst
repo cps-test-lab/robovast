@@ -1808,6 +1808,49 @@ What not to do, because each of these costs far more than it protects here:
 Note that CI does not build ``frontend/ui`` at all, so these run locally and in agent
 sessions rather than as a gate — another reason to keep them few and fast.
 
+**One colour scheme.** Every colour the UI paints that is not a one-off comes from
+``frontend/ui/src/colors.ts``. A ``Style`` object holds them; ``buildTheme(style)`` in
+``src/theme.ts`` maps one onto MUI's palette roles, so a component reaching for
+``'primary.main'`` or ``'error.main'`` resolves there. The module keeps four groups apart
+deliberately, because which group a colour is in decides whether it may move when the brand does:
+
+* **surface** — the ground, a neutral dark grey, and deliberately *not* the marketing site's
+  near-black green. This is a tool that stays open for hours in front of long log tails, 3D
+  scenes and charts, and on a tinted ground every one of those picks up the tint; a colourless
+  ground leaves the accent and the status colours as the only hues on screen, which is what makes
+  them read as meaning something;
+* **brand** — the accent (mint), transcribed from the site's CSS custom properties rather than
+  imported (it is a static page with no build step and no package to depend on, and a shared
+  palette package would couple a deployed service's bundle to a website). The favicon,
+  ``frontend/ui/public/favicon.svg``, is the same mark in the same mint;
+* **status** — phase chips, capacity meters, scenario-tree nodes, log severities. Semantics, not
+  identity: they must stay put when the brand moves, or a re-brand silently re-labels every
+  campaign. Held to one lightness band so no single status shouts and all of them sit clearly
+  *below* the accent, with the hues kept meaningful (green good, amber attention, rose bad, blue
+  working). The site has no equivalent, having no notion of a run that failed;
+* **data** — the categorical series scale, shared by the Vega eval charts, the run-view time
+  series and the variation previews so a series keeps its colour between them. Kept in a
+  *brighter* register than status on purpose: status is painted as filled chips and bars where a
+  deep tone reads well, while a series is a 1px line that has to survive being thin. An encoding,
+  so its order is load-bearing — append rather than reorder.
+
+One thing is pointedly **not** in the status group: ``src/components/runLog/ansi.tsx`` maps ANSI
+SGR codes to colours, and those describe what the program printed. Harmonising them into the
+scheme would misreport a tool's own output, so that table keeps its own values.
+
+**A second style is a new object, not a refactor.** ``ACTIVE`` names the one style there is
+(``midnightMint``); implementing ``Style`` and passing it to ``buildTheme`` is the whole of adding
+another. What is deliberately not built is *runtime* switching: the flat tokens are module
+constants resolved at build time, which is what lets a canvas-painting panel read a colour without
+a hook. Switching while the app runs needs those panels to read from ``useTheme()`` instead, and
+every token a panel uses to live on the theme — that is the entire delta, and nothing in the
+current shape blocks it.
+
+Import a token instead of writing a hex. Before this module the surfaces were spread across the
+theme and two components, the panel-canvas colour was copied into six files, the series scale
+existed twice — with a comment on one copy asking the other to please stay in sync — and the
+scenario tree and the log view each had their own private green and red.
+
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
 new interface op, then a page/tab that queries it.
 

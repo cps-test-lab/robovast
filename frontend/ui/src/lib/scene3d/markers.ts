@@ -7,6 +7,7 @@
 // Like its neighbours in this directory this imports only `three`, so the whole scene3d/ directory
 // stays extractable — the one exception is useSceneGeometry, which is the service seam.
 
+import { MARKER_DEFAULT } from '@/colors'
 import {
   BoxGeometry,
   BufferGeometry,
@@ -40,7 +41,7 @@ export interface Marker {
 }
 
 /** Used when a marker names no colour, so a variation need not know the view's palette. */
-const DEFAULT_COLOR = '#38bdf8'
+const DEFAULT_COLOR = MARKER_DEFAULT
 
 /** Solids are translucent: a marker sits *in* the world, and an opaque box at a goal pose hides the
  *  geometry the reader is trying to judge it against. */

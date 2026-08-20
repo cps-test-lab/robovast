@@ -11,12 +11,13 @@ import { useEffect, useMemo, useRef } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
+import { CANVAS, CHART_LABEL, SERIES } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
 import { useTimeSeries, type TimeSeriesBinding, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useCanvasClock, useClock, type PanelProps } from '@robovast/panel-kit'
 
-// Same categorical palette the eval charts use, so series colours read consistently across the app.
-const PALETTE = ['#2dd4bf', '#f0b429', '#4ade80', '#f48fb1', '#60a5fa', '#c084fc']
+// The shared categorical scale, so a series keeps its colour between here and the eval charts.
+const PALETTE = SERIES
 
 interface SeriesCfg {
   column: string
@@ -72,7 +73,7 @@ function TimeSeriesPanel({ spec, clock, data }: PanelProps) {
 
   const { containerRef, canvasRef, requestDraw } = useCanvasClock(clock, (ctx, w, h, now) => {
     ctx.setTransform(1, 0, 0, 1, 0, 0)
-    ctx.fillStyle = '#12171f'
+    ctx.fillStyle = CANVAS
     ctx.fillRect(0, 0, w, h)
     const src = seriesRef.current
     const p = plotRef.current
@@ -144,10 +145,10 @@ function TimeSeriesPanel({ spec, clock, data }: PanelProps) {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', bgcolor: '#12171f' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, px: 1, py: 0.5, fontSize: 12 }}>
         {series.map((s) => (
-          <Box key={s.column} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: '#cfd8dc' }}>
+          <Box key={s.column} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: CHART_LABEL }}>
             <Box sx={{ width: 10, height: 3, bgcolor: s.color, borderRadius: 1 }} />
             <span>{s.label}</span>
             <b style={{ color: s.color }}>{fmt(at?.[s.column])}</b>

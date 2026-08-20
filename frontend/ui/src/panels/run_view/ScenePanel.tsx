@@ -13,6 +13,7 @@ import { useEffect, useRef } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
+import { CANVAS, MARK, SERIES } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
 import { useTimeSeries, type TimeSeriesBinding, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useCanvasClock, type PanelProps } from '@robovast/panel-kit'
@@ -55,7 +56,7 @@ function ScenePanel({ spec, clock, data }: PanelProps) {
 
   const { containerRef, canvasRef, requestDraw } = useCanvasClock(clock, (ctx, w, h, t) => {
     ctx.setTransform(1, 0, 0, 1, 0, 0)
-    ctx.fillStyle = '#12171f'
+    ctx.fillStyle = CANVAS
     ctx.fillRect(0, 0, w, h)
     const src = seriesRef.current
     const ext = extentRef.current
@@ -89,7 +90,7 @@ function ScenePanel({ spec, clock, data }: PanelProps) {
         } else ctx.lineTo(sx, sy)
       }
       if (started) {
-        ctx.strokeStyle = '#2dd4bf'
+        ctx.strokeStyle = SERIES[0]
         ctx.lineWidth = 2 * (window.devicePixelRatio || 1)
         ctx.stroke()
       }
@@ -104,7 +105,7 @@ function ScenePanel({ spec, clock, data }: PanelProps) {
         const [sx, sy] = s(x, y)
         ctx.beginPath()
         ctx.arc(sx, sy, 6 * (window.devicePixelRatio || 1), 0, Math.PI * 2)
-        ctx.fillStyle = '#f0b429'
+        ctx.fillStyle = MARK
         ctx.fill()
         ctx.strokeStyle = 'rgba(0,0,0,0.6)'
         ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1)
@@ -136,7 +137,7 @@ function ScenePanel({ spec, clock, data }: PanelProps) {
     )
 
   return (
-    <Box ref={containerRef} sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: '#12171f' }}>
+    <Box ref={containerRef} sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <canvas ref={canvasRef} style={{ display: 'block' }} />
     </Box>
   )

@@ -41,6 +41,7 @@ import { registerPanel } from '@/lib/panels/registry'
 import type { PanelProps } from '@robovast/panel-kit'
 import { robovast } from '@/lib/robovastClient'
 import type { MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
+import { CANVAS } from '@/colors'
 import { openRunCapture } from '@/lib/scene3d/runCapture'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
@@ -223,7 +224,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   useEffect(() => clock.subscribe(() => applyAt(clock.t)), [clock, applyAt])
 
   return (
-    <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: '#12171f' }}>
+    <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
       {loading && !captureError && !buildingText ? (
         <CircularProgress size={24} sx={{ position: 'absolute', top: 16, left: 16 }} />

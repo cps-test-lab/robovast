@@ -4,12 +4,13 @@ import Plotly from 'plotly.js-dist-min'
 import createPlotlyComponent from 'react-plotly.js/factory'
 import type { Data, Layout } from 'plotly.js'
 
+import { CHART_LABEL } from '@/colors'
 const Plot = createPlotlyComponent(Plotly)
 
 const BASE_LAYOUT: Partial<Layout> = {
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(0,0,0,0)',
-  font: { color: '#cfd8dc', size: 11 },
+  font: { color: CHART_LABEL, size: 11 },
   margin: { l: 36, r: 10, t: 24, b: 28 },
   showlegend: false,
   height: 180,

@@ -29,6 +29,7 @@ import AltRouteRounded from '@mui/icons-material/AltRouteRounded'
 import ArrowRightAltRounded from '@mui/icons-material/ArrowRightAltRounded'
 import ChangeCircleRounded from '@mui/icons-material/ChangeCircleRounded'
 import SplitscreenRounded from '@mui/icons-material/SplitscreenRounded'
+import { ERROR, NEUTRAL, SUCCESS, WARNING } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
 import { timeSeriesFromRows, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useClock, type DataProvider, type DataRow, type PanelProps } from '@robovast/panel-kit'
@@ -167,10 +168,10 @@ async function loadTree(data: DataProvider, table: string): Promise<TreeData> {
 
 // nav2/py_trees statuses -> a colour. Latest row with t <= now wins; none yet = not-ticked.
 const STATUS_COLOR: Record<string, string> = {
-  RUNNING: '#f0b429',
-  SUCCESS: '#4caf50',
-  FAILURE: '#ef5350',
-  INVALID: '#6b7280',
+  RUNNING: WARNING,
+  SUCCESS: SUCCESS,
+  FAILURE: ERROR,
+  INVALID: NEUTRAL,
 }
 
 // Composite kind -> glyph, so the shape of the tree is readable without reading class names.

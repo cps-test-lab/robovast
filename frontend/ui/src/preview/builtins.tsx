@@ -7,6 +7,7 @@ import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import type { ComponentType } from 'react'
 import type { Data } from 'plotly.js'
+import { MARK, SERIES, withAlpha } from '@/colors'
 import { MiniPlot } from './plot'
 
 export interface PreviewProps {
@@ -22,7 +23,7 @@ const marker = (x: number, yTop: number): Data => ({
   x: [x, x],
   y: [0, yTop],
   mode: 'lines',
-  line: { color: '#f0b429', width: 2, dash: 'dash' },
+  line: { color: MARK, width: 2, dash: 'dash' },
   hoverinfo: 'x',
 })
 
@@ -36,7 +37,7 @@ function UniformPreview({ params, value }: PreviewProps) {
   const h = 1 / (max - min)
   const data: Data[] = [
     { x: [min, min, max, max], y: [0, h, h, 0], fill: 'toself', mode: 'lines',
-      line: { color: '#2dd4bf' }, fillcolor: 'rgba(45,212,191,0.25)', hoverinfo: 'skip' },
+      line: { color: SERIES[0] }, fillcolor: withAlpha(SERIES[0], 0.25), hoverinfo: 'skip' },
   ]
   if (v != null) data.push(marker(v, h))
   return <MiniPlot data={data} layout={{ title: { text: `uniform(${min}, ${max})` } }} />
@@ -60,8 +61,8 @@ function GaussianPreview({ params, value }: PreviewProps) {
     ys.push(norm * Math.exp(-0.5 * ((x - mean) / std) ** 2))
   }
   const data: Data[] = [
-    { x: xs, y: ys, fill: 'tozeroy', mode: 'lines', line: { color: '#2dd4bf' },
-      fillcolor: 'rgba(45,212,191,0.2)', hoverinfo: 'skip' },
+    { x: xs, y: ys, fill: 'tozeroy', mode: 'lines', line: { color: SERIES[0] },
+      fillcolor: withAlpha(SERIES[0], 0.2), hoverinfo: 'skip' },
   ]
   if (v != null) data.push(marker(v, norm))
   return <MiniPlot data={data} layout={{ title: { text: `gaussian(μ=${mean}, σ=${std})` } }} />

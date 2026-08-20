@@ -26,6 +26,7 @@ import {
   WebGLRenderer,
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { disposeSceneGraph } from './sceneLoader'
 
@@ -90,7 +91,7 @@ export class SceneViewport {
     this.renderer.domElement.style.display = 'block'
     container.appendChild(this.renderer.domElement)
 
-    this.scene.background = new Color(opts.background ?? '#12171f')
+    this.scene.background = new Color(opts.background ?? CANVAS)
 
     // Aspect is set by resize(); near/far are placeholders that updateFrustum() replaces on the first
     // frame -- only the 0.01 near floor it clamps to survives.
@@ -110,8 +111,8 @@ export class SceneViewport {
     const grid = new GridHelper(
       40,
       40,
-      new Color(opts.gridCenterColor ?? '#54c6b4'),
-      new Color(opts.gridColor ?? '#30524d'),
+      new Color(opts.gridCenterColor ?? GRID_CENTER),
+      new Color(opts.gridColor ?? GRID),
     )
     grid.position.y = -0.001
     this.scene.add(grid)
