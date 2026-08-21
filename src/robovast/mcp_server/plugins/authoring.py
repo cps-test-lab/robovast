@@ -161,6 +161,18 @@ def validate_project(address: str) -> dict:
     a full apt+pip cycle, so if any container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
+    **If the ``.vast`` has a ``plugins:`` block, this call alone cannot tell you whether it
+    is valid — always follow it with ``preview_configurations(limit=1)``.** Validation
+    resolves entry points already present in the process and does NOT install a campaign's
+    declared specs; that happens during config *generation*. So every variation the plugin
+    provides is reported as "Unknown variation class", and the advice the message then
+    gives — declare the package in ``plugins:`` — is advice you have already taken, which
+    makes it read like a wrong declaration or a missing credential. ``preview_configurations``
+    composes, so it installs them first and either expands the sweep or fails with the real
+    reason. ``limit=1`` because its default (``0``) returns EVERY resolved cell, and a sweep
+    with a plugin is usually the large kind — the counts come back either way, so one cell is
+    all it costs to see that the plugin resolved.
+
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
@@ -195,8 +207,14 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
-        limit: Maximum configurations to return (``0`` = all). ``configs`` is always the
-            true total; ``truncated`` marks a shortened list.
+        limit: Maximum configurations to return. ``configs``, ``runs_per_config`` and
+            ``total_trials`` are always the true totals, so **pass ``limit=1`` when the
+            question is only "does this resolve?"** — the cheapest way to confirm a
+            ``plugins:`` package installed and its variations expand, which
+            ``validate_project`` cannot answer (see there). There is no counts-only mode,
+            and the default ``0`` means ALL: on a sweep of a few hundred cells that is a
+            large reply for an answer the first cell already gives. Raise it when you
+            actually mean to read the fan-out. ``truncated`` marks a shortened list.
 
     Returns:
         ``{configs, runs_per_config, total_trials, configurations, truncated, lane}``,

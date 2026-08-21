@@ -7,7 +7,7 @@
 // Scope is deliberately narrow -- see the testing convention in docs/developer_guide.rst.
 
 import { describe, expect, it } from 'vitest'
-import { CAMPAIGN_SEGMENT, hashFor, navFromHash, nextNav, type Nav } from './hashNav'
+import { CAMPAIGN_SEGMENT, CAMPAIGN_SEL, hashFor, navFromHash, nextNav, type Nav } from './hashNav'
 
 const TOPICS = [
   { id: 'config' },
@@ -20,6 +20,8 @@ const DEFAULT_NAV: Nav = {
   viewId: '',
   campaignId: '',
   configCampaignId: '',
+  sel: CAMPAIGN_SEL,
+  tab: '',
 }
 
 const at = (hash: string) => navFromHash(hash, TOPICS, DEFAULT_NAV)
@@ -88,12 +90,16 @@ describe('nextNav — which campaign survives a navigation', () => {
     viewId: 'run',
     campaignId: 'c1',
     configCampaignId: '',
+    sel: CAMPAIGN_SEL,
+    tab: '',
   }
   const withConfig: Nav = {
     topicId: 'config',
     viewId: '',
     campaignId: '',
     configCampaignId: 'c1',
+    sel: CAMPAIGN_SEL,
+    tab: '',
   }
 
   it('carries the results campaign across topics', () => {
