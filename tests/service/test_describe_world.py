@@ -66,7 +66,7 @@ def test_input_files_asks_the_same_image():
     pinned = "harbor.example/sim:pinned"
     query = RoqsimBackend().input_files(
         _cfg(config="/config/world.yaml"),
-        {"mode": "ros2", "containers": {"simulation": {"image": pinned}}})
+        {"mode": "ros2", "containers": {"simulation": {"image": pinned}}}, "")
     # A path world that extends a campaign file is the case that needs a container at all.
     assert getattr(query, "spec", None) is None or query.spec.image == pinned
 

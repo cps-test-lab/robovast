@@ -42,7 +42,7 @@ class StubBackend(SimulatorBackend):
     def produces_run_capture(self, cfg, execution):
         return True
 
-    def input_files(self, cfg, execution):
+    def input_files(self, cfg, execution, vast_dir):
         # A path travels with the campaign; a `pkg:name` ref lives in the image.
         return [] if ":" in cfg.stage else [cfg.stage]
 

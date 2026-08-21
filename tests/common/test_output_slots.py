@@ -8,6 +8,7 @@ file is about the case that form cannot express -- a plugin whose outputs are se
 *names* the campaign chooses, and which may straddle the two channels.
 """
 
+import json
 import logging
 
 import pytest
@@ -289,7 +290,8 @@ def test_a_world_with_no_campaign_parent_needs_no_container(tmp_path):
 
     world = tmp_path / "w.yaml"
     world.write_text("extends: roqsim_scenes:depot\nplugins: []\n")
-    declared = RoqsimBackend().input_files(RoqsimConfig(config=str(world)), {})
+    declared = RoqsimBackend().input_files(
+        RoqsimConfig(config=str(world)), {}, str(tmp_path))
     assert not isinstance(declared, ContainerQuery)
     assert declared == [str(world)]
 
@@ -302,7 +304,8 @@ def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
 
     world = tmp_path / "w.yaml"
     world.write_text("extends: ./base.yaml\nplugins: []\n")
-    declared = RoqsimBackend().input_files(RoqsimConfig(config=str(world)), {})
+    declared = RoqsimBackend().input_files(
+        RoqsimConfig(config=str(world)), {}, str(tmp_path))
     assert isinstance(declared, ContainerQuery)
     assert declared.command[:3] == ["roqsim", "scenes", "inputs"]
 
@@ -311,7 +314,8 @@ def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
 def test_a_packaged_world_answers_without_a_container():
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
-    assert RoqsimBackend().input_files(RoqsimConfig(config="roqsim_scenes:depot"), {}) == []
+    assert RoqsimBackend().input_files(
+        RoqsimConfig(config="roqsim_scenes:depot"), {}, "") == []
 
 
 def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
@@ -327,11 +331,108 @@ def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
             pass
 
     import robovast.common.config_generation as cg
-    original, cg._make_container_runner = cg._make_container_runner, lambda spec: _Runner()
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
         assert _run_input_files_query(ContainerQuery(None, []), str(tmp_path)) == ["w.yaml"]
     finally:
         cg._make_container_runner = original
+
+
+@pytest.mark.requires_simulator
+def test_the_extends_question_is_answered_from_the_vast_dir_not_the_cwd(tmp_path, monkeypatch):
+    """The authored path is relative to the ``.vast``; the caller's cwd is not a party to it.
+
+    Opening it as given made the same campaign answer differently depending on where the
+    caller stood -- asked from its own directory, skipped from anywhere else -- and only the
+    asking branch staged the parent.
+    """
+    from robovast.common.simulators import ContainerQuery
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
+
+    (tmp_path / "world").mkdir()
+    (tmp_path / "world" / "w.yaml").write_text("extends: base.yaml\nplugins: []\n")
+    cfg = RoqsimConfig(config="world/w.yaml")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    declared = RoqsimBackend().input_files(cfg, {}, str(tmp_path))
+    assert isinstance(declared, ContainerQuery)
+    # And the container is told where the file will be, not where it is on this host.
+    assert declared.command == ["roqsim", "scenes", "inputs", "/config/world/w.yaml"]
+
+    monkeypatch.chdir(tmp_path)
+    assert isinstance(RoqsimBackend().input_files(cfg, {}, str(tmp_path)), ContainerQuery)
+
+
+def test_the_query_mounts_the_campaign_where_its_command_looks(tmp_path):
+    """The command names ``/config/...``; without the mount the container has no such path."""
+    from robovast.common.config_generation import _run_input_files_query
+    from robovast.common.simulators import ContainerQuery
+
+    exposed = {}
+
+    class _Runner:
+        def expose(self, host_path, container_path):
+            exposed[container_path] = host_path
+
+        def run(self, _command, emit):
+            emit('{"packaged": false, "inputs": ["%s/w.yaml"]}' % tmp_path)
+
+        def close(self):
+            pass
+
+    import robovast.common.config_generation as cg
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
+    try:
+        assert _run_input_files_query(ContainerQuery(None, []), str(tmp_path)) == ["w.yaml"]
+    finally:
+        cg._make_container_runner = original
+    assert exposed == {"/config": str(tmp_path)}
+
+
+def test_the_local_runner_gets_a_ref_docker_can_pull(monkeypatch):
+    """``docker`` cannot pull ``family:<member>`` -- that name is RoboVAST's, not a registry's."""
+    from robovast.common.config_generation import _make_container_runner
+    from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example/proj")
+    runner = _make_container_runner(ContainerSpec(image=family_image_ref(MEMBER_ROQSIM)))
+    try:
+        assert runner._spec.image == f"registry.example/proj/{MEMBER_ROQSIM}:latest"
+    finally:
+        runner.close()
+
+    runner = _make_container_runner(ContainerSpec(image=family_image_ref(MEMBER_ROQSIM)),
+                                    image_project="dev.example/mine",
+                                    image_project_tag="pinned")
+    try:
+        assert runner._spec.image == f"dev.example/mine/{MEMBER_ROQSIM}:pinned"
+    finally:
+        runner.close()
+
+
+def test_the_factory_keeps_the_family_ref_because_it_names_a_container(monkeypatch):
+    """The cluster factory execs into an aux Pod container named after the spec's image.
+
+    Resolving it here would name a container that Pod does not have, so the resolution is
+    the local fallback's alone.
+    """
+    from robovast.common.config_generation import (_container_runner_factory,
+                                                   _make_container_runner,
+                                                   set_container_runner_factory)
+    from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    seen = []
+    token = set_container_runner_factory(lambda spec: seen.append(spec.image) or "runner")
+    try:
+        assert _make_container_runner(
+            ContainerSpec(image=family_image_ref(MEMBER_ROQSIM))) == "runner"
+    finally:
+        _container_runner_factory.reset(token)
+    assert seen == [family_image_ref(MEMBER_ROQSIM)]
 
 
 def test_a_query_that_prints_no_json_fails_loudly(tmp_path):
@@ -346,7 +447,7 @@ def test_a_query_that_prints_no_json_fails_loudly(tmp_path):
             pass
 
     import robovast.common.config_generation as cg
-    original, cg._make_container_runner = cg._make_container_runner, lambda spec: _Runner()
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
         with pytest.raises(RuntimeError, match="printed no JSON"):
             _run_input_files_query(ContainerQuery(None, []), str(tmp_path))
@@ -360,12 +461,11 @@ def _describing(payload):
     """A container runner that answers a describe query with *payload*."""
     class _Runner:
         def run(self, _command, emit):
-            import json as _json
-            emit(_json.dumps(payload))
+            emit(json.dumps(payload))
 
         def close(self):
             pass
-    return lambda spec: _Runner()
+    return lambda spec, **_: _Runner()
 
 
 def _check(block, payload, tmp_path, params=None, scenario_parameters=None):
@@ -380,6 +480,85 @@ def _check(block, payload, tmp_path, params=None, scenario_parameters=None):
         cg._check_sim_against_world(execution, configs, str(tmp_path), scenario_parameters)
     finally:
         cg._make_container_runner = original
+
+
+@pytest.mark.requires_simulator
+def test_a_simulator_too_old_for_the_overrides_still_gets_the_plugin_half_checked(tmp_path):
+    """An old image must be the second-best case, not the least-checked one.
+
+    Its describe rejects ``--override`` outright, so the answer that needs the overrides is lost.
+    The plugin-key half never needed them, and dropping it too would mean a misspelled plugin
+    reached the container precisely where the image was oldest.
+    """
+    import robovast.common.config_generation as cg
+
+    asked = []
+
+    class _Runner:
+        def run(self, command, emit):
+            asked.append(command)
+            if "--override" in command:
+                emit("roqsim scenes describe: error: unrecognized arguments: --override")
+                raise RuntimeError("exit 2")
+            emit(json.dumps({"plugins": [{"key": "boxes", "ref": "boxes"}], "entities": None}))
+
+        def close(self):
+            pass
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}}
+    block = {"config": "w.yaml", "overrides": {"plugins": {"boxesTYPO": {"instances": []}}}}
+    configs = [{"name": "c", "sim": block, "config": {}}]
+    original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
+    try:
+        with pytest.raises(ValueError, match="targets no plugin in this world"):
+            cg._check_sim_against_world(execution, configs, str(tmp_path), None)
+    finally:
+        cg._make_container_runner = original
+    # Asked with the overrides first, then again without them -- the second container is the
+    # price of the degraded case only.
+    assert ["--override" in c for c in asked] == [True, False]
+
+
+@pytest.mark.requires_simulator
+def test_the_world_is_described_with_the_campaign_overrides_a_run_would_get():
+    """Otherwise the answer is about the base world, and the entity check reads it as truth.
+
+    A campaign whose obstacles come from its own ``sim`` overrides compiles those entities only
+    once the overrides are applied. Described without them, the world has none -- and the check
+    refused campaigns that run correctly.
+    """
+    from robovast.common.simulators import SIM_QUERY_OVERRIDES_MOUNT
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
+
+    cfg = RoqsimConfig(config="w.yaml",
+                       overrides={"plugins": {"boxes": {"instances": [{"pos": [1, 1]}]}}})
+    query = RoqsimBackend().describe_query(cfg, {"mode": "ros2"}, entities=True)
+    assert query.command[-2:] == ["--override", SIM_QUERY_OVERRIDES_MOUNT]
+    # And the document travels ON the query, so the path its command names is the path the
+    # caller mounts -- one string, read twice, rather than two places agreeing by luck.
+    assert query.documents == {SIM_QUERY_OVERRIDES_MOUNT: cfg.overrides}
+
+    plain = RoqsimBackend().describe_query(RoqsimConfig(config="w.yaml"), {"mode": "ros2"})
+    assert "--override" not in plain.command and plain.documents == {}
+
+
+def test_a_query_document_is_written_where_its_command_looks(tmp_path):
+    import yaml as _yaml
+
+    from robovast.common.config_generation import _stage_query_documents
+    from robovast.common.simulators import ContainerQuery
+
+    class _Runner:
+        workspace = str(tmp_path)
+
+    mounted = {}
+    query = ContainerQuery(None, [], {"/aux/sim.overrides.yaml": {"plugins": {"boxes": {}}}})
+    _stage_query_documents(_Runner(), query, lambda host, at: mounted.update({at: host}))
+
+    assert list(mounted) == ["/aux/sim.overrides.yaml"]
+    with open(mounted["/aux/sim.overrides.yaml"], encoding="utf-8") as handle:
+        assert _yaml.safe_load(handle) == {"plugins": {"boxes": {}}}
 
 
 @pytest.mark.requires_simulator

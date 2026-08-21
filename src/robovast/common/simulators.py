@@ -66,6 +66,14 @@ CONFIG_MOUNT = "/config"
 #: backend building a command has to name it, and a lane writing the file has to agree.
 SIM_OVERRIDES_MOUNT = f"{CONFIG_MOUNT}/sim.overrides.yaml"
 
+#: Where a *query's* overrides document is mounted -- a describe question, not a run. Outside
+#: ``CONFIG_MOUNT`` because the campaign tree mounts there and an input nested inside another
+#: input's mount has to be copied rather than bound; ``/aux`` because on the cluster a fixed
+#: mount is an emptyDir the aux Pod declares, and only ``AUX_MOUNTABLE_PATHS`` are declared. A
+#: constant for the same reason :data:`SIM_OVERRIDES_MOUNT` is one: the backend names it on argv
+#: and the caller mounts the file there.
+SIM_QUERY_OVERRIDES_MOUNT = "/aux/sim.overrides.yaml"
+
 #: Name of the per-configuration record of what the simulator was given, written beside
 #: ``scenario.config`` in ``<campaign>/<config>/_config/``. A record, not an input: what
 #: the run reads is :data:`SIM_OVERRIDES_MOUNT` plus the world on argv.
@@ -205,8 +213,15 @@ class SimulatorBackend:
         """
         return None
 
-    def input_files(self, cfg, execution: dict) -> list:
+    def input_files(self, cfg, execution: dict, vast_dir: str) -> list:
         """Files the simulator needs that the campaign owns, relative to the ``.vast``.
+
+        *vast_dir* is the directory the ``.vast`` lives in, and it is required because the
+        paths in *cfg* are relative to it and to nothing else. A backend that reads one --
+        to decide whether a world inherits from another campaign file, say -- must resolve
+        it against this, never against the process's working directory: composition runs
+        from the CLI's cwd, from a service worker, and from an isolated subprocess, and a
+        backend that guessed made the same campaign answer differently in each.
 
         Typically a world declared as a path rather than a package ref. A packaged world
         travels inside the image and needs nothing here, which is the default.
@@ -222,9 +237,9 @@ class SimulatorBackend:
         that was never mounted.
 
         Only the files the campaign itself owns. A world that ``extends`` another
-        *campaign* file is not followed -- enumerating that needs the simulator, which
-        must not be imported here. Such a run fails loudly in the container on a world it
-        cannot resolve, rather than silently rendering the wrong one.
+        *campaign* file cannot be followed here -- enumerating that needs the simulator,
+        which must not be imported in this process -- so a backend that can state the
+        question returns a :class:`ContainerQuery` for it instead.
         """
         return []
 
@@ -584,13 +599,20 @@ class ContainerQuery:
     and nothing has to travel. ``inputs`` are absolute paths **as the container sees them**;
     the runner mounts the campaign's directory at its own path, so anything under it is a file
     the campaign owns and everything else came with the image.
+
+    *documents* is ``{container path: mapping}`` the query needs mounted as YAML -- an override
+    tree, which argv cannot carry. It travels on the query rather than being re-derived by the
+    caller, because the path the command names and the path the file is mounted at have to be the
+    same string, and two places deciding it separately is a mismatch nothing detects until the
+    simulator reports a file it cannot find.
     """
 
-    __slots__ = ("spec", "command")
+    __slots__ = ("spec", "command", "documents")
 
-    def __init__(self, spec, command):
+    def __init__(self, spec, command, documents=None):
         self.spec = spec
         self.command = list(command)
+        self.documents = dict(documents or {})
 
 
 #: Sentinel kept out of the public surface; see ``sim_override_keys``.
@@ -778,7 +800,7 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
         return []
     backend = resolve_backend(name, base_dir)
     cfg = _validated_cfg(backend, dict(block or {}), name)
-    declared = backend.input_files(cfg, execution)
+    declared = backend.input_files(cfg, execution, base_dir)
     if isinstance(declared, ContainerQuery):
         # Answering needs the simulator's image. Composition passes *run_query* because it
         # owns the runner factory; validation and previews do not, and start no containers --

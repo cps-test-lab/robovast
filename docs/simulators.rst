@@ -146,9 +146,12 @@ Hooks, all optional except as noted:
    otherwise.
 ``env(cfg, execution)``
    Environment the simulator reads. A campaign's own ``execution.env`` wins over it.
-``input_files(cfg, execution)``
+``input_files(cfg, execution, vast_dir)``
    What must travel with the campaign. Return a ``ContainerSpec`` when working it out
-   needs the simulator itself.
+   needs the simulator itself. ``vast_dir`` is the campaign directory the paths in ``cfg``
+   are relative to: a backend that reads one of those files resolves it against this, never
+   against the working directory, which differs between the CLI, a service worker and the
+   isolated compose subprocess.
 ``produces_run_capture(cfg, execution)``
    Whether runs write the capture a ``scene3d`` panel replays.
 ``scene_export(cfg, execution, *, world, max_tex_dim, overrides)``
@@ -370,10 +373,32 @@ In practice a variation writing both channels keeps them consistent by construct
 obstacles the trial drives and the ones the world compiles come from one placement, with one
 set of names. The check is what catches a hand-authored mismatch.
 
+**Described with the configuration's overrides, exactly as the run gets them.** The entities a
+campaign's own obstacles add exist only once its ``sim`` overrides are applied, so a description
+of the base world reports none of them. Asked without the overrides, this check therefore
+refused campaigns that run correctly -- an obstacle placement is the ordinary case, not an edge
+one. The override tree cannot go on argv, so the query carries it as a *document* and RoboVAST
+mounts it where the command names it (``ContainerQuery.documents``), the same spelling the run
+itself uses.
+
+A simulator whose describe cannot take overrides says so ("unrecognized arguments") and the world
+is described again without them: the plugin-key half never needed them, and losing it as well
+would make an old image the *least* checked case rather than the second-best one. The entity half
+then reports itself unchecked, and the second container is the price of the degraded case only.
+
 The same seam answers the staging question. ``input_files`` may also return a query, which is
 how a world that ``extends`` **another campaign file** stages its whole chain; a world extending
 a *packaged* one, or nothing, is complete in the single file the campaign owns and says so
 without starting a container.
+
+That query is a container like any other, so it is subject to the same two facts every aux
+container is: it is handed the campaign's files at ``/config`` (the command names the world
+there, not by its path on the host), and its image reference must be one a registry can serve
+-- a ``family:`` ref is resolved for the local ``docker run`` fallback, and deliberately left
+symbolic for the cluster factory, whose aux Pod names its containers after the spec's image.
+Both were once missing here and the query could not run at all: on the local lane it asked
+``docker`` for an image called ``family``, and once past that it was given a world path
+relative to a directory the container did not have.
 
 **Packing groups by the resolved block.** A job's containers start once and are not restarted
 between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore

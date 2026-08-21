@@ -37,7 +37,7 @@ class _StubBackend(S.SimulatorBackend):
     def env(self, cfg, execution):
         return {"STUB_WORLD": cfg.config}
 
-    def input_files(self, cfg, execution):
+    def input_files(self, cfg, execution, vast_dir):
         return [] if ":" in cfg.config else [cfg.config]
 
     def sim_document(self, cfg, execution):

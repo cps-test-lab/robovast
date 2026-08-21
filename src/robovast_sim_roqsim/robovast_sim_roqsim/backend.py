@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from typing import Optional
 
@@ -14,10 +15,10 @@ from pydantic import BaseModel, ConfigDict
 
 from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
-                                        SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, ContainerQuery,
-                                        SimulatorBackend, shape_for, simulator_image)
+                                        SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
+                                        SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
+                                        shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
-
 
 #: The ``SimulationInterface`` scenario-execution steps.
 ADAPTER = "roqsim.scenario_adapter:MujocoSim"
@@ -51,7 +52,7 @@ def _config_in_container(config: str) -> str:
     return f"{CONFIG_MOUNT}/{config.lstrip('./')}"
 
 
-def _extends_a_campaign_file(config: str) -> bool:
+def _extends_a_campaign_file(config: str, vast_dir: str) -> bool:
     """Whether this world inherits from another file the CAMPAIGN owns.
 
     Reading one top-level key is not resolving the chain -- it is deciding whether the chain
@@ -59,13 +60,20 @@ def _extends_a_campaign_file(config: str) -> bool:
     A parent that is a package ref, or absent entirely, means the campaign's one file is the
     whole of what it owns.
 
+    Resolved against *vast_dir*, never against the working directory. Opening the authored
+    path as given made this answer depend on where the caller stood: from the campaign's own
+    directory the file was found and the chain was resolved, from anywhere else the open
+    failed and the branch below read that as "no parent" -- so the same campaign both did and
+    did not ask the simulator, and only one of those staged the parent.
+
     Unreadable, or not a mapping: no, because such a file is not a world the simulator can
     open either -- it fails with its own error, and paying for a container to describe it
     would only make that failure slower. The question here is narrow on purpose: does the
     chain need resolving, not is this world any good.
     """
+    path = config if os.path.isabs(config) else os.path.join(vast_dir or ".", config)
     try:
-        with open(config, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError):
         return False
@@ -261,7 +269,7 @@ class RoqsimBackend(SimulatorBackend):
         """
         return [{"scene3d": {}}]
 
-    def input_files(self, cfg, execution: dict):
+    def input_files(self, cfg, execution: dict, vast_dir: str):
         """Everything the world is made of -- asked of the image that can answer it.
 
         A world is not one file. It is the YAML, whatever it ``extends``, the MJCF that chain
@@ -280,7 +288,7 @@ class RoqsimBackend(SimulatorBackend):
         """
         if _is_package_ref(cfg.config):
             return []
-        if not _extends_a_campaign_file(cfg.config):
+        if not _extends_a_campaign_file(cfg.config, vast_dir):
             # The common case, and it needs no container: a world that extends nothing, or
             # extends a PACKAGED world, is complete in the one file the campaign owns. Asking
             # an image would make every ordinary campaign's composition depend on pulling a
@@ -291,7 +299,11 @@ class RoqsimBackend(SimulatorBackend):
             # The campaign's own image, for the same reason describe_query uses it: what a
             # world extends is resolved by what is installed.
             ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
-            ["roqsim", "scenes", "inputs", cfg.config])
+            # Through ``_config_in_container``, like every other command this backend sends:
+            # the container is given the campaign's files at ``/config``, and the authored
+            # path is relative to the ``.vast``. Passed raw, roqsim looked for the world
+            # beside its own working directory and said it did not exist.
+            ["roqsim", "scenes", "inputs", _config_in_container(cfg.config)])
 
     def describe_query(self, cfg, execution: dict, *, entities: bool = False,
                        targets: str = ""):
@@ -311,9 +323,18 @@ class RoqsimBackend(SimulatorBackend):
             # compiling the model. The glob is the caller's, and it is what keeps the answer
             # small -- a mobile-manipulator world has hundreds of geoms.
             command += ["--overridable", targets]
+        # Described WITH this configuration's overrides, the same file spelling the run uses
+        # (:meth:`sim_document`). Which entities a world compiles depends on its plugins' config,
+        # so a campaign whose obstacles come from its own overrides compiles them only with those
+        # applied: asked without them, the answer is about a different world, and the entity check
+        # read that as a working campaign naming entities that do not exist.
+        document = self.sim_document(cfg, execution)
+        if document:
+            command += ["--override", SIM_QUERY_OVERRIDES_MOUNT]
         return ContainerQuery(
             ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
-            command)
+            command,
+            {SIM_QUERY_OVERRIDES_MOUNT: document} if document else None)
 
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,

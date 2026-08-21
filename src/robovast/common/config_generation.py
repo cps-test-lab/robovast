@@ -128,8 +128,22 @@ _ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
 _ISOLATED_NO_BACKEND = "ROBOVAST_ISOLATED_NO_BACKEND"
 
 
-def _make_container_runner(spec):
-    """Build a runner for *spec* using the active factory (local fallback)."""
+def _make_container_runner(spec, *, image_project=None, image_project_tag=None):
+    """Build a runner for *spec* using the active factory (local fallback).
+
+    A ``family:`` ref is resolved for the LOCAL fallback only, because that is where the ref
+    becomes an argument to ``docker run`` -- and ``docker`` cannot pull ``family:<member>``,
+    which is a name only RoboVAST understands. It is deliberately not resolved for the
+    factory: the cluster factory execs into a container of the campaign's aux Pod, named
+    after the spec's image (``ContainerSpec.container_name``), and rewriting the image here
+    would name a container that Pod does not have.
+
+    *image_project* / *image_project_tag* are the campaign's, passed rather than read from
+    the environment for the reason :func:`resolve_family_image` documents: composition runs
+    in a worker thread, and in a subprocess of one, while a service composes campaigns for
+    several projects at once. ``None`` means the process environment's, which is what a CLI
+    run wants.
+    """
     if spec is None:
         return None
     if os.environ.get(_ISOLATED_NO_BACKEND) == "1" and _container_runner_factory.get() is None:
@@ -146,8 +160,17 @@ def _make_container_runner(spec):
     factory = _container_runner_factory.get()
     if factory is not None:
         return factory(spec)
+    from dataclasses import replace  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        is_family_image_ref, resolve_family_image)
+
     from .variation.container_runner import \
         LocalContainerRunner  # pylint: disable=import-outside-toplevel
+    if is_family_image_ref(getattr(spec, "image", "")):
+        spec = replace(spec, image=resolve_family_image(
+            spec.image, project=image_project, tag=image_project_tag,
+            role="image for an auxiliary container"))
     return LocalContainerRunner(spec)
 
 
@@ -203,7 +226,7 @@ def _backend_run_files(vast_dir, parameters):
     try:
         backend = resolve_backend(name, vast_dir)
         cfg = _backend_cfg(backend, execution, name)
-        declared = backend.input_files(cfg, execution)
+        declared = backend.input_files(cfg, execution, vast_dir)
         if isinstance(declared, ContainerQuery):
             return _run_input_files_query(declared, vast_dir)
         return [str(p) for p in (declared or [])]
@@ -212,7 +235,24 @@ def _backend_run_files(vast_dir, parameters):
         return []
 
 
-def _run_input_files_query(query, vast_dir):
+def _stage_query_documents(runner, query, expose):
+    """Write the documents a :class:`ContainerQuery` declares, where its command names them.
+
+    A query that needs a document -- an override tree, which argv cannot carry -- states the
+    container path itself, so this writes the YAML into the runner's workspace and mounts it
+    there. Nothing is inferred about which document goes where: the command and the mount read
+    the same string off the query.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
+
+    for container_path, document in (getattr(query, "documents", None) or {}).items():
+        staged = os.path.join(runner.workspace, os.path.basename(container_path))
+        with open(staged, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(document, handle, sort_keys=False)
+        expose(staged, container_path)
+
+
+def _run_input_files_query(query, vast_dir, *, image_project=None, image_project_tag=None):
     """Ask the simulator's own image which files a world is made of.
 
     A world is not one file -- it is the YAML, whatever it ``extends``, the MJCF that chain
@@ -227,11 +267,21 @@ def _run_input_files_query(query, vast_dir):
     that arrived with the image (a packaged world's meshes), and copying them would put a
     second, diverging copy of an installed asset into the campaign.
     """
-    runner = _make_container_runner(query.spec)
+    runner = _make_container_runner(query.spec, image_project=image_project,
+                                    image_project_tag=image_project_tag)
     if runner is None:
         return []
     lines = []
     try:
+        expose = getattr(runner, "expose", None)
+        if expose is not None:
+            # The campaign's own files, at the CONFIG_MOUNT path the backend's command
+            # already names -- the same mount a real run gives the simulator. Without it the
+            # container was handed a path relative to a directory it does not have, and said
+            # the world did not exist.
+            from robovast.common.simulators import \
+                CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+            expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
     finally:
         runner.close()
@@ -412,6 +462,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
             from robovast.common.simulators import \
                 CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
             expose(vast_dir, CONFIG_MOUNT)
+            _stage_query_documents(runner, query, expose)
         runner.run(query.command, lines.append)
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
         # A non-zero exit that nonetheless PRINTED a payload is a partial answer, not a failure: a
@@ -504,14 +555,37 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
             payload, _image = describe_world_payload(
                 execution, block, vast_dir, entities=bool(named))
         except WorldQueryUnavailable as exc:
-            # Say so. At debug level this silently disarmed the check for exactly the campaigns
-            # most in need of it -- one whose world ships in its own built image answers
-            # nothing, and a misspelled plugin key then sailed through to the container.
-            logger.warning(
-                "sim overrides were not pre-checked (%s): %s. They are still refused in the "
-                "container if they are wrong.",
-                exc, ", ".join(sorted(wanted)) or "the entities this scenario names")
-            return
+            # A simulator too old to take the overrides on its describe (no ``--override``: it
+            # says "unrecognized arguments" and exits) can still answer the half that does not
+            # need them. Losing the plugin-key check as well would make an old image the least
+            # checked case rather than the second-best one, so it is asked again without them --
+            # a second container only in the degraded case, never in the working one.
+            base = _block_without_overrides(backend, block)
+            payload = None
+            if base != block:
+                try:
+                    payload, _image = describe_world_payload(
+                        execution, base, vast_dir, entities=False)
+                except WorldQueryUnavailable:
+                    payload = None
+            if payload is None:
+                # Say so. At debug level this silently disarmed the check for exactly the
+                # campaigns most in need of it -- one whose world ships in its own built image
+                # answers nothing, and a misspelled plugin key then sailed through to the
+                # container.
+                logger.warning(
+                    "sim overrides were not pre-checked (%s): %s. They are still refused in the "
+                    "container if they are wrong.",
+                    exc, ", ".join(sorted(wanted)) or "the entities this scenario names")
+                return
+            if named:
+                logger.warning(
+                    "the entities this scenario names were not pre-checked (%s): %s. The world "
+                    "was described without this configuration's overrides, so the entities those "
+                    "overrides add are not in the answer. They are still refused in the container "
+                    "if they are wrong.",
+                    exc, ", ".join(sorted(named)))
+                named = set()
 
         errors = payload.get("errors") or {}
         if errors and named:
@@ -540,6 +614,19 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
                     "run time -- which entities exist is settled when the model compiles.")
 
 
+def _block_without_overrides(backend, block):
+    """*block* with the backend's override tree removed -- what a world's own file declares.
+
+    The fallback question, for a simulator whose describe cannot take overrides: which plugin
+    keys does this world have? That half needs no overrides, so it survives an image that cannot
+    answer the other one.
+    """
+    root = getattr(backend, "DOTTED_ROOT", None)
+    if not root:
+        return block
+    return {k: v for k, v in (block or {}).items() if k != root}
+
+
 def _validated_block(backend, block, name):
     """The backend's validated view of a resolved ``sim`` block."""
     from robovast.common.simulators import _validated_cfg  # pylint: disable=import-outside-toplevel
@@ -547,7 +634,8 @@ def _validated_block(backend, block, name):
 
 
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
-                               scenario_parameters=None):
+                               scenario_parameters=None, *,
+                               image_project=None, image_project_tag=None):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
     Runs **after** the variation loop, because that is the first point at which a
@@ -601,7 +689,9 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         try:
             declared = sim_input_files(
                 execution, block, vast_dir,
-                run_query=lambda query: _run_input_files_query(query, vast_dir))
+                run_query=lambda query: _run_input_files_query(
+                    query, vast_dir, image_project=image_project,
+                    image_project_tag=image_project_tag))
         except Exception as exc:  # noqa: BLE001 - as above
             if uses_channel:
                 raise
@@ -1590,7 +1680,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # point, so the additions travel with the campaign and are hashed into every
     # configuration's identity exactly as the campaign-level world already was.
     _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
-                               existing_scenario_parameters)
+                               existing_scenario_parameters,
+                               image_project=image_project,
+                               image_project_tag=image_project_tag)
 
     # Extract execution parameters from execution section
     #
