@@ -130,11 +130,23 @@ class ControllerState:
         ``variation`` would enter ``running`` already carrying a ten-minute-old
         progress clock, and be reported as stalled before its first run had a chance
         to finish.
+
+        **A stage belongs to the phase that set it**, so a phase change clears it unless the new
+        call names one. Without that, ``stage`` outlived its phase for the rest of the campaign's
+        life: a campaign that had waited for an image reported "waiting for image(s) simulation,
+        sut" while it ran, while it postprocessed, and after it finished -- a sentence that was
+        true once and then read as a live statement about a campaign that was already over. The
+        one call site that cleared it by hand (``stage=""`` on entering ``starting``) is the
+        workaround this replaces.
+
+        Re-setting the *same* phase keeps the stage: some paths do that defensively, and clearing
+        there would wipe a stage the same phase had just set.
         """
         with self._lock:
             if phase != self._status.phase:
                 self._status.phase_since = time.time()
                 self._status.progress_since = self._status.phase_since
+                self._status.stage = None
             self._status.phase = phase
             if stage is not None:
                 self._status.stage = stage

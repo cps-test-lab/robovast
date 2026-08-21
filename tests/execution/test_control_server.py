@@ -108,3 +108,40 @@ def test_phase_since_tracks_changes_only():
     assert state.snapshot().phase_since == first
     state.set_phase("running")
     assert state.snapshot().phase_since > first
+
+
+def test_a_stage_does_not_outlive_its_phase():
+    """``stage`` describes the phase that set it, so the next phase starts without one.
+
+    The bug this pins: a campaign that waited for an image kept reporting "waiting for image(s)
+    simulation, sut" as its stage while it ran, while it postprocessed, and after it had
+    finished. A sentence that was true once, still being served as a statement about now.
+    """
+    state = ControllerState()
+    state.set_phase("building", stage="waiting for image(s) simulation, sut")
+    assert state.snapshot().stage == "waiting for image(s) simulation, sut"
+
+    state.set_phase("running")
+
+    assert state.snapshot().stage is None
+    state.set_phase("finished")
+    assert state.snapshot().stage is None, "a finished campaign is not waiting for anything"
+
+
+def test_re_setting_the_same_phase_keeps_its_stage():
+    """Several paths re-set the current phase defensively. Clearing there would wipe a stage the
+    same phase had just set -- which is why this clears on a *change* and not on every call."""
+    state = ControllerState()
+    state.set_phase("postprocessing", stage="merging results")
+    state.set_phase("postprocessing")
+
+    assert state.snapshot().stage == "merging results"
+
+
+def test_a_new_phase_may_bring_its_own_stage():
+    """The clear is a default, not a rule: a phase change that names a stage keeps that one."""
+    state = ControllerState()
+    state.set_phase("building", stage="waiting for image(s) sut")
+    state.set_phase("finished", stage="postprocessing failed: no results")
+
+    assert state.snapshot().stage == "postprocessing failed: no results"
