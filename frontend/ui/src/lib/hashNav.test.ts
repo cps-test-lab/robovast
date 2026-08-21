@@ -1,13 +1,27 @@
-// The hash grammar and, above all, the two campaign scopes' opposite memory rules. Tested here
-// rather than through the UI because a mistake in `configCampaignId` does not misplace a view — it
-// *exposes* one. A campaign's frozen config is reachable only by the link on its card, and the whole
-// of that guarantee is `nextNav` dropping the field; nothing about the rendered page would look
-// wrong if it stopped.
+// The hash grammar: what a URL addresses, and above all the two campaign scopes' opposite memory
+// rules. Tested here rather than through the UI because a mistake in `configCampaignId` does not
+// misplace a view — it *exposes* one. A campaign's frozen config is reachable only by the link on
+// its card, and the whole of that guarantee is `nextNav` dropping the field; nothing about the
+// rendered page would look wrong if it stopped.
+//
+// The node grammar earns tests for the neighbouring reason: a link to a result is a promise that
+// the same URL comes back to the same run, so every form has to survive a round trip, and a URL
+// naming something impossible (a run with no config, a batch beside one) must resolve to a real
+// node rather than to a plausible wrong one.
 //
 // Scope is deliberately narrow -- see the testing convention in docs/developer_guide.rst.
 
 import { describe, expect, it } from 'vitest'
-import { CAMPAIGN_SEGMENT, CAMPAIGN_SEL, hashFor, navFromHash, nextNav, type Nav } from './hashNav'
+import {
+  CAMPAIGN_SEGMENT,
+  CAMPAIGN_SEL,
+  LOG_TAB_SLUG,
+  hashFor,
+  navFromHash,
+  nextNav,
+  type Nav,
+  type ResultsSel,
+} from './hashNav'
 
 const TOPICS = [
   { id: 'config' },
@@ -38,6 +52,8 @@ describe('navFromHash', () => {
       viewId: '',
       campaignId: '',
       configCampaignId: '',
+      sel: CAMPAIGN_SEL,
+      tab: '',
     })
   })
 
@@ -54,6 +70,8 @@ describe('navFromHash', () => {
       viewId: '',
       campaignId: '',
       configCampaignId: '',
+      sel: CAMPAIGN_SEL,
+      tab: '',
     })
   })
 
@@ -70,6 +88,95 @@ describe('navFromHash', () => {
   })
 })
 
+describe('navFromHash — which node of the campaign', () => {
+  const C = '#/results/explorer/nav-2026-08-12'
+
+  it('reads the four levels', () => {
+    expect(at(C).sel).toEqual({ level: 'campaign' })
+    expect(at(`${C}?batch=3`).sel).toEqual({ level: 'batch', batch: 3 })
+    expect(at(`${C}/goal-1`).sel).toEqual({ level: 'config', configName: 'goal-1' })
+    expect(at(`${C}/goal-1/2`).sel)
+      .toEqual({ level: 'run', configName: 'goal-1', runId: 2 })
+  })
+
+  it('percent-decodes a config name', () => {
+    expect(at(`${C}/goal%201`).sel).toEqual({ level: 'config', configName: 'goal 1' })
+  })
+
+  it('reads a malformed escape as written rather than throwing', () => {
+    // A hash is user-editable text; one bad byte must not take the page down.
+    expect(at(`${C}/goal%zz`).sel).toEqual({ level: 'config', configName: 'goal%zz' })
+  })
+
+  it('takes a run index only when it is one', () => {
+    // `parseInt` would read `2x` as 2 and invent a run the campaign does not have.
+    expect(at(`${C}/goal-1/2x`).sel).toEqual({ level: 'config', configName: 'goal-1' })
+    expect(at(`${C}/goal-1/-1`).sel).toEqual({ level: 'config', configName: 'goal-1' })
+    expect(at(`${C}/goal-1/0`).sel)
+      .toEqual({ level: 'run', configName: 'goal-1', runId: 0 })
+  })
+
+  it('ignores a batch named beside a config', () => {
+    // The two are different levels of one tree, and a config already implies its round — the
+    // union cannot hold both, so the config wins and the index is dropped.
+    expect(at(`${C}/goal-1?batch=3`).sel).toEqual({ level: 'config', configName: 'goal-1' })
+  })
+
+  it('ignores a batch that is not an index, and unknown query keys', () => {
+    expect(at(`${C}?batch=later`).sel).toEqual({ level: 'campaign' })
+    expect(at(`${C}?zoom=4`).sel).toEqual({ level: 'campaign' })
+    expect(at(`${C}?zoom=4`).tab).toBe('')
+  })
+
+  it('ignores segments past the run', () => {
+    expect(at(`${C}/goal-1/2/nonsense`).sel)
+      .toEqual({ level: 'run', configName: 'goal-1', runId: 2 })
+  })
+
+  it('reads the open tab, including the built-in log', () => {
+    expect(at(`${C}/goal-1/2?tab=nav_report`).tab).toBe('nav_report')
+    expect(at(`${C}/goal-1/2?tab=${LOG_TAB_SLUG}`).tab).toBe(LOG_TAB_SLUG)
+  })
+})
+
+describe('hashFor — what each view is allowed to spell', () => {
+  const run = { level: 'run', configName: 'goal-1', runId: 2 } as const
+  const nav = (viewId: string, sel: ResultsSel, tab = ''): Nav => ({
+    topicId: 'results',
+    viewId,
+    campaignId: 'c1',
+    sel,
+    tab,
+    configCampaignId: '',
+  })
+
+  it('gives the Explorer the whole selection and its tab', () => {
+    expect(hashFor(nav('explorer', run, 'nav_report')))
+      .toBe('/results/explorer/c1/goal-1/2?tab=nav_report')
+    expect(hashFor(nav('explorer', { level: 'batch', batch: 3 }))).toBe('/results/explorer/c1?batch=3')
+  })
+
+  it('gives the Run view a run, and nothing it cannot replay', () => {
+    expect(hashFor(nav('run', run))).toBe('/results/run/c1/goal-1/2')
+    // A config or batch node is not a run; the Run view would heal off it anyway, so its address
+    // does not claim one.
+    expect(hashFor(nav('run', { level: 'config', configName: 'goal-1' }))).toBe('/results/run/c1')
+    // It has no notebook tabs at all, so it never spells one.
+    expect(hashFor(nav('run', run, 'nav_report'))).toBe('/results/run/c1/goal-1/2')
+  })
+
+  it('gives the Data browser the campaign alone', () => {
+    // Campaign-scoped: a node means nothing to it, and a hash is a view's address rather than a
+    // place to stash state the view ignores.
+    expect(hashFor(nav('data', run, 'nav_report'))).toBe('/results/data/c1')
+  })
+
+  it('spells a config name that needs escaping', () => {
+    expect(hashFor(nav('explorer', { level: 'config', configName: 'goal 1' })))
+      .toBe('/results/explorer/c1/goal%201')
+  })
+})
+
 describe('hashFor', () => {
   it('round-trips every form', () => {
     for (const hash of [
@@ -78,6 +185,13 @@ describe('hashFor', () => {
       '#/execution',
       '#/results/explorer',
       '#/results/run/nav-2026-08-12',
+      // The node forms. The bare ones above are the pre-node URLs, and still resolve unchanged.
+      '#/results/explorer/nav-2026-08-12?batch=3',
+      '#/results/explorer/nav-2026-08-12/goal-1',
+      '#/results/explorer/nav-2026-08-12/goal-1/2',
+      '#/results/explorer/nav-2026-08-12/goal-1/2?tab=nav_report',
+      `#/results/explorer/nav-2026-08-12/goal-1/2?tab=${LOG_TAB_SLUG}`,
+      '#/results/run/nav-2026-08-12/goal-1/2',
     ]) {
       expect(`#${hashFor(at(hash))}`).toBe(hash)
     }
@@ -106,6 +220,21 @@ describe('nextNav — which campaign survives a navigation', () => {
     // A change of lens on one campaign, not a request for a different one.
     expect(nextNav(withResults, TOPICS, 'results', 'data').campaignId).toBe('c1')
     expect(nextNav(withResults, TOPICS, 'execution').campaignId).toBe('c1')
+  })
+
+  it('carries the node and the tab with it', () => {
+    // One level down, the same rule and for the same reason: it is what makes the Explorer's and
+    // the Run view's cross-links land on the run that was on screen. Which of it a given view
+    // *spells* is hashFor's decision, tested above.
+    const onRun: Nav = {
+      ...withResults,
+      sel: { level: 'run', configName: 'goal-1', runId: 2 },
+      tab: 'nav_report',
+    }
+    expect(nextNav(onRun, TOPICS, 'results', 'explorer')).toMatchObject({
+      sel: { level: 'run', configName: 'goal-1', runId: 2 },
+      tab: 'nav_report',
+    })
   })
 
   it('never carries the results campaign into the config scope', () => {

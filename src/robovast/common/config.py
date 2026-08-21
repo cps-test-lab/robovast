@@ -1125,6 +1125,28 @@ class ExplorerConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     notebooks: Optional[list[dict[str, Any]]] = None
 
+    #: The Explorer appends a built-in **Log** tab after the declared workloads, at run level.
+    #: It is not declarable -- a run always has a log -- so a workload of the same name renders a
+    #: second tab that reads the same, and neither says which is which. Refused here rather than
+    #: renamed or disambiguated downstream: the tab bar is what is wrong, and it is also what the
+    #: URL addresses a tab by (``?tab=log``), so a name nobody can tell apart would be a link
+    #: nobody can resolve.
+    RESERVED_WORKLOAD_NAMES: ClassVar[tuple[str, ...]] = ('log',)
+
+    @model_validator(mode='after')
+    def _no_reserved_workload_name(self):
+        for view in (self.notebooks or []):
+            if not isinstance(view, dict):
+                continue
+            for name in view:
+                if str(name).lower() in self.RESERVED_WORKLOAD_NAMES:
+                    raise ValueError(
+                        f"notebook workload '{name}' uses a reserved name: the Explorer already "
+                        f"shows a built-in Log tab for every run, so this would add a second tab "
+                        f"reading the same. Rename the workload."
+                    )
+        return self
+
 
 class DataBrowserConfig(BaseModel):
     """The Results **Data browser**: campaign-scoped declared plots (see :class:`PlotSpec`)."""

@@ -10,9 +10,14 @@ import { describe, expect, it } from 'vitest'
 import {
   ancestorIds,
   buildCampaignChildren,
+  firstRunSelection,
   objectiveDirection,
+  resolveSelection,
   runNodeId,
+  selectionNodeId,
+  selectionOf,
 } from './resultsTree'
+import { CAMPAIGN_SEL, type ResultsSel } from './hashNav'
 
 const CID = 'nav-2026-08-12'
 
@@ -227,5 +232,103 @@ describe('objectiveDirection', () => {
     // the .vast schema's own default for an objective that does not name a direction.
     expect(objectiveDirection([{ objective_direction: null }])).toBe('maximize')
     expect(objectiveDirection([])).toBe('maximize')
+  })
+})
+
+// The bridge between a URL and the tree. Tested for the same reason as the ids themselves, one step
+// further out: the URL is a third builder of node ids, and a selection carried in it has to select
+// the very node the tree rendered — a near-miss shows up only as a tree that opens collapsed on a
+// pasted link, which nothing else would catch.
+describe('selectionNodeId', () => {
+  const RUN: ResultsSel = { level: 'run', configName: 'nav_slow', runId: 1 }
+
+  it('agrees with runNodeId, grouped and ungrouped', () => {
+    expect(selectionNodeId(CID, RUN, null)).toBe(runNodeId(CID, null, 'nav_slow', 1))
+    expect(selectionNodeId(CID, RUN, 3)).toBe(runNodeId(CID, 3, 'nav_slow', 1))
+  })
+
+  it('addresses every level, and its ancestors are the levels above it', () => {
+    expect(selectionNodeId(CID, CAMPAIGN_SEL, null)).toBe(CID)
+    expect(selectionNodeId(CID, { level: 'batch', batch: 3 }, null)).toBe(`${CID}//batch/3`)
+    expect(selectionNodeId(CID, { level: 'config', configName: 'nav_slow' }, 3))
+      .toBe(`${CID}//batch/3//cfg/nav_slow`)
+    // What actually makes the tree expand onto a deep-linked run.
+    expect(ancestorIds(selectionNodeId(CID, RUN, 3)))
+      .toEqual([CID, `${CID}//batch/3`, `${CID}//batch/3//cfg/nav_slow`])
+  })
+
+  it('is the inverse of selectionOf, so a click and a link agree', () => {
+    const [config] = buildCampaignChildren(CID, [row('nav_slow', 1, 'passed')])
+    const runNode = config.children![0]
+    expect(selectionNodeId(CID, selectionOf(runNode), null)).toBe(runNode.id)
+    expect(selectionNodeId(CID, selectionOf(config), null)).toBe(config.id)
+  })
+
+  it('reads a placeholder as no node at all', () => {
+    // A unit whose configuration could not be built has no run behind it, so there is nothing to
+    // address — and it is not selectable in the tree either.
+    const [config] = buildCampaignChildren(CID, [row('nope', null, 'composition_failed')])
+    expect(selectionOf(config.children![0])).toEqual(CAMPAIGN_SEL)
+  })
+})
+
+describe('resolveSelection', () => {
+  const ROWS = [
+    row('nav_slow', 0, 'passed', { batch: 0 }),
+    row('nav_slow', 1, 'passed', { batch: 0 }),
+    row('nav_fast', 0, 'passed', { batch: 1 }),
+  ]
+
+  it('finds the round a search campaign proposed the run in', () => {
+    // The batch is never in the URL — it is derivable from the config, so carrying it would be a
+    // second copy of a fact that could then disagree. This lookup is what replaces it.
+    expect(resolveSelection(ROWS, true, { level: 'run', configName: 'nav_fast', runId: 0 }))
+      .toEqual({ sel: { level: 'run', configName: 'nav_fast', runId: 0 }, batch: 1 })
+    expect(resolveSelection(ROWS, true, { level: 'config', configName: 'nav_slow' }).batch).toBe(0)
+  })
+
+  it('keeps the batch out of an ungrouped campaign entirely', () => {
+    // A batch-mode campaign has exactly one round, so its tree is flat and `row.batch` (a real 0)
+    // must not reach the ids — the same rule buildCampaignChildren applies.
+    expect(resolveSelection(ROWS, false, { level: 'run', configName: 'nav_fast', runId: 0 }).batch)
+      .toBeNull()
+    // ...and it has no batch node to address, so a link naming one falls back.
+    expect(resolveSelection(ROWS, false, { level: 'batch', batch: 1 }).sel).toEqual(CAMPAIGN_SEL)
+  })
+
+  it('falls back to the campaign for a node this campaign does not have', () => {
+    // A wrong link, not a stale one: a finished campaign's runs are fixed, so there is nothing to
+    // wait for and nothing to keep re-checking.
+    expect(resolveSelection(ROWS, true, { level: 'config', configName: 'gone' }).sel)
+      .toEqual(CAMPAIGN_SEL)
+    expect(resolveSelection(ROWS, true, { level: 'run', configName: 'nav_slow', runId: 99 }).sel)
+      .toEqual(CAMPAIGN_SEL)
+    expect(resolveSelection(ROWS, true, { level: 'batch', batch: 7 }).sel).toEqual(CAMPAIGN_SEL)
+    expect(resolveSelection([], true, { level: 'config', configName: 'nav_slow' }).sel)
+      .toEqual(CAMPAIGN_SEL)
+  })
+
+  it('does not resolve a run that was never composed', () => {
+    const rows = [row('nope', null, 'composition_failed', { batch: 0 })]
+    expect(resolveSelection(rows, true, { level: 'run', configName: 'nope', runId: 0 }).sel)
+      .toEqual(CAMPAIGN_SEL)
+    // The config node above it is still real — the draw exists, it just never ran.
+    expect(resolveSelection(rows, true, { level: 'config', configName: 'nope' }).sel)
+      .toEqual({ level: 'config', configName: 'nope' })
+  })
+})
+
+describe('firstRunSelection', () => {
+  it('takes the first replayable run in the tree\'s own order', () => {
+    expect(firstRunSelection([
+      row('nope', null, 'composition_failed'),
+      row('nav_slow', 0, 'passed'),
+      row('nav_slow', 1, 'passed'),
+    ])).toEqual({ level: 'run', configName: 'nav_slow', runId: 0 })
+  })
+
+  it('has no answer when nothing ran', () => {
+    expect(firstRunSelection([])).toBeNull()
+    expect(firstRunSelection([row('nope', null, 'composition_failed')])).toBeNull()
   })
 })

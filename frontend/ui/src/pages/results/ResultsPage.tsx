@@ -6,6 +6,7 @@ import CircularProgress from '@mui/material/CircularProgress'
 import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
+import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
 import type { ResultsRefresh } from './RefreshResultsButton'
 
 // The three sub-views are fetched separately because their dependencies barely overlap:
@@ -34,7 +35,9 @@ export function ResultsPage({
   active,
   view,
   campaignId,
-  onCampaignChange,
+  sel,
+  tab,
+  onResultsChange,
 }: {
   /** The Results topic is the one on screen. Kept-alive pages stay mounted while hidden, so `view`
    *  alone cannot tell "the Explorer is showing" from "the Explorer is the Results topic's current
@@ -42,8 +45,18 @@ export function ResultsPage({
   active: boolean
   view: string
   campaignId: string
-  onCampaignChange: (campaignId: string) => void
+  /** Which node of the campaign, shared by the Explorer and the Run view (see `Nav.sel`). */
+  sel: ResultsSel
+  tab: string
+  onResultsChange: (campaignId: string, sel: ResultsSel, tab: string) => void
 }) {
+  // Changing campaign without naming a node: the Data browser's picker, and the self-heal below. A
+  // node belongs to the campaign that produced it, so it is dropped rather than carried into one
+  // that has no such config; re-selecting the campaign already shown changes nothing.
+  const changeCampaign = (id: string) => {
+    if (id !== campaignId) onResultsChange(id, CAMPAIGN_SEL, '')
+  }
+
   const campaigns = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => robovast.listCampaigns(200, 0),
@@ -102,7 +115,17 @@ export function ResultsPage({
   // finished while the user was elsewhere should simply be in the tree when they get there — asking
   // them to press Refresh for it makes the button the price of admission. That leaves Refresh with
   // the one case it is actually for: a campaign finishing while the Explorer is already open.
-  const explorerActive = active && view !== 'data' && view !== 'run'
+  //
+  // Two predicates per view, and they are not the same question. `*Shown` is which of the three is
+  // the one on screen *within* this page, which is what `KeepAlive` wants — the topic's own
+  // visibility is settled one level up, in App. `*Active` adds that the Results topic is on screen
+  // at all, and is the write gate on the shared selection: every view stays mounted once visited, so
+  // a hidden one healing onto its own default would otherwise overwrite the node the visible one is
+  // showing — or write the URL while the user is reading the monitor.
+  const explorerShown = view !== 'data' && view !== 'run'
+  const runShown = view === 'run'
+  const explorerActive = active && explorerShown
+  const runActive = active && runShown
   const wasActive = useRef(explorerActive)
   useEffect(() => {
     const entering = explorerActive && !wasActive.current
@@ -163,7 +186,7 @@ export function ResultsPage({
     // With nothing eligible, nothing may stay selected: the id would outlive the campaign it names
     // and the Data browser would keep querying a campaign no view lists — while the Explorer, which
     // renders the list directly, shows its empty state.
-    onCampaignChange((seed ?? readable ?? evalCampaigns[0])?.campaign_id ?? '')
+    changeCampaign((seed ?? readable ?? evalCampaigns[0])?.campaign_id ?? '')
   }, [loaded, campaignId, campaigns.isFetching, evalCampaigns.map((c) => c.campaign_id).join(','), live.map((c) => c.campaign_id).join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -177,19 +200,24 @@ export function ResultsPage({
 
   return (
     <Box sx={{ position: 'relative' }}>
-      <KeepAlive active={view !== 'data' && view !== 'run'}>
+      <KeepAlive active={explorerShown}>
         <ExplorerView
+          active={explorerActive}
           campaignId={campaignId}
           campaigns={list}
-          onCampaignChange={onCampaignChange}
+          sel={sel}
+          tab={tab}
+          onResultsChange={onResultsChange}
           refresh={refresh}
         />
       </KeepAlive>
-      <KeepAlive active={view === 'run'}>
+      <KeepAlive active={runShown}>
         <RunView
+          active={runActive}
           campaignId={campaignId}
           campaigns={list}
-          onCampaignChange={onCampaignChange}
+          sel={sel}
+          onResultsChange={onResultsChange}
           refresh={refresh}
         />
       </KeepAlive>
@@ -197,7 +225,7 @@ export function ResultsPage({
         <DataBrowser
           campaignId={campaignId}
           campaigns={list}
-          onCampaignChange={onCampaignChange}
+          onCampaignChange={changeCampaign}
           refresh={refresh}
         />
       </KeepAlive>

@@ -39,6 +39,12 @@ There are three reserved scopes:
 - **campaign** -- executed once per campaign directory
   (``<campaign-name>-<timestamp>/``).
 
+The workload name (``MyAnalysis`` above) becomes the label of its tab in the Explorer, and the
+way a link addresses that tab (``?tab=MyAnalysis``). One name is taken: a workload may not be
+called **log**, in any casing. The Explorer already appends a built-in **Log** tab to every run,
+so a second tab of that name would read the same and say nothing about which is which; the
+``.vast`` is rejected rather than the tab bar growing an ambiguity.
+
 The **only hard requirement** is that every notebook contains the line::
 
    DATA_DIR = ''

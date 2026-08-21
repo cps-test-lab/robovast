@@ -12,7 +12,7 @@ import {
 } from '@/components/viewIcons'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
-import { hashFor, navFromHash, nextNav, type Nav } from '@/lib/hashNav'
+import { CAMPAIGN_SEL, hashFor, navFromHash, nextNav, type Nav, type ResultsSel } from '@/lib/hashNav'
 
 // Each page is fetched on first visit rather than in the entry bundle. Config and Results
 // pull in Monaco, Plotly, Three and Vega between them — several megabytes that the campaign
@@ -63,6 +63,8 @@ const DEFAULT_NAV: Nav = {
   topicId: 'execution',
   viewId: '',
   campaignId: '',
+  sel: CAMPAIGN_SEL,
+  tab: '',
   configCampaignId: '',
 }
 
@@ -84,15 +86,23 @@ export function App() {
     window.location.hash = hashFor(next)
   }
 
-  // The campaign shown by the Results views, written from inside them (their picker, the Explorer
-  // tree, or the self-heal that repairs a stale id). replaceState, not an assignment to
-  // `location.hash`: this reflects a selection the user already made *in* the view, so it must not
-  // cost a Back press to get past — otherwise flipping through five campaigns buries the campaign
-  // list five steps deep. It also fires no `hashchange`, so this cannot loop back through the
-  // listener above. Only a jump from outside (a campaign card) pushes a real history entry.
-  const setCampaign = (campaignId: string) => {
-    if (nav.campaignId === campaignId) return
-    const next = { ...nav, campaignId }
+  // What the Results views are showing — the campaign, the node within it, and which of that
+  // node's tabs — written from inside them (a picker, the Explorer tree, or the self-heal that
+  // repairs a stale id). replaceState, not an assignment to `location.hash`: this reflects a
+  // selection the user already made *in* the view, so it must not cost a Back press to get past —
+  // otherwise flipping through five runs buries the campaign list five steps deep. It also fires no
+  // `hashchange`, so this cannot loop back through the listener above. Only a jump from outside (a
+  // campaign card, or the Explorer/Run view cross-links) pushes a real history entry.
+  //
+  // Guarded on the *hash* rather than field by field: the hash is exactly the identity that matters
+  // here, so one comparison covers every field and cannot go stale when another is added.
+  const setResults = (campaignId: string, sel: ResultsSel, tab: string) => {
+    // A different campaign is a different set of configs and runs, so a node from the old one
+    // addresses nothing; it is dropped rather than carried into a campaign that has no such config.
+    const next: Nav = campaignId === nav.campaignId
+      ? { ...nav, sel, tab }
+      : { ...nav, campaignId, sel: CAMPAIGN_SEL, tab: '' }
+    if (hashFor(next) === hashFor(nav)) return
     window.history.replaceState(null, '', `#${hashFor(next)}`)
     setNav(next)
   }
@@ -124,7 +134,9 @@ export function App() {
             active={nav.topicId === 'results'}
             view={nav.viewId}
             campaignId={nav.campaignId}
-            onCampaignChange={setCampaign}
+            sel={nav.sel}
+            tab={nav.tab}
+            onResultsChange={setResults}
           />
         </KeepAlive>
       </Box>

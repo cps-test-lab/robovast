@@ -32,7 +32,16 @@ import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongR
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, type CampaignSummary } from '@/lib/robovastClient'
-import { runNodeId, type ResultsTreeItem } from '@/lib/resultsTree'
+import {
+  firstRunSelection,
+  resolveSelection,
+  selectionNodeId,
+  selectionOf,
+  type ResultsTreeItem,
+} from '@/lib/resultsTree'
+import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
+import { openResultsView } from '@/lib/nav'
+import { ExplorerIcon } from '@/components/viewIcons'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider } from '@/lib/panels/dataProvider'
 import { parsePanels } from '@/lib/panels/parsePanels'
@@ -174,23 +183,23 @@ function capturePathOf(panels: { type: string; config: Record<string, unknown> }
   return null
 }
 
-interface RunKey {
-  config_name: string
-  run_id: string
-  /** The search round this run belongs to, or null when the campaign is not grouped by batch.
-   *  Carried only to rebuild the run's tree id — a run is *identified* by config + index. */
-  batch: number | null
-}
-
 export function RunView({
+  active,
   campaignId,
   campaigns,
-  onCampaignChange,
+  sel,
+  onResultsChange,
   refresh,
 }: {
+  /** This view is the one on screen. Every Results view stays mounted once visited, so a hidden one
+   *  must not heal its own default over the node the visible one is showing. */
+  active: boolean
   campaignId: string
   campaigns: CampaignSummary[]
-  onCampaignChange: (campaignId: string) => void
+  /** The node shared with the Explorer (see `Nav.sel`). Only a run is replayable; anything else
+   *  arriving from over there is healed onto this campaign's first run below. */
+  sel: ResultsSel
+  onResultsChange: (campaignId: string, sel: ResultsSel, tab: string) => void
   refresh: ResultsRefresh
 }) {
   const queryClient = useQueryClient()
@@ -220,42 +229,31 @@ export function RunView({
   // The batch is only meaningful when the picker's tree groups by it; for a batch-mode campaign
   // it stays null so the tree id built from it is the ungrouped one.
   const grouped = replayable.find((c) => c.campaign_id === campaignId)?.mode === 'search'
-  const runList: RunKey[] = useMemo(
-    () =>
-      (runs.data?.rows ?? []).map((r) => ({
-        config_name: String(r.config_name ?? ''),
-        run_id: String(r.run_id ?? ''),
-        batch: grouped && r.batch !== null && r.batch !== undefined ? Number(r.batch) : null,
-      })),
-    [runs.data, grouped],
-  )
+  const rows = runs.data?.rows ?? []
 
-  const [picked, setRun] = useState<RunKey | null>(null)
-  // Default to (and self-heal onto) the first run of the current campaign.
+  // Only a run the *current* campaign actually has counts as the run on screen. The selection is
+  // shared with the Explorer, so switching campaign leaves the previous one in it for a moment —
+  // this campaign's rows are a request away — and rendering it meanwhile would show the run someone
+  // had just been looking at as though it belonged to the campaign they clicked, with panels
+  // quietly querying ids the new campaign does not have. Resolving against the rows answers both
+  // questions at once: is it here, and which round is it in.
+  const resolved = useMemo(() => resolveSelection(rows, grouped, sel), [rows, grouped, sel])
+  const run = resolved.sel.level === 'run' ? resolved.sel : null
+
+  // Default to (and self-heal onto) the first run of the campaign. This view can only replay a run,
+  // so a campaign node — or a config or batch handed over from the Explorer — is not something it
+  // can show; it picks the first run and says so in the URL rather than sitting empty.
+  const firstRun = useMemo(() => firstRunSelection(rows), [rows])
   useEffect(() => {
-    if (!runList.length) {
-      setRun(null)
-      return
-    }
-    if (!runList.some((r) => r.config_name === picked?.config_name && r.run_id === picked?.run_id)) {
-      setRun(runList[0])
-    }
-  }, [runList]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!active || !runs.data || run) return
+    onResultsChange(campaignId, firstRun ?? CAMPAIGN_SEL, '')
+  }, [active, runs.data, run, firstRun, campaignId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Only a run the *current* campaign actually has counts as the run on screen. Switching campaign
-  // leaves the previous pick in state for a moment — the new campaign's run list is a request away,
-  // and the effect above can only correct it once that lands — and rendering it meanwhile would show
-  // the run someone had just been looking at as though it belonged to the campaign they clicked,
-  // with panels quietly querying ids the new campaign does not have.
-  const run = picked && runList.some(
-    (r) => r.config_name === picked.config_name && r.run_id === picked.run_id,
-  ) ? picked : null
-
-  const runKey = run ? `${campaignId}:${run.config_name}:${run.run_id}` : ''
+  const runKey = run ? `${campaignId}:${run.configName}:${run.runId}` : ''
 
   // One provider + clock per run. Recreated (and the old clock disposed) when the run changes.
   const provider = useMemo(
-    () => (run ? dbDataProvider(campaignId, run.config_name, run.run_id) : null),
+    () => (run ? dbDataProvider(campaignId, run.configName, run.runId) : null),
     [campaignId, run],
   )
   const clock = useMemo(() => new PlaybackClock(), [runKey])
@@ -288,7 +286,7 @@ export function RunView({
     const fromCapture = async (): Promise<[number, number] | null> => {
       if (!capturePath) return null
       const res = await fetch(
-        robovast.runFileUrl(campaignId, run.config_name, run.run_id, capturePath),
+        robovast.runFileUrl(campaignId, run.configName, run.runId, capturePath),
       )
       if (!res.ok) return null
       const manifest = (await res.json()) as { time?: { t0?: number; t1?: number } }
@@ -346,12 +344,9 @@ export function RunView({
   const pickRun = (item: ResultsTreeItem) => {
     // Only a run leaf resolves to a replayable run; campaigns/batches/configs just expand.
     if (item.kind !== 'run' || item.runId == null) return
-    if (item.campaignId !== campaignId) onCampaignChange(item.campaignId)
-    setRun({
-      config_name: item.configName ?? '',
-      run_id: String(item.runId),
-      batch: item.batch ?? null,
-    })
+    // Campaign and run move together: they are one selection, and setting them in two steps would
+    // blank the run in between.
+    onResultsChange(item.campaignId, selectionOf(item), '')
     setRunAnchor(null)
   }
 
@@ -367,7 +362,7 @@ export function RunView({
   // spelled again here: this used to be a hand-written copy of the id, which any change to the
   // tree's shape (such as the batch level) would silently break.
   const selectedTreeId = run
-    ? runNodeId(campaignId, run.batch, run.config_name, run.run_id)
+    ? selectionNodeId(campaignId, run, resolved.batch)
     : ''
 
   return (
@@ -406,9 +401,9 @@ export function RunView({
             {run
               ? [
                   campaignId,
-                  ...(run.batch === null ? [] : [`batch ${run.batch}`]),
-                  run.config_name,
-                  `run ${run.run_id}`,
+                  ...(resolved.batch === null ? [] : [`batch ${resolved.batch}`]),
+                  run.configName,
+                  `run ${run.runId}`,
                 ].join(' · ')
               : 'Select run'}
           </Box>
@@ -430,6 +425,20 @@ export function RunView({
         {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
         <Box sx={{ flexGrow: 1 }} />
+        {/* The mirror of the Explorer's jump into here: same icon as the campaign card's shortcut,
+            because it is the same destination, and it carries the run on screen so the tree opens on
+            it. Left of the gear -- the gear governs the view, this leaves it. */}
+        {run ? (
+          <Tooltip title="Open this run in the results Explorer">
+            <IconButton
+              size="small"
+              aria-label="open results explorer"
+              onClick={() => openResultsView('explorer', campaignId, run)}
+            >
+              <ExplorerIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         <RunSettingsMenu clock={clock} />
       </Stack>
 

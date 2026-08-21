@@ -1781,6 +1781,46 @@ in-cluster service ships the UI. If no build is present the service runs API-onl
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
 
+.. _web-ui-hash-grammar:
+
+**Navigation is the URL hash, and nothing else holds it.** ``frontend/ui/src/lib/hashNav.ts``
+is the whole grammar — pure, React-free, and the only place a hash is parsed or spelled::
+
+   #/<topic>                                     a leaf topic (Config)
+   #/<topic>/<view>[/<campaign>]                 a topic with views (Results)
+   #/results/<view>/<campaign>/<config>[/<run>]  ...down to one node of that campaign
+   #/results/<view>/<campaign>?batch=<i>         ...a search campaign's round
+   #/results/explorer/<campaign>/…?tab=<name>    ...and which of its notebook tabs
+   #/config/campaign/<campaign>                  the frozen ``_config/`` of one campaign
+
+``navFromHash`` parses into ``Nav``; ``hashFor`` spells one back; ``nextNav`` is the transition
+behind a sidebar click. Three rules live there rather than in a page, and each is pinned by
+``hashNav.test.ts``:
+
+* **The node address is positional**, matching the on-disk and ``/results`` spelling of a run
+  (:ref:`file-address-space`) rather than inventing ``cfg``/``run`` markers. ``ResultsSel`` is a
+  discriminated union over the four tree levels, so a config name *and* a batch index cannot both
+  be held — an impossible URL is not representable rather than forbidden in prose.
+* **A view's hash carries only what that view acts on.** ``hashFor`` gives the Explorer the whole
+  selection plus its tab, the Run view a run-level selection only (it cannot replay a batch or a
+  config), and the Data browser the campaign alone. A hash is a view's address, not a store for
+  state the view ignores.
+* **``configCampaignId`` is dropped by every transition.** A campaign's frozen config is reachable
+  only from its card, and that guarantee *is* ``nextNav`` dropping the field — a mistake there does
+  not misplace a view, it exposes one.
+
+App owns the ``Nav`` state and writes the hash two ways, and the difference is load-bearing:
+``select`` assigns ``location.hash`` (**pushes** a history entry, as do the cross-page jumps in
+``lib/nav.ts``), while ``setResults`` uses ``replaceState`` — a selection made *inside* a view must
+not cost a Back press. It is guarded on ``hashFor(next) === hashFor(nav)``, which is total by
+construction and cannot go stale as ``Nav`` grows a field.
+
+Turning a selection into the tree's node id, and back, is ``resultsTree.ts``'s
+``selectionNodeId`` / ``selectionOf``, beside the id builders themselves — the URL is a *third*
+builder of node ids, so it must not spell one itself. ``resolveSelection`` answers "does this
+campaign have this node, and which round is it in" from the rows the tree already loaded; because
+a finished campaign's runs are fixed, it is a ``useMemo`` and not a watcher.
+
 .. _frontend-tests:
 
 **Frontend tests stay minimal.** ``npm run test`` runs `vitest

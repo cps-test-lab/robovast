@@ -8,6 +8,7 @@
 // history (one ask/tell round). A batch-mode campaign has exactly one batch, so grouping by it
 // would say nothing, and its tree keeps the shape it always had.
 
+import { CAMPAIGN_SEL, type ResultsSel } from './hashNav'
 import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 
 // The tree's one query, shared by the Explorer and the Run view's picker (see `runsQuery`).
@@ -126,22 +127,138 @@ function rollupStatuses(children: NodeStatus[]): NodeStatus {
   return 'unknown'
 }
 
-// The tree id of a run node — the one place a run's id is spelled, so the Explorer (which
-// builds the tree) and the Run view (which reconstructs the id of the run it is showing, to
-// highlight it) cannot drift. `batch` is null for an ungrouped campaign, which reproduces the
-// pre-batch id exactly.
+// The tree ids, built here and nowhere else, so the three surfaces that spell one cannot drift:
+// the Explorer (which builds the tree), the Run view (which reconstructs the id of the run it is
+// showing, to highlight it), and the URL (which addresses a node with `selectionNodeId`). `batch`
+// is null for an ungrouped campaign, which reproduces the pre-batch ids exactly.
+
+export function batchNodeId(campaignId: string, batch: number): string {
+  return `${campaignId}//batch/${batch}`
+}
+
+export function configNodeId(
+  campaignId: string,
+  batch: number | null,
+  configName: string,
+): string {
+  return `${configPrefix(campaignId, batch)}//cfg/${configName}`
+}
+
 export function runNodeId(
   campaignId: string,
   batch: number | null,
   configName: string,
   runId: number | string,
 ): string {
-  return `${configPrefix(campaignId, batch)}//cfg/${configName}//run/${runId}`
+  return `${configNodeId(campaignId, batch, configName)}//run/${runId}`
 }
 
 /** Where a config node hangs: off its batch when grouped, off the campaign when not. */
 function configPrefix(campaignId: string, batch: number | null): string {
-  return batch == null ? campaignId : `${campaignId}//batch/${batch}`
+  return batch == null ? campaignId : batchNodeId(campaignId, batch)
+}
+
+/** The tree id of the node a URL addresses — the bridge between the hash and the tree, so a
+ *  selection carried in the URL selects, expands and scrolls the tree with no further work.
+ *
+ *  `groupBatch` is the round that proposed the selected config, as `resolveSelection` looked it up
+ *  from the campaign's rows. It is not taken from the URL: a batch is derivable from a config name,
+ *  so carrying it beside one would be a second copy of a fact that could then disagree. A `batch`
+ *  node is the exception and the only place an index is addressed directly — it carries its own. */
+export function selectionNodeId(
+  campaignId: string,
+  sel: ResultsSel,
+  groupBatch: number | null,
+): string {
+  switch (sel.level) {
+    case 'batch':
+      return batchNodeId(campaignId, sel.batch)
+    case 'config':
+      return configNodeId(campaignId, groupBatch, sel.configName)
+    case 'run':
+      return runNodeId(campaignId, groupBatch, sel.configName, sel.runId)
+    default:
+      return campaignId
+  }
+}
+
+/** The selection a clicked tree node stands for — the inverse of `selectionNodeId`, so a click and
+ *  a pasted link produce the same thing rather than two spellings that agree until they do not.
+ *
+ *  A node missing the fields its own level needs cannot be addressed, and falls back to the
+ *  campaign: a placeholder (a campaign still loading, or a unit whose configuration could not be
+ *  built) is not selectable in the first place. */
+export function selectionOf(item: ResultsTreeItem): ResultsSel {
+  switch (item.kind) {
+    case 'batch':
+      return item.batch == null ? CAMPAIGN_SEL : { level: 'batch', batch: item.batch }
+    case 'config':
+      return item.configName ? { level: 'config', configName: item.configName } : CAMPAIGN_SEL
+    case 'run':
+      return item.configName && item.runId != null
+        ? { level: 'run', configName: item.configName, runId: item.runId }
+        : CAMPAIGN_SEL
+    default:
+      return CAMPAIGN_SEL
+  }
+}
+
+/** The campaign's first replayable run, in the order the tree lists them — what the Run view
+ *  defaults to when the URL names no run. A row without a `run_id` is a unit whose configuration
+ *  could not be built, so there is nothing to replay for it.
+ *
+ *  Here rather than in the Run view because "first" has to mean the same thing as the tree's own
+ *  order (`CAMPAIGN_RUNS_SQL` sorts by batch, config, run), which is this module's business. */
+export function firstRunSelection(rows: Record<string, unknown>[]): ResultsSel | null {
+  const row = rows.find((r) => r.run_id !== null && r.run_id !== undefined)
+  return row
+    ? { level: 'run', configName: String(row.config_name ?? ''), runId: Number(row.run_id) }
+    : null
+}
+
+/** What a selection resolves to against the campaign that has to answer for it, and the round the
+ *  selected config was proposed in.
+ *
+ *  A finished, postprocessed campaign — the only kind the Results views show — has a fixed set of
+ *  configs and runs, so this is a pure function of its rows, computed once rather than watched: a
+ *  URL naming something the campaign does not have is a wrong link, not a stale one, and falls back
+ *  to the campaign node.
+ *
+ *  `grouped` decides whether the batch reaches the ids at all, exactly as it does in
+ *  `buildCampaignChildren`: a batch-mode campaign has one round, so its nodes are ungrouped and
+ *  `row.batch` (a real 0) must not leak into them. */
+export function resolveSelection(
+  rows: Record<string, unknown>[],
+  grouped: boolean,
+  sel: ResultsSel,
+): { sel: ResultsSel; batch: number | null } {
+  const batchOf = (row: Record<string, unknown>): number | null =>
+    grouped && row.batch !== null && row.batch !== undefined ? Number(row.batch) : null
+
+  switch (sel.level) {
+    case 'batch':
+      return grouped && rows.some((r) => Number(r.batch) === sel.batch)
+        ? { sel, batch: sel.batch }
+        : { sel: CAMPAIGN_SEL, batch: null }
+    case 'config': {
+      const row = rows.find((r) => String(r.config_name ?? '') === sel.configName)
+      return row ? { sel, batch: batchOf(row) } : { sel: CAMPAIGN_SEL, batch: null }
+    }
+    case 'run': {
+      // A row with no `run_id` is a unit whose configuration could not be built, which the tree
+      // renders as a non-selectable placeholder — so it is not a run anyone can address.
+      const row = rows.find(
+        (r) =>
+          String(r.config_name ?? '') === sel.configName &&
+          r.run_id !== null &&
+          r.run_id !== undefined &&
+          Number(r.run_id) === sel.runId,
+      )
+      return row ? { sel, batch: batchOf(row) } : { sel: CAMPAIGN_SEL, batch: null }
+    }
+    default:
+      return { sel: CAMPAIGN_SEL, batch: null }
+  }
 }
 
 /** The optimisation direction the campaign's objective is scored in. Defaults to `maximize`,
@@ -248,7 +365,7 @@ function batchNode(
     : null
 
   return {
-    id: `${campaignId}//batch/${batch}`,
+    id: batchNodeId(campaignId, batch),
     label: best === null ? `batch ${batch}` : `batch ${batch}  best ${fmtObjective(best)}`,
     kind: 'batch',
     campaignId,
@@ -267,7 +384,6 @@ function configNodes(
   batch: number | null,
   rows: Record<string, unknown>[],
 ): ResultsTreeItem[] {
-  const prefix = configPrefix(campaignId, batch)
   // Two units of one round can share a config_name (the same draw proposed twice); they merge
   // into one node here, as they always have at campaign level.
   const byConfig = new Map<string, Record<string, unknown>[]>()
@@ -284,7 +400,7 @@ function configNodes(
     const passed = runs.filter((r) => r.status === 'passed').length
     const objective = configObjective(configRows)
     return {
-      id: `${prefix}//cfg/${configName}`,
+      id: configNodeId(campaignId, batch, configName),
       // The objective is what a search's configs are read *by*, so it belongs on the label
       // rather than a tooltip. Absent for a batch-mode config and for a multi-objective
       // search, neither of which records a scalar.
@@ -315,7 +431,7 @@ function runNode(
   const composed = row.run_id !== null && row.run_id !== undefined
   if (!composed) {
     return {
-      id: `${configPrefix(campaignId, batch)}//cfg/${configName}//not-composed`,
+      id: `${configNodeId(campaignId, batch, configName)}//not-composed`,
       label: 'not composed — parameters could not be realized',
       kind: 'placeholder',
       campaignId,

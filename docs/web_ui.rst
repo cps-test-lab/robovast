@@ -652,15 +652,45 @@ The **Results** tab explores a finished campaign's data through three sub-views:
 **Data browser** (ad-hoc SQL + charts). Each carries a small icon, used in the sidebar
 and again on the campaign cards.
 
-**The campaign is part of the URL**: ``#/results/<view>/<campaign_id>``. So a Results
-view is linkable and survives a reload, switching sub-view keeps the campaign, and each
-campaign card in **Campaigns** carries shortcut buttons — left of its gear — that jump
-straight into the Explorer or the Run view *for that campaign*. A card only offers what
-it can deliver: the Explorer button once the campaign is finished **and** postprocessed
-(the same gate the Results tab itself applies), and the Run view button only if the
-campaign also recorded runs to replay. Changing the campaign inside a view updates the
-URL without adding a browser-history step, so **Back** always returns to where you came
-from in one press.
+**The selected result is the URL**, down to the run::
+
+   #/results/explorer/<campaign>                            the campaign
+   #/results/explorer/<campaign>?batch=<i>                   one search round
+   #/results/explorer/<campaign>/<config>                    one configuration
+   #/results/explorer/<campaign>/<config>/<run>              one run
+   #/results/explorer/<campaign>/<config>/<run>?tab=<name>   ...and which of its tabs
+   #/results/run/<campaign>/<config>/<run>                   the same run, replayed
+
+So a link addresses a *result*, not just the campaign that produced it: "look at this run's
+log" is a URL you can paste to someone, and a reload comes back to the same node with the
+tree already opened on it. The path is the same ``<campaign>/<config>/<run>`` address a run
+has on disk and under :ref:`/results <file-address-space>`, so there is one spelling to
+learn rather than two.
+
+**Both views use it, and share it.** Pick a run in the Explorer and switch to the Run view and
+that run is what plays; each has an icon button that hands its node to the other — at the right
+of the Explorer's tab row, and left of the Run view's gear, both carrying the icon of where they
+lead. The Data browser is campaign-scoped, so it carries no node: stepping through it and back
+returns to the campaign.
+
+Two things stay out of the path deliberately. The **notebook tab** is a lens on a node rather
+than part of its address, so it is a query parameter (``?tab=``; the built-in Log tab is
+``?tab=log``, which is why a workload may not be *named* ``log``). And a **batch** is a grouping
+recorded in the store rather than a directory — a run is identified by its config and index alone
+— so it appears only when a batch node is itself the thing selected. For a config or run it is
+looked up, never carried: a second copy of a derivable fact is one that can disagree.
+
+A URL naming a config or run the campaign does not have falls back to the campaign node. A
+finished campaign's structure is fixed, so that is a wrong link rather than a stale one, and
+nothing keeps re-checking it.
+
+Each campaign card in **Campaigns** also carries shortcut buttons — left of its gear — that jump
+straight into the Explorer or the Run view *for that campaign*. A card only offers what it can
+deliver: the Explorer button once the campaign is finished **and** postprocessed (the same gate
+the Results tab itself applies), and the Run view button only if the campaign also recorded runs
+to replay. Changing the selection inside a view updates the URL without adding a browser-history
+step, so **Back** always returns to where you came from in one press; a jump *between* views is a
+real step, so Back returns to the view you left.
 
 .. _web-ui-campaign-config:
 
@@ -699,9 +729,8 @@ dot; selecting a node opens its details on the right. When a campaign declares
 the selected node's level (campaign / batch / config / run) is executed server-side and
 shown as a rendered HTML page. The notebook's ``DATA_DIR`` is set to the selected node's
 directory (see :ref:`evaluation-notebooks`). Output is cached, so re-selecting a
-node is instant. Selecting a campaign here also selects it for the other two sub-views
-(it is the shared, URL-carried selection); the config or run picked below it is the
-Explorer's own.
+node is instant. The selected node is URL-carried and shared with the Run view, so selecting a
+run here is the run that replays there (see above); the Data browser takes only the campaign.
 
 **Search campaigns group by batch.** A search proposes its configurations one round at a
 time, so a flat config list buries the very thing that says whether the search worked. For
