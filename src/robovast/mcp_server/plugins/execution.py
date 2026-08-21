@@ -31,7 +31,8 @@ import time
 
 from fastmcp import FastMCP
 
-from robovast.client.status import stall_report
+from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, error_findings,
+                                    stall_report)
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
@@ -93,6 +94,19 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # Progress age and the stall verdict, derived once in the status contract so the
     # CLI monitor and this tool cannot disagree about whether a run is wedged.
     result.update(stall_report(st))
+    # Only when a running job's simulator reported one, but then always: an error-level finding
+    # is what stops `vast wait` (exit 5), so a reader of this tool has to be shown the same thing
+    # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
+    # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
+    findings = error_findings(st)
+    if findings:
+        result["health_findings"] = [f.model_dump() for f in findings]
+        result["health_next_step"] = HEALTH_NEXT_STEP
+    # Beside the findings and only with them: a check that reached no verdict matters precisely
+    # when something else did fire, because that is when a reader starts treating the rest of the
+    # run as fine. On its own it is noise on every healthy campaign.
+    if findings and st.health_skipped:
+        result["health_checks_not_run"] = list(st.health_skipped)
     # Only when it happened, but then always: a killed run is inside ``no_result``, so
     # without this the count reads as a run that vanished on its own rather than one
     # somebody deliberately ended — and the reader goes looking for a fault there is none.
@@ -254,6 +268,14 @@ def _campaign_next_step(result: dict) -> str:
     Ordered cheapest-first where a stall is reported, because the untainted options come
     before anything that perturbs the run.
     """
+    findings = result.get("health_findings") or []
+    if findings:
+        # Before the stall verdict deliberately: a finding names a fault class ("sim time is not
+        # advancing") where a stall says only "nothing finished in time", and it is true within a
+        # minute of the fault rather than one declared budget later.
+        first = findings[0]
+        return (f"{first.get('job_name', '')}: {first.get('check', '')} — "
+                f"{first.get('detail', '')}. Next: {STALL_NEXT_STEP}")
     if result.get("stalled") is True:
         return result.get("stall_reason", "")
     if result.get("status") == "finished" and result.get("postprocessed") is False:
@@ -267,23 +289,26 @@ def _campaign_next_step(result: dict) -> str:
 def get_campaign_status(campaign_id: str) -> dict:
     """Is it progressing, is it wedged, and are there results? One read, no waiting.
 
-    To *wait* for a campaign, background ``vast wait <campaign_id>`` — it exits when
-    the campaign is genuinely over. This is a single look at one you are not waiting on.
+    To *wait*, background ``vast wait <campaign_id>``: it exits when the campaign is
+    genuinely over. This is a single look at one you are not waiting on.
 
-    Two fields decide what to do next, and ``status`` is neither of them.
+    Three fields decide what to do next, and ``status`` is none of them.
 
-    ``stalled`` — a campaign holds ``running`` for its whole life whether or not anything
-    is happening. ``true``: nothing completed for longer than one run may take
+    ``stalled`` — a campaign holds ``running`` for its whole life whether or not anything is
+    happening. ``true``: nothing completed for longer than one run may take
     (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
-    ``false``: inside the declared budget. ``null``: the ``.vast`` declares no
-    ``execution.timeout``, so **no verdict is possible** — this is not "healthy"; judge
-    ``progress_age_s`` yourself. The local lane does not enforce the timeout, so a stalled
-    local run stays alive to inspect: end it with ``stop_campaign``.
+    ``false``: inside the declared budget. ``null``: no ``execution.timeout`` declared, so
+    **no verdict is possible** — not "healthy"; judge ``progress_age_s`` yourself. The local
+    lane does not enforce it, so a stalled local run stays alive to inspect.
 
-    ``postprocessed`` — ``status: "finished"`` does not imply results. The runs are the
-    deliverable, so a campaign whose trials passed but whose postprocessing failed still
-    finishes, with ``postprocessing_error`` and no CSVs or ``data.db``.
-    ``run_postprocessing`` fixes that without re-running anything.
+    ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
+    itself; what ends a ``vast wait`` (exit 5), and it needs no declared timeout.
+    ``get_job_state`` is the fuller read.
+
+    ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
+    deliverable, so a campaign whose postprocessing failed still finishes, with
+    ``postprocessing_error`` and no CSVs or ``data.db``. ``run_postprocessing`` fixes that
+    without re-running anything.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -292,10 +317,9 @@ def get_campaign_status(campaign_id: str) -> dict:
         ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
         batch_runs_failed, batch_runs_no_result}``, plus ``progress_deadline_s`` +
-        ``stall_reason`` or ``stall_verdict``, plus search fields (``best_objective``,
-        ``budget``, ``batches_done``, ``stop``) when they apply; or ``{error}``.
-        ``next_step`` when there is something to do about the state -- absent when the
-        campaign is simply progressing.
+        ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
+        search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
+        applies; or ``{error}``.
 
         Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
         completion cannot honestly be known). ``phase_age_s`` is the only signal for a
@@ -542,19 +566,22 @@ def _log_response(base: dict, view: dict, *, report_shutdown: bool = False) -> d
 
 
 def get_job_state(campaign_id: str, job_name: str) -> dict:
-    """Where is one **running** job right now? Call this before its log on a wedge.
+    """Where is one **running** job right now? Call this before its log on a wedge: a log says what
+    is *repeating*, this says where the run *is*.
 
-    A log says what is *repeating*; this says what the simulator is *doing*. Runs the
-    simulator's own fixed command in the job and returns its JSON. Perturbs nothing and needs no
-    record: the command is ours, not yours.
+    Three reads, each from the tool that owns the record, in the container that runs it:
+    ``scenario`` (which action the behaviour tree is in and for how long -- usually the sentence
+    that names the fault), ``simulator`` (its own findings, clock and poses) and ``resources``
+    (newest sample per process: a deadlock at 0% CPU vs a spin at 100%). Perturbs nothing and
+    records nothing.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         job_name: A ``job_name`` from ``list_campaign_jobs``.
 
     Returns:
-        ``{job_name, status, simulator, unavailable}``, or ``{error}``. ``unavailable`` names what
-        could not be read and why, rather than rendering it as empty.
+        ``{job_name, status, scenario, simulator, resources, unavailable}``, or ``{error}``. An
+        unreadable section is **absent**, with ``unavailable`` saying which and why.
     """
     try:
         client = service_access.service_client()

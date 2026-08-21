@@ -501,6 +501,11 @@ no longer has to be recorded into the bag.
 cannot be explained after the fact, and the file is small — tens to a few hundred KB, beside a
 rosbag measured in MB. Set it ``false`` to opt a campaign out.
 
+Opting out also costs the **live** answer, not just the recorded one: ``get_job_state`` reads
+this file to say where a running scenario has got to, so a wedged run in a campaign with
+``bt_log: false`` can be asked what its simulator is doing but not which action it is stuck in
+— which is usually the more useful half. It says so rather than showing an empty tree.
+
 The file is ingested into the ``behaviors`` table of ``data.db`` — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
 executed are still present. Each row carries ``parent_id`` and ``child_index`` (structure),

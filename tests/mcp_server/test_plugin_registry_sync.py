@@ -547,7 +547,31 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: exists because an agent got it wrong without it. Cutting that to fund a new tool would trade a
 #: shared resource everybody uses for one two callers use, which is a worse deal than the 300
 #: tokens.
-_SURFACE_TOKEN_BUDGET = 13_800
+#:
+#: Raised 13_800 → 13_850 for ``health_findings`` on ``get_campaign_status``: what a running job's
+#: own simulator reports about itself, and the reason ``vast wait`` can exit 5. Documented on this
+#: tool and not only on ``get_job_state`` because this is where the verdict is *read* -- by an agent
+#: deciding what to do next, and by the turn guard, which re-arms on it. An undocumented response
+#: field would be the cheaper trade only in tokens.
+#:
+#: **Mostly** paid for by compression, within the same description rather than out of someone
+#: else's: ``get_campaign_status`` lost about 60 tokens of prose that repeated what the reply
+#: already says (the ``next_step`` sentence its own ``next_step`` carries, a field list the response
+#: is self-describing about, and two sentences that had grown a clause each). Net cost of the field:
+#: ~38 tokens. The 50 is the round number above it, not a float.
+#:
+#: Raised 13_850 → 13_900 for the two reads ``get_job_state`` gained: the scenario's behaviour tree
+#: and the run's own resource samples. The tree is the half that usually names the fault, and a
+#: response section an agent is not told about is one nothing calls -- the description IS how a tool
+#: is chosen, so an undocumented section is a section that does not exist.
+#:
+#: **Mostly** paid for by compression, within the same description: it went 259 → ~181 tokens by
+#: folding three bullets into one sentence, merging the "log says what is repeating" line into the
+#: opening question it was restating, and dropping the "never empty, which reads as nothing is
+#: happening" rationale -- which is stated in full on ``JobState`` itself, where it belongs, and was
+#: costing tokens here to repeat it. Net cost of the two sections: ~27 tokens. The 50 is again the
+#: round number above it.
+_SURFACE_TOKEN_BUDGET = 13_900
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

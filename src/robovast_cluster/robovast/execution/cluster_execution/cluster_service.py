@@ -55,6 +55,7 @@ from pathlib import Path
 
 from robovast.client import file_address
 from robovast.common import file_view
+from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobSummary,
@@ -1672,58 +1673,119 @@ class ClusterService(LocalTransport):
         self._teardown_campaign_jobs(campaign_id)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
-    def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
+    def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
         """The inherited reads, pointed at this job's pod instead of a local container.
 
         Everything that decides *what* is asked -- the simulator's own command, the scenario's own
-        tree reader, the JSON passed through unreshaped, what "unavailable" means -- is
+        tree reader, which container each belongs in, the JSON passed through unreshaped, what
+        "unavailable" means, and the TTL that makes one check serve every watcher -- is
         :class:`LocalTransport`'s and shared. Only the target differs, which is the whole reason
         ``exec_in`` takes one.
 
-        Two lane facts shape the arguments. ``job_name`` here is the **Kubernetes Job** name rather
-        than a run key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack
-        several runs, so there is no single run dir to name even in principle. But ``/out`` is *this
-        pod's own* emptyDir, holding only this job's runs -- so naming it is exact rather than vague,
-        and both readers find the run still being written underneath it.
+        Two lane facts shape it. ``job_name`` here is the **Kubernetes Job** name rather than a run
+        key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack several runs,
+        so there is no single run dir to name even in principle. But ``/out`` is *this pod's own*
+        emptyDir, holding only this job's runs -- so naming it is exact rather than vague, and every
+        reader finds the run still being written underneath it, whichever container it is asked in.
+
+        Raises ``KeyError`` for a job between scheduling and running, or already gone; the callers
+        turn that into a stated reason rather than an empty answer.
         """
-        from robovast.common.simulators import health_command
-        from robovast.service.interface import JobState
+        return self._job_pod_target(campaign_id, job_name, role), "/out"
 
-        self._require_running_job(campaign_id, job_name)
-        state = JobState(job_name=job_name, status="running")
-        try:
-            target = self._job_pod_target(campaign_id, job_name)
-        except KeyError as err:
-            state.unavailable.append(str(err))
-            return state
-        # Independent of the simulator's, as locally: the scenario's tree is there whatever the
-        # simulator is, and coupling them would let the absence of one hide the other.
-        self._read_scenario_state(state, target, "/out")
-        try:
-            command = health_command(self._campaign_execution(campaign_id), run_dir="/out")
-        except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
-            state.unavailable.append(f"could not read this campaign's configuration: {err}")
-            return state
-        if not command:
-            state.unavailable.append(
-                "this campaign's simulator does not report its own state, so there is nothing to "
-                "read from a live run")
-            return state
+    #: The run dirs inside a Job, newest first. Only **real** run dirs: a campaign root holds
+    #: ``_jobs/`` beside them (and the other names in
+    #: :data:`~robovast.common.campaign_data.RESERVED_CAMPAIGN_DIRS`), and an earlier version of
+    #: this took the newest file anywhere under the root -- which was reliably a job artifact, so
+    #: it named the run ``_jobs/batch-0`` and pointed every reader at a subtree with no run in it.
+    #:
+    #: The shape is the filter: ``<config>/<run-number>``, the run number being digits. Matched on
+    #: the layout rather than on a list of names to exclude, because the layout is what the readers
+    #: below depend on and a new reserved name would silently pass an exclusion list.
+    _LIVE_RUN_FIND = ("find {root} -mindepth 2 -maxdepth 2 -type d "
+                      "-regex '.*/[^/]+/[0-9]+' -printf '%T@ %P\\n' "
+                      "| sort -rn | head -1 | cut -d' ' -f2-")
+
+    def _job_live_run(self, campaign_id: str, job_name: str, target, run_dir: str) -> tuple:
+        """``(run_dir, run_key)`` for the run this Job is on. Always resolved, never delegated.
+
+        **Which run a job is on is RoboVAST's question, and it gets answered here.** It used to be
+        answered only for a Job that packs several runs; an unpacked one was handed ``/out`` and the
+        readers were left to find the run underneath it. Both of them can -- ``tree_state`` and
+        ``roqsim health`` each search a couple of levels down -- and that is exactly the problem:
+
+        * it is two other components modelling *this* layout, and a layout guessed in two places is
+          free to disagree with the one place that owns it;
+        * "the newest one below here" is a heuristic answering a question they cannot see the answer
+          to, while the service can;
+        * and it **masks** a wrong directory instead of failing on it. Pointed at ``_jobs/batch-0``,
+          a reader searched around it and then reported that the scenario may have run without
+          ``--bt-log`` -- a confident wrong cause for a path bug, which cost several rounds to place.
+
+        So the exact run dir goes out, every time, and ``run`` names it in the reply. One ``find``
+        over the pod's own emptyDir per read, which is nothing beside the reads it precedes -- and
+        it replaces two heuristics with one resolution.
+
+        A discovery that finds nothing leaves ``/out`` in place: a job between starting and its
+        first record is normal, and the readers' own "nothing here yet" is a better answer than a
+        failure from the step that was only trying to be more precise.
+        """
+        del campaign_id
         from robovast.service.local_transport import _JOB_STATE_LIMIT_S
-        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            target, shlex.split(command), _JOB_STATE_LIMIT_S)
-        return self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+        command = self._LIVE_RUN_FIND.format(root=shlex.quote(run_dir))
+        _code, stdout, _stderr, timed_out = self._exec_lane().exec_in(
+            target, ["/bin/bash", "-c", command], _JOB_STATE_LIMIT_S)
+        if timed_out:
+            return run_dir, None
+        run_key = (stdout or "").strip()
+        if not run_key or run_key.count("/") != 1:
+            return run_dir, None
+        return f"{run_dir.rstrip('/')}/{run_key}", run_key
 
-    def _job_pod_target(self, campaign_id: str, job_name: str, role: str = "scenario"):
+    def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
+        """This Job's own ``OUTPUT_DIR``, which is where its resource samples and logs are.
+
+        Read off the Job rather than resolved through the campaign manifest, and rather than
+        derived from the layout: the backend **stamps it on the pod** as
+        ``OUTPUT_DIR=/out/_jobs/<batch>/job-<idx>``, so reading it back is exact for a running job
+        and needs no exec at all. :meth:`_job_artifact_dir` already does that read for the
+        intervention ledger; this is the same fact, wanted for the same job, so it is the same
+        read.
+        """
+        del run_dir
+        rel = self._job_artifact_dir(job_name)
+        return f"/out/{rel.strip('/')}" if rel else "/out"
+
+    def _job_pod_target(self, campaign_id: str, job_name: str, role: str = SCENARIO_CONTAINER):
         """``(pod, container)`` for one running job's *role*, or raise saying why not.
 
-        The scenario is the pod's first container and the sidecars follow it in declaration order,
-        so a role resolves to a position rather than to a name assembled here. Read from the live
-        pod for the same reason the log tail reads it: the manifest owns those names.
+        The scenario is the pod's first workload container and the sidecars follow it in
+        declaration order, so it resolves to a position rather than to a name assembled here. Read
+        from the live pod for the same reason the log tail reads it: the manifest owns those names.
+
+        **Through :func:`~.kube_client.pod_workload_containers`, which is not optional.** The
+        simulator and the system under test are *native sidecars* -- ``initContainers`` with
+        ``restartPolicy: Always`` -- so ``pod.spec.containers`` holds the scenario container and
+        nothing else. Asking it directly made this the fourth place to get that wrong in the same
+        way (see that function's docstring for the other three): every role but ``scenario`` was
+        refused as "this job runs no such container" on a pod that was visibly running three, and
+        the refusal quoted a one-name list as its evidence.
+
+        **The pod decides, and the plan is only consulted for a role the pod does not name.** That
+        order is the whole point and it used to be the other way round: the plan was asked first,
+        so a campaign whose archived config could not be read -- or whose block simply named no
+        simulator -- resolved ``simulation`` to the scenario container and the read then entered a
+        container with no simulator in it. Confidently, and with no way for the caller to tell.
+        A pod that *has* a container called ``simulation`` is not a thing the config can outvote.
+
+        The plan still answers the case the pod cannot: a simulator stepped in-process **is** the
+        scenario container, so there is no container of that name to find and refusing the role
+        would deny a read the campaign can answer.
         """
-        from robovast.common.config import CONTAINER_ROLES, SCENARIO_CONTAINER
+        from robovast.common.config import CONTAINER_ROLES
 
         from .cluster_execution import _label_safe_campaign
+        from .kube_client import pod_workload_containers
         if role not in CONTAINER_ROLES:
             raise ValueError(f"unknown container role {role!r}; expected one of "
                              f"{', '.join(CONTAINER_ROLES)}")
@@ -1734,23 +1796,30 @@ class ClusterService(LocalTransport):
             raise KeyError(f"no pod for job {job_name!r} in campaign {campaign_id!r}: it is "
                            f"between scheduling and running, or already gone")
         pod = pods.items[0]
-        names = [c.name for c in pod.spec.containers]
+        names = [c.name for c in pod_workload_containers(pod)]
+        if not names:
+            raise KeyError(f"pod for job {job_name!r} declares no workload containers")
+        # The scenario is the pod's first workload container, by position: the manifest owns what
+        # it is called, so there is no name to match on.
         if role == SCENARIO_CONTAINER:
             return pod.metadata.name, names[0]
         if role in names:
             return pod.metadata.name, role
+        if self._plan_role(campaign_id, role) == SCENARIO_CONTAINER:
+            return pod.metadata.name, names[0]
         raise KeyError(f"this job runs no {role!r} container; it has: {', '.join(names)}")
 
     def exec_in_job(self, campaign_id: str, job_name: str, command: str,
                     container: str = "scenario", source: str = "api") -> "ExecResult":
         """The inherited probe, pointed at this job's pod.
 
-        Same recording, same ordering, same refusal for a job that is not running -- only the target
-        differs, which is what ``exec_in`` exists for. The container is resolved from the pod rather
-        than from a name built here: a role maps to a *position* in the pod spec (the scenario runs
-        first), and the concrete names are the manifest's business.
+        Same recording, same ordering, same refusal for a job that is not running, same environment
+        -- only the target differs, which is what ``exec_in`` exists for. The container is resolved
+        from the pod rather than from a name built here: a role maps to a *position* in the pod spec
+        (the scenario runs first), and the concrete names are the manifest's business.
         """
         from robovast.common.campaign_data import KIND_PROBED, record_intervention
+        from robovast.common.execution import in_run_env
         from robovast.service.interface import ExecResult
 
         if not (command or "").strip():
@@ -1768,7 +1837,7 @@ class ClusterService(LocalTransport):
         from robovast.service.local_transport import _PROBE_LIMIT_S
         pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            (pod, pod_container), ["/bin/bash", "-lc", command], _PROBE_LIMIT_S)
+            (pod, pod_container), in_run_env(command), _PROBE_LIMIT_S)
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr,
                           timed_out=timed_out, limit_s=_PROBE_LIMIT_S, limit_source="command")
 

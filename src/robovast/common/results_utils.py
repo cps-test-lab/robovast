@@ -75,6 +75,48 @@ def campaign_vast(campaign_dir) -> Path:
     return vasts[0]
 
 
+def campaign_execution(campaign_dir) -> dict:
+    """The ``execution`` block of a campaign's own frozen ``.vast``, as a **mapping**.
+
+    Read from ``_config/`` rather than from whatever a workspace holds now: the question is what
+    *this* campaign is running, and a workspace edited since it launched would answer for a
+    different one.
+
+    A mapping and not :class:`~robovast.common.config.ConfigV1`, because that is what every
+    consumer of an execution block takes -- :func:`~robovast.common.containers.plan_containers`
+    says so in its own signature, and :func:`~robovast.common.simulators.health_command` indexes
+    it. Handing back the pydantic model is exactly the bug this function exists to end.
+
+    Read as a **subsection**, which is the lenient policy :func:`load_config` documents for this:
+    one section does not need the whole archived document to validate, and requiring it made a
+    perfectly good campaign unreadable by the tool that produced it. The strict read is for a
+    config being authored or launched, and this is neither.
+
+    Raises for a missing or unreadable ``.vast``; a campaign that simply declares no ``execution``
+    yields ``{}``. Whether the raise is fatal is the caller's to decide -- a live-run diagnostic
+    reports it as a stated reason, a viewer shrugs and shows the campaign anyway -- and collapsing
+    the two here would make one of them wrong.
+
+    **The backend's contributions are merged in**, through the one seam that does that
+    (:func:`~robovast.common.simulators.apply_backend`), because the archived ``.vast`` is what the
+    author *wrote* and not what the campaign *ran*. A simulator declared as bare
+    ``simulation: {backend: roqsim}`` has no image in the file -- the backend supplies one -- so the
+    container plan built from the raw block folds the simulator onto the scenario container, while
+    the pod that ran had a separate one. Reading it raw therefore sent the simulator's own health
+    command into a container with no simulator in it, and the campaign said so:
+    ``exec: roqsim: not found``. ``apply_backend``'s docstring already names the container plan as a
+    consumer that must see the merged picture; this was a second consumer that did not.
+
+    *base_dir* is the archived project, so a backend referenced as ``./file.py:Class`` resolves
+    against the tree the campaign actually ran with rather than against whatever is on disk now.
+    """
+    from robovast.common.common import load_config
+    from robovast.common.simulators import apply_backend
+    vast = campaign_vast(campaign_dir)
+    execution = load_config(str(vast), subsection="execution", allow_missing=True) or {}
+    return apply_backend(execution, base_dir=str(vast.parent))
+
+
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
     """The ``.vast`` for *results_dir* -- its own if it is a campaign, else a recent one.
 

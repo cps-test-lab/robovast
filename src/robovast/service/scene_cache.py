@@ -403,12 +403,16 @@ def _campaign_execution(campaign_dir) -> dict:
     *did* (images, timing) and not what it was configured with. Absent or unreadable is not
     an error here: the caller turns "no backend" into a reason a user can act on, and a
     campaign is worth looking at even when its config cannot be parsed.
+
+    The read itself is :func:`~robovast.common.results_utils.campaign_execution`, shared with the
+    live-run diagnostics; only this "shrug and show the campaign anyway" policy is local. It also
+    means an old campaign's block is migrated before being read, which a plain YAML load here was
+    not doing.
     """
     try:
         from robovast.common.results_utils import \
-            campaign_vast  # pylint: disable=import-outside-toplevel
-        raw = yaml.safe_load(campaign_vast(campaign_dir).read_text(encoding="utf-8")) or {}
-        return (raw.get("execution") or {}) if isinstance(raw, dict) else {}
+            campaign_execution  # pylint: disable=import-outside-toplevel
+        return campaign_execution(campaign_dir)
     except Exception as err:  # noqa: BLE001 - a missing/broken .vast is reported downstream
         logger.debug("no execution block for %s: %s", campaign_dir, err)
         return {}

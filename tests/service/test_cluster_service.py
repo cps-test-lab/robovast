@@ -1495,15 +1495,59 @@ def test_a_packaged_world_fetches_the_vast_and_nothing_else():
 # -- get_job_state on the cluster: same read, a pod instead of a container ------------------------
 
 
+def _container(name, restart_policy=None):
+    return types.SimpleNamespace(name=name, restart_policy=restart_policy)
+
+
 class _Pod:
-    def __init__(self, name, container="robovast"):
+    """A pod as the API returns one: workload sidecars live in ``init_containers``.
+
+    The default is the real single-container shape -- the scenario container, named ``robovast``
+    by the manifest. *sidecars* are declared the way the backend declares them, as **native**
+    sidecars (``restartPolicy: Always`` on an init container), because that is what made every
+    role but ``scenario`` unreachable while the pod was visibly running three containers.
+    """
+
+    def __init__(self, name, container="robovast", sidecars=(), init=()):
         self.metadata = types.SimpleNamespace(name=name)
-        self.spec = types.SimpleNamespace(containers=[types.SimpleNamespace(name=container)])
+        self.spec = types.SimpleNamespace(
+            containers=[_container(container)],
+            init_containers=[_container(n, "Always") for n in sidecars]
+            + [_container(n) for n in init])
 
 
-def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False)):
-    monkeypatch.setattr(cs, "_require_running_job", lambda cid, job: None)
-    monkeypatch.setattr(cs, "_campaign_execution", lambda cid: {"containers": {}})
+#: The campaign shape that goes with a single-container pod: nothing declares a simulator of its
+#: own, so the simulation role is backed by the scenario container. Stated rather than left as an
+#: empty block, because the execution block and the pod have to describe the same campaign -- an
+#: empty one beside a ROS-shape pod is a fixture that cannot exist, and it is what let the wrong
+#: container look right.
+_FOLDED_EXECUTION = {"mode": "base", "containers": {
+    "scenario": {"image": "scen:1"},
+    # Declared, with no image of its own: that is what "stepped in-process" looks like in a config,
+    # and it is what makes the plan fold the role onto the scenario container. An ABSENT simulation
+    # block would be a campaign with no simulator at all -- a third case, and one where a health
+    # command could not exist, so a fixture that omitted the block while forcing one described a
+    # campaign that cannot be.
+    "simulation": {"backend": "roqsim", "config": "w.yaml"}}}
+
+#: The ROS shape: the simulator is a sidecar with its own image and its own container.
+_ROS_EXECUTION = {"mode": "ros2", "containers": {"simulation": {"image": "sim:1", "backend": "roqsim",
+                                                               "config": "w.yaml"},
+                                                 "sut": {"image": "sut:1"}}}
+
+
+def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False),
+                       execution=None):
+    # A running job, as the real precondition returns one: the state read reports the status it was
+    # checked against rather than asserting "running" a second time.
+    monkeypatch.setattr(cs, "_require_running_job",
+                        lambda cid, job: types.SimpleNamespace(job_name=job, status="running"))
+    monkeypatch.setattr(cs, "_campaign_execution",
+                        lambda cid: execution if execution is not None else _FOLDED_EXECUTION)
+    # Stubbed because the real one READS THE JOB over the API: unmocked it reached a live cluster
+    # and every test in this file waited out a connect timeout. Its own resolution is asserted
+    # separately, in test_the_job_output_dir_is_read_off_the_job.
+    monkeypatch.setattr(cs, "_job_artifact_dir", lambda job: "_jobs/batch-0/job-0")
     monkeypatch.setattr("robovast.common.simulators.health_command",
                         lambda execution, *, run_dir, base_dir="": f"tool --json {run_dir}")
 
@@ -1520,8 +1564,13 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
 
         def exec_in(self, target, argv, limit_s, env=None):
             _Lane.calls.append((target, argv))
-            if "scenario_execution.tree_state" in argv:
+            # Matched on the joined argv: every read runs through a shell that sources the run's
+            # ROS overlay first, so the command is inside one element rather than being them.
+            joined = " ".join(argv)
+            if "scenario_execution.tree_state" in joined:
                 return (0, '{"found": true, "running": {"name": "drive_to"}}', "", False)
+            if "resource_usage_" in joined:
+                return (0, "", "", False)
             return exec_result
 
     _Lane.calls = []
@@ -1541,11 +1590,16 @@ def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
     assert state.scenario["running"]["name"] == "drive_to"
-    assert state.unavailable == []
-    target, argv = [c for c in lane.calls if "tool" in c[1]][0]
-    # The container comes from the pod, not from a constant repeated here.
+    target, argv = [c for c in lane.calls if "tool --json" in " ".join(c[1])][0]
+    # The job dir: this is a live run, and that is where its simulator's records are.
+    # The container comes from the pod, not from a constant repeated here. This campaign steps its
+    # simulator in-process, so the simulation role IS this container.
     assert target == ("scenario-abc-x9", "robovast")
-    assert argv == ["tool", "--json", "/out"]
+    # The command, run in the environment the run's own processes have -- a bare argv would not
+    # find anything the run built into its overlay.
+    script = " ".join(argv)
+    assert "/ws/install/setup.bash" in script
+    assert script.endswith("tool --json /out/_jobs/batch-0/job-0")
     assert "job-name=scenario-abc" in core.selector
 
 
@@ -1573,3 +1627,174 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
     assert state.simulator is None
     assert state.scenario["running"]["name"] == "drive_to"
     assert any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypatch):
+    """The lane that matters, so the pull is asserted here and not only locally: each running Job
+    is asked in *its own* pod, over the Kubernetes exec API, and a job with no pod yet is skipped
+    rather than crashing the sweep.
+
+    The inherited resolver walks ``list_jobs`` and asks the lane hook for each running one, so this
+    pins the composition rather than a second implementation of it.
+    """
+    # A ROS-shape pod: the simulator is a sidecar with its own image, which is the container the
+    # health read has to reach -- `roqsim health` sent to the scenario container names a tool that
+    # container does not have.
+    pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
+    core, lane = _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
+    monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
+        types.SimpleNamespace(job_name="scenario-abc", status="running"),
+        types.SimpleNamespace(job_name="scenario-def", status="completed"),
+    ]))
+
+    targets = cs._health_targets("camp-1")
+
+    # ``/out`` and not a run key: this pod's own emptyDir holds only this job's runs, and a packed
+    # Job has no single run dir to name even in principle.
+    # Both paths, because the simulator's records and the job's artifacts are different subtrees:
+    # the job dir first (where a LIVE run's clock record is), the run dir after it. The run dir is
+    # the resolved one -- the fixture's lane returns no run key, so it falls back to the job root,
+    # which is the documented behaviour for a job that has not written a record yet.
+    assert targets == [("scenario-abc", "/out/_jobs/batch-0/job-0", "/out")]
+    assert "job-name=scenario-abc" in core.selector
+    # One exec, and only the run-dir resolution: the reads themselves are the caller's to make, so
+    # a target that is merely being ENUMERATED must not trigger a health command.
+    assert [" ".join(c[1]) for c in lane.calls if "tool --json" in " ".join(c[1])] == []
+    # And the read itself lands in the simulator's own container, from the pod rather than from a
+    # name built here: that is the difference between asking the simulator and asking a container
+    # that has never heard of it.
+    assert cs._job_state_target("camp-1", "scenario-abc", "simulation")[0] == (
+        "scenario-abc-x9", "simulation")
+
+
+def test_a_role_in_a_native_sidecar_is_found(cs, monkeypatch):
+    """The simulator and the system under test are ``initContainers`` with ``restartPolicy:
+    Always`` -- workload containers that Kubernetes files under a field whose name says the
+    opposite. Reading ``spec.containers`` alone refused every role but ``scenario`` on a pod that
+    was running three of them, and quoted the one-name list as its evidence."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9",
+                                                  sidecars=("simulation", "sut"))],
+                       execution=_ROS_EXECUTION)
+
+    assert cs._job_pod_target("c", "j", "simulation") == ("scenario-abc-x9", "simulation")
+    assert cs._job_pod_target("c", "j", "sut") == ("scenario-abc-x9", "sut")
+    # Still by position, not by name: the manifest owns what the scenario's container is called.
+    assert cs._job_pod_target("c", "j", "scenario") == ("scenario-abc-x9", "robovast")
+
+
+def test_a_one_shot_init_container_is_not_a_role(cs, monkeypatch):
+    """``s3-init`` populates ``/config`` and exits. Counting it as a workload container would
+    offer a caller a container that is gone by the time anything could be run in it."""
+    _cluster_job_state(cs, monkeypatch,
+                       pods=[_Pod("scenario-abc-x9", sidecars=("sut",), init=("s3-init",))],
+                       execution=_ROS_EXECUTION)
+
+    # Reachable roles resolve past it, and it is absent from the list the refusal offers: that
+    # list is the caller's next move, so naming a container that has already exited would send
+    # them to run something in it.
+    assert cs._job_pod_target("c", "j", "sut") == ("scenario-abc-x9", "sut")
+    with pytest.raises(KeyError) as raised:
+        cs._job_pod_target("c", "j", "simulation")
+    assert "s3-init" not in str(raised.value)
+    assert "robovast, sut" in str(raised.value)
+
+
+def test_an_unpacked_job_is_located_too(cs, monkeypatch):
+    """An unpacked Job is one run, but its NAME is not the run key -- so the run still has to be
+    resolved, and it used to be left to the readers instead. Both of them can search a couple of
+    levels down for their own file, which is two other components modelling this layout, answering
+    with a heuristic ("the newest below here") where the service has the fact. Worse, searching
+    around a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looked past it and
+    then blamed ``--bt-log``."""
+    _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+        exec_in=lambda target, argv, limit_s, env=None: (0, "cfga/0\n", "", False)))
+
+    assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfga/0", "cfga/0")
+    del lane
+
+
+def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
+    """A packed Job runs its items one after another, so exactly one is live -- and every section
+    of the reply must describe that one. Pointed at the Job's whole ``/out``, the three readers
+    each picked a run for themselves and the caller could not tell which."""
+    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
+    _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+                                    execution=execution)
+    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+        exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))
+
+    assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfgb/2", "cfgb/2")
+
+
+def test_the_live_run_search_looks_for_run_dirs_and_not_for_the_newest_file(cs, monkeypatch):
+    """A campaign root holds ``_jobs/`` beside its runs, and the job artifacts under it are the
+    files most recently written -- so taking the newest file anywhere named the run ``_jobs/batch-0``
+    and pointed every reader at a subtree with no run in it. The search is for the run LAYOUT."""
+    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
+    seen = {}
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+        exec_in=lambda target, argv, limit_s, env=None: (
+            seen.setdefault("argv", " ".join(argv)), "", "", False) and (0, "", "", False)))
+
+    cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out")
+
+    script = seen["argv"]
+    assert "-type d" in script, "a run dir is a directory; the newest FILE is a job artifact"
+    assert "[0-9]+" in script, "a run number is digits -- that shape is what excludes _jobs"
+    assert "-maxdepth 2" in script
+
+
+def test_the_job_output_dir_is_read_off_the_job(cs, monkeypatch):
+    """Where the resource samples and logs are, which is NOT where the runs are: the backend stamps
+    ``OUTPUT_DIR=/out/_jobs/<batch>/job-<idx>`` on the pod, so this is a read rather than a guess --
+    and no exec at all."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    monkeypatch.setattr(cs, "_job_artifact_dir", lambda job: "_jobs/batch-0/job-0")
+
+    assert cs._job_output_dir("c", "scenario-abc", "/out") == "/out/_jobs/batch-0/job-0"
+
+
+def test_the_pod_outvotes_the_config_about_which_containers_exist(cs, monkeypatch):
+    """A pod that HAS a container called ``simulation`` is not something an unreadable -- or simply
+    simulator-less -- config can outvote. The plan used to be asked first, so such a config
+    resolved the role to the scenario container and the health read entered a container with no
+    simulator in it, confidently and with nothing saying so."""
+    _cluster_job_state(cs, monkeypatch,
+                       pods=[_Pod("scenario-abc-x9", sidecars=("simulation", "sut"))],
+                       execution={"mode": "base", "containers": {}})
+
+    assert cs._job_pod_target("c", "j", "simulation") == ("scenario-abc-x9", "simulation")
+
+
+def test_a_stepped_simulator_still_resolves_through_the_plan(cs, monkeypatch):
+    """The case the pod cannot answer: a simulator stepped in-process has no container of its own,
+    so there is no name to find and only the plan knows the role is backed by the scenario's."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+                       execution={"mode": "base", "containers": {
+                           "scenario": {"image": "s:1"},
+                           "simulation": {"backend": "roqsim", "config": "w.yaml"}}})
+
+    assert cs._job_pod_target("c", "j", "simulation") == ("scenario-abc-x9", "robovast")
+
+
+def test_a_packed_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatch):
+    """A run between starting and its first record is normal. The readers' own "nothing here yet"
+    is a better answer than a failure from the step that was only trying to be more precise."""
+    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+        exec_in=lambda target, argv, limit_s, env=None: (0, "", "", False)))
+
+    assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out", None)
+
+
+def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypatch):
+    """Normal on this lane: a Job exists before its pod does. One unanswerable job must not cost
+    the campaign's other jobs their check."""
+    _cluster_job_state(cs, monkeypatch, pods=[])
+    monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
+        types.SimpleNamespace(job_name="scenario-abc", status="running")]))
+
+    assert cs._health_targets("camp-1") == []

@@ -512,6 +512,11 @@ owns, with no log reading at all:
    * - ``stall_reason``
      - Present only when ``stalled`` is ``true``. Names the comparison *and the next
        call*, so the follow-up is not something to remember.
+   * - ``health_findings``
+     - What a running job's own **simulator** reported wrong about itself, ``error``-level
+       only and absent when there is none. Independent of every field above: it needs no
+       declared timeout and is true within a minute of the fault. See
+       :ref:`mcp-health-findings`.
 
 .. important::
 
@@ -530,6 +535,103 @@ beats never, whereas *reporting* late is worse than reporting nothing, so the tw
 are deliberately separate (``per_run_deadline_seconds`` versus
 ``declared_per_run_seconds``). A wedged local run with no declared timeout therefore stays
 alive to be inspected — end it with ``stop_campaign``.
+
+.. _mcp-health-findings:
+
+What the run's own simulator says about itself
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``stalled`` needs a declared budget and one run's worth of patience. A simulator can say
+"sim time is not advancing" within a minute of the fault and needs neither — so it is asked,
+and what it answers rides on ``get_campaign_status`` as ``health_findings`` and on
+``get_job_state`` in full.
+
+**How it is asked.** The service *pulls*: it runs a **fixed** command of its own choosing in
+the running container (:meth:`~robovast.common.simulators.SimulatorBackend.health_command`),
+reads the JSON, and keeps it for the length of one poll interval. So nothing runs in a run
+container between reads, nothing is emitted into any log, nothing is written into the results,
+and a campaign nobody is watching is never asked at all. N watchers cost one check per
+interval, and the read happens off the request thread — a wedged container cannot slow a
+status read even by its own timeout.
+
+**The contract, and all of it.** A simulator's reply carries ``findings``, each
+
+.. code-block:: json
+
+   {"level": "error", "check": "sim-time-rate", "detail": "sim advanced 3.1s in 60s of wall time"}
+
+RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast wait`` (exit 5);
+``warn`` never does, and surfaces on ``get_job_state`` and the campaign's own exit.
+``check`` is a stable slug the simulator owns — carried through untouched, so it is matched
+and reported, never interpreted — and ``detail`` is its observation in its own words. There
+is therefore no per-check knowledge anywhere in RoboVAST, and any simulator shipping a
+command with this contract is understood without a line of code here. Look a slug up in the
+simulator's documentation, not in this one.
+
+This paragraph is the specification, deliberately: the two sides of it cannot import each
+other, and an agreed format with no written home drifts the first time either side is
+edited. The precedent is :mod:`robovast.common.scenario_markers`, for the same reason.
+
+.. important::
+
+   **No findings is not a clean bill of health.** It means nothing was reported — which is
+   also what a simulator that cannot report on itself, a run that is not recording, and a
+   read that failed all produce. ``get_job_state`` is where the difference is stated: every
+   section it cannot fill names *which* and *why* in ``unavailable``, rather than rendering
+   as an empty world that reads as "nothing is happening".
+
+   A check the simulator says it **did not run** is the same trap one level down, and it is
+   reported as its own thing rather than as a finding: ``health_checks_not_run`` on
+   ``get_campaign_status`` and a ``check did not run`` line from ``vast wait``, each carrying
+   the simulator's own reason. Never turned into a ``warn`` -- a finding has a ``level`` its
+   simulator chose, and manufacturing one for a check that reached no verdict would put
+   RoboVAST's word in the simulator's mouth. roqsim's ``robot-motion`` is the case to know:
+   it resolves which bodies are robots from the run's own entity roster, and a run without
+   one is a run where nothing looked at whether the robot moved.
+
+Where the scenario has got to
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The simulator's half says whether the world is stepping and where its bodies are. It cannot say
+which **action** the scenario is stuck in, which is usually the sentence that identifies the
+fault -- so ``get_job_state`` asks scenario-execution's own reader for that too, by a fixed
+command, and returns what it says under ``scenario``.
+
+Two properties, both deliberate:
+
+* **The two reads are independent.** The scenario runs in every campaign whatever the simulator
+  is, so it is asked unconditionally: a campaign whose simulator cannot report on itself still
+  gets the more useful half.
+* **It is the expensive half, and therefore on demand.** The behaviour-tree log holds one line
+  per status change, so the current tree is a fold over the whole file rather than a tail read.
+  That is why it lives on ``get_job_state``, asked for when someone wants it, and never in the
+  cheap reply the service polls. ``bt_log: false`` costs this answer -- see
+  :ref:`the recording <configuration>`.
+
+Alongside both, ``resources`` carries the newest sample the run's own monitor wrote, per
+container and per process. It answers what neither of the others can: a run stuck at 0% CPU is
+deadlocked, one at 100% is spinning, and a log and a tree that both say RUNNING cannot tell
+them apart.
+
+.. note::
+
+   **The three reads look in three places, and while a run is live those are not the same
+   place.** Worth knowing when a section comes back empty, because the failure looks identical
+   to "nothing is happening":
+
+   ===========================  ==========================  ============================
+   what                         while the run is live        after results collection
+   ===========================  ==========================  ============================
+   the behaviour-tree log       ``<config>/<run>/``          same
+   the monitor's CSVs           ``_jobs/<batch>/job-N/``     same (a JOB artifact)
+   the simulator's records      ``_jobs/<batch>/job-N/``     ``<config>/<run>/``
+   ===========================  ==========================  ============================
+
+   So the tree is read from the run dir, the samples from the job's own ``OUTPUT_DIR`` (which
+   the backend stamps on the pod, so it is read back rather than derived), and the simulator is
+   asked about the job dir first and the run dir after it. Pointing all three at one directory
+   is the bug this table exists to prevent: whichever read matched the path worked, and the
+   others reported that the run had written nothing.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
 (``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) — and
@@ -856,8 +958,11 @@ to produce.
 What changed is that the perturbation is now *recordable* rather than forbidden. Two tools
 reach a live job, and the difference between them is who chooses the command:
 
-* ``get_job_state`` runs a **fixed** command the service chose — the simulator's own health
-  read — so nothing arbitrary can ride in, nothing is perturbed, and nothing is recorded.
+* ``get_job_state`` runs only **fixed** commands the service chose — the simulator's own health
+  read, scenario-execution's own tree reader, and a tail of the run's own resource samples, each
+  in the container that runs it. Nothing arbitrary can ride in, nothing is perturbed, and nothing
+  is recorded. That property holds *because* the commands are ours: they read files the run is
+  already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
   campaign instead: every run the job covers is marked ``probed`` in ``data.db``.
 

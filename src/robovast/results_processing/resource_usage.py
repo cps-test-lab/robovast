@@ -144,8 +144,6 @@ def read_container_csv(path: str, container: str, stats: ScanStats,
     kept, because process count genuinely falls during teardown and a "looks short" heuristic
     would delete real shutdown data from every healthy run.
     """
-    samples: List[Tuple[float, str, float, int]] = []
-    bad_here = 0
     where = f"{label}:{container}" if label else container
     try:
         handle = open(path, newline="", encoding="utf-8", errors="replace")
@@ -153,28 +151,43 @@ def read_container_csv(path: str, container: str, stats: ScanStats,
         stats.unreadable.append(f"{where} ({e.strerror or e})")
         return []
     with handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames or set(RAW_FIELDNAMES) - set(reader.fieldnames):
-            # Reported, not guessed at: a writer that changed its columns must not be read
-            # as if it had not.
-            stats.unreadable.append(f"{where} (header: {reader.fieldnames})")
-            return []
-        stats.files += 1
-        for row in reader:
-            if row.get(None) is not None or any(row.get(k) is None for k in RAW_FIELDNAMES):
-                stats.short_rows += 1
-                bad_here += 1
-                continue
-            wall = _as_float(row["timestamp"])
-            cpu = _as_float(row["cpu_percent"])
-            mem = _as_float(row["memory_rss_bytes"])
-            if wall is None or cpu is None or mem is None or wall <= 0:
-                # A zero or negative stamp is an absence, not an instant in 1970 -- admitting
-                # one puts the whole run behind it in every ORDER BY.
-                stats.bad_rows += 1
-                bad_here += 1
-                continue
-            samples.append((wall, row["name"] or "", cpu, int(mem)))
+        return parse_container_rows(handle, container, stats, label)
+
+
+def parse_container_rows(lines, container: str, stats: ScanStats,
+                         label: str = "") -> List[Tuple[float, str, float, int]]:
+    """:func:`read_container_csv` on any line source — a file, or a live tail.
+
+    Split out so that reading a **running** job's CSV, which arrives over an exec rather than as
+    a path, shares one definition of the column contract and of the damaged-tail rule. Two
+    parsers for one writer is how a changed column becomes wrong numbers in one place and an
+    error in the other.
+    """
+    samples: List[Tuple[float, str, float, int]] = []
+    bad_here = 0
+    where = f"{label}:{container}" if label else container
+    reader = csv.DictReader(lines)
+    if not reader.fieldnames or set(RAW_FIELDNAMES) - set(reader.fieldnames):
+        # Reported, not guessed at: a writer that changed its columns must not be read
+        # as if it had not.
+        stats.unreadable.append(f"{where} (header: {reader.fieldnames})")
+        return []
+    stats.files += 1
+    for row in reader:
+        if row.get(None) is not None or any(row.get(k) is None for k in RAW_FIELDNAMES):
+            stats.short_rows += 1
+            bad_here += 1
+            continue
+        wall = _as_float(row["timestamp"])
+        cpu = _as_float(row["cpu_percent"])
+        mem = _as_float(row["memory_rss_bytes"])
+        if wall is None or cpu is None or mem is None or wall <= 0:
+            # A zero or negative stamp is an absence, not an instant in 1970 -- admitting
+            # one puts the whole run behind it in every ORDER BY.
+            stats.bad_rows += 1
+            bad_here += 1
+            continue
+        samples.append((wall, row["name"] or "", cpu, int(mem)))
 
     if not samples:
         stats.empty.append(where)

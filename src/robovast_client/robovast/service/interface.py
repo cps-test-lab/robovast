@@ -476,6 +476,16 @@ class JobState(BaseModel):
     job_name: str
     #: ``running`` -- the only state this is asked about -- or what was found instead.
     status: str = "running"
+    #: Which run every section below describes, as ``<config>/<run>``.
+    #:
+    #: A job is one run on the local lane and may **pack** several on the cluster, run one after
+    #: another -- so a packed job has exactly one live run at a time, and this names it. Present
+    #: because without it a caller could not tell which of a job's runs it had been told about, and
+    #: the sections were free to disagree with each other about that.
+    #:
+    #: ``None`` for a job whose run cannot be named, which is an unpacked cluster Job: its single
+    #: run is what the readers find under ``/out``, and the Job's name is not a run key.
+    run: Optional[str] = None
     #: Whatever the campaign's simulator reports about itself: findings, and the last poses
     #: and clock. Shape belongs to the simulator (see
     #: :meth:`~robovast.common.simulators.SimulatorBackend.health_command`), so RoboVAST
@@ -489,6 +499,17 @@ class JobState(BaseModel):
     #: change, so the current tree is a fold over the whole file rather than a tail read. That is
     #: why it is here, asked for when someone wants it, and not in whatever the service polls.
     scenario: Optional[dict] = None
+    #: ``{container: {"at": <wall ts>, "processes": [{name, cpu_percent, memory_rss_bytes}]}}`` --
+    #: the newest sample the run's own resource monitor has written, per container.
+    #:
+    #: Here because it answers what neither other section can: a run stuck at 0% CPU is
+    #: deadlocked, one at 100% is spinning, and both look identical in a log and in a tree that
+    #: still says RUNNING. Per **process** rather than per container, because that names the node
+    #: doing it instead of only saying that something is.
+    #:
+    #: Numbers passed through and never scored, as with the other two: which of the two states is
+    #: the wrong one depends on what the run is supposed to be doing, which RoboVAST does not know.
+    resources: Optional[dict] = None
     #: One line per source that could not be read, saying which and why. Never a silent gap:
     #: a diagnostic that omits its own failures is one that reports a broken run as a fine one.
     unavailable: list = Field(default_factory=list)

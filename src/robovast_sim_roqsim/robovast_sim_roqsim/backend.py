@@ -355,9 +355,11 @@ class RoqsimBackend(SimulatorBackend):
         tail of the clock and pose records, and the ``state`` block in the same reply is the last
         sample of those same reads. Nothing here folds a whole file.
 
-        Deliberately no ``--robot``: the pose record names root bodies without saying which are
-        robots, so naming them would mean this backend guessing per world. The motion check
-        reports itself as skipped instead, which is the honest answer and visible in the reply.
+        Deliberately no ``--robot``: ``roqsim health`` resolves which bodies are robots from the
+        run's own entity roster, so the motion check runs without this backend naming anything
+        per world -- and a run with no roster says so in the reply's ``skipped``, which is the
+        honest answer rather than a silent pass. ``--robot`` remains an override there; passing
+        one from here would be RoboVAST guessing at a world it does not read.
         """
         del cfg, execution
         return f"roqsim health --json {shlex.quote(run_dir)}"

@@ -2008,6 +2008,39 @@ export interface components {
             detail: components["schemas"]["ValidationError"][];
         };
         /**
+         * HealthFinding
+         * @description One thing a run's **simulator** reported wrong about itself, while it was running.
+         *
+         *     The cross-repo contract, and the whole of it. RoboVAST learns exactly one word --
+         *     ``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no
+         *     per-check knowledge anywhere in RoboVAST and any simulator shipping a command with this
+         *     contract is understood. See
+         *     :meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and
+         *     :ref:`mcp-liveness` for the document it prints.
+         *
+         *     ``level`` decides what happens, and only these two mean anything here:
+         *
+         *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast wait``
+         *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
+         *       still holds ``running`` for its whole life.
+         *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
+         *       ``get_job_state`` and on the campaign's own exit.
+         *
+         *     ``check`` is a stable slug the simulator owns, and it is what makes "at most once" mean
+         *     something: the waiter fires on a *new* slug, so a check that keeps firing is one fault
+         *     rather than a stream of exits.
+         */
+        HealthFinding: {
+            /** Check */
+            check: string;
+            /** Detail */
+            detail: string;
+            /** Job Name */
+            job_name: string;
+            /** Level */
+            level: string;
+        };
+        /**
          * ImageBuildError
          * @description Structured, LLM-actionable build failure.
          *
@@ -2212,6 +2245,12 @@ export interface components {
         JobState: {
             /** Job Name */
             job_name: string;
+            /** Resources */
+            resources: {
+                [key: string]: unknown;
+            } | null;
+            /** Run */
+            run: string | null;
             /** Scenario */
             scenario: {
                 [key: string]: unknown;
@@ -2813,6 +2852,10 @@ export interface components {
             extra: {
                 [key: string]: unknown;
             };
+            /** Health */
+            health: components["schemas"]["HealthFinding"][];
+            /** Health Skipped */
+            health_skipped: string[];
             /** Mode */
             mode: string | null;
             /**

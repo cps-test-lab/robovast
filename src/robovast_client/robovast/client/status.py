@@ -147,6 +147,38 @@ class RunProgress(BaseModel):
     killed: int = 0
 
 
+class HealthFinding(BaseModel):
+    """One thing a run's **simulator** reported wrong about itself, while it was running.
+
+    The cross-repo contract, and the whole of it. RoboVAST learns exactly one word --
+    ``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no
+    per-check knowledge anywhere in RoboVAST and any simulator shipping a command with this
+    contract is understood. See
+    :meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and
+    :ref:`mcp-liveness` for the document it prints.
+
+    ``level`` decides what happens, and only these two mean anything here:
+
+    * ``error`` — the run is not doing what it was started to do. Ends a ``vast wait``
+      (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
+      still holds ``running`` for its whole life.
+    * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
+      ``get_job_state`` and on the campaign's own exit.
+
+    ``check`` is a stable slug the simulator owns, and it is what makes "at most once" mean
+    something: the waiter fires on a *new* slug, so a check that keeps firing is one fault
+    rather than a stream of exits.
+    """
+
+    #: Which job reported it. Present because a campaign's findings arrive from several
+    #: running jobs at once on the cluster lane, and "something is wedged" is not actionable
+    #: without saying which.
+    job_name: str
+    level: str          # error | warn -- the only word RoboVAST interprets
+    check: str          # the simulator's own slug, passed through
+    detail: str         # the simulator's own observation, passed through
+
+
 class BudgetItem(BaseModel):
     """One budget/stopping criterion's current value vs its limit."""
     label: str
@@ -232,6 +264,21 @@ class Status(BaseModel):
     # Cleared on a successful (re-)triggered upload.
     share_error: Optional[str] = None
     extra: dict = Field(default_factory=dict)
+    # What the running jobs' own simulators currently report about themselves. **Attached on
+    # read and never persisted**: the controller does not write this, nothing in the results
+    # records it, and a campaign nobody polls produces none of it -- diagnostics are not
+    # results. Empty is therefore "nothing was reported", which is not the same as "nothing
+    # is wrong"; :meth:`get_job_state` is where a reader finds out which of the two it is.
+    health: list[HealthFinding] = Field(default_factory=list)
+    # Checks a running job's simulator says it did NOT run, each already carrying its own reason
+    # (``"<job>: <the simulator's sentence>"``). Beside ``health`` rather than inside it, because a
+    # check that did not run is not a finding: it has no ``level``, and inventing one would be
+    # RoboVAST asserting something the simulator did not.
+    #
+    # Reported at all because "no findings" and "the check never ran" are the same shape otherwise,
+    # and the first reads as a clean bill of health. A robot-motion check with no roster is exactly
+    # that case: nothing is wrong, and nothing looked.
+    health_skipped: list[str] = Field(default_factory=list)
     updated_at: float = Field(default_factory=time.time)
 
 
@@ -244,6 +291,25 @@ STALL_NEXT_STEP = ("ask what the job is doing with get_job_state, then what it i
                    "`vast exec log`), then reproduce the configuration with exec_in_container "
                    "-- a fault that does not reproduce there is environmental rather than in "
                    "the config")
+
+
+#: What a caller should do once a run's own simulator has reported something wrong. A DIFFERENT
+#: step from :data:`STALL_NEXT_STEP`, and this used to reuse it, which sent a reader to go and ask
+#: what the job was doing -- the question the finding had already answered. A finding names the job
+#: and names the check, so the useful next move starts from those two facts.
+HEALTH_NEXT_STEP = ("read that job with get_job_state -- the finding says a check failed, the tree "
+                    "says which action was running while it did and the simulator's own state "
+                    "carries the clock and the poses; look the check's slug up in the simulator's "
+                    "documentation, not RoboVAST's, since the slug is the simulator's; then "
+                    "reproduce the configuration with exec_in_container if the cause is not yet "
+                    "in hand")
+
+
+#: The only two finding levels RoboVAST gives meaning to. Named here so the waiter, the MCP
+#: and the turn guard match on one spelling -- and deliberately just two: everything else a
+#: simulator might say is passed through, and a level RoboVAST does not know is not an error.
+HEALTH_ERROR = "error"
+HEALTH_WARN = "warn"
 
 
 #: Told to a caller whose campaign declared no budget, so "I cannot judge" is never
@@ -299,6 +365,32 @@ def stall_report(status: "Status") -> dict:
             f"no progress for {age:.0f}s, past the {deadline}s expected per run — "
             f"the run is not merely slow. Next: {STALL_NEXT_STEP}")
     return report
+
+
+def error_findings(status: "Status") -> list["HealthFinding"]:
+    """The ``error``-level findings on a live campaign, in report order.
+
+    One derivation, shared by the waiter and the MCP for the reason :func:`stall_report`
+    is shared: two surfaces deciding separately what counts as bad enough to act on is how
+    they come to disagree about the same campaign.
+
+    A terminal campaign gets none, as with a stall: what a run reported while it was wedged
+    is history once it is over, and the results are the record then.
+    """
+    if is_terminal(status.phase):
+        return []
+    return [f for f in (status.health or []) if f.level == HEALTH_ERROR]
+
+
+def finding_summary(finding: "HealthFinding") -> str:
+    """One finding as a line, phrased identically wherever it is shown.
+
+    Observation first and diagnosis never: the simulator's ``detail`` states what it saw,
+    and the slug is carried so a reader can look the check up in the simulator's own docs
+    rather than in RoboVAST's.
+    """
+    return (f"{finding.job_name}: health finding ({finding.level}) "
+            f"{finding.check}: {finding.detail}")
 
 
 def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:

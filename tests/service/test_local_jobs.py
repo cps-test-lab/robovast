@@ -11,10 +11,14 @@ live and it has none yet. The per-job log is that ``system.log`` read from a byt
 offset — no cluster needed.
 """
 
+import json
+import threading
 from pathlib import Path
 
 import pytest
 import yaml
+
+from robovast.common.config import SIMULATION_CONTAINER
 
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
 from robovast.execution.control_server import ControllerState
@@ -641,18 +645,90 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
 # -- get_job_state: what a running job is doing, from the run's own tools -------------------------
 
 
-def _job_state_transport(transport, monkeypatch, *, command, exec_result, tree_result=None):
+#: A ROS-shape execution block: the simulator has a container of its own, which is the shape every
+#: roqsim campaign uses. Written to the campaign's ``_config/`` so the transport reads it for real
+#: -- stubbing ``_campaign_execution`` was what hid a returned pydantic model AND a health command
+#: sent to the wrong container, for as long as both existed.
+_ROS_SHAPE_VAST = """\
+version: 2
+metadata: {name: t}
+configuration:
+- name: cfga
+execution:
+  runs: 1
+  mode: ros2
+  containers:
+    simulation: {image: sim-image:1, backend: roqsim, config: w.yaml}
+    sut: {image: sut-image:1}
+"""
+
+#: The stepped shape: the simulation container is declared but has neither image nor command, so
+#: the simulator IS the scenario container and the role must resolve to it rather than to a name
+#: nothing started. (An *absent* simulation block is a third case -- a campaign with no simulator.)
+_STEPPED_VAST = """\
+version: 2
+metadata: {name: t}
+configuration:
+- name: cfga
+execution:
+  runs: 1
+  mode: base
+  containers:
+    scenario: {image: scen-image:1}
+    simulation: {backend: roqsim, config: w.yaml}
+"""
+
+
+#: What the resource read prints back: the marker line the reader splits on, then each file's
+#: header and tail. Two ticks in the main container so "newest only" is actually exercised.
+_RESOURCE_CSVS = ("@@ resource_usage_main.csv\n"
+                  "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
+                  "100.0,7,scenario_execution,3.5,1000\n"
+                  "200.0,7,scenario_execution,0.0,1100\n"
+                  "@@ resource_usage_sut.csv\n"
+                  "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
+                  "200.0,9,amcl,99.5,2000\n")
+
+
+#: A campaign with no simulator at all: nothing to ask about itself, which is a normal answer and
+#: must never render as a healthy run.
+_NO_SIM_VAST = """\
+version: 2
+metadata: {name: t}
+configuration:
+- name: cfga
+execution:
+  runs: 1
+  mode: base
+  containers:
+    scenario: {image: scen-image:1}
+"""
+
+
+def _freeze_vast(campaign_dir, text=_ROS_SHAPE_VAST):
+    """Put a real frozen ``.vast`` where the transport looks for this campaign's config."""
+    config_dir = Path(campaign_dir) / "_config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "campaign.vast").write_text(text, encoding="utf-8")
+
+
+def _job_state_transport(transport, monkeypatch, *, command, exec_result, tree_result=None,
+                         resource_result=None):
     """A transport whose campaign has *command* as its simulator's health command.
 
-    The two reads are answered separately, as the real container does: the scenario's tree comes
-    from scenario-execution's reader and the rest from the simulator's. A single canned reply for
-    both would let one read's output be mistaken for the other's.
+    The reads are answered separately, as the real container does: the scenario's tree comes from
+    scenario-execution's reader, the samples from the run's resource monitor, and the rest from the
+    simulator's. A single canned reply for all of them would let one read's output be mistaken for
+    another's.
+
+    Matched on the *joined* argv, because every read now runs through a shell that sources the run's
+    ROS overlay first -- the command is inside one argv element rather than being the elements.
     """
     monkeypatch.setattr("robovast.common.simulators.health_command",
                         lambda execution, *, run_dir, base_dir="": command)
-    monkeypatch.setattr(transport, "_campaign_execution", lambda cid: {"containers": {}})
     tree = tree_result if tree_result is not None else (0, '{"found": false, "error": "none"}',
                                                        "", False)
+    resources = resource_result if resource_result is not None else (0, "", "", False)
 
     class _Lane:
         def __init__(self):
@@ -660,13 +736,23 @@ def _job_state_transport(transport, monkeypatch, *, command, exec_result, tree_r
 
         def exec_in(self, target, argv, limit_s, env=None):
             self.calls.append((target, argv, limit_s))
-            if "scenario_execution.tree_state" in argv:
+            joined = " ".join(argv)
+            if "scenario_execution.tree_state" in joined:
                 return tree
+            if "resource_usage_" in joined:
+                return resources
             return exec_result
 
     lane = _Lane()
     monkeypatch.setattr(transport, "_exec_lane", lambda: lane)
     return lane
+
+
+def _call_with(lane, needle):
+    """The one recorded exec whose command mentions *needle*."""
+    hits = [c for c in lane.calls if needle in " ".join(c[1])]
+    assert hits, f"no exec mentioning {needle!r}; got {[c[1] for c in lane.calls]}"
+    return hits[0]
 
 
 def test_get_job_state_passes_the_simulator_s_json_through(transport, monkeypatch):
@@ -676,13 +762,15 @@ def test_get_job_state_passes_the_simulator_s_json_through(transport, monkeypatc
     cid = "campaign-2026-08-20-120000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=1, completed=0)
     reply = '{"findings": [], "state": {"sim_ts": 12.5, "entities": []}}'
     tree = '{"found": true, "running": {"name": "drive_to"}, "counts": {"RUNNING": 1}}'
     lane = _job_state_transport(transport, monkeypatch,
                                 command="roqsim health --json /out/cfgA/1",
                                 exec_result=(0, reply, "", False),
-                                tree_result=(0, tree, "", False))
+                                tree_result=(0, tree, "", False),
+                                resource_result=(0, _RESOURCE_CSVS, "", False))
 
     state = transport.get_job_state(cid, "cfgA/1")
 
@@ -691,9 +779,182 @@ def test_get_job_state_passes_the_simulator_s_json_through(transport, monkeypatc
     assert state.unavailable == []
     # The run dir is derived from the run, not read from RUN_OUTPUT_DIR -- the backends set that
     # only for a job that is exactly one run, so a packed job would have none.
-    sim_call = [c for c in lane.calls if "roqsim" in c[1]][0]
-    assert sim_call[0] == transport._CONTAINER_NAME
-    assert sim_call[1] == ["roqsim", "health", "--json", "/out/cfgA/1"]
+    sim_call = _call_with(lane, "roqsim health")
+    assert "roqsim health --json /out/cfgA/1" in " ".join(sim_call[1])
+
+
+def test_the_health_read_tries_the_job_dir_before_the_run_dir(transport, monkeypatch):
+    """A simulator's records MOVE. While a run is live its clock record sits in the job's own
+    output dir; only results collection puts it beside the run. This read is only ever asked about
+    a running job, so the job dir is the answer -- and pointing it at the run dir returned "no
+    records" for a simulator that was reporting perfectly well one directory away."""
+    cid = "campaign-2026-08-20-120600"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
+    _live(transport, cid, "running", total=1, completed=0)
+    monkeypatch.setattr(transport, "_job_output_dir",
+                        lambda cid_, job, run_dir: "/out/_jobs/batch-0/job-0")
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": f"tool --json {run_dir}")
+
+    class _Lane:
+        def __init__(self):
+            self.dirs = []
+
+        def exec_in(self, target, argv, limit_s, env=None):
+            script = " ".join(argv)
+            if "tool --json" not in script:
+                return (0, "", "", False)
+            self.dirs.append(script.rsplit(" ", 1)[-1])
+            # Only the job dir has the record, exactly as a live run has it.
+            if "_jobs" in script:
+                return (0, '{"findings": [], "state": {"sim_ts": 9.0}}', "", False)
+            return (2, "", "no records here", False)
+
+    lane = _Lane()
+    monkeypatch.setattr(transport, "_exec_lane", lambda: lane)
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator == {"findings": [], "state": {"sim_ts": 9.0}}
+    assert lane.dirs == ["/out/_jobs/batch-0/job-0"], \
+        "the job dir must be tried FIRST, and answering there must cost no second exec"
+    # The other two reads are stubbed to say nothing here, so they report themselves as usual --
+    # what this test asserts is that none of those reasons is about the simulator.
+    assert not any("tool --json" in line for line in state.unavailable)
+
+
+def test_the_health_read_falls_back_to_the_run_dir(transport, monkeypatch):
+    """Where a backend writes is the backend's business and one lane's layout is not the other's,
+    so the run dir is tried after the job dir rather than assumed away."""
+    cid = "campaign-2026-08-20-120700"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
+    _live(transport, cid, "running", total=1, completed=0)
+    monkeypatch.setattr(transport, "_job_output_dir",
+                        lambda cid_, job, run_dir: "/out/_jobs/batch-0/job-0")
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": f"tool --json {run_dir}")
+
+    class _Lane:
+        def __init__(self):
+            self.dirs = []
+
+        def exec_in(self, target, argv, limit_s, env=None):
+            script = " ".join(argv)
+            if "tool --json" not in script:
+                return (0, "", "", False)
+            self.dirs.append(script.rsplit(" ", 1)[-1])
+            if "_jobs" in script:
+                return (2, "", "no records here", False)
+            return (0, '{"findings": [], "state": {"sim_ts": 1.0}}', "", False)
+
+    lane = _Lane()
+    monkeypatch.setattr(transport, "_exec_lane", lambda: lane)
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator == {"findings": [], "state": {"sim_ts": 1.0}}
+    assert lane.dirs == ["/out/_jobs/batch-0/job-0", "/out/cfgA/1"]
+
+
+def test_get_job_state_asks_each_container_that_owns_its_read(transport, monkeypatch):
+    """The simulator's command belongs in the simulator's container and the scenario's in the
+    scenario's. Sending both to one target ran ``roqsim health`` in a container with no roqsim in
+    it for every ROS-shape campaign -- which is every roqsim one."""
+    cid = "campaign-2026-08-20-120100"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)                      # a simulation container of its own
+    _live(transport, cid, "running", total=1, completed=0)
+    lane = _job_state_transport(transport, monkeypatch,
+                                command="roqsim health --json /out/cfgA/1",
+                                exec_result=(0, "{}", "", False),
+                                tree_result=(0, '{"found": false, "error": "x"}', "", False))
+
+    transport.get_job_state(cid, "cfgA/1")
+
+    assert _call_with(lane, "roqsim health")[0] == SIMULATION_CONTAINER
+    assert _call_with(lane, "tree_state")[0] == transport._CONTAINER_NAME
+
+
+def test_get_job_state_reads_a_stepped_simulator_in_the_scenario_container(transport, monkeypatch):
+    """A simulator stepped in-process IS the scenario container, so the role resolves to it. The
+    campaign's own container plan answers that -- guessing the role's name would address a
+    container nothing started."""
+    cid = "campaign-2026-08-20-120200"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir, _STEPPED_VAST)       # no simulation container
+    _live(transport, cid, "running", total=1, completed=0)
+    lane = _job_state_transport(transport, monkeypatch,
+                                command="roqsim health --json /out/cfgA/1",
+                                exec_result=(0, "{}", "", False))
+
+    transport.get_job_state(cid, "cfgA/1")
+
+    assert _call_with(lane, "roqsim health")[0] == transport._CONTAINER_NAME
+
+
+def test_get_job_state_reads_run_the_run_s_own_environment(transport, monkeypatch):
+    """``scenario_execution`` is colcon-built into an overlay no shell rc sources, so a bare argv
+    answers "No module named 'scenario_execution'" in every image ever built. Rebuilding does not
+    fix that; sourcing the overlay the run itself sources does."""
+    cid = "campaign-2026-08-20-120300"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
+    _live(transport, cid, "running", total=1, completed=0)
+    lane = _job_state_transport(transport, monkeypatch,
+                                command="roqsim health --json /out/cfgA/1",
+                                exec_result=(0, "{}", "", False))
+
+    transport.get_job_state(cid, "cfgA/1")
+
+    for needle in ("tree_state", "roqsim health"):
+        script = " ".join(_call_with(lane, needle)[1])
+        assert "/ws/install/setup.bash" in script
+        assert script.index("/ws/install/setup.bash") < script.index(needle)
+
+
+def test_get_job_state_states_an_unreadable_configuration_as_such(transport, monkeypatch):
+    """A config that cannot be read is a different answer from a simulator that cannot report, and
+    collapsing them makes a broken campaign read as a capability gap."""
+    cid = "campaign-2026-08-20-120400"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)   # no frozen .vast at all
+    _job_state_transport(transport, monkeypatch, command="roqsim health",
+                         exec_result=(0, "{}", "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator is None
+    assert any("could not read this campaign's configuration" in line
+               for line in state.unavailable)
+    assert not any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_get_job_state_reports_the_newest_resource_sample_per_container(transport, monkeypatch):
+    """0% CPU is a deadlock and 100% is a spin, and a log and a tree that both say RUNNING cannot
+    tell them apart. Per process, so the answer names the node rather than only the container."""
+    cid = "campaign-2026-08-20-120500"
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
+    _live(transport, cid, "running", total=1, completed=0)
+    _job_state_transport(transport, monkeypatch, command=None,
+                         exec_result=(0, "", "", False),
+                         resource_result=(0, _RESOURCE_CSVS, "", False))
+
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.resources["main"]["at"] == 200.0
+    assert state.resources["main"]["processes"] == [
+        {"name": "scenario_execution", "cpu_percent": 0.0, "memory_rss_bytes": 1100}]
+    assert state.resources["sut"]["processes"][0]["cpu_percent"] == 99.5
 
 
 def test_get_job_state_says_when_the_simulator_cannot_report(transport, monkeypatch):
@@ -702,6 +963,7 @@ def test_get_job_state_says_when_the_simulator_cannot_report(transport, monkeypa
     cid = "campaign-2026-08-20-121000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=1, completed=0)
     _job_state_transport(transport, monkeypatch, command=None, exec_result=(0, "", "", False))
 
@@ -717,6 +979,7 @@ def test_get_job_state_reports_a_timeout_without_asserting_a_cause(transport, mo
     cid = "campaign-2026-08-20-122000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=1, completed=0)
     _job_state_transport(transport, monkeypatch, command="roqsim health --json /out/cfgA/1",
                          exec_result=(0, "", "", True))
@@ -733,6 +996,7 @@ def test_get_job_state_reports_unreadable_output_rather_than_swallowing_it(trans
     cid = "campaign-2026-08-20-123000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=1, completed=0)
     _job_state_transport(transport, monkeypatch, command="roqsim health --json /out/cfgA/1",
                          exec_result=(1, "Traceback: boom", "", False))
@@ -750,6 +1014,7 @@ def test_get_job_state_refuses_a_job_that_is_not_running(transport, monkeypatch)
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "0", xml=_PASS_XML)   # completed
     _run(cdir, "cfgA", "1", log="running\n", job_index=1)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=2, completed=1)
     _job_state_transport(transport, monkeypatch, command="x", exec_result=(0, "{}", "", False))
 
@@ -881,6 +1146,7 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(transpo
     cid = "campaign-2026-08-20-126000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir, _NO_SIM_VAST)
     _live(transport, cid, "running", total=1, completed=0)
     tree = '{"found": true, "running": {"name": "drive_to", "since": 31.4}}'
     _job_state_transport(transport, monkeypatch, command=None,
@@ -900,6 +1166,7 @@ def test_a_run_without_bt_log_says_so_rather_than_showing_an_empty_tree(transpor
     cid = "campaign-2026-08-20-127000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir)
     _live(transport, cid, "running", total=1, completed=0)
     reason = '{"found": false, "error": "no behaviors.jsonl in or below \'/out/cfgA/1\'"}'
     _job_state_transport(transport, monkeypatch, command="tool --json /out/cfgA/1",
@@ -909,3 +1176,225 @@ def test_a_run_without_bt_log_says_so_rather_than_showing_an_empty_tree(transpor
 
     assert state.scenario is None
     assert any("behaviors.jsonl" in line for line in state.unavailable)
+
+
+# -- the pull: findings on the status path, without a standing anything ----------------------------
+
+
+#: A frozen `.vast` these tests can hand the transport, valid so `_campaign_execution` gets past
+#: validation. Its own copy rather than a shared constant: what the pull needs from a campaign's
+#: config is only that reading it *works*, so a fixture shaped for some other question would couple
+#: these tests to that question.
+_PULL_VAST = """\
+version: 2
+metadata: {name: t}
+configuration:
+- name: cfga
+execution:
+  runs: 1
+  mode: ros2
+  containers:
+    simulation: {image: sim-image:1, backend: roqsim, config: w.yaml}
+"""
+
+
+def _healthy_campaign(transport, monkeypatch, cid, *, findings, exec_result=None):
+    """A live one-run campaign whose simulator reports *findings*, and the lane it is asked over."""
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _freeze_vast(cdir, _PULL_VAST)
+    _live(transport, cid, "running", total=1, completed=0)
+    reply = json.dumps({"findings": findings, "state": {"sim_ts": 3.1}})
+    return _job_state_transport(transport, monkeypatch, command="tool --json /out/cfgA/1",
+                                exec_result=exec_result or (0, reply, "", False))
+
+
+def _drain(transport, cid, polls=1):
+    """Poll the status, then let the refresher it spawned finish before asserting on it.
+
+    The refresh is deliberately off the request thread -- a status read must not wait even for the
+    exec's own timeout -- so a test has to join it rather than assume the first read carries the
+    answer.
+    """
+    for _ in range(polls):
+        transport.get_status(cid)
+        for thread in list(threading.enumerate()):
+            if thread.name == f"health-{cid}":
+                thread.join(timeout=5)
+    # Read once more, after joining: findings arrive one poll later by design, so a status taken
+    # before the refresher finished would make every assertion below pass for the wrong reason.
+    return transport.get_status(cid)
+
+
+def test_a_status_read_carries_the_running_job_s_findings(transport, monkeypatch):
+    """The delivery this exists for: a wedged run holds ``running`` for its whole life, so the
+    verdict has to ride on the thing the waiter already polls."""
+    cid = "campaign-2026-08-20-130000"
+    _healthy_campaign(transport, monkeypatch, cid,
+                      findings=[{"level": "error", "check": "sim-time-rate", "detail": "3.1s"}])
+
+    status = _drain(transport, cid)               # one poll pays for the read, the next serves it
+
+    assert [(f.job_name, f.level, f.check) for f in status.health] == [
+        ("cfgA/1", "error", "sim-time-rate")]
+
+
+def test_nobody_polling_means_nothing_is_asked(transport, monkeypatch):
+    """"Absent costs nothing": no process runs in any container and no exec is issued at all until
+    somebody reads the status. A campaign nobody is debugging must pay nothing for this."""
+    cid = "campaign-2026-08-20-131000"
+    lane = _healthy_campaign(transport, monkeypatch, cid, findings=[])
+
+    assert lane.calls == []
+
+
+def test_the_ttl_collapses_many_watchers_into_one_check(transport, monkeypatch):
+    """N watchers cost one check per interval, not N. The claim is taken under the lock precisely
+    so concurrent status reads cannot each start their own exec."""
+    cid = "campaign-2026-08-20-132000"
+    lane = _healthy_campaign(transport, monkeypatch, cid, findings=[])
+
+    _drain(transport, cid, polls=6)
+
+    assert len([c for c in lane.calls if "tool" in " ".join(c[1])]) == 1
+
+
+def test_the_ttl_expiring_asks_again(transport, monkeypatch):
+    """The other half of the same property: this is a cache, not a one-shot. A finding that appears
+    after the first poll still has to arrive."""
+    cid = "campaign-2026-08-20-133000"
+    lane = _healthy_campaign(transport, monkeypatch, cid, findings=[])
+
+    _drain(transport, cid)
+    with transport._health_guard:
+        transport._health[cid]["at"] = 0.0        # as if a whole interval had passed
+        transport._health[cid]["jobs"] = {}
+    _drain(transport, cid)
+
+    assert len([c for c in lane.calls if "tool" in " ".join(c[1])]) == 2
+
+
+def test_a_status_read_never_waits_on_a_wedged_container(transport, monkeypatch):
+    """The non-negotiable one. A hung container must not slow every watcher of the campaign it is
+    hanging in -- which is exactly when a reader needs an answer -- so the read answers from what it
+    has and the exec happens elsewhere."""
+    cid = "campaign-2026-08-20-134000"
+    started, release = threading.Event(), threading.Event()
+    cdir = transport._campaigns_root() / cid
+    _run(cdir, "cfgA", "1", log="running\n", job_index=0)
+    _live(transport, cid, "running", total=1, completed=0)
+    _freeze_vast(cdir, _PULL_VAST)
+    monkeypatch.setattr("robovast.common.simulators.health_command",
+                        lambda execution, *, run_dir, base_dir="": "tool --json /out")
+
+    class _WedgedLane:
+        def exec_in(self, target, argv, limit_s, env=None):
+            started.set()
+            release.wait(10)
+            return (0, "", "", True)
+
+    monkeypatch.setattr(transport, "_exec_lane", lambda: _WedgedLane())
+    try:
+        transport.get_status(cid)                 # must return while the exec is still blocked
+        assert started.wait(5), "the refresh should have been started"
+        status = transport.get_status(cid)
+        assert status.health == [], "no findings yet -- and that is not a claim of health"
+    finally:
+        release.set()
+        for thread in list(threading.enumerate()):
+            if thread.name == f"health-{cid}":
+                thread.join(timeout=5)
+
+
+def test_a_read_that_failed_is_a_reason_and_never_a_verdict(transport, monkeypatch):
+    """An empty answer that reads as "nothing is happening" is the failure mode this whole path
+    exists to prevent, so the status carries no findings and ``get_job_state`` says why."""
+    cid = "campaign-2026-08-20-135000"
+    _healthy_campaign(transport, monkeypatch, cid, findings=[],
+                      exec_result=(0, "", "", True))
+
+    status = _drain(transport, cid)
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert status.health == []
+    assert any("did not answer within" in line for line in state.unavailable)
+    assert state.simulator is None
+
+
+def test_get_job_state_is_served_from_what_the_poll_already_paid_for(transport, monkeypatch):
+    """An agent asking must not be charged for a check a poll has already done, which is the reason
+    the two share one cache rather than each having their own."""
+    cid = "campaign-2026-08-20-136000"
+    lane = _healthy_campaign(transport, monkeypatch, cid, findings=[])
+
+    _drain(transport, cid)
+    state = transport.get_job_state(cid, "cfgA/1")
+
+    assert state.simulator == {"findings": [], "state": {"sim_ts": 3.1}}
+    assert len([c for c in lane.calls if "tool" in " ".join(c[1])]) == 1
+
+
+def test_a_malformed_finding_does_not_take_the_status_read_down(transport, monkeypatch):
+    """The document belongs to the simulator, so a shape RoboVAST did not expect is that
+    simulator's business. A finding with no level or check can be neither matched nor ranked, so it
+    is dropped rather than guessed at."""
+    cid = "campaign-2026-08-20-137000"
+    _healthy_campaign(transport, monkeypatch, cid, findings=[
+        "not a dict", {"detail": "no level, no check"}, {"level": "error", "check": "ok"}])
+
+    status = _drain(transport, cid)
+
+    assert [f.check for f in status.health] == ["ok"]
+
+
+def test_reading_a_live_job_taints_nothing(transport, monkeypatch):
+    """The rule the whole read/probe split rests on: the service chose this command, so no ledger
+    entry is written and no run is marked. Only a caller-supplied command is a probe."""
+    cid = "campaign-2026-08-20-138000"
+    _healthy_campaign(transport, monkeypatch, cid, findings=[])
+
+    _drain(transport, cid, polls=3)
+    transport.get_job_state(cid, "cfgA/1")
+
+    ledger = transport._campaigns_root() / cid / "_execution" / "interventions.json"
+    assert not ledger.exists()
+
+
+def test_a_finished_campaign_is_forgotten_rather_than_asked(transport, monkeypatch):
+    """What a run reported while it was wedged is history once it is over, and the results are the
+    record then. Holding it would also leak an entry per campaign for the service's lifetime."""
+    cid = "campaign-2026-08-20-139000"
+    _healthy_campaign(transport, monkeypatch, cid,
+                      findings=[{"level": "error", "check": "sim-time-rate"}])
+    _drain(transport, cid)
+    assert transport._health.get(cid)
+
+    _live(transport, cid, "finished", total=1, completed=1)
+    status = transport.get_status(cid)
+
+    assert status.health == []
+    assert cid not in transport._health
+
+
+def test_the_service_never_reads_a_simulator_s_own_records():
+    """The invariant a well-meaning shortcut breaks first, so it is asserted rather than trusted.
+
+    A live read *could* open the simulator's pose or clock record directly and would be marginally
+    cheaper. It is deliberately not done: those files belong to the simulator and are free to be
+    reshaped, so a reader here would be a hidden cross-repo coupling that breaks silently on the
+    day they are. The service execs the container's own tool and reads the JSON it declares.
+
+    Scoped to the service tree on purpose. Naming those records is correct in two other places: the
+    simulator-specific backend package, which *is* the code that knows its simulator, and the
+    results tables, where the CSV became a documented column set through the generic
+    one-table-per-CSV-stem ingest rather than through anything reading it by name.
+    """
+    # From a module in it rather than from the package: `robovast.service` is a namespace package,
+    # so it has no `__file__` of its own.
+    import robovast.service.local_transport as _lt
+    service_dir = Path(_lt.__file__).parent
+    offenders = [path.name for path in service_dir.rglob("*.py")
+                 if "sim_poses" in path.read_text(encoding="utf-8")]
+    assert offenders == [], (
+        f"{offenders} names a simulator's own record. Ask the simulator's tool instead — see "
+        "SimulatorBackend.health_command.")

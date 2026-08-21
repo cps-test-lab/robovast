@@ -1134,6 +1134,35 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HealthFinding": {
+        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast wait``\n  (exit 5), because nobody would otherwise be told: a run whose simulator is wedged\n  still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
+        "properties": {
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "job_name": {
+            "title": "Job Name",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "check",
+          "detail",
+          "job_name",
+          "level"
+        ],
+        "title": "HealthFinding",
+        "type": "object"
+      },
       "ImageBuildError": {
         "description": "Structured, LLM-actionable build failure.\n\nRegistry-free by construction: never carries an endpoint, credential, or\nregistry-qualified ref (see the zero-registry-knowledge invariant).",
         "properties": {
@@ -1389,6 +1418,29 @@
             "title": "Job Name",
             "type": "string"
           },
+          "resources": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resources"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          },
           "scenario": {
             "anyOf": [
               {
@@ -1426,6 +1478,8 @@
         },
         "required": [
           "job_name",
+          "resources",
+          "run",
           "scenario",
           "simulator",
           "status",
@@ -2281,6 +2335,20 @@
             "title": "Extra",
             "type": "object"
           },
+          "health": {
+            "items": {
+              "$ref": "#/components/schemas/HealthFinding"
+            },
+            "title": "Health",
+            "type": "array"
+          },
+          "health_skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Health Skipped",
+            "type": "array"
+          },
           "mode": {
             "anyOf": [
               {
@@ -2394,6 +2462,8 @@
           "campaign_id",
           "error",
           "extra",
+          "health",
+          "health_skipped",
           "mode",
           "phase",
           "phase_since",

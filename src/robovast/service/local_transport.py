@@ -47,6 +47,7 @@ from typing import Callable, Optional
 from robovast.client import file_address
 from robovast.client.safe_path import safe_join
 from robovast.common import file_view
+from robovast.common.config import SCENARIO_CONTAINER, SIMULATION_CONTAINER
 from robovast.common.host_display import require_host_display
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
@@ -262,6 +263,30 @@ def _config_view_contribution(config: dict, vast_dir: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _no_timeout_note(raw_config: dict) -> str:
+    """Say, at launch, that this campaign cannot be judged stalled — before it is.
+
+    ``execution.timeout`` is what makes ``stalled`` a verdict rather than ``null``, and
+    ``null`` is the one answer nobody acts on: a campaign that declared no budget gets no
+    stall verdict, and so ``vast wait`` can never end on one. Told here because the fix is
+    a line in the ``.vast`` and this is the last moment before the compute is spent; four
+    minutes into a wedged sweep it is only an explanation.
+
+    Advisory, not a validation error, and for the reason :func:`_show_gui_note` is: a
+    campaign with no declared per-run budget is a legitimate thing to run.
+    """
+    from robovast.common.config import declared_per_run_seconds
+
+    execution = (raw_config or {}).get("execution") or {}
+    if not isinstance(execution, dict) or declared_per_run_seconds(execution):
+        return ""
+    return ("this project declares no execution.timeout, so no stall verdict is possible "
+            "for it — `vast wait` cannot end on one, and get_campaign_status reports "
+            "stalled: null, which is not 'healthy'. Declare it to get a verdict. (A "
+            "simulator that reports on itself is unaffected: its own findings still end "
+            "the wait.)")
+
+
 def _show_gui_note(request, raw_config: dict) -> str:
     """Warn when ``show_gui`` was accepted but the project will still run headless.
 
@@ -379,6 +404,12 @@ class WorkspaceTarget:
 #: tail of two records, which answers in well under a second when anything is answering at all.
 _JOB_STATE_LIMIT_S = 20
 
+#: How long one health read stands in for the next. The waiter's own poll interval, so a status
+#: read never triggers a second exec for a job already asked this interval -- N watchers cost one
+#: check, and nobody watching costs none at all. Latency to notice is bounded by this, which is
+#: irrelevant against runs measured in minutes.
+_HEALTH_TTL_S = 10.0
+
 #: How long a caller's own command may run in a live job. Longer than a state read -- a caller may
 #: legitimately watch a topic for a few seconds -- but still a cap: this holds a request open, and a
 #: command that needs longer wants ``exec_in_container``, where nothing is waiting on it.
@@ -431,6 +462,12 @@ class LocalTransport(RobovastInterface):
         self._exec_mgr = None
         self._usage_lock = threading.Lock()
         self._usage_cache: "tuple[float, ResourceUsage] | None" = None
+        # campaign_id -> what its running jobs' simulators last said about themselves, and
+        # when. Held in memory and never written: a diagnostic is not a result, and a campaign
+        # nobody polls is never asked. Refreshed off the request thread (see _attach_health),
+        # so a wedged container cannot hold a status read even for the exec's own timeout.
+        self._health: dict[str, dict] = {}
+        self._health_guard = threading.Lock()
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes, so no invalidation is needed.
         self._started_at_cache: dict[str, str] = {}
@@ -1395,8 +1432,11 @@ class LocalTransport(RobovastInterface):
         entry.thread = thread
         thread.start()
         logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
-        return CampaignRef(campaign_id=campaign_id,
-                           note=_show_gui_note(request, raw_config))
+        # Joined rather than first-wins: two independent advisories can both apply to one
+        # launch, and dropping the second would make it depend on the first being absent.
+        notes = [n for n in (_show_gui_note(request, raw_config),
+                             _no_timeout_note(raw_config)) if n]
+        return CampaignRef(campaign_id=campaign_id, note=" ".join(notes))
 
     # -- image builds -------------------------------------------------------
 
@@ -1952,8 +1992,10 @@ class LocalTransport(RobovastInterface):
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         if entry is not None:
-            return self._derive_postprocessed(campaign_id, entry.state.snapshot())
-        # Not tracked in this process — reconstruct from disk (past campaign).
+            snap = self._derive_postprocessed(campaign_id, entry.state.snapshot())
+            return self._attach_health(campaign_id, snap)
+        # Not tracked in this process — reconstruct from disk (past campaign). Nothing to ask:
+        # a campaign this process does not drive has no running job here to look into.
         return self._status_from_disk(campaign_id)
 
     def _derive_postprocessed(self, campaign_id: str, snap: Status) -> Status:
@@ -2217,19 +2259,18 @@ class LocalTransport(RobovastInterface):
                      f"with its remaining runs and this run is recorded as 'killed'"))
 
     def _campaign_execution(self, campaign_id: str) -> dict:
-        """The ``execution`` block of the campaign's own frozen configuration.
+        """The ``execution`` block of this campaign's own frozen configuration.
 
-        Read from ``_config/`` rather than from whatever the workspace holds now: the question is
-        what *this* campaign is running, and a workspace edited since it launched would answer for
-        a different one. ``upgrade=True`` for the reason :meth:`_seed_from_campaign` gives -- this
-        is an archived file and may predate the current version.
+        One reader, in :func:`~robovast.common.results_utils.campaign_execution`, which is also
+        what the scene cache asks: two readers of one archived block are free to disagree, and the
+        one that lived here disagreed by handing back a pydantic model where a mapping was wanted.
+
+        Raises for an unreadable config, which :meth:`_read_health` turns into a stated reason. It
+        must stay a raise rather than an empty block: an empty one is indistinguishable from a
+        campaign whose simulator cannot report on itself, and that reads as "nothing is wrong".
         """
-        from robovast.common.common import load_config
-        from robovast.common.config import validate_config
-        from robovast.common.results_utils import campaign_vast
-        source = Path(self._retrigger_source_dir(campaign_id))
-        config = validate_config(load_config(str(campaign_vast(source)), upgrade=True))
-        return (config or {}).get("execution") or {}
+        from robovast.common.results_utils import campaign_execution
+        return campaign_execution(Path(self._retrigger_source_dir(campaign_id)))
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
         """What a running job is doing, from the run's own tools by fixed commands.
@@ -2241,39 +2282,368 @@ class LocalTransport(RobovastInterface):
         Neither parses another component's file format. The tool that owns each record reads it
         and prints JSON, so a record can be reshaped by its owner without breaking this.
 
-        Locally ``job_name`` *is* the run key (``<config>/<run>``), which is also where the run
-        writes inside the container -- ``/out/<config>/<run>``, the same path both lanes mount.
-        Derived from the run rather than read from ``RUN_OUTPUT_DIR``, which the backends set only
-        for a job that is exactly one run and so is absent from a packed one.
+        The health half is served from whatever the status path last pulled (see
+        :meth:`_read_health`), so an agent asking is never charged for a check a poll has already
+        paid for. The scenario's tree is always read fresh: it is the expensive half -- a fold over
+        every recorded transition rather than a tail -- which is exactly why it is asked for here
+        and never polled.
+
+        **Each read is asked of the container that owns it**, which is why the target is resolved
+        per role and not per job: the scenario runs in the scenario container always, while a
+        simulator with a container of its own answers only there. Sending both to one target sent
+        ``roqsim health`` into a container with no roqsim in it for every ROS-shape campaign.
+
+        Lane-independent by construction: everything that decides *what* is asked is here, and only
+        :meth:`_job_state_target` differs between a local container and a job's pod.
         """
-        from robovast.common.simulators import health_command
         from robovast.service.interface import JobState
 
         job = self._require_running_job(campaign_id, job_name)
         state = JobState(job_name=job_name, status=job.status)
-        run_dir = f"/out/{job_name}"
-        self._read_scenario_state(state, self._CONTAINER_NAME, run_dir)
         try:
-            command = health_command(self._campaign_execution(campaign_id), run_dir=run_dir)
-        except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
-            state.unavailable.append(f"could not read this campaign's configuration: {err}")
+            target, run_dir = self._job_state_target(campaign_id, job_name, SCENARIO_CONTAINER)
+            run_dir, state.run = self._job_live_run(campaign_id, job_name, target, run_dir)
+            job_dir = self._job_output_dir(campaign_id, job_name, run_dir)
+        except Exception as err:  # noqa: BLE001 - a job between scheduling and running, or gone
+            state.unavailable.append(str(err))
             return state
-        if not command:
-            # A normal answer, and the same kind `simulation_screenshot` gives: this campaign's
-            # simulator does not report on itself. Never rendered as a healthy run.
-            state.unavailable.append(
-                "this campaign's simulator does not report its own state, so there is nothing to "
-                "read from a live run")
-            return state
-        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            self._CONTAINER_NAME, shlex.split(command), _JOB_STATE_LIMIT_S)
-        self._job_state_from_output(state, command, exit_code, stdout, stderr, timed_out)
+        self._read_scenario_state(state, target, run_dir)
+        self._read_resources(state, target, job_dir)
+        document, reason = self._read_health(campaign_id, job_name, job_dir, run_dir)
+        if reason:
+            state.unavailable.append(reason)
+        state.simulator = document
         return state
+
+    def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
+        """Where this job writes its **job-level** artifacts, which is not where its runs are.
+
+        The two are different subtrees and conflating them is why two reads failed at once:
+        ``behaviors.jsonl`` and the simulator's records are per RUN
+        (``<config>/<run>/``), while the logs, the sysinfo and the resource monitor's CSVs are
+        per JOB, under ``_jobs/<batch>/job-<idx>/`` -- as
+        :func:`~robovast.common.execution.job_artifact_dir` says outright: *"never into the run
+        dir, so ``<config>/<run>/logs/`` stays empty and reading there yields a silently blank
+        log."* One path for both meant whichever read matched the path worked and the other
+        reported the run had written nothing.
+
+        Resolved through the manifest, which is written before the first job starts, so a RUNNING
+        job resolves. Falls back to *run_dir* when it cannot be resolved -- the read that follows
+        then reports finding nothing, which is the honest outcome and names the directory it
+        looked in.
+        """
+        from robovast.common.execution import job_artifact_dir
+        try:
+            rel = job_artifact_dir(self._campaigns_root() / campaign_id, job_name)
+        except Exception as err:  # noqa: BLE001 - the documented startup race, among others
+            logger.debug("no job artifact dir for %s of %s: %s", job_name, campaign_id, err)
+            return run_dir
+        rel = str(rel).strip("/")
+        return f"/out/{rel}" if rel else run_dir
+
+    def _job_live_run(self, campaign_id: str, job_name: str, target, run_dir: str) -> tuple:
+        """``(run_dir, run_key)`` for the run this job is working on **right now**.
+
+        Locally a job *is* one run, so this is what the target already said. The hook exists for
+        the cluster, where a Job may pack several runs -- and the packer runs them
+        **sequentially** (see ``KubernetesBackend``), so at any instant exactly one of them is
+        live and "where is this job" has a single right answer. Which is the point: pointing the
+        readers at the Job's whole ``/out`` let each of them pick a run for itself, silently, and
+        a caller could not tell which run it had been told about.
+        """
+        del campaign_id, target, run_dir
+        return f"/out/{job_name}", job_name
+
+    # -- what the running jobs' simulators say about themselves ---------------------------------
+    #
+    # The service *pulls*, with a command it chose itself, so nothing has to run in a container
+    # and nothing is emitted anywhere. That is what makes this free for a campaign nobody is
+    # debugging: an unwatched campaign is never asked, because only a status read asks.
+
+    def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
+        """``(target, run_dir)`` for one running job's *role* — the lane-specific part of a read.
+
+        Locally *job_name* **is** the run key (``<config>/<run>``), which is also where the run
+        writes inside the container: ``/out/<config>/<run>``, the same path both lanes mount.
+        Derived from the run rather than read from ``RUN_OUTPUT_DIR``, which the backends set only
+        for a job that is exactly one run and so is absent from a packed one.
+
+        The run dir does not depend on the role: ``/out`` is mounted into every container of a run,
+        which is what lets a sidecar be asked about the run being written under it.
+        """
+        return self._job_container(role, campaign_id), f"/out/{job_name}"
+
+    def _health_targets(self, campaign_id: str) -> list:
+        """``(job_name, job_dir, run_dir)`` for every job of this campaign running right now.
+
+        A different question from :meth:`_require_running_job`'s, which is why it is a different
+        method: that one enforces "this named job is running" for a caller who named one, this one
+        asks "which jobs are there to ask". Local Docker is sequential, so at most one.
+
+        No target: the health read resolves its own, because the container it belongs in is the
+        simulator's and not the job's.
+        """
+        out = []
+        for job in self.list_jobs(campaign_id).jobs:
+            if job.status != "running":
+                continue
+            try:
+                target, run_dir = self._job_state_target(
+                    campaign_id, job.job_name, SCENARIO_CONTAINER)
+                run_dir, _run = self._job_live_run(campaign_id, job.job_name, target, run_dir)
+                job_dir = self._job_output_dir(campaign_id, job.job_name, run_dir)
+            except Exception as err:  # noqa: BLE001 - a job that is no longer there is not an error
+                logger.debug("no health target for job %s of %s: %s",
+                             job.job_name, campaign_id, err)
+                continue
+            out.append((job.job_name, job_dir, run_dir))
+        return out
+
+    def _read_health(self, campaign_id: str, job_name: str, *dirs: str) -> tuple:
+        """``(document, reason)``: what this job's simulator says about itself, or why nothing.
+
+        Served from the cache while it is fresh, so the status path and an explicit
+        :meth:`get_job_state` share one exec per interval instead of one each.
+
+        Asked of the **simulation** container, which is the simulator's own and is not the job's:
+        in the ROS shape the simulator is a sidecar with its own image, and a health command sent
+        to the scenario container there names a tool that container does not have.
+
+        *dirs* are tried **in order, job dir first**, because a simulator's records move: while a
+        run is live its clock record sits in the job's own output dir, and only results collection
+        puts it beside the run. This read is only ever asked about a *running* job, so the job dir
+        is the answer -- but the run dir is tried after it rather than assumed away, since where a
+        backend writes is the backend's business and one lane's layout is not the other's. Only a
+        read that found nothing pays for the second exec.
+
+        Exactly one of the two returns is set. ``reason`` is never left empty for a read that
+        failed: a diagnostic whose own failure is silent reports a wedged run as a fine one, which
+        is the failure mode this whole path exists to prevent.
+        """
+        from robovast.common.execution import in_run_env
+        from robovast.common.simulators import health_command
+
+        cached = self._cached_health(campaign_id, job_name)
+        if cached is not None:
+            return cached
+        try:
+            execution = self._campaign_execution(campaign_id)
+        except Exception as err:  # noqa: BLE001 - an unreadable config is a reason, not a crash
+            return self._store_health(
+                campaign_id, job_name,
+                (None, f"could not read this campaign's configuration: {err}"))
+        try:
+            # Through the lane hook, not :meth:`_job_container`: on the cluster a target is a
+            # ``(pod, container)`` pair, and only the hook knows that.
+            target, _run_dir = self._job_state_target(
+                campaign_id, job_name, SIMULATION_CONTAINER)
+        except Exception as err:  # noqa: BLE001 - a job that has gone is a reason, not a crash
+            return self._store_health(campaign_id, job_name, (None, str(err)))
+
+        reasons: list = []
+        for candidate in dict.fromkeys(d for d in dirs if d):
+            try:
+                command = health_command(execution, run_dir=candidate)
+            except Exception as err:  # noqa: BLE001 - a backend that cannot say is a reason
+                return self._store_health(
+                    campaign_id, job_name,
+                    (None, f"could not read this campaign's configuration: {err}"))
+            if not command:
+                # A normal answer, and the same kind `simulation_screenshot` gives: this campaign's
+                # simulator does not report on itself. Never rendered as a healthy run.
+                return self._store_health(campaign_id, job_name, (
+                    None,
+                    "this campaign's simulator does not report its own state, so there is nothing "
+                    "to read from a live run"))
+            exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+                target, in_run_env(command), _JOB_STATE_LIMIT_S)
+            document, reason = self._health_from_output(
+                command, exit_code, stdout, stderr, timed_out)
+            if document is not None:
+                if reasons:
+                    # Said out loud, because a fallback that works is otherwise invisible: this
+                    # shape pays an extra exec on every read, and nobody would know which of the
+                    # two directories its simulator actually writes to.
+                    logger.debug("health for %s of %s came from %s after %d earlier candidate(s)",
+                                 job_name, campaign_id, candidate, len(reasons))
+                return self._store_health(campaign_id, job_name, (document, None))
+            reasons.append(reason)
+            if timed_out:
+                # A container that did not answer will not answer faster about another directory,
+                # and this read has a budget the status path is waiting on.
+                break
+        return self._store_health(campaign_id, job_name, (None, "; also: ".join(reasons)))
+
+    @staticmethod
+    def _health_from_output(command: str, exit_code: int, stdout: str, stderr: str,
+                            timed_out: bool) -> tuple:
+        """One health command's result as ``(document, reason)``.
+
+        Shared by both lanes deliberately: what the reply *means* is not lane-specific, and two
+        lanes interpreting the same output separately is how they drift.
+        """
+        if timed_out:
+            return None, (
+                f"{command!r} did not answer within {_JOB_STATE_LIMIT_S}s. The container may be "
+                "wedged, which is itself a finding -- but this call cannot confirm it.")
+        text = (stdout or "").strip()
+        if not text:
+            return None, (f"{command!r} exited {exit_code}"
+                          + (LocalTransport._said(stderr) or " and printed nothing at all"))
+        try:
+            return json.loads(text), None
+        except ValueError:
+            # Reported rather than swallowed: a tool whose output cannot be read is a different
+            # problem from a run that is misbehaving, and conflating them hides both.
+            return None, f"{command!r} exited {exit_code} but its output was not JSON"
+
+    def _cached_health(self, campaign_id: str, job_name: str):
+        """This job's last ``(document, reason)`` while it is inside the TTL, else ``None``."""
+        with self._health_guard:
+            job = (self._health.get(campaign_id, {}).get("jobs") or {}).get(job_name)
+            if job is None or (time.monotonic() - job["at"]) >= _HEALTH_TTL_S:
+                return None
+            return job["read"]
+
+    def _store_health(self, campaign_id: str, job_name: str, read: tuple) -> tuple:
+        """Remember one job's read and return it, so a caller stores and answers in one line."""
+        with self._health_guard:
+            entry = self._health.setdefault(campaign_id, {})
+            entry.setdefault("jobs", {})[job_name] = {"at": time.monotonic(), "read": read}
+        return read
+
+    def _attach_health(self, campaign_id: str, snap: "Status") -> "Status":
+        """Put the running jobs' findings on a status snapshot, and never wait to do it.
+
+        The findings served are the ones already in hand; a stale cache triggers a refresh on its
+        own thread and this read answers with what it has. That ordering is the point: the exec
+        has a timeout, and a status read that waited even that long for a wedged container would
+        make every watcher of a broken campaign slow -- exactly when a reader needs an answer.
+        One poll's worth of latency is nothing against runs measured in minutes.
+
+        A terminal campaign is forgotten rather than asked. What a run reported while it was wedged
+        is history once it is over, and the results are the record then.
+        """
+        if is_terminal(snap.phase):
+            with self._health_guard:
+                self._health.pop(campaign_id, None)
+            return snap
+        snap.health, snap.health_skipped = self._health_findings(campaign_id)
+        return snap
+
+    def _health_findings(self, campaign_id: str) -> tuple:
+        """``(findings, skipped)`` from the cache, refreshing off-thread when they have aged out.
+
+        Where "N watchers cost one check" is enforced: the refresh is claimed under the lock, so
+        concurrent status reads produce one exec per job per interval however many are asking.
+
+        The two travel together because they are one read's answer, and separating them would let a
+        surface report the findings of one interval beside the skips of another.
+        """
+        now = time.monotonic()
+        with self._health_guard:
+            entry = self._health.setdefault(campaign_id, {})
+            claim = ((now - entry.get("at", 0.0)) >= _HEALTH_TTL_S
+                     and not entry.get("refreshing"))
+            if claim:
+                entry["refreshing"] = True
+            findings = list(entry.get("findings") or [])
+            skipped = list(entry.get("skipped") or [])
+        if claim:
+            threading.Thread(target=self._refresh_health, args=(campaign_id,),
+                             name=f"health-{campaign_id}", daemon=True).start()
+        return findings, skipped
+
+    def _refresh_health(self, campaign_id: str) -> None:
+        """Ask every running job once, and replace what this campaign reports.
+
+        Replaces rather than accumulates: a finding is a statement about the run *now*, and one
+        that has stopped being true must stop being reported. Failures are left to
+        :meth:`get_job_state` to explain -- nothing is invented here, because a finding RoboVAST
+        made up is a finding no simulator can be held to.
+        """
+        findings: list = []
+        skipped: list = []
+        try:
+            for job_name, *paths in self._health_targets(campaign_id):
+                document, _reason = self._read_health(campaign_id, job_name, *paths)
+                findings.extend(self._findings_from_document(job_name, document))
+                skipped.extend(self._skips_from_document(job_name, document))
+        except Exception as err:  # noqa: BLE001 - a diagnostic that crashes a service is worse
+            logger.debug("health refresh for %s failed: %s", campaign_id, err)
+        finally:
+            with self._health_guard:
+                entry = self._health.setdefault(campaign_id, {})
+                entry["at"] = time.monotonic()
+                entry["findings"] = findings
+                entry["skipped"] = skipped
+                entry["refreshing"] = False
+
+    @staticmethod
+    def _findings_from_document(job_name: str, document) -> list:
+        """The findings in one simulator's reply, as RoboVAST's own two-word wire model.
+
+        Read defensively on purpose: the document belongs to the simulator, so a shape RoboVAST
+        did not expect is that simulator's business and must not take a status read down with it.
+        ``level`` and ``check`` are required because they are the two fields anything downstream
+        acts on -- a finding with neither can be neither matched nor ranked, so it is not one.
+        """
+        from robovast.client.status import HealthFinding
+
+        out = []
+        for raw in (document or {}).get("findings") or []:
+            if not isinstance(raw, dict):
+                continue
+            level, check = raw.get("level"), raw.get("check")
+            if not level or not check:
+                continue
+            out.append(HealthFinding(job_name=job_name, level=str(level), check=str(check),
+                                     detail=str(raw.get("detail") or "")))
+        return out
+
+    @staticmethod
+    def _skips_from_document(job_name: str, document) -> list:
+        """The checks one simulator says it did not run, each prefixed with the job.
+
+        Carried because a check that never ran and a check that passed are the same *absence* of a
+        finding, and the absence reads as "nothing is wrong". The simulator states its own reason,
+        so nothing is composed here beyond saying which job it came from.
+
+        Not turned into ``warn`` findings: a finding has a ``level`` its simulator chose, and
+        manufacturing one would put RoboVAST's word in the simulator's mouth -- for a check whose
+        whole point is that it reached no verdict.
+        """
+        out = []
+        for note in (document or {}).get("skipped") or []:
+            text = str(note).strip()
+            if text:
+                out.append(f"{job_name}: {text}")
+        return out
+
+    #: How many lines of a failed read's stderr travel with its reason.
+    #:
+    #: More than one, because one was not enough to act on: the environment setup a read runs
+    #: through says on stderr which overlays it found, and dropping every line but the last left
+    #: "No module named 'scenario_execution'" -- a message a missing overlay and a genuinely absent
+    #: module produce identically. Bounded, because a stack trace is not a reason.
+    _STDERR_TAIL_LINES = 4
+
+    @classmethod
+    def _said(cls, stderr: str, prefix: str = ": ") -> str:
+        """The tail of what the container said, or ``""`` when it said nothing.
+
+        Composed with *prefix* so a caller's sentence reads as one line whether or not there was
+        anything to append -- the alternative being every call site branching on it.
+        """
+        lines = [line for line in (stderr or "").strip().splitlines() if line.strip()]
+        if not lines:
+            return ""
+        return prefix + " | ".join(lines[-cls._STDERR_TAIL_LINES:])
 
     #: How scenario-execution reports where a scenario has got to. A *fixed* command, so this is
     #: a read and not a probe -- and named here rather than derived from a backend because the
     #: scenario runs in every campaign whatever the simulator is.
-    _TREE_STATE_ARGV = ("python3", "-m", "scenario_execution.tree_state")
+    _TREE_STATE_COMMAND = "python3 -m scenario_execution.tree_state"
 
     def _read_scenario_state(self, state, target, run_dir: str) -> None:
         """Fold the run's behaviour-tree log into ``state.scenario``, or say why not.
@@ -2281,17 +2651,35 @@ class LocalTransport(RobovastInterface):
         Asked of scenario-execution's own reader rather than parsed here: the log's shape is
         its record to change, and a second implementation of someone else's format in this repo
         would be the thing that breaks when it does.
+
+        Run through :func:`~robovast.common.execution.in_run_env`, which is not optional:
+        ``scenario_execution`` is colcon-built into ``/ws`` and is on no interpreter's path until
+        that overlay is sourced, so a bare argv answers ``No module named 'scenario_execution'``
+        in every image ever built.
         """
-        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            target, [*self._TREE_STATE_ARGV, run_dir], _JOB_STATE_LIMIT_S)
+        from robovast.common.execution import in_run_env
+        # The exit code is not consulted: the reader states its own outcome in the JSON (``found``
+        # plus its reason), and a nonzero exit with a usable reply is its business, not ours.
+        _code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            target, in_run_env(f"{self._TREE_STATE_COMMAND} {shlex.quote(run_dir)}"),
+            _JOB_STATE_LIMIT_S)
         if timed_out:
             state.unavailable.append(
                 f"reading the scenario's tree did not finish within {_JOB_STATE_LIMIT_S}s")
             return
         text = (stdout or "").strip()
         if not text:
-            detail = (stderr or "").strip().splitlines()[-1:] or ["no output"]
-            state.unavailable.append(f"could not read the scenario's tree: {detail[0]}")
+            # The reader is a command RoboVAST ships, so there are only two ways it can be
+            # missing, and the stderr above distinguishes them: the note says whether the run's
+            # overlay was sourced, and Python says whether it was the package or the module it
+            # could not find. Naming that here rather than leaving a runpy sentence to be
+            # interpreted -- three rounds of this were spent deciding which of the two it was.
+            state.unavailable.append(
+                "could not read the scenario's tree"
+                + (self._said(stderr) or ": it printed nothing at all")
+                + ". If the note says the overlay was sourced, this image's scenario-execution "
+                  "is older than the reader and the image needs rebuilding; if it says no "
+                  "overlay was found, the container is not one a run's tools live in.")
             return
         try:
             reply = json.loads(text)
@@ -2305,33 +2693,94 @@ class LocalTransport(RobovastInterface):
             return
         state.scenario = reply
 
-    @staticmethod
-    def _job_state_from_output(state, command: str, exit_code: int, stdout: str,
-                               stderr: str, timed_out: bool):
-        """Turn one health command's result into a :class:`JobState`, or into a stated reason.
+    #: How the run's own resource monitor is read back while the run is still going. Its files sit
+    #: under the run dir on the shared ``/out``, so ONE read in the scenario container returns every
+    #: container's, rather than an exec per container.
+    #:
+    #: Header plus tail, not the whole file: the header carries the column contract the parser
+    #: checks, and the tail is enough for the newest complete tick however long the run has been
+    #: going. A whole-file read would grow without bound for an answer about *now*.
+    _RESOURCE_TAIL_LINES = 200
 
-        Shared by both lanes deliberately: what the reply *means* is not lane-specific, and the
-        subclass overriding :meth:`get_job_state` differs only in which container it entered. Two
-        lanes interpreting the same output separately is how they drift.
+    #: Depth of the search for the monitor's CSVs, from the **job** dir (see
+    #: :meth:`_job_output_dir`) -- they sit directly in it, one per container. A level of slack for
+    #: the fallback case where that dir could not be resolved and the run dir is searched instead.
+    _RESOURCE_FIND_DEPTH = 2
+
+    def _read_resources(self, state, target, run_dir: str) -> None:
+        """Put each container's newest resource sample on ``state.resources``, or say why not.
+
+        The question this answers is the one neither other read can: a run stuck at 0% CPU is
+        deadlocked, one at 100% is spinning, and both look identical in a log and in a tree that
+        says "still RUNNING". Passed through as numbers and never scored -- which of the two is
+        wrong is not RoboVAST's to judge.
+
+        The monitor writes this file itself for every container of the run, so nothing new runs in
+        the run and nothing is added to the image.
         """
+        from robovast.results_processing.resource_usage import ScanStats, parse_container_rows
+
+        script = (f'find {shlex.quote(run_dir)} -maxdepth {self._RESOURCE_FIND_DEPTH} '
+                  f'-name "resource_usage_*.csv" -type f | while read -r f; do '
+                  f'echo "@@ $(basename "$f")"; head -1 "$f"; '
+                  f'tail -n {self._RESOURCE_TAIL_LINES} "$f"; done')
+        _exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            target, ["/bin/bash", "-c", script], _JOB_STATE_LIMIT_S)
         if timed_out:
             state.unavailable.append(
-                f"{command!r} did not answer within {_JOB_STATE_LIMIT_S}s. The container may be "
-                "wedged, which is itself a finding -- but this call cannot confirm it.")
-            return state
-        text = (stdout or "").strip()
-        if not text:
-            detail = (stderr or "").strip().splitlines()[-1:] or ["no output"]
-            state.unavailable.append(f"{command!r} exited {exit_code}: {detail[0]}")
-            return state
-        try:
-            state.simulator = json.loads(text)
-        except ValueError:
-            # Reported rather than swallowed: a tool whose output cannot be read is a different
-            # problem from a run that is misbehaving, and conflating them hides both.
+                f"reading this run's resource samples did not finish within {_JOB_STATE_LIMIT_S}s")
+            return
+        blocks = self._split_resource_blocks(stdout or "")
+        if not blocks:
             state.unavailable.append(
-                f"{command!r} exited {exit_code} but its output was not JSON")
-        return state
+                "this run has recorded no resource samples under " + run_dir
+                + self._said(stderr, prefix="; the container said: "))
+            return
+        stats = ScanStats()
+        out = {}
+        for container, lines in blocks.items():
+            samples = parse_container_rows(lines, container, stats)
+            if not samples:
+                continue
+            newest = max(wall for wall, _, _, _ in samples)
+            out[container] = {
+                "at": newest,
+                "processes": [{"name": name, "cpu_percent": cpu, "memory_rss_bytes": mem}
+                              for wall, name, cpu, mem in samples if wall == newest],
+            }
+        if not out:
+            # The parser's own account of why, which names a changed header or an empty file --
+            # both more use than "no samples", and neither invented here.
+            state.unavailable.append(
+                "this run's resource samples could not be read: "
+                + "; ".join(stats.unreadable + stats.empty))
+            return
+        state.resources = out
+
+    @staticmethod
+    def _split_resource_blocks(text: str) -> dict:
+        """``{container: [csv lines]}`` from the marked concatenation the read above prints.
+
+        The container is taken from the file name, which is what
+        :func:`~robovast.results_processing.resource_usage.expected_container_files` already
+        encodes: ``resource_usage_<container>.csv``, with ``main`` for the scenario container.
+
+        A packed Job holds several runs under one ``/out``, so the same container appears more than
+        once. The **last** block for a name wins, and the parser then keeps that block's newest
+        tick: the question is what is happening now, and the run still being appended to is the one
+        that answers it. Merging the blocks would put a finished run's processes beside a live
+        one's under a single container.
+        """
+        blocks: dict = {}
+        current = None
+        for line in text.splitlines():
+            if line.startswith("@@ "):
+                name = line[3:].strip()
+                current = name.removeprefix("resource_usage_").removesuffix(".csv")
+                blocks[current] = []
+            elif current is not None:
+                blocks[current].append(line)
+        return {k: v for k, v in blocks.items() if v}
 
     def exec_in_job(self, campaign_id: str, job_name: str, command: str,
                     container: str = "scenario", source: str = "api") -> "ExecResult":
@@ -2339,9 +2788,13 @@ class LocalTransport(RobovastInterface):
 
         Locally the scenario runs in a container of a fixed name and every sidecar takes its role's
         name, which is the same mapping ``logs/system_<name>.log`` follows.
+
+        Run in the run's own environment, not a bare login shell: ``ros2`` and everything else
+        colcon-built lives in an overlay no shell rc sources, so ``ros2 topic list`` -- the single
+        most likely thing to type here -- answered ``command not found``.
         """
         from robovast.common.campaign_data import KIND_PROBED, record_intervention
-        from robovast.common.execution import job_artifact_dir
+        from robovast.common.execution import in_run_env, job_artifact_dir
         from robovast.service.interface import ExecResult
 
         if not (command or "").strip():
@@ -2359,24 +2812,67 @@ class LocalTransport(RobovastInterface):
         # must not leave perturbed data with nothing saying why.
         record_intervention(campaign_dir, kind=KIND_PROBED, job_dir=job_dir, job_name=job_name,
                             source=source, detail=command, runs=(job_name,))
-        target = self._job_container(container)
+        target = self._job_container(container, campaign_id)
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
-            target, ["/bin/bash", "-lc", command], _PROBE_LIMIT_S)
+            target, in_run_env(command), _PROBE_LIMIT_S)
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr,
                           timed_out=timed_out, limit_s=_PROBE_LIMIT_S, limit_source="command")
 
-    def _job_container(self, role: str) -> str:
+    def _job_container(self, role: str, campaign_id: str = "") -> str:
         """The container a role runs in on this lane.
 
         The scenario's container has a fixed name; a sidecar's is its role. Mapped rather than taken
         verbatim so a caller names the role it means and the lane resolves it -- the cluster answers
         the same question with a pod and a container, which is why the callers never build one.
+
+        With a *campaign_id* the mapping comes from that campaign's own container plan, which is the
+        only thing that knows how many containers back a role: a simulator stepped in-process **is**
+        the scenario container, so ``simulation`` must resolve to it rather than to a name nothing
+        started. Without one -- a caller that has no campaign in hand -- the role's own name is the
+        best available answer, and a role this campaign does not have fails on the exec rather than
+        here, which is the same outcome as before.
         """
-        from robovast.common.config import CONTAINER_ROLES, SCENARIO_CONTAINER
+        from robovast.common.config import CONTAINER_ROLES
         if role not in CONTAINER_ROLES:
             raise ValueError(f"unknown container role {role!r}; expected one of "
                              f"{', '.join(CONTAINER_ROLES)}")
+        if campaign_id:
+            role = self._plan_role(campaign_id, role)
         return self._CONTAINER_NAME if role == SCENARIO_CONTAINER else role
+
+    def _plan_role(self, campaign_id: str, role: str) -> str:
+        """*role* resolved to the container name this campaign actually runs it in.
+
+        :func:`~robovast.common.containers.plan_containers` is the one map every other addresser of
+        these containers uses (compose generation, the job manifest, the image build), and its whole
+        point is that a second lookup is free to disagree with what runs -- silently, as a
+        diagnostic entering the wrong container.
+
+        ``simulation`` falls back to the scenario container when the plan names nothing for it, and
+        the other roles do not. That asymmetry is a fact about the roles rather than a convenience:
+        a simulator either has a container of its own or is stepped inside the scenario container,
+        so "no simulation container" means "in the scenario one" -- while a ``sut`` that nothing
+        declares is genuinely not there, and answering with a different container would be the
+        silent misdirection this map exists to prevent.
+
+        An unreadable config leaves the role as its own name rather than raising: the reads that
+        follow report their own failures with a reason, and a config error surfaced from here would
+        replace that reason with this one.
+
+        A role the plan does not name is likewise returned as itself. It must **not** fall back to
+        the scenario container: that fallback existed, and it turned "I could not tell" into "the
+        simulator is in the scenario container" -- a confident wrong answer that sent a health read
+        into a container with no simulator. Where the fold is real the plan says so, and where the
+        plan cannot be read the *pod* knows (see ``ClusterService._job_pod_target``).
+        """
+        from robovast.common.containers import plan_containers
+        try:
+            roles = plan_containers(self._campaign_execution(campaign_id)).roles
+        except Exception as err:  # noqa: BLE001 - the reads downstream state their own reasons
+            logger.debug("no container plan for %s, addressing %r by name: %s",
+                         campaign_id, role, err)
+            return role
+        return roles.get(role, role)
 
     def _require_running_job(self, campaign_id: str, job_name: str):
         """The named job, or raise — shared by both lanes' :meth:`stop_job` preconditions.
