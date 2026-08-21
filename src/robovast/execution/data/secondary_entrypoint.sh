@@ -48,13 +48,8 @@ log "Running as UID: $(id -u), GID: $(id -g)..."
 # (scenario_execution_server_ros / ros2) is on PATH for the check below: it only
 # lands there once the ROS overlay and the /ws workspace are sourced, so checking
 # earlier would spuriously report "no scenario-execution server" on a ROS image.
-if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
-    log "Setting up ROS2 environment..."
-    source "/opt/ros/$ROS_DISTRO/setup.bash"
-    if [ -f "/ws/install/setup.bash" ]; then
-        source "/ws/install/setup.bash"
-    fi
-fi
+ROS_SETUP_ANNOUNCE=log
+# @@ROS_SETUP_BLOCK@@
 
 # The scenario-execution server runner: ROS2's or the plain CLI. Only required when
 # this container IS the server; one running its own command (a simulator, a stack
@@ -138,8 +133,35 @@ _post_run() {
 # .npz without its index. `wait` returns >128 when a trapped signal interrupts it, hence
 # the loop: the second wait is the one that reaps.
 _child=""
-_forward() { [ -n "${_child}" ] && kill -TERM "${_child}" 2>/dev/null; return 0; }
+_terminating=""
+_forward() { _terminating=1; [ -n "${_child}" ] && kill -TERM "${_child}" 2>/dev/null; return 0; }
 trap _forward TERM INT
+
+# Stay alive until the pod is actually being torn down.
+#
+# A native sidecar that EXITS is RESTARTED by the kubelet -- that is what `restartPolicy: Always`
+# means, and it is not optional for a container that must start before the scenario. So a workload
+# finishing early does not end the container's job; exiting would hand RoboVAST a restart, and a
+# restarted container invalidates the trial (`pod_restarted_containers`) whatever it died of.
+#
+# That is not hypothetical: the scenario-execution server exits cleanly the moment its client goes
+# away, which happens as the scenario ENDS -- while the main container is still uploading. So a
+# perfectly good run was failed by its own teardown order, every time, and the exit code said
+# `Completed (exit 0)` because nothing had gone wrong.
+#
+# Holding also keeps `_post_run` where it belongs. Reached early it kills this container's resource
+# monitor and uploads mid-run, so the CSV stops at the moment the workload happened to finish
+# rather than at the end of the trial.
+_hold() {
+    log "${CONTAINER_NAME} workload finished cleanly; holding so the kubelet does not restart it"
+    while [ -z "${_terminating}" ]; do
+        # `sleep &` + `wait` and not a bare `sleep`: only `wait` is interruptible by the trap
+        # above, so a bare sleep would delay teardown by up to its own duration.
+        sleep 3600 &
+        _child=$!
+        wait "${_child}" 2>/dev/null || true
+    done
+}
 
 run_child() {
     # Line-buffered, for the same reason as PYTHONUNBUFFERED above but for the half of a
@@ -160,6 +182,12 @@ run_child() {
     while kill -0 "${_child}" 2>/dev/null; do
         wait "${_child}" || _rc=$?
     done
+    # A clean finish while the pod runs on is a container with nothing left to do, not one that is
+    # allowed to leave. A FAILURE still exits: the restart the kubelet then performs is a true
+    # signal, and invalidating that trial is the right outcome.
+    if [ "${_rc}" -eq 0 ] && [ -z "${_terminating}" ]; then
+        _hold
+    fi
     _post_run
     exit "${_rc}"
 }

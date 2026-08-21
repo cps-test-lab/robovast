@@ -76,13 +76,8 @@ check_required_tools ${REQUIRED_TOOLS}
 # the executor check below: the ROS runner (scenario_execution_ros / ros2) only
 # lands on PATH once the ROS overlay and the /ws workspace are sourced, so checking
 # earlier would spuriously report "no scenario executor" on a ROS image.
-if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
-    log "Setting up ROS2 environment..."
-    source "/opt/ros/$ROS_DISTRO/setup.bash" --
-    if [ -f "/ws/install/setup.bash" ]; then
-        source "/ws/install/setup.bash" --
-    fi
-fi
+ROS_SETUP_ANNOUNCE=log
+# @@ROS_SETUP_BLOCK@@
 
 # A scenario executor must be present: ROS2's runner or the plain CLI.
 if ! command -v ros2 > /dev/null 2>&1 && ! command -v scenario_execution > /dev/null 2>&1; then

@@ -1116,6 +1116,84 @@ _CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
 # failure tolerance (a metadata-server curl that 404s yields an empty string).
 _NO_INSTANCE_TYPE = 'INSTANCE_TYPE=""'
 
+#: The environment a run's own tools live in, as shell.
+#:
+#: Everything colcon-built in these images -- ``scenario_execution`` first among them -- is
+#: importable ONLY after these two setups are sourced, and the images deliberately do not put
+#: them in any shell rc (a login shell reads ``/etc/profile``, not ``/ws/install/setup.bash``).
+#: So a diagnostic that ``docker exec``s a bare argv into a live run cannot see the run's own
+#: modules, in any image, however freshly built -- which is what :func:`in_run_env` exists to
+#: stop, and what a rebuild is repeatedly mistaken for a fix of.
+#:
+#: ROS-optional by the same guards the entrypoint uses, so an image with no ROS in it runs the
+#: command unchanged rather than failing on a missing file.
+#: ``--`` on both, which the secondary entrypoint's own copy was missing: ROS's ``setup.bash``
+#: reads the *caller's* positional parameters when it is given none of its own, so sourcing it from
+#: a script that has any is how a sidecar's arguments end up interpreted by the ROS setup.
+#:
+#: ``ROS_SETUP_ANNOUNCE`` is the one thing the copies legitimately differed in: an entrypoint logs
+#: the step into the run's log, and a live exec has no ``log`` function to call. Defaulted to the
+#: shell's no-op so the block runs anywhere, rather than each caller keeping its own copy for the
+#: sake of one line.
+#: **Every branch announces itself, including the ones that do nothing.** A setup that silently
+#: skips is what made "No module named 'scenario_execution'" unreadable: that message is what a
+#: missing overlay and a genuinely absent module both produce, so a reader could not tell an image
+#: problem from a plumbing one and each guess cost a campaign to test. Saying which branch ran
+#: turns the next occurrence into an answer instead of a fourth round.
+ROS_SETUP_BLOCK = """\
+if [ -z "${ROS_DISTRO:-}" ]; then
+    ${ROS_SETUP_ANNOUNCE:-:} "no ROS_DISTRO set, so no ROS overlay was sourced"
+elif [ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]; then
+    ${ROS_SETUP_ANNOUNCE:-:} "ROS_DISTRO=${ROS_DISTRO} but /opt/ros/${ROS_DISTRO}/setup.bash is missing"
+else
+    . "/opt/ros/${ROS_DISTRO}/setup.bash" --
+    if [ -f /ws/install/setup.bash ]; then
+        . /ws/install/setup.bash --
+        ${ROS_SETUP_ANNOUNCE:-:} "sourced /opt/ros/${ROS_DISTRO} and /ws/install"
+    else
+        ${ROS_SETUP_ANNOUNCE:-:} "sourced /opt/ros/${ROS_DISTRO}; this container has no /ws/install overlay"
+    fi
+fi"""
+
+#: Prefix on every note the block emits from a live exec, so a caller can tell our sentence from
+#: the command's own output when it reads back a failure.
+RUN_ENV_NOTE = "robovast-env:"
+
+
+def in_run_env(command: str) -> list:
+    """*command* as argv that runs it in the environment a run's own processes have.
+
+    For reaching into a **live** job, where the run's ``entrypoint.sh`` is not an option: it
+    collects sysinfo, starts Xvfb and the resource monitor and tees into the run's log, so
+    invoking it would perturb the very run being diagnosed. This is the environment part of it
+    and nothing else.
+
+    *command* is a string because that is how the things asked for here are written -- a
+    backend's ``health_command`` returns one, and a probe is whatever a caller would have typed.
+
+    ``bash -c`` and deliberately not ``-lc``: the overlay is sourced here, explicitly, so a login
+    shell adds ``/etc/profile``'s opinion about ``PATH`` and buys nothing -- and what a login shell
+    does or does not read was itself one of the guesses that made this hard to diagnose.
+
+    **The command is a shell body, not an ``exec`` argument.** It used to be ``exec {command}``,
+    which silently ran only the first simple command: everything after a ``;`` was dropped without
+    a word, and a braced group was a syntax error. A probe that returns the output of the first
+    third of what you typed is worse than one that refuses, because it looks like an answer. The
+    exit status is the last command's either way, which is all ``exec`` was buying.
+
+    The notes go to **stderr**, where they join whatever the command says about its own failure
+    rather than being mixed into the JSON a caller parses.
+    """
+    prelude = (f'{_RUN_ENV_NOTE_FN}() {{ echo "{RUN_ENV_NOTE} $*" >&2; }}\n'
+               f'ROS_SETUP_ANNOUNCE={_RUN_ENV_NOTE_FN}\n')
+    return ["/bin/bash", "-c", f"{prelude}{ROS_SETUP_BLOCK}\n{command}"]
+
+
+#: Shell function name the notes go through. Named rather than inlined so the block's
+#: ``${ROS_SETUP_ANNOUNCE}`` seam carries a *command*, which is what the entrypoints put there too.
+_RUN_ENV_NOTE_FN = "_robovast_env_note"
+
+
 # The log helper both entrypoints share, substituted into ``# @@LOG_BLOCK@@``.
 #
 # One definition because the two scripts must emit the *same* line format: the merged run log
@@ -1425,6 +1503,7 @@ def render_entrypoint(*, cluster=False, instance_type_command=None):
     post_run_block = _CLUSTER_POST_RUN_BLOCK if cluster else _LOCAL_POST_RUN_BLOCK
     content = content.replace('# @@INIT_BLOCK@@', init_block)
     content = content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
+    content = content.replace('# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
     content = content.replace('# @@INSTANCE_TYPE_BLOCK@@',
                               instance_type_command or _NO_INSTANCE_TYPE)
     content = content.replace('    # @@POST_RUN_BLOCK@@', post_run_block)
@@ -1509,6 +1588,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         secondary_entrypoint_content = f.read()
     secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
     secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
+    secondary_entrypoint_content = secondary_entrypoint_content.replace(
+        '# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
     secondary_entrypoint_dst = os.path.join(campaign_transient_dir, "secondary_entrypoint.sh")
     with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(secondary_entrypoint_content)
