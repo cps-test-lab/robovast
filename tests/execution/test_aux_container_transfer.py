@@ -112,6 +112,34 @@ def test_copy_in_uploads_then_mirrors_down(monkeypatch):
     assert "/tools/mc" in script, "mc comes from the injected copy, not the aux image"
 
 
+def test_copy_in_creates_staged_empty_dirs_even_when_there_are_files(monkeypatch):
+    """The shape every two-step generator stages: inputs, plus an empty output directory.
+
+    An object store has no empty directories, so ``mc mirror`` recreates only the ones that
+    hold files -- it cannot know about one that is empty on purpose. The no-files path
+    already created the skeleton; this path assumed mc would cover it, and the empty output
+    directory silently did not arrive. ``floorplan generate`` validates its ``-o`` path and
+    exited 2 with "Path ... does not exist", after step 1 had passed because ``transform``
+    creates its own output directory.
+    """
+    store = _FakeStore()
+    runner = _runner(store)
+    with open(os.path.join(runner.workspace, "hexagon.fpm"), "w", encoding="utf-8") as fh:
+        fh.write("floorplan\n")
+    staged_out = os.path.join(runner.workspace, "artifacts", "hexagon")
+    os.makedirs(staged_out)
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_retrying_exec", rec)
+
+    runner._copy_in()
+
+    assert store.uploads, "there are files, so they do go through the store"
+    (cmd, _), = rec.calls
+    script = cmd[2]
+    assert f"'{staged_out}'" in script, "the empty output directory is created in the container"
+    assert "mirror" in script, "and it rides along with the mirror, costing no extra exec"
+    assert script.index("mkdir") < script.index("mirror"), "created before the files land"
+
 def test_copy_out_mirrors_up_then_downloads_forcing_a_refresh(monkeypatch):
     """``force=True`` matters: the default skips a file whose size still matches, and a
     regenerated artifact of the same size is an ordinary outcome, not a curiosity."""

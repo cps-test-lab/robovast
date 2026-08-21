@@ -729,21 +729,30 @@ class ClusterContainerRunner:
         a no-input generator's workspace holds one empty dir and no files. Counting entries
         called that non-empty, uploaded nothing, and then mirrored *from a prefix that does
         not exist* — ``mc`` exits 1, and building a scene descriptor failed with an object
-        storage error. On that path the staged directory skeleton is created directly
-        instead, because the generator was handed those paths to write into. When there are
-        files, ``mc mirror`` makes the directories itself.
+        storage error.
+
+        **The staged directory skeleton is created in the container either way**, because an
+        object store has no empty directories: ``mc mirror`` recreates only the ones that
+        hold files. This used to be done only on the no-files path, on the reasoning that
+        with files present ``mc`` would make the directories itself — true only of the
+        directories it has something to put in. A workspace that stages inputs AND an empty
+        output directory is every two-step generator, and it arrived missing exactly the
+        directory the command was told to write into: ``floorplan generate`` validates its
+        ``-o`` path and exited 2 with "Path ... does not exist", while step 1 had passed
+        because ``transform`` creates its own output directory. The ``mkdir`` rides along
+        with the mirror's own exec, so this costs no extra round trip.
         """
         staged_dirs = [self.workspace]
         staged_files = 0
         for root, dirs, names in os.walk(self.workspace):
             staged_dirs.extend(os.path.join(root, name) for name in dirs)
             staged_files += len(names)
+        quoted = " ".join(f"'{path}'" for path in staged_dirs)
         if not staged_files:
-            quoted = " ".join(f"'{path}'" for path in staged_dirs)
             self._retrying_exec(["sh", "-c", f"mkdir -p {quoted}"])
             return
         self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
-        self._retrying_exec(["sh", "-c", self._mirror(down=True)])
+        self._retrying_exec(["sh", "-c", f"mkdir -p {quoted} && " + self._mirror(down=True)])
 
     def _copy_out(self) -> None:
         """Mirror the container's workspace back over the local one, via the store.
