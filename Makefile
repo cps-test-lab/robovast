@@ -110,8 +110,25 @@ check-mf-runtime:
 	@python3 tools/check_mf_runtime.py
 
 .PHONY: refresh-build-pins
-refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives (WRITE=1 to apply)
-	@python3 tools/refresh_build_pins.py $(if $(WRITE),--write,)
+refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives (asks first; WRITE=1 to skip the question)
+	@python3 tools/refresh_build_pins.py $(if $(WRITE),--write,--ask)
+
+# The source-side counterpart of the target above, separate because the two refresh different kinds
+# of ground: that one takes whatever a third party published, this one moves the image onto a new
+# commit of code we write, which is a release decision and wants its own diff. BRANCH= to resolve
+# something other than main.
+#
+# Named after `release-images` rather than after its sibling above, because it is the release flow
+# it belongs to: what these pins decide is which sources that command bakes. One name for it, and
+# the same one a superproject holding these sources exposes -- two names for one target is how a
+# caller learns the wrong one.
+#
+# It refreshes the pins and nothing more. A superproject that holds these sources as submodules can
+# additionally compare each pin against the checkout sitting beside it -- which this repo cannot do,
+# having no idea those checkouts exist.
+.PHONY: release-images-update-versions
+release-images-update-versions: ## Move the commits release-images bakes (roqsim, scenario-execution) onto their branch heads (asks first; WRITE=1 to skip the question)
+	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(if $(BRANCH),--branch $(BRANCH),)
 
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
@@ -155,8 +172,8 @@ build: ui-stage
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 actually publishes; without it nothing reaches the registry."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
-	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,) \
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref> | ROQSIM_SRC=<path>] [ROS_DISTRO=<distro>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image; ROQSIM_SRC builds it from a checkout on disk instead. Without either, the script's default branch is used."; exit 1; }
+	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,--ask-push) \
 		$(if $(TAG),--tag "$(TAG)",) \
 		$(if $(ROQSIM_REF),--roqsim-ref "$(ROQSIM_REF)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
@@ -176,10 +193,10 @@ release-images:
 # as a set. `make image-digests PROJECT=... TAG=...` is the check for it.
 .PHONY: release-image-controller
 release-image-controller:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast exec cluster upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-controller PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1]"; echo "Builds ONLY robovast-controller -- the one image 'vast exec cluster upgrade' rolls. Use it for a change to robovast's own Python source."; echo "The other three family members must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
 	./container/controller/build.sh \
 		-t "$(patsubst %/,%,$(PROJECT))/robovast-controller:$(if $(TAG),$(TAG),latest)" \
-		$(if $(PUSH),--push,)
+		$(if $(PUSH),--push,--ask-push)
 
 # ROQSIM_REF is passed in the ENVIRONMENT rather than as a flag, because
 # container/robovast/build.sh has no --roqsim-ref option and reads it from there -- where it
@@ -187,12 +204,12 @@ release-image-controller:
 # release_images.sh passes it the same way; a flag here would be silently ignored.
 .PHONY: release-image-roqsim
 release-image-roqsim:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-image-roqsim PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_SRC=<path> | ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>]"; echo "Builds ONLY robovast-roqsim. It is FROM <PROJECT>/robovast:<TAG>, so that base must already be published there -- the build fails loudly if it is not."; echo "The rest of the family must already exist at this PROJECT/TAG; 'make image-digests' is the check."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-image-roqsim PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_SRC=<path> | ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>]"; echo "Builds ONLY robovast-roqsim. It is FROM <PROJECT>/robovast:<TAG>, so that base must already be published there -- the build fails loudly if it is not."; echo "The rest of the family must already exist at this PROJECT/TAG; 'make image-digests' is the check."; echo "PUSH=1 publishes without asking; without it you are asked before the build."; exit 1; }
 	$(if $(ROQSIM_REF),ROQSIM_REF="$(ROQSIM_REF)",) ./container/robovast/build.sh --image roqsim \
 		--project "$(PROJECT)" --tag "$(if $(TAG),$(TAG),latest)" \
 		$(if $(ROS_DISTRO),--ros-distro "$(ROS_DISTRO)",) \
 		$(if $(ROQSIM_SRC),--roqsim-src "$(ROQSIM_SRC)",) \
-		$(if $(PUSH),--push,)
+		$(if $(PUSH),--push,--ask-push)
 
 .PHONY: image-digests
 image-digests:

@@ -19,7 +19,14 @@ ARG ROS_BASE_DIGEST=sha256:d16957210572c5f919f3f9bd2fb0cc24a82542647489d8b8eda7c
 # commit became unreachable, and every build from a clean clone failed with "fatal: reference
 # is not a tree". A pin whose commit can disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
-ARG SCENARIO_EXECUTION_REF=bd77cc9b283f1b775240ab8ac65d71c761bd1e8a
+ARG SCENARIO_EXECUTION_REF=ba7728a9f6a65bb4284721897e31208792e6218a
+
+# The scenario-execution *server*, the second source this image bakes. Same idiom deliberately: a
+# pin is only overridable if it is an ARG, and `make release-images-update-versions` finds a pin by
+# that shape -- one written inline in the RUN that clones it is a pin nothing refreshes and nothing
+# labels.
+ARG SCENARIO_EXECUTION_SERVER_REPO=https://github.com/cps-test-lab/scenario-execution-server.git
+ARG SCENARIO_EXECUTION_SERVER_REF=39c55d1081dcdd9f04f3762c0ec84b189c50b2da
 
 # Pinned by digest, on the same reasoning the SCENARIO_EXECUTION_REF comment above gives:
 # an untagged FROM resolves to whatever :latest points at on the day of the build, so two
@@ -207,11 +214,19 @@ RUN mkdir -p /ws/src
 # wrapper is a Dockerfile whose CI job is decorative.
 COPY --from=scenario-execution-src / /ws/src/scenario-execution
 
+# Declared in the global scope above, like scenario-execution's, so the bare re-declaration at the
+# LABEL near the end of this file resolves -- a bare ARG reads the global scope, not an earlier
+# in-stage default.
+ARG SCENARIO_EXECUTION_SERVER_REPO
+ARG SCENARIO_EXECUTION_SERVER_REF
+# No --depth: it used to be `--depth=1` followed by a checkout of a sha, which works only while
+# that sha is still the branch tip. The moment main moves, a rebuild of THIS commit fails with
+# "reference is not a tree" -- a pin that only resolves today is not a pin.
 # hadolint ignore=DL3003
 RUN  cd /ws && \
-     git clone --depth=1 "https://github.com/cps-test-lab/scenario-execution-server.git" /ws/src/scenario-execution-server && \
+     git clone "$SCENARIO_EXECUTION_SERVER_REPO" /ws/src/scenario-execution-server && \
      cd /ws/src/scenario-execution-server && \
-     git checkout 39c55d1081dcdd9f04f3762c0ec84b189c50b2da && \
+     git checkout "$SCENARIO_EXECUTION_SERVER_REF" && \
      cd /ws && \
      . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
      colcon build
@@ -270,6 +285,8 @@ LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 # at the commit above, and only if that commit is still reachable.
 ARG SCENARIO_EXECUTION_REF
 LABEL org.robovast.scenario-execution-ref="${SCENARIO_EXECUTION_REF}"
+ARG SCENARIO_EXECUTION_SERVER_REF
+LABEL org.robovast.scenario-execution-server-ref="${SCENARIO_EXECUTION_SERVER_REF}"
 
 ARG TARGETARCH
 RUN USER=ubuntu && \

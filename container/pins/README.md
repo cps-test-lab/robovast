@@ -86,9 +86,13 @@ makes a pinned rebuild checkable: the version says which snapshot produced it.
 ## Refreshing the pins
 
 ```sh
-make refresh-build-pins            # report
-make refresh-build-pins WRITE=1    # rewrite the base digests
+make refresh-build-pins            # report, then offer to apply it
+make refresh-build-pins WRITE=1    # rewrite the base digests without asking
 ```
+
+The report is printed before the question, because the diff has to be in front of the decision.
+With no terminal to ask on it stays a report — a script that inherited the command must not move a
+pin because nobody was there to say no.
 
 Re-resolves every digest-pinned `FROM` from the tag kept beside it — which is why the tag is kept
 — and prints the newest snapshot date the ROS server actually offers. Deliberately manual and
@@ -123,3 +127,14 @@ above, so it is the thing to run before blaming a rebuild. Points 5 and 6 are pr
 base rather than of the archives, so they are checked where they live: at build time by the
 Dockerfile's own assertion on `apt-cache policy`, and textually by
 `tests/service/test_build_pins.py`.
+
+## Not covered here: the source pins
+
+This file is about third-party ground — which base image, which apt archives. *Which commit of our
+own code* an image bakes (roqsim, scenario-execution, the scenario-execution-server) is pinned as
+`ARG <NAME>_REF` in the Dockerfiles and moved with `make release-images-update-versions`, which
+asks the same way (`WRITE=1` skips the question),
+which re-resolves each one from its `<NAME>_REPO` with `git ls-remote`. Two commands rather than
+one because they are different decisions: refreshing a build pin takes what upstream published,
+while moving a source pin changes what the image *does* and belongs in its own reviewable diff.
+See `docs/images.rst`, "Which sources an image bakes".

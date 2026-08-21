@@ -15,12 +15,19 @@
 # ROBOVAST_PROJECT moves all four, so there is no longer a per-image knob to forget.
 #
 # Usage:
-#   ./container/release_images.sh --project <prefix> [--push] [--ros-distro <distro>] \
+#   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--ros-distro <distro>] \
 #                                  [--roqsim-ref <ref> | --roqsim-src <path>] \
 #                                  [-- <extra docker build args>]
 #
 # Example:
 #   ./container/release_images.sh --project docker.io/freeedlabs --push
+#
+# --ask-push asks, on the terminal and before the first build, whether the family should be
+# published -- what the Makefile passes when PUSH is not set, so publishing is a decision made
+# out loud rather than a flag remembered. It has to be asked UP FRONT because `buildx --push`
+# builds and publishes in one pass; there is no later moment where the images exist unpublished.
+# Without a terminal to ask on it does not publish, which is the same thing as passing neither
+# flag: a script that inherited this command must not push because nobody was there to say no.
 #
 # --roqsim-src builds the simulator image from a checkout on disk instead of cloning, for
 # a caller that already has one -- a superproject holding roqsim as a submodule, or an
@@ -31,6 +38,7 @@ BASEDIR=$(cd "$(dirname "$0")" && pwd)
 
 PROJECT=""
 PUSH=""
+ASK_PUSH=""
 ROS_DISTRO="jazzy"
 ROQSIM_REF="main"
 ROQSIM_SRC=""
@@ -50,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --push|-n)
       PUSH=1
+      shift
+      ;;
+    --ask-push)
+      ASK_PUSH=1
       shift
       ;;
     --ros-distro)
@@ -78,7 +90,7 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project docker.io/freeedlabs --push" >&2
   echo "Pinned:  $0 --project docker.io/freeedlabs --tag 2026-08-17 --push" >&2
 }
@@ -108,6 +120,13 @@ fi
 # normalization, needed here too since container/controller/build.sh takes a full
 # tag rather than a prefix and this script builds that tag itself.
 [[ "$PROJECT" == */ ]] || PROJECT="${PROJECT}/"
+
+# shellcheck source=container/ask_push.sh
+. "$BASEDIR/ask_push.sh"
+# Asked with the destination in it, because "yes" here is the whole release decision: four images
+# at one tag, moving whatever ROBOVAST_PROJECT resolves for everyone pointed at that tag. A bare
+# "push? [y/N]" does not say which registry it means.
+ask_push "all four family members to ${PROJECT}*:${TAG}"
 
 PUSH_FLAG=()
 [[ -n "$PUSH" ]] && PUSH_FLAG=(--push)

@@ -142,10 +142,21 @@ Publishing your own set
 
 .. code-block:: bash
 
-   make release-images PROJECT=docker.io/<ns> PUSH=1                 # :latest
-   make release-images PROJECT=docker.io/<ns> TAG=$(date +%F) PUSH=1  # immutable
+   make release-images PROJECT=docker.io/<ns>                        # asks before publishing
+   make release-images PROJECT=docker.io/<ns> TAG=$(date +%F)        # immutable, asks
+   make release-images PROJECT=docker.io/<ns> PUSH=1                 # answers yes up front
 
-Both build and push all four members — a partial set is not usable, because
+Publishing is asked on the terminal, naming the destination, **before the first build** —
+``buildx --push`` builds and publishes in one pass, so there is no later moment where the
+images exist unpublished. Answering no still builds them locally. ``PUSH=1`` answers yes
+up front, which is also what a non-interactive caller needs: with no terminal to ask on,
+nothing is published.
+
+The same question, from the same place (``container/ask_push.sh``), guards
+``release-image-controller`` and ``release-image-roqsim`` below — anything here that can
+publish asks first, so there is no command where a forgotten flag is the difference.
+
+Either way all four members move together — a partial set is not usable, because
 ``ROBOVAST_PROJECT`` moves all four at once. The command prints the two lines that
 configure them and offers to write them to ``~/.config/robovast/env``.
 
@@ -168,6 +179,42 @@ be pinned member by member is the five-variable configuration this replaced.
 
 Resolving to a floating tag logs a warning naming the image, so an unpinned deployment
 says so rather than looking identical to a pinned one.
+
+Which sources an image bakes
+````````````````````````````
+
+``release-images`` builds what is **committed**, not what is checked out beside it. The
+framework image clones scenario-execution and the scenario-execution-server, and the
+simulator image clones roqsim, each at a commit pinned as an ``ARG`` in its Dockerfile.
+Updating a checkout therefore does not change the image; moving the pin does:
+
+.. code-block:: bash
+
+   make release-images-update-versions           # report which pins are behind, then offer to apply it
+   make release-images-update-versions WRITE=1   # apply without asking, then commit the diff
+
+The report is the question, so it is asked after it: the diff has to be in front of the
+decision, which a flag decided in advance cannot be. Without a terminal to ask on it
+degrades to the report — a build script that inherited the command must not move a pin
+because nobody was there to say no.
+
+Each pin is re-resolved with ``git ls-remote`` against the branch (``BRANCH=`` to use one
+other than ``main``), so what lands is by construction a commit on a durable ref — a pin
+taken from a feature branch stops resolving the moment that branch is deleted, and every
+clean build then fails with ``fatal: reference is not a tree``.
+
+Named after ``release-images`` because that is the flow it belongs to: these pins are what
+decide which sources that command bakes. Distinct from ``make refresh-build-pins``, which
+re-resolves the third-party ground an image starts from (base-image digests, the dated apt archives; see
+``container/pins/README.md``). Moving one of those takes what upstream published; moving a
+source pin changes what our own code does, so it is a release decision and gets its own
+diff.
+
+The escape hatches, for iterating on a commit that is not pushed yet: ``--roqsim-src`` /
+``--scenario-execution-src`` build from a checkout on disk instead of cloning. Only
+``--roqsim-src`` is reachable from ``release-images`` (as ``ROQSIM_SRC``); the others need
+``container/robovast/build.sh`` directly. An image built that way carries a commit no repo
+records, which is why the pin — not the hatch — is the release path.
 
 Moving a cluster's images
 -------------------------
@@ -195,7 +242,7 @@ image without pulling it:
 
 ``org.opencontainers.image.revision`` / ``.source``
    the RoboVAST commit and repository the image was built from.
-``org.robovast.roqsim-ref`` / ``.scenario-execution-ref``
+``org.robovast.roqsim-ref`` / ``.scenario-execution-ref`` / ``.scenario-execution-server-ref``
    the upstream commits baked in. These are build ``ARG``\ s and therefore invisible from
    outside the build, so without the labels the only way to answer is to read the Dockerfile at
    the recorded commit — and hope the ref was not overridden at build time.

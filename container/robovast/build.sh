@@ -53,6 +53,8 @@ PLATFORM=""
 . "$BASEDIR/../platforms.env"
 # shellcheck source=../buildcache.sh
 . "$BASEDIR/../buildcache.sh"
+# shellcheck source=container/ask_push.sh
+. "$BASEDIR/../ask_push.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -87,6 +89,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --push|-n)
       PUSH=1
+      shift
+      ;;
+    --ask-push)
+      ASK_PUSH=1
       shift
       ;;
     --)
@@ -174,6 +180,14 @@ echo "Image(s): $IMAGE"
 if [[ -n "${PROJECT}" ]]; then
   [[ "${PROJECT}" == */ ]] || PROJECT="${PROJECT}/"
 fi
+
+# After PROJECT is normalized, so the question names the destination it would publish to, and
+# before the first build, because --push builds and publishes in one pass.
+case "$IMAGE" in
+  all) ask_push "${PROJECT}robovast:${TAG} and ${PROJECT}robovast-roqsim:${TAG}" ;;
+  robovast) ask_push "${PROJECT}robovast:${TAG}" ;;
+  roqsim) ask_push "${PROJECT}robovast-roqsim:${TAG}" ;;
+esac
 
 # One throwaway directory for both jobs: the empty build context every image is built against
 # (nothing is read from the context -- see build_base), and a home for any working tree

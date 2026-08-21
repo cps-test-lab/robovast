@@ -6,7 +6,11 @@ So this is deliberately manual and deliberately occasional -- the model of ``poe
 ``cargo update``. CI builds only from what is committed.
 
     python3 tools/refresh_build_pins.py            # report what would change
-    python3 tools/refresh_build_pins.py --write    # rewrite the Dockerfile ARGs
+    python3 tools/refresh_build_pins.py --ask      # report, then offer to apply it
+    python3 tools/refresh_build_pins.py --write    # rewrite the Dockerfile ARGs, no question asked
+
+``--ask`` is what the Makefile uses; see ``tools/pin_prompt.py`` for why the question comes after
+the report and what happens when there is no terminal to ask on.
 
 What it resolves:
 
@@ -32,6 +36,8 @@ import re
 import subprocess
 import sys
 import urllib.request
+
+import pin_prompt
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 _DOCKERFILES = ("container/robovast/Dockerfile", "container/robovast/Dockerfile.roqsim",
@@ -119,11 +125,13 @@ def _ubuntu_stamp(base_ref: str) -> "str | None":
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--write", action="store_true",
-                        help="Rewrite the pins. Without it, only report.")
+    pin_prompt.add_arguments(parser)
     args = parser.parse_args()
 
     changes, unresolved = [], []
+    # path -> rewritten text, held back until the decision at the end: with --ask the report has to
+    # be printed before anything is written, so collecting and applying are two steps.
+    edits = {}
 
     # Resolved once, before the loop: every Dockerfile that pins a snapshot must land on the SAME
     # point in time, and asking the ROS server once per file could straddle a publication.
@@ -179,8 +187,8 @@ def main() -> int:
                 changes.append(f"{rel}: {name}\n    {match.group(group)}\n -> {wanted}")
                 text = text.replace(f"ARG {name}={match.group(group)}", f"ARG {name}={wanted}")
 
-        if args.write and text != original:
-            path.write_text(text, encoding="utf-8")
+        if text != original:
+            edits[path] = text
 
     for change in changes:
         print(change)
@@ -189,9 +197,7 @@ def main() -> int:
 
     if not changes:
         print("every pin is already current")
-    elif not args.write:
-        print(f"\n{len(changes)} pin(s) would change. Nothing written -- add --write.")
-    else:
+    elif pin_prompt.apply_or_ask(edits, len(changes), args):
         print(f"\nrewrote {len(changes)} pin(s). Review the diff, then rebuild and run "
               f"configs/examples/camera_smoke to prove the new pin set works.")
     # Unresolved pins are reported but do not fail: a registry that is briefly unreachable is not a

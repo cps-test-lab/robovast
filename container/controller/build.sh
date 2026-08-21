@@ -25,6 +25,8 @@ PLATFORM=""
 . "$ROOT/container/platforms.env"
 # shellcheck source=../buildcache.sh
 . "$ROOT/container/buildcache.sh"
+# shellcheck source=container/ask_push.sh
+. "$ROOT/container/ask_push.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -40,11 +42,17 @@ while [[ $# -gt 0 ]]; do
       PUSH=1
       shift
       ;;
+    --ask-push)
+      ASK_PUSH=1
+      shift
+      ;;
     *)
       break
       ;;
   esac
 done
+
+ask_push "$TAG"
 
 # A push publishes for the cluster, which is linux/amd64 -- so honour the declared
 # policy rather than the host's architecture. Building on an arm64 Mac otherwise
