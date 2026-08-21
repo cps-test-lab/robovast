@@ -1328,16 +1328,19 @@ class CampaignPanelsResponse(BaseModel):
     is the flattened panel dict (``type`` + ``position`` + panel-specific data
     bindings), rendered by the web run-view against the campaign's ``data.db``.
     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
-    the table + column that defines the playback range for non-ROS runs."""
+    the table + column that defines the playback range for non-ROS runs.
+    ``transport_only`` answers, for the run view, whether any of it is content."""
 
     campaign_id: str
     panels: list[dict] = Field(default_factory=list)
     timeline: Optional["PlaybackTimeline"] = None
-    #: How many panels the ``.vast`` declared *itself*, before the contributed ones were merged in
-    #: (the ``playback`` transport, and a ``scene3d`` for a backend that records a capture). The run
-    #: view needs the author's count, not the served one, to tell "this campaign has no
-    #: visualization block" from "this campaign has panels" -- the served list is never empty.
-    authored_panels: int = 0
+    #: Whether the served list holds nothing but the always-on transport -- i.e. this run view has
+    #: nothing to look at, and the web UI says so and points at **Edit visualization**. The served
+    #: list is never empty, so "bare" cannot be its length; and which panels a campaign gets
+    #: without asking is settled here, where they are merged in (a simulator that records a capture
+    #: contributes its own ``scene3d``, which *is* content), rather than in the web UI, which would
+    #: then have to spell the contributed types a second time.
+    transport_only: bool = False
 
 
 # NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +

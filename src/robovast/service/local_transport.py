@@ -3489,8 +3489,8 @@ class LocalTransport(RobovastInterface):
         # Raw-load (not full validation) — reading declared panels must not depend on
         # the rest of the snapshot config being re-validatable. Reads the *effective*
         # .vast so in-place run-view visualization edits are reflected.
-        from robovast.common.config import (CUSTOM_PANEL_TYPE, flatten_panel_shorthand,
-                                            visualization_block)
+        from robovast.common.config import (CUSTOM_PANEL_TYPE, always_on_panel_types,
+                                            flatten_panel_shorthand, visualization_block)
         from robovast.common.config_validation import _safe_load
         from robovast.common.simulators import merge_default_panels
         from robovast.service.interface import CampaignPanelsResponse
@@ -3501,8 +3501,8 @@ class LocalTransport(RobovastInterface):
         # Contributed panels: the transport bar every run view needs, plus the ones that replay
         # what the configured simulator always records (roqsim's `scene3d`) -- so a campaign never
         # declares a panel it could not do without. Merged here rather than in the UI, so the
-        # served list and the view cannot disagree. `authored_panels` keeps the author's own count,
-        # which is the only way the view can still tell an empty visualization block apart.
+        # served list and the view cannot disagree -- which is also why `transport_only` below is
+        # answered here: whether anything in the list is *content* is a question about the merge.
         raw = merge_default_panels(authored, (cfg or {}).get("execution") or {})
         # Each panel is a single-key mapping ``{<type>: <props-or-null>}`` (``log:`` for a bare
         # panel), or the plain string ``"log"`` for a bare ``- log`` with no colon; flatten to the
@@ -3531,9 +3531,14 @@ class LocalTransport(RobovastInterface):
             elif ptype in pkg_remotes:
                 panel["remote"] = pkg_remotes[ptype]
             panels.append(panel)
+        # The transport bar is the clock the other panels follow, not something to look at, so a
+        # list of nothing but always-on panels is a bare run view -- whoever wrote them: a campaign
+        # that declares `playback` itself (to move or re-title the bar) has still authored no
+        # content, and a backend's contributed panel is content even though no `.vast` asked for it.
+        always_on = always_on_panel_types()
         return CampaignPanelsResponse(
             campaign_id=campaign_id, panels=panels, timeline=run_view.get("timeline"),
-            authored_panels=len(authored))
+            transport_only=all(p.get("type") in always_on for p in panels))
 
     def resolve_campaign_panel_asset(self, campaign_id: str, rel_path: str) -> str:
         """Resolve a ``custom`` panel's staged bundle file, confined to the campaign's

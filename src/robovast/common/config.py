@@ -685,6 +685,18 @@ def flatten_panel_shorthand(v):
     return v
 
 
+def always_on_panel_types() -> frozenset:
+    """The panel *types* of :data:`ALWAYS_ON_PANELS`.
+
+    These are the panels that are not content: contributed to every run view whatever the
+    ``.vast`` says, so a view holding nothing but these is a view with nothing to look at --
+    which is what the web run-view asks in order to offer help authoring panels. Read through
+    :func:`flatten_panel_shorthand`, so "which type is this entry" cannot come to mean one
+    thing here and another where the list is merged or served.
+    """
+    return frozenset(flatten_panel_shorthand(p).get("type") for p in ALWAYS_ON_PANELS)
+
+
 def panel_json_schema(core_schema, handler, surface: str = DEFAULT_PANEL_SURFACE,
                       builtins: frozenset = frozenset()):
     """JSON Schema for a panel, reflecting the shorthand :func:`flatten_panel_shorthand` takes.

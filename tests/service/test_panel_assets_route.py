@@ -76,10 +76,10 @@ def test_panels_carry_remote_descriptors(tmp_path):
         panels = {p["type"]: p for p in resp.json()["panels"]}
 
         # Built-in, and contributed rather than declared: still served, no remote descriptor
-        # (host-native). `authored_panels` is the two the .vast wrote, which is how the run
-        # view tells "no visualization block" from "panels" now that the list is never empty.
+        # (host-native). The list carrying the transport is why "has this run view anything to
+        # look at" is `transport_only` rather than the list being empty.
         assert "remote" not in panels["playback"]
-        assert resp.json()["authored_panels"] == 2
+        assert resp.json()["transport_only"] is False
 
         # Package-provided: robovast_nav's costmap resolves to a /panel_types asset. All
         # robovast_nav panels share one MF container ("robovast_nav"), but the asset URL is
@@ -124,12 +124,63 @@ def test_custom_panel_path_escape_rejected(tmp_path):
 
 
 def test_a_campaign_with_no_visualization_block_still_gets_the_transport(tmp_path):
-    """The bar is not a thing a .vast can forget. `authored_panels: 0` is what lets the run
-    view say the campaign declared nothing while still showing a working transport."""
+    """The bar is not a thing a .vast can forget. `transport_only` is what lets the run view
+    say there is nothing to look at while still showing a working transport."""
     cfg = tmp_path / "camp-2" / "_config"
     cfg.mkdir(parents=True)
     (cfg / "camp.vast").write_text("version: 2\n")
     with TestClient(build_app(_local_transport(tmp_path))) as client:
         body = client.get("/campaigns/camp-2/panels").json()
         assert [p["type"] for p in body["panels"]] == ["playback"]
-        assert body["authored_panels"] == 0
+        assert body["transport_only"] is True
+
+
+def test_declaring_only_the_transport_is_still_a_bare_run_view(tmp_path):
+    """Moving or re-titling the bar is not authoring something to look at, so the count of
+    declared panels cannot be what decides this -- only whether any of them is content."""
+    cfg = tmp_path / "camp-3" / "_config"
+    cfg.mkdir(parents=True)
+    (cfg / "camp.vast").write_text(
+        "version: 2\n"
+        "visualization:\n"
+        "  results:\n"
+        "    run_view:\n"
+        "      panels:\n"
+        "      - playback:\n"
+        "          title: Transport\n"
+    )
+    with TestClient(build_app(_local_transport(tmp_path))) as client:
+        body = client.get("/campaigns/camp-3/panels").json()
+        assert [p["type"] for p in body["panels"]] == ["playback"]
+        assert body["transport_only"] is True
+
+
+def test_a_panel_the_simulator_contributes_is_content(tmp_path, monkeypatch):
+    """A campaign that declares nothing still has something to look at when its backend
+    records one (roqsim contributes a `scene3d`), and must not be told to author panels.
+
+    Driven by a stub backend rather than the roqsim one: RoboVAST's own suite must not need a
+    simulator installed to know that a contributed panel counts.
+    """
+    from robovast.common import simulators
+
+    class PanelBackend(simulators.SimulatorBackend):
+        def default_panels(self, cfg, execution):
+            return [{"scene3d": {}}]
+
+    monkeypatch.setattr(simulators, "resolve_backend",
+                        lambda name, base_dir="": PanelBackend())
+    cfg = tmp_path / "camp-4" / "_config"
+    cfg.mkdir(parents=True)
+    (cfg / "camp.vast").write_text(
+        "version: 2\n"
+        "execution:\n"
+        "  mode: ros2\n"
+        "  containers:\n"
+        "    simulation:\n"
+        "      backend: stub\n"
+    )
+    with TestClient(build_app(_local_transport(tmp_path))) as client:
+        body = client.get("/campaigns/camp-4/panels").json()
+        assert [p["type"] for p in body["panels"]] == ["playback", "scene3d"]
+        assert body["transport_only"] is False

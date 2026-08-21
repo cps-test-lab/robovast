@@ -1495,13 +1495,9 @@ export interface components {
          *     bindings), rendered by the web run-view against the campaign's ``data.db``.
          *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
          *     the table + column that defines the playback range for non-ROS runs.
+         *     ``transport_only`` answers, for the run view, whether any of it is content.
          */
         CampaignPanelsResponse: {
-            /**
-             * Authored Panels
-             * @default 0
-             */
-            authored_panels: number;
             /** Campaign Id */
             campaign_id: string;
             /** Panels */
@@ -1509,6 +1505,11 @@ export interface components {
                 [key: string]: unknown;
             }[];
             timeline: components["schemas"]["PlaybackTimeline"] | null;
+            /**
+             * Transport Only
+             * @default false
+             */
+            transport_only: boolean;
         };
         /**
          * CampaignPlotsResponse

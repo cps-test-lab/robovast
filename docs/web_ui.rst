@@ -903,6 +903,11 @@ to change it: an entry of your own keeps its position and its fields, exactly as
 ``execution.env`` wins over a backend's. A campaign with no ``visualization`` block at all still
 opens on a working transport bar.
 
+The transport does not count as something to look at — it is the clock, not content — so the view
+offers help authoring panels only when it is genuinely all there is. A simulator that contributes a
+``scene3d`` has a run view worth watching and is not asked to declare one; declaring only
+``playback`` yourself, to move the bar, still leaves nothing to watch and still gets the notice.
+
 **Docked panels reserve the space they occupy, and everything else is placed in what is
 left.** A ``top``/``bottom`` bar reserves its height and spans the full width; a
 ``left``/``right`` column reserves its width and lives in the band between the bars. Both

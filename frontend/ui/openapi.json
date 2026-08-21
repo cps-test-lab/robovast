@@ -384,13 +384,8 @@
         "type": "object"
       },
       "CampaignPanelsResponse": {
-        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's ``data.db``.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.",
+        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's ``data.db``.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
         "properties": {
-          "authored_panels": {
-            "default": 0,
-            "title": "Authored Panels",
-            "type": "integer"
-          },
           "campaign_id": {
             "title": "Campaign Id",
             "type": "string"
@@ -412,13 +407,18 @@
                 "type": "null"
               }
             ]
+          },
+          "transport_only": {
+            "default": false,
+            "title": "Transport Only",
+            "type": "boolean"
           }
         },
         "required": [
-          "authored_panels",
           "campaign_id",
           "panels",
-          "timeline"
+          "timeline",
+          "transport_only"
         ],
         "title": "CampaignPanelsResponse",
         "type": "object"

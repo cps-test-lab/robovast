@@ -335,6 +335,14 @@ def test_the_transport_bar_is_contributed_whatever_the_simulator(execution):
     assert _panel_types(merge_default_panels([], execution)) == ["playback"]
 
 
+def test_the_always_on_types_are_read_from_the_always_on_set():
+    """The one place that says which panels are not content, so the service asking "is this run
+    view bare?" and the merge deciding what to contribute cannot come to disagree."""
+    from robovast.common.config import ALWAYS_ON_PANELS, always_on_panel_types
+
+    assert always_on_panel_types() == set(_panel_types(ALWAYS_ON_PANELS))
+
+
 def test_a_backend_contributes_on_top_of_the_always_on_set():
     """Order matters: the transport docks flush against the bottom edge, which the first
     ``bottom`` bar in the list takes, and the declared panels come last."""

@@ -265,11 +265,13 @@ export function RunView({
     () => (panels.data ? parsePanels(panels.data.panels) : []),
     [panels.data],
   )
-  // The served list is never empty -- the playback transport is contributed for every campaign, and
-  // a capture-recording simulator adds its scene3d -- so "nothing to look at here" is the *author's*
-  // count, which the service reports separately. Filtering the served list by type instead would
-  // call a roqsim campaign empty when it has a full-bleed 3D panel.
-  const unauthored = panels.data?.authored_panels === 0
+  // The served list is never empty -- the playback transport is contributed for every campaign --
+  // and the transport is not content: it is the clock the other panels follow. So "nothing to look
+  // at here" is the service's `transport_only`, asked where the contributed panels are merged in
+  // rather than by filtering the served list here, which would mean spelling the contributed types
+  // a second time. A capture-recording simulator's scene3d is a real panel, so a roqsim campaign
+  // that declares nothing is not bare.
+  const bare = !!panels.data?.transport_only
 
   // Discover the timeline range and set it on the clock, in order of authority:
   //   1. a run capture's own time base -- the run's ground truth, and available with no data.db;
@@ -497,11 +499,11 @@ export function RunView({
           {/* Said alongside the view rather than instead of it: the transport bar is there for
               every campaign, so replacing the whole host would now hide a working panel to
               explain that there are none. */}
-          {unauthored && (
+          {bare && (
             <Alert severity="info" variant="outlined">
-              This campaign's <code>.vast</code> declares no{' '}
-              <code>visualization.results.run_view.panels</code>, so the run view has only the
-              playback transport. Use <b>Edit visualization</b> to add panels.
+              This run view has only the playback transport, which every campaign gets. Declare
+              panels under <code>visualization.results.run_view.panels</code> — see{' '}
+              <b>Edit visualization</b> — to show anything else.
             </Alert>
           )}
           <Box
