@@ -558,7 +558,16 @@ _TABLE_DESCRIPTIONS = {
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
         "— runs.objective lifts just the single scalar objective. params_json holds "
         "the config's scenario parameters; n_samples/status are roll-ups of its "
-        "'run' rows. For per-run detail use run_view, which joins this to run."),
+        "'run' rows. For per-run detail use run_view, which joins this to run. "
+        "status='evaluated' is the normal case. status='no_sample' marks a cell that RAN "
+        "but produced nothing measurable — every run lost to infrastructure rather than to "
+        "the system under test — so it carries n_samples=0 and EMPTY objectives_json, and "
+        "the search recorded it and continued rather than scoring a fabricated value. Its "
+        "runs ARE present in run/run_view with their real statuses, so exclude the unit "
+        "(WHERE u.status='evaluated') when averaging objectives, and count "
+        "status='no_sample' to see how much of the search space went unmeasured — that is "
+        "a coverage loss, not a result. status='composition_failed' is the sibling case "
+        "where the draw could not be built at all and never ran."),
     ("campaign", "run"): (
         "One row per individual run, child of unit via unit_id and of a job via job_id. "
         "status is passed/failed/error/killed/unknown (unknown = test.xml missing or "

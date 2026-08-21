@@ -43,13 +43,18 @@ local run never mutates the user's site-packages. Prepending is what lets a plug
 pinned dependency win over a different version the host also ships (``--target``
 pulls the full closure, e.g. a *forked* ``rdflib`` the plugin requires) — a mismatch
 would otherwise silently break composition (a wrong ``rdflib`` mangles JSON-LD
-parsing). **This is only safe because plugin composition runs in the isolated
-subprocess** (``config_generation._compose_isolated``): a fresh, short-lived process
-whose ``sys.path`` this rearranges — never the long-lived robovast service, which
-never imports plugin code. Because that worker is short-lived and single-purpose,
-the ``_warn_if_already_loaded`` first-wins caveat below is effectively moot there;
-it still guards any in-process caller (e.g. the GUI editor) that opts out of
-isolation.
+parsing). **Composition** is safe because it runs in the isolated subprocess
+(``config_generation._compose_isolated``): a fresh, short-lived process whose
+``sys.path`` this rearranges. Because that worker is short-lived and single-purpose,
+the ``_warn_if_already_loaded`` first-wins caveat below is effectively moot there.
+
+**Not every consumer is composition, though**, and the caveat is live for the rest:
+postprocessing plugins, search **extractors** and search strategies are resolved
+*in-process* — in the controller, which for a cluster campaign is the service process
+itself. Those callers go through :func:`ensure_plugins_importable`, and the first-wins
+caveat genuinely applies to them: a plugin pinning a different version of something the
+service has already imported does not win. That is the price of resolving a plugin in a
+long-lived process, and it is why only the consumers that *cannot* fork do it.
 """
 
 import hashlib
@@ -573,17 +578,25 @@ def _plugin_specs_from_vast(vast_path: str) -> list:
     return [s for s in specs if isinstance(s, str) and s.strip()]
 
 
-def ensure_postprocessing_plugins(install_dir: str, vast_path: str | None = None) -> None:
-    """Make a campaign's ``plugins:`` importable for postprocessing.
+def ensure_plugins_importable(install_dir: str, vast_path: str | None = None) -> None:
+    """Make a campaign's ``plugins:`` importable **in this process**.
 
-    Postprocessing plugins resolve off ``sys.path`` exactly like variation plugins
-    (an entry-point name, or the third-party deps a local ``./file.py:Class`` plugin
-    imports). The compose worker only leads ``sys.path`` with ``.robovast_plugins/``
-    inside its *subprocess*, so a later postprocessing pass — a batch analysis run, a
-    search's per-batch ``search.postprocessing`` step, or a re-run in a fresh process /
-    fetched campaign — would not otherwise see them. This installs the recorded specs
-    into ``<install_dir>/.robovast_plugins/`` when absent and leads ``sys.path`` with
-    it; "install if absent" is what lets a re-run after a service restart resolve them.
+    Postprocessing plugins and search extractors resolve off ``sys.path`` exactly like
+    variation plugins (an entry-point name, or the third-party deps a local
+    ``./file.py:Class`` plugin imports). The compose worker only leads ``sys.path`` with
+    ``.robovast_plugins/`` inside its *subprocess*, and the controller's plugin-install
+    phase is deliberately materialize-only, so anything resolving a plugin **in** the
+    long-lived process — a batch analysis run, a search's per-batch
+    ``search.postprocessing`` step, a search **extractor**, or a re-run in a fresh
+    process / fetched campaign — would not otherwise see them. This installs the
+    recorded specs into ``<install_dir>/.robovast_plugins/`` when absent and leads
+    ``sys.path`` with it; "install if absent" is what lets a re-run after a service
+    restart resolve them.
+
+    Both in-process consumers must call this. A search extractor did not, which made
+    ``plugins:`` silently useless for one: a local ``./search/x.py:Class`` extractor
+    importing a third-party reader raised ``ModuleNotFoundError`` from the service
+    process no matter what the ``.vast`` declared.
 
     *vast_path* names the ``.vast`` whose ``plugins:`` to read; when ``None`` the sole
     ``.vast`` directly under *install_dir* is used. Best-effort: a genuinely missing
@@ -596,6 +609,6 @@ def ensure_postprocessing_plugins(install_dir: str, vast_path: str | None = None
     specs = _plugin_specs_from_vast(vast_path) if vast_path else []
     try:
         ensure_workspace_plugins(install_dir, specs)
-    except Exception as e:  # noqa: BLE001 - never abort postprocessing on plugin prep
-        logger.warning("Could not prepare postprocessing plugins in %s: %s",
+    except Exception as e:  # noqa: BLE001 - never abort the caller on plugin prep
+        logger.warning("Could not prepare campaign plugins in %s: %s",
                        install_dir, e)

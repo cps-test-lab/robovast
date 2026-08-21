@@ -83,7 +83,19 @@ def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
     The plugin may be an entry-point name or a local file relative to the
     ``.vast``. ``cfg.strategy_parameters`` is validated against the plugin's
     ``PARAMS_MODEL`` when present.
+
+    Leads ``sys.path`` with the ``.vast``'s ``plugins:`` first, for the same reason
+    :class:`~robovast.search.evaluator.Evaluator` does: ``load_ref`` exec's a local
+    ``./file.py:Class`` strategy's module in *this* process, so its third-party imports
+    resolve off this path and nothing else prepares it -- compose only does so in its
+    subprocess, and the controller's plugin-install phase is materialize-only. A strategy
+    is the same kind of in-process plugin consumer as an extractor and needs the same
+    treatment; without it ``plugins:`` was silently useless for one.
     """
+    if vast_dir:
+        from robovast.common.config_plugins import \
+            ensure_plugins_importable  # pylint: disable=import-outside-toplevel
+        ensure_plugins_importable(vast_dir)
     strategy_cls = load_ref(cfg.strategy, STRATEGY_GROUP, vast_dir)
     if strategy_cls.PARAMS_MODEL is not None:
         params = strategy_cls.PARAMS_MODEL(**(cfg.strategy_parameters or {}))

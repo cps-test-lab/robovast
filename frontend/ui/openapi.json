@@ -508,6 +508,11 @@
             "title": "Num Failed",
             "type": "integer"
           },
+          "num_no_sample": {
+            "default": 0,
+            "title": "Num No Sample",
+            "type": "integer"
+          },
           "num_passed": {
             "default": 0,
             "title": "Num Passed",
@@ -568,6 +573,7 @@
           "mode",
           "num_composition_failed",
           "num_failed",
+          "num_no_sample",
           "num_passed",
           "num_runs",
           "origin",

@@ -29,6 +29,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+class NoSampleError(RuntimeError):
+    """This parameter set produced nothing measurable, as opposed to a bug in the
+    extractor. The only exception type a search is allowed to treat as "record this
+    one and carry on" rather than a fatal error.
+
+    The counterpart of
+    :class:`~robovast.common.variation.base_variation.VariationInfeasibleError` on the
+    scoring side, and the distinction is the same one: a draw that could not be
+    *realized* skips composition, a cell that could not be *measured* skips evaluation,
+    and anything else is a defect that must still abort loudly.
+
+    Raise this instead of scoring a fallback value. A fabricated ``0.0`` is
+    indistinguishable from a cell that genuinely scored zero, which is how an objective
+    goes structurally dead while the campaign looks healthy. Raising a bare
+    ``RuntimeError`` instead is the other failure: it aborted a 50-batch campaign over
+    one cell's container bringup, discarding every completed batch with it.
+
+    ``config_name`` is filled in by the caller that knows it, so a reporting layer can
+    name the cell in a structured field rather than only inside the message.
+
+    ``include_traceback = False`` (see
+    :func:`robovast.client.status.failure_detail`): the message names the cell and the
+    reason, which is the whole of what a reader can act on. A stack trace through the
+    controller only makes an unmeasurable cell look like a RoboVAST crash.
+    """
+
+    include_traceback = False
+
+    def __init__(self, message, config_name=None):
+        super().__init__(message)
+        self.config_name = config_name
+
+
 def run_dirs(config_dir: Path) -> list[Path]:
     """Numeric run subdirectories of a per-config result directory, in order."""
     if not config_dir.is_dir():

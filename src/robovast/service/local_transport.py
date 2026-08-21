@@ -4028,6 +4028,7 @@ class LocalTransport(RobovastInterface):
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
             num_failed=counts["num_failed"] + counts["num_errors"],
             num_composition_failed=counts.get("num_composition_failed", 0),
+            num_no_sample=counts.get("num_no_sample", 0),
             # From the same snapshot as the phase, so a listing cannot show a campaign as
             # finished-and-fine while its Status says postprocessing failed.
             postprocessing_error=snap.postprocessing_error or "",
@@ -4073,6 +4074,11 @@ class LocalTransport(RobovastInterface):
         ``num_composition_failed`` is 0 here by necessity, not by finding none: a
         draw that never composed left no directory for a disk walk to see. Only the
         store knows about those, which is why this is the last resort.
+
+        ``num_no_sample`` is 0 for a different reason: those cells DID leave directories,
+        and this walk counts their runs -- but "the extractor could not measure this cell"
+        is a scoring verdict, not something a ``test.xml`` walk can re-derive. So the runs
+        are reported and the coverage loss is not; only the store records that.
         """
         from robovast.common.campaign_data import get_vast_configuration_info
         try:
@@ -4085,6 +4091,7 @@ class LocalTransport(RobovastInterface):
             "num_failed": info.get("num_failed", 0),
             "num_errors": info.get("num_errors", 0),
             "num_composition_failed": 0,
+            "num_no_sample": 0,
         }
 
     def _started_at_for(self, cid: str) -> Optional[str]:

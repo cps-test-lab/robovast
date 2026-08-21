@@ -695,8 +695,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # plugins and the deps of local file-ref plugins), installing them into the
     # campaign's own .robovast_plugins/ if absent — so a re-run in a fresh process /
     # fetched campaign (post-restart) resolves them, not just the original run.
-    from robovast.common.config_plugins import ensure_postprocessing_plugins
-    ensure_postprocessing_plugins(campaign_dir, vast_path=vast_path)
+    from robovast.common.config_plugins import ensure_plugins_importable
+    ensure_plugins_importable(campaign_dir, vast_path=vast_path)
 
     # Read execution image from execution.yaml (if available)
     execution_image = None

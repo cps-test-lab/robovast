@@ -5,6 +5,7 @@
 """RandomSearch, the failure_rate extractor, the codec, and load_ref."""
 
 import numpy as np
+import pytest
 
 from robovast.common.config import SearchConfig
 from robovast.common.plugin_ref import load_ref
@@ -105,8 +106,29 @@ def test_failure_rate_aggregates_runs(tmp_path):
     assert not res.measures
 
 
-def test_failure_rate_missing_dir_is_zero(tmp_path):
-    assert FailureRate().extract(tmp_path / "nope").objectives == {"failure_rate": 0.0}
+def test_failure_rate_refuses_to_score_a_cell_that_produced_nothing(tmp_path):
+    """No results at all is NOT failure_rate 0.0.
+
+    This asserted 0.0 until 2026-08-21, and 0.0 is a fabricated observation: it claims
+    nothing failed, when in fact nothing ran, and the two are then indistinguishable.
+    It is worse for a *maximized* objective -- 0.0 is the least interesting score, so the
+    search steers away from exactly the parameter sets whose runs are dying.
+
+    The old behaviour was the only safe one at the time: raising would have aborted the
+    campaign. Now the controller records a NoSampleError cell and carries on (see
+    test_a_sample_less_cell_is_recorded_and_skipped_not_fatal), so refusing to invent a
+    number costs nothing -- which is what makes the honest answer available.
+    """
+    from robovast.search.extractor import NoSampleError
+
+    with pytest.raises(NoSampleError):
+        FailureRate().extract(tmp_path / "nope")
+
+    # A directory that exists but holds no test.xml is the same case, not a different one.
+    empty = tmp_path / "ran-but-recorded-nothing"
+    (empty / "0").mkdir(parents=True)
+    with pytest.raises(NoSampleError):
+        FailureRate().extract(empty)
 
 
 # ---- load_ref ----

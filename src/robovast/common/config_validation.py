@@ -752,6 +752,15 @@ def _search_problems(search, vast_dir):
 
     problems = []
 
+    # Both refs below may be local `./file.py:Class` modules whose third-party imports the
+    # `.vast` declares in `plugins:`. Lead sys.path with them first, or validation reports a
+    # ModuleNotFoundError as a config problem for a file that is in fact correctly declared --
+    # which is what it did, refusing campaigns the launcher then accepted and ran.
+    if vast_dir:
+        from robovast.common.config_plugins import \
+            ensure_plugins_importable  # pylint: disable=import-outside-toplevel
+        ensure_plugins_importable(vast_dir)
+
     # -- strategy (+ its optional PARAMS_MODEL) ------------------------------
     strategy = search.get("strategy")
     if isinstance(strategy, str) and strategy:

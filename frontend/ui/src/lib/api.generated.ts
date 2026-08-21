@@ -1575,6 +1575,11 @@ export interface components {
              */
             num_failed: number;
             /**
+             * Num No Sample
+             * @default 0
+             */
+            num_no_sample: number;
+            /**
              * Num Passed
              * @default 0
              */

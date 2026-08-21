@@ -683,6 +683,13 @@ class CampaignStore:
         that could not be composed never produced one), so it is reported beside
         the run tallies rather than folded into them: ``num_runs`` keeps meaning
         "runs that happened".
+
+        ``num_no_sample`` counts units too, but for the opposite reason: the cell DID
+        run and its runs ARE in ``num_runs`` — nothing they produced was measurable, so
+        the search recorded the cell and moved on instead of scoring a fabricated value
+        or aborting. A campaign with a non-zero count here still has a valid objective;
+        what it has lost is coverage of those cells, which is why the number is reported
+        rather than absorbed.
         """
         rows = self._conn.execute(
             "SELECT r.status AS status, COUNT(*) AS n FROM run r "
@@ -695,6 +702,10 @@ class CampaignStore:
             "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
             "WHERE b.campaign_id = ? AND u.status = 'composition_failed'",
             (campaign_id,)).fetchone()[0]
+        no_sample = self._conn.execute(
+            "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? AND u.status = 'no_sample'",
+            (campaign_id,)).fetchone()[0]
         return {
             "num_runs": sum(by_status.values()),
             "num_passed": by_status.get("passed", 0),
@@ -702,6 +713,7 @@ class CampaignStore:
             "num_errors": by_status.get("error", 0),
             "num_killed": by_status.get("killed", 0),
             "num_composition_failed": composition_failed,
+            "num_no_sample": no_sample,
         }
 
 
@@ -844,12 +856,18 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
             # stops being invisible in every summary that reads these counts. Its own
             # try: a store without a ``unit`` table still has usable run tallies, and
             # losing them to a missing column would be the worse failure.
+            # ``no_sample`` is the same kind of unit-level fact: the cell ran, but nothing
+            # it produced was measurable, so it has runs AND belongs beside these counts.
             try:
                 composition_failed = conn.execute(
                     "SELECT COUNT(*) FROM unit WHERE status = 'composition_failed'"
                 ).fetchone()[0]
+                no_sample = conn.execute(
+                    "SELECT COUNT(*) FROM unit WHERE status = 'no_sample'"
+                ).fetchone()[0]
             except sqlite3.Error:
                 composition_failed = 0
+                no_sample = 0
     except sqlite3.Error:
         return None  # no ``run`` table (v1) or unreadable store
     by_status = {r[0]: r[1] for r in rows}
@@ -860,4 +878,5 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
         "num_errors": by_status.get("error", 0),
         "num_killed": by_status.get("killed", 0),
         "num_composition_failed": composition_failed,
+        "num_no_sample": no_sample,
     }

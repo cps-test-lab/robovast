@@ -52,6 +52,7 @@ from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_per_run_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
+from robovast.search.extractor import NoSampleError
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
                        RunOptions)
@@ -644,13 +645,43 @@ class CampaignController:
                             n_samples=0, status="composition_failed", result_dir="")
                         continue
                     config_dir = Path(self.campaign_root) / config_name
-                    ev = self.evaluator.evaluate(config_dir, ps)
+                    result_dir = os.path.relpath(config_dir, self.campaign_root)
+                    try:
+                        ev = self.evaluator.evaluate(config_dir, ps)
+                    except NoSampleError as exc:
+                        # The cell ran but produced nothing measurable -- every run lost to
+                        # infrastructure (container bringup, a crash before recording started)
+                        # rather than to the system under test. Treated exactly like an
+                        # unrealizable draw above: recorded and left out of `evaluations`,
+                        # which every strategy tolerates. Aborting instead discarded up to 49
+                        # completed batches over one cell, and scoring a fallback 0.0 instead
+                        # would be a fabricated observation -- the extractor is right to refuse
+                        # both, so the framework has to be the one that carries on.
+                        #
+                        # Only this type is caught. Any other exception is an extractor defect
+                        # and must still abort, or a broken objective goes unnoticed -- the
+                        # exact failure NoSampleError's docstring records.
+                        logger.warning("Batch %d: %s produced no measurable sample, "
+                                       "recorded and skipped: %s", batch_idx, config_name, exc)
+                        unit_id = self.store.record_unit(
+                            batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
+                            params=ps.values, objectives={}, measures={},
+                            n_samples=0, status="no_sample", result_dir=result_dir)
+                        # Unlike composition_failed, these runs HAPPENED: record them so the
+                        # cell's failures are visible and counted rather than vanishing with
+                        # the evaluation that could not use them.
+                        outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
+                        self.store.record_runs(unit_id, outcomes)
+                        cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+                        failed_runs += cfg_failed
+                        killed_runs += cfg_killed
+                        continue
                     evaluations.append(ev)
                     unit_id = self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
                         n_samples=ev.n_samples, status="evaluated",
-                        result_dir=os.path.relpath(config_dir, self.campaign_root))
+                        result_dir=result_dir)
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
                     cfg_failed, cfg_killed = _tally_outcomes(outcomes)
@@ -683,8 +714,8 @@ class CampaignController:
         # <vast_dir>/.robovast_plugins/ but only led sys.path in its *subprocess*, so
         # this controller process needs them prepended before resolving search
         # postprocessing plugins (and their deps). Same helper the analysis path uses.
-        from robovast.common.config_plugins import ensure_postprocessing_plugins
-        ensure_postprocessing_plugins(self.vast_dir)
+        from robovast.common.config_plugins import ensure_plugins_importable
+        ensure_plugins_importable(self.vast_dir)
         # Imported lazily to avoid importing the results_processing stack (and its
         # heavier deps) unless a search actually configures postprocessing.
         from robovast.results_processing.postprocessing import run_postprocessing_commands

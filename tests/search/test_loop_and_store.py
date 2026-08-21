@@ -88,7 +88,7 @@ class FakeComposePartialFailure:
         return campaign_data, name_by_id
 
 
-def _search_controller(cfg, tmp_path, strategy=None, runs=2, compose=None):
+def _search_controller(cfg, tmp_path, strategy=None, runs=2, compose=None, evaluator=None):
     from robovast.search.stopping import build_stop_conditions
     store = CampaignStore(tmp_path / "camp" / STORE_FILENAME)
     backend = FakeBackend()
@@ -96,7 +96,7 @@ def _search_controller(cfg, tmp_path, strategy=None, runs=2, compose=None):
         campaign_id="camp", results_dir=str(tmp_path), runs=runs, backend=backend,
         options=RunOptions(), store=store, campaign_config_dump={"version": 1},
         vast_dir=str(tmp_path), strategy=strategy or build_strategy(cfg),
-        evaluator=Evaluator(cfg, str(tmp_path)), compose=compose or FakeCompose(),
+        evaluator=evaluator or Evaluator(cfg, str(tmp_path)), compose=compose or FakeCompose(),
         per_batch=cfg.per_batch, stop_conditions=build_stop_conditions(cfg))
     return controller, store, backend
 
@@ -415,3 +415,90 @@ def test_newer_store_is_read_best_effort(tmp_path):
         # Untouched: still at the newer version, not migrated down.
         assert store._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
         assert [c["name"] for c in store.list_campaigns()] == ["newer"]
+
+
+class _EvaluatorRaising:
+    """Evaluates normally except for one param set, for which it raises *exc*.
+
+    Stands in for an extractor that found nothing measurable in a cell (every run lost to
+    container bringup), or for one with an outright bug -- the two cases the controller
+    must treat differently.
+    """
+
+    def __init__(self, cfg, tmp_path, fail_x, exc):
+        self._inner = Evaluator(cfg, str(tmp_path))
+        self._fail_x = fail_x
+        self._exc = exc
+
+    def evaluate(self, config_dir, params):
+        if params.values["x"] == self._fail_x:
+            raise self._exc
+        return self._inner.evaluate(config_dir, params)
+
+
+def test_a_sample_less_cell_is_recorded_and_skipped_not_fatal(tmp_path):
+    """A cell whose runs produced nothing measurable must not abort the campaign.
+
+    The extractor is right to refuse both alternatives -- a fabricated 0.0 is
+    indistinguishable from a cell that genuinely scored zero, and a bare raise discarded
+    every completed batch over one cell's container bringup -- so the framework records it
+    and carries on, exactly as it does for an unrealizable draw.
+
+    Unlike ``composition_failed``, these runs HAPPENED, so they must still be recorded:
+    the cell's failures stay visible instead of vanishing with the unusable evaluation.
+    """
+    from robovast.search.extractor import NoSampleError
+
+    cfg = _cfg(batches=1, per_batch=3)
+    param_sets = [ParamSet(values={"x": 0.1}),
+                  ParamSet(values={"x": 0.2}),
+                  ParamSet(values={"x": 0.3})]
+    controller, store, _backend = _search_controller(
+        cfg, tmp_path, strategy=_Fixed(cfg, param_sets),
+        evaluator=_EvaluatorRaising(cfg, tmp_path, 0.2,
+                                    NoSampleError("no measurable run", config_name="c")))
+
+    report = controller.run()  # must not raise
+
+    assert len(report.evaluations) == 2  # the unmeasurable cell is excluded
+    assert {ev.params.values["x"] for ev in report.evaluations} == {0.1, 0.3}
+
+    conn = sqlite3.connect(store.db_path)
+    rows = conn.execute(
+        "SELECT paramset_id, status, n_samples, objectives_json, result_dir FROM unit"
+    ).fetchall()
+    # The runs of the skipped cell are recorded, which is what separates this from
+    # composition_failed (where nothing ever ran).
+    run_counts = conn.execute(
+        "SELECT u.status, COUNT(r.id) FROM unit u LEFT JOIN run r ON r.unit_id = u.id "
+        "GROUP BY u.status").fetchall()
+    conn.close()
+    store.close()
+
+    assert len(rows) == 3  # every param set recorded, including the unmeasurable one
+    skipped = [r for r in rows if r[1] == "no_sample"]
+    assert len(skipped) == 1
+    assert skipped[0][0] == param_sets[1].id
+    assert skipped[0][2] == 0                      # n_samples
+    assert json.loads(skipped[0][3]) == {}         # no fabricated objective
+    assert skipped[0][4] != ""                     # it HAS a result dir, unlike composition_failed
+    assert dict(run_counts)["no_sample"] == 2      # its runs are recorded (runs=2)
+
+
+def test_an_extractor_bug_still_aborts_the_campaign(tmp_path):
+    """Only NoSampleError is tolerated. Any other exception is an extractor defect and
+    must still abort -- swallowing it is how an objective goes structurally dead while
+    the campaign reports success, which is the failure the typed error exists to avoid.
+    """
+    cfg = _cfg(batches=1, per_batch=3)
+    param_sets = [ParamSet(values={"x": 0.1}),
+                  ParamSet(values={"x": 0.2}),
+                  ParamSet(values={"x": 0.3})]
+    controller, store, _backend = _search_controller(
+        cfg, tmp_path, strategy=_Fixed(cfg, param_sets),
+        evaluator=_EvaluatorRaising(cfg, tmp_path, 0.2,
+                                    KeyError("column the extractor assumed")))
+
+    with pytest.raises(KeyError):
+        controller.run()
+    store.close()

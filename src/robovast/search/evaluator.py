@@ -38,6 +38,17 @@ class Evaluator:
     """Applies the configured extractor to score parameter sets."""
 
     def __init__(self, cfg: SearchConfig, vast_dir: str = ""):
+        # Make the workspace's `plugins:` importable HERE before resolving the extractor.
+        # load_ref exec's a local `./file.py:Class` extractor's module in *this* process, so
+        # its third-party imports resolve off this sys.path -- and nothing else leads it with
+        # .robovast_plugins/: compose only does so inside its subprocess, and the controller's
+        # plugin-install phase is materialize-only by design. Without this, `plugins:` was
+        # silently useless for a search extractor (ModuleNotFoundError however it was declared),
+        # while the same declaration worked for postprocessing, which does call this.
+        if vast_dir:
+            from robovast.common.config_plugins import \
+                ensure_plugins_importable  # pylint: disable=import-outside-toplevel
+            ensure_plugins_importable(vast_dir)
         extractor_cls = load_ref(cfg.extract.plugin, EXTRACTOR_GROUP, vast_dir)
         self.extractor: Extractor = extractor_cls(**cfg.extract.params)
         self.objective_names = [o.name for o in cfg.objectives]

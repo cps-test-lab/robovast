@@ -438,6 +438,13 @@ class CampaignSummary(BaseModel):
     #: campaign that could not compose half of what it proposed must not read as a
     #: campaign that simply proposed less. Always 0 for a batch campaign.
     num_composition_failed: int = 0
+    #: Search parameter sets that RAN but produced nothing measurable -- every run lost
+    #: to infrastructure rather than to the system under test. Counted apart from
+    #: ``num_failed`` for the same reason ``num_killed`` is: those runs say nothing about
+    #: the SUT. Their runs ARE inside the run tallies above (they happened); what this
+    #: number reports is lost search COVERAGE, which a campaign that scored a fabricated
+    #: value instead would hide entirely. Always 0 for a batch campaign.
+    num_no_sample: int = 0
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     # A campaign whose runs all passed still *finishes* when a post-run step fails -- the
