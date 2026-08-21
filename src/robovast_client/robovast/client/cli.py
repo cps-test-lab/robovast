@@ -728,7 +728,8 @@ def install_completion():
 def wait(campaign, interval, timeout, namespace, context):
     """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
     waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
-    still running, but no longer being waited on).
+    still running, but no longer being waited on), 5 (a running job's simulator reported
+    something wrong -- likewise still running).
 
     The lane-agnostic wait: the service drives every campaign, so its phase *is* the
     campaign's whichever backend the runs execute on. Prints each phase change as it
@@ -747,21 +748,46 @@ def wait(campaign, interval, timeout, namespace, context):
     on terminality would never return and nobody would be told. The verdict is
     :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
 
-    Only a **new** stall exits. A campaign already stalled when this command starts is not
-    news -- whoever ran it has just been told -- and exiting on the first poll would make
-    ``vast wait`` unusable for exactly the state it reports: the message says to re-run it
-    after diagnosing, and a fresh waiter would exit immediately, forever. So the first
-    observation is recorded and only a rising edge stops the wait.
+    **An ``error``-level health finding ends it too** (exit 5), and earlier: a stall is only
+    visible once a run is past its declared budget, and needs one to have been declared at
+    all, while a simulator saying "sim time is not advancing" is true within a minute and
+    needs no budget. Whatever a finding means is the simulator's business -- this reads one
+    word, ``level``, and passes the rest through.
+
+    Only a **new** stall or a **new** finding exits. A campaign already stalled when this
+    command starts is not news -- whoever ran it has just been told -- and exiting on the
+    first poll would make ``vast wait`` unusable for exactly the state it reports: the message
+    says to re-run it after diagnosing, and a fresh waiter would exit immediately, forever. So
+    the first observation is recorded and only a rising edge stops the wait; for findings the
+    edge is per ``check``, so one check firing repeatedly is one exit and not a stream.
     """
-    from robovast.client.status import Phase, is_terminal, stall_report
+    from robovast.client.status import (HEALTH_NEXT_STEP, Phase, error_findings,
+                                        finding_summary, is_terminal, stall_report)
     from robovast.execution.campaign_wait import wait_for_campaign_status
     from robovast.execution.poll_health import PollsStopped
 
-    seen = {"stalled": None}
+    seen = {"stalled": None, "checks": None}
+    fired: dict = {}
 
     def stop_when(current):
+        # Both edges are taken every poll, whichever ends up firing: a baseline that moved only on
+        # the branch that was reached would let the other one exit on a condition it inherited.
         stalled = stall_report(current).get("stalled") is True
         previous, seen["stalled"] = seen["stalled"], stalled
+        findings = error_findings(current)
+        baseline = seen["checks"]
+        if baseline is None:
+            # The baseline poll. Whatever a simulator is already complaining about is the state the
+            # caller was just told to come back from, so it cannot be what sends them away again.
+            seen["checks"] = {f.check for f in findings}
+        else:
+            # A finding first when both are true, matching `_campaign_next_step`: it names a fault
+            # class ("sim time is not advancing") where a stall says only "nothing finished in
+            # time".
+            fresh = [f for f in findings if f.check not in baseline]
+            if fresh:
+                fired["finding"] = fresh[0]
+                return True
         return stalled and previous is False
 
     try:
@@ -785,15 +811,36 @@ def wait(campaign, interval, timeout, namespace, context):
         handle_cli_exception(e)
         return
     if not is_terminal(status.phase):
-        # stop_when fired: the campaign is alive and stalled. Distinct from every other
-        # exit here, all of which mean the campaign is over or unreachable -- and the
-        # message has to say so, or "the waiter returned" reads as "the run ended".
-        report = stall_report(status)
-        click.echo(f"{campaign}: {report.get('stall_reason', 'no progress')}", err=True)
+        # stop_when fired: the campaign is alive, and something about it is worth stopping a
+        # wait for. Distinct from every other exit here, all of which mean the campaign is over
+        # or unreachable -- and the message has to say so, or "the waiter returned" reads as
+        # "the run ended".
+        finding = fired.get("finding")
+        if finding is not None:
+            click.echo(f"{campaign}: {finding_summary(finding)}", err=True)
+            # Said before anything else about what to do: a waiter stopping must never read as
+            # a run stopping, and this exit is reached by *reading* a run, with a fixed
+            # read-only command the service chose. Nothing touched the job.
+            click.echo(f"{campaign}: the run was NOT touched — this is what the run's own "
+                       f"simulator reported about itself.", err=True)
+        else:
+            click.echo(f"{campaign}: {stall_report(status).get('stall_reason', 'no progress')}",
+                       err=True)
         click.echo(
             f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
             f"When you are done diagnosing, background `vast wait {campaign}` again, or "
             f"end it with stop_campaign.", err=True)
+        if finding is not None:
+            # A check the simulator says it did NOT run, reported here and only here in the wait:
+            # this exit means one check fired, and a reader is entitled to know which others
+            # reached no verdict before concluding that the rest of the run is fine.
+            for note in status.health_skipped or []:
+                click.echo(f"{campaign}: check did not run — {note}", err=True)
+            # The stall message carries its ladder inside `stall_reason`; a finding has no such
+            # sentence of its own. Deliberately NOT the stall's step, which reused to send a
+            # reader off to ask what the job was doing -- the question this finding just answered.
+            click.echo(f"{campaign}: next: {HEALTH_NEXT_STEP}", err=True)
+            raise SystemExit(5)
         raise SystemExit(4)
     click.echo(f"{campaign}: {status.phase}")
     if status.phase == Phase.UNKNOWN:

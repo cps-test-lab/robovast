@@ -128,8 +128,11 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
 5. **Describe every run.** `description` is what tells two same-day
    `campaign-<timestamp>` ids apart a week later. Say what the run is *for*.
 6. **Wait for it.** Background `vast wait <campaign_id>` (exit 0 finished, 1
-   failed/stopped) — it exits when the campaign is genuinely over, past postprocessing,
-   and leaves you free meanwhile. Never end a turn on a campaign you started without
+   failed/stopped, **4 stalled**, **5 its simulator reported a fault**) — it exits when the
+   campaign is genuinely over, past postprocessing, and leaves you free meanwhile. **4 and 5
+   mean the campaign is still running and nothing is waiting on it**, so they are a hand-off
+   to you, not an ending: diagnose, then either background the waiter again or
+   `stop_campaign`. You do not have to remember to check for a wedge — the waiter tells you. Never end a turn on a campaign you started without
    either waiting for it or saying you are not: an unwatched campaign's end goes
    unnoticed, which is what ntfy (`ROBOVAST_NTFY_TOPIC`) is for. Then check what it
    actually produced — `status: finished` does not imply results, and a campaign whose
@@ -142,6 +145,25 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    what a severity read returns. `hide_shutdown=false` when the shutdown *is* the fault.
 7. **Verify the output, not the exit code.** `get_campaign_summary`, then
    `list_files("/results/<campaign_id>/")` to see the runs actually wrote something.
+
+## When a live run is wedged, in this order
+
+Cheapest and least invasive first, and the ordering is the point — every untainted option
+comes before the one that taints:
+
+1. `get_job_state(campaign_id, job_name)` — what the simulator says about itself and which
+   scenario action it is stuck in. A fixed command the service chose: perturbs nothing,
+   records nothing.
+2. `get_job_log(summarize=True)` — what it is *repeating*. A flood is the finding, so
+   summarize rather than grep.
+3. **Reproduce it in a copy**: `exec_in_container(campaign_id, config_name=...)` stages the
+   same image, env and `/config` with no campaign data at stake. Most wedges are config,
+   launch or param faults and reproduce here. **If it does not reproduce, that is itself the
+   finding** — the fault is environmental, timing-dependent or draw-specific.
+4. Only then `exec_in_job(campaign_id, job_name, command)`, which enters the live run and is
+   **recorded against it**: every run that job covers is marked `probed`. Confirming a
+   hypothesis there is the point; making a wedged run go green is not — the fix belongs in
+   the `.vast` and the number belongs to a clean relaunch.
 
 ## Containers
 

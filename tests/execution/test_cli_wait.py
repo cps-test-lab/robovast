@@ -184,3 +184,122 @@ def test_a_campaign_with_no_declared_timeout_never_exits_four(statuses):
               _stalled_status("c1", 99999, deadline=None)])
     result = _run("c1", "--timeout", "0.2")
     assert result.exit_code == 2
+
+
+# -- exit 5: the run's own simulator said something is wrong ---------------------------------
+
+
+def _finding_status(campaign_id, findings, deadline=None, skipped=()):
+    """A live campaign carrying *findings*, and deliberately no stall: exit 5 must not need one.
+
+    ``progress_deadline_s`` defaults to ``None`` here for the property that matters -- a health
+    finding is true within a minute of the fault and needs no declared budget, which is exactly
+    what a stall verdict cannot do.
+    """
+    return Status(phase=Phase.RUNNING, campaign_id=campaign_id,
+                  progress_since=time.time(), progress_deadline_s=deadline,
+                  health=findings, health_skipped=list(skipped))
+
+
+def _finding(check="sim-time-rate", level="error", job="nav-1/1"):
+    return {"job_name": job, "level": level, "check": check, "detail": "sim advanced 3.1s in 60s"}
+
+
+def test_a_fresh_error_finding_ends_the_wait_with_its_own_code(statuses):
+    """The point of exit 5: nobody would otherwise be told. A run whose simulator is wedged holds
+    ``running`` for its whole life, and with no ``execution.timeout`` there is not even a stall
+    verdict to fall back on."""
+    statuses([_finding_status("c1", []), _finding_status("c1", [_finding()])])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "sim-time-rate" in result.output and "sim advanced 3.1s" in result.output
+    # Three things the message must say, and each was got wrong by a draft of it.
+    assert "NOT touched" in result.output, "a waiter stopping must not read as a run stopping"
+    assert "STILL RUNNING" in result.output
+    assert "vast wait c1" in result.output, "the way back has to be named"
+
+
+def test_a_finding_exit_says_what_to_do_next_from_what_the_finding_already_told_you(statuses):
+    """A finding names the job and names the check, so the next step starts from those two facts.
+    This used to carry the *stall* step, which sent a reader off to ask what the job was doing --
+    the one question the finding had just answered."""
+    statuses([_finding_status("c1", []), _finding_status("c1", [_finding()])])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "next:" in result.output
+    assert "get_job_state" in result.output
+    assert "simulator's documentation" in result.output, \
+        "the slug is the simulator's, so the reader has to be sent to the simulator's docs"
+    assert "no progress for" not in result.output, \
+        "the stall's ladder is about a budget this exit did not use"
+
+
+def test_a_finding_exit_reports_the_checks_that_did_not_run(statuses):
+    """The moment one check fires is the moment a reader starts treating the rest of the run as
+    fine. A check that reached no verdict is not a finding and must not be rendered as one -- but
+    it must be said, or its absence reads as a pass."""
+    statuses([
+        _finding_status("c1", []),
+        _finding_status("c1", [_finding()],
+                        skipped=["nav-1/1: check 1 (robot-motion): no rows in sim_poses.csv"]),
+    ])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "check did not run" in result.output
+    assert "robot-motion" in result.output
+
+
+def test_a_finding_already_present_is_not_news(statuses):
+    """The same rule as the stall, and load-bearing for the same reason: the exit message says to
+    re-run this command after diagnosing, so a fresh waiter must not exit on what it inherits."""
+    statuses([_finding_status("c1", [_finding()])])
+    result = _run("c1", "--timeout", "0.2")
+    assert result.exit_code == 2  # kept waiting, then hit --timeout
+
+
+def test_a_second_finding_from_a_new_check_still_exits(statuses):
+    """The baseline is per ``check``, not "any finding": a run already warning about one thing
+    must still be able to report a different fault."""
+    statuses([_finding_status("c1", [_finding(check="robot-motion")]),
+              _finding_status("c1", [_finding(check="robot-motion"), _finding()])])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "sim-time-rate" in result.output
+
+
+def test_the_same_check_firing_again_does_not_exit(statuses):
+    """A check that keeps firing is one fault, not a stream of exits."""
+    statuses([_finding_status("c1", [_finding()]), _finding_status("c1", [_finding()]),
+              _finding_status("c1", [_finding()])])
+    result = _run("c1", "--timeout", "0.2")
+    assert result.exit_code == 2
+
+
+def test_a_warning_never_ends_the_wait(statuses):
+    """``warn`` is the level RoboVAST reads and then does nothing about: a robot standing still is
+    often correct. It surfaces on ``get_job_state``; it must not stop a wait."""
+    statuses([_finding_status("c1", []),
+              _finding_status("c1", [_finding(check="robot-motion", level="warn")])])
+    result = _run("c1", "--timeout", "0.2")
+    assert result.exit_code == 2
+
+
+def test_a_terminal_campaign_with_findings_exits_on_its_phase(statuses):
+    """What a run reported while it was wedged is history once it is over: the phase decides, and
+    the results are the record. Exiting 5 on a finished campaign would report a completed run as
+    an interrupted wait."""
+    statuses([_finding_status("c1", []),
+              Status(phase=Phase.FINISHED, campaign_id="c1", health=[_finding()])])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 0
+
+
+def test_a_stall_and_a_finding_together_report_the_finding(statuses):
+    """Both are true and only one message can lead. The finding names a fault class where the
+    stall says only "nothing finished in time", so it is the one worth reading first."""
+    stalled = Status(phase=Phase.RUNNING, campaign_id="c1", progress_deadline_s=300,
+                     progress_since=time.time() - 999, health=[_finding()])
+    statuses([_finding_status("c1", []), stalled])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "NOT touched" in result.output

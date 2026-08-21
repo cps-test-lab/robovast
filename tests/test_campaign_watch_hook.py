@@ -181,3 +181,58 @@ def test_re_arming_an_unknown_campaign_is_harmless(hook, capsys):
     """A status read for a campaign this session never started must not invent an entry."""
     _rearm(hook, "camp-elsewhere", True)
     assert _check(hook, capsys) is None
+
+
+def _rearm_response(hook, campaign, response, session="s1"):
+    hook.rearm({"session_id": session, "tool_input": {"campaign_id": campaign},
+                "tool_response": {"campaign_id": campaign, **response}},
+               _ledger(hook, session))
+
+
+def _handed_off(hook, capsys, campaign="camp-a"):
+    _start(hook, campaign)
+    hook.delegated({"session_id": "s1",
+                    "tool_input": {"command": f"vast wait {campaign}"}}, _ledger(hook))
+    assert _check(hook, capsys) is None
+    return campaign
+
+
+def test_an_error_finding_re_arms_too(hook, capsys):
+    """`vast wait` exits 5 on one, leaving the campaign live and still marked handed-off — the
+    same hole a stall opens, so it needs the same patch. Claiming both and covering one would
+    make the guard's own docstring wrong."""
+    campaign = _handed_off(hook, capsys)
+    _rearm_response(hook, campaign,
+                    {"health_findings": [{"level": "error", "check": "sim-time-rate"}]})
+    decision = _check(hook, capsys)
+    assert decision is not None and campaign in decision["reason"]
+
+
+def test_a_warning_does_not_re_arm(hook, capsys):
+    """A warning never ends a wait, so it must not re-arm the guard either: a robot standing
+    still is often correct, and a guard that fires on it is one agents learn to ignore."""
+    campaign = _handed_off(hook, capsys)
+    _rearm_response(hook, campaign,
+                    {"health_findings": [{"level": "warn", "check": "robot-motion"}]})
+    assert _check(hook, capsys) is None
+
+
+def test_a_job_state_read_re_arms_on_its_simulator_s_findings(hook, capsys):
+    """`get_job_state` passes the simulator's whole document through under `simulator`, warnings
+    included — so the level has to be read there rather than assumed from the field's presence."""
+    campaign = _handed_off(hook, capsys)
+    _rearm_response(hook, campaign, {"simulator": {"findings": [
+        {"level": "warn", "check": "robot-motion"}]}})
+    assert _check(hook, capsys) is None, "a warning in the document is still only a warning"
+    _rearm_response(hook, campaign, {"simulator": {"findings": [
+        {"level": "warn", "check": "robot-motion"},
+        {"level": "error", "check": "sim-time-start"}]}})
+    assert _check(hook, capsys) is not None
+
+
+def test_a_reply_that_could_not_read_anything_does_not_re_arm(hook, capsys):
+    """`unavailable` says a read failed, which is not the same as the run being wrong. Only the
+    two conditions that actually end a wait may re-arm; this hook computes no verdict of its own."""
+    campaign = _handed_off(hook, capsys)
+    _rearm_response(hook, campaign, {"simulator": None, "unavailable": ["could not read"]})
+    assert _check(hook, capsys) is None

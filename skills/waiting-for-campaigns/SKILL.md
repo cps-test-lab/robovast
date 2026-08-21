@@ -12,7 +12,7 @@ skill exists to prevent: it tells the user a campaign finished when it has barel
 ## Wait for it, in the background
 
 ```text
-Bash(command="vast wait <campaign_id> --interval 10", run_in_background=true)
+Bash(command="vast wait <campaign_id>", run_in_background=true)
 ```
 
 Run it as the **whole** command — nothing chained after it. The exit code is the entire
@@ -25,8 +25,23 @@ campaign then reports success.
 | 1 | failed or stopped |
 | 2 | `--timeout` elapsed; the campaign is still running |
 | 3 | the service has no phase for that id — a typo, or it died before recording one |
+| 4 | **stalled** — nothing completed for longer than one run may take |
+| 5 | a running job's **simulator** reported a fault (sim time not advancing, and the like) |
 
 Backgrounded, it costs you nothing: you stay free, and you are notified when it exits.
+
+## 4 and 5 are a hand-off, not an ending
+
+**The campaign is still running and nothing is waiting on it now.** Neither exit touched the
+run. This is the waiter telling you something is wrong so you do not have to remember to look
+— which is the whole reason it exits at all, since a wedged campaign holds `running` for its
+whole life and would otherwise never end the wait.
+
+The message names the diagnosis and the next call. Work through it cheapest-first —
+`get_job_state`, then `get_job_log(summarize=True)`, then reproduce in a copy with
+`exec_in_container`, and only then `exec_in_job`, which is recorded against the run. Then
+**settle the campaign again**: background `vast wait <campaign_id>` (it will not exit on the
+same thing twice, so resuming works), or `stop_campaign`.
 
 ## Or say you are not waiting
 

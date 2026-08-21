@@ -181,22 +181,44 @@ def check(_payload, path):
     }))
 
 
+def _reports_trouble(response):
+    """True when a tool's own reply carries one of the two things that end a wait early.
+
+    The two, and only these two: `stalled: true` (exit 4) and an `error`-level health finding
+    (exit 5). Both are read from what the tool already returned -- never computed here, never
+    fetched -- so this stays what the file promises, pure bookkeeping with no robovast import
+    and no service call.
+
+    Two shapes, because two tools report findings: `get_campaign_status` lists the error-level
+    ones at the top level, while `get_job_state` passes the simulator's whole document through
+    under `simulator`, warnings included -- so the level has to be read there rather than
+    assumed.
+    """
+    if response.get("stalled") is True:
+        return True
+    findings = list(response.get("health_findings") or [])
+    simulator = response.get("simulator")
+    if isinstance(simulator, dict):
+        findings += list(simulator.get("findings") or [])
+    return any(isinstance(f, dict) and f.get("level") == "error" for f in findings)
+
+
 def rearm(payload, path):
-    """A campaign reported as stalled is unattended again, so let the guard stop once more.
+    """A campaign reported as wedged is unattended again, so let the guard stop once more.
 
     `delegated` marks a campaign handed off at *launch*, which is right for a waiter that
-    will see it out -- but `vast wait` now exits 4 on a stall, leaving the campaign alive
-    and still marked handed-off. Without this the turn guard is spent and the agent can
-    stop silently on a wedged campaign, which is the exact failure it exists to prevent.
+    will see it out -- but `vast wait` now exits 4 on a stall and 5 on an error-level health
+    finding, leaving the campaign alive and still marked handed-off. Without this the turn
+    guard is spent and the agent can stop silently on a wedged campaign, which is the exact
+    failure it exists to prevent.
 
-    Deliberately narrow: only a response that *itself reports* `stalled: true`. Still pure
-    bookkeeping -- the verdict is the tool's, read from what it already returned, never
-    computed or fetched here. Re-arming on any status read would nag about healthy sweeps a
-    waiter is legitimately watching, and a guard that fires when nothing is wrong is one
-    agents learn to ignore.
+    Deliberately narrow: only a response that *itself reports* one of the two conditions that
+    cause a non-terminal exit (see :func:`_reports_trouble`). Re-arming on any status read
+    would nag about healthy sweeps a waiter is legitimately watching, and a guard that fires
+    when nothing is wrong is one agents learn to ignore.
     """
     response = _tool_response(payload)
-    if response.get("stalled") is not True:
+    if not _reports_trouble(response):
         return
     campaign_id = str(response.get("campaign_id") or
                       (payload.get("tool_input") or {}).get("campaign_id") or "")
