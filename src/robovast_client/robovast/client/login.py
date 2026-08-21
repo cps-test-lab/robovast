@@ -36,11 +36,45 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 #: Overridable so a test never touches a developer's real login, and so a CI job can
 #: point at its own.
 CONFIG_ENV_VAR = "ROBOVAST_CONFIG"
+
+#: A scheme, per RFC 3986: a letter followed by letters/digits/``+-.``, then ``://``.
+#: Matched rather than handed to ``urlsplit`` because ``urlsplit`` reads the host of a
+#: bare ``host:port`` as a *scheme* -- so ``localhost:8800`` would come back with
+#: ``scheme="localhost"`` and no host at all.
+_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+
+
+def normalize_url(url: str) -> str:
+    """The service URL as the client should use it, from what a person typed.
+
+    A bare host is what an operator actually hands out -- they say "the service is at
+    robovast.example.org", not "at https://robovast.example.org" -- so a missing scheme
+    is filled in rather than failing on a URL whose meaning is unambiguous. Deployed
+    services are behind TLS, hence ``https``; loopback is the one place where they are
+    not, so ``localhost:8800`` becomes ``http`` and not an unexplainable TLS error
+    against a plain ``vast serve``.
+
+    A scheme that *is* given is kept, and anything other than http/https is refused
+    here: the client speaks HTTP, and a wrong scheme should be a sentence now rather
+    than a connection error from the next unrelated command.
+    """
+    url = url.strip().rstrip("/")
+    if not url:
+        return ""
+    if not _SCHEME.match(url):
+        host = url.split("/", 1)[0].split(":", 1)[0].lower()
+        local = host in ("localhost", "127.0.0.1", "::1", "[::1]") or host.endswith(".localhost")
+        url = f"{'http' if local else 'https'}://{url}"
+    scheme = url.split("://", 1)[0].lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"{scheme}:// is not a service URL — robovast speaks http(s)")
+    return url
 
 
 def config_path() -> Path:

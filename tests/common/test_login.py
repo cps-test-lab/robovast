@@ -14,6 +14,8 @@ import json
 import os
 import stat
 
+import pytest
+
 
 from robovast.client import login, service_target
 
@@ -114,6 +116,64 @@ def test_explicit_credentials_override_the_stored_ones():
     client = RobovastClient("https://elsewhere.example.org", token="other", user="Ada")
     assert client.session.headers["Authorization"] == "Bearer other"
     assert client.session.headers["X-Robovast-User"] == "Ada"
+
+
+def test_a_bare_host_becomes_an_https_url():
+    """What an operator says out loud is what you can type."""
+    assert login.normalize_url("robovast.example.org") == "https://robovast.example.org"
+    assert login.normalize_url("robovast.example.org/") == "https://robovast.example.org"
+    assert login.normalize_url("  robovast.example.org  ") == "https://robovast.example.org"
+
+
+def test_a_given_scheme_is_never_overridden():
+    """Plain http against a service without TLS stays plain http."""
+    assert login.normalize_url("http://robovast.example.org") == "http://robovast.example.org"
+    assert login.normalize_url("https://robovast.example.org/") == "https://robovast.example.org"
+
+
+def test_a_bare_loopback_host_becomes_http():
+    """A local ``vast serve`` has no certificate, so https would be a TLS error, not a typo.
+
+    ``localhost:8800`` is also the case ``urlsplit`` gets wrong -- it reads the host as
+    a scheme -- which is why the scheme is detected by pattern instead.
+    """
+    assert login.normalize_url("localhost:8800") == "http://localhost:8800"
+    assert login.normalize_url("127.0.0.1:8800") == "http://127.0.0.1:8800"
+
+
+def test_a_bare_host_with_a_port_keeps_it():
+    assert login.normalize_url("robovast.example.org:8443") == "https://robovast.example.org:8443"
+
+
+def test_a_scheme_that_is_not_http_is_refused():
+    """The client speaks HTTP; say so now rather than failing at connect time."""
+    with pytest.raises(ValueError, match="ftp"):
+        login.normalize_url("ftp://robovast.example.org")
+
+
+def test_the_login_command_accepts_a_bare_host(monkeypatch):
+    """``vast login robovast.example.org`` stores (and talks to) the https URL."""
+    from robovast.client.cli import cli
+
+    reached = []
+
+    class _Accepts:
+        def version(self):
+            return object()
+
+    monkeypatch.setattr("robovast.service.http_client.RobovastClient",
+                        lambda url, **kw: (reached.append(url), _Accepts())[1])
+    runner = _runner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            cli, ["login", "robovast.example.org", "--token", "tok", "--name", "Fred",
+                  "--no-link"])
+
+    assert result.exit_code == 0, result.output
+    # Verified against the normalized URL too -- storing https:// after probing a bare
+    # host would mean the check did not cover what was stored.
+    assert reached == ["https://robovast.example.org"]
+    assert login.credentials() == ("https://robovast.example.org", "tok", "Fred")
 
 
 def test_the_login_command_verifies_before_it_stores(monkeypatch):

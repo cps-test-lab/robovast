@@ -12,7 +12,10 @@ is all you need to install.
 .. code-block:: bash
 
    pip install robovast-client
-   vast login https://robovast.example.org
+   vast login robovast.example.org
+
+The scheme is optional: a bare host is filled in as ``https``, or as ``http`` for
+loopback, so the address as the operator hands it to you is the address you can type.
 
 Three dependencies (``pydantic``, ``click``, ``requests``), 13 packages, about 30 MB. The
 full ``robovast`` distribution is 88 packages and about 290 MB, because it can *execute*

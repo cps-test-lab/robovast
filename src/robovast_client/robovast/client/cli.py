@@ -205,9 +205,11 @@ def login(url, token, name, link):
     """Store the credentials for a robovast-service, so every command can reach it.
 
     \b
-      vast login https://robovast.example.org
+      vast login robovast.example.org
 
-    The operator hands you the URL and the access token. Both are kept per **user** in
+    The operator hands you the URL and the access token. A bare host is enough — the
+    scheme is filled in (``https``, or ``http`` for loopback), so the address as the
+    operator says it out loud is the address you can type. Both are kept per **user** in
     ``~/.config/robovast/config.json`` (mode 0600), not in a project ``.env``: which
     instance you talk to follows you rather than a checkout, and a token inside a
     project directory is one ``git add -A`` from being committed.
@@ -228,8 +230,11 @@ def login(url, token, name, link):
         if not url:
             raise click.ClickException(
                 "no service URL given and none stored — "
-                "run 'vast login https://robovast.example.org'")
-    url = url.rstrip('/')
+                "run 'vast login robovast.example.org'")
+    try:
+        url = login_config.normalize_url(url)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if token is None:
         # Only offer the stored token as a default when the URL is unchanged; a token
