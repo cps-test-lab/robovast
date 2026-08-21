@@ -43,7 +43,15 @@ scenario test_scenario:
                  key_value('map', '/config/files/depot.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:
-                    remote('ipc:///ipc/sut')
+                    # setup_timeout stated, not left at the 10s default: this waits for the
+                    # scenario-execution-server in ANOTHER container, and a cluster batch starts
+                    # many pods at once, so bringup crosses 10s routinely. Measured 2026-08-21 on
+                    # a search campaign: all 5 runs of one parameter set failed "Cannot reach
+                    # scenario-execution-server ... (timeout 10.0s)". It is a bringup wait, not
+                    # part of the trial -- it returns as soon as the server answers -- so a
+                    # generous value costs nothing and the scenario's own timeout() still bounds
+                    # the run. Stated here because this example is what gets copied.
+                    remote('ipc:///ipc/sut', setup_timeout: 120s)
             serial:
                 # Waits for amcl and bt_navigator to report active, retrying every tick -- which is
                 # what absorbs however long the twelve composed nodes take to come up.
