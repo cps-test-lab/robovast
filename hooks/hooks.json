@@ -32,12 +32,12 @@
         ]
       },
       {
-        "matcher": "mcp__.*__get_campaign_status",
+        "matcher": "mcp__.*__(get_campaign_status|get_job_state)",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py rearm",
-            "statusMessage": "Noting a campaign reported as stalled"
+            "statusMessage": "Noting a campaign reported as wedged"
           }
         ]
       }
