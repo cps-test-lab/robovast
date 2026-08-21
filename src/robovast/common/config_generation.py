@@ -1238,11 +1238,14 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     ``isolate_plugins`` is true (the default), the composition runs in an isolated
     subprocess (:func:`_compose_isolated`) so the plugin and its pinned dependencies
     are imported there — never in this long-lived process — and cannot clash with
-    robovast's own. Only ``campaign_data`` crosses back; the second return value
-    (variation GUI classes) is then ``{}``. The interactive GUI config editor, which
-    needs the live GUI classes, passes ``isolate_plugins=False`` to compose in-process
-    (it already runs in its own desktop process). A warm cache hit returns without
-    forking. Built-in-only vasts (no ``plugins:``) always compose in-process.
+    robovast's own. Only ``campaign_data`` crosses back, and it is returned exactly as
+    the in-process path returns it: **a bare dict, on every path**. It used to be a
+    ``(campaign_data, {})`` tuple here only, which no caller unpacked — so every ``.vast``
+    declaring ``plugins:`` composed fine and then died on ``campaign_data["vast"] = ...``
+    in :mod:`robovast.search.compose` with "'tuple' object does not support item
+    assignment". Pass ``isolate_plugins=False`` to compose in-process when a caller needs
+    live variation GUI classes. A warm cache hit returns without forking. Built-in-only
+    vasts (no ``plugins:``) always compose in-process.
     """
     if not progress_update_callback:
         progress_update_callback = logger.debug
@@ -1417,7 +1420,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if should_isolate:
         return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                                  tolerate_infeasible, image_project=image_project,
-                                 image_project_tag=image_project_tag), {}
+                                 image_project_tag=image_project_tag)
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
