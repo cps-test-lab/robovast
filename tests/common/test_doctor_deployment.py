@@ -146,15 +146,26 @@ def test_it_is_not_reached_when_the_cluster_checks_fail(monkeypatch):
 # -- the client side, which needs no kubectl ---------------------------------
 
 
-def _client_checks(version=None, raises=None):
-    """`check_client`'s build line, with the handshake stubbed."""
+def _handshake(version=None, raises=None):
+    """The service's VersionInfo as `check_client` reads it, with the HTTP call stubbed."""
     client = MagicMock()
     if raises is not None:
         client.version.side_effect = raises
     else:
         client.version.return_value = version
     with patch("robovast.service.http_client.RobovastClient", return_value=client):
-        return doc._check_build_capability("https://svc.example")  # noqa: SLF001
+        return doc._service_version("https://svc.example")  # noqa: SLF001
+
+
+def _client_checks(version=None, raises=None):
+    """`check_client`'s build line, with the handshake stubbed."""
+    return doc._check_build_capability(_handshake(version, raises))  # noqa: SLF001
+
+
+def _revision_checks(version=None, raises=None, here="abc1234"):
+    """`check_client`'s revision line, with the handshake and this side's revision stubbed."""
+    with patch("robovast.client.app_version.running_revision", return_value=here):
+        return doc._check_service_revision(_handshake(version, raises))  # noqa: SLF001
 
 
 def test_a_service_that_gave_no_verdict_produces_no_line():
@@ -188,3 +199,71 @@ def test_an_unreadable_handshake_is_silent_rather_than_red():
     """A local `vast serve` whose token differs from the stored login answers 401. Turning
     that into a red line reports doctor's own credential mismatch as the service's fault."""
     assert _client_checks(raises=RuntimeError("401 Unauthorized")) == []
+
+
+# -- which code is the service running --------------------------------------
+#
+# The failure: an edit made, a service that never reloaded it, and every symptom reading as
+# a bug in the change. `vast --version` answers it for this side; this is the other side.
+
+
+def _version(**kwargs):
+    from robovast.service.interface import VersionInfo
+
+    return VersionInfo(robovast_version="2.0.0", **kwargs)
+
+
+def test_a_matching_revision_is_green_and_says_so():
+    checks = _revision_checks(_version(code_revision="abc1234"), here="abc1234")
+    assert len(checks) == 1
+    assert checks[0].ok is True
+    assert "abc1234" in checks[0].detail
+
+
+def test_a_differing_revision_warns_and_names_the_roll():
+    """Advisory, not fatal: being pointed at a deployment other than your own tree is
+    normal, and a doctor that exited non-zero for it would be crying wolf."""
+    checks = _revision_checks(_version(code_revision="abc1234"), here="def5678")
+    assert checks[0].ok is False
+    assert checks[0].optional
+    assert "abc1234" in checks[0].detail and "def5678" in checks[0].detail
+    assert "upgrade" in checks[0].fix
+
+
+def test_no_reported_revision_is_distinguishable_from_a_mismatch():
+    """The state every agent hit before the images baked their revision. "Cannot tell" must
+    not be reported as "different code", which sends someone re-releasing a current
+    service."""
+    checks = _revision_checks(_version(code_revision=""), here="abc1234")
+    assert checks[0].ok is False
+    assert "not reported" in checks[0].detail
+    assert "def5678" not in checks[0].detail
+    assert "release-images" in checks[0].fix
+
+
+def test_nothing_to_compare_against_is_not_a_mismatch():
+    """A client-only or non-git install has no revision of its own. Reporting the service's
+    and stopping beats inventing a comparison."""
+    checks = _revision_checks(_version(code_revision="abc1234"), here="")
+    assert checks[0].ok is True
+    assert "abc1234" in checks[0].detail
+
+
+def test_two_dirty_trees_are_not_claimed_to_match():
+    """`+dirty` records that a tree was unclean; it cannot tell two unclean trees apart, so
+    equality here is not proof and must not read as it."""
+    checks = _revision_checks(_version(code_revision="abc1234+dirty"), here="abc1234+dirty")
+    assert checks[0].ok is True
+    assert "dirty" in checks[0].detail.lower()
+
+
+def test_neither_side_having_one_says_nothing():
+    """A client-only install talking to an older service: the remedy for "cannot report" is
+    a re-release, which is not this user's job, and the service may be current anyway."""
+    assert _revision_checks(_version(code_revision=""), here="") == []
+
+
+def test_an_unreadable_handshake_says_nothing_about_the_revision():
+    """Same rule as the build line: an unreachable or unauthorised service is the `service`
+    check's business, not two more red lines."""
+    assert _revision_checks(raises=RuntimeError("401 Unauthorized")) == []

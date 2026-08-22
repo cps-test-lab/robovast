@@ -36,6 +36,11 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # the handshake type, for readers and type checkers only -- the runtime
+    # imports below stay local, so a client-only install never pays for robovast.service.
+    from robovast.service.interface import VersionInfo
 
 #: Python this codebase requires (``pyproject.toml``: ``>=3.12,<3.14``).
 MIN_PYTHON = (3, 12)
@@ -389,6 +394,14 @@ def check_client() -> list[Check]:
             "answers either. Start one with 'vast serve', or 'vast login <url>' to "
             "point at a running one."))
 
+    if target:
+        # Beside the `service` line above, because these describe the same subject -- and
+        # one handshake answers both: a check per question was a second round trip to say
+        # the same thing twice.
+        info = _service_version(target)
+        checks.extend(_check_service_revision(info))
+        checks.extend(_check_build_capability(info))
+
     # Not `shutil.which`: this process may have a venv active that no other shell does,
     # which is exactly the case where the answer differs and the wrong one is reassuring.
     try:
@@ -405,12 +418,96 @@ def check_client() -> list[Check]:
             "A new shell — an agent's, or your next terminal — cannot run 'vast'. "
             "Run 'vast login --link' to symlink it somewhere already on PATH."))
 
-    if target:
-        checks.extend(_check_build_capability(target))
     return checks
 
 
-def _check_build_capability(target: str) -> list[Check]:
+def _service_version(target: str) -> "VersionInfo | None":
+    """The service's version handshake, or ``None`` when it could not be read.
+
+    ``None`` is "no verdict", never "no". A local ``vast serve`` whose token differs from
+    the stored login answers 401, and a doctor that turned that into a red line would be
+    reporting its own credential mismatch as the service's problem; an unreachable service
+    is already the ``service`` check above, and saying it twice gives a reader two problems
+    to chase where there is one.
+    """
+    from robovast.service.http_client import \
+        RobovastClient  # pylint: disable=import-outside-toplevel
+    try:
+        return RobovastClient(target).version()
+    except Exception:  # noqa: BLE001 - unreachable, unauthorised, or too old to ask
+        return None
+
+
+def _check_service_revision(info: "VersionInfo | None") -> list[Check]:
+    """Whether the service is running the code this checkout has.
+
+    The question a long-lived service makes real: it loads robovast **once, at startup**,
+    so after an edit a perfectly reachable service may still be running the old code —
+    and every symptom of that looks like a bug in the change. ``vast --version`` answers
+    it for this side; until now nothing answered it for the service side outside the
+    agent-only ``get_service_info``, so a human had to hand-roll an HTTP call.
+
+    Three outcomes, and the third must stay distinct from the second:
+
+    * equal — ✓, and nothing to do;
+    * different — ⚠ with the command that rolls it, because *deploying* is the remedy;
+    * **not reported** — the deployment cannot tell, which is not a mismatch. Reading it as
+      one would send someone re-releasing to fix a service that may already be current.
+
+    Both halves can be missing, and each silences a different thing: without a revision
+    *here* there is nothing to compare against (report the service's and stop), and without
+    one on either side there is nothing to say at all.
+
+    Advisory throughout (``optional``): a service on a different revision from a working
+    tree is the normal state of anyone mid-edit, so it must not fail the command.
+    """
+    if info is None:
+        return []
+    from robovast.client.app_version import \
+        running_revision  # pylint: disable=import-outside-toplevel
+    here = running_revision()
+    deployed = getattr(info, "code_revision", "") or ""
+
+    if not deployed:
+        # Silent when this side has no revision either: the remedy for a service that
+        # cannot report one is to re-release and roll it, which is only *anybody's* remedy
+        # if they have the tree. Telling a client-only install to run `make release-images`
+        # is a line about somebody else's job on a service that may be perfectly current.
+        if not here:
+            return []
+        return [Check(
+            "service revision", False, "not reported",
+            "This deployment cannot say which revision it runs, so \"is my change "
+            "loaded?\" has no answer from it — probe for the behaviour instead. Images "
+            "built before the revision was baked in report nothing: re-release the family "
+            "('make release-images PROJECT=<registry> PUSH=1') and roll onto it "
+            "('vast exec cluster upgrade') to get the answer back.",
+            optional=True)]
+
+    if not here:
+        # Nothing to compare against is not a mismatch, and not a defect either: a
+        # client-only or non-git install is a perfectly good one. Report what the service
+        # said and stop.
+        return [Check("service revision", True, f"{deployed} (nothing here to compare it to)")]
+    if here == deployed:
+        detail = f"{deployed} (matches this checkout)"
+        if deployed.endswith("+dirty"):
+            # Equal strings, possibly different code: the marker records *that* a tree was
+            # dirty, and cannot distinguish two dirty trees. Saying "matches" flatly here
+            # would be the one place this check lies.
+            detail = f"{deployed} (matches this checkout — but '+dirty' cannot tell two " \
+                     "dirty trees apart)"
+        return [Check("service revision", True, detail)]
+    return [Check(
+        "service revision", False, f"{deployed} deployed, {here} here",
+        "The service loaded its code at startup, so nothing edited since then is in it. "
+        "Roll it onto this revision: 'make release-images PROJECT=<registry> PUSH=1' then "
+        "'vast exec cluster upgrade' for a cluster, or restart 'vast serve' for a local "
+        "one. Expected, and fine, when you are pointed at someone else's deployment.",
+        optional=True)]
+
+
+def _check_build_capability(info: "VersionInfo | None") -> list[Check]:
     """What the *running* service says about building images, from the handshake.
 
     Answered without kubectl, so a user who will never deploy anything still learns that
@@ -421,20 +518,15 @@ def _check_build_capability(target: str) -> list[Check]:
 
     * the service did not report the field (older than it) — ``None`` must never be read
       as ``False``, or every healthy pre-field deployment gets told to fix itself;
-    * the handshake could not be read at all. A local ``vast serve`` whose token differs
-      from the stored login answers 401, and a doctor that turned that into a red line
-      would be reporting its own credential mismatch as the service's problem;
+    * the handshake could not be read at all (``info`` is ``None``; see
+      :func:`_service_version`);
     * the service can build, and there is nothing to say beyond ✓.
 
     Optional, because a service with no registry is not a broken install — it is a
     deployment that cannot do one thing, and the operator half below says which command
     fixes it.
     """
-    from robovast.service.http_client import \
-        RobovastClient  # pylint: disable=import-outside-toplevel
-    try:
-        info = RobovastClient(target).version()
-    except Exception:  # noqa: BLE001 - unreachable, unauthorised, or too old to ask
+    if info is None:
         return []
     if info.can_build_images is None:
         return []

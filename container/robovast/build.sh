@@ -55,6 +55,8 @@ PLATFORM=""
 . "$BASEDIR/../buildcache.sh"
 # shellcheck source=container/ask_push.sh
 . "$BASEDIR/../ask_push.sh"
+# shellcheck source=../git_revision.sh
+. "$BASEDIR/../git_revision.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -252,10 +254,19 @@ build_base() {
   buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
     "robovast:${TAG}" "${PROJECT}robovast:${TAG}" || return $?
 
+  # Becomes this image's `org.opencontainers.image.revision`, which is what a campaign's
+  # provenance record answers "rebuild it from what?" with once the image itself is gone. In CI
+  # that label is filled by docker/metadata-action's own --label (a full sha, and it overrides
+  # the Dockerfile's LABEL); locally nothing filled it at all, so a released family recorded no
+  # origin. Only the base needs it: Dockerfile.roqsim is FROM the resolved base tag and image
+  # labels are inherited, so the derived image carries this one.
+  git_revision_args
+
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
     "${SRC_CONTEXT[@]}" \
     "${GIT_SECRET[@]}" \
+    "${GIT_REVISION_ARGS[@]}" \
     --build-arg ROS_DISTRO=$ROS_DISTRO \
     $EXTRA_ARGS \
     -f $BASEDIR/Dockerfile \

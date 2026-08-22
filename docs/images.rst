@@ -266,3 +266,33 @@ decides whether a rebuild would install the same software or merely something co
 A campaign's own ``_execution/image_build_refs`` records the same facts per container, read from
 the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
 author declared. Those survive the image being deleted, which the labels do not.
+
+Which revision a deployment is running
+``````````````````````````````````````
+
+The controller image carries its revision a second time, as an environment variable
+(``ROBOVAST_GIT_REVISION``), because a *running* service is asked something a label cannot
+answer: **is the change I just made loaded?** A service loads RoboVAST once, at startup, so
+after an edit a perfectly reachable one may still be serving the old code — and every symptom
+of that looks like a bug in the change. It reports the baked value as ``code_revision``:
+
+.. code-block:: bash
+
+   vast doctor      # 'service revision': what the service runs, against this checkout
+   vast --version   # what this client runs
+
+Nothing has to be passed to get it. Both the environment variable and the revision label are
+derived at build time from the checkout the build scripts live in
+(``container/git_revision.sh``), so ``make release-images`` bakes them with no extra flag —
+there is deliberately no option for it, because an option is something to forget, and a
+forgotten one produced exactly this gap. A dirty tree bakes ``<sha>+dirty`` and the build says
+so: such an image corresponds to no commit anyone can check out, and a campaign run against it
+records that rather than looking reproducible.
+
+A build outside a git checkout bakes nothing, and ``code_revision`` is then **absent** rather
+than filled with something else. That is a deliberate answer — *this deployment cannot tell
+you* — and it has to stay distinguishable from "a revision that differs", which would send
+someone re-releasing over a service that is already current. Absence is also what an image
+built before the revision was baked in reports; re-release the family and ``upgrade`` to get
+the answer back. The package version is no substitute: it stays ``2.0.0`` across every edit, so
+a caller comparing it reads "same code" where the truth is "no information".

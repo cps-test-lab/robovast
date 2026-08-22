@@ -190,12 +190,25 @@ RUN echo "2" > /etc/robovast_compat_version
 # it, so it goes after the expensive installs. Empty is honest -- `code_revision` then
 # reports "" rather than a value that looks like a revision and is not.
 #
-# A build by hand should pass it, or the service it deploys cannot report its revision:
+# container/controller/build.sh (and therefore `make release-images`) passes this automatically
+# from the checkout it lives in -- see container/git_revision.sh. It did not, once, and the
+# result was a locally released family whose deployed service could not say which code it ran.
+# A `docker build` invoked by hand is the remaining case that has to pass it itself:
 #   docker build -f container/controller/Dockerfile \
 #     --build-arg ROBOVAST_GIT_REVISION="$(git rev-parse --short HEAD)$(git status --porcelain \
 #       | grep -q . && echo +dirty)" .
 ARG ROBOVAST_GIT_REVISION=""
 ENV ROBOVAST_GIT_REVISION=${ROBOVAST_GIT_REVISION}
+
+# The same fact as a label, for a different reader. The ENV answers "which code is the running
+# service executing?"; these answer "which controller is sitting in this registry?" -- readable
+# with `buildx imagetools inspect` from a *remote* image, without pulling it or starting
+# anything, which is what checking a project before pointing a cluster at it needs. Standard OCI
+# names, as container/robovast/Dockerfile already uses. In CI docker/metadata-action supplies its
+# own --label here (a full sha), and a CLI --label wins over this instruction; locally these are
+# the only source.
+LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
+LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a

@@ -42,3 +42,24 @@ def running_version() -> str:
             except PackageNotFoundError:
                 continue
         return "0.0.0+unknown"  # a source tree with no metadata
+
+
+def running_revision() -> str:
+    """The running code's git revision, or ``""`` when it cannot be determined.
+
+    The strict half of :func:`running_version`, and the reason both exist: a *version* is
+    allowed to fall back to package metadata, because "which robovast am I?" always has an
+    answer worth printing. A *revision* is not, because the only question it is asked is
+    "is this the same code as over there?" -- and a semver that stays ``2.0.0`` across every
+    edit answers that with a confident wrong yes.
+
+    ``""`` therefore means "no comparison is possible here", which a caller can act on by
+    saying so. Two cases produce it and neither is an error: a client-only install (no
+    ``robovast.common.execution`` to ask) and a non-git install of the full package.
+    """
+    try:
+        from robovast.common.execution import \
+            code_revision  # pylint: disable=import-outside-toplevel
+        return code_revision()
+    except Exception:  # noqa: BLE001 - a diagnostic must not raise; "" is the honest answer
+        return ""

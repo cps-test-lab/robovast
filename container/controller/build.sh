@@ -27,6 +27,8 @@ PLATFORM=""
 . "$ROOT/container/buildcache.sh"
 # shellcheck source=container/ask_push.sh
 . "$ROOT/container/ask_push.sh"
+# shellcheck source=../git_revision.sh
+. "$ROOT/container/git_revision.sh"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -88,9 +90,15 @@ fi
 # scratch whenever the local builder has lost its cache.
 buildcache_args "$TAG" "${PUSH:-}"
 
+# The service image is the one asked "is the change I just made loaded?", so it is the one that
+# must carry the answer: the `ENV` this sets is all `code_revision()` has to go on in a pod,
+# where there is no `.git` above site-packages to ask instead.
+git_revision_args "$ROOT"
+
 docker buildx build \
   "${BUILDX_ARGS[@]}" \
   "${BUILDCACHE_ARGS[@]}" \
+  "${GIT_REVISION_ARGS[@]}" \
   $EXTRA_ARGS \
   -t "$TAG" \
   -f "$BASEDIR/Dockerfile" \

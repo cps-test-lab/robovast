@@ -275,6 +275,12 @@ LABEL org.robovast.compat-version="2"
 # Standard OCI provenance. These are the spec'd names — no reason to invent our own — and they
 # are what lets a campaign's results say which commit its image was built from, so an image
 # that has since been deleted can be rebuilt from the same source rather than guessed at.
+#
+# Two sources for the revision, and not by accident: CI publishes with docker/metadata-action,
+# whose generated --label carries the full sha and overrides this instruction, while a local
+# build has no such thing and this ARG is the only source. So the ARG is not dead weight even
+# though CI never passes it -- container/robovast/build.sh does, from the checkout it lives in
+# (container/git_revision.sh), and until it did a locally released image recorded no origin at all.
 ARG ROBOVAST_GIT_REVISION=""
 LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
