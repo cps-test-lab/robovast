@@ -1833,6 +1833,20 @@ export interface components {
             table: string;
         };
         /**
+         * DiskSpace
+         * @description Capacity and current use of one filesystem, in bytes.
+         *
+         *     One object rather than two optional fields on the caller, because the pair is only
+         *     meaningful whole: a meter drawn from a half-populated reading shows a full or an
+         *     empty disk, and nothing downstream could tell that from a real one.
+         */
+        DiskSpace: {
+            /** Capacity Bytes */
+            capacity_bytes: number;
+            /** Used Bytes */
+            used_bytes: number;
+        };
+        /**
          * ExecContainerState
          * @description State of the single exec container, as of one call.
          *
@@ -2505,6 +2519,16 @@ export interface components {
          *     on **local** they are live host utilization. ``cpu_*`` are CPU cores;
          *     ``memory_*`` are bytes.
          *
+         *     ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
+         *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
+         *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
+         *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
+         *     run writes into (the sum of every node's kubelet-reported *nodefs* on the cluster; the
+         *     campaign results root's filesystem locally); ``store`` is the results store, which on
+         *     the cluster is a different thing from ``disk`` and only some providers can measure. A
+         *     cluster total also cannot show that one node of many is nearly full -- a limitation of
+         *     a summed meter, not of the reading.
+         *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
          *     scenario runs execute one at a time (local Docker is single-flight), ``True``
          *     means they run in parallel bounded only by free capacity (cluster). How many runs
@@ -2533,6 +2557,9 @@ export interface components {
             cpu_capacity: number;
             /** Cpu Used */
             cpu_used: number;
+            disk: components["schemas"]["DiskSpace"] | null;
+            /** Disk Unavailable */
+            disk_unavailable: string | null;
             exec_container: components["schemas"]["ExecContainerState"] | null;
             /**
              * Jobs Pending
@@ -2550,6 +2577,7 @@ export interface components {
             memory_used_bytes: number;
             /** Parallel Runs */
             parallel_runs: boolean;
+            store: components["schemas"]["DiskSpace"] | null;
         };
         /**
          * RetriggerAxis

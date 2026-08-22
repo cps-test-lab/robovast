@@ -41,6 +41,22 @@ def test_manifests_have_expected_kinds_and_names():
     assert not any(m["kind"] == "Secret" for m in ms)
 
 
+def test_usage_cluster_role_grants_the_kubelet_proxy_read():
+    """The disk meter reads each kubelet's Summary API through ``nodes/proxy``.
+
+    Asserted on the *rules*, not just the object's existence: the same grant also happens
+    to come from the controller-nodes ClusterRole, so without this the dependency could be
+    dropped here and the disk meter would quietly stop working on a cluster where that
+    other role was pruned.
+    """
+    ms = sd.service_manifests(namespace="default", image="example/robovast:test")
+    role = next(m for m in ms if m["kind"] == "ClusterRole")
+    grants = {(r["apiGroups"][0], res, verb)
+              for r in role["rules"] for res in r["resources"] for verb in r["verbs"]}
+    assert ("", "nodes/proxy", "get") in grants
+    assert ("", "nodes", "list") in grants
+
+
 def test_git_token_injects_secret_and_file_mount_not_env():
     ms = sd.service_manifests(namespace="default", image="x", git_token="ghp_example")
     secret = next(m for m in ms if m["kind"] == "Secret")

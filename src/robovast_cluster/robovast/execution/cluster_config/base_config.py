@@ -387,6 +387,21 @@ class BaseConfig(object):
         """
         return "s3"
 
+    def get_store_usage(self, node_summaries, namespace="default"):
+        """``(used_bytes, capacity_bytes)`` for the campaign results store, or ``(None, None)``.
+
+        Called by the service's ``/usage`` endpoint to draw the results-store meter. The
+        default ``(None, None)`` means **this provider cannot say**, and the caller reports
+        no store figure rather than guessing. That is also the honest answer for a provider
+        backed by a cloud bucket: object storage has no capacity to fill, so there is no
+        meter to draw -- not a failure to draw one.
+
+        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched
+        by the caller, so an override needs no cluster round-trip of its own.
+        """
+        del node_summaries, namespace
+        return None, None
+
     def get_cluster_allocatable_resources(self, kube_context=None):
         """Return the total CPU and memory quota for Kueue.
 

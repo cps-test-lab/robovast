@@ -747,6 +747,18 @@ class VersionInfo(BaseModel):
     sources_root: Optional[str] = None
 
 
+class DiskSpace(BaseModel):
+    """Capacity and current use of one filesystem, in bytes.
+
+    One object rather than two optional fields on the caller, because the pair is only
+    meaningful whole: a meter drawn from a half-populated reading shows a full or an
+    empty disk, and nothing downstream could tell that from a real one.
+    """
+
+    capacity_bytes: int
+    used_bytes: int
+
+
 class ResourceUsage(BaseModel):
     """Live compute capacity and current usage of the service's execution backend.
 
@@ -762,6 +774,16 @@ class ResourceUsage(BaseModel):
     reported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);
     on **local** they are live host utilization. ``cpu_*`` are CPU cores;
     ``memory_*`` are bytes.
+
+    ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
+    this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
+    answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
+    report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
+    run writes into (the sum of every node's kubelet-reported *nodefs* on the cluster; the
+    campaign results root's filesystem locally); ``store`` is the results store, which on
+    the cluster is a different thing from ``disk`` and only some providers can measure. A
+    cluster total also cannot show that one node of many is nearly full -- a limitation of
+    a summed meter, not of the reading.
 
     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -793,6 +815,23 @@ class ResourceUsage(BaseModel):
     parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
     jobs_running: int = 0            # scenario-run pods in phase Running, backend-wide
     jobs_pending: int = 0            # scenario-run pods admitted/queued but not yet Running
+    #: The filesystem this backend's runs write into: nodefs on the cluster (container
+    #: writable layers, emptyDir scratch, pulled image layers -- the disk kubelet's
+    #: eviction thresholds watch), the campaign results root locally. **``None`` means "no
+    #: verdict"** -- an older service, or a backend whose disk could not be read -- and a
+    #: consumer must then show nothing rather than a zero.
+    disk: Optional[DiskSpace] = None
+    #: The campaign **results store**, when it is separately measurable -- the embedded
+    #: object store's volume on a cluster that hosts one. ``None`` on a provider backed by
+    #: a cloud bucket (object storage has no capacity to fill, so there is no meter to draw
+    #: -- not a failure to draw one), and locally, where the store *is* the filesystem
+    #: ``disk`` already reports.
+    store: Optional[DiskSpace] = None
+    #: Why there is no ``disk``, when the backend tried and failed. Non-null only when
+    #: ``disk`` is None *and* the reason is known -- a service too old to have this field
+    #: leaves both absent, which reads identically to "did not try". Names counts and the
+    #: fixing command, **never a node name**: this string crosses the interface.
+    disk_unavailable: Optional[str] = None
     #: The held container-exec container, when one exists. A diagnostic container can
     #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
     #: has no way to discover that its own container is the reason.

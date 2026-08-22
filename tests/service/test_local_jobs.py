@@ -213,6 +213,61 @@ def test_usage_tally_is_zero_with_no_campaigns(transport):
     assert (usage.jobs_running, usage.jobs_pending) == (0, 0)
 
 
+# -- the /usage disk meter --------------------------------------------------
+
+
+def test_usage_reports_the_results_filesystem(transport):
+    """Disk is the filesystem campaigns are written to, and it is reported as a pair.
+
+    ``store`` stays None on this lane on purpose: the results store IS that filesystem,
+    so a second identical meter would say nothing.
+    """
+    transport._usage_cache = None
+    usage = transport.resource_usage()
+
+    assert usage.disk is not None and usage.disk_unavailable is None
+    assert usage.disk.capacity_bytes > 0
+    assert 0 <= usage.disk.used_bytes <= usage.disk.capacity_bytes
+    assert usage.store is None
+
+
+def test_usage_reports_disk_before_the_results_dir_exists(transport):
+    """The regression the ancestor walk exists for.
+
+    ``_campaigns_root`` is a pure path resolver — the directory is materialized lazily on
+    the first run — so reading it directly failed on exactly the fresh install where the
+    meter first appears.
+    """
+    root = transport._campaigns_root()
+    # Precondition, not setup: nothing has created it, because resolving the path never
+    # does. Asserted so the test cannot quietly stop covering the case it exists for.
+    assert not root.exists()
+    transport._usage_cache = None
+
+    usage = transport.resource_usage()
+
+    assert usage.disk is not None
+    assert usage.disk.capacity_bytes > 0
+
+
+def test_usage_reports_no_disk_when_the_filesystem_cannot_be_read(transport, monkeypatch):
+    """An unreadable filesystem yields no disk and a reason — never a zeroed pair, which
+    would draw as an empty disk, and never a failure that takes the whole reading down."""
+    import psutil
+
+    def boom(_path):
+        raise OSError("stale NFS handle")
+
+    monkeypatch.setattr(psutil, "disk_usage", boom)
+    transport._usage_cache = None
+
+    usage = transport.resource_usage()
+
+    assert usage.disk is None
+    assert "stale NFS handle" in usage.disk_unavailable
+    assert usage.cpu_capacity > 0        # the capacity meter survives it
+
+
 # --- three containers -------------------------------------------------------
 #
 # The ROS shape runs the simulator and the system under test in their own containers,

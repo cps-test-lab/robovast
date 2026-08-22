@@ -211,6 +211,12 @@ def _service_rbac_manifests(namespace):
             "rules": [
                 {"apiGroups": [""], "resources": ["nodes", "pods"],
                  "verbs": ["get", "list"]},
+                # /usage also reads each kubelet's Summary API (stats/summary) through the
+                # nodes/proxy subresource, for the disk meter. Also granted by the
+                # controller-nodes ClusterRole for its configz read, but /usage's own
+                # dependency belongs in /usage's own role -- a pruned controller role must
+                # not silently take the disk meter with it.
+                {"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["clusterqueues"],
                  "verbs": ["get", "list"]},
             ],

@@ -624,16 +624,35 @@ whatever ``vast ui`` opens is all a browser, the ``vast`` CLI, and the MCP serve
 need. Other service-touching commands (``vast workspace …``) resolve the same
 target the same way, so nothing needs to be exported.
 
-A connection indicator in the top bar turns green once the service answers, and
-shows the backend's live **resource usage** — used vs. total CPU cores and memory
-(``cpu 6/16 · mem 22/62 GiB``). The numbers are backend-appropriate: the host
-machine's utilization for a local ``vast serve``, and the cluster's node
-capacity vs. the summed requests of the pods scheduled onto those nodes for an
-in-cluster service (runs still queued for a node show up in the jobs meter as
-pending, not as CPU in use). Hovering the chip
-reveals the RoboVAST version, the backend, and whether runs execute in parallel
-(cluster) or one at a time (local). The reading is sampled at most once every few
-seconds and shared across browser tabs, so it never loads the backend.
+A connection indicator in the **sidebar footer** reads ``disconnected`` until the
+service answers, then becomes a stack of labelled meters showing the backend's
+live **resource usage**, each with the compact ``used/total`` in the bar and a
+hover tooltip spelling the numbers out:
+
+* **CPU** and **Mem** — always shown. The numbers are backend-appropriate: the
+  host machine's utilization for a local ``vast serve``, and the cluster's node
+  capacity vs. the summed requests of the pods scheduled onto those nodes for an
+  in-cluster service (runs still queued for a node show up in the jobs meter as
+  pending, not as CPU in use).
+* **Jobs** — only while there is scenario work, since a permanent ``0/0`` on an
+  empty track was indistinguishable from a dead widget. Its total is the
+  outstanding work (running + pending), not a capacity, so a full bar means the
+  queue has drained.
+* **Disk** — the filesystem the backend's runs write into: the campaign results
+  root's filesystem locally, every node's filesystem summed on a cluster. Unlike
+  CPU and memory on a cluster, this is **measured** usage rather than a sum of
+  pod requests — nothing reserves disk, so a request sum would read near-empty on
+  a full disk.
+* **Store** — the campaign results store, where the backend can measure one. Its
+  denominator is the store's own volume, not the summed **Disk** figure.
+
+The last two appear only where the backend can actually report them, and are
+absent rather than zero when it cannot: a service older than the fields, a
+cluster whose kubelet could not be read (the service needs ``nodes/proxy``; see
+:ref:`deployment`), or a provider backed by a cloud bucket, which has no capacity
+to fill and so nothing to draw. ``get_resource_usage`` reports the reason when the
+backend tried and failed. The reading is sampled at most once every few seconds
+and shared across browser tabs, so it never loads the backend.
 
 .. note::
 

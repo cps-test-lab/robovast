@@ -470,7 +470,8 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 .. note::
 
    ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
-   usage, plus a ``parallel_runs`` flag. The fields mean the same thing on either
+   usage — plus, where the lane can report them, its ``disk`` and results ``store``
+   filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on either
    lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
    for memory), a run's concurrency is ``1`` when ``parallel_runs`` is false,

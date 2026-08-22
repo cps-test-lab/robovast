@@ -59,7 +59,8 @@ from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobSummary,
-                                        ListJobsResponse, LogChunk, ResourceUsage, VersionInfo)
+                                        ListJobsResponse, LogChunk, ResourceUsage,
+                                        DiskSpace, VersionInfo)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,16 @@ class ClusterService(LocalTransport):
     #: ``_admit_show_gui`` turns this into an explicit refusal rather than a silent
     #: windowless run.
     _SUPPORTS_SHOW_GUI = False
+
+    #: How long a kubelet Summary reading is reused -- deliberately longer than
+    #: ``_USAGE_CACHE_TTL``. One Summary payload carries every pod's stats on that node
+    #: (hundreds of KB on a busy one), and a disk fills over minutes, not seconds.
+    _DISK_CACHE_TTL = 60.0
+    #: Per-node and total wall-clock ceilings. ``/usage`` is polled by every open tab and
+    #: is the app's answer to "is the backend there?", so an unresponsive kubelet must not
+    #: turn it into a hang, and N nodes must not make its cost proportional to N unbounded.
+    _DISK_NODE_TIMEOUT = 2.0
+    _DISK_BUDGET_SECONDS = 5.0
 
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
@@ -138,6 +149,10 @@ class ClusterService(LocalTransport):
         # rather than a guess, and a caller that waited can be told why. Process-local: a
         # restart forgets it, and the cache it describes is scratch anyway.
         self._last_fetch: dict[str, tuple[int, float]] = {}
+        # Last kubelet Summary reading behind the disk/store meters, as
+        # ``(monotonic, fields)``. Its own TTL, longer than the usage cache's -- see
+        # ``_DISK_CACHE_TTL``. Read under ``_usage_lock``, so it needs no lock of its own.
+        self._disk_cache: "tuple[float, dict] | None" = None
         # How far along the blocking work for each campaign currently is — the counts behind
         # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
         # dropped when they finish, so a present entry means "busy right now". In memory on
@@ -225,8 +240,10 @@ class ClusterService(LocalTransport):
         "29.7/24" on a 24-core workstation. Pending work is visible as
         ``jobs_pending`` instead, counted from Jobs by :meth:`_scenario_job_tally`.
 
-        Requires the service's ClusterRole (nodes/pods get,list — see
-        ``service_deploy._service_rbac_manifests``).
+        Requires the service's ClusterRole (nodes/pods get,list + nodes/proxy get — see
+        ``service_deploy._service_rbac_manifests``). The proxy grant is for the disk
+        meter's kubelet read, which adds one Summary GET per node per
+        ``_DISK_CACHE_TTL`` on top of the per-window list calls above.
         """
         from .kube_client import pod_workload_containers  # pylint: disable=import-outside-toplevel
         from .kubernetes_kueue import _parse_resource  # pylint: disable=import-outside-toplevel
@@ -259,6 +276,7 @@ class ClusterService(LocalTransport):
                     mem_used += int(_parse_resource(requests.get("memory")))
 
         jobs_running, jobs_pending = self._scenario_job_tally()
+        disk, store, disk_unavailable = self._disk_and_store(node_names)
         return ResourceUsage(
             backend="kubernetes",
             cpu_capacity=cpu_capacity,
@@ -268,7 +286,96 @@ class ClusterService(LocalTransport):
             parallel_runs=True,   # runs execute in parallel, bounded only by capacity
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,
+            disk=disk,
+            store=store,
+            disk_unavailable=disk_unavailable,
         )
+
+    def _disk_and_store(self, node_names):
+        """``(disk, store, unavailable)`` from one kubelet Summary read per node.
+
+        Read over the ``nodes/proxy`` subresource — the same channel
+        :func:`robovast.common.execution._check_static_cpu_manager` reads ``configz`` on.
+        There is no alternative source: metrics-server publishes cpu and memory only, and
+        the pod-request sum behind ``cpu_used`` cannot answer disk because
+        ``ephemeral-storage`` is almost never requested — it would report a few hundred MB
+        used on a node that is nearly full, a wrong answer that looks right.
+
+        Memoised on its own longer TTL; called with ``_usage_lock`` held (see
+        :meth:`LocalTransport.resource_usage`), so the memo needs no lock of its own.
+        """
+        now = time.monotonic()
+        cached = self._disk_cache
+        if cached is None or now - cached[0] >= self._DISK_CACHE_TTL:
+            cached = (now, self._read_disk_and_store(sorted(node_names)))
+            self._disk_cache = cached
+        fields = cached[1]
+        return fields.get("disk"), fields.get("store"), fields.get("unavailable")
+
+    def _read_disk_and_store(self, node_names) -> dict:
+        """Sum every node's filesystem, then let the provider name its results store.
+
+        ``node.fs`` (nodefs) only, **not** summed with ``node.runtime.imageFs``: on a
+        single-disk node those are two views of the SAME device, so summing doubles
+        capacity and used alike — the ratio survives but the labelled numbers become
+        fiction.
+
+        All-or-nothing across the node set. A partial sum understates capacity and usage
+        together and nothing downstream can tell it from a real reading, so one silent node
+        means no disk reported and a reason saying how many. The parsed summaries are then
+        handed to the provider's store hook, so the results-store figure costs no further
+        round-trip — and is dropped for the same reason when a node was missed, since the
+        store's pod may be the one that was not read.
+        """
+        v1 = self._k8s()
+        deadline = time.monotonic() + self._DISK_BUDGET_SECONDS
+        summaries = {}
+        capacity = 0
+        used = 0
+        for index, name in enumerate(node_names):
+            if time.monotonic() > deadline:
+                return {"unavailable":
+                        f"reading node filesystems exceeded its "
+                        f"{self._DISK_BUDGET_SECONDS:.0f}s budget after {index} of "
+                        f"{len(node_names)} nodes"}
+            try:
+                raw = v1.connect_get_node_proxy_with_path(
+                    name, "stats/summary", _request_timeout=self._DISK_NODE_TIMEOUT)
+                summary = json.loads(raw) if isinstance(raw, str) else raw
+                fs = ((summary.get("node") or {}).get("fs")) or {}
+                capacity += int(fs["capacityBytes"])
+                used += int(fs["usedBytes"])
+                summaries[name] = summary
+            except Exception as e:  # noqa: BLE001 - capacity must still be answerable
+                # The node is named in the log, never in the returned reason: that string
+                # crosses the interface to a UI and an MCP client.
+                logger.debug("kubelet stats/summary unavailable on node %s: %s", name, e)
+                return {"unavailable":
+                        f"the kubelet Summary API did not answer on 1 of "
+                        f"{len(node_names)} node(s) — the service needs `nodes/proxy` "
+                        f"get; run `vast exec cluster upgrade` to reconcile RBAC"}
+        if capacity <= 0:
+            return {"unavailable": "the kubelet Summary API reported no node filesystem"}
+        fields = {"disk": DiskSpace(capacity_bytes=capacity, used_bytes=used)}
+        store_used, store_capacity = self._store_usage(summaries)
+        if store_used is not None and store_capacity is not None and store_capacity > 0:
+            fields["store"] = DiskSpace(capacity_bytes=store_capacity,
+                                        used_bytes=store_used)
+        return fields
+
+    def _store_usage(self, summaries):
+        """The provider's results-store reading, or ``(None, None)``.
+
+        Delegated because the answer is provider-specific: a cluster hosting its own object
+        store can measure the volume behind it, while one backed by a cloud bucket has no
+        capacity to fill and so no meter to draw. Never fatal — a provider that raises must
+        not take the disk meter down with it.
+        """
+        try:
+            return self._cluster_config().get_store_usage(summaries)
+        except Exception as e:  # noqa: BLE001 - the disk meter must still be answerable
+            logger.debug("could not read the results store usage: %s", e)
+            return None, None
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` over every scenario-run Job in this namespace.

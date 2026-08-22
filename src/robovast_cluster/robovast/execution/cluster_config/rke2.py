@@ -25,11 +25,18 @@ from robovast.execution.cluster_execution.kube_client import load_kube_config
 from ..cluster_execution.kubernetes import apply_manifests, check_pod_running, delete_manifests
 from .base_config import BaseConfig
 
-MINIO_MANIFEST_RKE2 = """---
+#: The embedded MinIO pod this config deploys, and the volume its ``/data`` mounts.
+#: Named here rather than inline in the manifest because ``get_store_usage`` has to find
+#: exactly this pod and volume in the kubelet's stats -- a manifest and a reader that spell
+#: the same name twice drift apart on the first rename.
+MINIO_POD_NAME = "robovast"
+MINIO_VOLUME_NAME = "minio-storage"
+
+MINIO_MANIFEST_RKE2 = f"""---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: robovast
+  name: {MINIO_POD_NAME}
   namespace: default
   labels:
     role: robovast
@@ -50,7 +57,7 @@ spec:
       containerPort: 9001
     volumeMounts:
     - mountPath: /data
-      name: minio-storage
+      name: {MINIO_VOLUME_NAME}
     readinessProbe:
       httpGet:
         path: /minio/health/ready
@@ -58,8 +65,8 @@ spec:
       initialDelaySeconds: 5
       periodSeconds: 5
   volumes:
-  - name: minio-storage
-    emptyDir: {}
+  - name: {MINIO_VOLUME_NAME}
+    emptyDir: {{}}
 ---
 apiVersion: v1
 kind: Service
@@ -151,15 +158,14 @@ class Rke2ClusterConfig(BaseConfig):
 
         readme_content = """# RKE2 Cluster Setup Instructions
 
-Uses MinIO with hostPath storage at `/transfer` on the cluster nodes.
+Uses MinIO backed by an `emptyDir`, so it needs no storage class and no
+preparation on the nodes.
 
-## Prerequisites
-
-Ensure the `/transfer` directory exists and is writable on all cluster nodes:
-
-```bash
-sudo mkdir -p /transfer && sudo chmod 777 /transfer
-```
+The store is a **transfer buffer, not an archive**: campaign results pass through
+it and are pulled off to wherever you run `vast`. Its contents do not survive the
+MinIO pod being restarted or rescheduled, so do not treat it as the place your
+results live. Because the volume is an `emptyDir` with no size limit, it draws
+from the node filesystem, and the web UI's **Store** meter reports how full it is.
 
 ## Setup Steps
 
@@ -180,6 +186,35 @@ MinIO console is available at port 9001.
 """
         with open(f"{output_dir}/README_rke2.md", "w") as f:
             f.write(readme_content)
+
+    def get_store_usage(self, node_summaries, namespace="default"):
+        """The embedded MinIO pod's ``/data`` volume, from the kubelet's volume stats.
+
+        This config mounts ``/data`` as an ``emptyDir`` (see ``MINIO_MANIFEST_RKE2``): the
+        store is a transfer buffer that results are pulled off, not an archive. So kubelet
+        reports it as a volume of the MinIO pod, and because the ``emptyDir`` declares no
+        ``sizeLimit`` its capacity is the node filesystem's -- which is why this reads close
+        to the node disk here, and why on a multi-node cluster its denominator is the one
+        node MinIO runs on rather than the summed disk. Worth a meter regardless: a full
+        buffer stalls campaigns.
+
+        ``(None, None)`` when the pod is not in the stats -- it may live on a node whose
+        kubelet was not read, and a store the caller cannot see is not a store of size zero.
+        """
+        del namespace
+        for summary in (node_summaries or {}).values():
+            for pod in (summary.get("pods") or []):
+                if (pod.get("podRef") or {}).get("name") != MINIO_POD_NAME:
+                    continue
+                for volume in (pod.get("volume") or []):
+                    if volume.get("name") != MINIO_VOLUME_NAME:
+                        continue
+                    used = volume.get("usedBytes")
+                    capacity = volume.get("capacityBytes")
+                    if used is None or capacity is None:
+                        return None, None
+                    return int(used), int(capacity)
+        return None, None
 
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
         """Ensure the embedded MinIO (``robovast``) pod is running before a run.

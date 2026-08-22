@@ -18,28 +18,6 @@ interface Usage {
   memory_used_bytes: number
 }
 
-/** CPU half of the usage label, e.g. "cpu 6/16". */
-export function formatCpuLabel(u: Usage): string {
-  return `cpu ${formatCores(u.cpu_used)}/${formatCores(u.cpu_capacity)}`
-}
-
-/** Memory half of the usage label, e.g. "mem 22/62 GiB". */
-export function formatMemLabel(u: Usage): string {
-  return `mem ${bytesToGiB(u.memory_used_bytes).toFixed(0)}/${bytesToGiB(
-    u.memory_capacity_bytes,
-  ).toFixed(0)} GiB`
-}
-
-/** CPU capacity only, e.g. "96 CPUs". */
-export function formatCpuCapacity(u: Usage): string {
-  return `${formatCores(u.cpu_capacity)} CPUs`
-}
-
-/** Memory capacity only, e.g. "32 GiB". */
-export function formatMemCapacity(u: Usage): string {
-  return `${bytesToGiB(u.memory_capacity_bytes).toFixed(0)} GiB`
-}
-
 /** Compact "used/capacity" the sidebar CPU bar shows in-track, e.g. "10/98". */
 export function formatCpuUsed(u: Usage): string {
   return `${formatCores(u.cpu_used)}/${formatCores(u.cpu_capacity)}`
@@ -50,11 +28,6 @@ export function formatMemUsed(u: Usage): string {
   return `${bytesToGiB(u.memory_used_bytes).toFixed(0)}/${bytesToGiB(
     u.memory_capacity_bytes,
   ).toFixed(0)}`
-}
-
-/** A compact "used/capacity" resource label, e.g. "cpu 6/16 · mem 22/62 GiB". */
-export function formatUsageLabel(u: Usage): string {
-  return `${formatCpuLabel(u)} · ${formatMemLabel(u)}`
 }
 
 /** Bytes → a compact size, e.g. "912 KiB", "39.9 MiB", "1.4 GiB". */
@@ -68,6 +41,27 @@ export function formatBytes(bytes: number): string {
     i += 1
   }
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`
+}
+
+/** Compact "used/capacity" in ONE shared unit, e.g. "0.4/1.8 TiB", "82/512 GiB". */
+export function formatBytesPair(used: number, capacity: number): string {
+  // Not `formatMemUsed`'s fixed-GiB style: a node filesystem is often TiB-scale, where
+  // "412/1863" is both unreadable and unlabelled. Same unit table and rounding as
+  // `formatBytes`, but BOTH numbers are scaled by the CAPACITY's divisor, so the pair
+  // reads as two magnitudes in one unit instead of "1.4 TiB/3.6 TiB" — twice the width,
+  // in a ~124px track. A capacity below 1 KiB is not a disk, so there is no bytes case.
+  const units = ['KiB', 'MiB', 'GiB', 'TiB']
+  let scale = 1024
+  let i = 0
+  while (capacity / scale >= 1024 && i < units.length - 1) {
+    scale *= 1024
+    i += 1
+  }
+  const one = (b: number) => {
+    const v = b / scale
+    return v < 10 ? v.toFixed(1) : String(Math.round(v))
+  }
+  return `${one(used)}/${one(capacity)} ${units[i]}`
 }
 
 export interface WorkProgress {

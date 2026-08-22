@@ -13,6 +13,8 @@ import { accent } from '@/colors'
 import { robovast } from '@/lib/robovastClient'
 import {
   bytesToGiB,
+  formatBytes,
+  formatBytesPair,
   formatCores,
   formatCpuUsed,
   formatMemUsed,
@@ -159,7 +161,8 @@ export function Sidebar({
 }
 
 // Passive service-connection + usage indicator, pinned to the sidebar footer (moved here from the
-// old top AppBar). Stacked meters — cpu, mem, and jobs while there is scenario work — each labelled
+// old top AppBar). Stacked meters — cpu, mem, jobs while there is scenario work, and disk/store
+// wherever the backend can report them — each labelled
 // and captioned with its own hover tooltip; the whole block reads "disconnected" until the backend
 // answers. Jobs is conditional because an always-present "0/0" on an empty track was indis-
 // tinguishable from a dead widget, on a lane that is simply idle. Hidden now means nothing is
@@ -210,11 +213,42 @@ function ConnectionStatus() {
         fraction={u.memory_capacity_bytes > 0 ? u.memory_used_bytes / u.memory_capacity_bytes : 0}
         text={formatMemUsed(u)}
       />
+      {/* Disk and Store are conditional for the reason the Jobs row is: null means "no
+          verdict" — a service older than the fields, a backend whose filesystem could not
+          be read, or a provider (a cloud bucket) with no capacity to report — and a 0/0
+          track reads as either a full disk or a dead widget. Gated on the object, not on
+          `backend`: the model is backend-neutral by contract, so the UI hides a row
+          because the numbers are absent, never because it recognised a lane. No colour
+          override: MeterBar turns red at 0.9, which is where kubelet's default hard
+          eviction threshold (nodefs.available<10%) starts killing pods. */}
+      {u.disk && u.disk.capacity_bytes > 0 ? (
+        <UsageRow
+          label="Disk"
+          tip={`${formatBytes(u.disk.used_bytes)} out of ${formatBytes(
+            u.disk.capacity_bytes,
+          )} disk used${u.backend === 'kubernetes' ? ', summed across the cluster nodes' : ''}`}
+          fraction={u.disk.used_bytes / u.disk.capacity_bytes}
+          text={formatBytesPair(u.disk.used_bytes, u.disk.capacity_bytes)}
+        />
+      ) : null}
+      {u.store && u.store.capacity_bytes > 0 ? (
+        <UsageRow
+          label="Store"
+          // The denominator is named because it is NOT the Disk row's: the store is
+          // bounded by the one node it runs on, so on a multi-node cluster a nearly full
+          // buffer can look like a short bar beside the summed disk.
+          tip={`campaign results store: ${formatBytes(u.store.used_bytes)} out of ${formatBytes(
+            u.store.capacity_bytes,
+          )} on the node it runs on`}
+          fraction={u.store.used_bytes / u.store.capacity_bytes}
+          text={formatBytesPair(u.store.used_bytes, u.store.capacity_bytes)}
+        />
+      ) : null}
     </Stack>
   )
 }
 
-// One labelled meter row: a fixed-width caption ("Jobs"/"CPU"/"Mem") beside a MeterBar
+// One labelled meter row: a fixed-width caption ("Jobs"/"CPU"/"Mem"/"Disk"/"Store") beside a MeterBar
 // whose in-track text is the compact "used/total". The whole row carries its own hover
 // tooltip spelling the numbers out in words. `color` overrides the auto green→red fill
 // (jobs use a fixed info tint since "full" isn't a warning there — for jobs "total" is

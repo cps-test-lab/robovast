@@ -55,7 +55,7 @@ from robovast.execution.control_server import (ControllerState, Phase, Status, f
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
                                         CampaignSummary, OriginKind,
                                         CreateCampaignRequest, CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest, FileEntry,
+                                        CreateWorkspaceRequest, DiskSpace, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText, ImageBuildRef, JobCounts,
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
@@ -905,6 +905,7 @@ class LocalTransport(RobovastInterface):
         vm = psutil.virtual_memory()
         cores = psutil.cpu_count(logical=True)
         jobs_running, jobs_pending = self._scenario_job_tally()
+        disk, disk_unavailable = self._disk_space()
         return ResourceUsage(
             backend="docker",
             cpu_capacity=float(cores),
@@ -914,7 +915,37 @@ class LocalTransport(RobovastInterface):
             parallel_runs=False,   # Docker backend is single-flight: runs are sequential
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,
+            disk=disk,
+            disk_unavailable=disk_unavailable,
+            # `store` stays None: this lane's results store IS the filesystem `disk`
+            # already reports, and a second identical meter would say nothing.
         )
+
+    def _disk_space(self) -> "tuple[Optional[DiskSpace], Optional[str]]":
+        """This host's results filesystem, or the reason it could not be read.
+
+        The filesystem holding :meth:`_campaigns_root`, not ``/``: a campaign writes its
+        rosbags and CSVs there, and where that is a separate mount -- a data disk, an NFS
+        export -- ``/`` can look comfortable while the disk the next campaign needs is
+        full. (The Docker graph dir is the other thing that fills, from image pulls; it is
+        normally the same device, and a second disk would need a second meter.)
+
+        Resolved to the nearest existing ancestor because ``_campaigns_root`` is a pure
+        path resolver -- the directory is materialized lazily on the first run, so a
+        service that has never run a campaign would otherwise fail to read the very disk it
+        is about to write to. Same filesystem either way, unless the missing component is
+        itself an unmounted mountpoint.
+        """
+        import psutil  # pylint: disable=import-outside-toplevel
+        path = self._campaigns_root()
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        try:
+            usage = psutil.disk_usage(str(path))
+        except OSError as e:
+            logger.debug("could not read disk usage for %s: %s", path, e)
+            return None, f"could not read the results filesystem: {e}"
+        return DiskSpace(capacity_bytes=usage.total, used_bytes=usage.used), None
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` scenario runs across this lane's live campaigns.
