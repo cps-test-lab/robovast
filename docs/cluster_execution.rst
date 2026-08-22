@@ -483,16 +483,27 @@ apart: it reads the prefix out of its environment and has no RBAC to look at its
 
 ``vast doctor -n <namespace>`` says which of the two you are in.
 
-**The same host is also baked in as the service's declared origin**, from the same
-``--ingress-host`` and re-baked by the same ``upgrade``. It is what the service reports as
-``web_base``, so a client that cannot be handed bytes -- a 20k-line log, a truncated query,
-a rosbag -- can be handed a link to fetch them out of band instead. The two are separate
-values on purpose, even though today they are the same host: a registry prefix may point
-somewhere else entirely, and the origin must not silently follow it.
+**The same host is also written in as the service's declared origin**, from the same
+``--ingress-host``. It is what the service reports as ``web_base``, so a client that cannot
+be handed bytes -- a 20k-line log, a truncated query, a rosbag -- can be handed a link to
+fetch them out of band instead. The two are separate values on purpose, even though today
+they are the same host: a registry prefix may point somewhere else entirely, and the origin
+must not silently follow it.
 
-An unpublished service declares no origin, which is the honest answer rather than a
-degraded one: routes and file addresses still work, and it is only the absolute URLs that
-are absent.
+**Unlike the prefix, an ``upgrade`` does not re-bake it -- it leaves it alone.** The origin
+needs a scheme as well as a host, and the recovery path has only the host: ``upgrade`` reads
+it back from the live Ingress and holds none of the TLS arguments that Ingress was created
+with. So it says nothing about the origin, a merge patch preserves what it does not mention,
+and a published deployment keeps its origin across every upgrade. ``setup`` with
+``--ingress-host`` (plus ``--insecure-http`` where that applies) is what states it.
+
+The case that trades against: a service that *stopped* being published keeps a stale origin
+until a ``setup`` restates it. That is the same trade the prefix makes in the other
+direction -- a stale value an operator can correct, rather than a correct value silently
+thrown away on the next upgrade.
+
+A service that was never published declares no origin at all, which is honest rather than
+degraded: routes and file addresses still work, and only the absolute URLs are absent.
 
 Storage defaults to a ``hostPath`` on the node the pod is pinned to, because a stock RKE2
 cluster ships no StorageClass and a PVC there stays ``Pending`` forever. ``emptyDir`` is

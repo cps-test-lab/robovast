@@ -1419,6 +1419,11 @@ def service_manifests(namespace="default", image=None, env=None,
     the second: it knows the host only by reading it back from the live Ingress, and has
     none of the TLS arguments that Ingress was created with. Defaults to *ingress_host*,
     which is what setup passes.
+
+    :data:`PUBLIC_URL_ENV` is *not* rendered from *registry_host*, even though the two are
+    the same host: it needs the scheme too, and only a caller that creates the Ingress
+    knows that from its own arguments. It is therefore written when this call states one
+    and left alone otherwise — see the env block.
     """
     registry_host = registry_host or ingress_host
     from robovast.common.execution import resolve_controller_image
@@ -1472,14 +1477,25 @@ def service_manifests(namespace="default", image=None, env=None,
     if not any(e["name"] == "TZ" for e in env):
         env = [*env, {"name": "TZ", "value": _host_timezone()}]
 
-    # The published origin, carried the same way and for the same reason: emitted only
-    # when set it would be write-only, so a `setup` that drops --ingress-host would leave
-    # the pod declaring an origin that no longer resolves. "" is what "not published"
-    # already means to the service reading it, so emitting it makes removal a reset
-    # instead of a no-op.
-    if not any(e["name"] == PUBLIC_URL_ENV for e in env):
-        env = [*env, {"name": PUBLIC_URL_ENV,
-                      "value": public_url(ingress_host, insecure_http)}]
+    # The published origin, written only when this call actually knows it -- which means
+    # `--ingress-host` plus the scheme flags, i.e. a `setup` that published the service.
+    #
+    # Unlike the image-family vars above this is deliberately NOT emitted empty when
+    # unknown. A merge patch preserves what it does not mention, and the callers that
+    # cannot state one are precisely the ones that must not overwrite it: `upgrade` and a
+    # `setup` re-run recover the published *host* from the live Ingress but hold none of
+    # the TLS arguments it was created with, so they know the host and not the scheme.
+    # Emitting "" there would erase, on every upgrade, an origin that is still correct --
+    # and rendering `https://<host>` from the host alone would publish the wrong scheme
+    # for a deployment set up with --insecure-http.
+    #
+    # The case this cannot express is a service that *stopped* being published: its
+    # origin then lingers until a `setup` restates it. Fixed the same way the registry
+    # prefix is (see cluster_execution.rst), and the same trade the prefix makes: a stale
+    # value an operator can correct beats a correct value silently thrown away.
+    origin = public_url(ingress_host, insecure_http)
+    if origin and not any(e["name"] == PUBLIC_URL_ENV for e in env):
+        env = [*env, {"name": PUBLIC_URL_ENV, "value": origin}]
 
     extra = []
     if git_token is None:

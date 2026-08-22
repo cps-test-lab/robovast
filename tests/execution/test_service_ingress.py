@@ -223,15 +223,26 @@ def test_plain_http_is_declared_as_plain_http():
     assert env[PUBLIC_URL_ENV] == "http://robovast.example.org"
 
 
-def test_an_unpublished_service_declares_an_empty_origin():
-    """Emitted empty, not omitted, and that distinction is the point.
+def test_a_call_that_cannot_know_the_origin_leaves_it_alone():
+    """Omitted, not emitted empty, and that distinction is the point.
 
-    A var emitted only when set is write-only: a ``setup`` re-run that drops
-    ``--ingress-host`` would leave the pod declaring an origin that no longer resolves,
-    because a merge patch preserves what the new manifest does not mention. Empty is what
-    "not published" already means to the reader, so emitting it makes removal a reset.
+    A merge patch preserves what it does not mention. The calls that arrive without
+    ``--ingress-host`` are exactly the ones that must not overwrite the origin: ``upgrade``
+    and a ``setup`` re-run recover the published *host* from the live Ingress but hold none
+    of the TLS arguments it was created with, so they know the host and not the scheme.
+    Emitting "" would erase a still-correct origin on every upgrade; rendering
+    ``https://<host>`` from the host alone would publish the wrong scheme for a deployment
+    set up with ``--insecure-http``.
     """
-    assert _service_env()[PUBLIC_URL_ENV] == ""
+    assert PUBLIC_URL_ENV not in _service_env()
+
+
+def test_an_upgrade_does_not_overwrite_the_origin_it_cannot_restate():
+    """The regression this exists for: an upgrade passes the published host as
+    ``registry_host`` -- never as ``ingress_host``, which would try to recreate the Ingress
+    and be refused for want of TLS arguments. Deriving the origin from the host it does
+    pass looked equivalent and was not."""
+    assert PUBLIC_URL_ENV not in _service_env(registry_host="robovast.example.org")
 
 
 def test_a_caller_supplied_origin_is_not_overwritten():
