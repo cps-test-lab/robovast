@@ -122,3 +122,69 @@ jobs:
           assert not leaked, f"importing the client loaded {leaked}"
           print(f"{len(modules)} modules imported, nothing heavy loaded")
           EOF
+
+      # Importing a module does not execute the imports deferred inside its functions, so
+      # the step above stops exactly where this distribution's leaks have always been: a
+      # verb that imports cleanly and dies the moment somebody runs it. The functions whose
+      # bodies reach across the boundary are therefore CALLED. `vast doctor` is the widest
+      # of them -- the cluster lane, the core's version helpers and `kubernetes` -- and the
+      # only one that reaches them without a service to talk to.
+      - name: Verbs that defer imports run, not just import
+        run: |
+          "$CLIENT_VENV/bin/python" - <<'EOF'
+          import sys
+
+          from robovast.client.app_version import running_revision, running_version
+          from robovast.client.doctor import run_checks
+          from robovast.service.http_client import RobovastClient
+
+          # Doctor's own verdict is not the subject -- this job has no service, so failing
+          # checks are correct. Only that it produced checks instead of a traceback.
+          checks = {c.name: c for c in run_checks()}
+          lane = checks.get("cluster support")
+          assert lane is not None, (
+              f"no 'cluster support' verdict in {sorted(checks)}; check_cluster's "
+              "ImportError guard did not fire, so this is not the client-only install "
+              "it claims to be")
+          assert not lane.ok and lane.optional, (
+              "a missing cluster lane must be advisory: a client-only install is a "
+              f"complete install, not a broken one (ok={lane.ok}, optional={lane.optional})")
+
+          # The metadata fallback, which is the only version this install can report.
+          version = running_version()
+          assert version != "0.0.0+unknown", (
+              "running_version() fell through to its no-metadata answer, so a perfectly "
+              "good client-only install reports itself as a broken one")
+          assert running_revision() == "", (
+              f"running_revision() returned {running_revision()!r}; with no core to ask "
+              "there is no revision, and '' is what says so")
+
+          # No URL and no in-process transport: it must name the remedy, not raise
+          # ModuleNotFoundError for a module the caller never mentioned.
+          try:
+              RobovastClient("")
+          except RuntimeError as exc:
+              assert "vast login" in str(exc), f"refusal does not name the remedy: {exc}"
+          else:
+              raise AssertionError("RobovastClient('') must refuse with no service")
+
+          heavy = {"kubernetes", "pandas", "numpy", "yaml", "docker"}
+          leaked = sorted(heavy & set(sys.modules))
+          assert not leaked, f"driving the client's deferred imports loaded {leaked}"
+          print(f"deferred imports resolved; {len(checks)} checks, version {version}")
+          EOF
+
+      # The same path through the CLI, for the click layer and the exit code. It is
+      # EXPECTED to exit non-zero: with no login and no service those checks are correctly
+      # ✗. What must not happen is a traceback -- that is the difference between "your
+      # install is incomplete", which this one is on purpose, and "the tool is broken".
+      - name: '`vast doctor` reports rather than crashes'
+        run: |
+          "$CLIENT_VENV/bin/vast" doctor > doctor.log 2>&1 || true
+          cat doctor.log
+          grep -q 'cluster support' doctor.log \
+            || { echo '::error::doctor never reached the cluster-lane check'; exit 1; }
+          if grep -qE 'Traceback|ModuleNotFoundError|ImportError' doctor.log; then
+            echo '::error::doctor crashed instead of reporting'
+            exit 1
+          fi
