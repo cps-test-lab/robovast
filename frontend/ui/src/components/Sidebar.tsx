@@ -224,9 +224,13 @@ function ConnectionStatus() {
       {u.disk && u.disk.capacity_bytes > 0 ? (
         <UsageRow
           label="Disk"
-          tip={`${formatBytes(u.disk.used_bytes)} out of ${formatBytes(
-            u.disk.capacity_bytes,
-          )} disk used${u.backend === 'kubernetes' ? ', summed across the cluster nodes' : ''}`}
+          // NOT summed across the cluster: on kubernetes this is the filesystem of the node
+          // the service runs on, which is the disk its workspaces are a hostPath on and so
+          // the one that decides whether a campaign can be written. A twenty-node sum read
+          // as tens of terabytes free while that one disk filled.
+          tip={`${formatBytes(u.disk.used_bytes)} used, ${formatBytes(
+            Math.max(0, u.disk.capacity_bytes - u.disk.used_bytes),
+          )} free${u.backend === 'kubernetes' ? " on the service's node" : ''}`}
           fraction={u.disk.used_bytes / u.disk.capacity_bytes}
           text={formatBytesPair(u.disk.used_bytes, u.disk.capacity_bytes)}
         />

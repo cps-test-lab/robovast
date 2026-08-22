@@ -246,6 +246,7 @@ class ClusterService(LocalTransport):
         ``_DISK_CACHE_TTL`` on top of the per-window list calls above.
         """
         from .kube_client import pod_workload_containers  # pylint: disable=import-outside-toplevel
+        from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
         from .kubernetes_kueue import _parse_resource  # pylint: disable=import-outside-toplevel
         v1 = self._k8s()
 
@@ -260,9 +261,18 @@ class ClusterService(LocalTransport):
 
         cpu_used = 0.0
         mem_used = 0
+        service_node = None
         pods = v1.list_pod_for_all_namespaces(
             field_selector="status.phase!=Succeeded,status.phase!=Failed")
         for pod in pods.items:
+            # Which node carries the service, taken from a list we already have rather than
+            # a read of its own: the disk meter reports THAT node's filesystem, because the
+            # workspaces volume is a hostPath there on a stock RKE2 and a cluster-wide sum
+            # answers a question nobody asks.
+            meta = pod.metadata
+            if ((meta.labels or {}).get("app") == SERVICE_NAME
+                    and meta.namespace == self.namespace):
+                service_node = getattr(pod.spec, "node_name", None) or service_node
             if getattr(pod.spec, "node_name", None) in node_names:
                 # Native sidecars included: Kubernetes adds their requests to the pod's
                 # effective total rather than taking the max as it does for ordinary init
@@ -276,7 +286,7 @@ class ClusterService(LocalTransport):
                     mem_used += int(_parse_resource(requests.get("memory")))
 
         jobs_running, jobs_pending = self._scenario_job_tally()
-        disk, store, disk_unavailable = self._disk_and_store(node_names)
+        disk, store, disk_unavailable = self._disk_and_store(node_names, service_node)
         return ResourceUsage(
             backend="kubernetes",
             cpu_capacity=cpu_capacity,
@@ -291,8 +301,8 @@ class ClusterService(LocalTransport):
             disk_unavailable=disk_unavailable,
         )
 
-    def _disk_and_store(self, node_names):
-        """``(disk, store, unavailable)`` from one kubelet Summary read per node.
+    def _disk_and_store(self, node_names, service_node=None):
+        """``(disk, store, unavailable)`` from the kubelet Summary reads that are needed.
 
         Read over the ``nodes/proxy`` subresource — the same channel
         :func:`robovast.common.execution._check_static_cpu_manager` reads ``configz`` on.
@@ -307,92 +317,111 @@ class ClusterService(LocalTransport):
         now = time.monotonic()
         cached = self._disk_cache
         if cached is None or now - cached[0] >= self._DISK_CACHE_TTL:
-            cached = (now, self._read_disk_and_store(sorted(node_names)))
+            cached = (now, self._read_disk_and_store(sorted(node_names), service_node))
             self._disk_cache = cached
         fields = cached[1]
         return fields.get("disk"), fields.get("store"), fields.get("unavailable")
 
-    def _read_disk_and_store(self, node_names) -> dict:
-        """Sum every node's filesystem, then let the provider name its results store.
+    def _read_disk_and_store(self, node_names, service_node=None) -> dict:
+        """The SERVICE's node filesystem, then let the provider name its results store.
+
+        Node-local, not summed, and that is the whole point at scale. A cluster-wide sum
+        answers a question nobody asks: with twenty nodes it reports tens of terabytes while
+        the only disk that decides whether a campaign can be written is the one under the
+        service's workspaces -- a hostPath on a stock RKE2, so pinned to a single node and
+        invisible in the kubelet's per-volume stats. Summing also could not survive the
+        scale it claimed to serve: all-or-nothing across the node set, with a
+        ``_DISK_BUDGET_SECONDS`` of 5 against a ``_DISK_NODE_TIMEOUT`` of 2, meant twenty
+        nodes blew the budget and reported no disk at all.
+
+        ``used / (used + available)``, not ``capacityBytes``: reserved blocks are in the
+        capacity and cannot be written, so ``available`` is the only honest denominator --
+        the same correction the store's meter carries.
 
         ``node.fs`` (nodefs) only, **not** summed with ``node.runtime.imageFs``: on a
         single-disk node those are two views of the SAME device, so summing doubles
-        capacity and used alike — the ratio survives but the labelled numbers become
+        capacity and used alike -- the ratio survives but the labelled numbers become
         fiction.
 
-        All-or-nothing across the node set. A partial sum understates capacity and usage
-        together and nothing downstream can tell it from a real reading, so one silent node
-        means no disk reported and a reason saying how many. The parsed summaries are then
-        handed to the provider's store hook, so the results-store figure costs no further
-        round-trip — and is dropped for the same reason when a node was missed, since the
-        store's pod may be the one that was not read.
+        The store is a different node's business, so the nodes are read in order --
+        the service's first, so the disk figure is answerable even if the budget then runs
+        out -- and the walk STOPS as soon as the provider recognises its store. On the
+        clusters that have one that is one or two reads, whatever the node count.
         """
         v1 = self._k8s()
         deadline = time.monotonic() + self._DISK_BUDGET_SECONDS
         summaries = {}
-        capacity = 0
-        used = 0
-        for index, name in enumerate(node_names):
+        fields = {}
+        # The service's node first: it is the one figure that must survive a short budget.
+        ordered = ([service_node] if service_node in node_names else []) + [
+            n for n in node_names if n != service_node]
+        if service_node is not None and service_node not in node_names:
+            logger.debug("service node %s is not in the node list", service_node)
+        for name in ordered:
             if time.monotonic() > deadline:
-                return {"unavailable":
-                        f"reading node filesystems exceeded its "
-                        f"{self._DISK_BUDGET_SECONDS:.0f}s budget after {index} of "
-                        f"{len(node_names)} nodes"}
+                break
             try:
                 # `_preload_content=False` for the RAW response, and it is load-bearing: the
                 # generated client declares this endpoint's response_type as 'str', so with
                 # preloading it parses the kubelet's JSON into a dict and then coerces it to
                 # the declared type with str() -- handing back a single-quoted Python repr
                 # that json.loads rejects at character 1 ("Expecting property name enclosed
-                # in double quotes"). `json.loads(raw) if isinstance(raw, str) else raw`
-                # therefore could not work on ANY cluster; this meter had never reported a
-                # byte. Raw bytes skip the deserializer, so there is nothing to un-coerce.
+                # in double quotes"). Raw bytes skip the deserializer entirely.
                 resp = v1.connect_get_node_proxy_with_path(
                     name, "stats/summary", _request_timeout=self._DISK_NODE_TIMEOUT,
                     _preload_content=False)
                 try:
                     summary = json.loads(resp.data)
                 finally:
-                    # Not a with-block: urllib3's response is not a context manager here, and
-                    # an unreleased connection leaks the pool one node at a time.
+                    # Not a with-block: urllib3's response is not a context manager here,
+                    # and an unreleased connection leaks the pool one node at a time.
                     resp.release_conn()
-                fs = ((summary.get("node") or {}).get("fs")) or {}
-                capacity += int(fs["capacityBytes"])
-                used += int(fs["usedBytes"])
                 summaries[name] = summary
-            except Exception as e:  # noqa: BLE001 - capacity must still be answerable
-                # The node is named in the log, never in the returned reason: that string
+                if name == service_node and "disk" not in fields:
+                    fs = ((summary.get("node") or {}).get("fs")) or {}
+                    used, available = fs.get("usedBytes"), fs.get("availableBytes")
+                    if used is not None and available is not None:
+                        fields["disk"] = DiskSpace(
+                            capacity_bytes=int(used) + int(available),
+                            used_bytes=int(used))
+            except Exception as e:  # noqa: BLE001 - the other figure must still be answerable
+                # The node is named in the log, never in a returned reason: that string
                 # crosses the interface to a UI and an MCP client.
                 logger.debug("kubelet stats/summary unavailable on node %s: %s", name, e)
-                # Report what actually failed. This used to answer "the service needs
-                # `nodes/proxy` get; run `vast exec cluster upgrade` to reconcile RBAC" for
-                # EVERY exception -- a timeout, a TLS refusal, a kubelet with the read-only
-                # port closed, a summary without the key -- and only 403 is that. A reader who
-                # reconciles RBAC on a timeout sees the identical message afterwards and has
-                # no way to tell a failed fix from a wrong diagnosis, which is worse than no
-                # reason at all: it also prescribes rolling the service, which on a lane with
-                # a campaign in flight costs the campaign.
-                status = getattr(e, "status", None)
-                if status == 403:
-                    reason = ("the service may not read `nodes/proxy` (403) — run "
-                              "`vast exec cluster upgrade --no-restart` to reconcile RBAC")
-                else:
-                    # The exception's own text, not a guess. Bounded because it lands in a UI,
-                    # and the full one is in the log line above.
-                    detail = str(getattr(e, "reason", None) or e).strip().splitlines()
-                    detail = (detail[0] if detail else e.__class__.__name__)[:120]
-                    prefix = f"HTTP {status}: " if status else f"{e.__class__.__name__}: "
-                    reason = f"the kubelet Summary API did not answer: {prefix}{detail}"
-                return {"unavailable":
-                        f"{reason} (1 of {len(node_names)} node(s))"}
-        if capacity <= 0:
-            return {"unavailable": "the kubelet Summary API reported no node filesystem"}
-        fields = {"disk": DiskSpace(capacity_bytes=capacity, used_bytes=used)}
-        store_used, store_capacity = self._store_usage(summaries)
-        if store_used is not None and store_capacity is not None and store_capacity > 0:
-            fields["store"] = DiskSpace(capacity_bytes=store_capacity,
-                                        used_bytes=store_used)
+                if name == service_node:
+                    fields["unavailable"] = self._summary_read_reason(e)
+            # Stop as soon as the provider can answer: its store lives on one node, and
+            # walking the rest buys nothing but latency against the budget.
+            store_used, store_capacity = self._store_usage(summaries)
+            if store_used is not None and store_capacity is not None and store_capacity > 0:
+                fields["store"] = DiskSpace(capacity_bytes=store_capacity,
+                                            used_bytes=store_used)
+                break
+        if "disk" not in fields and "unavailable" not in fields:
+            fields["unavailable"] = (
+                "no node filesystem for the service's node"
+                if service_node else "the service's node could not be identified")
         return fields
+
+    @staticmethod
+    def _summary_read_reason(e) -> str:
+        """Why a kubelet Summary read failed, in words that cross to a UI.
+
+        Only 403 is an RBAC verdict. This used to answer "the service needs `nodes/proxy`
+        get; run `vast exec cluster upgrade` to reconcile RBAC" for EVERY exception -- a
+        timeout, a TLS refusal, a summary missing a key -- with the real one going no
+        further than a logger.debug. Reconciling RBAC then returned the identical message,
+        which is the failure mode that makes a guess worse than no reason at all: a reader
+        cannot tell a fix that did not work from a diagnosis that was never right.
+        """
+        status = getattr(e, "status", None)
+        if status == 403:
+            return ("the service may not read `nodes/proxy` (403) — run "
+                    "`vast exec cluster upgrade --no-restart` to reconcile RBAC")
+        detail = str(getattr(e, "reason", None) or e).strip().splitlines()
+        detail = (detail[0] if detail else e.__class__.__name__)[:120]
+        prefix = f"HTTP {status}: " if status else f"{e.__class__.__name__}: "
+        return f"the kubelet Summary API did not answer: {prefix}{detail}"
 
     def _store_usage(self, summaries):
         """The provider's results-store reading, or ``(None, None)``.
@@ -2980,6 +3009,79 @@ class ClusterService(LocalTransport):
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.SHARING, work=work)
+
+    # -- taking a campaign in ------------------------------------------------
+    #
+    # The import sequence itself is the inherited one; only the three questions it asks
+    # about durability differ here, because a pod's scratch is not where a campaign lives.
+
+    def _campaign_is_here(self, campaign_id: str) -> bool:
+        """The object store's index is the answer, not this pod's disk.
+
+        Asking the filesystem would report "no" for every campaign this pod has not
+        happened to fetch, so an import would sail past the collision check and then
+        overwrite a campaign in the durable home that nobody was warned about.
+        """
+        return campaign_id in self._durable_campaign_ids()
+
+    def _release_durable_campaign(self, campaign_id: str) -> None:
+        """Under ``force``: delete the object-store copy being replaced, and its marker.
+
+        Deliberately not :meth:`delete_campaign`, whose ``_ensure_deletable`` refuses a
+        campaign this service is driving — by this point the import is registered under
+        that very id, so the campaign would be refused on account of the operation asking.
+        The guard that matters has already run: ``_dispatch_background`` would not have
+        started a second operation on a busy campaign.
+        """
+        from botocore.exceptions import ClientError
+
+        from robovast.execution.cluster_execution import bucket_ops
+        try:
+            bucket_ops.delete_campaign(campaign_id, self._cluster_config(),
+                                       namespace=self.namespace, context=self.kube_context)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
+                raise
+        self._unmark_campaign(campaign_id)
+
+    def _publish_imported_campaign(self, campaign_id: str, target) -> None:
+        """Upload the imported tree to the object store and index it; drop the scratch.
+
+        Without this an import would land on a pod's ephemeral disk and be gone with the
+        pod — and invisible even before that, since ``_durable_campaign_ids`` answers from
+        the index rather than from what happens to be on disk.
+
+        ``upload_dir`` walks without following symlinks, so the ``<config>/<run>/job``
+        links are not uploaded — correct, because the object store has no symlinks and the
+        download side rebuilds them from ``_transient/job_links.yaml``, which is a real
+        file and does travel.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+        from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+        from robovast.common.store import \
+            read_campaign_created_at  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution import \
+            in_pod_storage  # pylint: disable=import-outside-toplevel
+
+        cfg = self._cluster_config()
+        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+        storage = in_pod_storage.storage_client_for(cfg)
+        count = storage.upload_dir(str(target), bucket, prefix.rstrip("/"))
+        logger.info("Published %d objects of imported campaign %s to the object store",
+                    count, campaign_id)
+        # The marker is what makes it listable at all; its created_at rides in the key so
+        # a cold listing can order campaigns without an object read each.
+        # The campaign's own recorded start time, so an imported campaign sorts where it
+        # belongs in the listing rather than jumping to the top as if it had just run.
+        created_at = (read_campaign_created_at(target)
+                      or datetime.now(timezone.utc).isoformat())
+        in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
+        with self._index_lock:
+            self._index_cache = None
+        # The pod's copy has served its purpose; the durable home is the store, and a
+        # multi-gigabyte campaign left on scratch is how a service pod fills its disk.
+        shutil.rmtree(target, ignore_errors=True)
 
     def campaign_tar_stream(self, campaign_id: str):
         """Yield a ``tar.gz`` of the postprocessed campaign, streamed from the object store.
