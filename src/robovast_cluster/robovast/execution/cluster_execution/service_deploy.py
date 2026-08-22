@@ -87,6 +87,16 @@ WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
 DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 
+#: The origin clients reach this service on, which the service reports as
+#: ``VersionInfo.web_base`` so a caller that cannot be handed bytes can be handed a link.
+#: Derived from the Ingress at setup/upgrade time, exactly like the build registry's prefix
+#: (:func:`registry_deploy.registry_prefix`) and for the same reason: the in-pod service is
+#: deliberately given no RBAC to read its own Ingress. Empty without an Ingress -- an
+#: unpublished service has no origin to declare, and a link nobody can open is worse than
+#: no link. Read back by ``LocalTransport._declared_web_base``, which also takes it from
+#: ``serve`` for a service started by hand -- one input either way.
+PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
+
 
 def workspaces_volume(storage_path="", storage_class=""):
     """The volume backing the workspace store: a PVC when provisionable, else hostPath.
@@ -761,6 +771,18 @@ def validate_ingress_options(ingress_host="", tls_secret="", issuer="",
             "login would not work at all. Pass a TLS secret or a cert-manager issuer "
             "(tools/setup_ingress_tls.py sets one up), or --insecure-http to accept "
             "this on a trusted network.")
+
+
+def public_url(ingress_host="", insecure_http=False) -> str:
+    """The origin this service is published on, or ``""`` when it is not published.
+
+    The scheme is not a guess: :func:`validate_ingress_options` refuses to create an
+    Ingress over plain HTTP unless ``--insecure-http`` says so explicitly, so these two
+    arguments already decide it.
+    """
+    if not ingress_host:
+        return ""
+    return f"{'http' if insecure_http else 'https'}://{ingress_host}"
 
 
 def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
@@ -1449,6 +1471,15 @@ def service_manifests(namespace="default", image=None, env=None,
     # empty value resets the pod to UTC instead of being a value the merge patch preserves.
     if not any(e["name"] == "TZ" for e in env):
         env = [*env, {"name": "TZ", "value": _host_timezone()}]
+
+    # The published origin, carried the same way and for the same reason: emitted only
+    # when set it would be write-only, so a `setup` that drops --ingress-host would leave
+    # the pod declaring an origin that no longer resolves. "" is what "not published"
+    # already means to the service reading it, so emitting it makes removal a reset
+    # instead of a no-op.
+    if not any(e["name"] == PUBLIC_URL_ENV for e in env):
+        env = [*env, {"name": PUBLIC_URL_ENV,
+                      "value": public_url(ingress_host, insecure_http)}]
 
     extra = []
     if git_token is None:

@@ -1275,7 +1275,29 @@ class LocalTransport(RobovastInterface):
                            code_revision=_code_revision(), backend="docker",
                            can_build_images=True,
                            results_root=str(self._campaigns_root()),
-                           sources_root=str(self.store.registry.root))
+                           sources_root=str(self.store.registry.root),
+                           web_base=self._declared_web_base())
+
+    def _declared_web_base(self) -> str:
+        """The origin this deployment declares for its callers, or ``""``.
+
+        One input, from whoever knows: ``setup`` bakes it from the Ingress for a deployed
+        service (which is given no RBAC to read its own), and ``serve`` fills it in from
+        the address it bound for a service started by hand. Both arrive the same way, so
+        there is nothing to reconcile here and no lane needs an override -- the cluster
+        lane runs both in-pod and off-cluster through a port-forward, and a per-lane
+        version of this would have had to remember not to blank the second case.
+
+        ``""`` when nobody named one: unpublished, or bound to a wildcard where which
+        address a caller used is not knowable from here.
+
+        The literal rather than an import, like ``default_workspaces_root`` reads
+        ``ROBOVAST_WORKSPACES_ROOT``: the writers name it
+        (``robovast.service.app.PUBLIC_URL_ENV`` and the cluster lane's constant of the
+        same name), and importing either from here would drag a serving layer, or a lane,
+        into the cheapest call in the interface.
+        """
+        return os.environ.get("ROBOVAST_PUBLIC_URL", "").strip()
 
     def resource_usage(self) -> ResourceUsage:
         """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.

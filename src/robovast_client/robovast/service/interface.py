@@ -745,6 +745,18 @@ class VersionInfo(BaseModel):
     #: ``--workspace-dir`` and therefore lives outside this root.
     results_root: Optional[str] = None
     sources_root: Optional[str] = None
+    #: The origin to prefix a route or an address with, so a caller that cannot be handed
+    #: bytes can be handed a link instead: ``"https://<ingress-host>"`` on a published
+    #: deployment, the bound address for a local ``vast serve``.
+    #:
+    #: The **service** declares it because only the service knows it. A transport's
+    #: ``base_url`` is where *it* dials, which is the same string only by accident, and the
+    #: MCP mounted inside the service has no transport at all.
+    #:
+    #: ``""`` means this deployment has no origin to declare — unpublished, or bound to a
+    #: wildcard where no single address is the one a caller used. Information, not a gap:
+    #: a consumer omits the link rather than emitting one nobody can open.
+    web_base: str = ""
 
 
 class DiskSpace(BaseModel):

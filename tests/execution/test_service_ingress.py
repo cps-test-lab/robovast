@@ -14,8 +14,9 @@ they are refusals in code rather than warnings in documentation:
 
 import pytest
 
-from robovast.execution.cluster_execution.service_deploy import (SERVICE_NAME, SERVICE_PORT,
-                                                                 IngressRefused, service_manifests)
+from robovast.execution.cluster_execution.service_deploy import (PUBLIC_URL_ENV, SERVICE_NAME,
+                                                                 SERVICE_PORT, IngressRefused,
+                                                                 public_url, service_manifests)
 
 
 def _kinds(manifests):
@@ -192,3 +193,56 @@ def test_nginx_needs_no_such_annotation():
                                   ingress_class="nginx", issuer="ca")
     service = next(m for m in manifests if m["kind"] == "Service")
     assert "annotations" not in service["metadata"]
+
+
+# -- the published origin, carried to the service that must report it -------
+
+
+def _service_env(**kwargs):
+    kwargs.setdefault("auth_token", "tok")
+    # An https Ingress is refused without one of these (see above); irrelevant to the env.
+    if kwargs.get("ingress_host") and not kwargs.get("insecure_http"):
+        kwargs.setdefault("tls_secret", "robovast-tls")
+    deployment = next(m for m in service_manifests(**kwargs) if m["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    return {e["name"]: e["value"] for e in container["env"] if "value" in e}
+
+
+def test_the_published_origin_reaches_the_pod():
+    """The service cannot work this out for itself.
+
+    It is given no RBAC to read its own Ingress -- deliberately -- so the origin it reports
+    to clients has to be baked in at setup, exactly like the build registry's prefix.
+    """
+    env = _service_env(ingress_host="robovast.example.org")
+    assert env[PUBLIC_URL_ENV] == "https://robovast.example.org"
+
+
+def test_plain_http_is_declared_as_plain_http():
+    env = _service_env(ingress_host="robovast.example.org", insecure_http=True)
+    assert env[PUBLIC_URL_ENV] == "http://robovast.example.org"
+
+
+def test_an_unpublished_service_declares_an_empty_origin():
+    """Emitted empty, not omitted, and that distinction is the point.
+
+    A var emitted only when set is write-only: a ``setup`` re-run that drops
+    ``--ingress-host`` would leave the pod declaring an origin that no longer resolves,
+    because a merge patch preserves what the new manifest does not mention. Empty is what
+    "not published" already means to the reader, so emitting it makes removal a reset.
+    """
+    assert _service_env()[PUBLIC_URL_ENV] == ""
+
+
+def test_a_caller_supplied_origin_is_not_overwritten():
+    """Same rule as every other env var here: what setup composed upstream wins."""
+    env = _service_env(ingress_host="robovast.example.org",
+                       env=[{"name": PUBLIC_URL_ENV, "value": "https://decided.example.org"}])
+    assert env[PUBLIC_URL_ENV] == "https://decided.example.org"
+
+
+def test_public_url_follows_the_scheme_the_ingress_was_validated_for():
+    assert public_url("h.example.org") == "https://h.example.org"
+    assert public_url("h.example.org", insecure_http=True) == "http://h.example.org"
+    assert public_url("") == ""
+    assert public_url("", insecure_http=True) == ""

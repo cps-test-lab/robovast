@@ -1338,6 +1338,31 @@ def _mount_ui(app) -> None:
     logger.info("serving web UI from %s", dist)
 
 
+#: Where the origin comes from, for a service that was deployed rather than started by
+#: hand: ``vast exec cluster setup`` bakes it from the Ingress, because an in-pod service is
+#: given no RBAC to read its own. Named here as well as in the cluster lane that writes it,
+#: since this is the side that reads it and the core must not import a lane.
+PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
+
+
+def bound_origin(host: str, port: int) -> str:
+    """The origin this bind can be declared as, or ``""`` for a wildcard.
+
+    A wildcard bind has no single origin: the service is reachable on every address the
+    host has, and which one a caller used is not knowable from here. In the deployment
+    where that is normal -- a pod, bound ``0.0.0.0`` and reached through an Ingress -- the
+    environment carries the answer instead, so declaring nothing here is what lets that
+    one through.
+
+    Deliberately stricter than the startup banner's ``display_host``, which guesses
+    loopback for a wildcard. That guess is right for the human reading it on this machine
+    and wrong for a caller elsewhere, and only one of the two travels.
+    """
+    if host in ("0.0.0.0", "::"):  # noqa: S104
+        return ""
+    return f"http://{host}:{port}"
+
+
 def startup_banner(base_url: str, token: str, *, ephemeral: bool,
                    mount_mcp: bool) -> str:
     """What ``vast serve`` prints for the two clients a person is about to point here.
@@ -1458,6 +1483,12 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
                 host, port, mcp_note)
 
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104
+    # The origin this service will report to clients, published the same way a deployed one
+    # receives it -- `setdefault`, so a value baked in at setup always wins and this only
+    # answers for a service nobody told. Deliberately not written onto *impl*: `serve` takes
+    # a `RobovastInterface`, and the origin is not part of that contract.
+    import os  # pylint: disable=import-outside-toplevel
+    os.environ.setdefault(PUBLIC_URL_ENV, bound_origin(host, port))
     banner = startup_banner(f"http://{display_host}:{port}", token,
                             ephemeral=ephemeral, mount_mcp=mount_mcp)
     if banner:
@@ -1473,8 +1504,6 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     #
     # This is the *service default*. A campaign may carry its own project on the request
     # (CreateCampaignRequest.image_project), which is why the line says "default".
-    import os  # pylint: disable=import-outside-toplevel
-
     from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
         DEFAULT_IMAGE_PROJECT, default_image_project, default_image_tag)
     project = default_image_project()

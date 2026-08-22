@@ -3365,6 +3365,11 @@ export interface components {
             sources_address: string;
             /** Sources Root */
             sources_root: string | null;
+            /**
+             * Web Base
+             * @default
+             */
+            web_base: string;
         };
         /**
          * WorkOrder

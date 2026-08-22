@@ -454,6 +454,18 @@ def test_get_campaign_download_without_a_transport_omits_the_url(monkeypatch):
     assert "error" not in res
 
 
+def test_get_campaign_download_uses_the_declared_origin(monkeypatch):
+    """With no transport, the origin comes from what the service declares."""
+    from robovast.service.interface import VersionInfo
+    impl = SimpleNamespace(version=lambda: VersionInfo(
+        robovast_version="test", backend="kubernetes",
+        web_base="https://robovast.example.org"))
+    monkeypatch.setattr(service_access, "service_client", lambda: impl)
+    res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
+    assert res["url"] == ("https://robovast.example.org"
+                          "/campaigns/camp-2026-01-01-000000/archive")
+
+
 def test_get_campaign_download_no_service_errors(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")

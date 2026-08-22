@@ -483,6 +483,17 @@ apart: it reads the prefix out of its environment and has no RBAC to look at its
 
 ``vast doctor -n <namespace>`` says which of the two you are in.
 
+**The same host is also baked in as the service's declared origin**, from the same
+``--ingress-host`` and re-baked by the same ``upgrade``. It is what the service reports as
+``web_base``, so a client that cannot be handed bytes -- a 20k-line log, a truncated query,
+a rosbag -- can be handed a link to fetch them out of band instead. The two are separate
+values on purpose, even though today they are the same host: a registry prefix may point
+somewhere else entirely, and the origin must not silently follow it.
+
+An unpublished service declares no origin, which is the honest answer rather than a
+degraded one: routes and file addresses still work, and it is only the absolute URLs that
+are absent.
+
 Storage defaults to a ``hostPath`` on the node the pod is pinned to, because a stock RKE2
 cluster ships no StorageClass and a PVC there stays ``Pending`` forever. ``emptyDir`` is
 deliberately not offered: every ``upgrade`` restarts the pod, which would discard every

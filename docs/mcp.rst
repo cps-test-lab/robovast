@@ -440,6 +440,30 @@ so its bytes never enter the token stream.
 your own machine — ``results_root`` / ``sources_root``, so you can read files with your
 own tools rather than through the interface.
 
+.. _mcp-origin:
+
+Where a link comes from
+-----------------------
+
+An address or a route is origin-less, and everything that hands one back as a *URL* — the
+binary/oversized ``read_file``, ``csv_url`` on a truncated query, the campaign log,
+``get_campaign_download`` — needs an origin to put in front of it. **The service declares
+that origin**, and reports it as ``web_base``.
+
+It has to be the service's own fact. A transport's base URL is where *it* dials, which is
+the same string only by accident, and the MCP mounted inside the service has no transport
+at all — the client there *is* the implementation. Read off a transport, this raised an
+``AttributeError`` on ``get_campaign_download`` and silently dropped every other link, on
+exactly the deployments that publish the service. Both are fixed by asking the service.
+
+A published deployment is told its origin when it is set up, because an in-pod service is
+given no RBAC to read its own Ingress; a local ``vast serve`` uses the address it bound.
+Where neither names one — unpublished, or bound to a wildcard, where which address a
+caller used is genuinely unknowable — there is **no** origin, the URL field is absent
+rather than empty, and the route or address is still the answer. A caller that dialled the
+service itself keeps using the address that worked, which stays right through a tunnel or
+a port-forward where the service's own view of itself would not be.
+
 
 .. _mcp-control:
 
@@ -486,7 +510,11 @@ one that stops being read.
 Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
-``get_campaign_download``).
+``get_campaign_download``, which hands back the route, the ``vast results download``
+command with the id filled in, and a URL when this deployment declares an origin to build
+one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
+a copy there is not a fact the service records, so claiming one would be advertising what
+the caller may not have.
 
 The opposite direction is ``import_campaign``: it takes in a campaign archive
 somebody else produced and registers it, so it lists, displays and can be re-run like

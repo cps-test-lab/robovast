@@ -150,7 +150,8 @@ def get_service_info() -> dict:
 
         ``results_root``/``sources_root`` appear only when **you** can open them (a
         local-filesystem service on loopback); then read files directly instead of
-        relaying bytes through this interface.
+        relaying bytes through this interface. ``web_base`` prefixes a route into a
+        URL; absent when this deployment has none.
 
         With a cluster lane: ``kube_context``, ``kube_context_source``, ``namespace``,
         ``in_pod``, ``api_server`` — which cluster a campaign would land in.
@@ -190,6 +191,10 @@ def get_service_info() -> dict:
         info["results_root"] = v.results_root
     if v.sources_root:
         info["sources_root"] = v.sources_root
+    # Same rule: absent means this deployment has no origin to declare (unpublished, or
+    # bound to a wildcard), not an origin that happens to be unknown.
+    if v.web_base:
+        info["web_base"] = v.web_base
     # Only when there is a cluster lane: on a local-only service these would all be
     # None, and five null fields read as "unknown" rather than "not applicable".
     if v.backend == "kubernetes":

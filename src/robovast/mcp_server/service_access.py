@@ -114,12 +114,35 @@ def client_or_local():
 
 
 def web_url(client, route: str) -> str:
-    """An absolute URL for *route*, or ``""`` when this caller has no URL to give.
+    """An absolute URL for *route*, or ``""`` when nobody can name an origin for it.
 
     The address space is also the URL space, so pointing at the web API for a large
-    payload costs nothing to build — but only an HTTP transport has a base to build it
-    from. An in-process ``LocalTransport`` has none, and per AGENTS.md §4 a field that
-    cannot be used is **omitted** rather than reported as null or, worse, guessed at.
+    payload costs nothing to build — and per AGENTS.md §4 a field that cannot be used is
+    **omitted** rather than reported as null or, worse, guessed at.
+
+    Two sources, in this order. An HTTP transport's ``base_url`` is *where this caller
+    dialled, and it worked*, which beats any declaration — it stays right for a service
+    reached through a tunnel or a port-forward, where what the service believes about
+    itself would not be. Failing that, the service's own declaration, which is the answer
+    for the case with no transport at all: the MCP mounted inside the service, where the
+    client *is* the implementation.
     """
-    base = getattr(client, "base_url", "")
+    base = getattr(client, "base_url", "") or _declared_base(client)
     return f"{base}{route}" if base else ""
+
+
+def _declared_base(client) -> str:
+    """The origin the service declares for its callers, or ``""``.
+
+    Not cached: an HTTP transport never reaches this (its own base answers first), and
+    ``version()`` is deliberately the cheapest call in the interface — neither lane dials
+    anything to answer it — so in-process this is a local attribute read.
+
+    Never raises. A link is an extra way to reach a payload; failing a tool call over one
+    would trade the answer for the convenience.
+    """
+    try:
+        return getattr(client.version(), "web_base", "") or ""
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the service's declared origin", exc_info=True)
+        return ""

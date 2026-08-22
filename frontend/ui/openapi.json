@@ -3155,6 +3155,11 @@
               }
             ],
             "title": "Sources Root"
+          },
+          "web_base": {
+            "default": "",
+            "title": "Web Base",
+            "type": "string"
           }
         },
         "required": [
@@ -3172,7 +3177,8 @@
           "results_root",
           "robovast_version",
           "sources_address",
-          "sources_root"
+          "sources_root",
+          "web_base"
         ],
         "title": "VersionInfo",
         "type": "object"
