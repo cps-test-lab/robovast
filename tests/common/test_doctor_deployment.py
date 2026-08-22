@@ -158,14 +158,21 @@ def _handshake(version=None, raises=None):
 
 
 def _client_checks(version=None, raises=None):
-    """`check_client`'s build line, with the handshake stubbed."""
-    return doc._check_build_capability(_handshake(version, raises))  # noqa: SLF001
+    """`check_client`'s build line, with the handshake stubbed.
+
+    Splatted, because the handshake answers ``(info, error)``: the error is returned rather
+    than swallowed so that a service which ANSWERED and refused can be told apart from one
+    nothing replied to. Passing the pair as ``info`` alone is not a type error -- a tuple has
+    no ``code_revision``, so every case reads as "the service did not report one" and the
+    branch under test is never reached.
+    """
+    return doc._check_build_capability(*_handshake(version, raises))  # noqa: SLF001
 
 
 def _revision_checks(version=None, raises=None, here="abc1234"):
     """`check_client`'s revision line, with the handshake and this side's revision stubbed."""
     with patch("robovast.client.app_version.running_revision", return_value=here):
-        return doc._check_service_revision(_handshake(version, raises))  # noqa: SLF001
+        return doc._check_service_revision(*_handshake(version, raises))  # noqa: SLF001
 
 
 def test_a_service_that_gave_no_verdict_produces_no_line():
@@ -263,7 +270,90 @@ def test_neither_side_having_one_says_nothing():
     assert _revision_checks(_version(code_revision=""), here="") == []
 
 
-def test_an_unreadable_handshake_says_nothing_about_the_revision():
-    """Same rule as the build line: an unreachable or unauthorised service is the `service`
-    check's business, not two more red lines."""
-    assert _revision_checks(raises=RuntimeError("401 Unauthorized")) == []
+def test_an_unreachable_service_says_nothing_about_the_revision():
+    """Silent only when nothing replied: that fault belongs to the `service` row alone.
+
+    A bare exception with no HTTP status is a request that never got an answer -- DNS, TCP,
+    TLS, a timeout, a pod mid-roll. The `service` row is red and names it, and a second red
+    line for the same fault sends a reader chasing it twice.
+    """
+    assert _revision_checks(raises=RuntimeError("connection refused")) == []
+
+
+def test_a_refused_handshake_says_which_credential_fixes_it():
+    """Answered-and-refused is a DIFFERENT fault, and it used to vanish.
+
+    A service whose token does not match this deployment answers 401. That is not "no
+    revision question exists", it is "your credentials cannot ask it" -- and while this row
+    stayed silent for it, the reader saw nothing to report at all.
+    """
+    checks = _revision_checks(raises=_Refused(401, "token does not match"))
+
+    assert len(checks) == 1
+    assert checks[0].ok is False and checks[0].optional
+    assert "401" in checks[0].detail
+    assert "vast login" in checks[0].fix
+
+
+def test_a_refused_handshake_also_speaks_on_the_build_line():
+    """Same rule, same reason, on the row that answers "can this service build?"."""
+    checks = _client_checks(raises=_Refused(403, "forbidden"))
+
+    assert len(checks) == 1
+    assert checks[0].ok is False
+
+
+def _service_row(target, err, monkeypatch):
+    """``check_client``'s `service` row, with the handshake and the PATH probe stubbed."""
+    from robovast.client import login as login_config
+    from robovast.client import service_target
+
+    monkeypatch.setattr(login_config, "credentials",
+                        lambda: (target, "tok", "me") if target else ("", "", ""))
+    monkeypatch.setattr(service_target, "detected_service_url", lambda: target)
+    monkeypatch.setattr(doc, "_service_version", lambda t: (None, err))
+    monkeypatch.setattr(doc, "_check_service_revision", lambda *a: [])
+    monkeypatch.setattr(doc, "_check_build_capability", lambda *a: [])
+    monkeypatch.setattr(doc.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=1, stdout=""))
+    return next(c for c in doc.check_client() if c.name == "service")
+
+
+def test_the_service_row_is_green_only_when_the_service_answered(monkeypatch):
+    """A stored login is configuration, not reachability.
+
+    This row was green whenever a URL was configured, while the revision and build rows
+    silently vanished because the handshake could not be read. Observed against a cluster
+    mid-roll: a green service line, two missing lines, and every call timing out. The row's
+    own failure wording is "none answering", so it already promised what it did not check.
+    """
+    row = _service_row("https://svc.example", None, monkeypatch)
+    assert row.ok is True
+
+
+def test_a_configured_but_silent_service_is_red_and_says_where_to_look(monkeypatch):
+    row = _service_row("https://svc.example", RuntimeError("timed out"), monkeypatch)
+
+    assert row.ok is False
+    assert "not answering" in row.detail
+    assert "mid-roll" in row.fix or "upgrade" in row.fix
+
+
+def test_a_service_that_answered_and_refused_is_not_the_service_rows_fault(monkeypatch):
+    """401 means it was reached, parsed the request and refused it.
+
+    Only a request that never got an answer belongs on this row; the refusal is reported by
+    the rows that own it, which name the credential that fixes it. Reading a 401 as "not
+    answering" would send someone restarting a service that is up and working.
+    """
+    row = _service_row("https://svc.example", _Refused(401, "bad token"), monkeypatch)
+    assert row.ok is True
+
+
+class _Refused(Exception):
+    """A service that answered and refused. ``status`` is what makes "it answered" decidable."""
+
+    def __init__(self, status, detail=""):
+        super().__init__(detail or f"HTTP {status}")
+        self.status = status
+        self.detail = detail
