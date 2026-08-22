@@ -278,7 +278,7 @@ class BaseShareProvider(ABC):
         Implementations should return bare object names (keys), not full URLs.
         """
         raise NotImplementedError(
-            f"Provider '{self.SHARE_TYPE}' does not support 'results list-share'."
+            f"Provider '{self.SHARE_TYPE}' does not support 'vast share list'."
         )
 
     # None is the documented default
@@ -320,11 +320,11 @@ class BaseShareProvider(ABC):
         """
         _ = object_name, dest_path, progress_callback, resume_offset
         raise NotImplementedError(
-            f"Provider '{self.SHARE_TYPE}' does not support 'results download'."
+            f"Provider '{self.SHARE_TYPE}' does not support 'vast share download'."
         )
 
     # ------------------------------------------------------------------
-    # Optional remove interface (used by ``results remove-from-share``)
+    # Optional remove interface (used by ``vast share remove``)
     # ------------------------------------------------------------------
 
     def remove_archive(self, object_name: str) -> None:
@@ -339,18 +339,18 @@ class BaseShareProvider(ABC):
         """
         _ = object_name
         raise NotImplementedError(
-            f"Provider '{self.SHARE_TYPE}' does not support 'results remove-from-share'."
+            f"Provider '{self.SHARE_TYPE}' does not support 'vast share remove'."
         )
 
     # ------------------------------------------------------------------
-    # Optional existence check (used by ``cluster upload-to-share``)
+    # Optional existence check (used before an upload)
     # ------------------------------------------------------------------
 
     def archive_exists_on_share(self, object_name: str) -> bool:
         """Return ``True`` if *object_name* already exists on the share.
 
-        Used by ``cluster upload-to-share`` to skip uploads when the archive
-        is already present (unless ``--force`` is given).  Only meaningful for
+        Used to skip an upload when the archive is already present (unless
+        ``--force`` is given).  Only meaningful for
         providers that support remote listing or HTTP HEAD checks.
 
         The default implementation always returns ``False`` (no skip), so

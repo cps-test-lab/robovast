@@ -59,7 +59,7 @@ _LAZY = {
     "FileCache": ".file_cache",
     "ProgressBar": ".progress",
     "fmt_size": ".progress",
-    "make_download_progress_callback": ".progress",
+    "make_transfer_progress_callback": ".progress",
 }
 
 __all__ = sorted(_LAZY)
@@ -94,4 +94,4 @@ if TYPE_CHECKING:  # the real imports, for type checkers and IDEs only
                             get_execution_env_variables, image_compat_version, is_campaign_dir,
                             prepare_campaign_configs, scenario_env)
     from .file_cache import FileCache
-    from .progress import ProgressBar, fmt_size, make_download_progress_callback
+    from .progress import ProgressBar, fmt_size, make_transfer_progress_callback

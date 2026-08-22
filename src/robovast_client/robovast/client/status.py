@@ -56,7 +56,8 @@ class Phase(StrEnum):
     # -- live: the campaign is still working ------------------------------
     # Ordered by when they occur: acceptance → lane pre-flight → image build (if any)
     # → plugin install (if any) → config-variation expansion (batch) → the run loop
-    # → finish → postprocess → share. ``initializing``, ``building``, ``plugin
+    # → finish → postprocess → share. (``importing`` is the exception: it is where a
+    # campaign that was taken in rather than run *starts*.) ``initializing``, ``building``, ``plugin
     # install`` and ``variation`` precede ``running`` and exist so the pre-run steps
     # are observable rather than a blank "starting".
     #
@@ -75,6 +76,13 @@ class Phase(StrEnum):
     VARIATION = "variation"
     RUNNING = "running"
     FINISHING = "finishing"
+    # ``importing`` is the one live phase a campaign can have without ever having run
+    # here: a campaign taken in from an archive or from the share enters at this phase
+    # and, when what arrived was raw, rolls straight on into ``postprocessing``. It is
+    # in the enum rather than off to one side so that everything that already knows
+    # "live" -- ``vast wait``, the busy guard, the campaign view -- treats an import
+    # like any other work in progress without being told about imports.
+    IMPORTING = "importing"
     POSTPROCESSING = "postprocessing"
     SHARING = "sharing"
     # -- terminal: the campaign is over, one way or another ---------------
@@ -192,11 +200,14 @@ class Status(BaseModel):
 
     ``phase`` is an **open** string the controller advances through a documented
     vocabulary (``initializing`` → ``building`` → ``starting`` → ``variation`` →
-    ``running`` → ``finishing`` → ``postprocessing`` → ``sharing`` → ``finished`` /
-    ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
-    ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
-    names the share type of the current upload attempt; it can change across
-    retriggers (a failed upload may be retried to a different provider).
+    ``running`` → ``finishing`` → ``importing`` → ``postprocessing`` → ``sharing`` →
+    ``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
+    ``"upload-to-share-done"``) slot in without a schema change.
+
+    What is on the share is deliberately *not* here. It was, as ``share_provider``,
+    and nothing ever wrote it -- which is the shape of the mistake: the share is
+    another system's state, so a copy of it on a campaign goes stale the first time
+    somebody deletes an archive out of band. ``list_share_archives`` asks the share.
     """
     # validate_assignment so the controller can assign plain dicts to the typed
     # sub-fields (``runs``, ``budget``) and they coerce to the models.
@@ -241,9 +252,6 @@ class Status(BaseModel):
     # ``phase == "failed"``. Surfaced in the CLI/UI/MCP so a controller crash no
     # longer has to be dug out of the pod log; ``None`` on a healthy campaign.
     error: Optional[str] = None
-    # Share type of the current upload attempt; may change across retriggers
-    # (the upload can be retried to a different provider).
-    share_provider: Optional[str] = None
     # True once the campaign's configured analysis-postprocessing pipelines have run
     # to completion. A dedicated fact, not derivable from ``phase``: the run reaches
     # "finished" *before* postprocessing is chained (see controller._chain_postprocessing),

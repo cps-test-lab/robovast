@@ -970,6 +970,110 @@ class UploadGrant(BaseModel):
     url: Optional[str] = None    # absolute when issued by an HTTP service
 
 
+class StagedArchive(BaseModel):
+    """Where an uploaded campaign archive landed on the service host.
+
+    The PUT that streams the bytes deliberately stops here rather than importing: import is
+    one op with one report, and making the byte channel a second entrance to it would give
+    the same operation two implementations to keep in step.
+    """
+
+    path: str
+    size: int = 0
+
+
+class ImportCampaignRequest(BaseModel):
+    """Which campaign archive to take in, and from where. Exactly one source.
+
+    Two sources rather than one because the interesting one is the share: having the
+    *service* fetch from it is what keeps a multi-gigabyte campaign off the path through
+    somebody's laptop, and out of reach of a user whose share credentials are read-only or
+    absent. ``archive_path`` is the other end of the same op — a file already on the service
+    host, including one just uploaded through
+    :meth:`~robovast.service.interface.RobovastInterface.create_archive_upload`.
+    """
+
+    #: A path on the **service host**: a staged upload, or a file put there by other means.
+    archive_path: str = ""
+    #: A campaign id or archive name on the configured share; the service downloads it.
+    share_archive: str = ""
+    #: Replace a campaign of the same id that is already here. Destructive by construction:
+    #: the campaign it replaces is deleted, so it is off by default and asked for per call.
+    force: bool = False
+    #: Reconstruct ``campaign.db`` from the results tree — the recovery a corrupt store's
+    #: stage names.
+    rebuild_store: bool = False
+
+
+class IngestStage(BaseModel):
+    """One stage of an import, and what to do about it if it is not ``ok``.
+
+    ``verdict`` is one of ``ok``/``migrated``/``absent``/``degraded``/``newer``/``failed``
+    (:mod:`robovast.service.ingest`); only ``failed`` blocks. The remaining fields are
+    per-stage and absent where they do not apply, which is why every one is optional.
+    """
+
+    verdict: str = ""
+    detail: str = ""
+    #: Config-version stages: the version found, and the migration steps applied to read it.
+    version: Optional[int] = None
+    steps: list[str] = Field(default_factory=list)
+    #: Store stages: the schema version, how many runs it indexes, and whether the store was
+    #: reconstructed from the results tree rather than recorded live by a controller.
+    schema_version: Optional[int] = None
+    runs: Optional[int] = None
+    rebuilt: Optional[bool] = None
+    #: What the caller can do about this stage, when there is something.
+    recovery: str = ""
+
+
+class IngestReport(BaseModel):
+    """What happened to an imported campaign, per stage.
+
+    ``ok`` is False only when a stage genuinely blocks. A *degraded* import is reported as
+    usable-but-incomplete rather than discarded, because throwing away a campaign somebody
+    already has in order to keep a boolean clean is the wrong trade.
+    """
+
+    campaign_id: str = ""
+    ok: bool = False
+    #: Names of the stages that block, so a caller can say *which* part failed.
+    blocking: list[str] = Field(default_factory=list)
+    stages: dict[str, IngestStage] = Field(default_factory=dict)
+    #: Where the campaign was extracted, on the service host.
+    path: str = ""
+
+
+class ShareArchive(BaseModel):
+    """One campaign archive on the configured share."""
+
+    campaign_id: str = ""
+    #: ``raw`` (before postprocessing -- what a campaign-end upload leaves) or
+    #: ``postprocessed``. Read from the object's name; an archive written before the name
+    #: carried it is raw, which is what it is.
+    variant: str = ""
+    #: The object's own name on the share, which is what an import names.
+    object_name: str = ""
+    #: ``-1`` where the provider cannot say.
+    size: int = -1
+    #: A link a person can open, where the provider has one. Absent for sftp, and for a
+    #: webdav share whose URL needs credentials.
+    url: Optional[str] = None
+
+
+class ShareListing(BaseModel):
+    """What the share holds, and which provider answered.
+
+    ``configured`` is False when this service has no share at all — a real answer, and a
+    different one from an empty share. A client that conflated them would offer to import
+    from nowhere, or claim a configured share was empty when it simply could not be read.
+    """
+
+    configured: bool = False
+    share_type: str = ""
+    archives: list[ShareArchive] = Field(default_factory=list)
+
+
 # -- validation / preview / authoring help (config editor) ------------------
 
 
@@ -1481,6 +1585,22 @@ class Routes:
     #: token URL. Not workspace-scoped — the request carries a ``/sources`` address.
     UPLOADS = "/uploads"
     UPLOAD = "/uploads/{token}"
+    #: Taking a campaign in. ``CAMPAIGN_ARCHIVES`` is the archive side channel (POST for a
+    #: grant, PUT the bytes to the token URL, exactly as ``UPLOADS`` above); it stores the
+    #: archive and stops there. ``CAMPAIGN_IMPORT`` is the import itself, and is what every
+    #: caller uses — an upload, a CLI, the MCP tool — so the operation has one entrance.
+    #:
+    #: Two distinct words rather than a singular/plural pair: ``/campaigns/import`` beside
+    #: ``/campaigns/imports`` is a difference no reader spots. Neither can shadow a campaign
+    #: id, since those must match ``<name>-<timestamp>`` (``is_campaign_dir``).
+    CAMPAIGN_ARCHIVES = "/campaigns/archives"
+    CAMPAIGN_ARCHIVE_UPLOAD = "/campaigns/archives/{token}"
+    CAMPAIGN_IMPORT = "/campaigns/import"
+    #: What is on the configured share, read by the service with the service's own
+    #: credentials. Its own namespace rather than under ``/campaigns``: the share is a
+    #: separate system, and what it holds is not a subset of what this service has --
+    #: a campaign can be cleaned up here while its archive stays up there.
+    SHARE_ARCHIVES = "/share/archives"
     #: Authoring help — static, no workspace (config editor).
     CONFIG_SCHEMA = "/config/schema"
     VARIATION_TYPES = "/variation_types"
@@ -1534,6 +1654,10 @@ class Routes:
     @staticmethod
     def upload(token: str) -> str:
         return f"/uploads/{token}"
+
+    @staticmethod
+    def campaign_archive_upload(token: str) -> str:
+        return f"/campaigns/archives/{token}"
 
     @staticmethod
     def campaign(campaign_id: str) -> str:
@@ -2102,6 +2226,96 @@ class RobovastInterface(ABC):
         Refuses a campaign that is still running (raises so it surfaces as a 409);
         stop it first. A campaign that is already gone deletes idempotently. The
         external share copy (if any) is never touched — it is a separate system.
+        """
+
+    @abstractmethod
+    def campaign_tar_stream(self, campaign_id: str):
+        """Yield the campaign as a ``tar.gz``, in chunks, for ``GET /campaigns/{id}/archive``.
+
+        What comes out is the campaign as this service holds it -- postprocessed, if it
+        has been -- minus the internal ``_postproc/`` staging, so what lands is the clean
+        campaign layout. Streamed on both lanes and buffered by neither: the cluster tars
+        objects as it fetches them, the local lane tars its own directory into the
+        response.
+
+        On the interface rather than only on the lane that first needed it: this was a
+        cluster-only method the HTTP route probed for with ``hasattr``, so a local service
+        answered 409 and the web UI hid its download button there. Which lane a service
+        runs is not what decides whether a caller can be handed a file.
+        """
+
+    @abstractmethod
+    def list_share_archives(self) -> ShareListing:
+        """What the configured share holds, read with **this service's** credentials.
+
+        For the callers that cannot hold share credentials of their own: a browser has
+        none at all, which is why the web UI's campaign rows and its Share view both come
+        from here. The ``vast share`` verbs you perform yourself use *your* credentials
+        instead, which is what lets a read-only one work — the provider layer underneath is
+        the same one implementation either way.
+
+        Nothing caches this. A "does this campaign have a share copy" field on a campaign
+        was tried and is deliberately absent: it would be a second copy of another system's
+        state, and the first out-of-band delete makes it a lie.
+
+        Reports ``configured=False`` rather than an empty list when there is no share, since
+        "nothing there" and "nowhere to look" are different answers.
+        """
+
+    # -- taking a campaign in (the opposite direction to the archive download) --
+
+    @abstractmethod
+    def create_archive_upload(self) -> UploadGrant:
+        """Grant a one-time, TTL-scoped PUT for a campaign archive.
+
+        The campaign-archive counterpart of :meth:`create_upload`, and separate from it
+        because that one addresses ``/sources`` — it needs workspaces configured, and an
+        archive is not project input. The PUT stores the bytes and answers where they
+        landed; :meth:`import_campaign` is what then imports them.
+        """
+
+    @abstractmethod
+    def import_campaign(self, request: ImportCampaignRequest) -> CampaignRef:
+        """Take a campaign in, as a tracked background operation.
+
+        The one import op, whatever the source: an upload redeemed through
+        :meth:`create_archive_upload`, a file already on the service host, or an archive on
+        the configured share, which the *service* fetches so a campaign never has to travel
+        through somebody's laptop to get between two servers. After it the campaign is
+        indistinguishable from one that ran here — which takes registration, not just
+        extraction, since listings and the web UI answer from ``campaign.db`` rather than
+        from the results tree. When what arrived was **raw** (no ``_execution/data.db``, which
+        is what the share holds) postprocessing is chained, because a campaign without its
+        metric tables is not one anybody can ask anything.
+
+        Returns a :class:`CampaignRef`, not a report: the work is a download, a
+        multi-gigabyte extraction and then postprocessing, and an inline wait would turn a
+        succeeding import into a client timeout. A ref for the same reason
+        :meth:`create_campaign` and :meth:`retrigger_campaign` return one — all three mean
+        "a campaign now exists, here is its id, go watch it", and an id a caller has to read
+        out of a prose message is an id that breaks the first time the message is reworded.
+        Per-stage detail lands in the campaign's ``_execution/import.json`` and its
+        narrative in ``_execution/import.log``.
+
+        The campaign is registered at phase ``importing`` before any bytes move — its id is
+        read from the archive's member list, or from the share object's name — so it appears
+        in the campaign view while it is still arriving, and ``vast wait`` follows it like
+        any other work.
+
+        A failed import leaves nothing behind: the half-extracted directory is removed,
+        because a tree that merely *looks* like a campaign would be listed by every client
+        from then on. The archive is untouched, so a retry costs only the transfer.
+
+        Reads an arbitrary path on the service host by design: that is what lets a caller
+        import a dataset it put there by other means, and it is the same privilege
+        ``get_service_info``'s roots and :meth:`exec_in_container` already assume of an
+        authenticated caller. An archive the *service* staged is deleted once imported; a
+        path the caller named is left alone.
+
+        Raises ``ValueError`` for an archive that is not one campaign or a request that does
+        not name exactly one source, ``KeyError`` when the named archive is not there, and
+        ``RuntimeError`` when a campaign of the same id is already here and ``force`` was not
+        set, or when that campaign is busy with another operation.
         """
 
     # -- image builds (experiment image, from the project's build: section) --

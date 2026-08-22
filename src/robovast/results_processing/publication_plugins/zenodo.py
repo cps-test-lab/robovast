@@ -58,7 +58,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
-from robovast.common.progress import make_download_progress_callback
+from robovast.common.progress import make_transfer_progress_callback
 from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
 
 _ZENODO_BASE = "https://zenodo.org/api"
@@ -163,7 +163,7 @@ def _upload_file(base: str, record_id: int, filename: str, file_path: Path, toke
     # 2. Upload content
     file_size = file_path.stat().st_size
     start = time.monotonic()
-    progress_cb = make_download_progress_callback(filename, start)
+    progress_cb = make_transfer_progress_callback(filename, start)
 
     pf = _ProgressFile(file_path, progress_cb, file_size)
     try:

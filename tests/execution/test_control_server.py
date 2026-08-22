@@ -13,6 +13,7 @@ what remains is the state contract every surface still depends on.
 """
 
 
+from robovast.client.status import Phase
 from robovast.execution.control_server import ControllerState, Status
 
 
@@ -62,15 +63,14 @@ def test_request_stop_sets_event():
     assert state.stop_requested is True
 
 
-def test_status_reports_share_provider():
-    # share_provider tracks the current upload attempt; upload-to-share is a
-    # stateless service call now, but the phase/provider it reports is unchanged.
+def test_status_reports_the_share_phase():
+    # There is deliberately no share_provider field: what is on the share is the
+    # share's state, and a copy of it here went stale (and, in fact, was never
+    # written at all). The phase is what a campaign knows about its own upload.
     state = ControllerState()
-    state.update(share_provider="sftp")
-    state.set_phase("uploading", stage="upload-to-share")
+    state.set_phase(Phase.SHARING, stage="upload-to-share")
     snap = state.snapshot()
-    assert snap.share_provider == "sftp"
-    assert snap.phase == "uploading" and snap.stage == "upload-to-share"
+    assert snap.phase == "sharing" and snap.stage == "upload-to-share"
 
 
 def test_error_is_part_of_the_status_contract():

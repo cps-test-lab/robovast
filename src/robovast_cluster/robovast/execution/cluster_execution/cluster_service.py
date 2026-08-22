@@ -2973,6 +2973,7 @@ class ClusterService(LocalTransport):
         from robovast.client.status import failure_detail
         from robovast.execution.backends import RunOptions
         from robovast.execution.control_server import ControllerState
+        from robovast.execution.controller import make_upload_progress_cb
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
@@ -2994,7 +2995,8 @@ class ClusterService(LocalTransport):
             try:
                 logger.info("upload-to-share: %s", request.campaign_id)
                 backend.preflight_upload_to_share()
-                backend.share_campaign(str(campaign_root), options)
+                backend.share_campaign(str(campaign_root), options,
+                                       progress_callback=make_upload_progress_cb(state))
                 ok, message = True, "upload-to-share complete"
                 logger.info("✓ %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
@@ -3092,6 +3094,15 @@ class ClusterService(LocalTransport):
         internal staging is excluded so the archive is the clean campaign layout.
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+
+        # Eagerly, before a generator is handed to the response: once streaming has begun
+        # the status line is already 200, so a campaign that does not exist arrives as a
+        # truncated body -- "Response ended prematurely" on the client, which names neither
+        # the campaign nor the problem. The predicate is the one `list_campaigns` answers
+        # with, so the archive route and the listing cannot disagree about what is here.
+        if not self._campaign_is_here(campaign_id):
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+
         cfg = self._cluster_config()
         return campaign_archive.iter_tar(
             lambda tar: cfg.add_campaign_members(

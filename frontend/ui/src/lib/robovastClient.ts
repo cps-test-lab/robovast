@@ -157,6 +157,11 @@ export interface FileText {
 
 export type UploadGrant = Schemas['UploadGrant']
 
+// Where an uploaded campaign archive landed on the service host, for `importCampaign` to
+// import. The service host's path, not ours — this client never sees that filesystem.
+export type StagedArchive = Schemas['StagedArchive']
+
+
 // -- config-editor models (mirror interface.py) ----------------------------
 
 export type ValidationProblem = Schemas['ValidationProblem']
@@ -293,6 +298,23 @@ const listFilesAt = (address: string) =>
 const readFileAt = (address: string) =>
   request<FileText>('GET', `${address}?as=text&lines=0`)
 
+export type ShareArchive = {
+  campaign_id: string
+  /** `raw` (before postprocessing) or `postprocessed`. Read from the object's name. */
+  variant: string
+  object_name: string
+  /** -1 where the provider cannot say. */
+  size: number
+  /** A link a person can open, where the provider has one (never for sftp). */
+  url: string | null
+}
+
+export type ShareListing = {
+  configured: boolean
+  share_type: string
+  archives: ShareArchive[]
+}
+
 // -- the interface (Phase-0 subset the M1 UI needs) -------------------------
 
 export const robovast = {
@@ -300,10 +322,21 @@ export const robovast = {
 
   resourceUsage: () => request<ResourceUsage>('GET', '/usage'),
 
-  // Direct URL of a campaign's postprocessed tar.gz (a GET the browser downloads).
-  // Cluster services stream it from the object store; a local service returns 409.
+  // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
+  // it: a cluster service streams it from the object store, a local one tars its own
+  // results directory. (A local service used to reply 409 here, which is why the button
+  // was once hidden outside the cluster.)
   archiveUrl: (campaignId: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
+
+  // What the configured share holds, read by the service with its own credentials --
+  // a browser has none. `configured: false` means this service has no share at all,
+  // which is deliberately not the same answer as an empty list.
+  //
+  // Nothing here is cached onto a campaign: the share is another system's state, and a
+  // copy of it would be wrong the moment somebody deleted an archive out of band. One
+  // request per page load, shared by every card through its react-query key.
+  listShareArchives: () => request<ShareListing>('GET', '/share/archives'),
 
   listWorkspaces: () => request<ListWorkspacesResponse>('GET', '/workspaces'),
 
@@ -428,6 +461,56 @@ export const robovast = {
     if (!res.ok) throw new RobovastError(res.status, `upload failed: ${res.statusText}`)
     return (await res.json()) as FileMeta
   },
+
+  // -- taking a campaign in -------------------------------------------------
+  // Two steps, mirroring uploadFile above: a grant, then the bytes. The PUT deliberately
+  // stops at storing them — `importCampaign` is the import, for this and every other client,
+  // so the operation has one implementation rather than one per entry point.
+
+  stageCampaignArchive: async (file: File) => {
+    const grant = await request<UploadGrant>('POST', '/campaigns/archives')
+    const res = await fetch(`${BASE}${grant.url ?? `/campaigns/archives/${grant.token}`}`, {
+      method: 'PUT',
+      body: file,
+    })
+    if (!res.ok) {
+      let detail = res.statusText
+      try {
+        const j = (await res.json()) as { detail?: string }
+        if (j?.detail) detail = j.detail
+      } catch {
+        /* non-JSON body */
+      }
+      throw new RobovastError(res.status, detail)
+    }
+    return (await res.json()) as StagedArchive
+  },
+
+  // Starts a *tracked* import and returns the ref of the campaign it created, as soon as the
+  // work is under way: that campaign appears in the list at phase `importing` while its bytes
+  // are still being unpacked, and rolls on into `postprocessing` when what arrived was a raw
+  // archive (which `note` says up front). So there is nothing to poll here for progress — the
+  // campaign row *is* the progress, exactly as it is for a campaign that is running.
+  //
+  // `force` replaces a campaign of the same id that is already there, and is what the 409 this
+  // otherwise raises asks the user to confirm. `rebuildStore` is the recovery a corrupt store's
+  // stage report names.
+  importCampaign: (archivePath: string, opts?: { force?: boolean; rebuildStore?: boolean }) =>
+    request<CampaignRef>('POST', '/campaigns/import', {
+      archive_path: archivePath,
+      force: opts?.force ?? false,
+      rebuild_store: opts?.rebuildStore ?? false,
+    }),
+
+  // The same import, sourced from the share instead of an upload. The *service* downloads
+  // it, which is the whole point: a campaign moving between two servers never comes through
+  // this browser, and nobody here needs share credentials.
+  importFromShare: (campaignId: string, opts?: { force?: boolean }) =>
+    request<CampaignRef>('POST', '/campaigns/import', {
+      share_archive: campaignId,
+      force: opts?.force ?? false,
+      rebuild_store: false,
+    }),
 
   // -- config editor --------------------------------------------------------
 

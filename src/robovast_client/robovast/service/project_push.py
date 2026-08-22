@@ -24,23 +24,36 @@ PUT side channel, preserving executables), then calls ``create_campaign``.
 Reused by the CLI; the LocalTransport/HTTP client itself stays transport-agnostic.
 """
 
+import contextlib
 import logging
 import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
+from robovast.client.workspaces import is_campaign_results_dir
 from robovast.client.workspaces import is_skipped as _should_skip
 
 logger = logging.getLogger(__name__)
+
+#: Absolute root the content-based results check resolves against, set for the duration
+#: of one push. Module-level because ``_is_generated`` is called through a predicate
+#: signature that takes only a relative path, and threading a root through every caller
+#: would change three public functions to fix one of them.
+_content_root: Path | None = None
 
 _INLINE_EXTS = (".vast", ".osc")
 
 # Generated/cache artefacts that must not be pushed as project inputs. ``results`` is
 # here for the same reason ``vast workspace init`` excludes it: it is a campaign's
 # *output*, and pushing it uploads every past campaign on disk as project input on every
-# launch. Only the default name is known — a project whose ``.vast_project`` names a
-# different results dir still uploads it, and there is no way to learn that name from the
-# ``.vast`` alone.
+# launch.
+#
+# THE NAME IS NO LONGER THE ONLY DEFENCE, and it never could be: a project whose
+# ``.vast_project`` names a different results dir, or one holding a campaign downloaded
+# under its own id, is not on this list and cannot be -- the name is not knowable from
+# the ``.vast``. ``_is_generated`` therefore also asks whether a directory *contains* a
+# campaign's markers (``is_campaign_results_dir``), which is knowable from the directory
+# itself and stays true when a naming convention changes.
 _SKIP_DIRS = {".cache", ".preprocessed", "resolved", "_execution", "_transient",
               "_config", "_control", "_jobs", "__pycache__", ".git", "results"}
 
@@ -55,7 +68,22 @@ def _is_generated(rel: Path) -> bool:
     delete them; pruning the service's own cache forces a full regeneration on every
     relaunch, and does it while a campaign may still be reading it.
     """
-    return any(p in _SKIP_DIRS or p.startswith(".") for p in rel.parts)
+    if any(p in _SKIP_DIRS or p.startswith(".") for p in rel.parts):
+        return True
+    # And the same question by content, for a results tree this list cannot name. Asked
+    # of each ANCESTOR directory rather than of the file: the markers sit at the results
+    # root, so `<campaign-id>/goal-1/0/poses.csv` is only recognisable from
+    # `<campaign-id>/`. Relative to the caller's root via `_content_root`, which is set
+    # for the duration of one push -- the predicate needs an absolute path to stat.
+    root = _content_root
+    if root is None:
+        return False
+    parent = rel.parent
+    while parent != Path("."):
+        if is_campaign_results_dir(root / parent):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _is_project_input(rel: Path, main_vast: str) -> bool:
@@ -105,6 +133,29 @@ def push_file(client, address: str, path: Path) -> str:
         raise RuntimeError(
             f"cannot upload {address!r}: this client has no upload channel")
     return "uploaded"
+
+
+def push_campaign_archive(client, path: Path) -> str:
+    """Stream a campaign archive to the service and return where it landed there.
+
+    The archive counterpart of :func:`push_file`, and the same "one place knows about both
+    transports" job: an HTTP service issues an absolute PUT URL, while an in-process
+    transport already shares this filesystem and so needs no transfer at all -- its own
+    path *is* the staged path.
+
+    Returns a path on the service host, for :meth:`import_campaign` to import. Streamed
+    from disk rather than read into memory: a campaign archive is routinely gigabytes, and
+    this runs on a laptop.
+    """
+    grant = client.create_archive_upload()
+    if grant.url:
+        with open(path, "rb") as fh:
+            # The client's own session, for the reason push_file gives: the route is behind
+            # the same authentication as everything else. `data=` a file object streams it.
+            resp = client.session.put(grant.url, data=fh, timeout=None)
+        resp.raise_for_status()
+        return resp.json()["path"]
+    return str(path)
 
 
 def _resolve_workspace_id(client, ref: str) -> str:
@@ -174,17 +225,103 @@ def pull_workspace_to_directory(client, workspace_id: str, directory, *,
     return counts
 
 
+def _dir_size(path: Path) -> int:
+    """Total bytes under *path*, best-effort. Only for the skip report."""
+    total = 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:      # a vanishing temp file must not break a report
+            continue
+    return total
+
+
+def _human(size: int) -> str:
+    """*size* as a short human-readable string."""
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TiB"
+
+
+def collect_inputs(root: Path, *, skip_dirs=frozenset(),
+                   include_results: bool = False) -> tuple[list[Path], list[tuple]]:
+    """The files to push under *root*, and the directories deliberately not pushed.
+
+    Walks **top-down and prunes**, rather than listing everything and filtering after.
+    That is not only faster: ``rglob("*")`` descends into a skipped tree before deciding
+    to drop it, so a project sitting beside a multi-gigabyte results directory paid for
+    stat-ing every file in it in order to ignore them all.
+
+    Returns ``(files, skipped)``, where each *skipped* entry is
+    ``(rel_posix, reason, bytes)`` -- carried out rather than logged here so the caller
+    can report it in its own voice, and so a caller that wants the bytes anyway
+    (*include_results*) can say so.
+    """
+    files: list[Path] = []
+    skipped: list[tuple] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        keep = []
+        for name in sorted(dirnames):
+            # Hidden dirs are dropped in silence: they are caches and VCS metadata, they
+            # were never project input, and reporting them would bury the report that
+            # matters under `.git`, `.cache`, `.venv` on every push.
+            if name.startswith("."):
+                continue
+            rel = (here / name).relative_to(root)
+            if name in skip_dirs:
+                skipped.append((rel.as_posix(), "excluded by name", _dir_size(here / name)))
+                continue
+            if not include_results and is_campaign_results_dir(here / name):
+                skipped.append((rel.as_posix(), "campaign results",
+                                _dir_size(here / name)))
+                continue
+            keep.append(name)
+        dirnames[:] = keep          # in place: this is what prunes the walk
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            files.append((here / name).relative_to(root))
+    return sorted(files), skipped
+
+
+def report_skipped(skipped: list[tuple], echo) -> None:
+    """Say what was not uploaded, and how to upload it anyway.
+
+    **Reported rather than assumed**, because the alternative is a filter that quietly
+    decides what an author meant. A skipped directory is usually right and occasionally
+    wrong -- a project really can keep a hand-authored file inside a directory that looks
+    like campaign output -- and the only way to tell is to say so and name the flag that
+    reverses it.
+    """
+    total = sum(size for _, _, size in skipped)
+    echo(f"  skipped {len(skipped)} director{'y' if len(skipped) == 1 else 'ies'} "
+         f"({_human(total)} not uploaded):")
+    width = max(len(rel) for rel, _, _ in skipped)
+    for rel, reason, size in sorted(skipped, key=lambda e: -e[2]):
+        echo(f"    {rel:<{width}}  {reason:<17} {_human(size):>9}")
+    if any(reason == "campaign results" for _, reason, _ in skipped):
+        echo("  campaign results are a campaign's OUTPUT, not project input; "
+             "pass --include-results to upload them anyway")
+
+
 def sync_directory_to_workspace(client, workspace_id: str, directory, *,
                                 skip_dirs=frozenset(), prune: bool = False,
-                                echo=None) -> dict:
+                                include_results: bool = False, echo=None) -> dict:
     """Re-sync a local *directory* into an **existing** workspace.
 
     Uploads every non-hidden file under *directory* (``.vast``/``.osc`` inline,
-    the rest via the PUT side channel), overwriting in place. Hidden files/dirs
-    and any directory named in *skip_dirs* are skipped. With *prune*, workspace
+    the rest via the PUT side channel), overwriting in place. Hidden files/dirs,
+    any directory named in *skip_dirs*, and any **campaign results tree** (recognised
+    by content -- see :func:`~robovast.client.workspaces.is_campaign_results_dir`) are
+    skipped; *include_results* uploads the last of those anyway. With *prune*, workspace
     files absent from *directory* are deleted (full mirror). *echo* (e.g.
-    ``click.echo``) receives one ``+``/``-`` line per change. Returns
-    ``{"written", "uploaded", "pruned"}`` counts.
+    ``click.echo``) receives one ``+``/``-`` line per change, and a closing report of
+    every directory that was skipped. Returns ``{"written", "uploaded", "pruned",
+    "skipped_dirs"}`` counts.
 
     Raises:
         FileNotFoundError: *directory* does not exist. Checked rather than left to
@@ -211,18 +348,19 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
             "project in a workspace instead (vast workspace init <dir>).")
     stats = {"written": 0, "uploaded": 0, "pruned": 0}
     local_rels: set[str] = set()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if _should_skip(rel, skip_dirs):
-            continue
+    files, skipped = collect_inputs(root, skip_dirs=skip_dirs,
+                                    include_results=include_results)
+    for rel in files:
         rel_str = rel.as_posix()
-        kind = push_file(client, format_address(SOURCES, workspace_id, rel_str), path)
+        kind = push_file(client, format_address(SOURCES, workspace_id, rel_str),
+                         root / rel)
         stats["written" if kind == "written" else "uploaded"] += 1
         local_rels.add(rel_str)
         if echo:
             echo(f"  + {rel_str}")
+    stats["skipped_dirs"] = len(skipped)
+    if echo and skipped:
+        report_skipped(skipped, echo)
 
     if prune:
         existing = client.list_files(format_address(SOURCES, workspace_id),
@@ -266,18 +404,27 @@ def push_project_files(client, workspace_id: str, config_path: str, *,
     stats = {"written": 0, "uploaded": 0, "pruned": 0}
     local_rels: set[str] = set()
 
-    for path in sorted(project_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_path = path.relative_to(project_dir)
-        if not _is_project_input(rel_path, main_vast):
-            continue
-        rel_str = rel_path.as_posix()
-        kind = push_file(client, format_address(SOURCES, workspace_id, rel_str), path)
-        stats["written" if kind == "written" else "uploaded"] += 1
-        local_rels.add(rel_str)
-        if echo:
-            echo(f"  + {rel_str}")
+    # The content-based half of `_is_generated` needs an absolute root to stat against.
+    # try/finally, not a bare assignment: leaving it set would make the NEXT push resolve
+    # its relative paths against this project's directory.
+    global _content_root  # pylint: disable=global-statement
+    _content_root = project_dir
+    try:
+        files, skipped = collect_inputs(project_dir, skip_dirs=_SKIP_DIRS)
+        for rel_path in files:
+            if not _is_project_input(rel_path, main_vast):
+                continue
+            rel_str = rel_path.as_posix()
+            kind = push_file(client, format_address(SOURCES, workspace_id, rel_str),
+                             project_dir / rel_path)
+            stats["written" if kind == "written" else "uploaded"] += 1
+            local_rels.add(rel_str)
+            if echo:
+                echo(f"  + {rel_str}")
+        if echo and skipped:
+            report_skipped(skipped, echo)
+    finally:
+        _content_root = None
 
     if prune:
         existing = client.list_files(format_address(SOURCES, workspace_id),
@@ -405,28 +552,48 @@ def run_project_via_service(client, config_path: str,
     return ref.campaign_id
 
 
-def download_campaign_via_service(client, campaign_id: str,
-                                  results_dir: str, feedback=None) -> str:
-    """Download a campaign's ``tar.gz`` through *client* and extract it locally.
+def download_campaign_archive(client, campaign_id: str, dest_path: str,
+                              progress_callback=None) -> str:
+    """Stream the campaign's ``tar.gz`` through *client* into *dest_path*; return it.
 
-    The service streams the campaign from the object store (no external share).
-    Returns the local campaign directory path.
+    A file lands, and that is all that happens. This used to stream-*extract* off the
+    socket, which made "download" also decide where a results tree goes and what it is
+    called -- two jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and
+    putting a campaign back into a service is ``vast results import``.
+
+    Written through a ``.part`` sibling and renamed on success, so an interrupted
+    transfer cannot leave a truncated archive sitting under the real name looking
+    complete. There is no resume: this is a service on your own network, and a
+    half-finished HTTP GET is cheaper to repeat than to reason about.
     """
-    import tarfile
+    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    from robovast.service.interface import Routes
-
-    say = feedback or logger.info
+    say = logger.info
     url = f"{client.base_url}{Routes.CAMPAIGNS}/{campaign_id}/archive"
-    say(f"Downloading {campaign_id} from robovast-service ...")
-    os.makedirs(results_dir, exist_ok=True)
-    # Stream-extract straight off the socket (mode "r|gz") so a large (up to ~1TB)
-    # campaign never has to be buffered in memory on the client.
-    with client.session.get(url, timeout=600, stream=True) as resp:
-        resp.raise_for_status()
-        resp.raw.decode_content = True
-        with tarfile.open(fileobj=resp.raw, mode="r|gz") as tar:
-            tar.extractall(results_dir)  # noqa: S202 - trusted service, arcname=campaign_id
-    dest = os.path.join(results_dir, campaign_id)
-    say(f"Extracted to {dest}")
-    return dest
+    say("Downloading %s from robovast-service ...", campaign_id)
+    os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
+    tmp_path = f"{dest_path}.part"
+    try:
+        with client.session.get(url, timeout=600, stream=True) as resp:
+            resp.raise_for_status()
+            # Absent for a campaign archive: the service tars it on the fly, so there is
+            # nothing to divide by and the progress callback reports a running count.
+            total = int(resp.headers.get("Content-Length") or 0)
+            received = 0
+            with open(tmp_path, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    received += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(received, total)
+    except BaseException:
+        # No resume on this path, so a partial file is litter rather than progress -- and
+        # litter named after a campaign, in the directory the next attempt writes to.
+        # BaseException so a Ctrl+C cleans up too.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    os.replace(tmp_path, dest_path)
+    return dest_path

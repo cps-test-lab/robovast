@@ -169,23 +169,35 @@ class ExecutionBackend(ABC):
         raise :class:`CampaignConfigError` when no share provider is configured.
         """
 
-    def share_campaign(self, campaign_root: str, options: "RunOptions") -> None:
-        """Produce the pre-postprocess "upload-to-share" artifact for this campaign.
+    def share_campaign(self, campaign_root: str, options: "RunOptions",
+                       progress_callback=None) -> None:
+        """Produce the campaign's "upload-to-share" artifact.
 
         Called from the controller's finish tail **before** analysis postprocessing,
-        so the archive is the raw campaign (no derived data). The default (local
-        :class:`DockerBackend`) writes ``<archive_dir>/<campaign>.tar.gz`` — there is
-        no external share locally, so the file is the deliverable. ``archive_dir`` is
+        so at campaign end the archive is the raw campaign (no derived data) and is
+        named as such; a later ``vast share export`` of the same campaign finds
+        ``_execution/data.db`` there and names it ``postprocessed``. Neither caller
+        is told which it is — :func:`~robovast.execution.share_providers.naming.
+        campaign_variant` reads it off the directory, so the two cannot disagree.
+
+        The default (local :class:`DockerBackend`) writes the archive into
         ``$ROBOVAST_ARCHIVE_DIR`` or a ``_archives/`` sibling of the campaign dirs
         (kept outside every campaign dir so it can't perturb postprocessing's
-        hash-cache). The :class:`KubernetesBackend` overrides this to stream the
-        archive to the configured share provider instead.
+        hash-cache) — there is no external share locally, so the file is the
+        deliverable, and *progress_callback* goes unused because nothing is
+        transferred. The :class:`KubernetesBackend` overrides this to stream the
+        archive to the configured share provider, and does report progress.
         """
+        _ = progress_callback
         from robovast.execution import campaign_archive
+        from robovast.execution.share_providers.naming import archive_name, campaign_variant
         results_dir = os.path.dirname(os.path.normpath(campaign_root))
         archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
             results_dir, "_archives")
-        campaign_archive.make_campaign_tarball(campaign_root, archive_dir)
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        campaign_archive.make_campaign_tarball(
+            campaign_root, archive_dir,
+            name=archive_name(campaign_id, campaign_variant(campaign_root)))
 
     #: The per-run JUnit report a finished run publishes. Counting these is what
     #: "a run completed" means to the progress poller, on either lane — the object

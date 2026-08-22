@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""SFTP share provider for ``cluster upload-to-share``."""
+"""SFTP share provider for ``vast share`` and ``--upload-to-share``."""
 
 import os
 import urllib.parse
@@ -23,7 +23,7 @@ import urllib.parse
 import click
 import paramiko
 
-from robovast.common.execution import is_campaign_dir
+from .naming import parse_archive_name
 
 from .base import BaseShareProvider
 
@@ -258,8 +258,7 @@ class SftpShareProvider(BaseShareProvider):
             result = [
                 (attr.filename, attr.st_size if attr.st_size is not None else -1)
                 for attr in entries
-                if attr.filename.endswith(".tar.gz")
-                and is_campaign_dir(attr.filename[: -len(".tar.gz")])
+                if parse_archive_name(attr.filename) is not None
             ]
             result.sort(key=lambda t: t[0])
             return result

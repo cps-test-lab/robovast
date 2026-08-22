@@ -1,15 +1,21 @@
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 
-// The controller's phase vocabulary (control_server.Status): initializing → building → starting →
+// The controller's phase vocabulary (client.status.Phase): initializing → building → starting →
 // plugin install → variation → running → finishing → postprocessing → sharing → finished / failed /
 // stopped. Map to MUI colors; unknown phases stay neutral.
+//
+// `importing` is the one live phase a campaign can reach without ever having run here — a
+// campaign taken in from an archive or the share enters at it, and rolls on into
+// `postprocessing` when what arrived was raw. It is coloured and listed as live like any other
+// work in progress, which is the whole point of it being in the phase enum rather than beside it.
 const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'> = {
   initializing: 'info',
   building: 'info',
   starting: 'info',
   'plugin install': 'info',
   variation: 'info',
+  importing: 'info',
   running: 'warning',
   finishing: 'warning',
   postprocessing: 'warning',
@@ -23,8 +29,8 @@ const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'
 }
 
 const LIVE_PHASES = [
-  'initializing', 'building', 'starting', 'plugin install', 'variation', 'running', 'finishing',
-  'postprocessing', 'sharing',
+  'initializing', 'building', 'starting', 'plugin install', 'variation', 'importing', 'running',
+  'finishing', 'postprocessing', 'sharing',
 ]
 
 // A campaign reaches `finished` as soon as its runs are done, so a failed post-run step

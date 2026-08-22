@@ -16,10 +16,14 @@
 
 """MCP plugin: what happens to a campaign's results after it has run.
 
-Re-deriving them (postprocessing), publishing them (share), and disposing of them
-(delete, download). Separate from :mod:`execution` because these act on a campaign that
-has already finished, and separate from :mod:`results` because they *change* or move the
-results rather than read them.
+Re-deriving them (postprocessing), publishing them (share), disposing of them (delete),
+and moving them between deployments (download, import). Separate from :mod:`execution`
+because these act on a campaign that has already finished, and separate from
+:mod:`results` because they *change* or move the results rather than read them.
+
+Download and import are the two directions of the same move, so they sit together: one
+answers where to fetch a campaign from, the other takes one in. Neither carries bytes --
+an archive is routinely gigabytes, so both deal in paths and links.
 
 Removal is one verb with a scope flag rather than two tools. A caller facing
 ``delete_campaign`` beside ``cleanup_campaign_data`` has to know that one erases the
@@ -165,31 +169,42 @@ def delete_campaign(campaign_id: str = "", data_only: bool = False,
         return {"error": str(e)}
 
 
-def _campaign_lane(campaign_id: str, client) -> str:
-    """``"cluster"`` or ``"local"`` — the lane **this campaign** ran on.
+def import_campaign(archive_path: str = "", share_archive: str = "",
+                    force: bool = False, rebuild_store: bool = False) -> dict:
+    """Take a campaign in — from the service host or the share — and register it.
 
-    Read from the campaign's own record rather than from the service's current backend.
-    A service can be restarted onto the other lane, and past campaigns keep the lane they
-    actually ran on; asking the service instead would tell a cluster campaign that its
-    results were on the local filesystem — a capability denied, and a place to look that
-    holds nothing.
+    Registration, not just extraction: listings and every query answer from ``campaign.db``,
+    so an unpacked archive lists blank. A **raw** archive (no metric tables — what the share
+    holds) is postprocessed once it lands. Returns immediately; the campaign is already
+    listed at phase ``importing``.
 
-    Falls back to the service's backend for a campaign with no record yet (it has not
-    reached execution), which is the only case where there is nothing better to ask.
+    Give exactly one source. Neither carries bytes through this tool — an archive is
+    routinely gigabytes. For one on *your own* machine use ``vast results import`` or the
+    web UI, which upload over a side channel and then call this.
+
+    Args:
+        archive_path: A ``.tar.gz`` on the **service host**, not on this machine. Left in
+            place; importing it does not consume it.
+        share_archive: A campaign id or archive name on the configured share. The service
+            fetches it itself.
+        force: Replace a campaign of the same id. Destructive.
+        rebuild_store: Rebuild ``campaign.db`` from the results tree — the recovery when
+            the ``campaign_store`` stage reports a corrupt one.
+
+    Returns:
+        ``{campaign_id, note}``; watch it with ``vast wait <campaign_id>``. Or ``{error}``.
+        Per-stage verdicts land in the campaign's ``_execution/import.json`` — a *degraded*
+        import is usable-but-incomplete, **not** a failure, so read it before discarding a
+        campaign you just recovered.
     """
-    from robovast.mcp_server import data_access
+    from robovast.service.interface import ImportCampaignRequest
     try:
-        rows = data_access.rows(
-            campaign_id, "SELECT execution_type FROM campaign.campaign LIMIT 1",
-            max_rows=1)
-    except Exception:  # noqa: BLE001 - a provenance read must not fail the answer
-        logger.debug("could not read the lane of %s from its record.", campaign_id,
-                     exc_info=True)
-        rows = []
-    recorded = (rows[0].get("execution_type") if rows else None)
-    if recorded:
-        return "cluster" if recorded == "cluster" else "local"
-    return "cluster" if client.version().backend == "kubernetes" else "local"
+        ref = service_access.client_or_local().import_campaign(ImportCampaignRequest(
+            archive_path=archive_path, share_archive=share_archive,
+            force=force, rebuild_store=rebuild_store))
+        return {"campaign_id": ref.campaign_id, "note": ref.note}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
 
 
 def get_campaign_download(campaign_id: str) -> dict:
@@ -201,35 +216,20 @@ def get_campaign_download(campaign_id: str) -> dict:
         campaign_id: The campaign to download.
 
     Returns:
-        Cluster service: ``{campaign_id, url, path, note}`` — the postprocessed
-        ``tar.gz`` streamed from the object store. Local service: ``{campaign_id, note}``
-        — the results are already on the service host's filesystem, so there is no HTTP
-        download. Or ``{error}``.
+        ``{campaign_id, url, path, note}`` — the campaign as a ``tar.gz``. Or ``{error}``.
     """
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
-    try:
-        lane = _campaign_lane(campaign_id, client)
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"could not reach the service: {e}"}
-
     path = f"/campaigns/{campaign_id}/archive"
-    if lane == "cluster":
-        return {
-            "campaign_id": campaign_id,
-            "url": f"{client.base_url}{path}",
-            "path": path,
-            "note": ("Open this in the browser where your robovast web UI runs "
-                     "(or Monitor → Download), or run "
-                     f"'vast results download -i {campaign_id}' on your own machine "
-                     "('--variant raw' for the pre-postprocess archive from the share)."),
-        }
     return {
         "campaign_id": campaign_id,
-        "note": ("This campaign ran on the local lane — its results are already on the "
-                 "service host's filesystem; there is no HTTP download."),
+        "url": f"{client.base_url}{path}",
+        "path": path,
+        "note": ("Open it in the browser where the robovast web UI runs, or run "
+                 f"'vast results download {campaign_id}'. The share's pre-postprocess "
+                 "copy is 'vast share download'; the way back in is 'vast share import'."),
     }
 
 
@@ -242,6 +242,7 @@ _TOOLS = [
     run_share,
     delete_campaign,
     get_campaign_download,
+    import_campaign,
 ]
 
 

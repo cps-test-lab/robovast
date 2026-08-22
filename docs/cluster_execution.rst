@@ -352,32 +352,27 @@ Check the status of a running (or recently completed) run:
 
    vast execution cluster monitor
 
-The service publishes the finished campaign to the object store automatically,
-and ``vast results download`` (or ``run --wait-and-download``) streams it from
-there — no external share needed:
+The service publishes the finished campaign to the object store automatically, and
+``vast results download`` (or ``run --wait-and-download``) streams it from there — no
+external share needed:
 
 .. code-block:: bash
 
-   # Postprocessed campaign (full, incl. derived data), streamed from the service:
-   vast results download -i campaign-2025-06-01-120000
+   vast results download campaign-2025-06-01-120000
+   # -> ./campaign-2025-06-01-120000.tar.gz
 
-   # List what is downloadable and from where (service = postprocessed, share = raw):
-   vast results list-downloads
+That is the whole command. It fetches the campaign as this service holds it —
+postprocessing and all — writes one ``.tar.gz``, and stops: nothing is extracted, no
+results directory is written into, and no state is kept about what you already have.
+The stream is end-to-end, so a ~1TB campaign is never buffered on the service or in
+memory. What you do with the archive afterwards is yours; to put it back into a
+service, ``vast results import <archive>``.
 
-   # Restrict the listing to specific campaigns (positional, one or more):
-   vast results list-downloads campaign-2025-06-01-120000
-
-``vast results download`` picks its source automatically from what is reachable — a
-running service serves the **postprocessed** archive from the object store; a
-configured external share serves the **raw** (pre-postprocessing) archive that
-*Upload to share when done* produced. Force one with ``--variant postprocessed`` or
-``--variant raw``. Both stream end-to-end, so a ~1TB campaign never has to be
-buffered on the service or in memory.
-
-To push a copy to an external share, enable it **at launch** (*Upload to share when
-done* in the web UI, ``--upload-to-share`` on ``vast execution cluster run``, or the
-MCP ``upload_to_share`` flag). The share/``.env`` settings determine the
-destination; the archive delivered there is the raw pre-postprocessing snapshot.
+The share's raw, pre-postprocessing copy is a different system, reached through
+``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
+**at launch** (*Upload to share when done* in the web UI, ``--upload-to-share`` on
+``vast execution cluster run``, or the MCP ``upload_to_share`` flag) or export a
+finished campaign with ``vast share export -i <campaign-id>``.
 
 Clean up only the job objects (without touching the result storage):
 
@@ -1145,14 +1140,67 @@ Sharing Results
 
 The object store is the campaign's durable home and the default delivery path —
 ``vast results download`` streams the campaign straight from it, so **no external
-share is required**. Pushing to an external share (Nextcloud, GCS, …) is an opt-in
-**launch-time** step run **in the driver**: enable *Upload to share when done* in
-the web UI, pass ``--upload-to-share`` to ``vast execution cluster run``, or set the
-MCP ``upload_to_share`` flag. No data ever reaches the user's machine, and no
-separate archiver pod is involved.
+share is required**. An external share (Nextcloud, GCS, …) is for getting a campaign
+somewhere the object store does not reach: another deployment, or a colleague.
+
+``vast share`` — the six verbs, and who performs them
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+=======================  ======================  ============
+verb                     moves                   performed by
+=======================  ======================  ============
+``vast share list``      (reads the share)       you
+``vast share download``  share → your machine    you
+``vast share upload``    your machine → share    you
+``vast share remove``    (deletes on the share)  you
+``vast share export``    service → share         the service
+``vast share import``    share → service         the service
+=======================  ======================  ============
+
+**Who performs a verb is decided by its endpoints, not its direction: the service
+acts when a campaign in the service is one end; you act when the two ends are your
+machine and the share.** That is what makes a **read-only** share credential a
+supported way to be set up — ``list`` and ``download`` work with it, and
+``upload``/``remove`` are refused by the share, which is what read-only means.
+``remove`` deliberately does *not* borrow the service's credentials to get around
+that: doing so would let anyone who can reach RoboVAST delete share content the share
+itself would refuse them. Only ``export`` uses the service's write access, which is
+its whole purpose and exactly what the campaign-end upload already does.
+
+So your ``.env`` holds *your* share credentials, and the service's
+``robovast-share-credentials`` Secret holds the ones that can write.
+
+``vast share import`` is the one worth knowing about: the **service** downloads from
+the share, so a multi-gigabyte campaign never travels through your machine to get
+between two servers, and you need no share credentials at all for it. What arrives
+raw is postprocessed automatically once it lands, so you get a campaign with its
+metric tables rather than a directory to remember to reprocess.
+
+**The share is not a subset of what a service has.** A campaign can be deleted here
+while its archive stays up there — ``vast share list`` marks such an archive
+``importable``, and that case is the main reason import exists.
+
+Archive names
+^^^^^^^^^^^^^
+
+``<campaign-id>.raw.tar.gz`` or ``<campaign-id>.postprocessed.tar.gz``. Nobody is
+asked which: it is read off the campaign (``_execution/data.db`` is postprocessing's
+output and nothing else writes it), so the campaign-end upload and a later
+``vast share export`` cannot disagree. An archive uploaded before the name carried a
+variant is read as ``raw``, which is what it is.
+
+Raw is the right default for the share because it is the irreplaceable part, not
+because it is small: rosbags and ``rosout`` dominate a campaign and are in both
+variants, so a raw archive is roughly three quarters the size of a postprocessed one,
+not a fraction of it.
 
 How it works
 ^^^^^^^^^^^^
+
+Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share
+when done* in the web UI, pass ``--upload-to-share`` to ``vast execution cluster
+run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
+no separate archiver pod is involved.
 
 When the toggle is set, the driver — the moment the scenario runs finish and
 **before** analysis postprocessing — streams the campaign to the share:
@@ -1170,9 +1218,9 @@ When the toggle is set, the driver — the moment the scenario runs finish and
    reason is recorded on the campaign's ``share_error`` (durable across a service
    restart) and shown as a warning in the UI; the campaign still reports ``finished``.
 
-The upload can be **re-triggered** on a finished campaign at any time — from the web
-UI's *Retrigger upload-to-share* action, the MCP ``run_share`` tool, or
-``POST /campaigns/{id}/share/run`` — and it works from the stored campaign alone, so
+The upload can be run again on a finished campaign at any time — ``vast share export
+-i <campaign-id>``, the web UI's *Export to share* action, the MCP ``run_share`` tool,
+or ``POST /campaigns/{id}/share/run`` — and it works from the stored campaign alone, so
 it is available even after the service was restarted. A re-trigger uses the share
 provider currently configured in the environment, so adjusting ``ROBOVAST_SHARE_TYPE``
 and re-triggering uploads to a different provider.

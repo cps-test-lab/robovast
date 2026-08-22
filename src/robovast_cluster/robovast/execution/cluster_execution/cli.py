@@ -134,8 +134,6 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         phase_label = status.get("phase", "?")
         if status.get("stage"):
             phase_label += f" / {status['stage']}"
-        if status.get("phase") == "uploading" and status.get("share_provider"):
-            phase_label += f" via {status['share_provider']}"
         lines = [f"Campaign {status.get('campaign_id', '?')}  [{phase_label}]"]
         line2 = f"  Batch {status.get('batch', 0)} (done {status.get('batches_done', 0)})"
         if status.get("best_objective") is not None:

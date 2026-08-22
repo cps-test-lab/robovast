@@ -177,11 +177,35 @@ def test_run_options_carry_upload_to_share(cs):
     assert default.upload_to_share is False
 
 
+def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, monkeypatch):
+    """A campaign that is not here must fail *before* the response starts.
+
+    Found live. Once a byte has been streamed the status line is already 200, so an
+    unknown campaign reached the client as a truncated body -- ``ChunkedEncodingError:
+    Response ended prematurely``, which names neither the campaign nor the problem, and
+    left a ``.part`` file behind. Raised eagerly it is a 404 with a sentence in it.
+
+    The predicate is the one ``list_campaigns`` answers with, so the archive route and the
+    listing cannot disagree about what this service has.
+    """
+    import types
+
+    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"other-2026-01-01-000000"})
+    monkeypatch.setattr(
+        cs, "_cluster_config",
+        lambda: types.SimpleNamespace(add_campaign_members=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not touch the object store for a campaign that is not here"))))
+
+    with pytest.raises(KeyError, match="camp-2026-01-01-000000"):
+        cs.campaign_tar_stream("camp-2026-01-01-000000")
+
+
 def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):
     """The download stream tars objects from the config's add_campaign_members,
     passing the _postproc exclusion — no scratch on the service."""
     import types
 
+    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"camp-2026-01-01-000000"})
     seen = {}
 
     def _add_members(tar, campaign_id, exclude_prefixes=()):

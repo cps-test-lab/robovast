@@ -22,6 +22,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/archives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Archive Upload
+         * @description Grant a one-time PUT for a campaign archive.
+         *
+         *     Separate from ``POST /uploads`` because that one addresses ``/sources``: it needs
+         *     workspaces configured, and an archive is not project input.
+         */
+        post: operations["create_archive_upload_campaigns_archives_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/archives/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Campaign Archive
+         * @description Redeem a one-time token and stream a campaign archive to disk.
+         *
+         *     **Streamed, not buffered** — unlike ``PUT /uploads/{token}``, whose payload is a
+         *     ``.vast`` or a notebook. A campaign archive is routinely gigabytes, and reading one
+         *     into memory to write it straight back out would put the service's own footprint at
+         *     the mercy of what somebody uploads.
+         *
+         *     Stores the bytes and stops there: ``POST /campaigns/import`` is the import, for this
+         *     and every other caller, so the operation has a single implementation.
+         */
+        put: operations["put_campaign_archive_campaigns_archives__token__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/cleanup-data": {
         parameters: {
             query?: never;
@@ -59,6 +110,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Campaign
+         * @description Take a campaign in -- from a staged upload, a host path, or the share.
+         *
+         *     Registration is the point: listings and the web UI answer from ``campaign.db``, so an
+         *     archive that is merely extracted lists blank. An older archive migrates on the way in
+         *     -- the ``.vast`` ladder in memory, the store on open -- and a raw one is postprocessed
+         *     after it lands, since it arrives without the tables anybody would query.
+         *
+         *     Returns as soon as the import is under way, with the id of the campaign that is
+         *     already listed at phase ``importing`` -- the same shape ``create`` and ``retrigger``
+         *     answer with, because all three mean "a campaign now exists, go watch it". Per-stage
+         *     verdicts are written to its ``_execution/import.json``, because "import failed"
+         *     would hide which stage did and what recovers it.
+         */
+        post: operations["import_campaign_campaigns_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}": {
         parameters: {
             query?: never;
@@ -85,17 +167,22 @@ export interface paths {
         };
         /**
          * Download Campaign Archive
-         * @description Stream a ``tar.gz`` of the **postprocessed** campaign from the object store.
+         * @description Stream a ``tar.gz`` of the campaign, on either lane.
          *
-         *     Backs the ``postprocessed`` variant of ``vast results download`` for a
-         *     **cluster** service: objects are fetched from the object store and tarred on
-         *     the fly (``impl.campaign_tar_stream``) straight into the response — **no
-         *     scratch is used on the service and nothing is buffered in memory**, decisive
-         *     for ~1TB campaigns. Internal ``_postproc/`` staging is excluded so the download
-         *     is the clean campaign layout.
+         *     Backs ``vast results download`` and the web UI's download button. What comes
+         *     out is the campaign as this service holds it -- postprocessed, if it has been.
+         *     Internal ``_postproc/`` staging is excluded so the archive is the clean
+         *     campaign layout.
          *
-         *     A **local** service refuses: its results already live on the same filesystem,
-         *     so there is nothing to download.
+         *     Nothing is buffered and no scratch is used, on either lane: the cluster fetches
+         *     objects from the store and tars them on the fly, the local lane tars its own
+         *     directory into the response. Decisive for ~1TB campaigns.
+         *
+         *     A local service used to refuse this with a 409 -- "the results are already on
+         *     this host's filesystem". True of a caller on that host, and false of everyone
+         *     else: a ``vast serve`` reached over the network could not be downloaded from at
+         *     all, and the web UI had to hide its own button on that lane. The lane is not
+         *     what decides whether a caller can read a file.
          */
         get: operations["download_campaign_archive_campaigns__campaign_id__archive_get"];
         put?: never;
@@ -904,6 +991,30 @@ export interface paths {
          * @description A campaign's outputs: one file's bytes, its text page, or a directory listing.
          */
         get: operations["get_results_file_results__campaign_id___path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share/archives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Share Archives
+         * @description What the configured share holds, read with this service's own credentials.
+         *
+         *     For the web UI, which can hold none of its own. ``configured=false`` when this
+         *     service has no share -- a different answer from an empty one, and a client that
+         *     conflated them would offer to import from nowhere.
+         */
+        get: operations["list_share_archives_share_archives_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2204,6 +2315,39 @@ export interface components {
             image: string;
         };
         /**
+         * ImportCampaignRequest
+         * @description Which campaign archive to take in, and from where. Exactly one source.
+         *
+         *     Two sources rather than one because the interesting one is the share: having the
+         *     *service* fetch from it is what keeps a multi-gigabyte campaign off the path through
+         *     somebody's laptop, and out of reach of a user whose share credentials are read-only or
+         *     absent. ``archive_path`` is the other end of the same op — a file already on the service
+         *     host, including one just uploaded through
+         *     :meth:`~robovast.service.interface.RobovastInterface.create_archive_upload`.
+         */
+        ImportCampaignRequest: {
+            /**
+             * Archive Path
+             * @default
+             */
+            archive_path: string;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /**
+             * Rebuild Store
+             * @default false
+             */
+            rebuild_store: boolean;
+            /**
+             * Share Archive
+             * @default
+             */
+            share_archive: string;
+        };
+        /**
          * JobCounts
          * @description Aggregate job status counts for a campaign's current batch.
          */
@@ -2848,16 +2992,86 @@ export interface components {
             markers: components["schemas"]["SceneMarker"][];
         };
         /**
+         * ShareArchive
+         * @description One campaign archive on the configured share.
+         */
+        ShareArchive: {
+            /**
+             * Campaign Id
+             * @default
+             */
+            campaign_id: string;
+            /**
+             * Object Name
+             * @default
+             */
+            object_name: string;
+            /**
+             * Size
+             * @default -1
+             */
+            size: number;
+            /** Url */
+            url: string | null;
+            /**
+             * Variant
+             * @default
+             */
+            variant: string;
+        };
+        /**
+         * ShareListing
+         * @description What the share holds, and which provider answered.
+         *
+         *     ``configured`` is False when this service has no share at all — a real answer, and a
+         *     different one from an empty share. A client that conflated them would offer to import
+         *     from nowhere, or claim a configured share was empty when it simply could not be read.
+         */
+        ShareListing: {
+            /** Archives */
+            archives: components["schemas"]["ShareArchive"][];
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            /**
+             * Share Type
+             * @default
+             */
+            share_type: string;
+        };
+        /**
+         * StagedArchive
+         * @description Where an uploaded campaign archive landed on the service host.
+         *
+         *     The PUT that streams the bytes deliberately stops here rather than importing: import is
+         *     one op with one report, and making the byte channel a second entrance to it would give
+         *     the same operation two implementations to keep in step.
+         */
+        StagedArchive: {
+            /** Path */
+            path: string;
+            /**
+             * Size
+             * @default 0
+             */
+            size: number;
+        };
+        /**
          * Status
          * @description The controller's live state, served by ``GET /campaigns/{id}/status``.
          *
          *     ``phase`` is an **open** string the controller advances through a documented
          *     vocabulary (``initializing`` → ``building`` → ``starting`` → ``variation`` →
-         *     ``running`` → ``finishing`` → ``postprocessing`` → ``sharing`` → ``finished`` /
-         *     ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
-         *     ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
-         *     names the share type of the current upload attempt; it can change across
-         *     retriggers (a failed upload may be retried to a different provider).
+         *     ``running`` → ``finishing`` → ``importing`` → ``postprocessing`` → ``sharing`` →
+         *     ``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
+         *     ``"upload-to-share-done"``) slot in without a schema change.
+         *
+         *     What is on the share is deliberately *not* here. It was, as ``share_provider``,
+         *     and nothing ever wrote it -- which is the shape of the mistake: the share is
+         *     another system's state, so a copy of it on a campaign goes stale the first time
+         *     somebody deletes an archive out of band. ``list_share_archives`` asks the share.
          */
         Status: {
             /**
@@ -2913,8 +3127,6 @@ export interface components {
             runs: components["schemas"]["RunProgress"];
             /** Share Error */
             share_error: string | null;
-            /** Share Provider */
-            share_provider: string | null;
             /** Stage */
             stage: string | null;
             /** Stop */
@@ -3383,6 +3595,57 @@ export interface operations {
             };
         };
     };
+    create_archive_upload_campaigns_archives_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadGrant"];
+                };
+            };
+        };
+    };
+    put_campaign_archive_campaigns_archives__token__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StagedArchive"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     cleanup_campaign_data_campaigns_cleanup_data_post: {
         parameters: {
             query?: never;
@@ -3432,6 +3695,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    import_campaign_campaigns_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportCampaignRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignRef"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4985,6 +5281,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_share_archives_share_archives_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareListing"];
                 };
             };
         };

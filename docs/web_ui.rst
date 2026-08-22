@@ -60,10 +60,13 @@ It provides four views:
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
   running work halts promptly (not only after the current batch). That is the whole
   campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
-  A finished cluster
-  campaign also shows a **Download** button that streams its postprocessed
-  ``tar.gz`` straight from the object store (offered only for a cluster service — a
-  local service's results are already on its filesystem). A finished campaign's
+  A finished campaign also shows a **download icon** that streams its ``tar.gz``
+  straight from the service — from the object store on a cluster, from disk on a local
+  one; the lane is not something a viewer should have to know, and this used to be
+  offered only on the cluster. When that campaign also has a copy on the share the icon
+  becomes a small menu, adding **Copy share link** beside the download (omitted for a
+  share provider that has no link a browser could open — SFTP has none). No share copy,
+  no menu — one click. A finished campaign's
   actions menu offers **Retrigger campaign**, which starts a **new** campaign from
   what this one recorded — its frozen ``_config/`` and the image its runs actually
   used — rather than from the workspace it was launched from, which may be gone or
@@ -117,9 +120,11 @@ delivers nothing more — indistinguishable from a campaign that simply has not 
 the service heartbeats every quiet second with a *visible* event (:doc:`http_api`), and the
 UI watches that clock: a stream that is closed, or silent for 15 s, is replaced with a fresh
 connection whenever the tab becomes visible, the network returns, or the check next runs.
-The **Refresh** button on the campaign list does the same thing on demand — it is no longer
-the only way to get there. Anything other than a healthy stream is labeled ``reconnecting…``
-next to the heading, so a stale list always says that it might be.
+The **Refresh** button beside the campaign list's heading does the same thing on demand — it
+is no longer the only way to get there, which is why it is an icon rather than a labelled
+button: it sits next to the heading it acts on, the way the Explorer's and the run view's do.
+Anything other than a healthy stream is labeled ``reconnecting…`` next to it, so a stale list
+always says that it might be.
 
 **The polled readings** — a campaign's phase and its per-job listing, and the sidebar's
 resource meters — deliberately stop polling while the tab is hidden, so a monitor left open
@@ -133,6 +138,72 @@ snapshot of the campaign list and adopt a new one only when you ask (see
 `Results viewer`_) — a finished campaign is immutable, so reshuffling its tree under
 someone mid-read would cost attention and return nothing. Freshness applies to what is
 still changing.
+
+.. _web-ui-import:
+
+Bringing a campaign in
+----------------------
+
+The **upload button** at the right-hand end of the campaign list takes a campaign archive
+(``.tar.gz``) off your machine and makes it a campaign on this deployment — a colleague's
+results, a published dataset, or a campaign from a service you have since torn down. It is
+the other direction of a campaign card's **Download**, and it is the same operation as
+``vast results import`` and the ``import_campaign`` MCP tool: the browser is only how the
+bytes get there (:doc:`http_api`).
+
+**Extracting is not importing.** Listings, this page and every query answer from the
+campaign's ``campaign.db``, not from its results tree, so an archive that was merely unpacked
+would appear blank — which is why the archive is registered, and why ``vast results
+download`` alone does not make a campaign appear here.
+
+**It is also not instant.** The import is a tracked operation like any other: the campaign
+appears in the list straight away at phase ``importing`` — its id is read from the archive
+before a byte is extracted — and, when the archive is a raw one, rolls on into
+``postprocessing`` rather than finishing without the tables anybody would query. So the
+dialog closes as soon as you start it and you watch the row, exactly as for a run. A failed
+import removes itself; there is no half-campaign left to tidy up.
+
+**An older archive is brought forward on the way in.** The ``.vast``'s version ladder is
+applied in memory (the archived file is never rewritten), the campaign store migrates when it
+is opened, and a store that is missing entirely is reconstructed from the results tree — the
+normal case for a raw, pre-postprocess archive.
+
+That is four independent things that can each be fine, old, missing or broken, so the outcome
+is reported **per stage** rather than as one word, and every stage that is not ``ok`` says what
+recovers it. The report is written to the campaign's ``_execution/import.json``, and this page
+shows it under the heading once the campaign settles — the import answers with the campaign's
+id, not with a verdict, so there is nothing to show until there is.
+
+The panel is **collapsed** by default, because an import is usually unremarkable and its
+headline is the whole story; the headline still names any caveat, so what folds away is the
+detail behind one, never its existence. Two problems are offered as a button rather than as
+advice: an archive whose campaign id is **already here** is refused before anything moves
+rather than silently replacing evidence, and *Replace existing* re-imports over it without
+re-uploading the bytes; a **corrupt store** offers *Rebuild store*, which reconstructs it from
+the results tree. A refusal of either kind never creates a campaign row, which is why it is
+reported here rather than on a card.
+
+A **degraded** import is not a failure. A campaign that lists but under-reports — its runs
+were archived without their run directories, say — is still a campaign somebody has, and
+discarding it to keep a verdict clean would throw away the data. Only a stage that genuinely
+blocks fails the import, and the one thing nothing here can fix is an archive from a *newer*
+robovast: a schema cannot be migrated downwards, so that one asks you to upgrade.
+
+The **Share** view
+------------------
+
+What the configured share holds, read by the service with the service's own credentials —
+a browser has none of its own. Most rows correspond to a campaign already here, and those
+are reachable from the campaign's own download menu instead. The rows worth this page are
+the others: an archive whose campaign was cleaned up from this deployment, or one produced
+somewhere else entirely. Each offers **Import** (the service fetches it, so the bytes never
+come through your browser) and **Copy share link**.
+
+The share is deliberately not treated as a subset of what this deployment has — the two
+overlap, and an archive with no campaign here is the ordinary case this page exists for, not
+an anomaly to be filtered out. Nothing about the share is cached on a campaign either: it is
+another system's state, and a copy of it would be wrong the first time somebody deleted an
+archive out of band.
 
 .. _web-ui-origin:
 

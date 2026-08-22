@@ -37,6 +37,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
+                                        ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
                                         JobState, ListJobsResponse, ListWorkspacesResponse,
                                         LogChunk,
@@ -287,6 +288,21 @@ class HTTPTransport(RobovastInterface):
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
 
+    def create_archive_upload(self) -> UploadGrant:
+        grant = UploadGrant.model_validate(self._post(Routes.CAMPAIGN_ARCHIVES))
+        # As in create_upload: the service answers a relative path because it cannot know
+        # its external base, so the caller is handed something it can PUT to directly.
+        grant.url = f"{self.base_url}{Routes.campaign_archive_upload(grant.token)}"
+        return grant
+
+    def list_share_archives(self) -> "ShareListing":
+        from robovast.service.interface import ShareListing
+        return ShareListing.model_validate(self._get(Routes.SHARE_ARCHIVES))
+
+    def import_campaign(self, request: ImportCampaignRequest) -> CampaignRef:
+        return CampaignRef.model_validate(
+            self._post(Routes.CAMPAIGN_IMPORT, json=request.model_dump()))
+
     # -- image builds -------------------------------------------------------
 
     def build_image(self, request: BuildImageRequest) -> ImageBuildRef:
@@ -428,6 +444,19 @@ class HTTPTransport(RobovastInterface):
                             params=params, timeout=self.DATA_TIMEOUT, stream=True)
         self.raise_for_status(resp)
         return resp.iter_content(chunk_size=64 * 1024, decode_unicode=True)
+
+    def campaign_tar_stream(self, campaign_id: str):
+        """Stream the campaign archive through, chunk by chunk.
+
+        Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
+        may hold it. ``vast results download`` writes these chunks to a file;
+        :func:`~robovast.service.project_push.download_campaign_archive` is that, with
+        a progress bar and an atomic rename.
+        """
+        resp = self.session.get(f"{self.base_url}{Routes.campaign_archive(campaign_id)}",
+                                timeout=self.DATA_TIMEOUT, stream=True)
+        self.raise_for_status(resp)
+        return resp.iter_content(chunk_size=1024 * 1024)
 
     def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
         # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the

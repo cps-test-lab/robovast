@@ -14,7 +14,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Take in a campaign directory somebody else produced, and say whether it worked.
+"""Take in a campaign somebody else produced -- an archive or a directory -- and say whether
+it worked.
 
 A downloaded campaign -- from a colleague, or from a published dataset -- has to become
 something this deployment can list, display and re-run. That is not one operation, so
@@ -32,10 +33,21 @@ This module observes and reports; it does not re-implement the migrations. ``Cam
 already upgrades on open through its own append-only ladder, and deliberately reads a *newer*
 store best-effort rather than refusing -- its queries name columns explicitly, so unknown ones
 are ignored. That decision is respected here and surfaced as a caveat rather than overridden.
+
+The steps above :func:`ingest_campaign` are here too, and separate rather than one
+``import_archive``: :func:`read_campaign_id`, :func:`claim_campaign_dir`, :func:`extract_archive`.
+The importer interleaves other work between them -- it opens the campaign's ``import.log`` once
+the directory is claimed, and downloads from the share before extracting -- which a single
+do-everything call cannot allow. They live here rather than in a CLI because extraction is where
+an archive is decided to be untrusted input, and every client reaches them through one service op
+(:meth:`~robovast.service.interface.RobovastInterface.import_campaign`) rather than
+re-implementing the sequence.
 """
 
 import logging
+import shutil
 import sqlite3
+import tarfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -58,6 +70,128 @@ BLOCKING_STAGES = (STAGE_FAILED,)
 
 def _stage(verdict: str, detail: str, **extra) -> dict:
     return {"verdict": verdict, "detail": detail, **extra}
+
+
+def _top_level_entries(names) -> set:
+    """The distinct first path segments in *names*, ignoring a ``./`` root.
+
+    ``tar czf x.tar.gz -C <results> .`` writes every member under ``./``, so reading the
+    first segment literally reports one top-level entry called ``.`` -- which then resolves
+    to the results root itself. A one-entry archive is exactly the shape this function is
+    asked to recognize, so that mistake looks like success right up to the point where the
+    "campaign" being replaced is every campaign there is.
+    """
+    tops = set()
+    for name in names:
+        if not name or name.startswith('/'):
+            continue
+        parts = [part for part in name.split('/') if part not in ('', '.')]
+        if parts:
+            tops.add(parts[0])
+    return tops
+
+
+def _checked_campaign_name(name: str) -> str:
+    """Refuse a top-level name that is not a campaign directory's.
+
+    Two different dangers, both silent:
+
+    * A traversal name (``.``, ``..``, anything with a separator left in it) resolves
+      outside the campaign it claims to be, and ``force`` deletes whatever it resolved to.
+    * A name that is merely *not campaign-shaped* imports and registers fine and then never
+      appears: the local listing keeps only directories matching ``is_campaign_dir``, and
+      deletion checks the same thing. So it would be an import that reports every stage ok
+      and produces a campaign nobody can see or remove -- which is worse than a refusal.
+    """
+    from robovast.common.execution import is_campaign_dir
+
+    if name in ('.', '..') or '/' in name or '\\' in name:
+        raise ValueError(
+            f"the archive's top-level entry {name!r} is not a campaign directory name")
+    if not is_campaign_dir(name):
+        raise ValueError(
+            f"{name!r} is not a campaign directory name (expected "
+            f"'<name>-YYYY-MM-DD-HHMMSS'). Campaigns are listed and deleted by that shape, "
+            f"so importing this would register something no listing would ever show. If this "
+            f"really is a campaign, rename its directory inside the archive.")
+    return name
+
+
+def read_campaign_id(archive_path) -> str:
+    """The campaign id an archive holds, read from its member list alone.
+
+    Known before anything is extracted, which is what lets an import be a *tracked*
+    operation: the campaign is registered under this id and shows in the campaign view at
+    phase ``importing`` while the bytes are still moving. Reading it costs the tar's index,
+    not its contents.
+
+    ``ValueError`` -- the interface's vocabulary for "this input is wrong", mapped to 400 by
+    the HTTP layer -- when the archive is not exactly one campaign.
+    """
+    archive_path = Path(archive_path)
+    try:
+        with tarfile.open(archive_path, 'r:*') as tar:
+            tops = _top_level_entries(tar.getnames())
+    except (tarfile.TarError, OSError) as e:
+        raise ValueError(f"could not read {archive_path.name}: {e}") from e
+    if len(tops) != 1:
+        raise ValueError(
+            f"archive holds {len(tops)} top-level entries; expected one campaign "
+            f"directory: {sorted(tops)[:5]}")
+    return _checked_campaign_name(tops.pop())
+
+
+def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
+    """Make ``<results_root>/<campaign_id>`` ready to be extracted into; return it.
+
+    Settles the conflict with whatever is already there **before** any bytes are fetched, so
+    an import that was never going to be allowed does not first spend an hour downloading.
+    ``RuntimeError`` (409 at the HTTP layer) when a campaign of this id is here and *force*
+    was not asked for.
+
+    Creates the campaign's ``_execution/`` directory, because the importer's log lives there
+    and it must be open before the slow part starts -- an import whose account of itself only
+    begins after the download is an import with no account of the download.
+    """
+    root = Path(results_root)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / _checked_campaign_name(campaign_id)
+    if target.exists():
+        if not force:
+            raise RuntimeError(
+                f"{campaign_id} is already here. Refusing to overwrite a campaign "
+                f"that is already present -- its records are evidence. Import it again "
+                f"with force to replace it.")
+        shutil.rmtree(target)
+    (target / "_execution").mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def extract_archive(archive_path, results_root, *, remove_archive: bool = False) -> None:
+    """Unpack a campaign archive into *results_root*.
+
+    *remove_archive* deletes *archive_path* afterwards. It is for a copy the service staged
+    -- from an upload, or from the share -- and now owns; a path the caller named is never
+    deleted, because deleting somebody's own file as a side effect of importing it is not
+    something a caller can undo.
+    """
+    archive_path = Path(archive_path)
+    try:
+        with tarfile.open(archive_path, 'r:*') as tar:
+            # `filter='data'` refuses absolute paths and ../ escapes. An archive from elsewhere is
+            # untrusted input, and the default became an error in newer Pythons for that reason.
+            # A campaign's `job` symlinks point within the campaign, so they survive it.
+            tar.extractall(path=Path(results_root), filter='data')
+    except (tarfile.TarError, OSError) as e:
+        raise ValueError(f"could not read {archive_path.name}: {e}") from e
+
+    if remove_archive:
+        try:
+            archive_path.unlink()
+        except OSError as e:
+            # The campaign is out of the archive; a leftover staging file is a housekeeping
+            # problem, not a reason to report the import as failed.
+            logger.warning("Could not remove the staged archive %s: %s", archive_path, e)
 
 
 def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:

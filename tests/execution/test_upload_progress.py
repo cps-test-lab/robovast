@@ -86,7 +86,7 @@ def test_stream_progress_reader_has_no_len_or_fileno():
 
 
 # ---------------------------------------------------------------------------
-# controller._make_upload_progress_cb — publishes into Status.extra['upload']
+# controller.make_upload_progress_cb — publishes into Status.extra['upload']
 # ---------------------------------------------------------------------------
 
 class _RecordingState:
@@ -99,10 +99,10 @@ class _RecordingState:
 
 
 def test_progress_cb_publishes_sent_total_and_rate():
-    from robovast.execution.controller import _make_upload_progress_cb
+    from robovast.execution.controller import make_upload_progress_cb
 
     state = _RecordingState()
-    cb = _make_upload_progress_cb(state)
+    cb = make_upload_progress_cb(state)
     cb(0, 1000)                       # first sample always pushes
     assert state.extra["upload"]["sent"] == 0
     assert state.extra["upload"]["total"] == 1000
@@ -114,5 +114,5 @@ def test_progress_cb_publishes_sent_total_and_rate():
 
 
 def test_progress_cb_none_without_state():
-    from robovast.execution.controller import _make_upload_progress_cb
-    assert _make_upload_progress_cb(None) is None
+    from robovast.execution.controller import make_upload_progress_cb
+    assert make_upload_progress_cb(None) is None

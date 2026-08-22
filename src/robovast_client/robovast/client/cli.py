@@ -308,6 +308,9 @@ def workspace():
 
 
 #: Directory names skipped by ``workspace init`` — campaign outputs, not project inputs.
+#: Only the conventional name; a results tree under any OTHER name is caught by content
+#: instead (``is_campaign_results_dir``), which is what covers a downloaded campaign
+#: sitting at the project root under its campaign id. Both are reported, never silent.
 _INIT_EXCLUDE_DIRS = {'results'}
 
 
@@ -317,14 +320,19 @@ _INIT_EXCLUDE_DIRS = {'results'}
 @click.option('--exclude', 'excludes', multiple=True, metavar='NAME',
               help='Directory name to skip (repeatable). Adds to the default '
                    f"{sorted(_INIT_EXCLUDE_DIRS)}.")
+@click.option('--include-results', is_flag=True,
+              help='Upload campaign results trees too. Off by default: they are a '
+                   "campaign's OUTPUT, so pushing them back as project input uploads "
+                   'every past campaign on disk. What was skipped is always reported.')
 @target_options
-def workspace_init(directory, name, excludes, namespace, context):
+def workspace_init(directory, name, excludes, include_results, namespace, context):
     """Create a workspace and upload every file from DIRECTORY into it.
 
     ``.vast``/``.osc`` are written inline; all other files go through the upload
-    side channel (executability preserved). Hidden files/dirs (``.cache`` etc.) and
-    output dirs (``results/``, plus any ``--exclude``) are skipped. Prints the new
-    workspace id — open it in the web UI's Config tab.
+    side channel (executability preserved). Hidden files/dirs (``.cache`` etc.),
+    output dirs (``results/``, plus any ``--exclude``) and any campaign results tree
+    — recognised by its contents, so a downloaded campaign under its own id is caught
+    too — are skipped, and every skip is reported. Prints the new workspace id.
 
     \b
       vast workspace init configs/examples/growth_sim   # into the resolved service
@@ -352,7 +360,8 @@ def workspace_init(directory, name, excludes, namespace, context):
             click.echo(f"note: name {requested!r} already exists — using {ws.name!r}")
 
         stats = sync_directory_to_workspace(
-            client, wid, root, skip_dirs=skip_dirs, echo=click.echo)
+            client, wid, root, skip_dirs=skip_dirs,
+            include_results=include_results, echo=click.echo)
         count = stats['written'] + stats['uploaded']
         click.echo(
             f"workspace {wid} ({ws.name}) initialized from {root} ({count} files)")
@@ -367,13 +376,18 @@ def workspace_init(directory, name, excludes, namespace, context):
 @click.option('--prune', is_flag=True,
               help='Also delete workspace files that are absent from DIRECTORY '
                    '(full mirror). Off by default: update only adds/overwrites.')
+@click.option('--include-results', is_flag=True,
+              help='Upload campaign results trees too. Off by default: they are a '
+                   "campaign's OUTPUT, so pushing them back as project input uploads "
+                   'every past campaign on disk. What was skipped is always reported.')
 @target_options
-def workspace_update(workspace, directory, excludes, prune, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_update(workspace, directory, excludes, prune, include_results, namespace, context):  # pylint: disable=redefined-outer-name
     """Re-sync DIRECTORY into an EXISTING workspace (id or name).
 
     Uploads every file from DIRECTORY, overwriting in place — ``.vast``/``.osc``
-    inline, everything else via the upload side channel. Hidden files/dirs and
-    output dirs (``results/``, plus any ``--exclude``) are skipped. With
+    inline, everything else via the upload side channel. Hidden files/dirs,
+    output dirs (``results/``, plus any ``--exclude``) and any campaign results tree
+    (recognised by its contents) are skipped, and every skip is reported. With
     ``--prune`` it also removes workspace files that no longer exist locally, so
     the workspace mirrors DIRECTORY exactly.
 
@@ -390,7 +404,8 @@ def workspace_update(workspace, directory, excludes, prune, namespace, context):
         _echo_target(target)
         wid = _resolve_workspace_id(client, workspace)
         stats = sync_directory_to_workspace(
-            client, wid, root, skip_dirs=skip_dirs, prune=prune, echo=click.echo)
+            client, wid, root, skip_dirs=skip_dirs, prune=prune,
+            include_results=include_results, echo=click.echo)
         count = stats['written'] + stats['uploaded']
         summary = f"{count} written"
         if prune:

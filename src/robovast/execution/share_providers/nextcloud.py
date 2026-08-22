@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nextcloud share provider for ``cluster upload-to-share``."""
+"""Nextcloud share provider for ``vast share`` and ``--upload-to-share``."""
 
 import base64
 import os
@@ -28,7 +28,7 @@ from typing import Callable
 import click
 import requests
 
-from robovast.common.execution import is_campaign_dir
+from .naming import parse_archive_name
 
 from .base import BaseShareProvider, UploadProgressReader
 
@@ -239,7 +239,7 @@ class NextcloudShareProvider(BaseShareProvider):
             name = urllib.parse.unquote(href.rstrip("/").rsplit("/", 1)[-1])
             if not name.endswith(".tar.gz"):
                 continue
-            if not is_campaign_dir(name[: -len(".tar.gz")]):
+            if parse_archive_name(name) is None:
                 continue
             size = -1
             for propstat in response.findall("D:propstat", ns):

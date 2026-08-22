@@ -85,7 +85,9 @@ def test_sync_uploads_inline_and_side_channel_skipping_hidden_and_results(client
     stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
 
     assert _paths(client, wid) == ["demo.vast", "run.sh", "scenes/room.json"]
-    assert stats == {"written": 1, "uploaded": 2, "pruned": 0}  # .vast inline; run.sh + json uploaded
+    # .vast inline; run.sh + json uploaded. `skipped_dirs` counts results/, which is
+    # reported rather than dropped in silence.
+    assert stats == {"written": 1, "uploaded": 2, "pruned": 0, "skipped_dirs": 1}
     # .vast content written inline, nested path preserved.
     assert _content(client, wid, "demo.vast").startswith("configuration:")
 
@@ -114,7 +116,70 @@ def test_sync_echo_reports_each_change(client, project):
     lines = []
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"}, echo=lines.append)
     assert any("+ demo.vast" in ln for ln in lines)
-    assert all(ln.strip().startswith("+") for ln in lines)  # no prune lines without --prune
+    # No prune lines without --prune. The skip report is the other legitimate output, so
+    # this checks for the "-" a prune would emit rather than for "everything is a +".
+    assert not any(ln.strip().startswith("-") for ln in lines)
+
+
+# -- sync: campaign results are not project input ---------------------------
+
+
+def _campaign_dir(root, name):
+    """A directory that looks like campaign output because it CONTAINS the markers.
+
+    Named after a campaign id rather than "results", which is the case the name-based
+    default cannot catch: `vast results download` and `exec cluster run
+    --wait-and-download` both land a campaign under its own id.
+    """
+    d = root / name
+    (d / "_execution").mkdir(parents=True)
+    (d / "metadata.yaml").write_text("campaign_id: x\n")
+    (d / "_execution" / "outcome.json").write_text("{}")
+    (d / "cfg-1" / "0").mkdir(parents=True)
+    (d / "cfg-1" / "0" / "poses.csv").write_text("frame,x\n")
+    return d
+
+
+def test_sync_skips_a_results_tree_named_after_its_campaign(client, project):
+    _campaign_dir(project, "demo-2026-08-21-09291829")
+    wid = _wid(client)
+    stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+
+    # The campaign's files are absent even though nothing named it: recognised by content.
+    assert _paths(client, wid) == ["demo.vast", "run.sh", "scenes/room.json"]
+    assert stats["skipped_dirs"] == 2       # results/ by name, the campaign by content
+
+
+def test_sync_reports_what_it_skipped_and_how_to_include_it(client, project):
+    _campaign_dir(project, "demo-2026-08-21-09291829")
+    wid = _wid(client)
+    lines = []
+    sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
+                                echo=lines.append)
+    report = "\n".join(lines)
+    assert "demo-2026-08-21-09291829" in report      # named, not silently dropped
+    assert "campaign results" in report              # why
+    assert "--include-results" in report             # how to override
+
+
+def test_include_results_uploads_them_anyway(client, project):
+    _campaign_dir(project, "demo-2026-08-21-09291829")
+    wid = _wid(client)
+    sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
+                                include_results=True)
+    assert "demo-2026-08-21-09291829/cfg-1/0/poses.csv" in _paths(client, wid)
+    # `results` is excluded BY NAME, so the content override must not resurrect it --
+    # the two filters are independent and --include-results only relaxes the content one.
+    assert not any(p.startswith("results/") for p in _paths(client, wid))
+
+
+def test_a_project_with_only_one_marker_is_not_mistaken_for_results(client, project):
+    """One marker is not enough: a project may legitimately own a metadata.yaml."""
+    (project / "docs").mkdir()
+    (project / "docs" / "metadata.yaml").write_text("title: notes\n")
+    wid = _wid(client)
+    sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+    assert "docs/metadata.yaml" in _paths(client, wid)
 
 
 # -- sync: prune (full mirror) ----------------------------------------------

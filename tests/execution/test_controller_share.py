@@ -35,9 +35,14 @@ class _RecordingBackend:
     def __init__(self, fail=False):
         self.calls = []
         self._fail = fail
+        self.progress_callback = None
 
-    def share_campaign(self, campaign_root, options):
+    def share_campaign(self, campaign_root, options, progress_callback=None):
+        # The callback is part of the hook: the controller builds one per attempt so the
+        # campaign view can show an upload bar. It went unpassed for a long time, which is
+        # why this fake records that it arrives at all.
         self.calls.append("share")
+        self.progress_callback = progress_callback
         if self._fail:
             raise RuntimeError("share boom")
 

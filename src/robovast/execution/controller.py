@@ -957,18 +957,20 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
 
 def _share_campaign(backend: ExecutionBackend, campaign_root: str,
                     options: "RunOptions", state, notifier=None) -> None:
-    """Produce the raw upload-to-share artifact, **before** postprocessing.
+    """Produce the upload-to-share artifact, **before** postprocessing.
 
     Runs the backend's ``share_campaign`` hook (local: tar.gz on disk; cluster:
-    streamed to the share provider) so the shared archive is the minimal, untouched
-    campaign — postprocessing only *adds* derived data, which stays out of the share.
-    Best-effort: a share failure is logged but never loses the campaign nor blocks
-    postprocessing/finalize.
+    streamed to the share provider). Called here, the shared archive is the minimal,
+    untouched campaign — postprocessing only *adds* derived data, which stays out of
+    the share — and the backend names it ``raw`` because that is what it finds on
+    disk. Best-effort: a share failure is logged but never loses the campaign nor
+    blocks postprocessing/finalize.
     """
     try:
         if state is not None:
             state.set_phase(Phase.SHARING)
-        backend.share_campaign(campaign_root, options)
+        backend.share_campaign(campaign_root, options,
+                               progress_callback=make_upload_progress_cb(state))
     except Exception as e:  # pylint: disable=broad-except
         logger.warning("Upload-to-share failed; continuing with the campaign.",
                        exc_info=True)
@@ -987,7 +989,7 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         # controller's ``provider.SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
-def _make_upload_progress_cb(state):
+def make_upload_progress_cb(state):
     """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
     upload progress into ``Status.extra['upload']``, or ``None`` if there is no
     control channel.

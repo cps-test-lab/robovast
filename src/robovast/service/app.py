@@ -45,12 +45,13 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         EditFileRequest, ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
+                                        ImportCampaignRequest, ShareListing,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk, PanelsSource,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
-                                        RunShareRequest, SceneStatus, Status,
+                                        RunShareRequest, SceneStatus, StagedArchive, Status,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse, VersionInfo,
@@ -697,6 +698,75 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                                 detail="this service has no workspace store")
         return _guard(lambda: redeem(token, body))
 
+    # -- taking a campaign in: grant + streamed PUT, then one import op ------
+
+    @app.post(Routes.CAMPAIGN_ARCHIVES, response_model=UploadGrant, tags=["results"])
+    def create_archive_upload() -> UploadGrant:
+        """Grant a one-time PUT for a campaign archive.
+
+        Separate from ``POST /uploads`` because that one addresses ``/sources``: it needs
+        workspaces configured, and an archive is not project input.
+        """
+        grant = _guard(impl.create_archive_upload)
+        grant.url = f"{Routes.campaign_archive_upload(grant.token)}"
+        return grant
+
+    @app.put(Routes.CAMPAIGN_ARCHIVE_UPLOAD, response_model=StagedArchive, tags=["results"])
+    async def put_campaign_archive(token: str, req: Request) -> StagedArchive:
+        """Redeem a one-time token and stream a campaign archive to disk.
+
+        **Streamed, not buffered** — unlike ``PUT /uploads/{token}``, whose payload is a
+        ``.vast`` or a notebook. A campaign archive is routinely gigabytes, and reading one
+        into memory to write it straight back out would put the service's own footprint at
+        the mercy of what somebody uploads.
+
+        Stores the bytes and stops there: ``POST /campaigns/import`` is the import, for this
+        and every other caller, so the operation has a single implementation.
+        """
+        staged = _guard(lambda: impl.redeem_archive_upload(token))
+        size = 0
+        try:
+            with open(staged, "wb") as fh:
+                async for chunk in req.stream():
+                    fh.write(chunk)
+                    size += len(chunk)
+        except OSError as e:
+            staged.unlink(missing_ok=True)
+            raise HTTPException(status_code=500,
+                                detail=f"could not store the archive: {e}") from e
+        except Exception:
+            # A dropped connection leaves a truncated tarball that would only fail at import.
+            staged.unlink(missing_ok=True)
+            raise
+        return StagedArchive(path=str(staged), size=size)
+
+    @app.get(Routes.SHARE_ARCHIVES, response_model=ShareListing, tags=["results"])
+    def list_share_archives() -> ShareListing:
+        """What the configured share holds, read with this service's own credentials.
+
+        For the web UI, which can hold none of its own. ``configured=false`` when this
+        service has no share -- a different answer from an empty one, and a client that
+        conflated them would offer to import from nowhere.
+        """
+        return _guard(impl.list_share_archives)
+
+    @app.post(Routes.CAMPAIGN_IMPORT, response_model=CampaignRef, tags=["results"])
+    def import_campaign(request: ImportCampaignRequest) -> CampaignRef:
+        """Take a campaign in -- from a staged upload, a host path, or the share.
+
+        Registration is the point: listings and the web UI answer from ``campaign.db``, so an
+        archive that is merely extracted lists blank. An older archive migrates on the way in
+        -- the ``.vast`` ladder in memory, the store on open -- and a raw one is postprocessed
+        after it lands, since it arrives without the tables anybody would query.
+
+        Returns as soon as the import is under way, with the id of the campaign that is
+        already listed at phase ``importing`` -- the same shape ``create`` and ``retrigger``
+        answer with, because all three mean "a campaign now exists, go watch it". Per-stage
+        verdicts are written to its ``_execution/import.json``, because "import failed"
+        would hide which stage did and what recovers it.
+        """
+        return _guard(lambda: impl.import_campaign(request))
+
     # -- files: one address space -------------------------------------------
     #
     # ``/results/<campaign>/<path>`` and ``/sources/<workspace>/<path>``: the address a
@@ -963,27 +1033,24 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.campaign_archive("{campaign_id}"), tags=["results"])
     def download_campaign_archive(campaign_id: str):
-        """Stream a ``tar.gz`` of the **postprocessed** campaign from the object store.
+        """Stream a ``tar.gz`` of the campaign, on either lane.
 
-        Backs the ``postprocessed`` variant of ``vast results download`` for a
-        **cluster** service: objects are fetched from the object store and tarred on
-        the fly (``impl.campaign_tar_stream``) straight into the response — **no
-        scratch is used on the service and nothing is buffered in memory**, decisive
-        for ~1TB campaigns. Internal ``_postproc/`` staging is excluded so the download
-        is the clean campaign layout.
+        Backs ``vast results download`` and the web UI's download button. What comes
+        out is the campaign as this service holds it -- postprocessed, if it has been.
+        Internal ``_postproc/`` staging is excluded so the archive is the clean
+        campaign layout.
 
-        A **local** service refuses: its results already live on the same filesystem,
-        so there is nothing to download.
+        Nothing is buffered and no scratch is used, on either lane: the cluster fetches
+        objects from the store and tars them on the fly, the local lane tars its own
+        directory into the response. Decisive for ~1TB campaigns.
+
+        A local service used to refuse this with a 409 -- "the results are already on
+        this host's filesystem". True of a caller on that host, and false of everyone
+        else: a ``vast serve`` reached over the network could not be downloaded from at
+        all, and the web UI had to hide its own button on that lane. The lane is not
+        what decides whether a caller can read a file.
         """
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
-
-        if not hasattr(impl, "campaign_tar_stream"):  # local service
-            results_dir = getattr(getattr(impl, "store", None), "root", None)
-            hint = f" under {results_dir}" if results_dir else ""
-            raise HTTPException(
-                status_code=409,
-                detail=(f"this service runs locally; campaign '{campaign_id}' results "
-                        f"are already on this host's filesystem{hint} — no download needed"))
 
         return StreamingResponse(
             _guard(lambda: impl.campaign_tar_stream(campaign_id)),

@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""WebDAV share provider for ``cluster upload-to-share``."""
+"""WebDAV share provider for ``vast share`` and ``--upload-to-share``."""
 
 import base64
 import os
@@ -25,7 +25,7 @@ import urllib.parse
 import click
 import requests
 
-from robovast.common.execution import is_campaign_dir
+from .naming import parse_archive_name
 
 from .base import BaseShareProvider, UploadProgressReader
 
@@ -316,7 +316,7 @@ class WebDavShareProvider(BaseShareProvider):
             name = urllib.parse.unquote(href.rstrip("/").rsplit("/", 1)[-1])
             if not name.endswith(".tar.gz"):
                 continue
-            if not is_campaign_dir(name[:-len(".tar.gz")]):
+            if parse_archive_name(name) is None:
                 continue
             size_text = response.findtext(
                 "D:propstat/D:prop/D:getcontentlength",
@@ -337,7 +337,7 @@ class WebDavShareProvider(BaseShareProvider):
 
         Falls back to this when the server does not support ``PROPFIND``
         (e.g. Hetzner Storage Box).  Matches any ``*.tar.gz`` href whose base
-        name (without ``.tar.gz``) passes :func:`is_campaign_dir` and returns
+        name is read by :func:`~.naming.parse_archive_name`, and returns
         ``(name, -1)`` tuples (sizes not available from HTML listings).
         """
         try:
@@ -360,7 +360,7 @@ class WebDavShareProvider(BaseShareProvider):
         results = []
         for href_val in pattern.findall(resp.text):
             base = urllib.parse.unquote(href_val.rstrip("/").rsplit("/", 1)[-1])
-            if base.endswith(".tar.gz") and is_campaign_dir(base[:-len(".tar.gz")]):
+            if parse_archive_name(base) is not None:
                 results.append((base, -1))
         results.sort(key=lambda t: t[0])
         return results

@@ -1379,6 +1379,33 @@
         "title": "ImageResolution",
         "type": "object"
       },
+      "ImportCampaignRequest": {
+        "description": "Which campaign archive to take in, and from where. Exactly one source.\n\nTwo sources rather than one because the interesting one is the share: having the\n*service* fetch from it is what keeps a multi-gigabyte campaign off the path through\nsomebody's laptop, and out of reach of a user whose share credentials are read-only or\nabsent. ``archive_path`` is the other end of the same op \u2014 a file already on the service\nhost, including one just uploaded through\n:meth:`~robovast.service.interface.RobovastInterface.create_archive_upload`.",
+        "properties": {
+          "archive_path": {
+            "default": "",
+            "title": "Archive Path",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "rebuild_store": {
+            "default": false,
+            "title": "Rebuild Store",
+            "type": "boolean"
+          },
+          "share_archive": {
+            "default": "",
+            "title": "Share Archive",
+            "type": "string"
+          }
+        },
+        "title": "ImportCampaignRequest",
+        "type": "object"
+      },
       "JobCounts": {
         "description": "Aggregate job status counts for a campaign's current batch.",
         "properties": {
@@ -2328,8 +2355,102 @@
         "title": "ServedContribution",
         "type": "object"
       },
+      "ShareArchive": {
+        "description": "One campaign archive on the configured share.",
+        "properties": {
+          "campaign_id": {
+            "default": "",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "object_name": {
+            "default": "",
+            "title": "Object Name",
+            "type": "string"
+          },
+          "size": {
+            "default": -1,
+            "title": "Size",
+            "type": "integer"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "variant": {
+            "default": "",
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "object_name",
+          "size",
+          "url",
+          "variant"
+        ],
+        "title": "ShareArchive",
+        "type": "object"
+      },
+      "ShareListing": {
+        "description": "What the share holds, and which provider answered.\n\n``configured`` is False when this service has no share at all \u2014 a real answer, and a\ndifferent one from an empty share. A client that conflated them would offer to import\nfrom nowhere, or claim a configured share was empty when it simply could not be read.",
+        "properties": {
+          "archives": {
+            "items": {
+              "$ref": "#/components/schemas/ShareArchive"
+            },
+            "title": "Archives",
+            "type": "array"
+          },
+          "configured": {
+            "default": false,
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "share_type": {
+            "default": "",
+            "title": "Share Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archives",
+          "configured",
+          "share_type"
+        ],
+        "title": "ShareListing",
+        "type": "object"
+      },
+      "StagedArchive": {
+        "description": "Where an uploaded campaign archive landed on the service host.\n\nThe PUT that streams the bytes deliberately stops here rather than importing: import is\none op with one report, and making the byte channel a second entrance to it would give\nthe same operation two implementations to keep in step.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "default": 0,
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size"
+        ],
+        "title": "StagedArchive",
+        "type": "object"
+      },
       "Status": {
-        "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192 ``finished`` /\n``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change. ``share_provider``\nnames the share type of the current upload attempt; it can change across\nretriggers (a failed upload may be retried to a different provider).",
+        "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``importing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192\n``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change.\n\nWhat is on the share is deliberately *not* here. It was, as ``share_provider``,\nand nothing ever wrote it -- which is the shape of the mistake: the share is\nanother system's state, so a copy of it on a campaign goes stale the first time\nsomebody deletes an archive out of band. ``list_share_archives`` asks the share.",
         "properties": {
           "batch": {
             "default": 0,
@@ -2473,17 +2594,6 @@
             ],
             "title": "Share Error"
           },
-          "share_provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Share Provider"
-          },
           "stage": {
             "anyOf": [
               {
@@ -2532,7 +2642,6 @@
           "progress_since",
           "runs",
           "share_error",
-          "share_provider",
           "stage",
           "stop",
           "updated_at"
@@ -3415,6 +3524,71 @@
         ]
       }
     },
+    "/campaigns/archives": {
+      "post": {
+        "description": "Grant a one-time PUT for a campaign archive.\n\nSeparate from ``POST /uploads`` because that one addresses ``/sources``: it needs\nworkspaces configured, and an archive is not project input.",
+        "operationId": "create_archive_upload_campaigns_archives_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Archive Upload",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/archives/{token}": {
+      "put": {
+        "description": "Redeem a one-time token and stream a campaign archive to disk.\n\n**Streamed, not buffered** \u2014 unlike ``PUT /uploads/{token}``, whose payload is a\n``.vast`` or a notebook. A campaign archive is routinely gigabytes, and reading one\ninto memory to write it straight back out would put the service's own footprint at\nthe mercy of what somebody uploads.\n\nStores the bytes and stops there: ``POST /campaigns/import`` is the import, for this\nand every other caller, so the operation has a single implementation.",
+        "operationId": "put_campaign_archive_campaigns_archives__token__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StagedArchive"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Campaign Archive",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/cleanup-data": {
       "post": {
         "operationId": "cleanup_campaign_data_campaigns_cleanup_data_post",
@@ -3483,6 +3657,48 @@
         ]
       }
     },
+    "/campaigns/import": {
+      "post": {
+        "description": "Take a campaign in -- from a staged upload, a host path, or the share.\n\nRegistration is the point: listings and the web UI answer from ``campaign.db``, so an\narchive that is merely extracted lists blank. An older archive migrates on the way in\n-- the ``.vast`` ladder in memory, the store on open -- and a raw one is postprocessed\nafter it lands, since it arrives without the tables anybody would query.\n\nReturns as soon as the import is under way, with the id of the campaign that is\nalready listed at phase ``importing`` -- the same shape ``create`` and ``retrigger``\nanswer with, because all three mean \"a campaign now exists, go watch it\". Per-stage\nverdicts are written to its ``_execution/import.json``, because \"import failed\"\nwould hide which stage did and what recovers it.",
+        "operationId": "import_campaign_campaigns_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCampaignRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignRef"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Campaign",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}": {
       "delete": {
         "operationId": "delete_campaign_campaigns__campaign_id__delete",
@@ -3527,7 +3743,7 @@
     },
     "/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream a ``tar.gz`` of the **postprocessed** campaign from the object store.\n\nBacks the ``postprocessed`` variant of ``vast results download`` for a\n**cluster** service: objects are fetched from the object store and tarred on\nthe fly (``impl.campaign_tar_stream``) straight into the response \u2014 **no\nscratch is used on the service and nothing is buffered in memory**, decisive\nfor ~1TB campaigns. Internal ``_postproc/`` staging is excluded so the download\nis the clean campaign layout.\n\nA **local** service refuses: its results already live on the same filesystem,\nso there is nothing to download.",
+        "description": "Stream a ``tar.gz`` of the campaign, on either lane.\n\nBacks ``vast results download`` and the web UI's download button. What comes\nout is the campaign as this service holds it -- postprocessed, if it has been.\nInternal ``_postproc/`` staging is excluded so the archive is the clean\ncampaign layout.\n\nNothing is buffered and no scratch is used, on either lane: the cluster fetches\nobjects from the store and tars them on the fly, the local lane tars its own\ndirectory into the response. Decisive for ~1TB campaigns.\n\nA local service used to refuse this with a 409 -- \"the results are already on\nthis host's filesystem\". True of a caller on that host, and false of everyone\nelse: a ``vast serve`` reached over the network could not be downloaded from at\nall, and the web UI had to hide its own button on that lane. The lane is not\nwhat decides whether a caller can read a file.",
         "operationId": "download_campaign_archive_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -5966,6 +6182,28 @@
         "summary": "Get Results File",
         "tags": [
           "files"
+        ]
+      }
+    },
+    "/share/archives": {
+      "get": {
+        "description": "What the configured share holds, read with this service's own credentials.\n\nFor the web UI, which can hold none of its own. ``configured=false`` when this\nservice has no share -- a different answer from an empty one, and a client that\nconflated them would offer to import from nowhere.",
+        "operationId": "list_share_archives_share_archives_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareListing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Share Archives",
+        "tags": [
+          "results"
         ]
       }
     },

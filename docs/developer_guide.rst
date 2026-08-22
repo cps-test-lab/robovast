@@ -118,10 +118,10 @@ A good practice is, to first run a single configuration to verify that everythin
     # 1. run single configuration in cluster, once
     vast exec cluster run --config config1 --runs 1
 
-    # 2. upload results to share service (or use download-cleanup to just remove S3 buckets)
-    vast exec cluster upload-to-share
-    # Results can then be retrieved with: vast results download
-    # Files are organized as: <results-dir>/<campaign-name>-<timestamp>/<config-name>/<run_number>/
+    # 2. fetch the campaign's archive (or publish it to the share for someone else)
+    vast results download <campaign-id>       # -> ./<campaign-id>.tar.gz
+    vast share export -i <campaign-id>        # -> the configured share
+    # Inside the archive: <campaign-name>-<timestamp>/<config-name>/<run_number>/
 
 ``vast exec cluster run`` is fire-and-forget: it starts the campaign on the
 ``robovast-service``, which drives it in-process, and returns immediately. The
@@ -1394,6 +1394,32 @@ Who writes it
   store-driven view. (This paragraph previously said it stayed because ``import-results``
   and the tests used it -- stale on both counts: that command did not call it, and it had
   no caller at all, so a routine dead-code sweep would have taken the primitive with it.)
+
+Taking a campaign in
+^^^^^^^^^^^^^^^^^^^^
+
+``robovast.service.ingest`` owns both halves. :func:`~robovast.service.ingest.import_archive`
+unpacks an archive into a results root; :func:`~robovast.service.ingest.ingest_campaign`
+registers what came out and reports **per stage**, since a campaign archive carries three
+version surfaces of its own (the ``.vast``'s, ``campaign.db``'s and the analysis DB's) which
+can independently be older, newer, absent or corrupt. Neither re-implements a migration --
+the config ladder is applied in memory and the store migrates on open, so this module observes
+and reports.
+
+Three entry points, one implementation: ``vast results import`` (locally, or streamed to a
+reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the
+``import_campaign`` MCP tool. Only the first two ever move bytes; both do it through the
+archive side channel documented in :doc:`http_api`, and the import itself always takes a path
+on the host that will hold the campaign.
+
+Two refusals in ``import_archive`` are load-bearing rather than defensive. The archive must
+hold exactly **one** top-level entry, computed with a ``./`` root ignored -- reading the first
+path segment literally makes ``tar czf x.tar.gz -C <results> .`` look like one entry named
+``.``, which resolves to the results root, so a forced import would have deleted every
+campaign to make room for itself. And that entry must satisfy
+:func:`~robovast.common.execution.is_campaign_dir`, because the local listing and the delete
+guard both filter on that shape: a differently-named directory would import, report every
+stage ``ok``, and then be invisible and undeletable.
 
 Store-driven results views
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -177,12 +177,24 @@ This removes the scenario execution jobs and their associated pods from the clus
 Download Results
 """"""""""""""""
 
-When the campaign finishes, the results are uploaded to the configured share
-service (Nextcloud, GCS, …) automatically. Retrieve them with:
+Ask the service for the campaign's archive:
 
 .. code-block:: bash
 
-   vast results download
+   vast results download <campaign-id>
+
+That writes ``<campaign-id>.tar.gz`` into the current directory and stops there — the
+archive is yours to unpack, keep, or hand to a colleague.
+
+If the campaign was launched with ``--upload-to-share`` it also has a raw,
+pre-postprocessing copy on the configured share (Nextcloud, GCS, …), which is a
+separate system with its own commands:
+
+.. code-block:: bash
+
+   vast share list                     # what is on the share
+   vast share download <campaign-id>   # the raw archive, to this machine
+   vast share import <campaign-id>     # have a service take it in, and postprocess it
 
 See :ref:`cluster-sharing` for configuration details and :ref:`results-processing`
 for a complete description of the result files.

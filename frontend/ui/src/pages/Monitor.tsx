@@ -16,6 +16,7 @@ import Stack from '@mui/material/Stack'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
+import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // Postprocessing recomputes metrics from the preserved rosbags, so it gets the
@@ -39,6 +40,7 @@ import {
   type Status,
 } from '@/lib/robovastClient'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
+import { ShareInventory } from './ShareInventory'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
@@ -48,6 +50,7 @@ import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { LaunchedBy } from '@/components/LaunchedBy'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
+import { useCampaignImport } from './ImportCampaignButton'
 import { LaunchBar } from './LaunchBar'
 // Deferred, not statically imported: this dialog embeds a Monaco editor, and Monaco is
 // ~3.9 MB. Monitor is the view the app opens on, so importing it here put the whole editor
@@ -305,10 +308,25 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
   const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
 
-  // The postprocessed archive is streamed from the object store — only a cluster
-  // service serves it (a local service's results are already on its filesystem).
-  const version = useQuery({ queryKey: ['version'], queryFn: () => robovast.version() })
-  const canDownload = !running && version.data?.backend === 'kubernetes'
+  // Every lane serves the archive now: the cluster streams it from the object store, and a
+  // local service tars its own results directory (`campaign_tar_stream` is on the interface,
+  // implemented by both). So the only thing gating the download is whether the campaign is
+  // still being written to — it used to be gated on the backend as well, because a local
+  // service answered this route with a 409.
+  const canDownload = !running
+
+  // One listing for the whole page: every card asks under the same react-query key, so
+  // they collapse into a single request, and the share answers for itself rather than
+  // anything being cached onto a campaign. A share that is unconfigured or unreachable
+  // simply leaves every card with a plain icon button.
+  const shareArchives = useQuery({
+    queryKey: ['shareArchives'],
+    queryFn: () => robovast.listShareArchives(),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const shareCopy = shareArchives.data?.archives.find((a) => a.campaign_id === id) ?? null
+  const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null)
 
   // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
   // sidebar's connection meter, so every card on the page and the sidebar share one poll
@@ -439,7 +457,7 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 <ListItemIcon>
                   <CloudUploadRoundedIcon fontSize="small" />
                 </ListItemIcon>
-                <ListItemText>Retrigger upload-to-share</ListItemText>
+                <ListItemText>Export to share</ListItemText>
               </MenuItem>
               <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
                 <ListItemIcon>
@@ -451,16 +469,66 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           </>
         ) : null}
         {canDownload ? (
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<DownloadRoundedIcon />}
-            component="a"
-            href={robovast.archiveUrl(id)}
-            download={`${id}.tar.gz`}
-          >
-            Download
-          </Button>
+          shareCopy ? (
+            // A share copy exists, so download is one of two things you might want and the
+            // icon becomes a menu. With no copy there is no menu and no second click --
+            // the common case stays one press.
+            <>
+              <Tooltip title="Download">
+                <IconButton
+                  size="small"
+                  onClick={(e) => setDownloadAnchor(e.currentTarget)}
+                  aria-label="download options"
+                >
+                  <DownloadRoundedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Menu
+                anchorEl={downloadAnchor}
+                open={Boolean(downloadAnchor)}
+                onClose={() => setDownloadAnchor(null)}
+              >
+                <MenuItem
+                  component="a"
+                  href={robovast.archiveUrl(id)}
+                  download={`${id}.tar.gz`}
+                  onClick={() => setDownloadAnchor(null)}
+                >
+                  <ListItemIcon>
+                    <DownloadRoundedIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText>Download</ListItemText>
+                </MenuItem>
+                {/* Omitted where the provider has no openable link -- sftp never has one,
+                    and a webdav URL often needs credentials the recipient lacks. */}
+                {shareCopy.url ? (
+                  <MenuItem
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(shareCopy.url as string)
+                      setDownloadAnchor(null)
+                    }}
+                  >
+                    <ListItemIcon>
+                      <LinkRoundedIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText>Copy share link</ListItemText>
+                  </MenuItem>
+                ) : null}
+              </Menu>
+            </>
+          ) : (
+            <Tooltip title="Download">
+              <IconButton
+                size="small"
+                component="a"
+                href={robovast.archiveUrl(id)}
+                download={`${id}.tar.gz`}
+                aria-label="download"
+              >
+                <DownloadRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )
         ) : null}
         {running ? (
           <Button
@@ -636,6 +704,10 @@ function useCampaignStream() {
 
 export function Monitor() {
   const { data, error, live, reconnect } = useCampaignStream()
+  // The list is handed to the importer because it is how the import reports itself: the campaign
+  // appears at phase `importing` and its stage report is read once it settles. Reconnecting on
+  // start is belt-and-braces for a stream that has silently died meanwhile.
+  const importer = useCampaignImport(data?.campaigns, reconnect)
 
   return (
     // `cursor` is inherited, so this one rule covers the whole view: nothing here is
@@ -646,18 +718,34 @@ export function Monitor() {
     <Stack spacing={2} sx={{ cursor: 'default' }}>
       <LaunchBar />
 
+      {/* Refresh sits beside the title, as it does in the Explorer and the run view: it acts on
+          the list this heading names, and a control next to what it governs needs no label. The
+          import button is the one thing here pushed right — it adds to the list rather than
+          reloading it, and belongs at the end of the row for the same reason. */}
       <Stack direction="row" alignItems="center" spacing={1}>
         <Typography variant="h6">Campaigns</Typography>
+        <Tooltip title="Reload the campaign list">
+          <IconButton
+            size="small"
+            aria-label="Reload campaign list"
+            onClick={reconnect}
+            sx={{ color: 'common.white' }}
+          >
+            <RefreshRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         {data && !live ? (
           <Typography variant="caption" color="text.secondary">
             reconnecting…
           </Typography>
         ) : null}
         <Box flexGrow={1} />
-        <Button size="small" startIcon={<RefreshRoundedIcon />} onClick={reconnect}>
-          Refresh
-        </Button>
+        {importer.button}
       </Stack>
+
+      {/* Under the header row, not in it: an import's report is four stage lines, which inside
+          that flex row would push the heading and its controls around. */}
+      {importer.panel}
 
       {error ? (
         <Alert severity="error">
@@ -675,6 +763,12 @@ export function Monitor() {
           <CampaignCard key={c.campaign_id} summary={c} newest={i === 0} />
         ))
       )}
+      {/* Below the cards, and only when it has something to say: archives on the share
+          whose campaign is not here. Those cannot appear on a card -- there is no card --
+          and they are exactly what import is for. */}
+      <ShareInventory
+        presentIds={new Set((data?.campaigns ?? []).map((c) => c.campaign_id))}
+      />
     </Stack>
   )
 }

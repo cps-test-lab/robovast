@@ -84,8 +84,13 @@ def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> Non
 
 
 def make_campaign_tarball(campaign_root: str, archive_dir: str,
-                          exclude=DEFAULT_EXCLUDE) -> str:
-    """Write ``<archive_dir>/<campaign>.tar.gz`` from *campaign_root*; return its path.
+                          exclude=DEFAULT_EXCLUDE, name: "str | None" = None) -> str:
+    """Write the campaign at *campaign_root* into *archive_dir*; return its path.
+
+    *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. The local
+    lane passes the variant-carrying name a share uses
+    (:func:`~robovast.execution.share_providers.naming.archive_name`) so its
+    ``_archives/`` dir and a real share are readable by the same parser.
 
     Uses Python's built-in gzip (no ``pigz`` dependency) since this runs on the
     local host where ``pigz`` may be absent; the stream variants use ``pigz`` on the
@@ -94,7 +99,7 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
     campaign_root = os.path.normpath(str(campaign_root))
     arcname = os.path.basename(campaign_root)
     os.makedirs(archive_dir, exist_ok=True)
-    out_path = os.path.join(archive_dir, f"{arcname}.tar.gz")
+    out_path = os.path.join(archive_dir, name or f"{arcname}.tar.gz")
     with tarfile.open(out_path, "w:gz") as tar:
         _add_campaign_tree(tar, campaign_root, exclude)
     logger.info("Wrote campaign archive %s", out_path)

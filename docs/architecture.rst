@@ -585,13 +585,27 @@ For cluster campaigns, results live in the **object store** (the durable home);
 the service is a stateless gateway that streams finished campaigns from it —
 ``GET /campaigns/{id}/archive`` tars the campaign's objects **on the fly** into the
 response (no scratch on the service, nothing buffered in memory), which is what
-``vast results download`` and the web UI **Download** button use. The external
-``tar.gz`` share is **opt-in at launch** (``upload_to_share``): when set, the driver
-streams a raw, pre-postprocessing archive to the share the moment the runs finish,
-*before* postprocessing — so the shared copy stays minimal while the object store
-(and the postprocessed download) carry the derived data. For a local ``vast serve``,
-the durable home is simply the local filesystem, so it has no share and refuses the
-archive route.
+``vast results download`` and the web UI **Download** button use. A local ``vast
+serve`` answers the same route by tarring its own directory: the durable home differs,
+the operation does not. (It used to refuse with a 409 — "the results are already on
+this host's filesystem" — which was true of a caller on that host and false of
+everyone else, so a service reached over the network could not be downloaded from at
+all.)
+
+The external ``tar.gz`` share is a **separate system**, with its own credentials and
+its own lifetime, reached through ``vast share``. It is opt-in at launch
+(``upload_to_share``): when set, the driver streams the campaign to the share the
+moment the runs finish, *before* postprocessing — so the shared copy is the minimal
+``raw`` snapshot while the object store carries the derived data. Which variant an
+archive is rides in its name (``<campaign-id>.raw.tar.gz`` /
+``…postprocessed.tar.gz``) and is read off the campaign rather than passed in, so the
+campaign-end upload and a later ``vast share export`` cannot disagree.
+
+**The share is not a subset of what a service has.** A campaign can be cleaned up here
+while its archive stays up there — that overlap, not a hierarchy, is why
+``vast share import`` exists and why nothing caches "does this campaign have a share
+copy" on the campaign. ``GET /share/archives`` asks the share, with the service's own
+credentials, for the callers (a browser) that can hold none.
 
 Analysis postprocessing is **editable and re-runnable**: the raw rosbags are
 always preserved, so ``results_processing.postprocessing`` entries can be changed

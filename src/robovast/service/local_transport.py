@@ -33,7 +33,9 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -53,10 +55,11 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
-                                        CampaignSummary, OriginKind,
+                                        CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DiskSpace, EditFileRequest, FileEntry,
-                                        FileListing, FileMeta, FileText, ImageBuildRef, JobCounts,
+                                        FileListing, FileMeta, FileText, ImageBuildRef,
+                                        ImportCampaignRequest, JobCounts,
                                         JobSummary, ListCampaignsRequest, ListCampaignsResponse,
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
@@ -415,6 +418,55 @@ _HEALTH_TTL_S = 10.0
 #: command that needs longer wants ``exec_in_container``, where nothing is waiting on it.
 _PROBE_LIMIT_S = 60
 
+#: How long an uploaded-but-never-imported archive is kept before it is swept. Long enough that
+#: it cannot collide with an upload still in flight or a user deciding whether to force a
+#: replace, short enough that abandoned multi-gigabyte archives do not accumulate.
+STAGED_ARCHIVE_MAX_AGE_S = 24 * 60 * 60
+
+#: How long a campaign-archive upload grant stays redeemable, matching the workspace store's
+#: ``UPLOAD_TTL_SECONDS``. It bounds the wait *before* the PUT begins, not the transfer: the
+#: grant is consumed when the request arrives, so a multi-hour upload of a large campaign is
+#: not racing this.
+ARCHIVE_UPLOAD_TTL_SECONDS = 600
+
+
+def _archive_has_metrics(archive_path) -> bool:
+    """Whether the archive already carries ``_execution/data.db``, from the tar index.
+
+    Postprocessing writes that file and nothing else does, so its presence is the whole
+    raw-versus-postprocessed question -- answerable from the member list, without
+    extracting anything, before the import even starts.
+    """
+    import tarfile  # pylint: disable=import-outside-toplevel
+    try:
+        with tarfile.open(archive_path, "r:*") as tar:
+            return any(name.endswith("/_execution/data.db") for name in tar.getnames())
+    except (tarfile.TarError, OSError):
+        # Unreadable is not "postprocessed"; the extraction that follows will say so
+        # properly, and until then the safe answer is the one that runs postprocessing.
+        return False
+
+
+def _throttled_transfer_log(log, every: float = 0.10):
+    """A ``(received, total)`` provider callback that logs a line per *every* of the whole.
+
+    The providers call back per chunk, which in a campaign log is thousands of lines saying
+    nothing. A share download is the least inspectable minutes an import has -- gigabytes
+    from somebody else's storage -- so it gets an account of itself, just not that one.
+    """
+    seen = {"mark": 0.0}
+
+    def _cb(received, total):
+        if total <= 0:
+            return
+        fraction = received / total
+        if fraction < seen["mark"] and received < total:
+            return
+        seen["mark"] = fraction + every
+        log(f"  {fraction * 100:5.1f}%  {received}/{total} bytes")
+
+    return _cb
+
 
 class LocalTransport(RobovastInterface):
     """In-process implementation over the local Docker backend.
@@ -476,6 +528,10 @@ class LocalTransport(RobovastInterface):
         self._description_cache: dict[str, str] = {}
         self._created_by_cache: dict[str, str] = {}
         self._origin_cache: dict[str, CampaignOrigin] = {}
+        # token -> (expiry, staged archive path) for campaign-archive uploads. In memory by
+        # design; see the "taking a campaign in" section.
+        self._archive_grants: dict[str, tuple[float, Path]] = {}
+        self._archive_grants_lock = threading.Lock()
         # Prime psutil's non-blocking CPU sampler so the first resource_usage()
         # reading reflects real load instead of the 0.0 a cold sampler returns.
         import psutil  # pylint: disable=import-outside-toplevel
@@ -832,6 +888,371 @@ class LocalTransport(RobovastInterface):
         grant = self.store.create_upload(owner, rel, executable=request.executable)
         return UploadGrant(token=grant["token"], path=grant["path"],
                            expires_in=grant["expires_in"])
+
+    # -- taking a campaign in -----------------------------------------------
+    #
+    # Archive grants are held in memory rather than in the workspace store's token table,
+    # for two reasons: this channel must work on a service with no workspaces configured (the
+    # store is what raises 501 there), and a grant outliving the process would buy nothing --
+    # a restart mid-upload has already failed the upload.
+
+    #: Where uploaded archives are staged before import. Under the results root so a
+    #: multi-gigabyte tarball lands on the same volume it will be extracted into, rather
+    #: than on whatever backs the system temp dir.
+    _STAGING_DIRNAME = "_imports"
+
+    def _staging_dir(self) -> Path:
+        return self._campaigns_root() / self._STAGING_DIRNAME
+
+    def campaign_tar_stream(self, campaign_id: str):
+        """Tar this host's campaign directory straight into the response.
+
+        The local counterpart of the cluster's object-store tar: same exclusions, same
+        streaming, so a caller cannot tell which lane answered. ``_postproc/`` is left
+        out with ``.cache`` -- it is postprocessing's staging, not part of the campaign.
+        """
+        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+        campaign_dir = self._campaign_dir(campaign_id)
+        if not campaign_dir.is_dir():
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        return campaign_archive.iter_campaign_tar(
+            str(campaign_dir),
+            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"})
+
+    def create_archive_upload(self) -> UploadGrant:
+        token = secrets.token_urlsafe(32)
+        staged = self._staging_dir() / f"{token}.tar.gz"
+        with self._archive_grants_lock:
+            self._prune_archive_grants()
+            self._archive_grants[token] = (time.time() + ARCHIVE_UPLOAD_TTL_SECONDS, staged)
+        self._sweep_staged_archives()
+        return UploadGrant(token=token, path=str(staged),
+                           expires_in=ARCHIVE_UPLOAD_TTL_SECONDS)
+
+    def _sweep_staged_archives(self) -> None:
+        """Delete staged archives old enough that nothing can still be waiting on them.
+
+        Every other path already cleans up after itself: an import deletes the copy it
+        consumed, and a failed extraction deletes it too. What is left is the upload that was
+        never imported -- a refused pre-flight, or a browser that went away between the PUT and
+        the POST -- and those bytes are a campaign archive, so leaving them is leaving
+        gigabytes per attempt on the results volume.
+
+        Not deleted on refusal, deliberately: the answer to the commonest refusal (a campaign of
+        that id is already here) is to import the *same* staged archive again with ``force``,
+        which is exactly what the web UI's "Replace existing" does. Cleaning up on refusal would
+        make that retry re-upload the whole thing.
+
+        Age rather than liveness, for the same reason: a file being written has no grant left
+        (the token is consumed when the PUT begins), so "unreferenced" cannot distinguish an
+        upload in flight from an abandoned one. The window is generous because the thing it must
+        never do is delete an upload that is still arriving.
+        """
+        cutoff = time.time() - STAGED_ARCHIVE_MAX_AGE_S
+        staging = self._staging_dir()
+        if not staging.is_dir():
+            return
+        for path in staging.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    logger.info("Removed abandoned staged archive %s", path.name)
+            except OSError as e:
+                # Housekeeping: a file that cannot be removed must not fail the upload the
+                # caller actually asked for.
+                logger.warning("Could not remove staged archive %s: %s", path, e)
+
+    def _prune_archive_grants(self) -> None:
+        """Drop expired grants. Called under the lock, on each new grant."""
+        now = time.time()
+        for token in [t for t, (expiry, _) in self._archive_grants.items() if expiry < now]:
+            self._archive_grants.pop(token, None)
+
+    def redeem_archive_upload(self, token: str) -> Path:
+        """Consume *token* and return the path its bytes belong at.
+
+        One-time: the grant is removed here, so a replayed PUT is a plain 404 rather than a
+        second write to a path somebody else may already be importing.
+        """
+        with self._archive_grants_lock:
+            self._prune_archive_grants()
+            grant = self._archive_grants.pop(token, None)
+        if grant is None:
+            raise KeyError("no such upload grant (unknown, already used, or expired)")
+        _, staged = grant
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        return staged
+
+    def list_share_archives(self) -> ShareListing:
+        """Ask the share what it holds, with this service's own credentials.
+
+        Nothing is cached and nothing is cross-referenced against what this service has:
+        an archive whose campaign was cleaned up here is not an anomaly to be filtered out,
+        it is the main reason import exists. Clients decide what to do with the overlap.
+        """
+        from robovast.execution.share_providers import \
+            share_type_configured  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import \
+            parse_archive_name  # pylint: disable=import-outside-toplevel
+        from robovast.service.interface import \
+            ShareArchive  # pylint: disable=import-outside-toplevel
+
+        if not share_type_configured():
+            return ShareListing(configured=False)
+        provider = self._share_provider()
+        archives = []
+        for object_name, size in provider.list_campaign_archives_with_size():
+            parsed = parse_archive_name(os.path.basename(object_name))
+            if parsed is None:
+                continue
+            campaign_id, variant = parsed
+            archives.append(ShareArchive(
+                campaign_id=campaign_id, variant=variant, object_name=object_name,
+                size=size, url=provider.archive_url(object_name)))
+        archives.sort(key=lambda a: a.campaign_id)
+        return ShareListing(configured=True, share_type=provider.SHARE_TYPE,
+                            archives=archives)
+
+    def import_campaign(self, request: ImportCampaignRequest) -> CampaignRef:
+        """Take a campaign in, as a tracked background operation.
+
+        Long by construction -- a share download, a multi-gigabyte extraction, and then
+        postprocessing when what arrived was raw -- so it returns a handle rather than
+        blocking a request until it is over. Everything that is knowable up front is
+        settled here, synchronously, so the caller learns about a bad archive or a name
+        collision as an error and not as a background failure five minutes later.
+        """
+        campaign_id, fetch, raw = self._resolve_import_source(request)
+        note = ("this archive has no metric tables, so postprocessing runs once it lands -- "
+                "the import is not over when the extraction is") if raw else ""
+
+        # Pre-flight, the same shape as preflight_upload_to_share: the authoritative claim
+        # (which deletes, under force) happens in the worker once the busy guard has
+        # passed, so nothing here can destroy a campaign that is still being worked on.
+        if self._campaign_is_here(campaign_id) and not request.force:
+            raise RuntimeError(
+                f"{campaign_id} is already here. Refusing to overwrite a campaign that is "
+                f"already present -- its records are evidence. Import it again with force "
+                f"to replace it.")
+
+        def work(state):
+            self._run_import(state, campaign_id, fetch, request)
+
+        result = self._dispatch_background(campaign_id, phase=Phase.IMPORTING, work=work)
+        if not result.ok:
+            # The busy guard. A conflict, so it is raised rather than reported: this op
+            # answers with a ref, and there is no ref for a campaign that was not started.
+            raise RuntimeError(result.message)
+        return CampaignRef(campaign_id=campaign_id, note=note)
+
+    def _resolve_import_source(self, request: ImportCampaignRequest):
+        """``(campaign_id, fetch, raw)`` for an import request; raise if it names nothing.
+
+        *fetch* is a callable run inside the worker that puts the archive on this host and
+        returns ``(path, owned)`` -- ``owned`` meaning this service staged the copy and may
+        delete it afterwards. A path the caller named is never deleted: removing somebody's
+        own file as a side effect of importing it is not something they can undo.
+
+        Two things are known before any bytes move, on both sources: the campaign id -- from
+        the archive's member list, or from the object's name -- which is what lets the
+        campaign appear in the view at ``importing`` while it is still arriving; and whether
+        it is *raw*, which is what lets the caller be told up front that postprocessing
+        follows. Neither costs a read of the contents.
+        """
+        from robovast.execution.share_providers.naming import \
+            RAW  # pylint: disable=import-outside-toplevel
+        from robovast.service.ingest import \
+            read_campaign_id  # pylint: disable=import-outside-toplevel
+
+        if bool(request.archive_path) == bool(request.share_archive):
+            raise ValueError(
+                "an import names exactly one source: archive_path (a file on the service "
+                "host) or share_archive (an archive on the configured share)")
+
+        if request.archive_path:
+            archive = Path(request.archive_path)
+            if not archive.is_file():
+                raise KeyError(f"no archive at {request.archive_path} on the service host")
+            staged_root = self._staging_dir().resolve()
+            try:
+                owned = archive.resolve().parent == staged_root
+            except OSError:
+                owned = False
+            return (read_campaign_id(archive), lambda _log: (archive, owned),
+                    not _archive_has_metrics(archive))
+
+        object_name, campaign_id, variant = self._find_share_archive(request.share_archive)
+
+        def _fetch(log):
+            provider = self._share_provider()
+            dest = self._staging_dir() / f"{campaign_id}.tar.gz"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            log(f"downloading {object_name} from the {provider.SHARE_TYPE} share ...")
+            provider.download_archive(object_name, str(dest),
+                                      _throttled_transfer_log(log))
+            log(f"downloaded {dest.stat().st_size} bytes")
+            return dest, True
+
+        return campaign_id, _fetch, variant == RAW
+
+    def _share_provider(self):
+        """The configured share provider, or a refusal naming what is missing."""
+        from robovast.execution.share_providers import \
+            load_provider_from_env  # pylint: disable=import-outside-toplevel
+        provider = load_provider_from_env()
+        if provider is None:
+            raise RuntimeError(
+                "this service has no share configured (ROBOVAST_SHARE_TYPE unset), so it "
+                "cannot fetch an archive from one")
+        return provider
+
+    def _find_share_archive(self, wanted: str):
+        """``(object_name, campaign_id, variant)`` for *wanted* on the share.
+
+        *wanted* may be a campaign id or a full archive name; both resolve through the
+        share's own listing, so a typo is an error naming what is actually there rather
+        than a download of nothing.
+        """
+        from robovast.execution.share_providers.naming import \
+            parse_archive_name  # pylint: disable=import-outside-toplevel
+
+        provider = self._share_provider()
+        available = []
+        for object_name, _size in provider.list_campaign_archives_with_size():
+            parsed = parse_archive_name(os.path.basename(object_name))
+            if parsed is None:
+                continue
+            campaign_id, variant = parsed
+            available.append(campaign_id)
+            if wanted in (campaign_id, os.path.basename(object_name)):
+                return object_name, campaign_id, variant
+        raise KeyError(
+            f"no archive for {wanted!r} on the {provider.SHARE_TYPE} share. "
+            f"It holds: {', '.join(sorted(available)[:10]) or '(nothing)'}")
+
+    def _run_import(self, state, campaign_id: str, fetch, request) -> None:
+        """The import itself: claim, fetch, extract, register, and postprocess if raw.
+
+        Any failure removes the half-imported directory. A tree that got as far as looking
+        like a campaign but is not one would be listed by every client from then on, since
+        listings go by directory shape -- so leaving it is worse than leaving nothing. The
+        archive is untouched either way, so a retry costs only the transfer.
+        """
+        from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
+            add_campaign_log_handler, remove_campaign_log_handler)
+        from robovast.service.ingest import (  # pylint: disable=import-outside-toplevel
+            claim_campaign_dir, extract_archive, ingest_campaign)
+        from robovast.service.interface import \
+            IngestReport  # pylint: disable=import-outside-toplevel
+
+        if request.force:
+            self._release_durable_campaign(campaign_id)
+        target = claim_campaign_dir(self._campaigns_root(), campaign_id,
+                                    force=request.force)
+        handler = None
+        try:
+            handler = add_campaign_log_handler(str(target / "_execution" / "import.log"))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not open import.log for %s", campaign_id, exc_info=True)
+
+        try:
+            archive, owned = fetch(logger.info)
+            logger.info("extracting %s into %s ...", Path(archive).name,
+                        self._campaigns_root())
+            extract_archive(archive, self._campaigns_root(), remove_archive=owned)
+            report = ingest_campaign(target, rebuild_store=request.rebuild_store)
+            for name, stage in report["stages"].items():
+                logger.info("  %-15s %-10s %s", name, stage["verdict"], stage["detail"])
+            # Through the wire model rather than json.dumps of a dict: one definition of
+            # what a stage report is, so what a client reads out of the file and what the
+            # interface documents cannot drift apart.
+            (target / "_execution" / "import.json").write_text(
+                IngestReport.model_validate(report).model_dump_json(indent=2),
+                encoding="utf-8")
+            if not report["ok"]:
+                raise RuntimeError(
+                    f"{campaign_id} could not be ingested: {', '.join(report['blocking'])}")
+            logger.info("\u2713 imported %s", campaign_id)
+        except Exception as e:  # noqa: BLE001 - reported on the entry; the tree is not kept
+            logger.error("\u2717 import of %s failed: %s", campaign_id, e)
+            remove_campaign_log_handler(handler)
+            handler = None
+            shutil.rmtree(target, ignore_errors=True)
+            state.update(error=failure_detail(e))
+            state.set_phase(Phase.FAILED)
+            return
+        finally:
+            remove_campaign_log_handler(handler)
+
+        self._postprocess_after_import(state, campaign_id, target)
+
+    def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
+                              force: bool = False, skip=()) -> tuple:
+        """Run the campaign's own postprocessing pipeline; return ``(ok, message)``.
+
+        One call for both callers -- the ``run_postprocessing`` retrigger and the chain an
+        import starts -- so a raw archive taken in is postprocessed exactly the way asking
+        for it later would be.
+
+        ``campaign`` scopes the work to this campaign; with no ``vast_file`` the run reads
+        the campaign's own ``_config/<name>.vast``. ``output_callback`` is what puts the
+        step-by-step narrative ("[2/4] Executing: …", "✓ …") into whichever campaign log
+        handler the caller opened. Without it those lines default to ``print`` and land on
+        the service's stdout, so the phase file held only what modules logged themselves --
+        the campaign log looked empty for the run you had just asked for.
+        """
+        from robovast.results_processing.postprocessing import \
+            run_postprocessing  # pylint: disable=import-outside-toplevel
+        return run_postprocessing(
+            results_dir=str(campaign_dir.parent), campaign=campaign_id,
+            force=force, skip=list(skip), output_callback=logger.info)
+
+    def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
+        """Chain postprocessing when the imported campaign has none of its own.
+
+        ``_execution/data.db`` is postprocessing's output and nothing else writes it, so its
+        absence is the question already answered: this archive is a raw one -- what the
+        share holds -- and a campaign with no metric tables is not one anybody can ask
+        anything. A postprocessed archive is left exactly as it arrived.
+        """
+        from robovast.execution.status_recovery import \
+            record_step_outcome  # pylint: disable=import-outside-toplevel
+
+        if (target / "_execution" / "data.db").exists():
+            logger.info("%s arrived postprocessed; nothing to compute", campaign_id)
+        else:
+            logger.info("%s arrived raw; running postprocessing", campaign_id)
+            state.set_phase(Phase.POSTPROCESSING)
+            ok, message = self._postprocess_campaign(campaign_id, target)
+            status = record_step_outcome(target, postprocessing=(ok, message))
+            state.update(postprocessed=status.postprocessed,
+                         postprocessing_error=status.postprocessing_error)
+        # Last, and after postprocessing rather than before: on a lane whose durable home
+        # is elsewhere this is where the campaign actually becomes durable, and publishing
+        # first would have published a campaign without the tables just computed.
+        self._publish_imported_campaign(campaign_id, target)
+        state.set_phase(Phase.FINISHED)
+
+    # -- the three things an import means something different by, per lane -----
+    #
+    # Local disk is both the working area and the durable home, so all three are trivial
+    # here. A lane whose home is an object store overrides them; nothing else in the
+    # import differs, which is why they are three small questions rather than a second
+    # copy of the sequence.
+
+    def _campaign_is_here(self, campaign_id: str) -> bool:
+        """Whether importing this id would replace something. Asked before any transfer."""
+        return self._campaign_dir(campaign_id).exists()
+
+    def _release_durable_campaign(self, campaign_id: str) -> None:
+        """Under ``force``: drop the durable copy this import is about to replace.
+
+        Nothing to do locally — the directory *is* the durable copy, and
+        ``claim_campaign_dir`` removes it.
+        """
+
+    def _publish_imported_campaign(self, campaign_id: str, target: Path) -> None:
+        """Make the imported campaign durable. Locally it already is."""
 
     # -- interface ----------------------------------------------------------
 
@@ -3081,7 +3502,6 @@ class LocalTransport(RobovastInterface):
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Delete the campaign's directory under the results root (see interface)."""
-        import shutil
         self._ensure_deletable(campaign_id)
         campaign_dir = self._campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
@@ -3143,6 +3563,12 @@ class LocalTransport(RobovastInterface):
         and records the durable outcome; this helper only owns the tracked-entry lifecycle
         and a crash safety-net. The entry's ``created_at`` is the campaign's real start
         time so a re-run does not make its listed ``started_at`` jump to now.
+
+        An **import** is dispatched through here too, and it is the one case where the
+        campaign directory does not exist yet: registering the entry is exactly what makes
+        the campaign visible while its bytes are still arriving. So the two reads below are
+        allowed to find nothing and fall back — which is also the honest answer, since a
+        campaign being imported has no earlier start time than now.
         """
         with self._lock:
             existing = self._campaigns.get(campaign_id)
@@ -3189,7 +3615,6 @@ class LocalTransport(RobovastInterface):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             from robovast.execution.status_recovery import record_step_outcome
-            from robovast.results_processing.postprocessing import run_postprocessing
             handler = None
             try:
                 handler = add_campaign_log_handler(
@@ -3198,18 +3623,9 @@ class LocalTransport(RobovastInterface):
                 logger.warning("Could not open postprocessing.log for %s",
                                request.campaign_id, exc_info=True)
             try:
-                # `campaign` scopes the work to this campaign; with no `vast_file` the run
-                # reads the campaign's own `_config/<name>.vast` (edited in place).
-                # `output_callback` is what puts the step-by-step narrative ("[2/4]
-                # Executing: …", "✓ …") into the handler opened above. Without it those lines
-                # default to `print` and land on the service's stdout, so a *retriggered*
-                # postprocessing wrote a phase file holding only what modules logged
-                # themselves -- the campaign log looked empty for the run you just asked for.
-                # Same callback the in-campaign path passes (`_postprocess`).
-                ok, message = run_postprocessing(
-                    results_dir=str(campaign_dir.parent), campaign=request.campaign_id,
-                    force=request.force, skip=list(request.skip or []),
-                    output_callback=logger.info)
+                ok, message = self._postprocess_campaign(
+                    request.campaign_id, campaign_dir,
+                    force=request.force, skip=list(request.skip or []))
             finally:
                 remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
@@ -3233,6 +3649,7 @@ class LocalTransport(RobovastInterface):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
             from robovast.execution.backends import RunOptions
+            from robovast.execution.controller import make_upload_progress_cb
             from robovast.execution.status_recovery import record_step_outcome
 
             # Its own phase file, so the campaign log shows what an upload did under a SHARE
@@ -3253,7 +3670,8 @@ class LocalTransport(RobovastInterface):
             try:
                 logger.info("upload-to-share: %s", campaign_dir.name)
                 backend.preflight_upload_to_share()
-                backend.share_campaign(str(campaign_dir), options)
+                backend.share_campaign(str(campaign_dir), options,
+                                       progress_callback=make_upload_progress_cb(state))
                 ok, message = True, "upload-to-share complete"
                 logger.info("✓ %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error

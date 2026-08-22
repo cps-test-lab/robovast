@@ -1477,18 +1477,21 @@ class KubernetesBackend(ExecutionBackend):
                 "  ROBOVAST_GCS_BUCKET=my-robovast-results\n"
                 "— or drop --upload-to-share.")
 
-    def share_campaign(self, campaign_root: str, options) -> None:
-        """Stream the raw campaign straight to the configured share provider.
+    def share_campaign(self, campaign_root: str, options,
+                       progress_callback=None) -> None:
+        """Stream the campaign straight to the configured share provider.
 
         Overrides the local tar.gz-on-disk behaviour: the campaign is already on the
         driver's scratch (the batch runner downloaded it back for scoring), so it is
         tarred + gzipped **on the fly** into the provider's request body — no
-        compressed copy ever lands on disk, which matters for ~1TB campaigns. Runs
-        before analysis postprocessing, so the shared archive is the minimal raw
-        snapshot. A share failure is surfaced but never loses the campaign (the
-        controller wraps this call).
+        compressed copy ever lands on disk, which matters for ~1TB campaigns. At
+        campaign end this runs before analysis postprocessing, so what goes up is the
+        minimal raw snapshot; the name says which it is either way. A share failure is
+        surfaced but never loses the campaign (the controller wraps this call).
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            archive_name, campaign_variant)
 
         from . import in_pod_upload  # pylint: disable=import-outside-toplevel
 
@@ -1503,11 +1506,13 @@ class KubernetesBackend(ExecutionBackend):
                 "upload-to-share enabled but no share provider is configured "
                 "(ROBOVAST_SHARE_TYPE unset) for %s." % campaign_id)
         in_pod_upload.verify_share_access(provider)
-        object_name = f"{campaign_id}.tar.gz"
-        logger.info("Streaming raw campaign %s to %s share as %s...",
-                    campaign_id, provider.SHARE_TYPE, object_name)
+        variant = campaign_variant(campaign_root)
+        object_name = archive_name(campaign_id, variant)
+        logger.info("Streaming %s campaign %s to %s share as %s...",
+                    variant, campaign_id, provider.SHARE_TYPE, object_name)
         with campaign_archive.campaign_tar_stream(campaign_root) as stream:
-            provider.upload_archive_stream(stream, object_name)
+            provider.upload_archive_stream(stream, object_name,
+                                           progress_callback=progress_callback)
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
 
     def count_run_artifacts(self, campaign_id: str,

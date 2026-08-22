@@ -48,6 +48,24 @@ reading the route table:
 Large uploads take the side channel instead: ``POST /uploads`` grants a token, and
 ``PUT /uploads/{token}`` streams the bytes.
 
+A **campaign archive** has its own channel rather than an address in that space, because
+``/sources`` needs workspaces configured (a ``501`` otherwise) and an archive is not project
+input, while ``/results`` is read-only by registration and punching a write into it would cost
+exactly the property that section describes. So: ``POST /campaigns/archives`` grants a token,
+``PUT /campaigns/archives/{token}`` streams the bytes — **streamed to disk, not buffered**,
+unlike the ``/uploads`` PUT whose payload is a ``.vast`` — and it answers with where they
+landed. It stops there. ``POST /campaigns/import`` is the import, for that upload and for a
+path put on the host by any other means, so the operation has one implementation rather than
+one per entry point; an archive the *service* staged is removed once imported, a path the
+caller named is not.
+
+An upload that was never imported is **not** removed when the import refuses it: the answer to
+the commonest refusal — a campaign of that id is already here — is to import the same staged
+archive again with ``force``, and cleaning up on refusal would turn that retry into a second
+multi-gigabyte upload. They are swept by age instead, on the next grant. Age rather than
+liveness because the grant is consumed when the PUT begins, so an unreferenced staging file
+cannot be told apart from one still arriving.
+
 Status codes
 ============
 
@@ -67,7 +85,8 @@ the meaning of a status is uniform across every route:
      - ``KeyError`` — no such campaign, workspace, build or file.
    * - ``409``
      - ``RuntimeError`` — the request conflicts with current state (stopping a campaign
-       that is not running; asking a *local* service for a cluster archive).
+       that is not running; importing over a campaign that is already here, or one that
+       is busy with another operation).
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
@@ -79,8 +98,11 @@ Streaming
 Four routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
-than replaying the whole log. ``GET /campaigns/{id}/archive`` streams a tar.gz of a cluster
-campaign's results as they are fetched from the object store.
+than replaying the whole log. ``GET /campaigns/{id}/archive`` streams a tar.gz of the
+campaign — tarred from the object store's objects as they are fetched on a cluster
+service, from the campaign directory on a local one. Both lanes answer it: a local
+service used to refuse with a ``409`` ("the results are already on this host's
+filesystem"), which was true of a caller on that host and false of everyone else.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is

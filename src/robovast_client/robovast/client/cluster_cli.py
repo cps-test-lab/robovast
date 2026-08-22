@@ -114,7 +114,7 @@ def _confirm_overwrite(name, workspace_id):
 @target_options
 @click.option('--wait-and-download', 'wait_and_download', is_flag=True,
               help='Block until the campaign finishes and its results are uploaded, '
-                   'then download them into the project results directory — making a '
+                   'then download its archive into the current directory — making a '
                    'cluster run as transparent as a local run.')
 @click.option('--poll-interval', type=float, default=5.0, show_default=True,
               help='Seconds between status polls when --wait-and-download is set.')
@@ -179,7 +179,7 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
         from robovast.service.interface import \
             DESCRIPTION_MAX_LEN  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
-            download_campaign_via_service, run_project_via_service)
+            download_campaign_archive, run_project_via_service)
 
         # Checked here rather than left to the request model: this says what to do
         # instead of surfacing a pydantic validation string, and it refuses before the
@@ -220,10 +220,13 @@ def run(config, runs, log_tree, namespace, context, wait_and_download,
                     f"Campaign '{cid}' failed. Its status carries the failure reason: "
                     f"see 'vast exec cluster log {cid}' or the web UI.")
 
-            click.echo(f"Campaign '{cid}' finished. Downloading results...")
+            click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
             # The service streams the campaign from the object store — no external
-            # share needed for delivery.
-            download_campaign_via_service(client, cid, os.getcwd(), feedback=click.echo)
+            # share needed for delivery. An archive, not an unpacked tree: what to do
+            # with it is the caller's, exactly as for `vast results download`.
+            dest = download_campaign_archive(
+                client, cid, os.path.join(os.getcwd(), f"{cid}.tar.gz"))
+            click.echo(f"Wrote {dest}")
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
     # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints

@@ -25,9 +25,11 @@ class _FakeProvider:
 
     def __init__(self):
         self.uploaded = None
+        self.progress_callback = None
 
     def upload_archive_stream(self, fileobj, object_name, progress_callback=None):
         self.uploaded = (object_name, fileobj.read())
+        self.progress_callback = progress_callback
 
 
 def _patch_stream(monkeypatch, payload=b"tar-bytes"):
@@ -41,15 +43,38 @@ def _backend():
     return KubernetesBackend(cluster_config=types.SimpleNamespace())
 
 
-def test_share_campaign_streams_to_provider(monkeypatch):
+def test_share_campaign_streams_to_provider_naming_the_variant(monkeypatch, tmp_path):
     provider = _FakeProvider()
     monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: provider)
     monkeypatch.setattr(in_pod_upload, "verify_share_access", lambda p: None)
     _patch_stream(monkeypatch, b"tar-bytes")
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    (campaign / "_execution").mkdir(parents=True)
 
-    _backend().share_campaign("/scratch/camp-2026-01-01-000000", RunOptions())
+    _backend().share_campaign(str(campaign), RunOptions(),
+                              progress_callback="the-callback")
 
-    assert provider.uploaded == ("camp-2026-01-01-000000.tar.gz", b"tar-bytes")
+    # Called from the finish tail, so postprocessing has not run: raw, and named so.
+    assert provider.uploaded == ("camp-2026-01-01-000000.raw.tar.gz", b"tar-bytes")
+    # Passing it is the point: this was dropped, so the upload bar the campaign view
+    # renders never had anything to render.
+    assert provider.progress_callback == "the-callback"
+
+
+def test_share_campaign_names_a_postprocessed_campaign_as_such(monkeypatch, tmp_path):
+    # A later `vast share export` of the same campaign finds data.db and says so. Nobody
+    # passes the variant in -- both callers read it off the tree, so they cannot disagree.
+    provider = _FakeProvider()
+    monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: provider)
+    monkeypatch.setattr(in_pod_upload, "verify_share_access", lambda p: None)
+    _patch_stream(monkeypatch, b"tar-bytes")
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    (campaign / "_execution").mkdir(parents=True)
+    (campaign / "_execution" / "data.db").write_bytes(b"")
+
+    _backend().share_campaign(str(campaign), RunOptions())
+
+    assert provider.uploaded[0] == "camp-2026-01-01-000000.postprocessed.tar.gz"
 
 
 def test_preflight_raises_without_share_configured(monkeypatch):

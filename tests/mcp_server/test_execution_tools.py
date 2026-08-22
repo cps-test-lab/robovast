@@ -340,7 +340,11 @@ def test_stop_without_service_fails_loudly(no_service):
 
 @pytest.fixture
 def dual_lane(monkeypatch):
-    """A service whose reported default lane is not the lane a campaign ran on."""
+    """A service whose reported default lane is not the lane a campaign ran on.
+
+    Kept after the lane branching was removed, because "the answer does not depend on the
+    lane" is only worth asserting against a service where the two disagree.
+    """
     from robovast.mcp_server import data_access
 
     class _Dual:
@@ -349,8 +353,6 @@ def dual_lane(monkeypatch):
         def version(self):
             from robovast.service.interface import VersionInfo
 
-            # The service reports its *current* lane. Asking it which lane a past
-            # campaign used gives the wrong answer, which is the point of this fixture.
             return VersionInfo(robovast_version="x", backend="docker",
                                backends=["local", "cluster"])
 
@@ -364,27 +366,25 @@ def dual_lane(monkeypatch):
     return recorded
 
 
-def test_download_offers_the_url_for_a_cluster_campaign_on_a_dual_lane_service(dual_lane):
-    """It used to read the service's default backend, which is ``docker`` here.
+@pytest.mark.parametrize("lane", ["cluster", "local", None])
+def test_download_offers_the_url_whatever_lane_the_campaign_ran_on(dual_lane, lane):
+    """Every lane serves the archive, so the tool no longer asks which one ran it.
 
-    Every cluster campaign on a dev host was therefore told its results were on the local
-    filesystem — a real capability denied, and a place to look that holds nothing.
+    Two bugs died with that question, and this is here so neither can come back. It used to
+    read the *service's* default backend, so on a dev host every cluster campaign was told its
+    results were on the local filesystem — a real capability denied and a place to look that
+    holds nothing. Reading the campaign's own record fixed that but kept the branch, which
+    then denied the download to genuinely local campaigns; those are now served too (the local
+    lane tars its own results directory), so the branch had nothing left to decide.
+
+    ``lane=None`` is a campaign with no execution record yet: previously the case that fell
+    back to the service's default, and now simply not a question that gets asked.
     """
-    dual_lane["camp-cluster"] = "cluster"
-    result = results_lifecycle.get_campaign_download("camp-cluster")
-    assert result["url"].endswith("/campaigns/camp-cluster/archive")
-
-
-def test_download_says_there_is_none_for_a_local_campaign(dual_lane):
-    dual_lane["camp-local"] = "local"
-    result = results_lifecycle.get_campaign_download("camp-local")
-    assert "url" not in result and "no HTTP download" in result["note"]
-
-
-def test_download_falls_back_to_the_service_backend_before_execution(dual_lane):
-    """A campaign with no record yet has nothing better to ask than the service."""
-    result = results_lifecycle.get_campaign_download("camp-unstarted")
-    assert "url" not in result  # this service's default lane is docker
+    if lane:
+        dual_lane["camp-x"] = lane
+    result = results_lifecycle.get_campaign_download("camp-x")
+    assert result["url"].endswith("/campaigns/camp-x/archive")
+    assert "error" not in result
 
 
 def test_resource_usage_without_service_fails_loudly(no_service):
@@ -411,12 +411,17 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
     assert "error" not in res
 
 
-def test_get_campaign_download_local_has_no_url(monkeypatch):
+def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
+    """A local service serves the archive too, so the two lanes answer identically.
+
+    The note must not send the caller to the service's filesystem: the point of the route is
+    that a caller who cannot reach that filesystem can still get the campaign.
+    """
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("docker"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
-    assert "url" not in res
-    assert "filesystem" in res["note"]
+    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
+    assert "filesystem" not in res["note"]
 
 
 def test_get_campaign_download_no_service_errors(monkeypatch):

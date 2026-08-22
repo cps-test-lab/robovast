@@ -125,7 +125,7 @@ reading results. Each phase is one plugin, so the generated table below is also 
        listing and one aggregate.
    * - ``results_lifecycle``
      - Acting *on* finished results: re-deriving them (postprocessing), publishing them,
-       downloading, cleaning up, deleting.
+       downloading, taking one in, cleaning up, deleting.
    * - ``reference`` / ``docs`` / ``examples`` / ``plugin_metadata``
      - Reference material about RoboVAST itself: the config schema, the CLI, the
        documentation, worked examples, and what plugins are installed.
@@ -429,6 +429,29 @@ Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
 ``get_campaign_download``).
+
+The opposite direction is ``import_campaign``: it takes in a campaign archive
+somebody else produced and registers it, so it lists, displays and can be re-run like
+one that ran here. It has two sources and **neither carries bytes, for the same reason
+the download is link-only** — a campaign archive is routinely gigabytes.
+``archive_path`` is a path on the *service host*; an archive on your own machine goes
+through ``vast results import`` or the web UI's campaign view, both of which upload it
+over a side channel (:doc:`http_api`) and then call this same operation.
+``share_archive`` names one on the configured share, which the **service** downloads
+itself — so a campaign moving between two servers never travels through anybody's
+laptop, and needs no share credentials of yours.
+
+The tool returns a ``campaign_id`` rather than a report, because the import is a
+tracked operation: watch it with ``vast wait <campaign_id>``, and read the per-stage
+verdicts from the campaign's ``_execution/import.json``. Per stage because an archive
+carries three version surfaces of its own and each can independently be older, newer,
+absent or corrupt; a *degraded* import is usable-but-incomplete rather than a failure,
+so read it before discarding a campaign you just recovered.
+
+There is no MCP tool for listing or downloading from the share. That is deliberate and
+it is the same rule as the wait tools: a share listing is a CLI call
+(``vast share list``), and a transfer that can outlive a turn is a shell command
+(``vast share download``, ``vast share import``), which costs this surface nothing.
 
 Pass a ``description`` (≤ 200 characters) saying what the run is *for*. It is
 recorded on the campaign row in its ``campaign.db``, so it travels with the

@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google Cloud Storage share provider for ``cluster upload-to-share``."""
+"""Google Cloud Storage share provider for ``vast share`` and ``--upload-to-share``."""
 
 import json
 import os
@@ -27,7 +27,7 @@ from typing import Callable
 
 import click
 
-from robovast.common.execution import is_campaign_dir
+from .naming import parse_archive_name
 
 from .base import BaseShareProvider, UploadProgressReader
 
@@ -54,7 +54,7 @@ class GcsShareProvider(BaseShareProvider):
          - Target GCS bucket name (e.g. ``my-robovast-results``)
        * - ``ROBOVAST_GCS_KEY_FILE``
          - Path to the service-account JSON key file
-           (**required for** ``cluster upload-to-share`` **only**;
+           (**required for writing only** -- an upload or a remove;
            not needed for ``results download`` on public buckets)
 
     Optional ``.env`` variables:
@@ -72,7 +72,7 @@ class GcsShareProvider(BaseShareProvider):
     SHARE_TYPE = "gcs"
 
     def required_env_vars(self) -> dict[str, str]:
-        # ROBOVAST_GCS_KEY_FILE is only required for upload (cluster upload-to-share);
+        # ROBOVAST_GCS_KEY_FILE is only required for writing (upload / remove);
         # download uses the public GCS HTTP API and needs no credentials.
         return {
             "ROBOVAST_GCS_BUCKET": (
@@ -84,7 +84,7 @@ class GcsShareProvider(BaseShareProvider):
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
             raise click.UsageError(
-                "ROBOVAST_GCS_KEY_FILE is required for cluster upload-to-share.\n"
+                "ROBOVAST_GCS_KEY_FILE is required to write to the share.\n"
                 "Set it to the path of a service-account JSON key file with "
                 "Storage Object Creator access on the bucket."
             )
@@ -437,7 +437,7 @@ class GcsShareProvider(BaseShareProvider):
                 size_el = content.find("s3:Size", ns)
                 if key_el is not None and key_el.text and key_el.text.endswith(".tar.gz"):
                     base = key_el.text.rstrip("/").rsplit("/", 1)[-1]
-                    if is_campaign_dir(base[:-len(".tar.gz")]):
+                    if parse_archive_name(base) is not None:
                         size = int(size_el.text) if size_el is not None and size_el.text else -1
                         found.append((key_el.text, size))
 
@@ -578,7 +578,7 @@ class GcsShareProvider(BaseShareProvider):
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")
         if not key_file:
             raise click.UsageError(
-                "ROBOVAST_GCS_KEY_FILE is required for results remove-from-share.\n"
+                "ROBOVAST_GCS_KEY_FILE is required for 'vast share remove'.\n"
                 "Set it to the path of a service-account JSON key file with "
                 "Storage Object Admin access on the bucket."
             )

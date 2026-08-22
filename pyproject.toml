@@ -137,6 +137,10 @@ serve = "robovast.common.cli.core_commands:serve"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 results = "robovast.results_processing.cli:results"
+# `vast share`: four of its six verbs instantiate a share provider, so the group needs
+# the core. `export`/`import` only drive the service and could live in the client, but
+# one group split across two distributions is worse than the asymmetry.
+share = "robovast.execution.share_cli:share"
 # No `execution` here: `vast exec` is the client's group now, because the launch path
 # (push a project, ask the service to run it) needs nothing the core provides. What
 # needed the core was `vast exec local`, which attaches below.

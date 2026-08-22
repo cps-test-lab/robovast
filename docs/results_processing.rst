@@ -79,7 +79,9 @@ The structure inside is domain-specific, but typically includes:
    ├── variation.log                         # ``variation`` phase (config-variation expansion)
    ├── controller.log                        # ``run`` phase — campaign controller log
    ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + data.db)
-   └── share.log                             # ``share`` phase (upload-to-share, when retriggered)
+   ├── share.log                             # ``share`` phase (export to share, when re-run)
+   ├── import.log                            # ``importing`` phase (only on an imported campaign)
+   └── import.json                           # per-stage ingest report (only on an imported campaign)
 
 Each pre-/post-run **phase** writes its own log file here; the service concatenates
 them in phase order into the single live campaign log the web UI streams. The
@@ -93,6 +95,13 @@ step you just asked for actually did rather than only what the original run did.
 writes ``share.log``, which is a phase of its own because an upload is not postprocessing and
 a divider naming the wrong step is worse than no divider. (The share that runs *inside* a
 campaign is part of the controller's own narrative and stays under ``run``.)
+
+``import.log`` is the same idea for the one phase that can *precede* everything else:
+a campaign taken in from an archive or the share writes it while the bytes are still
+arriving — which is why the campaign's ``_execution/`` directory is created before the
+extraction rather than by it. An import whose account of itself only began after the
+download would have no account of the download, which is the slowest and least
+inspectable part of it.
 
 ``execution.yaml`` contains:
 
@@ -659,7 +668,8 @@ change. Workspace *inputs* live in the writable half of the same address space,
 and per run, so a recursive listing of the root is thousands of entries; it
 reports ``total`` when it truncates. ``cat`` pages text and refuses binary;
 ``get`` writes raw bytes, which is how you fetch one artifact without downloading
-the whole campaign archive (that is ``vast results download``, below).
+the whole campaign archive (that is ``vast results download <campaign-id>``, which
+writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
 and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
@@ -881,9 +891,21 @@ The two steps that run *after* a campaign's scenarios finish — analysis
 finished campaign, and each works **from the stored campaign alone**: no live
 campaign process is required, so a re-trigger is available even after the
 ``robovast-service`` (``vast serve``) was restarted. Under the web UI's *Monitor*
-each finished campaign's actions menu offers *Retrigger postprocessing* and
-*Retrigger upload-to-share*; the same operations are exposed as the MCP tools
-``run_postprocessing`` and ``run_share``.
+each finished campaign's actions menu offers *Retrigger postprocessing* and *Export
+to share*; the same operations are ``vast share export -i <campaign-id>`` on the
+command line and the MCP tools ``run_postprocessing`` and ``run_share``.
+
+A third operation shares their shape without being a *re*-run: **importing** a
+campaign this deployment never ran, from an archive
+(``vast results import <archive>``) or from the share (``vast share import
+<campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
+— when what arrived is a raw archive with no ``_execution/data.db`` — rolls straight
+on into ``postprocessing``, because a campaign without its metric tables is not one
+anybody can query. Its per-stage verdicts land in ``_execution/import.json`` and its
+narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
+rather than a failure; a genuine failure removes the half-imported directory
+entirely, since a tree that merely looks like a campaign would be listed by every
+client from then on.
 
 A re-trigger through the service is **dispatched in the background and returns
 immediately** — postprocessing can take minutes to hours, so the campaign simply
@@ -908,8 +930,12 @@ in place** — it is config, not captured data, so there are no override files o
 revisions, and the raw rosbags and the as-ran ``configuration``/``execution`` are left
 untouched. The edited config applies on both the local and the cluster backend. For the
 **upload-to-share**, the target provider is taken from the service environment
-(``ROBOVAST_SHARE_TYPE`` and its credentials); adjust it and re-trigger to upload the
-same campaign to a different provider.
+(``ROBOVAST_SHARE_TYPE`` and its credentials); adjust it and export again to upload the
+same campaign to a different provider. The archive is named for what it now is —
+a campaign exported after postprocessing goes up as ``.postprocessed.tar.gz``, one
+exported before it as ``.raw.tar.gz`` — and nobody passes that in: it is read off
+``_execution/data.db``, so the campaign-end upload and a later export agree by
+construction.
 
 Custom postprocessing plugins that need third-party Python packages — an
 entry-point postprocessing command, or the dependencies a local

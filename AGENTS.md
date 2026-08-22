@@ -113,10 +113,15 @@ that matters — can decline what it does not.
 | Distribution | Contains | Adds |
 |---|---|---|
 | `robovast-client` | the `vast` root command group and every verb that only drives a service (login, workspace, files, image, wait, doctor, **and `exec cluster run/stop/stop-job/log/download-cleanup`**), the `exec` and `exec cluster` group shells, the interface models, the HTTP client, the credential store | `pydantic`, `click`, `requests` |
-| `robovast` | service core, config/variation, results, MCP, controller, the local Docker lane (`exec local`) | no kubernetes |
+| `robovast` | service core, config/variation, results, MCP, controller, the share (`vast share` + its providers), the local Docker lane (`exec local`) | no kubernetes |
 | `robovast-cluster` | the Kubernetes execution lane, its cluster-config plugins, and the operator verbs (`exec cluster setup/cleanup/upgrade/token/run-cleanup/monitor`) | `kubernetes`, `boto3`, `google-cloud-storage` |
 | `robovast-nav` | navigation variation types, panels | `pyside6`, `scipy`, … |
 | `robovast-sim-roqsim` | the roqsim simulator backend | `pydantic` only |
+
+`vast share` is one group split by *who acts* rather than by distribution, and it lives whole in
+`robovast`: `list`/`download`/`upload`/`remove` instantiate a share provider, while `export`/`import`
+only drive the service and could have gone in the client. Splitting one group across two
+distributions would be worse than the asymmetry — a client-only install would offer half a noun.
 
 Four rules keep this working:
 

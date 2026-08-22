@@ -23,7 +23,7 @@ const SERVICE = process.env.ROBOVAST_SERVICE_URL ?? 'http://127.0.0.1:8800'
 // shadow it.
 const API_PREFIXES = [
   // control
-  '/campaigns', '/workspaces', '/uploads', '/image-builds', '/exec',
+  '/campaigns', '/workspaces', '/uploads', '/image-builds', '/exec', '/share',
   // metadata + authoring help
   '/version', '/healthz', '/login', '/usage', '/config', '/variation_types', '/panel_types',
   // the two content namespaces (files by address)
