@@ -57,7 +57,8 @@ from robovast.client.errors import handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
 from robovast.common import make_transfer_progress_callback
 from robovast.execution.share_providers import load_share_provider_plugins
-from robovast.execution.share_providers.naming import archive_name, parse_archive_name
+from robovast.execution.share_providers.naming import (VARIANTS, archive_name,
+                                                       parse_archive_name)
 
 
 @click.group()
@@ -381,9 +382,19 @@ def _read_archive_identity(tarfile_mod, path):
 @click.option('--campaign', '-i', 'campaigns', multiple=True, required=True,
               help='Campaign to remove (globs such as "nav-2026-03-09-*" are allowed). '
                    'Repeatable.')
+@click.option('--variant', type=click.Choice(list(VARIANTS)), default=None,
+              help='Remove only this variant. Without it, every variant of the named '
+                   'campaign goes.')
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt')
-def remove_cmd(campaigns, yes):
+def remove_cmd(campaigns, variant, yes):
     """Permanently delete campaign archives from the share.
+
+    A campaign can have both variants on the share at once -- that is what naming them
+    apart is for -- and by default this removes all of them, because "delete this
+    campaign from the share" is the usual thing to mean. ``--variant`` narrows it to one,
+    which is the only way to drop a postprocessed copy while keeping the raw snapshot it
+    was computed from. The raw one is the irreplaceable half: postprocessing can be run
+    again, a recording cannot.
 
     A write, performed with your credentials -- not the service's. Borrowing the
     service's would let anyone who can reach RoboVAST delete share content the share
@@ -394,17 +405,20 @@ def remove_cmd(campaigns, yes):
     all_archives = _archives(provider)
 
     matched = [rec for rec in all_archives
-               if any(fnmatch.fnmatch(rec[1], pat) for pat in campaigns)]
+               if any(fnmatch.fnmatch(rec[1], pat) for pat in campaigns)
+               and (variant is None or rec[2] == variant)]
 
     def _is_glob(pattern):
         return any(c in pattern for c in ("*", "?", "["))
 
     unmatched = [p for p in campaigns
-                 if not any(fnmatch.fnmatch(rec[1], p) for rec in all_archives)]
+                 if not any(fnmatch.fnmatch(rec[1], p) for rec in all_archives
+                            if variant is None or rec[2] == variant)]
     exact = [p for p in unmatched if not _is_glob(p)]
     if exact:
+        qualifier = f" as {variant}" if variant else ""
         raise click.UsageError(
-            f"Campaign(s) not found on the share: {', '.join(sorted(exact))}\n"
+            f"Campaign(s) not found on the share{qualifier}: {', '.join(sorted(exact))}\n"
             "Run 'vast share list' to see what is there.")
     for pattern in (p for p in unmatched if _is_glob(p)):
         click.echo(f"  Warning: no campaigns matched pattern '{pattern}'")
