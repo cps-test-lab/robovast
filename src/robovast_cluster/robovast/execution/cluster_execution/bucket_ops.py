@@ -34,6 +34,7 @@ Public API
 
 import contextlib
 import logging
+import os
 import socket
 import subprocess
 import time
@@ -155,7 +156,21 @@ def open_minio_port_forward(namespace: str, context: Optional[str]):
 
 @contextlib.contextmanager
 def _s3_connection(cluster_config, namespace: str, context: Optional[str]):
-    """Yield a boto3 S3 client, opening a port-forward for embedded MinIO."""
+    """Yield a boto3 S3 client, opening a port-forward for embedded MinIO.
+
+    Only when one is actually needed. A port-forward is how a caller *off* the cluster
+    reaches embedded MinIO; in-cluster the service DNS name resolves directly, and shelling
+    out to ``kubectl`` there fails with ``FileNotFoundError`` -- the service image has no
+    ``kubectl`` and needs none, since everything else it does in-pod goes through the API
+    client or the cluster-internal endpoint. That failure reached users as a bare 500 on
+    every campaign deletion from the web UI, the CLI and the MCP tool alike, because all
+    three call the one op and this is the first thing it does.
+
+    The in-pod test is the same ``KUBERNETES_SERVICE_HOST`` probe the rest of the cluster
+    lane uses, rather than a new flag threaded down from the caller: whether a port-forward
+    is required is a property of where this process runs, which is exactly what that
+    variable answers, and no caller knows it better.
+    """
     uses_embedded = cluster_config.uses_embedded_s3()
     access_key, secret_key = cluster_config.get_s3_credentials()
     region = cluster_config.get_s3_region()
@@ -163,8 +178,11 @@ def _s3_connection(cluster_config, namespace: str, context: Optional[str]):
 
     pf_proc = None
     if uses_embedded:
-        pf_proc, local_port = open_minio_port_forward(namespace, context)
-        endpoint = f"http://localhost:{local_port}"
+        if os.environ.get("KUBERNETES_SERVICE_HOST"):
+            endpoint = cluster_config.get_s3_endpoint()
+        else:
+            pf_proc, local_port = open_minio_port_forward(namespace, context)
+            endpoint = f"http://localhost:{local_port}"
 
     s3 = boto3.client(
         "s3",
