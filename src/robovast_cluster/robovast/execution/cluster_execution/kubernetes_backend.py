@@ -946,29 +946,41 @@ class BatchJobRunner:
             logger.debug("Could not determine GPU support (%s); assuming none", exc)
 
     def _gpu_request(self, resources, container=None) -> int:
-        """How many GPUs one container should request.
+        """How many GPUs one container should request. **Opt-in: none unless declared.**
 
-        An explicit ``resources.gpu`` always wins, ``0`` included -- that is how a campaign
-        opts out of a GPU on a cluster that has one, e.g. to run wider than the advertised
-        replica count. Otherwise the container that runs the simulator asks for one if the
-        cluster advertises any, which is what makes "use the GPU if there is one" need no
-        ``.vast`` edit at all.
+        ``resources.gpu`` is the whole answer. A campaign that renders asks for a device; one
+        that does not gets none, and the cluster having a GPU is not taken as a reason to hand
+        one out.
 
-        The cost of that convenience, stated where it is incurred: a ``.vast`` no longer
-        fully determines the pod, so the same file yields different pods on a GPU cluster
-        and a CPU one. The run's own log records which backend it bound, so the result
-        stays interpretable afterwards.
+        This used to give the simulator one automatically whenever the cluster advertised any,
+        so "use the GPU if there is one" needed no ``.vast`` edit. Measured on a headless nav2
+        campaign, that device did nothing: with ``gpu: 0`` the simulator's CPU was unchanged
+        (mean 0.34 cores either way), trials took the same time (33.8 s against 33.5 s), and the
+        ``capture/`` the 3D run view replays was still written -- it is pose and geometry, not
+        rendered frames. Nothing in that world drew anything: no camera, and a lidar is a
+        raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no device is
+        present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back from.
+
+        What it did cost was concurrency, and silently. A request is charged against the
+        ClusterQueue's ``nvidia.com/gpu`` quota, and time-slicing replicas are a concurrency cap
+        and not a VRAM budget (see :data:`DEFAULT_GPU_REPLICAS`) -- so one auto-claimed device
+        per run capped a campaign that never rendered a frame. Worse, it capped it *invisibly*:
+        the default replica count is chosen to sit above the CPU ceiling, so the GPU only starts
+        binding once someone right-sizes CPU, which is exactly when they are looking at CPU.
+
+        A simulator that DOES render -- a camera or image sensor in the world, a video in the
+        postprocessing -- declares ``resources: {gpu: 1}`` and is treated exactly as before,
+        including on a CPU-only cluster, where the declaration stands and the pre-flight refuses
+        the campaign rather than scheduling a job that would hang.
         """
         declared = (resources or {}).get('gpu')
-        if declared is not None:
-            try:
-                return max(0, int(declared))
-            except (TypeError, ValueError):
-                logger.warning("Ignoring non-numeric resources.gpu %r", declared)
-                return 0
-        if container is None or SIMULATION_CONTAINER not in (container.roles or ()):
+        if declared is None:
             return 0
-        return 1 if getattr(self, "_gpu_capacity", 0) else 0
+        try:
+            return max(0, int(declared))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring non-numeric resources.gpu %r", declared)
+            return 0
 
     def _apply_gpu_to_container(self, spec, env_list, count) -> None:
         """Put *count* GPUs on one container spec, with the env the runtime needs."""
