@@ -1967,3 +1967,56 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
         types.SimpleNamespace(job_name="scenario-abc", status="running")]))
 
     assert cs._health_targets("camp-1") == []
+
+def test_deleting_an_imported_campaign_does_not_ask_the_object_store(cs, monkeypatch):
+    """An imported campaign has no bucket, so deletion must not go looking for one.
+
+    Found live, against a real deployment. An import is extracted onto the service's own
+    filesystem and registered from there, so it lists and queries perfectly well while the
+    object store has never heard of it. Deletion went to the store first regardless; the
+    provider raised whatever it raises for a name it cannot resolve, that escaped the
+    ``NoSuchBucket`` tolerance as an unhandled error, and the campaign became undeletable
+    through every client -- the web UI, the CLI and the MCP tool alike, with a bare 500.
+
+    The store is asked only about campaigns it actually holds. Anything reaching
+    ``bucket_ops`` here is the failure.
+    """
+    from robovast.execution.cluster_execution import bucket_ops
+
+    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: set())
+    monkeypatch.setattr(cs, "_ensure_deletable", lambda cid: None)
+    monkeypatch.setattr(cs, "_unmark_campaign", lambda cid: None)
+    monkeypatch.setattr(
+        bucket_ops, "delete_campaign",
+        lambda *a, **k: pytest.fail("the object store must not be asked about an "
+                                    "imported campaign it never held"))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **k: None)
+
+    result = cs.delete_campaign("imported-2026-01-01-000000")
+    assert result.ok
+
+
+def test_deleting_a_cluster_campaign_still_clears_its_bucket(cs, monkeypatch):
+    """The other half: a campaign the store does hold is still deleted from it.
+
+    Guards the skip above from becoming "never delete anything", which would leak every
+    finished cluster campaign's data while reporting success.
+    """
+    from robovast.execution.cluster_execution import bucket_ops
+
+    asked = []
+    monkeypatch.setattr(cs, "_durable_campaign_ids",
+                        lambda: {"camp-2026-01-01-000000"})
+    monkeypatch.setattr(cs, "_ensure_deletable", lambda cid: None)
+    monkeypatch.setattr(cs, "_unmark_campaign", lambda cid: None)
+    monkeypatch.setattr(cs, "_cluster_config", lambda: object())
+    monkeypatch.setattr(bucket_ops, "delete_campaign",
+                        lambda cid, cfg, **k: asked.append(cid))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
+        lambda **k: None)
+
+    assert cs.delete_campaign("camp-2026-01-01-000000").ok
+    assert asked == ["camp-2026-01-01-000000"]

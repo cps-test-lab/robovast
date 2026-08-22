@@ -2288,15 +2288,23 @@ class ClusterService(LocalTransport):
         from .cluster_execution import cleanup_cluster_campaign
 
         self._ensure_deletable(campaign_id)  # refuse while this service still drives it
-        cfg = self._cluster_config()
-        # 1. Durable home: object-store bucket / shared prefix. Tolerate an
-        #    already-absent bucket so a repeated delete is idempotent.
-        try:
-            bucket_ops.delete_campaign(campaign_id, cfg, namespace=self.namespace,
-                                       context=self.kube_context)
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
-                raise
+        # 1. Durable home: object-store bucket / shared prefix. Skipped entirely for a
+        #    campaign the object store never held -- an *imported* one, which is extracted
+        #    onto this service's own filesystem and registered from there, so it lists and
+        #    queries without ever having a bucket. Asking the store to delete a campaign it
+        #    has never heard of is not idempotency, it is a different question, and it
+        #    answered with whatever error that provider raises for a name it cannot resolve
+        #    -- which escaped as a 500 and left the campaign undeletable through any client.
+        #    The NoSuchBucket tolerance below stays for the ordinary case: a cluster campaign
+        #    whose bucket a previous delete already removed.
+        if campaign_id in self._durable_campaign_ids():
+            cfg = self._cluster_config()
+            try:
+                bucket_ops.delete_campaign(campaign_id, cfg, namespace=self.namespace,
+                                           context=self.kube_context)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
+                    raise
         # 2. Reap any leftover Jobs/pods (best-effort — the data is already gone).
         try:
             cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
