@@ -11,6 +11,7 @@ The two properties worth defending: a *degraded* ingest is still usable and must
 away to keep a boolean clean, and every non-ok stage has to name what to do about it.
 """
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
                                      STAGE_NEWER, STAGE_OK, ingest_campaign)
 
@@ -90,6 +92,50 @@ def test_a_store_from_a_newer_robovast_says_what_would_be_lost(campaign):
     assert stage["schema_version"] == 99
     assert "upgrade robovast" in stage["detail"]
     assert "silently omit" in stage["detail"]
+
+
+def test_a_store_from_an_older_robovast_migrates_without_being_asked(campaign):
+    """An archived store must come up the schema ladder on import, with no flag.
+
+    Found live, importing a real July-2026 campaign off the share: it failed on
+    ``no such table: run``. Three things had to line up. The archived ``campaign.db`` is
+    schema v1, from before that table existed; the ladder runs on a read-*write* open and
+    every check here is read-only; and ``build_campaign_store`` will not rebuild it either,
+    because its freshness shortcut compares mtimes and tar preserves them -- so a store
+    archived beside its own tree always looks up to date.
+
+    The population this blocked is exactly the one that most needs importing: campaigns old
+    enough to predate the current schema. ``--rebuild-store`` is for a *corrupt* store, not
+    for a merely old one, and requiring it here would have made the recovery a thing you had
+    to already know.
+    """
+    # A genuine v1 store, built from the ladder's own first step rather than by mutating a
+    # current one -- a hand-faked v1 is not v1, and the ladder rightly refuses it
+    # ("duplicate column name"). _MIGRATIONS is append-only and indexed by the version it
+    # upgrades *from*, so entry 0 is exactly what v1 was.
+    store = campaign / "campaign.db"
+    store.unlink(missing_ok=True)
+    with sqlite3.connect(store) as conn:
+        conn.executescript(_MIGRATIONS[0])
+        conn.execute("PRAGMA user_version = 1")
+    # Archived mtimes: the store looks no older than the tree it came with, which is what
+    # sends build_campaign_store down its "already up to date" path.
+    for path in campaign.rglob("*"):
+        os.utime(path, (1_700_000_000, 1_700_000_000))
+    os.utime(store, (1_700_000_100, 1_700_000_100))
+
+    stage = ingest_campaign(campaign)["stages"]["campaign_store"]
+
+    assert stage["verdict"] != STAGE_FAILED, stage["detail"]
+    assert stage["schema_version"] == SCHEMA_VERSION
+    # Provenance rides alongside the health verdict rather than replacing it -- the same
+    # rule `rebuilt` follows, so a migrated store that still indexes nothing says both.
+    assert stage["version"] == 1
+    assert "migrated from schema v1" in stage["detail"]
+    # Migrated in place, not rebuilt: the rows the controller recorded live are kept.
+    assert stage["rebuilt"] is False
+    with sqlite3.connect(store) as conn:
+        conn.execute("SELECT count(*) FROM run").fetchone()
 
 
 def test_a_corrupt_store_names_a_recovery_that_works(campaign):

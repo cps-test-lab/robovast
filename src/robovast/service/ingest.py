@@ -286,6 +286,7 @@ def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:
 
     store_path = campaign_dir / STORE_FILENAME
     existed = store_path.exists()
+    migrated_from = None
 
     if existed and not rebuild:
         try:
@@ -304,6 +305,28 @@ def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:
                           f"downwards, so upgrade robovast; queries will otherwise read it "
                           f"best-effort and silently omit whatever the newer schema added.",
                           schema_version=found)
+        if found < SCHEMA_VERSION:
+            # An archived store has to be walked up the ladder explicitly, and this is the
+            # only place that can. The checks around it are read-only, and the ladder runs
+            # on a read-*write* open; and ``build_campaign_store`` below will not rebuild
+            # it either, because its freshness shortcut compares mtimes and tar preserves
+            # them -- so a store archived alongside its own tree always looks up to date.
+            # The result was an import that failed on ``no such table: run`` for every
+            # campaign old enough to predate that table, which is exactly the population
+            # that most needs importing.
+            #
+            # Migrated in place rather than rebuilt: the ladder keeps the rows the
+            # controller recorded live, and ``backfill_run_rows`` then fills the run table
+            # a v1 store never had from the results tree beside it.
+            try:
+                _migrate_store_in_place(campaign_dir, store_path)
+            except Exception as e:  # pylint: disable=broad-except
+                return _stage(STAGE_FAILED,
+                              f"{STORE_FILENAME} is schema v{found} and could not be "
+                              f"migrated ({e}). It can be reconstructed from the results "
+                              f"tree instead -- re-run with --rebuild-store.",
+                              schema_version=found, recovery="--rebuild-store")
+            migrated_from = found
 
     try:
         built = build_campaign_store(campaign_dir, force=rebuild)
@@ -327,15 +350,40 @@ def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:
     # tree rather than written live by the controller, which is the difference between a recorded
     # fact and a recovered one, and a reader comparing two campaigns should be able to see it.
     rebuilt = bool(rebuild or not existed)
+    # Migration is provenance too, for the same reason `rebuilt` is: it says how the store
+    # came to be usable, not whether it is healthy. A v1 store that migrates cleanly and
+    # still indexes nothing is degraded, and saying only "migrated" would hide that.
+    origin = ""
+    if migrated_from is not None:
+        origin = (f" (migrated from schema v{migrated_from} in place; the rows the "
+                  f"controller recorded live are kept)")
+    elif rebuilt:
+        origin = " (reconstructed from the results tree)"
+
     if runs == 0:
         return _stage(STAGE_DEGRADED,
                       f"registered at schema v{now}, but it indexes no runs. The campaign will "
                       f"list and report nothing, which usually means the results tree was "
-                      f"archived without its run directories.",
-                      schema_version=now, runs=runs, rebuilt=rebuilt)
-    return _stage(STAGE_OK, f"registered at schema v{now}, indexing {runs} run(s)"
-                            + (" (reconstructed from the results tree)" if rebuilt else ""),
-                  schema_version=now, runs=runs, rebuilt=rebuilt)
+                      f"archived without its run directories." + origin,
+                      schema_version=now, runs=runs, rebuilt=rebuilt, version=migrated_from)
+    return _stage(STAGE_OK, f"registered at schema v{now}, indexing {runs} run(s)" + origin,
+                  schema_version=now, runs=runs, rebuilt=rebuilt, version=migrated_from)
+
+
+def _migrate_store_in_place(campaign_dir: Path, store_path: Path) -> None:
+    """Walk an archived ``campaign.db`` up the schema ladder, then fill in its runs.
+
+    Opening a :class:`CampaignStore` read-write is what runs the ladder -- there is no
+    separate migrate entry point, and deliberately so: every reader gets the upgrade by
+    opening. A v1 store arrives at v2+ with an empty ``run`` table, which is precisely the
+    case :func:`~robovast.common.campaign_index.backfill_run_rows` was written for.
+    """
+    from robovast.common.campaign_index import backfill_run_rows
+    from robovast.common.store import CampaignStore
+
+    with CampaignStore(store_path):
+        pass
+    backfill_run_rows(campaign_dir)
 
 
 def _check_analysis_db(campaign_dir: Path) -> dict:
