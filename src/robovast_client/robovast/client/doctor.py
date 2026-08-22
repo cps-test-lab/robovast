@@ -414,8 +414,20 @@ def check_client() -> list[Check]:
             "A local service prints both when it starts."))
 
     target = detected_service_url()
-    if target:
+    # Handshake FIRST, because the row below claims the service is answering and used to
+    # say so on the strength of a configured URL alone. A stored login is configuration,
+    # not reachability: with the pod mid-roll this printed "\u2713 service" while every call
+    # timed out, and the revision and image-build rows silently vanished rather than
+    # reporting a fault -- a green tick and two missing lines for a service that was down.
+    info, err = _service_version(target) if target else (None, None)
+    if target and _service_answered(err):
         checks.append(Check("service", True, target))
+    elif target:
+        checks.append(Check(
+            "service", False, f"{target} not answering",
+            f"The URL is configured but nothing replied ({type(err).__name__}). If this is "
+            "a cluster, the pod may be mid-roll or down: 'vast exec cluster upgrade' after "
+            "it settles, or check the ingress. If it is local, start it with 'vast serve'."))
     else:
         checks.append(Check(
             "service", False, "none answering",
@@ -427,9 +439,8 @@ def check_client() -> list[Check]:
         # Beside the `service` line above, because these describe the same subject -- and
         # one handshake answers both: a check per question was a second round trip to say
         # the same thing twice.
-        info = _service_version(target)
-        checks.extend(_check_service_revision(info))
-        checks.extend(_check_build_capability(info))
+        checks.extend(_check_service_revision(info, err))
+        checks.extend(_check_build_capability(info, err))
 
     # Not `shutil.which`: this process may have a venv active that no other shell does,
     # which is exactly the case where the answer differs and the wrong one is reassuring.
@@ -450,24 +461,37 @@ def check_client() -> list[Check]:
     return checks
 
 
-def _service_version(target: str) -> "VersionInfo | None":
-    """The service's version handshake, or ``None`` when it could not be read.
+def _service_version(target: str) -> "tuple[VersionInfo | None, Exception | None]":
+    """``(handshake, error)`` — the service's version, and why it could not be read.
 
-    ``None`` is "no verdict", never "no". A local ``vast serve`` whose token differs from
-    the stored login answers 401, and a doctor that turned that into a red line would be
-    reporting its own credential mismatch as the service's problem; an unreachable service
-    is already the ``service`` check above, and saying it twice gives a reader two problems
-    to chase where there is one.
+    The error is returned rather than swallowed because two very different faults used to
+    arrive as the same ``None``: a service that ANSWERED and refused (a local ``vast serve``
+    whose token differs from the stored login answers 401) and one that could not be reached
+    at all. Only the first is "no verdict"; the second is the ``service`` check's verdict,
+    and it could not reach it while this function kept the evidence to itself.
+
+    A refusal is a :class:`ServiceError` carrying ``.status``, so "it answered" is decidable
+    — see :func:`_service_answered`.
     """
     from robovast.service.http_client import \
         RobovastClient  # pylint: disable=import-outside-toplevel
     try:
-        return RobovastClient(target).version()
-    except Exception:  # noqa: BLE001 - unreachable, unauthorised, or too old to ask
-        return None
+        return RobovastClient(target).version(), None
+    except Exception as e:  # noqa: BLE001 - unreachable, unauthorised, or too old to ask
+        return None, e
 
 
-def _check_service_revision(info: "VersionInfo | None") -> list[Check]:
+def _service_answered(err: "Exception | None") -> bool:
+    """Did the service reply at all, whatever it replied?
+
+    An HTTP status means yes: it was reached, parsed the request and refused it. No status
+    means the request never got an answer — DNS, TCP, TLS, a timeout, a pod mid-roll.
+    """
+    return err is None or getattr(err, "status", None) is not None
+
+
+def _check_service_revision(info: "VersionInfo | None",
+                            err: "Exception | None" = None) -> list[Check]:
     """Whether the service is running the code this checkout has.
 
     The question a long-lived service makes real: it loads robovast **once, at startup**,
@@ -491,7 +515,21 @@ def _check_service_revision(info: "VersionInfo | None") -> list[Check]:
     tree is the normal state of anyone mid-edit, so it must not fail the command.
     """
     if info is None:
-        return []
+        # Silent ONLY when the service never answered: the `service` row above is red and
+        # names it, and two rows for one fault sends a reader chasing twice. But a service
+        # that ANSWERED and refused the handshake is a different, unreported thing -- this
+        # row used to disappear for it too, so a 401 read as "no revision question exists"
+        # rather than "your credentials cannot ask it".
+        if not _service_answered(err):
+            return []
+        status = getattr(err, "status", None)
+        detail = getattr(err, "detail", "") or type(err).__name__
+        return [Check(
+            "service revision", False, f"could not be read (HTTP {status})",
+            f"The service answered but refused the version handshake: {detail}. A 401/403 "
+            "is usually a token that does not match this deployment — 'vast login <url>' "
+            "with the token it printed. Until then \"is my change loaded?\" has no answer.",
+            optional=True)]
     from robovast.client.app_version import \
         running_revision  # pylint: disable=import-outside-toplevel
     here = running_revision()
@@ -536,7 +574,8 @@ def _check_service_revision(info: "VersionInfo | None") -> list[Check]:
         optional=True)]
 
 
-def _check_build_capability(info: "VersionInfo | None") -> list[Check]:
+def _check_build_capability(info: "VersionInfo | None",
+                            err: "Exception | None" = None) -> list[Check]:
     """What the *running* service says about building images, from the handshake.
 
     Answered without kubectl, so a user who will never deploy anything still learns that
@@ -556,7 +595,16 @@ def _check_build_capability(info: "VersionInfo | None") -> list[Check]:
     fixes it.
     """
     if info is None:
-        return []
+        # Same split as the revision row: nothing to add when the service never answered,
+        # but an answered-and-refused handshake means this capability is unknown rather
+        # than absent, and silence read as "nothing to report about building".
+        if not _service_answered(err):
+            return []
+        return [Check("image builds", False, "unknown — the handshake was refused",
+                      "Whether this service can build images is part of the version "
+                      "handshake, which it would not answer. Fix the credentials (see the "
+                      "revision row) and re-run.",
+                      optional=True)]
     if info.can_build_images is None:
         return []
     if info.can_build_images:
