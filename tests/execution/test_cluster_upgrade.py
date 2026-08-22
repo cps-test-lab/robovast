@@ -16,8 +16,27 @@ until something forces a restart.
 A pod-template annotation that differs on every deploy is what forces it.
 """
 
+import pytest
+
 from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import service_deploy
+
+
+@pytest.fixture(autouse=True)
+def _no_image_warm(monkeypatch):
+    """Never pre-pull images at a real cluster from these tests.
+
+    ``setup_server`` and ``upgrade`` finish by warming the image family onto the nodes, which
+    is a live Kubernetes call. Unstubbed it went to whatever context the developer's
+    kubeconfig named and blocked until that timed out -- so this file did not merely run
+    slowly, it did not finish at all where egress is closed, and the three files with this
+    hole were the reason a full ``pytest tests/`` never completed here.
+
+    Autouse because pre-pulling is a side effect no test in this file is about, and the next
+    one to drive setup or upgrade would otherwise reintroduce it silently.
+    """
+    from robovast.execution.cluster_execution import image_warm
+    monkeypatch.setattr(image_warm, "warm_family_images", lambda *a, **k: [])
 
 
 def _template(manifest):

@@ -63,11 +63,26 @@ def _batch_with(*build_ids):
 
 
 @pytest.fixture
-def cs():
+def cs(monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
-    return ClusterService(namespace="ns1", cluster_config_name="rke2",
-                          cluster_config_kwargs={}, store=store,
-                          reap_on_start=False)
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={}, store=store,
+                         reap_on_start=False)
+    # A status read probes the build POD as well as its Job, and that probe is a real
+    # Kubernetes GET: unstubbed it went to whatever cluster the developer's kubeconfig
+    # named, so four tests here each waited ~40s for it to time out before the caller
+    # carried on -- 160 of this suite's seconds, and a result that depended on which
+    # cluster was configured. `(None, None)` is the documented "the pod is fine, or there
+    # is none yet", which is the state every test in this file means; one that cares about
+    # a blocked or failed pod overrides it.
+    monkeypatch.setattr(svc, "_build_pod_verdict", lambda build_id: (None, None))
+    # A build that just succeeded is warmed onto a node, which resolves a registry pull
+    # secret over the API -- another real cluster call, on the other path through the same
+    # method, and another ~40s each for the two tests that take it. Pre-pulling an image is
+    # a side effect no test in this file is about; `_warm` exists as a seam precisely so it
+    # can be one line at each call site, and here that makes it one line to silence.
+    monkeypatch.setattr(svc, "_warm", lambda image_ref: None)
+    return svc
 
 
 def _record(cs, build_id, *, done):

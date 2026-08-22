@@ -35,7 +35,8 @@ def deployment(monkeypatch):
     """Stub the `service_deploy` reads `check_deployment` makes, by name."""
     from robovast.execution.cluster_execution import service_deploy
 
-    state = types.SimpleNamespace(config="rke2", prefix="", host="", defects=[])
+    state = types.SimpleNamespace(config="rke2", prefix="", host="", defects=[],
+                                 daemon_ready=True)
 
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda ns, ctx: (state.config, {}) if state.config else (None, {}))
@@ -48,6 +49,15 @@ def deployment(monkeypatch):
     monkeypatch.setattr("kubernetes.client.NetworkingV1Api",
                         lambda *a, **k: MagicMock(
                             read_namespaced_ingress=lambda *_a, **_k: object()))
+    # The build-daemon read, which lands on a real cluster if it is not stubbed. It was
+    # added after this fixture and went unstubbed, so the two tests that reach it (the ones
+    # with a registry prefix -- the only path that asks) each spent 40 seconds waiting for
+    # the configured context to time out before `_check_build_daemon` swallowed the error.
+    # Eighty of this file's eighty-one seconds, and a result that silently depended on
+    # whichever cluster the developer's kubeconfig happened to point at.
+    from robovast.execution.cluster_execution import buildkitd_deploy, kube_client
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_ready", lambda ns: state.daemon_ready)
     return state
 
 
@@ -72,6 +82,33 @@ def test_a_configured_prefix_is_reported(deployment):
     deployment.config, deployment.prefix = "rke2", "robovast.example.org"
 
     assert _by_name(doc.check_deployment(), "build registry").ok is True
+
+
+def test_a_missing_build_daemon_is_reported_beside_the_registry(deployment):
+    """Nothing can build without it, and a campaign should not be how you find out.
+
+    Asked only where it can be answered usefully -- next to a configured registry, since
+    "the daemon is down" is noise on a deployment that has nowhere to push anyway.
+    """
+    deployment.prefix, deployment.daemon_ready = "registry.example.org", False
+
+    check = _by_name(doc.check_deployment(), "build daemon")
+    assert check.ok is False and check.optional
+    assert "no ready pod" in check.detail
+
+
+def test_a_ready_build_daemon_is_green(deployment):
+    deployment.prefix, deployment.daemon_ready = "registry.example.org", True
+
+    assert _by_name(doc.check_deployment(), "build daemon").ok is True
+
+
+def test_the_build_daemon_is_not_asked_about_without_a_registry(deployment):
+    """No push target means no build question -- one fault, one line."""
+    deployment.prefix = ""
+
+    names = [c.name for c in doc.check_deployment()]
+    assert "build daemon" not in names
 
 
 def test_published_but_no_prefix_names_upgrade(deployment):

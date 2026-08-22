@@ -22,6 +22,7 @@ import pathlib
 import sys
 
 import pytest
+from unittest.mock import patch
 from click.testing import CliRunner
 
 #: Everything a client install does not ship. `robovast.client`, `robovast.service`'s
@@ -244,7 +245,18 @@ def test_doctor_can_ask_about_a_deployment_without_the_core(without_core):
     """
     from robovast.client.doctor import check_deployment  # pylint: disable=import-outside-toplevel
 
-    assert check_deployment(namespace="default") == []
+    # The lane is made absent HERE rather than in `CORE_ONLY`, and scoped to this test.
+    # Adding it to the fixture's block list evicted `robovast.execution.cluster_execution`
+    # from sys.modules for the rest of the session, and other suites hold references into
+    # it -- six tests in three other files started failing while passing in isolation.
+    #
+    # It has to be absent somehow, though: without it the deferred import SUCCEEDS, the
+    # code calls the cluster, and returns [] ten seconds later because nothing answered.
+    # That is the same answer the ImportError path gives, so this assertion used to hold
+    # while proving nothing about it -- and it would have failed on a machine that could
+    # reach a deployment. `None` in sys.modules is what makes an import raise.
+    with patch.dict(sys.modules, {"robovast.execution.cluster_execution": None}):
+        assert check_deployment(namespace="default") == []
 
 
 def test_no_service_url_and_no_core_is_a_clear_refusal(without_core):

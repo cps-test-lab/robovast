@@ -16,6 +16,22 @@ import pytest
 
 from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import cluster_setup
+
+
+@pytest.fixture(autouse=True)
+def _no_image_warm(monkeypatch):
+    """Never pre-pull images at a real cluster from these tests.
+
+    ``setup_server`` finishes by warming the image family onto the nodes, which is a live
+    Kubernetes call. Unstubbed it went to whatever context the developer's kubeconfig named
+    and blocked until that timed out -- so this file did not merely run slowly, it did not
+    finish at all where egress is closed.
+
+    Autouse because pre-pulling is a side effect no test in this file is about, and the eight
+    tests here that drive setup would each reintroduce it.
+    """
+    from robovast.execution.cluster_execution import image_warm
+    monkeypatch.setattr(image_warm, "warm_family_images", lambda *a, **k: [])
 from robovast.execution.cluster_execution.cluster_setup import (
     get_kubernetes_node_labels_from_config, setup_server)
 
