@@ -798,8 +798,13 @@ def run_cleanup(campaign, data, force, namespace, context):
               help='Change the free space kept on the cache filesystem. See setup.')
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Change the cache kept even when old. See setup.')
+@click.option('--no-restart', is_flag=True, default=False,
+              help='Reconcile only what does not need the pod rolled -- RBAC, the Kueue '
+                   'queues, the registry ingress route -- then stop. For granting a '
+                   'permission the RUNNING version is missing without a version change or '
+                   'an API blip, e.g. while a campaign is in flight.')
 def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
-            buildkit_cache_min_free, buildkit_cache_reserved):
+            buildkit_cache_min_free, buildkit_cache_reserved, no_restart):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -822,6 +827,16 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
+
+    ``--no-restart`` reconciles just that part — RBAC, the Kueue queues, the registry
+    ingress route — and stops before the Deployment is touched. All three are picked up by
+    the *running* pod (the API server evaluates RBAC per request, Kueue reads its queues per
+    workload, a route is the gateway's own state), so a permission the running version is
+    missing can be granted without a version change and without the API blip. That is the
+    difference between fixing a missed migration and rolling a service: it is the only way
+    to do the former while a campaign is in flight, because the campaign controller lives in
+    the pod a roll would replace. It does *not* move the image and does *not* re-read the env
+    Secrets — for either of those, run the command without the flag.
 
     Reads the environment like every ``vast`` command -- ``./.env`` then
     ``~/.config/robovast/env`` -- so ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG``
@@ -888,6 +903,24 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         apply_kueue_queues(namespace=namespace, kube_context=kube_context)
         if reconcile_registry_ingress_path(namespace=namespace, kube_context=kube_context):
             click.echo("  added the registry's /v2 route to the existing Ingress")
+        # --no-restart stops here, and everything above this line is why it can: RBAC is
+        # evaluated by the API server per request, Kueue reads its queues per workload, and
+        # an Ingress route is the gateway's own state -- so the RUNNING pod picks all three
+        # up with no roll. Only the image and the env Secrets need a restart, and this flag
+        # promises neither.
+        #
+        # It exists because the alternative was telling an operator whose service is missing
+        # one permission to roll the Deployment: a few seconds of unavailable API, a pod that
+        # re-reads its Secrets, and a move onto whatever the resolved image now points at --
+        # none of which they asked for, and all of which is unavailable to them anyway while
+        # a campaign is in flight, since the campaign controller lives in that pod.
+        if no_restart:
+            click.echo("✓ reconciled RBAC, Kueue queues and the ingress route")
+            click.echo("  the pod was NOT restarted: the running version is unchanged and "
+                       "its env Secrets were not re-read")
+            click.echo("  run 'vast exec cluster upgrade' without --no-restart to move the "
+                       "image or pick up changed Secrets")
+            return
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host)
