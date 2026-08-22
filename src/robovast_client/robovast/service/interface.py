@@ -2314,9 +2314,11 @@ class RobovastInterface(ABC):
         in the campaign view while it is still arriving, and ``vast wait`` follows it like
         any other work.
 
-        A failed import leaves nothing behind: the half-extracted directory is removed,
-        because a tree that merely *looks* like a campaign would be listed by every client
-        from then on. The archive is untouched, so a retry costs only the transfer.
+        A failed import is **kept**, as a failed campaign: registering it is what made it
+        visible while it was arriving, so deleting the tree afterwards would leave it listed
+        with nothing behind it to explain why. Its ``import.log`` and ``import.json`` stay
+        where they are, and it is removed like any other campaign. The archive is untouched,
+        so a retry with ``force`` costs only the transfer.
 
         Reads an arbitrary path on the service host by design: that is what lets a caller
         import a dataset it put there by other means, and it is the same privilege

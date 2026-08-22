@@ -1133,10 +1133,19 @@ class LocalTransport(RobovastInterface):
     def _run_import(self, state, campaign_id: str, fetch, request) -> None:
         """The import itself: claim, fetch, extract, register, and postprocess if raw.
 
-        Any failure removes the half-imported directory. A tree that got as far as looking
-        like a campaign but is not one would be listed by every client from then on, since
-        listings go by directory shape -- so leaving it is worse than leaving nothing. The
-        archive is untouched either way, so a retry costs only the transfer.
+        **A failed import is left in place, as a failed campaign.** It used to delete its
+        own directory, on the reasoning that a tree which merely looks like a campaign
+        would be listed by every client from then on. Live testing showed that reasoning
+        buys nothing and costs the diagnosis: the campaign is listed anyway -- registering
+        the tracked entry is what makes it visible during the import, and that entry
+        outlives the failure -- so deleting the tree produced a campaign listed as
+        ``failed`` with *no* ``import.log``, no ``import.json``, and nothing to read.
+        Worst of both.
+
+        So the evidence stays where the evidence goes: in the campaign, next to the log
+        that explains it. It behaves like any other failed campaign, including being
+        removed by ``vast results delete``, and the archive is untouched, so a retry with
+        force costs only the transfer.
         """
         from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
             add_campaign_log_handler, remove_campaign_log_handler)
@@ -1173,18 +1182,40 @@ class LocalTransport(RobovastInterface):
                 raise RuntimeError(
                     f"{campaign_id} could not be ingested: {', '.join(report['blocking'])}")
             logger.info("\u2713 imported %s", campaign_id)
-        except Exception as e:  # noqa: BLE001 - reported on the entry; the tree is not kept
+        except Exception as e:  # noqa: BLE001 - recorded on the campaign, which is kept
+            detail = failure_detail(e)
             logger.error("\u2717 import of %s failed: %s", campaign_id, e)
+            logger.error("The campaign is kept as failed so this log survives; remove it "
+                         "with 'vast results delete %s', or retry with force.", campaign_id)
             remove_campaign_log_handler(handler)
             handler = None
-            shutil.rmtree(target, ignore_errors=True)
-            state.update(error=failure_detail(e))
+            # Durable, so the failure still reads as a failure after a service restart --
+            # the tracked entry that carries it now lives only in this process.
+            self._record_failed_import(target, detail)
+            state.update(error=detail)
             state.set_phase(Phase.FAILED)
             return
         finally:
             remove_campaign_log_handler(handler)
 
         self._postprocess_after_import(state, campaign_id, target)
+
+    @staticmethod
+    def _record_failed_import(target: Path, detail: str) -> None:
+        """Write the terminal outcome of a failed import into the campaign it failed on.
+
+        Best-effort: the import already failed, and failing to *record* that must not
+        replace the reason with a second, less useful one. The log beside it is the
+        account either way.
+        """
+        try:
+            from robovast.client.status import Status  # pylint: disable=import-outside-toplevel
+            from robovast.execution.status_recovery import \
+                write_execution_outcome  # pylint: disable=import-outside-toplevel
+            write_execution_outcome(target, Status(phase=Phase.FAILED, error=detail))
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Could not record the failed import outcome for %s",
+                           target.name, exc_info=True)
 
     def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
                               force: bool = False, skip=()) -> tuple:

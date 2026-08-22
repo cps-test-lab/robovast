@@ -9,8 +9,10 @@ Three properties this defends, each of which was a wrong answer at some point:
 * postprocessing is chained exactly when the archive arrived **raw**, because a campaign
   with no metric tables is not one anybody can query -- and a postprocessed one must not be
   recomputed;
-* a failed import leaves **nothing**. A half-extracted tree still matches the campaign
-  directory shape, so every listing from then on would show a campaign that is not one.
+* a failed import is **kept**, as a failed campaign. Deleting the tree was tried and was
+  strictly worse: registering the campaign is what makes it visible while it arrives, and
+  that entry outlives the failure, so removing the directory left it listed as ``failed``
+  with no log and no report -- listed *and* undiagnosable.
 """
 
 import tarfile
@@ -115,9 +117,16 @@ def test_a_second_import_of_the_same_campaign_is_refused_before_it_transfers(ser
     _wait_done(service, ref.campaign_id)
 
 
-def test_a_failed_import_leaves_no_half_campaign_behind(service, tmp_path, monkeypatch):
-    # A tree that got as far as looking like a campaign is worse than nothing: listings go
-    # by directory shape, so it would be shown by every client from then on.
+def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, monkeypatch):
+    """A failed import stays put, with the log that explains it.
+
+    Found live. The campaign is registered *before* the transfer -- that is what puts it in
+    the campaign view at ``importing`` -- and the tracked entry survives the failure. So
+    deleting the directory afterwards did not unlist anything; it only removed the
+    ``import.log`` and ``import.json`` that said what went wrong, leaving a campaign listed
+    as ``failed`` with nothing behind it. Keeping it makes it an ordinary failed campaign:
+    inspectable, and removable with ``vast results delete``.
+    """
     def _boom(*_a, **_k):
         raise OSError("disk went away mid-extraction")
     monkeypatch.setattr("robovast.service.ingest.extract_archive", _boom)
@@ -127,7 +136,15 @@ def test_a_failed_import_leaves_no_half_campaign_behind(service, tmp_path, monke
     status = _wait_done(service, ref.campaign_id)
     assert status.phase == Phase.FAILED
     assert status.error
-    assert not (service._campaigns_root() / ref.campaign_id).exists()  # pylint: disable=protected-access
+
+    campaign = service._campaigns_root() / ref.campaign_id  # pylint: disable=protected-access
+    assert campaign.is_dir(), "the failed import must remain, or its reason is unreadable"
+    log = (campaign / "_execution" / "import.log").read_text(encoding="utf-8")
+    assert "disk went away mid-extraction" in log
+    # Durable too: the tracked entry carrying `error` lives only in this process, so a
+    # service restart must still find this campaign failed rather than merely unfinished.
+    outcome = (campaign / "_execution" / "outcome.json").read_text(encoding="utf-8")
+    assert "failed" in outcome
 
 
 def test_an_import_names_exactly_one_source(service, tmp_path):
