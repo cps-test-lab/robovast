@@ -10,6 +10,11 @@ is the opposite of useful for the one person who had nothing left to do.
 The client checks now come first, and when they all pass the operator prerequisites drop
 to advisory: still listed, still with their remedies, but not a failure. When the client
 half is *not* working, deploying is the likely intent and they stay fatal.
+
+Except when there is no cluster lane installed, which is the same bug one level down: that
+gate asked whether the client half worked, and a client-only user who had simply not run
+``vast login`` yet failed it -- and was told, fatally, to install kubectl and helm for a
+``setup`` command their install does not have.
 """
 
 import pytest
@@ -19,7 +24,13 @@ from robovast.client import doctor as doc
 
 @pytest.fixture
 def operator_checks(monkeypatch):
-    """Pin the operator half so the tests are about fatality, not about this machine."""
+    """Pin the operator half so the tests are about fatality, not about this machine.
+
+    The lane is pinned installed along with the rest: `run_checks` consults it to decide
+    whether the operator half applies, so leaving it to the real import would make these
+    tests pass or fail on whether `robovast-cluster` happens to be in the environment.
+    """
+    monkeypatch.setattr(doc, "cluster_lane_installed", lambda: True)
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
     monkeypatch.setattr(doc, "check_tools", lambda flavor="": [
         doc.Check("kubectl", False, "not on PATH", "Install kubectl")])
@@ -69,6 +80,63 @@ def test_a_client_failure_is_always_fatal(monkeypatch, operator_checks):
     """Whatever the operator half says: without these you cannot reach a service."""
     _client(monkeypatch, False)
     assert {"login", "service", "vast on PATH"} <= {c.name for c in _fatal(doc.run_checks())}
+
+
+@pytest.fixture
+def no_cluster_lane(monkeypatch):
+    """A client-only install: nothing to import, and `check_cluster` reporting that.
+
+    `check_tools` is pinned to *failing* binaries so the tests below are about whether it
+    is consulted at all, not about what happens to be on this machine's PATH.
+    """
+    monkeypatch.setattr(doc, "cluster_lane_installed", lambda: False)
+    monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
+    monkeypatch.setattr(doc, "check_cluster", lambda context=None: [
+        doc.Check("cluster support", False, "not installed",
+                  "Install it to deploy or operate a cluster of your own.",
+                  optional=True)])
+    monkeypatch.setattr(doc, "check_tools", lambda flavor="": [
+        doc.Check("kubectl", False, "not on PATH", "Install kubectl"),
+        doc.Check("helm", False, "not on PATH", "Install helm")])
+
+
+def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
+        monkeypatch, no_cluster_lane):
+    """The defect: the demotion gate asked the wrong question.
+
+    It asked whether the client half worked, so a client-only user who had simply not run
+    `vast login` yet fell through to the fatal branch -- and `helm`'s remedy names `setup`,
+    a verb their install does not have. Deploying cannot be the intent when there is
+    nothing installed to deploy with, whatever the login says.
+    """
+    _client(monkeypatch, False)
+    checks = doc.run_checks()
+
+    reported = {c.name for c in checks}
+    assert not reported & {"kubectl", "helm"}, (
+        "a client-only install was asked for the binaries `vast exec cluster setup` "
+        "shells out to, and it has no `setup` to shell out")
+    assert {c.name for c in _fatal(checks)} == {"login", "service", "vast on PATH"}, (
+        "only the client half may be fatal here -- that is the user's real problem")
+
+
+def test_the_missing_lane_is_still_reported(monkeypatch, no_cluster_lane):
+    """Dropping the binaries must not drop the verdict that explains why they are gone."""
+    _client(monkeypatch, False)
+    lane = next(c for c in doc.run_checks() if c.name == "cluster support")
+    assert lane.status == "warn" and lane.fix, "advisory is not silent, and names a remedy"
+
+
+def test_python_is_still_checked_without_a_lane(monkeypatch, no_cluster_lane):
+    """Needing 3.12 is not the cluster's business, so it survives the lane being absent."""
+    _client(monkeypatch, True)
+    assert "python" in {c.name for c in doc.run_checks()}
+
+
+def test_an_installed_lane_still_gets_the_full_operator_half(monkeypatch, operator_checks):
+    """The other direction: the fix must not silence an operator who *can* act on it."""
+    _client(monkeypatch, False)
+    assert {"kubectl", "kubeconfig"} <= {c.name for c in _fatal(doc.run_checks())}
 
 
 def test_a_failing_optional_client_check_does_not_make_the_operator_half_fatal(

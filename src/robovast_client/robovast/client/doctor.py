@@ -118,19 +118,43 @@ def check_tools(flavor: str = "") -> list[Check]:
     return checks
 
 
+def cluster_lane_installed() -> bool:
+    """Whether this install owns a cluster lane at all.
+
+    A predicate rather than a string match on :func:`check_cluster`'s verdict, because two
+    callers need the answer and must not disagree about it: that function, to *report* the
+    lane as missing, and :func:`run_checks`, to decide whether the operator half is worth
+    reporting in the first place.
+
+    It asks by running the *same import* :func:`check_cluster` goes on to need, which is
+    what makes agreement structural rather than a promise. ``from cluster_execution import
+    kube_client`` would not do: once anything has imported that submodule, the parent
+    package keeps it as an attribute, and the ``from`` succeeds off that attribute without
+    ever consulting the import machinery -- so a genuinely absent lane reads as present and
+    the real ImportError resurfaces below as a *kubeconfig* fault, which is a lie about
+    which thing is missing.
+
+    Deferred, like every other reach across the boundary here: ``robovast-client`` depends
+    on neither the core nor the lane, so on a client-only install this module is all there
+    is and a module-level import would break the install the distribution exists for.
+    """
+    try:
+        from robovast.execution.cluster_execution.kube_client import \
+            load_kube_config  # noqa: F401  # pylint: disable=import-outside-toplevel,unused-import
+    except ImportError:
+        return False
+    return True
+
+
 def check_cluster(context: str | None = None) -> list[Check]:
     """Reachability, identity, and the permissions setup actually needs.
 
     Reports rather than raises, in every direction -- including "this install has no
-    cluster support at all". The import is inside the ``try`` for that reason: it is the
-    thing most likely to fail once the cluster lane ships as its own package, and a
-    diagnostic command that dies while diagnosing is the one failure it cannot have.
+    cluster support at all", which :func:`cluster_lane_installed` answers before anything
+    is imported for real. A diagnostic command that dies while diagnosing is the one
+    failure it cannot have.
     """
-    try:
-        from robovast.execution.cluster_execution.kube_client import \
-            load_kube_config  # pylint: disable=import-outside-toplevel
-        loaded = load_kube_config(context=context)
-    except ImportError:
+    if not cluster_lane_installed():
         # Not "to deploy or drive a cluster" any more: driving one is `vast exec cluster
         # run`, which this distribution ships. What needs the lane is OWNING a cluster --
         # deploying the service into it and operating it. Saying otherwise sent exactly
@@ -139,7 +163,12 @@ def check_cluster(context: str | None = None) -> list[Check]:
                       "This install has no cluster lane, and does not need one to run "
                       "campaigns ('vast exec cluster run' works). Install it to deploy "
                       "or operate a cluster of your own.", optional=True)]
-    except Exception as exc:  # noqa: BLE001 - every other failure means "no cluster"
+
+    try:
+        from robovast.execution.cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+        loaded = load_kube_config(context=context)
+    except Exception as exc:  # noqa: BLE001 - every failure here means "no cluster"
         return [Check("kubeconfig", False, str(exc)[:120],
                       "Point kubectl at a cluster (`kubectl config use-context …`), or "
                       "pass -x/--context.")]
@@ -549,7 +578,8 @@ def run_checks(flavor: str = "", context: str | None = None,
     nothing left to do that four things were wrong, and exited non-zero saying so.
 
     When the client half is not working, they stay fatal: then deploying is the likely
-    intent, and a missing ``helm`` really does stop it.
+    intent, and a missing ``helm`` really does stop it -- *unless* there is no cluster lane
+    installed, in which case deploying cannot be the intent at all. See below.
     """
     client = check_client()
     # Optional checks are advisory by definition (`Check.optional`), so one failing must
@@ -559,7 +589,18 @@ def run_checks(flavor: str = "", context: str | None = None,
     # need -- the exact confusion the client/operator split exists to prevent.
     usable = all(c.ok for c in client if not c.optional)
     cluster = check_cluster(context)
-    operator = [check_python(), *check_tools(flavor), *cluster]
+    lane = cluster_lane_installed()
+    # With no lane, the binaries it shells out to are moot rather than merely advisory:
+    # `kubectl` and `helm` are what `vast exec cluster setup` runs, and there is no `setup`
+    # in this install to run them -- so "Install helm: setup installs Kueue with it" answers
+    # a question this user cannot ask, one line under a check that just said the lane is
+    # missing. Fatal, it was worse: a client user whose only real problem was that they had
+    # not run `vast login` yet got told, in red, to install two cluster binaries.
+    #
+    # Dropped rather than demoted, for the reason `check_deployment` is silent here too:
+    # `check_cluster` has already said it, and saying it twice makes a reader look for two
+    # problems. Python stays either way -- needing 3.12 is not the cluster's business.
+    operator = [check_python(), *(check_tools(flavor) if lane else []), *cluster]
     # Only when the cluster is actually usable. Asking a deployment about itself over an
     # unreachable API server produces a second way of saying "no cluster", and a reader
     # then has two problems to chase where there is one.

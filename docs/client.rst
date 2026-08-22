@@ -179,9 +179,10 @@ When something is wrong
 
 On a client install it checks what a client has: a stored login, that the service answers,
 that ``vast`` resolves in a fresh login shell, and that the symlink points at a live
-interpreter. Checks belonging to capabilities you have not installed are reported as
-*not installed* rather than as failures — a client install lacking ``kubectl`` is not a
-broken one.
+interpreter. A capability you have not installed is reported once, as advisory — you get
+``cluster support: not installed``, and not the ``kubectl`` and ``helm`` that only
+``vast exec cluster setup`` shells out to, because there is no ``setup`` here to run them.
+A client install lacking them is not a broken one, so they cannot fail the command.
 
 ``vast login`` symlinks ``vast`` into a directory already on your login shell's PATH, so a
 shell that activated no virtualenv — a new terminal, or an agent's — can run it. That is
