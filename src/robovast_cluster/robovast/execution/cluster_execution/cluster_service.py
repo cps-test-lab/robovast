@@ -339,9 +339,23 @@ class ClusterService(LocalTransport):
                         f"{self._DISK_BUDGET_SECONDS:.0f}s budget after {index} of "
                         f"{len(node_names)} nodes"}
             try:
-                raw = v1.connect_get_node_proxy_with_path(
-                    name, "stats/summary", _request_timeout=self._DISK_NODE_TIMEOUT)
-                summary = json.loads(raw) if isinstance(raw, str) else raw
+                # `_preload_content=False` for the RAW response, and it is load-bearing: the
+                # generated client declares this endpoint's response_type as 'str', so with
+                # preloading it parses the kubelet's JSON into a dict and then coerces it to
+                # the declared type with str() -- handing back a single-quoted Python repr
+                # that json.loads rejects at character 1 ("Expecting property name enclosed
+                # in double quotes"). `json.loads(raw) if isinstance(raw, str) else raw`
+                # therefore could not work on ANY cluster; this meter had never reported a
+                # byte. Raw bytes skip the deserializer, so there is nothing to un-coerce.
+                resp = v1.connect_get_node_proxy_with_path(
+                    name, "stats/summary", _request_timeout=self._DISK_NODE_TIMEOUT,
+                    _preload_content=False)
+                try:
+                    summary = json.loads(resp.data)
+                finally:
+                    # Not a with-block: urllib3's response is not a context manager here, and
+                    # an unreleased connection leaks the pool one node at a time.
+                    resp.release_conn()
                 fs = ((summary.get("node") or {}).get("fs")) or {}
                 capacity += int(fs["capacityBytes"])
                 used += int(fs["usedBytes"])
