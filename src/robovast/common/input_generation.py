@@ -512,7 +512,7 @@ def _make_runner(generator_cls, params, container_runner_factory, name):
     if container_runner_factory is None:
         from robovast.common.config_generation import \
             _make_container_runner  # pylint: disable=import-outside-toplevel
-        return _make_container_runner(spec)
+        return _make_container_runner(spec, purpose=f"input generator '{name}'")
     logger.debug("input generator '%s' requires container %s", name, spec.image)
     return container_runner_factory(spec)
 

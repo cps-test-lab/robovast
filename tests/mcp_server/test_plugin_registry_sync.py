@@ -13,6 +13,7 @@ import inspect
 import pathlib
 import re
 from importlib.metadata import entry_points
+from unittest import mock
 
 import pytest
 
@@ -256,9 +257,25 @@ def _llm_facing_text() -> dict[str, str]:
     # sharpest example: it is the command an agent runs verbatim after start_campaign,
     # and it kept naming `vast exec wait` for a whole refactor because every guard here
     # read docstrings and this is a runtime return value.
+    from robovast.common.config_generation import \
+        _make_container_runner  # pylint: disable=import-outside-toplevel
     from robovast.mcp_server.plugins.execution import \
         _wait_next_step  # pylint: disable=import-outside-toplevel
     text["start_campaign next_step"] = _wait_next_step("<campaign-id>")
+    # Same reason, for the refusals that carry one: a variation needing an auxiliary
+    # container names the tool that would exercise it, and a message the composition
+    # layer builds is not reachable by any docstring guard.
+    from robovast.common.errors import \
+        AuxContainerUnavailable  # pylint: disable=import-outside-toplevel
+    from robovast.common.variation.container_runner import \
+        ContainerSpec  # pylint: disable=import-outside-toplevel
+    with mock.patch("shutil.which", return_value=None):
+        try:
+            _make_container_runner(
+                ContainerSpec(image="example.com/img", command_prefix=["x"]),
+                purpose="variation X")
+        except AuxContainerUnavailable as e:
+            text["aux container refusal"] = f"{e} {e.next_step}"
     return text
 
 

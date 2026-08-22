@@ -161,17 +161,18 @@ def validate_project(address: str) -> dict:
     a full apt+pip cycle, so if any container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
-    **If the ``.vast`` has a ``plugins:`` block, this call alone cannot tell you whether it
-    is valid — always follow it with ``preview_configurations(limit=1)``.** Validation
-    resolves entry points already present in the process and does NOT install a campaign's
-    declared specs; that happens during config *generation*. So every variation the plugin
-    provides is reported as "Unknown variation class", and the advice the message then
-    gives — declare the package in ``plugins:`` — is advice you have already taken, which
-    makes it read like a wrong declaration or a missing credential. ``preview_configurations``
-    composes, so it installs them first and either expands the sweep or fails with the real
-    reason. ``limit=1`` because its default (``0``) returns EVERY resolved cell, and a sweep
-    with a plugin is usually the large kind — the counts come back either way, so one cell is
-    all it costs to see that the plugin resolved.
+    **Three tiers check a ``.vast``, differing in what they install and wire — not in how
+    hard they look.** This call: schema and references, resolving installed entry points plus a
+    ``plugins:`` package already staged in the project. ``preview_configurations``: composes, so
+    it *installs* declared specs. ``start_campaign``: the only one composing inside an execution
+    backend's container context (cluster: the aux pod; local: host ``docker``).
+
+    You do not have to map that onto your case — **each problem names what it could not settle
+    and what would.** An uninstalled ``plugins:`` spec names ``preview_configurations(limit=1)``
+    (``limit=1`` because the default ``0`` returns EVERY resolved cell, while the counts come
+    back either way). A variation needing an auxiliary container names ``start_campaign``, which
+    costs a real trial — worth it only when you need that variation's *output*, not the sweep's
+    shape.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
@@ -265,7 +266,10 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "lane": "workspace",
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: composing here can refuse with an
+        # ActionableError (a variation needing an auxiliary container no runner can provide),
+        # and dropping its next_step leaves the caller with a reason and no move.
+        return service_access.error_result(e)
 
 
 def describe_world(address: str, targets: str = "", entities: bool = False,

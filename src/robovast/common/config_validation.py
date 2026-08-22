@@ -653,12 +653,62 @@ def _scenario_parameter_names(scenario_file):
             if isinstance(p, dict) and "name" in p]
 
 
-def _config_block_problems(config, vast_dir, valid_param_names):
-    """Accumulate problems for a single configuration block."""
+def _unresolved_variation_problem(exc, vast_dir, declared_plugins, config_name):
+    """Turn an unresolved variation name into the *true* statement about it, or ``None``.
+
+    Three different situations reach here, and reporting them identically is what made a
+    correct ``.vast`` look broken:
+
+    * **A staged plugin registers the name.** The project's ``.robovast_plugins/`` already
+      holds the package (``vast workspace update``, or any earlier composition), so the name
+      is real and composition will resolve it. This is not a problem with the file, so none
+      is reported. It is deliberately not *confirmed* either: knowing the class behind the
+      name is a valid ``Variation`` needs the import, and validation must not import plugin
+      code into this long-lived process (see ``config_plugins._prepend_sys_path``).
+    * **``plugins:`` declares specs that are not staged yet.** The name cannot be resolved
+      *here* -- and the generic message's advice, "declare that package in ``plugins:``", is
+      advice the author has already taken, so it reads as a wrong declaration or a missing
+      credential. It cost two re-uploads of a plugin that was correct all along. Say what is
+      actually true instead, and name what settles it.
+    * **Nothing declares it, or a staged project does not provide it.** The generic message is
+      right -- and for the second case it is better than the one above, since a staged project
+      has already composed and the name really is unknown. It also lists what does exist,
+      which is what a typo needs. Pass it through.
+    """
+    from robovast.common.config_plugins import \
+        staged_variation_type_names  # pylint: disable=import-outside-toplevel
+
+    staged = staged_variation_type_names(vast_dir)
+    if exc.class_name and exc.class_name in staged:
+        return None
+    # Only while nothing is staged. A project that *has* a plugin dir has already composed,
+    # so "this resolves once you compose" would be false there -- and a name that dir does
+    # not provide is genuinely unknown (a typo, most often), which the generic message
+    # serves better: it lists the names that do exist.
+    if declared_plugins and not staged:
+        return _problem(
+            "variation",
+            f"Variation class '{exc.class_name}' did not resolve here. The .vast declares "
+            "'plugins:', and declared specs are installed during config *generation*, not by "
+            "this check -- so this is expected until the project has composed once, and is "
+            "not evidence that the declaration is wrong. What settles it: "
+            "preview_configurations(limit=1) composes, installing the specs into "
+            ".robovast_plugins/ first, and then either expands the sweep or fails with the "
+            "plugin's own reason. Seconds, and no compute.",
+            config=config_name, field="variations")
+    return _problem("variation", str(exc), config=config_name, field="variations")
+
+
+def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins=()):
+    """Accumulate problems for a single configuration block.
+
+    *declared_plugins* is the ``.vast``'s top-level ``plugins:`` list, needed only to say
+    something true about an unresolved variation name -- see the handler below.
+    """
     from robovast.common.config import \
         get_validated_config  # pylint: disable=import-outside-toplevel
-    from robovast.common.config_generation import \
-        _get_variation_classes  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
+        UnknownVariationClass, _get_variation_classes)
 
     problems = []
     name = config.get("name", "<unnamed>") if isinstance(config, dict) else "<unnamed>"
@@ -667,6 +717,10 @@ def _config_block_problems(config, vast_dir, valid_param_names):
     variation_classes = []
     try:
         variation_classes = _get_variation_classes(config, vast_dir)
+    except UnknownVariationClass as e:
+        problem = _unresolved_variation_problem(e, vast_dir, declared_plugins, name)
+        if problem is not None:
+            problems.append(problem)
     except ValueError as e:
         problems.append(_problem("variation", str(e), config=name, field="variations"))
 
@@ -900,7 +954,8 @@ def validate_project_file(config_path):
     valid_param_names = _scenario_parameter_names(scenario_file) if scenario_file else None
 
     for config in raw.get("configuration", []) or []:
-        problems.extend(_config_block_problems(config, vast_dir, valid_param_names))
+        problems.extend(_config_block_problems(
+            config, vast_dir, valid_param_names, raw.get("plugins") or ()))
 
     # Top-level plugin refs (postprocessing / search strategy / extractor).
     problems.extend(_plugin_ref_problems(raw, vast_dir))
@@ -938,6 +993,20 @@ def validate_project_file(config_path):
     return _batch_composition_report(config_path)
 
 
+def _message_with_next_step(exc):
+    """The exception's message, with an :class:`ActionableError`'s next step kept.
+
+    A problem is a flat ``{stage, config, field, message}``, so an exception folded into one
+    with ``str(exc)`` loses any ``next_step`` riding on it -- and the refusals worth carrying
+    one (a variation needing an auxiliary container no runner can provide) are exactly the
+    ones where the message alone leaves the reader stuck. Appending keeps the reply shape
+    unchanged, which is why it is done here rather than by widening the problem dict.
+    """
+    message = str(exc)
+    step = getattr(exc, "next_step", "")
+    return f"{message} Next: {step}" if step else message
+
+
 def _batch_composition_report(config_path):
     """Compose a batch-mode ``.vast`` and report its counts.
 
@@ -966,7 +1035,7 @@ def _batch_composition_report(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
-                "problems": [_problem("generation", str(e))],
+                "problems": [_problem("generation", _message_with_next_step(e))],
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
@@ -992,7 +1061,7 @@ def _search_composition_report(config_path):
         sample = preview_search_sample(config_path)
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
-                "problems": [_problem("generation", str(e))],
+                "problems": [_problem("generation", _message_with_next_step(e))],
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
 
     problems = []

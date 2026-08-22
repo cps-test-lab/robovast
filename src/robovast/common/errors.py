@@ -124,6 +124,27 @@ class ImageNotBuilt(ActionableError):
     """
 
 
+class AuxContainerUnavailable(ActionableError):
+    """A variation needs an auxiliary container and nothing can provide one here.
+
+    A container runner exists only *inside* a campaign's composition: the cluster lane
+    installs a per-campaign aux-pod factory, and the local lane falls back to ``docker`` on
+    the service host. Anything composing **outside** a campaign -- ``validate_project``,
+    ``preview_configurations``, a scene or screenshot query -- has neither, and the same
+    boundary is already refused in as many words by ``ClusterService.describe_world``.
+
+    What was missing is that the *composition* path never refused. It fell through to the
+    local ``docker run`` fallback and died in ``Popen`` with a bare ``FileNotFoundError:
+    'docker'`` -- which reads as a broken ``.vast`` rather than as a runner that was never
+    wired, and names neither the variation nor the container it wanted. This is that
+    refusal, with the :attr:`~ActionableError.next_step` that says what would exercise it
+    and what that costs.
+
+    Deliberately *conditional*: on a host that has ``docker`` the local fallback genuinely
+    works, and previewing a container-backed variation there must keep working.
+    """
+
+
 class ImageStoreUnavailable(RuntimeError):
     """Raised when an image store could not be asked whether an image is there.
 

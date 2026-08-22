@@ -472,6 +472,39 @@ def _prepend_sys_path(target_dir: str) -> None:
     importlib.invalidate_caches()
 
 
+def staged_variation_type_names(vast_dir: str) -> set:
+    """Variation-type names a **staged** ``.robovast_plugins/`` registers, without importing it.
+
+    For the one caller that must answer "is this variation name real?" while forbidden from
+    finding out the usual way. A project pushed with ``vast workspace update``, or one that has
+    composed once, already has its declared ``plugins:`` materialized in that directory -- but
+    validation cannot lead ``sys.path`` with it and load the entry points, because
+    :func:`_prepend_sys_path` is only safe in the isolated compose subprocess, and
+    :func:`ensure_workspace_plugins` would pip-install anything not yet there.
+
+    Entry-point names are distribution metadata, so they can be read straight out of the
+    directory: no ``sys.path`` change, no import of plugin code, no pip, no network. What this
+    cannot confirm is that the class behind a name is a valid ``Variation`` -- that needs the
+    import, and composition is where it happens.
+
+    Returns an empty set when the directory does not exist or holds no such registration.
+    """
+    from importlib.metadata import distributions  # noqa: PLC0415
+
+    target_dir = os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
+    if not os.path.isdir(target_dir):
+        return set()
+    names = set()
+    try:
+        for dist in distributions(path=[target_dir]):
+            for ep in dist.entry_points:
+                if ep.group == "robovast.variation_types":
+                    names.add(ep.name)
+    except Exception as e:  # noqa: BLE001 - a metadata read must never fail validation
+        logger.debug("Could not read staged plugin entry points in %s: %s", target_dir, e)
+    return names
+
+
 def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
                              add_to_path: bool = True) -> str | None:
     """Ensure the ``.vast``'s ``plugins:`` are available for composition.

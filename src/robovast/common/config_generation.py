@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import ssl
 import subprocess  # nosec B404 - spawns the trusted robovast compose worker
 import sys
@@ -128,7 +129,7 @@ _ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
 _ISOLATED_NO_BACKEND = "ROBOVAST_ISOLATED_NO_BACKEND"
 
 
-def _make_container_runner(spec, *, image_project=None, image_project_tag=None):
+def _make_container_runner(spec, *, image_project=None, image_project_tag=None, purpose=""):
     """Build a runner for *spec* using the active factory (local fallback).
 
     A ``family:`` ref is resolved for the LOCAL fallback only, because that is where the ref
@@ -143,6 +144,11 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None):
     in a worker thread, and in a subprocess of one, while a service composes campaigns for
     several projects at once. ``None`` means the process environment's, which is what a CLI
     run wants.
+
+    *purpose* names whatever needs the container ("variation FloorplanGeneration"), used only
+    in the refusal below -- the caller knows it and this function does not, and a refusal that
+    cannot say what wanted the container leaves the reader to guess which of a sweep's
+    variations it was.
     """
     if spec is None:
         return None
@@ -160,6 +166,25 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None):
     factory = _container_runner_factory.get()
     if factory is not None:
         return factory(spec)
+    if shutil.which("docker") is None:
+        # No backend runner and no local fallback. Refuse here, naming what wanted the
+        # container: the alternative is `docker run` in a Popen that raises a bare
+        # FileNotFoundError deep in the variation, which reads as a broken .vast. Conditional
+        # on docker being genuinely absent, so a local host that has it is untouched.
+        from robovast.common.errors import \
+            AuxContainerUnavailable  # pylint: disable=import-outside-toplevel
+        who = purpose or "a variation"
+        raise AuxContainerUnavailable(
+            f"{who} requires the auxiliary container '{spec.container_name()}' "
+            f"(image {spec.image}) while it composes. No execution-backend "
+            "container runner is active here, and there is no local 'docker' to fall back "
+            "on. A runner exists only inside a campaign's composition -- so composing "
+            "outside one (validating, or previewing configurations) cannot run this "
+            "variation's helper image.",
+            next_step=("start_campaign(config_filter=<this config>, runs=1) is the only path "
+                       "that wires a backend runner -- it costs one real trial and occupies "
+                       "the lane. Skip it if you only needed the sweep's shape (config count, "
+                       "cell names, parameters): composition already reported that above."))
     from dataclasses import replace  # pylint: disable=import-outside-toplevel
 
     from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
@@ -857,6 +882,23 @@ def _match_recursive_pattern(path, pattern):
         return fnmatch.fnmatch(path, pattern)
 
 
+class UnknownVariationClass(ValueError):
+    """A variation name resolved to no entry point and no local file reference.
+
+    A ``ValueError`` subclass so every existing handler is unaffected -- composition still
+    aborts on it, which is the point: a name nobody can resolve must never be skipped. It
+    carries :attr:`class_name` so a caller can tell *this* failure from the other
+    ``ValueError`` this resolution raises (an invalid local plugin) without matching on
+    message text, and decide whether it is a failure *for them*. Validation is the one
+    caller for which it may not be -- see
+    ``config_validation._config_block_problems``.
+    """
+
+    def __init__(self, message, class_name=""):
+        super().__init__(message)
+        self.class_name = class_name
+
+
 def _get_variation_classes(scenario_config, vast_dir=""):
     """
     Read variation class names scenario
@@ -932,7 +974,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
                             "  - 'my_plugin @ git+https://github.com/org/repo@ref'\n"
                             "Then re-run so the variation names resolve via its entry points.\n"
                             "Alternatively, use a '<path>.py:<Class>' file reference for a local module.")
-                    raise ValueError(error_msg)
+                    raise UnknownVariationClass(error_msg, class_name=class_name)
 
     return variation_classes
 
@@ -1584,7 +1626,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             # Auxiliary container: if the plugin declares one, the active backend
             # (local docker or cluster sidecar) provides a runner for its use.
             container_spec = variation_class.get_required_container(variation_parameters)
-            container_runner = _make_container_runner(container_spec)
+            container_runner = _make_container_runner(
+                container_spec, purpose=f"variation {variation_class.__name__}")
             try:
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,

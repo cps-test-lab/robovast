@@ -144,6 +144,64 @@ Two whole classes of question are deliberately *not* one tool per scope: files a
 :ref:`read-only SQL <mcp-analysis>`.
 
 
+.. _mcp-check-tiers:
+
+What each check can and cannot settle
+-------------------------------------
+
+Three authoring/execution tools check a ``.vast``, and they are often mistaken for
+increasingly-thorough versions of one check. They are not: they differ in **two independent
+things**, and neither is "how carefully it looks".
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 22 30
+
+   * - Tool
+     - Schema + refs
+     - Installs ``plugins:``
+     - Backend container context
+   * - ``validate_project``
+     - yes
+     - no
+     - no
+   * - ``preview_configurations``
+     - yes
+     - yes
+     - no
+   * - ``start_campaign``
+     - yes
+     - yes
+     - yes
+
+Note what the table does *not* say. ``validate_project`` composes too (it has to, to report
+``total_trials``), so "composes" is not the axis. And the container context is the *execution
+backend's*: on the cluster lane that is the campaign's aux pod, on the local lane ``docker``
+on the service host — which is why ``start_campaign`` is the boundary rather than "the cluster".
+
+The consequence is that each tier has something it structurally cannot settle, and the honest
+place to say so is **the problem it reports**, not a tool description the reader has to
+remember and map onto their situation:
+
+* A ``plugins:`` spec not yet installed for the project cannot be resolved by
+  ``validate_project`` at all — declared specs are installed during config *generation*. A
+  package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point
+  **names** out of that directory: metadata, not an import, because
+  ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
+  this process is long-lived.
+* A variation declaring an auxiliary container is exercised by neither ``validate_project`` nor
+  ``preview_configurations``, since a container runner exists only inside a campaign's
+  composition — the same boundary ``ClusterService.describe_world`` refuses in as many words.
+  Both refuse naming the variation and the container, via
+  :class:`~robovast.common.errors.AuxContainerUnavailable`, rather than falling through to a
+  ``docker run`` that dies with a bare ``FileNotFoundError``. The refusal is conditional on the
+  runner being genuinely unavailable, so a local host that has ``docker`` is unaffected.
+
+Both carry a ``next_step`` stating what closing the gap **costs** — seconds for a preview, one
+real trial and the lane for a campaign — so a caller who only needed the sweep's shape can
+weigh it rather than reading the hint as an instruction.
+
+
 .. _mcp-one-tool-per-question:
 
 One tool per question, not per shape of answer
