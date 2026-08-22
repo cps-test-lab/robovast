@@ -350,10 +350,27 @@ class ClusterService(LocalTransport):
                 # The node is named in the log, never in the returned reason: that string
                 # crosses the interface to a UI and an MCP client.
                 logger.debug("kubelet stats/summary unavailable on node %s: %s", name, e)
+                # Report what actually failed. This used to answer "the service needs
+                # `nodes/proxy` get; run `vast exec cluster upgrade` to reconcile RBAC" for
+                # EVERY exception -- a timeout, a TLS refusal, a kubelet with the read-only
+                # port closed, a summary without the key -- and only 403 is that. A reader who
+                # reconciles RBAC on a timeout sees the identical message afterwards and has
+                # no way to tell a failed fix from a wrong diagnosis, which is worse than no
+                # reason at all: it also prescribes rolling the service, which on a lane with
+                # a campaign in flight costs the campaign.
+                status = getattr(e, "status", None)
+                if status == 403:
+                    reason = ("the service may not read `nodes/proxy` (403) — run "
+                              "`vast exec cluster upgrade --no-restart` to reconcile RBAC")
+                else:
+                    # The exception's own text, not a guess. Bounded because it lands in a UI,
+                    # and the full one is in the log line above.
+                    detail = str(getattr(e, "reason", None) or e).strip().splitlines()
+                    detail = (detail[0] if detail else e.__class__.__name__)[:120]
+                    prefix = f"HTTP {status}: " if status else f"{e.__class__.__name__}: "
+                    reason = f"the kubelet Summary API did not answer: {prefix}{detail}"
                 return {"unavailable":
-                        f"the kubelet Summary API did not answer on 1 of "
-                        f"{len(node_names)} node(s) — the service needs `nodes/proxy` "
-                        f"get; run `vast exec cluster upgrade` to reconcile RBAC"}
+                        f"{reason} (1 of {len(node_names)} node(s))"}
         if capacity <= 0:
             return {"unavailable": "the kubelet Summary API reported no node filesystem"}
         fields = {"disk": DiskSpace(capacity_bytes=capacity, used_bytes=used)}
