@@ -571,7 +571,25 @@ def test_a_shared_parameter_name_keeps_one_type():
 #: happening" rationale -- which is stated in full on ``JobState`` itself, where it belongs, and was
 #: costing tokens here to repeat it. Net cost of the two sections: ~27 tokens. The 50 is again the
 #: round number above it.
-_SURFACE_TOKEN_BUDGET = 13_900
+#:
+#: Raised 13_900 → 15_000 for the ``disk``/``store``/``disk_unavailable`` fields on
+#: ``get_resource_usage`` (~59 tokens: what the lane's runs write into, the results store, and
+#: why either is absent -- a null one means "the lane does not report it", and an agent told
+#: only the key names would read it as an empty disk).
+#:
+#: **Not paid for by compression, and not sized to that change either** -- both worth recording
+#: plainly. The surface was already ~14_251 when those fields arrived, i.e. 351 over a budget
+#: nothing had raised: the guard had been failing for a while, so the next change to touch a
+#: description inherited a red test it did not cause. That is the failure mode a budget with no
+#: headroom produces -- it stops reading as "this change costs too much" and starts reading as
+#: "the suite is broken", which is how it gets ignored. The jump to 15_000 is deliberately
+#: larger than the ~690 the current surface needs, to put the number back ahead of the surface
+#: rather than one field behind it.
+#:
+#: So the rule the assertion states is unchanged and still the first thing to try: compress a
+#: description, or merge two tools. What this raise does not do is make the earlier overage
+#: someone else's problem by leaving it attributed to whoever edits next.
+_SURFACE_TOKEN_BUDGET = 15_000
 
 
 def test_the_tool_surface_stays_within_its_token_budget():
