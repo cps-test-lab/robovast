@@ -234,12 +234,16 @@ function ConnectionStatus() {
       {u.store && u.store.capacity_bytes > 0 ? (
         <UsageRow
           label="Store"
-          // The denominator is named because it is NOT the Disk row's: the store is
-          // bounded by the one node it runs on, so on a multi-node cluster a nearly full
-          // buffer can look like a short bar beside the summed disk.
-          tip={`campaign results store: ${formatBytes(u.store.used_bytes)} out of ${formatBytes(
-            u.store.capacity_bytes,
-          )} on the node it runs on`}
+          // The denominator is what this store can still REACH -- its own bytes plus what
+          // the filesystem behind it will still take -- not that filesystem's size. A
+          // provider whose store is an unbounded volume shares its disk with everything
+          // else on that node, so its size was never a budget: it read 29 of 460 GiB on a
+          // disk already 314 full. Named in the tip because it moves as the node fills,
+          // which is the point rather than a wobble, and because it is NOT the Disk row's
+          // denominator -- on a multi-node cluster this is one node while Disk is the sum.
+          tip={`campaign results store: ${formatBytes(u.store.used_bytes)} used, ${formatBytes(
+            Math.max(0, u.store.capacity_bytes - u.store.used_bytes),
+          )} still free to it`}
           fraction={u.store.used_bytes / u.store.capacity_bytes}
           text={formatBytesPair(u.store.used_bytes, u.store.capacity_bytes)}
         />

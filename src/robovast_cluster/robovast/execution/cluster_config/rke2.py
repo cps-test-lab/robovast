@@ -193,13 +193,26 @@ MinIO console is available at port 9001.
         This config mounts ``/data`` as an ``emptyDir`` (see ``MINIO_MANIFEST_RKE2``): the
         store is a transfer buffer that results are pulled off, not an archive. So kubelet
         reports it as a volume of the MinIO pod, and because the ``emptyDir`` declares no
-        ``sizeLimit`` its capacity is the node filesystem's -- which is why this reads close
-        to the node disk here, and why on a multi-node cluster its denominator is the one
-        node MinIO runs on rather than the summed disk. Worth a meter regardless: a full
-        buffer stalls campaigns.
+        ``sizeLimit`` it has no bound of its own. Worth a meter regardless: a full buffer
+        stalls campaigns.
+
+        THE DENOMINATOR IS ``used + available``, NOT ``capacityBytes``. For an unbounded
+        ``emptyDir`` the volume's ``capacityBytes`` is the whole node filesystem, which the
+        store shares with the images, the containers and every campaign directory -- so it
+        reported 29 GiB of 460 on a disk already 314 GiB full, inviting the reading that
+        there were 430 GiB of store headroom when there were about 146. ``availableBytes``
+        is what the filesystem will actually still take, so ``used + available`` is the
+        ceiling this store can really reach.
+
+        That makes the denominator move as the rest of the node fills, which is a feature
+        and not an artefact: the number an operator needs before a sweep is how much more
+        this buffer can hold *now*, and it genuinely shrinks when something else grows. A
+        fixed 460 was never that number for any reading.
 
         ``(None, None)`` when the pod is not in the stats -- it may live on a node whose
         kubelet was not read, and a store the caller cannot see is not a store of size zero.
+        Also ``(None, None)`` when the kubelet gave no ``availableBytes``: the honest
+        answer is no meter, rather than falling back to the capacity that caused this.
         """
         del namespace
         for summary in (node_summaries or {}).values():
@@ -210,10 +223,10 @@ MinIO console is available at port 9001.
                     if volume.get("name") != MINIO_VOLUME_NAME:
                         continue
                     used = volume.get("usedBytes")
-                    capacity = volume.get("capacityBytes")
-                    if used is None or capacity is None:
+                    available = volume.get("availableBytes")
+                    if used is None or available is None:
                         return None, None
-                    return int(used), int(capacity)
+                    return int(used), int(used) + int(available)
         return None, None
 
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
