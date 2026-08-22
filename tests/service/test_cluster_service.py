@@ -856,64 +856,127 @@ def test_resource_usage_ignores_pods_no_node_granted(cs, monkeypatch):
     assert (usage.jobs_running, usage.jobs_pending) == (3, 2)
 
 
-def test_resource_usage_sums_node_filesystems(cs, monkeypatch):
-    """Disk is the sum of every node's nodefs — and NOT of its imageFs.
-
-    On a single-disk node ``node.fs`` and ``node.runtime.imageFs`` are two views of the
-    same device, so a reader that summed both would double capacity and used alike. The
-    imageFs figures here are deliberately different, so that mistake shows up as a wrong
-    total rather than hiding in the arithmetic.
-    """
+def _disk_env(cs, monkeypatch, nodes, summaries, service_node, raise_on=None):
+    """A usage read with the service pod placed on *service_node*. Returns the fake core."""
     _fake_kueue(monkeypatch)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
-    core = _UsageCore(
-        [_usage_node("n1", "8", "16Gi"), _usage_node("n2", "8", "16Gi")], [], [],
-        summaries={"n1": _summary(100, 40, image_fs=777),
-                   "n2": _summary(200, 60, image_fs=888)})
+    core = _UsageCore([_usage_node(n, "8", str(16 * 1024 ** 3)) for n in nodes],
+                      [_service_pod(service_node)], [],
+                      summaries=summaries, raise_on=raise_on)
     monkeypatch.setattr(cs, "_k8s", lambda: core)
+    return core
+
+
+def test_resource_usage_meters_the_services_own_node_not_a_sum(cs, monkeypatch):
+    """Disk is the SERVICE's node filesystem. Not a cluster-wide sum, not capacityBytes.
+
+    A sum answers a question nobody asks: the disk that decides whether a campaign can be
+    written is the one under the service's workspaces -- a hostPath on a stock RKE2, so
+    pinned to one node and absent from the kubelet's per-volume stats. At one node a sum
+    coincided with it; at twenty it reports tens of terabytes free while that single disk
+    fills, which is the reading that matters going wrong precisely as the cluster grows.
+
+    Three separate mistakes are excluded by the numbers here, each of which would otherwise
+    hide in the arithmetic: summing the nodes, folding in ``node.runtime.imageFs`` (the same
+    device on a single-disk node), and taking ``capacityBytes`` (which counts reserved blocks
+    nothing can write).
+    """
+    core = _disk_env(
+        cs, monkeypatch, ["n1", "n2"],
+        {"n1": _summary(40, 60, image_fs=777), "n2": _summary(400, 600, image_fs=888)},
+        service_node="n2")
 
     usage = cs.resource_usage()
 
-    assert (usage.disk.capacity_bytes, usage.disk.used_bytes) == (300, 100)
+    # n2 alone: used 400, and 400 + 600 available.
+    assert (usage.disk.capacity_bytes, usage.disk.used_bytes) == (1000, 400)
+    assert usage.disk_unavailable is None
+    assert usage.disk.capacity_bytes != 1100, "the two nodes were summed"
+    assert usage.disk.capacity_bytes != 1000 + _RESERVED, "capacityBytes was used"
+    assert core.proxy_calls[0] == ("n2", "stats/summary"), \
+        "the service's node must be read first, so the disk figure survives a short budget"
+
+
+def test_a_silent_kubelet_elsewhere_does_not_blank_the_disk(cs, monkeypatch):
+    """Another node refusing is not the disk meter's problem any more.
+
+    Under the old cluster-wide sum one unreadable node meant no disk figure at all, because
+    a partial sum was indistinguishable from a real reading. Node-local, that coupling is
+    gone: only the service's own node can take the disk figure down.
+    """
+    _disk_env(cs, monkeypatch, ["n1", "n2"],
+              {"n1": _summary(40, 60)}, service_node="n1",
+              raise_on={"n2": _Refused(status=500)})
+
+    usage = cs.resource_usage()
+
+    assert (usage.disk.capacity_bytes, usage.disk.used_bytes) == (100, 40)
     assert usage.disk_unavailable is None
 
 
-def test_resource_usage_reports_no_disk_when_a_kubelet_is_silent(cs, monkeypatch):
-    """One unreadable node means NO disk figure — never a partial sum, never a zero.
+def test_a_silent_kubelet_on_the_services_node_says_what_actually_failed(cs, monkeypatch):
+    """No disk figure, and a reason that reports the real failure rather than guessing.
 
-    A sum over the nodes that answered understates capacity and usage together, and
-    nothing downstream could tell it from a real reading. The capacity meter must survive
-    the failure: a missing `nodes/proxy` grant is not allowed to blank cpu and memory too.
+    This used to answer "the service needs `nodes/proxy`; run upgrade to reconcile RBAC" for
+    every exception -- a timeout, a TLS refusal, a summary missing a key -- with the real
+    cause going no further than a debug log. Reconciling RBAC then returned the identical
+    message, which is what makes a guess worse than no reason at all: the reader cannot tell
+    a fix that did not work from a diagnosis that was never right.
+
+    The capacity meter must survive it: an unreadable kubelet is not allowed to blank cpu and
+    memory too.
     """
-    _fake_kueue(monkeypatch)
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
-    core = _UsageCore(
-        [_usage_node("n1", "8", str(16 * 1024 ** 3)),
-         _usage_node("n2", "8", str(16 * 1024 ** 3))], [], [],
-        summaries={"n1": _summary(100, 40)}, raise_on=["n2"])
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
+    _disk_env(cs, monkeypatch, ["n1"], {}, service_node="n1",
+              raise_on={"n1": _Refused(status=None, reason="connection refused")})
 
     usage = cs.resource_usage()
 
     assert usage.disk is None and usage.store is None
-    assert "nodes/proxy" in usage.disk_unavailable
-    # the rest of the reading is untouched
-    assert usage.cpu_capacity == 16
-    assert usage.memory_capacity_bytes == 32 * 1024 ** 3
+    assert "connection refused" in usage.disk_unavailable
+    assert "nodes/proxy" not in usage.disk_unavailable, \
+        "only a 403 is an RBAC verdict; anything else must report its own cause"
+    # The rest of the reading is untouched.
+    assert usage.cpu_capacity == 8
+    assert usage.memory_capacity_bytes == 16 * 1024 ** 3
+
+
+def test_a_403_on_the_services_node_names_the_rbac_fix(cs, monkeypatch):
+    """The one case that IS an RBAC verdict, and the only one allowed to claim it."""
+    _disk_env(cs, monkeypatch, ["n1"], {}, service_node="n1",
+              raise_on={"n1": _Refused(status=403, reason="Forbidden")})
+
+    unavailable = cs.resource_usage().disk_unavailable
+
+    assert "nodes/proxy" in unavailable and "403" in unavailable
+    assert "--no-restart" in unavailable, \
+        "the fix is offered without rolling the pod, so the reason must say so"
+
+
+def test_no_service_pod_means_no_disk_and_a_reason_that_says_so(cs, monkeypatch):
+    """The meter is node-local, so it cannot answer without knowing which node.
+
+    Reported rather than silently omitted: a blank disk row with no explanation reads as a
+    full disk to some people and a broken meter to others.
+    """
+    _fake_kueue(monkeypatch)
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
+    monkeypatch.setattr(cs, "_k8s", lambda: _UsageCore(
+        [_usage_node("n1", "8", "16Gi")], [], [], summaries={"n1": _summary(40, 60)}))
+
+    usage = cs.resource_usage()
+
+    assert usage.disk is None
+    assert "could not be identified" in usage.disk_unavailable
 
 
 def test_resource_usage_memoises_the_kubelet_summary(cs, monkeypatch):
     """The Summary read has its own, longer TTL than the usage cache.
 
-    One payload carries every pod's stats on that node, and a disk fills over minutes —
-    so a poll that refreshed it every usage window would be paying per open browser tab
-    for a number that had not changed.
+    One payload carries every pod's stats on that node, and a disk fills over minutes — so a
+    poll that refreshed it every usage window would be paying per open browser tab for a
+    number that had not changed.
     """
-    _fake_kueue(monkeypatch)
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
-    core = _UsageCore([_usage_node("n1", "8", "16Gi")], [], [],
-                      summaries={"n1": _summary(100, 40)})
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
+    core = _disk_env(cs, monkeypatch, ["n1"], {"n1": _summary(40, 60)}, service_node="n1")
 
     cs.resource_usage()
     cs._usage_cache = None          # force a fresh capacity sample
@@ -923,36 +986,58 @@ def test_resource_usage_memoises_the_kubelet_summary(cs, monkeypatch):
     assert core.proxy_calls == [("n1", "stats/summary")]
 
 
+def test_the_kubelet_connection_is_released(cs, monkeypatch):
+    """Raw reads must be released, or the pool leaks one connection per node walked."""
+    core = _disk_env(cs, monkeypatch, ["n1"], {"n1": _summary(40, 60)}, service_node="n1")
+    cs.resource_usage()
+    assert core.responses and all(r.released for r in core.responses)
+
+
 def test_resource_usage_reports_the_rke2_results_store(cs, monkeypatch):
     """The store meter comes from the provider, out of the summaries already fetched."""
     from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
 
-    _fake_kueue(monkeypatch)
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
-    core = _UsageCore([_usage_node("n1", "8", "16Gi")], [], [],
-                      summaries={"n1": _summary(1000, 400,
-                                                pods=[_minio_pod(200, 1000)])})
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
+    _disk_env(cs, monkeypatch, ["n1"],
+              {"n1": _summary(400, 600, pods=[_minio_pod(200, 600)])},
+              service_node="n1")
     monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
 
     usage = cs.resource_usage()
 
-    assert (usage.store.capacity_bytes, usage.store.used_bytes) == (1000, 200)
-    # the emptyDir has no sizeLimit, so it shares the node filesystem's capacity
-    assert usage.store.capacity_bytes == usage.disk.capacity_bytes
+    # The store's own used, plus what the filesystem will still take: 200 + 600.
+    assert (usage.store.capacity_bytes, usage.store.used_bytes) == (800, 200)
+    # NOT the node filesystem's total. The emptyDir declares no sizeLimit, so it shares the
+    # disk with images, containers and every campaign directory -- its ceiling is what is
+    # left plus what it already holds, and it genuinely shrinks as the rest of the node
+    # fills. Reporting the filesystem's capacity here invited reading hundreds of spare
+    # gigabytes into a disk that was already nearly full.
+    assert usage.disk.capacity_bytes == 1000
+    assert usage.store.capacity_bytes < usage.disk.capacity_bytes
+
+
+def test_the_node_walk_stops_once_the_store_answers(cs, monkeypatch):
+    """The store lives on one node, so walking the rest buys only latency."""
+    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
+
+    core = _disk_env(cs, monkeypatch, ["n1", "n2", "n3"],
+                     {"n1": _summary(400, 600, pods=[_minio_pod(200, 600)]),
+                      "n2": _summary(1, 1), "n3": _summary(1, 1)},
+                     service_node="n1")
+    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
+
+    assert cs.resource_usage().store is not None
+    assert core.proxy_calls == [("n1", "stats/summary")], \
+        "the walk must stop as soon as the provider recognises its store"
 
 
 def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatch):
     """A provider that cannot measure its store reports none — not a store of size zero.
 
-    That is the honest answer for a cloud bucket, which has no capacity to fill, and for
-    a MinIO pod on a node whose kubelet was not read.
+    That is the honest answer for a cloud bucket, which has no capacity to fill, and for a
+    MinIO pod on a node whose kubelet was not read.
     """
-    _fake_kueue(monkeypatch)
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _UsageBatch([]))
-    core = _UsageCore([_usage_node("n1", "8", "16Gi")], [], [],
-                      summaries={"n1": _summary(1000, 400)})   # no MinIO pod in the stats
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
+    _disk_env(cs, monkeypatch, ["n1"], {"n1": _summary(400, 600)},  # no MinIO pod in stats
+              service_node="n1")
 
     usage = cs.resource_usage()
 
@@ -974,28 +1059,56 @@ def _usage_node(name, cpu, mem):
         status=types.SimpleNamespace(allocatable={"cpu": cpu, "memory": mem}))
 
 
-def _summary(fs_capacity, fs_used, image_fs=None, pods=()):
+def _summary(fs_used, fs_available, image_fs=None, pods=()):
     """One kubelet ``stats/summary`` payload, as the node proxy returns it (JSON text).
 
-    ``image_fs`` is set to values DIFFERENT from ``node.fs`` on purpose: on a single-disk
-    node the two are the same device, and a reader that summed them would double the disk.
+    The meter reads ``usedBytes`` and ``availableBytes`` and derives capacity as their sum,
+    because a filesystem's ``capacityBytes`` includes reserved blocks that cannot be
+    written. So ``capacityBytes`` is emitted here as a DECOY -- deliberately not equal to
+    ``used + available`` -- and every assertion below is written against the sum. A reader
+    that went back to ``capacityBytes`` would fail rather than quietly over-report headroom.
+
+    ``image_fs`` is likewise set to values DIFFERENT from ``node.fs``: on a single-disk node
+    the two are the same device, and a reader that summed them would double the disk.
     Distinct numbers make that mistake visible instead of arithmetically invisible.
     """
-    node = {"fs": {"capacityBytes": fs_capacity, "usedBytes": fs_used}}
+    node = {"fs": {"capacityBytes": fs_used + fs_available + _RESERVED,
+                   "usedBytes": fs_used, "availableBytes": fs_available}}
     if image_fs is not None:
-        node["runtime"] = {"imageFs": {"capacityBytes": image_fs, "usedBytes": image_fs}}
+        node["runtime"] = {"imageFs": {"capacityBytes": image_fs, "usedBytes": image_fs,
+                                       "availableBytes": image_fs}}
     return json.dumps({"node": node, "pods": list(pods)})
 
 
-def _minio_pod(used, capacity):
-    """A pod entry shaped like the RKE2 MinIO pod's, for the results-store hook."""
+#: Reserved blocks: in a filesystem's capacity, never writable. Non-zero here so that
+#: ``capacityBytes`` and ``used + available`` can never coincide by accident.
+_RESERVED = 7
+
+
+def _minio_pod(used, available):
+    """A pod entry shaped like the RKE2 MinIO pod's, for the results-store hook.
+
+    Same denominator as the disk meter, for the reason ``get_store_usage`` documents: the
+    ``/data`` emptyDir declares no ``sizeLimit``, so its ``capacityBytes`` is the whole node
+    filesystem -- which the store shares with images, containers and every campaign
+    directory. ``used + available`` is what this buffer can really still reach, so
+    ``capacityBytes`` is a decoy here too.
+    """
     from robovast.execution.cluster_config.rke2 import MINIO_POD_NAME, MINIO_VOLUME_NAME
     return {"podRef": {"name": MINIO_POD_NAME, "namespace": "default"},
-            "volume": [{"name": MINIO_VOLUME_NAME,
-                        "usedBytes": used, "capacityBytes": capacity}]}
+            "volume": [{"name": MINIO_VOLUME_NAME, "usedBytes": used,
+                        "availableBytes": available,
+                        "capacityBytes": used + available + _RESERVED}]}
 
 
-def _usage_pod(labels, phase, node=None, cpu=None, mem=None):
+def _usage_pod(labels, phase, node=None, cpu=None, mem=None, namespace="other"):
+    """A pod as the cluster-wide list returns it.
+
+    ``namespace`` defaults to one that is NOT the service's, so a pod only counts as the
+    service's own when a test says so: the disk meter finds the service's node by matching
+    both the ``app`` label and the namespace, and a default that matched would silently give
+    every test a service node it never asked for.
+    """
     import types
     requests = {}
     if cpu is not None:
@@ -1005,9 +1118,43 @@ def _usage_pod(labels, phase, node=None, cpu=None, mem=None):
     containers = [types.SimpleNamespace(
         resources=types.SimpleNamespace(requests=requests))] if requests else []
     return types.SimpleNamespace(
-        metadata=types.SimpleNamespace(labels=labels),
+        metadata=types.SimpleNamespace(labels=labels, namespace=namespace),
         status=types.SimpleNamespace(phase=phase),
         spec=types.SimpleNamespace(containers=containers, node_name=node))
+
+
+def _service_pod(node, namespace="ns1"):
+    """The robovast-service pod itself, which is how the disk meter learns its node.
+
+    Taken from the cluster-wide pod list the CPU sum already fetches, so it costs no read
+    of its own -- and it is the reason the disk figure is node-local rather than a sum.
+    """
+    from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME
+    return _usage_pod({"app": SERVICE_NAME}, "Running", node=node, namespace=namespace)
+
+
+class _RawResponse:
+    """urllib3-shaped response: ``.data`` bytes and an explicit ``release_conn``.
+
+    ``release_conn`` is asserted on, because an unreleased connection leaks the pool one
+    node at a time -- invisible until a long-lived service has walked enough nodes.
+    """
+
+    def __init__(self, payload):
+        self.data = payload.encode() if isinstance(payload, str) else payload
+        self.released = False
+
+    def release_conn(self):
+        self.released = True
+
+
+class _Refused(Exception):
+    """A kubelet read that failed, carrying the ``status`` the reason-builder reads."""
+
+    def __init__(self, status=None, reason="connection refused"):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
 
 
 class _UsageCore:
@@ -1017,7 +1164,7 @@ class _UsageCore:
     cluster has, while the scenario-run tally answers "what is *this* service running".
     """
 
-    def __init__(self, nodes, pods, job_pods=(), summaries=None, raise_on=()):
+    def __init__(self, nodes, pods, job_pods=(), summaries=None, raise_on=None):
         import types
         self._nodes = types.SimpleNamespace(items=nodes)
         self._pods = types.SimpleNamespace(items=pods)
@@ -1026,14 +1173,29 @@ class _UsageCore:
         # refuses. proxy_calls counts reads so a test can prove the summary is memoised
         # on its own TTL rather than re-fetched with every usage poll.
         self._summaries = summaries or {}
-        self._raise_on = set(raise_on)
+        # {node: exception}. A mapping rather than a name set, because *why* a kubelet did
+        # not answer is now part of the reported reason: only a 403 is an RBAC verdict.
+        self._raise_on = dict(raise_on or {})
         self.proxy_calls = []
+        # Every raw response handed out, so a test can prove each was released.
+        self.responses = []
 
     def connect_get_node_proxy_with_path(self, name, path, **kwargs):
+        """The RAW response the real client returns for ``_preload_content=False``.
+
+        Not the parsed body, and that shape is load-bearing: the generated client declares
+        this endpoint's response_type as ``str``, so a preloaded read hands back a
+        single-quoted Python repr that ``json.loads`` rejects. The meter reads ``.data`` and
+        releases the connection, so a fake returning a bare string would pass while the real
+        client failed -- which is exactly the bug that shipped.
+        """
         self.proxy_calls.append((name, path))
-        if name in self._raise_on:
-            raise RuntimeError("forbidden: nodes/proxy")
-        return self._summaries[name]
+        raiser = self._raise_on.get(name)
+        if raiser is not None:
+            raise raiser
+        resp = _RawResponse(self._summaries[name])
+        self.responses.append(resp)
+        return resp
 
     def list_node(self):
         return self._nodes
