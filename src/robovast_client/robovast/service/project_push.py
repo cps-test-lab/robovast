@@ -153,7 +153,9 @@ def push_campaign_archive(client, path: Path) -> str:
             # The client's own session, for the reason push_file gives: the route is behind
             # the same authentication as everything else. `data=` a file object streams it.
             resp = client.session.put(grant.url, data=fh, timeout=None)
-        resp.raise_for_status()
+        # The client's helper: an expired or replayed grant answers with a sentence saying
+        # so, and requests' own would report only "404 for url ...".
+        client.raise_for_status(resp)
         return resp.json()["path"]
     return str(path)
 
@@ -575,7 +577,10 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     tmp_path = f"{dest_path}.part"
     try:
         with client.session.get(url, timeout=600, stream=True) as resp:
-            resp.raise_for_status()
+            # The client's helper, not requests' own: that one reports the status line and
+            # the URL and throws the body away, which is where this service writes the
+            # actionable sentence ("no campaign 'x' on this service").
+            client.raise_for_status(resp)
             # Absent for a campaign archive: the service tars it on the fly, so there is
             # nothing to divide by and the progress callback reports a running count.
             total = int(resp.headers.get("Content-Length") or 0)
