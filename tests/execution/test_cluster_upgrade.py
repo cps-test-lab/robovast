@@ -243,7 +243,7 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: ("rke2", {"namespace": "default"}))
-    monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
     monkeypatch.setattr(service_deploy, "deploy_service", mock.Mock())
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
@@ -259,3 +259,46 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
     assert result.exit_code == 0, result.output
     assert apply_queues.called, "upgrade left the Kueue queues unreconciled"
     assert apply_queues.call_args.kwargs["namespace"] == "default"
+
+
+def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
+    """An upgrade on its own is enough to publish the service's origin.
+
+    It is the command an operator already runs to move a version, and it is the only one
+    that can do this without being told anything: the origin needs a scheme as well as a
+    host, `setup` knows that from its own flags but `upgrade` has none of them, so it reads
+    the whole URL off the live Ingress -- where the TLS block decides the scheme -- and
+    states it. The alternative shipped briefly and was worse than nothing: rendering from
+    `ingress_host`, which an upgrade must never pass, evaluated to empty and would have
+    erased a correct origin on every upgrade of a published deployment.
+    """
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue
+
+    deploy = mock.Mock()
+    monkeypatch.setattr(kubernetes_kueue, "apply_kueue_queues", mock.Mock())
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
+                        lambda *a, **k: ("rke2", {"namespace": "default"}))
+    monkeypatch.setattr(service_deploy, "published_url",
+                        lambda *a, **k: "http://robovast.example.org")
+    monkeypatch.setattr(service_deploy, "deploy_service", deploy)
+    monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
+    monkeypatch.setattr(service_deploy, "wait_for_rollout", lambda **k: None)
+    monkeypatch.setattr(service_deploy, "running_image_digest", lambda *a, **k: "sha256:abc")
+    monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
+
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
+    assert result.exit_code == 0, result.output
+
+    kwargs = deploy.call_args.kwargs
+    # The scheme is the point: read from the Ingress, not assumed from the host.
+    assert kwargs.get("public_origin") == "http://robovast.example.org"
+    # And the host still reaches the registry config, which is what it was read for first.
+    assert kwargs.get("registry_host") == "robovast.example.org"

@@ -223,6 +223,23 @@ def test_plain_http_is_declared_as_plain_http():
     assert env[PUBLIC_URL_ENV] == "http://robovast.example.org"
 
 
+def test_a_stated_origin_is_written_whatever_the_ingress_arguments_say():
+    """How an ``upgrade`` sets it: it holds no TLS arguments, so it reads the whole origin
+    off the live Ingress and states it. Deriving one from the host it passes as
+    ``registry_host`` would publish https:// over a plain-HTTP deployment."""
+    env = _service_env(registry_host="robovast.example.org",
+                       public_origin="http://robovast.example.org")
+    assert env[PUBLIC_URL_ENV] == "http://robovast.example.org"
+
+
+def test_a_stated_empty_origin_clears_it():
+    """Stating ``""`` is not the same as saying nothing. An upgrade reads the live Ingress,
+    so it can tell "not published" from "I do not know" -- and a service that has just been
+    unpublished must stop advertising an origin rather than keep a dead one."""
+    env = _service_env(public_origin="")
+    assert env[PUBLIC_URL_ENV] == ""
+
+
 def test_a_call_that_cannot_know_the_origin_leaves_it_alone():
     """Omitted, not emitted empty, and that distinction is the point.
 
@@ -237,11 +254,13 @@ def test_a_call_that_cannot_know_the_origin_leaves_it_alone():
     assert PUBLIC_URL_ENV not in _service_env()
 
 
-def test_an_upgrade_does_not_overwrite_the_origin_it_cannot_restate():
+def test_the_host_alone_is_never_enough_to_render_an_origin():
     """The regression this exists for: an upgrade passes the published host as
     ``registry_host`` -- never as ``ingress_host``, which would try to recreate the Ingress
-    and be refused for want of TLS arguments. Deriving the origin from the host it does
-    pass looked equivalent and was not."""
+    and be refused for want of TLS arguments. Rendering the origin from the host it does
+    pass looked equivalent and was not: the scheme would be a guess. Silence here is what
+    forces the caller to state one.
+    """
     assert PUBLIC_URL_ENV not in _service_env(registry_host="robovast.example.org")
 
 

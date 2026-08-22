@@ -490,17 +490,17 @@ fetch them out of band instead. The two are separate values on purpose, even tho
 they are the same host: a registry prefix may point somewhere else entirely, and the origin
 must not silently follow it.
 
-**Unlike the prefix, an ``upgrade`` does not re-bake it -- it leaves it alone.** The origin
-needs a scheme as well as a host, and the recovery path has only the host: ``upgrade`` reads
-it back from the live Ingress and holds none of the TLS arguments that Ingress was created
-with. So it says nothing about the origin, a merge patch preserves what it does not mention,
-and a published deployment keeps its origin across every upgrade. ``setup`` with
-``--ingress-host`` (plus ``--insecure-http`` where that applies) is what states it.
+**An ``upgrade`` re-bakes it too, and needs no arguments to do it.** The origin carries a
+scheme as well as a host, and an upgrade holds none of the TLS arguments the Ingress was
+created with -- so it reads the whole URL back from the live Ingress, where the TLS block
+decides the scheme, and states that. Which means a single ``vast exec cluster upgrade`` is
+enough to publish the origin of a deployment that predates it, and enough to *clear* it
+again for one that has been unpublished: reading the Ingress is what tells those two apart
+from "nobody told me".
 
-The case that trades against: a service that *stopped* being published keeps a stale origin
-until a ``setup`` restates it. That is the same trade the prefix makes in the other
-direction -- a stale value an operator can correct, rather than a correct value silently
-thrown away on the next upgrade.
+Nothing else overwrites it. A ``setup`` re-run without ``--ingress-host`` recovers only the
+host, so it says nothing and the merge patch leaves the value alone -- as does an origin an
+operator set by hand.
 
 A service that was never published declares no origin at all, which is honest rather than
 degraded: routes and file addresses still work, and only the absolute URLs are absent.

@@ -97,7 +97,7 @@ def _run_upgrade(before, after, rollout_error=None):
     with patch.multiple(
             "robovast.execution.cluster_execution.service_deploy",
             read_service_config_from_cluster=MagicMock(return_value=("rke2", {})),
-            published_host=MagicMock(return_value="robovast.example"),
+            published_url=MagicMock(return_value="https://robovast.example"),
             reconcile_registry_ingress_path=MagicMock(return_value=False),
             deploy_service=MagicMock(),
             wait_for_service_ready=MagicMock(),

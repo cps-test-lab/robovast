@@ -1401,7 +1401,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
                       tls_secret="", issuer="", insecure_http=False,
-                      registry_host="", registry_storage_path="",
+                      public_origin=None, registry_host="", registry_storage_path="",
                       workspaces_storage_path="", workspaces_storage_class="",
                       registry_storage_class="", registry_node=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
@@ -1420,10 +1420,11 @@ def service_manifests(namespace="default", image=None, env=None,
     none of the TLS arguments that Ingress was created with. Defaults to *ingress_host*,
     which is what setup passes.
 
-    :data:`PUBLIC_URL_ENV` is *not* rendered from *registry_host*, even though the two are
-    the same host: it needs the scheme too, and only a caller that creates the Ingress
-    knows that from its own arguments. It is therefore written when this call states one
-    and left alone otherwise — see the env block.
+    *public_origin* is :data:`PUBLIC_URL_ENV`, and it is three-valued because the callers
+    differ in what they can know. ``None`` means "not stated": rendered from *ingress_host*
+    and *insecure_http* if those name one, and otherwise left exactly as the pod has it. A
+    string is authoritative, including ``""`` for "this service is not published" — which is
+    what lets an ``upgrade``, reading the live Ingress, both set the origin and clear it.
     """
     registry_host = registry_host or ingress_host
     from robovast.common.execution import resolve_controller_image
@@ -1477,25 +1478,23 @@ def service_manifests(namespace="default", image=None, env=None,
     if not any(e["name"] == "TZ" for e in env):
         env = [*env, {"name": "TZ", "value": _host_timezone()}]
 
-    # The published origin, written only when this call actually knows it -- which means
-    # `--ingress-host` plus the scheme flags, i.e. a `setup` that published the service.
+    # The published origin. Written when somebody knows it, and left alone when nobody
+    # does -- a merge patch preserves what it does not mention, which is the only safe
+    # answer for a caller that would otherwise overwrite a correct value with a guess.
     #
-    # Unlike the image-family vars above this is deliberately NOT emitted empty when
-    # unknown. A merge patch preserves what it does not mention, and the callers that
-    # cannot state one are precisely the ones that must not overwrite it: `upgrade` and a
-    # `setup` re-run recover the published *host* from the live Ingress but hold none of
-    # the TLS arguments it was created with, so they know the host and not the scheme.
-    # Emitting "" there would erase, on every upgrade, an origin that is still correct --
-    # and rendering `https://<host>` from the host alone would publish the wrong scheme
-    # for a deployment set up with --insecure-http.
-    #
-    # The case this cannot express is a service that *stopped* being published: its
-    # origin then lingers until a `setup` restates it. Fixed the same way the registry
-    # prefix is (see cluster_execution.rst), and the same trade the prefix makes: a stale
-    # value an operator can correct beats a correct value silently thrown away.
-    origin = public_url(ingress_host, insecure_http)
-    if origin and not any(e["name"] == PUBLIC_URL_ENV for e in env):
-        env = [*env, {"name": PUBLIC_URL_ENV, "value": origin}]
+    # Knowing it means knowing the *scheme* as well as the host. A `setup` that publishes
+    # the service has that in its own arguments. An `upgrade` has neither: it reads the
+    # host back from the live Ingress and holds none of the TLS arguments that Ingress was
+    # created with -- so it reads the whole origin instead (`published_url`, whose scheme
+    # comes from the live TLS block) and states it here. Deriving `https://<host>` from the
+    # host it passes as `registry_host` would have published the wrong scheme for anything
+    # set up with --insecure-http, and rendering from `ingress_host` -- which an upgrade
+    # must never pass, since that also *creates* the Ingress -- would have erased the
+    # origin on every upgrade of a published deployment.
+    declared = public_origin if public_origin is not None else (
+        public_url(ingress_host, insecure_http) or None)
+    if declared is not None and not any(e["name"] == PUBLIC_URL_ENV for e in env):
+        env = [*env, {"name": PUBLIC_URL_ENV, "value": declared}]
 
     extra = []
     if git_token is None:
@@ -1614,7 +1613,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
-                   registry_host="", registry_storage_path="",
+                   public_origin=None, registry_host="", registry_storage_path="",
                    workspaces_storage_path="", workspaces_storage_class="",
                    registry_storage_class="", registry_node=""):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
@@ -1662,7 +1661,8 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         kube_context=kube_context, pull_secret=pull_secret,
         auth_token=auth_token, ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
-        insecure_http=insecure_http, registry_host=registry_host,
+        insecure_http=insecure_http, public_origin=public_origin,
+        registry_host=registry_host,
         registry_storage_path=registry_storage_path,
         workspaces_storage_path=workspaces_storage_path,
         workspaces_storage_class=workspaces_storage_class,

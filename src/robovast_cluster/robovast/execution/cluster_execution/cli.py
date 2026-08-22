@@ -868,7 +868,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     """
     from .cluster_setup import apply_controller_rbac
     from .kubernetes_kueue import apply_kueue_queues
-    from .service_deploy import (deploy_service, published_host, read_service_config_from_cluster,
+    from .service_deploy import (deploy_service, published_url, read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
                                  wait_for_rollout, wait_for_service_ready)
 
@@ -883,7 +883,14 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         # is upgrading, not necessarily by whoever set the cluster up. It doubles as the
         # registry prefix, so passing it is what stops an upgrade from rebuilding the
         # registry config without one and silently disabling in-cluster builds.
-        ingress_host = published_host(namespace, kube_context)
+        # One read, two facts. The host doubles as the registry prefix; the whole URL is
+        # what the service declares to its clients, and its scheme comes from the live TLS
+        # block rather than from arguments this command does not have. Stating it is what
+        # makes an upgrade enough on its own -- deriving it from the host would publish
+        # https:// over a plain-HTTP deployment, and saying nothing would leave a service
+        # that has just been unpublished still advertising an origin.
+        public_origin = published_url(namespace, kube_context)
+        ingress_host = public_origin.split("://", 1)[-1] if public_origin else ""
 
         click.echo(f"Upgrading robovast-service in {namespace}...")
         before = running_image_digest(namespace, kube_context)
@@ -921,7 +928,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             return
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
-                       registry_host=ingress_host)
+                       registry_host=ingress_host, public_origin=public_origin)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
         #
