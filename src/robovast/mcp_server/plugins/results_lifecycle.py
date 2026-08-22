@@ -216,20 +216,29 @@ def get_campaign_download(campaign_id: str) -> dict:
         campaign_id: The campaign to download.
 
     Returns:
-        ``{campaign_id, url, path, note}`` — the campaign as a ``tar.gz``. Or ``{error}``.
+        ``{campaign_id, path, next_step}`` — the campaign as a ``tar.gz`` — plus ``url``
+        when this service declares an origin to reach it on. Or ``{error}``.
     """
+    from robovast.service.interface import Routes
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
-    path = f"/campaigns/{campaign_id}/archive"
+    # The route helper, not a second copy of the path: it exists so this link and the
+    # endpoint serving it are one string.
+    path = Routes.campaign_archive(campaign_id)
+    # Omitted rather than empty when there is no origin to build one from -- a deployment
+    # that declares none still has a usable answer in `path` + `next_step`.
+    url = service_access.web_url(client, path)
+    # The command belongs here rather than in prose: it is the whole next move, with the
+    # id already filled in. Nothing is said about the share copy -- whether one exists is
+    # not a fact this service records (only `share_error`, a failure, travels with a
+    # campaign), and `vast share download` is documented where commands are looked up.
     return {
         "campaign_id": campaign_id,
-        "url": f"{client.base_url}{path}",
+        **({"url": url} if url else {}),
         "path": path,
-        "note": ("Open it in the browser where the robovast web UI runs, or run "
-                 f"'vast results download {campaign_id}'. The share's pre-postprocess "
-                 "copy is 'vast share download'; the way back in is 'vast share import'."),
+        "next_step": f"vast results download {campaign_id}",
     }
 
 

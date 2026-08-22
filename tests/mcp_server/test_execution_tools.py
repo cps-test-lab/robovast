@@ -407,21 +407,51 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
     assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
-    assert "web UI" in res["note"]
+    assert res["next_step"] == "vast results download camp-2026-01-01-000000"
     assert "error" not in res
 
 
 def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
-    """A local service serves the archive too, so the two lanes answer identically.
-
-    The note must not send the caller to the service's filesystem: the point of the route is
-    that a caller who cannot reach that filesystem can still get the campaign.
-    """
+    """A local service serves the archive too, so the two lanes answer identically."""
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("docker"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
-    assert "filesystem" not in res["note"]
+
+
+def test_get_campaign_download_says_nothing_about_the_share(monkeypatch):
+    """Whether a share copy exists is not a fact this service records.
+
+    The note used to name ``vast share download`` unconditionally, but a campaign only has
+    a share copy if it was uploaded to one -- ``upload_to_share`` is a create-time request
+    flag, and the only thing travelling with a campaign afterwards is ``share_error``, a
+    failure. Advertising the copy anyway is AGENTS.md §4's "capability the caller cannot
+    use", and the honest check (``list_share_archives``) is a different system with
+    different credentials.
+    """
+    monkeypatch.setattr(service_access, "service_client",
+                        lambda: _fake_download_client("kubernetes"))
+    res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
+    assert "share" not in " ".join(str(v) for v in res.values())
+
+
+def test_get_campaign_download_without_a_transport_omits_the_url(monkeypatch):
+    """The mounted MCP holds the implementation, which has no ``base_url`` to read.
+
+    The regression this exists for: the tool read ``client.base_url`` directly, so on the
+    deployment that mounts the MCP inside the service -- every published one -- it raised
+    ``AttributeError`` instead of answering. Every fake here had a ``base_url``, which is
+    the one shape production never has.
+    """
+    from robovast.service.interface import VersionInfo
+    impl = SimpleNamespace(          # no base_url, and nothing declared
+        version=lambda: VersionInfo(robovast_version="test", backend="kubernetes"))
+    monkeypatch.setattr(service_access, "service_client", lambda: impl)
+    res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
+    assert "url" not in res          # omitted, not empty
+    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert res["next_step"] == "vast results download camp-2026-01-01-000000"
+    assert "error" not in res
 
 
 def test_get_campaign_download_no_service_errors(monkeypatch):
