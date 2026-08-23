@@ -2704,6 +2704,45 @@ class ClusterService(LocalTransport):
         cached = self._cache_dir(cid)
         return cached if (cached / "campaign.db").is_file() else None
 
+    def _is_record_cache(self, campaign_dir) -> bool:
+        """Whether *campaign_dir* is a fetched mirror of the object store (:meth:`_cache_dir`)
+        rather than a campaign tree this pod drives.
+
+        Asked of the directory, not of the campaign id, because that is what the readers
+        below are handed -- and resolved through ``_cache_dir`` so the answer follows
+        wherever that puts the scratch.
+        """
+        path = Path(campaign_dir)
+        return path == Path(self._cache_dir(path.name))
+
+    def _run_counts(self, campaign_dir: Path, *, live: bool) -> dict:
+        """The store's own tallies for a fetched record cache: no backfill, no disk walk.
+
+        For a campaign this pod does not drive, :meth:`_record_dir` hands back the
+        two-object mirror of the object store, not the campaign's tree. The inherited
+        backfill and its ``get_vast_configuration_info`` fallback both read per-run
+        directories that are not there and never will be, so both can only answer zero --
+        after opening ``campaign.db`` **read-write**.
+
+        That open is what makes this more than wasted work. ``CampaignStore`` migrates on
+        open, so a campaign recorded under an older schema gets rewritten in the cache; the
+        copy then no longer matches the object it mirrors in size, and size is exactly how
+        :meth:`_materialize` decides a cached object is stale. The next listing pass
+        re-fetches it, the read migrates it again, and the pod re-downloads that campaign's
+        records once per pass for as long as a browser tab is open -- one log line each
+        time, which is how this was found. Only a campaign with **no runs recorded** reaches
+        the backfill at all, which is why it surfaced as a few rows cycling in the log
+        rather than as the whole listing.
+        """
+        if not self._is_record_cache(campaign_dir):
+            return super()._run_counts(campaign_dir, live=live)
+        from robovast.common.store import read_run_counts
+        counts = read_run_counts(campaign_dir)
+        # ``None`` is a store too old to have the ``run`` table. The walk is the inherited
+        # answer for that, and here it is also the honest one -- it finds nothing, because
+        # the runs are not on this disk -- while carrying the keys the caller expects.
+        return counts if counts is not None else self._walk_counts(campaign_dir)
+
     def _record_dir(self, cid: str) -> Path:
         """Where *cid*'s recorded facts are, fetching the two small objects if needed.
 

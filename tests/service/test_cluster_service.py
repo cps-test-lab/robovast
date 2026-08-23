@@ -408,6 +408,47 @@ def test_a_campaign_this_process_drives_is_never_fetched(indexed, monkeypatch):
     assert storage.reads == []
 
 
+def test_a_fetched_record_cache_is_never_written_back(indexed):
+    """A summary read must leave the cache byte-identical to the object it mirrors.
+
+    ``_materialize`` decides a cached object is stale by comparing its size with the
+    store's, so a read that rewrites the copy makes the next listing pass re-fetch it --
+    and that pass reads it again, rewrites it again, and the pod re-downloads the campaign
+    once per pass for as long as a tab is open. The inherited zero-runs path does exactly
+    that: it opens ``campaign.db`` read-write to backfill run rows from a run tree the
+    cache does not hold, and ``CampaignStore`` migrates an older-schema store on open.
+    """
+    cs, storage = indexed
+    from robovast.execution.cluster_execution import in_pod_storage
+    cid = "old-2026-07-17-120000"
+    in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
+    # An empty database: a store predating the ``run`` table, which is what sends the
+    # inherited path to the backfill in the first place.
+    storage.objects["campaign.db"] = b""
+    storage.objects["_execution/outcome.json"] = b'{"phase": "finished"}'
+
+    root = cs._record_dir(cid)
+    counts = cs._run_counts(root, live=False)
+
+    assert counts["num_runs"] == 0
+    assert (root / "campaign.db").read_bytes() == storage.objects["campaign.db"]
+
+
+def test_a_campaign_tree_this_pod_drives_is_still_backfilled(indexed, monkeypatch):
+    """Read-only is the rule for the cache, not for a real tree: there the runs *are* on
+    disk, the repair sticks, and nothing re-fetches the store afterwards."""
+    cs, _storage = indexed
+    seen = []
+    monkeypatch.setattr("robovast.common.campaign_index.backfill_run_rows",
+                        lambda d: seen.append(d) or 0)
+    root = cs._campaign_dir("live-2026-07-17-120000")
+    root.mkdir(parents=True)
+
+    cs._run_counts(root, live=False)
+
+    assert seen == [root]
+
+
 def test_the_index_supplies_the_ids_the_disk_scan_cannot_see(indexed):
     cs, storage = indexed
     from robovast.execution.cluster_execution import in_pod_storage
