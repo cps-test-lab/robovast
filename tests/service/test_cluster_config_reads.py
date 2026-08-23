@@ -137,6 +137,28 @@ def test_resolving_a_panel_asset_does_not_fetch_the_campaign(svc):
     assert not any(key.endswith("rosbag.db3") for key in _downloaded(storage))
 
 
+def test_listing_panels_reads_the_config_snapshot_not_an_unfetched_campaign(svc):
+    """The one that reached a browser.
+
+    ``list_campaign_panels`` resolved the ``.vast`` through ``_campaign_dir``, which on this
+    lane names the fetched *record* cache: for a campaign this pod does not drive that holds
+    ``campaign.db`` and ``_execution/`` and no ``_config/`` at all, so ``campaign_vast`` raised
+    "no .vast" and the route answered 500. The run view asks for its panels before it draws
+    anything, so that single failure emptied the entire view -- no transport bar, no
+    backend-contributed ``scene3d``, just the run-selection header -- which reads as the 3D
+    scene being broken rather than as a config read taking the wrong seam.
+
+    Not caught by the structural guard above: ``_campaign_dir`` is not ``_data_dir``, so it
+    never raised. It answered, with a directory that was simply empty.
+    """
+    service, storage = svc
+    response = service.list_campaign_panels("camp-1")
+
+    # The transport bar is contributed to every run view, so its absence is the empty view.
+    assert "playback" in [panel["type"] for panel in response.panels]
+    assert not any(key.endswith("rosbag.db3") for key in _downloaded(storage))
+
+
 def test_whole_campaign_dir_is_the_explicit_way_to_ask_for_everything(monkeypatch, svc):
     """``_whole_campaign_dir`` still fetches — the point is that it says so."""
     service, _ = svc

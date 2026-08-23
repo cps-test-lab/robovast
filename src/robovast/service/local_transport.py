@@ -4019,7 +4019,15 @@ class LocalTransport(RobovastInterface):
         from robovast.common.simulators import merge_default_panels
         from robovast.service.interface import CampaignPanelsResponse
         from robovast.service.postprocessing_edit import campaign_vast
-        cfg, _ = _safe_load(str(campaign_vast(Path(self._campaign_dir(campaign_id)))))
+        # Through `_config_dir` and not `_campaign_dir`: on the cluster lane a campaign this pod
+        # does not drive has only its two record objects fetched, so `_campaign_dir` names a cache
+        # holding `campaign.db` and `_execution/` and no `_config/` at all -- and `campaign_vast`
+        # then raises "no .vast", which reaches the browser as a 500 on this route. The run view
+        # asks for its panels before it draws anything, so that one failure emptied the whole view:
+        # no `playback`, no backend-contributed `scene3d`, just the run-selection header. Only
+        # `_config_dir` materialises the frozen snapshot first, which is why the panel-asset reader
+        # below already uses it. Its parent is the campaign dir `campaign_vast` wants.
+        cfg, _ = _safe_load(str(campaign_vast(Path(self._config_dir(campaign_id)).parent)))
         run_view = visualization_block(cfg, "results", "run_view") or {}
         authored = run_view.get("panels") or []
         # Contributed panels: the transport bar every run view needs, plus the ones that replay
