@@ -12,11 +12,16 @@ the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is 
   raw `/tf` transforms; unused by the playback path (poses arrive already map-frame), kept for the
   future live view.
 - `viewport.ts` — a plain-three viewport (renderer, camera, lights, grid, orbit controls, its own
-  wheel handler, a frustum that tracks the camera, Z-up wrapper group, resize, dispose).
-- `cursorDolly.ts` — the wheel: fly along the ray under the cursor, moving eye and orbit pivot
-  together. Scaling the orbit radius instead — what an orbit controller's own dolly does — makes the
-  travel a geometric series converging on the pivot, which stalls the wheel close in and makes the
-  pivot impossible to pass through; the docstring has the full reasoning.
+  wheel/pointer handlers, a frustum that tracks the camera, Z-up wrapper group, resize, dispose).
+- `pivot.ts` — where the orbit pivot goes, and the reason the other two files are shaped as they are.
+  Rotate, pan and the wheel are all scaled by the pivot distance, so it is measured against the scene
+  under the cursor at the start of every gesture. A pivot left at the world's authored framing
+  distance is right in the opening frame and wrong everywhere the camera travels to.
+- `cursorDolly.ts` — the wheel: fly along the ray under the cursor, stepping a fraction of the pivot
+  distance and leaving the pivot behind, so the approach slows as it closes on the surface aimed at.
+  That is radius-scaling, which this file was originally written to avoid; the docstring says at
+  length why the objection (a series converging on a pivot that can never be passed) does not apply
+  to a pivot re-chosen every gesture with a floored step.
 
 ## Texture mapping
 

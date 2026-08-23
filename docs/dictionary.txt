@@ -141,6 +141,8 @@ MCP
 memoizes
 Memoizing
 memoryless
+metre
+metres
 MiB
 middleware
 millicore

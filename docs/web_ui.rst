@@ -1263,17 +1263,25 @@ one rigid piece.
 The mouse bindings:
 
 - **wheel** — fly toward or away from whatever is under the pointer. You steer by aiming: point at a
-  far shelf and scroll, and you arrive at that shelf. One notch covers the same fraction of the view
-  at any distance, and there is no distance at which it stops — you can fly *into* a building whose
-  camera was framed from outside it.
-- **left-drag** — turn the view about a pivot held a fixed distance ahead, so it reads as looking
-  around rather than circling a point that recedes as you approach it.
-- **right-drag** — pan sideways and vertically.
+  far shelf and scroll, and you arrive at that shelf. The approach slows as you close on it, so a
+  notch crosses open ground quickly and never crosses the surface you are aiming at — and a notch out
+  undoes a notch in exactly.
+- **left-drag** — turn about the surface under the pointer. Aimed at a corridor wall a metre away it
+  reads as looking around; aimed at a building across the world it orbits the building.
+- **right-drag** — pan sideways and vertically, at roughly the speed of the surface being dragged.
+- **double-click** — travel to frame whatever you clicked, without turning the camera.
 
-The wheel deliberately does not shrink an orbit radius toward a fixed center, which is the usual
-default and is what makes such a view freeze a short way from its center. Because it flies without
-bound, the way back is the header gear's :ref:`Reset 3D view <reset-3d-view>` entry, which re-frames
-the camera at the view the world was authored with.
+All three drags are scaled by one number, the distance to the **pivot**, and the panel re-measures it
+against the actual geometry whenever a gesture starts. That is what lets a single set of bindings fit
+a 3 m tabletop and a 65 m building without a mode or a speed setting: a pivot fixed at the distance
+the world was authored with is right in the opening frame and wrong everywhere you travel to, which
+is felt as a drag that flings the camera through walls and a wheel that cannot approach one.
+
+The wheel deliberately does not shrink an orbit radius toward a *fixed* center, which is the usual
+default and is what makes such a view freeze a short way from that center; here the pivot is
+re-chosen every gesture and can be flown through. Because it flies without bound, the way back is
+the header gear's :ref:`Reset 3D view <reset-3d-view>` entry, which re-frames the camera at the view
+the world was authored with.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **capture** names the world it used and the service builds the matching **geometry** on demand. Both
