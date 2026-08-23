@@ -64,7 +64,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ListJobsResponse, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
                                         MigrationMarker, RetriggerAxis, RetriggerReport,
-                                        RobovastInterface, Routes, WorkOrder,
+                                        RobovastInterface, Routes, SearchHistory, WorkOrder,
                                         UploadGrant, ValidationProblem,
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
@@ -528,6 +528,12 @@ class LocalTransport(RobovastInterface):
         self._description_cache: dict[str, str] = {}
         self._created_by_cache: dict[str, str] = {}
         self._origin_cache: dict[str, CampaignOrigin] = {}
+        # campaign_id -> (rest key, answer) for the two EXPENSIVE reads, which -- unlike the
+        # write-once facts above -- can change, so each entry carries the key it was computed
+        # from and is discarded the moment that key moves. See _rest_key for what the key is
+        # and why it is a file stat rather than an invalidation call.
+        self._summary_cache: dict[str, tuple] = {}
+        self._disk_status_cache: dict[str, tuple] = {}
         # token -> (expiry, staged archive path) for campaign-archive uploads. In memory by
         # design; see the "taking a campaign in" section.
         self._archive_grants: dict[str, tuple[float, Path]] = {}
@@ -2502,6 +2508,22 @@ class LocalTransport(RobovastInterface):
         # Not tracked in this process — reconstruct from disk (past campaign). Nothing to ask:
         # a campaign this process does not drive has no running job here to look into.
         return self._status_from_disk(campaign_id)
+
+    def get_search_history(self, campaign_id: str) -> SearchHistory:
+        """A search's per-batch objective trajectory, from its ``campaign.db``.
+
+        Resolved through :meth:`_record_dir`, which is what makes one implementation serve
+        every case: a campaign this process is driving answers from the store its controller is
+        writing right now, and any other from its durable records. That is also why this reads
+        the store rather than going through the SQL query endpoint — on the cluster lane that
+        endpoint materialises a snapshot the campaign publishes only when it *finishes*, so a
+        query there returns nothing at all for the running search this exists to show.
+        """
+        from robovast.common.store import read_batch_objectives
+        history = read_batch_objectives(self._record_dir(campaign_id))
+        if history is None:
+            return SearchHistory(unavailable="no_store")
+        return SearchHistory(**history)
 
     def _derive_postprocessed(self, campaign_id: str, snap: Status) -> Status:
         """Apply the recovery path's ``postprocessed`` rule to a **live** snapshot.
@@ -4483,6 +4505,61 @@ class LocalTransport(RobovastInterface):
         return is_terminal(entry.state.snapshot().phase) or (
             entry.thread is not None and not entry.thread.is_alive())
 
+    #: Every file a campaign's summary or reconstructed status is derived from. ``campaign.db``
+    #: carries the run tallies and the mode; ``outcome.json`` the terminal outcome; ``data.db``
+    #: is what ``postprocessed`` is derived from (see _derive_postprocessed). The SQLite
+    #: sidecars are listed because a store in WAL mode commits into ``-wal`` and can leave the
+    #: main file's mtime standing still -- no journal_mode is set today, so this is insurance
+    #: against a later change silently freezing every card rather than a current requirement.
+    _REST_FILES = ("campaign.db", "campaign.db-wal", "campaign.db-journal",
+                   "_execution/outcome.json", "_execution/data.db")
+
+    def _rest_dir(self, cid: str) -> Optional[Path]:
+        """The campaign's record directory **if it is already on local disk**, else ``None``.
+
+        Deliberately never fetches, which is what separates it from :meth:`_record_dir`: it
+        exists to be called on the listing's hot path, where ``_record_dir`` is the cost being
+        avoided. On the cluster lane that method re-validates its two objects against the store
+        on every call, so asking it for a cache key would pay the price the cache exists to
+        save. ``None`` means "not cheaply knowable here" and the caller falls back to the full
+        path, which is the honest answer for a campaign whose records have never been fetched.
+        """
+        local = self._campaign_dir(cid)
+        return local if (local / "campaign.db").is_file() else None
+
+    def _rest_key(self, cid: str, entry) -> Optional[tuple]:
+        """Cache key for a campaign **at rest**, or ``None`` when it must not be cached.
+
+        Two parts, and both are load-bearing.
+
+        *Is it at rest?* Only a campaign nothing is driving may be cached. Note this is not the
+        same as "terminal": ``_dispatch_background`` puts a campaign back under a live entry for
+        an export-to-share, a re-triggered postprocessing or an import, so those reactivations
+        exclude themselves here with no special case. The entry's identity goes into the key as
+        well, because such a dispatch constructs a *new* ``ControllerState`` -- so the next read
+        misses by construction rather than by a file stat that a share might not have moved.
+
+        *Has anything changed?* The stat tuple of :data:`_REST_FILES`. Deliberately a stat and
+        not an invalidation call from each mutating operation: enumerating those means the next
+        operation somebody adds forgets one and a card goes stale forever with nothing to point
+        at -- and share and re-postprocessing would have been two of the entries to remember. A
+        stat key needs nobody to remember, and it also catches what no invalidation can, such as
+        a results directory repaired or imported out of band.
+        """
+        if entry is not None and not self._is_done(entry):
+            return None
+        root = self._rest_dir(cid)
+        if root is None:
+            return None
+        stats = []
+        for rel in self._REST_FILES:
+            try:
+                st = (root / rel).stat()
+                stats.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                stats.append(None)  # absent is itself a fact the answer depends on
+        return (id(entry.state) if entry is not None else None, tuple(stats))
+
     def _record_dir(self, cid: str) -> Path:
         """The directory holding *cid*'s **recorded facts** — ``campaign.db`` and
         ``_execution/outcome.json``.
@@ -4500,9 +4577,20 @@ class LocalTransport(RobovastInterface):
     def _summary_for(self, cid: str) -> CampaignSummary:
         from robovast.common.store import read_campaign_mode
         from robovast.execution.status_recovery import reconstruct_status_from_disk
-        campaign_dir = self._record_dir(cid)
         with self._lock:
             entry = self._campaigns.get(cid)
+        # The listing's hot path. The campaign-list SSE stream re-lists once a second for as
+        # long as any tab is open, and everything below -- a status reconstruction, the run
+        # tallies, the mode -- is three SQLite opens and a JSON read *per campaign*, for
+        # campaigns that are not being driven and whose answers therefore cannot change. The
+        # four cheap facts beside it have been memoised for exactly this reason since
+        # _campaign_fact was written; these are the expensive ones, and they were not.
+        key = self._rest_key(cid, entry)
+        if key is not None:
+            hit = self._summary_cache.get(cid)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+        campaign_dir = self._record_dir(cid)
         # One precedence rule, shared with get_status: a tracked campaign's live
         # ControllerState wins; otherwise reconstruct the Status from disk (the one
         # documented recovery path — it also derives `postprocessed` from data.db).
@@ -4515,7 +4603,7 @@ class LocalTransport(RobovastInterface):
             snap = reconstruct_status_from_disk(campaign_dir)
         started_at = self._started_at_for(cid)
         counts = self._run_counts(campaign_dir, live=entry is not None)
-        return CampaignSummary(
+        summary = CampaignSummary(
             campaign_id=cid, phase=snap.phase, postprocessed=snap.postprocessed,
             description=self._description_for(cid) or "",
             created_by=self._created_by_for(cid) or "",
@@ -4535,6 +4623,9 @@ class LocalTransport(RobovastInterface):
             # finished-and-fine while its Status says postprocessing failed.
             postprocessing_error=snap.postprocessing_error or "",
             share_error=snap.share_error or "")
+        if key is not None:
+            self._summary_cache[cid] = (key, summary)
+        return summary
 
     def _run_counts(self, campaign_dir: Path, *, live: bool) -> dict:
         """Pass/fail tallies for the summary, from ``campaign.db`` when possible.
@@ -4681,5 +4772,24 @@ class LocalTransport(RobovastInterface):
         return value
 
     def _status_from_disk(self, campaign_id: str) -> Status:
+        """Reconstruct an untracked campaign's Status from its records, memoised at rest.
+
+        Cached for the same reason as the summary and against the same key, but for a
+        different traffic shape: this is not the 1 Hz listing, it is the **page-load burst**.
+        Every campaign card fetches its status once on mount, and the browser reaches the
+        service over HTTP/2 -- so with no connection limit to throttle them, a hundred cards
+        issue a hundred of these at once, each a JSON read plus a store read, against a
+        40-thread pool.
+        """
         from robovast.execution.status_recovery import reconstruct_status_from_disk
-        return reconstruct_status_from_disk(self._record_dir(campaign_id))
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        key = self._rest_key(campaign_id, entry)
+        if key is not None:
+            hit = self._disk_status_cache.get(campaign_id)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+        status = reconstruct_status_from_disk(self._record_dir(campaign_id))
+        if key is not None:
+            self._disk_status_cache[campaign_id] = (key, status)
+        return status

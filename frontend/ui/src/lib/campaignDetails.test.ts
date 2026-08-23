@@ -33,7 +33,6 @@ function run(
     batch?: number | null
     duration?: number | null
     start?: string | null
-    objective?: number | null
   } = {},
 ): RunRow {
   return {
@@ -41,7 +40,6 @@ function run(
     batch: extra.batch ?? 0,
     duration_s: extra.duration === undefined ? 60 : extra.duration,
     start_time: extra.start === undefined ? '2026-08-12T10:00:00+00:00' : extra.start,
-    objective: extra.objective ?? null,
   }
 }
 
@@ -259,12 +257,6 @@ describe('summariseBatches', () => {
     expect(all.passed + all.failed + all.killed + all.other).toBe(all.runs)
   })
 
-  it('takes the best objective by the campaign direction', () => {
-    const rows = [run('passed', { objective: 0.2 }), run('passed', { objective: 0.9 })]
-    expect(summariseBatches(rows, true)[0].bestObjective).toBe(0.9)
-    expect(summariseBatches(rows, false)[0].bestObjective).toBe(0.2)
-  })
-
   it('medians only the runs that recorded a duration', () => {
     const [all] = summariseBatches([
       run('passed', { duration: 10 }),
@@ -429,7 +421,6 @@ describe('durationHistogram', () => {
     duration_s: duration,
     batch: 0,
     start_time: '2026-08-12T10:00:00+00:00',
-    objective: null,
   })
 
   it('bins over the data range, not from zero', () => {

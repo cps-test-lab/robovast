@@ -117,6 +117,15 @@ export type BudgetItem = Schemas['BudgetItem']
 
 export type Status = Schemas['Status']
 
+// A search's per-batch objective trajectory (interface.py:SearchHistory). Its own route rather
+// than a field on Status: every campaign card polls the status at 1.5s, so a series that grows
+// with the batch count would be paid for by every card on screen whether or not anything is
+// showing it. This is fetched only while the chart is open. `unavailable` says WHY there is no
+// trajectory ('batch_mode' | 'multi_objective' | 'no_store'), because an empty `batches` reads
+// as "measured, and there was nothing".
+export type SearchHistory = Schemas['SearchHistory']
+export type BatchObjective = Schemas['BatchObjective']
+
 // An incremental slice of a campaign's controller.log. Poll from `next_offset`
 // and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
 export type LogChunk = Schemas['LogChunk']
@@ -345,6 +354,12 @@ export const robovast = {
 
   getStatus: (campaignId: string) =>
     request<Status>('GET', `/campaigns/${encodeURIComponent(campaignId)}/status`),
+
+  getSearchHistory: (campaignId: string) =>
+    request<SearchHistory>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/search/history`,
+    ),
 
   getCampaignLogs: (campaignId: string, offset = 0) =>
     request<LogChunk>(

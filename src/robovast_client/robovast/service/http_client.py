@@ -42,7 +42,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         JobState, ListJobsResponse, ListWorkspacesResponse,
                                         LogChunk,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
-                                        RobovastInterface, Routes, ServiceError, UploadGrant,
+                                        RobovastInterface, Routes, SearchHistory,
+                                        ServiceError, UploadGrant,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
@@ -234,6 +235,10 @@ class HTTPTransport(RobovastInterface):
 
     def get_status(self, campaign_id: str) -> Status:
         return Status.model_validate(self._get(Routes.campaign_status(campaign_id)))
+
+    def get_search_history(self, campaign_id: str) -> SearchHistory:
+        return SearchHistory.model_validate(
+            self._get(Routes.campaign_search_history(campaign_id)))
 
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         return LogChunk.model_validate(

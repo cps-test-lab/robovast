@@ -990,3 +990,94 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
         "num_composition_failed": composition_failed,
         "num_no_sample": no_sample,
     }
+
+
+def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
+    """Best-effort read of a search's per-batch objective trajectory from ``campaign.db``.
+
+    One row per batch, aggregated in SQLite: the wire cost tracks the number of *batches*,
+    not the number of runs, which is what lets this answer a live campaign cheaply enough
+    to sit behind a panel and an MCP field.
+
+    Read-only and never migrating, exactly like :func:`read_run_counts`, so it is safe
+    against a store the controller is writing right now — which is the point. A batch's
+    objectives are committed per unit as the batch is evaluated, so this is readable the
+    instant a round finishes rather than after postprocessing, and it is the only path to
+    that data on the cluster lane (a SQL query there reads a snapshot from the object
+    store, which the campaign publishes only once, at the end).
+
+    ``status = 'evaluated'`` is required, not tidiness: a ``no_sample`` unit ran but
+    produced nothing measurable and a ``composition_failed`` one never ran at all, and both
+    carry empty objectives. Averaging them in would score cells that were never measured.
+    A batch where every unit is one of those comes back with ``n_scored = 0`` and ``None``
+    statistics — a gap, which a reader must not confuse with a batch that scored zero.
+
+    ``best_so_far`` is folded here rather than stored, because it is the only figure that
+    depends on the objective's *direction*; ``min``/``max``/``mean`` are raw, so no reader
+    has to know the direction to interpret a field name.
+
+    Returns ``None`` when there is no store to read, and a dict with ``unavailable`` set
+    when there is one but no scalar trajectory in it:
+
+    * ``batch_mode`` — not a search, so its single batch is not a trajectory;
+    * ``multi_objective`` — ``unit.objective`` is NULL whenever a search declares more than
+      one objective (see :meth:`CampaignStore.record_unit`), so there is nothing to trend;
+      the values are in ``objectives_json``;
+    * ``no_store`` — the ``batch``/``unit`` tables predate this schema.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    empty = {"objective_name": None, "direction": None, "batches": []}
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT mode, "
+                "json_extract(config_json, '$.search.objectives[0].name') AS name, "
+                "json_extract(config_json, '$.search.objectives[0].direction') AS direction, "
+                "json_array_length(json_extract(config_json, '$.search.objectives')) AS n_obj "
+                "FROM campaign LIMIT 1").fetchone()
+            if row is None:
+                return {**empty, "unavailable": "no_store"}
+            if (row["mode"] or "") != "search":
+                return {**empty, "unavailable": "batch_mode"}
+            if (row["n_obj"] or 0) > 1:
+                return {**empty, "unavailable": "multi_objective"}
+            rows = conn.execute(
+                # The 'evaluated' filter is a conditional AGGREGATE, not a join condition, and
+                # the difference is the whole point of reporting two counts. In the join it also
+                # removed the unmeasured units from `n_units`, so n_scored == n_units always and
+                # the coverage loss this exists to surface could never be seen. Here `n_units`
+                # is every cell the batch had and `n_scored` only the ones that yielded the
+                # objective, so `7/8` reads as what it is: one cell that produced nothing.
+                "SELECT b.idx AS idx, COUNT(u.id) AS n_units, "
+                "COUNT(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS n_scored, "
+                "MIN(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS lo, "
+                "MAX(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS hi, "
+                "AVG(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS mean "
+                "FROM batch b LEFT JOIN unit u ON u.batch_id = b.id "
+                "GROUP BY b.idx ORDER BY b.idx").fetchall()
+    except sqlite3.Error:
+        return {**empty, "unavailable": "no_store"}  # pre-batch/unit schema, or unreadable
+
+    maximize = (row["direction"] or "maximize") != "minimize"
+    batches, best = [], None
+    for r in rows:
+        scored = r["n_scored"] or 0
+        if scored:
+            reached = r["hi"] if maximize else r["lo"]
+            best = reached if best is None else (
+                max(best, reached) if maximize else min(best, reached))
+        batches.append({
+            "idx": r["idx"], "n_units": r["n_units"] or 0, "n_scored": scored,
+            # Raw and direction-free. `best_so_far` carries the direction, and it carries
+            # forward across a scoreless batch rather than resetting: the best found so far
+            # is still the best found so far when a round measures nothing.
+            "min": r["lo"] if scored else None,
+            "max": r["hi"] if scored else None,
+            "mean": r["mean"] if scored else None,
+            "best_so_far": best,
+        })
+    return {"objective_name": row["name"], "direction": row["direction"] or "maximize",
+            "batches": batches, "unavailable": None}

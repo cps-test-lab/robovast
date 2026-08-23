@@ -22,8 +22,7 @@ def test_snapshot_reflects_state_updates():
     state.set_phase("running")
     state.update(mode="search", campaign_id="nav-x", batch=2, batches_done=2,
                  budget=[{"label": "batches", "current": 2.0, "limit": 10.0, "done": False}],
-                 runs={"completed": 3, "total": 8}, best_objective=0.25,
-                 batch_history=[{"idx": 0, "n_units": 4}, {"idx": 1, "n_units": 4}])
+                 runs={"completed": 3, "total": 8}, best_objective=0.25)
     body = state.snapshot().model_dump()
     assert body["phase"] == "running"
     assert body["mode"] == "search"
@@ -35,7 +34,10 @@ def test_snapshot_reflects_state_updates():
                             "killed": 0, "invalid": 0}
     assert body["budget"][0]["label"] == "batches"
     assert body["best_objective"] == 0.25
-    assert len(body["batch_history"]) == 2
+    # The per-batch trajectory is deliberately NOT here: it lived on this payload as
+    # `batch_history`, was read by nothing, and grew with the batch count on a status every
+    # campaign card polls. It is served by GET /campaigns/{id}/search/history instead.
+    assert "batch_history" not in body
 
 
 def test_snapshot_is_a_copy():

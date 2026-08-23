@@ -113,6 +113,47 @@ raised, ``readyState`` stays ``OPEN``, and no further byte ever arrives. A clien
 therefore treat a gap of several heartbeats as a dead connection and open a new
 ``EventSource``; the web UI does exactly that (see :doc:`web_ui`).
 
+What may ride on a polled payload
+=================================
+
+``GET /campaigns/{id}/status`` and ``GET /campaigns/events`` are **hot fan-out payloads**, and
+that governs what may be put on them. The web UI renders every campaign in the list as a card;
+each card polls the status every 1.5 seconds, and the list stream re-lists every campaign once a
+second for as long as any tab is open. So the cost of a field there is multiplied by campaigns on
+screen, by polls, and by open tabs — and served over HTTP/2, where no connection limit throttles a
+page-load burst the way it once did.
+
+Three tiers, and the question to ask of any new data is which one it is in:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Kind
+     - Example
+     - Transport
+   * - Bounded state, and cursors
+     - phase, run counters, ``batches_done``, ``best_objective``
+     - on the polled ``Status``
+   * - A series, read by whoever is looking at it
+     - a search's per-batch objective trajectory
+     - its own route, fetched lazily, keyed on a cursor
+   * - High-rate telemetry from a running run
+     - a future live run view
+     - its own stream, per run
+
+The middle row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry
+per batch, growing for the whole run — that **nothing ever read**, on the payload polled most
+often in the system. It was replaced by ``GET /campaigns/{id}/search/history``, which is requested
+only while something is displaying it and re-requested only when ``batches_done`` (a single integer
+on the status) moves. A series is almost never so small that it belongs on the status; if it grows
+with batches, runs, or time, it does not.
+
+The third row is deliberately a *separate* stream rather than another event type on
+``/campaigns/events``. A run's telemetry and a campaign list have different lifetimes
+(per-run-while-viewing versus always-on), different rates, and different failure semantics;
+multiplexed together, one slow consumer stalls the other and a run view's reconnects disturb the
+campaign list.
+
 Paths are defined once
 ======================
 

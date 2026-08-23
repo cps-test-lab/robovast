@@ -572,6 +572,45 @@ class ListJobsResponse(BaseModel):
     counts: JobCounts = Field(default_factory=JobCounts)
 
 
+class BatchObjective(BaseModel):
+    """One search batch's objective figures.
+
+    ``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the
+    campaign maximizes before it can read a field name; ``best_so_far`` is the one figure that
+    applies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured
+    nothing — a gap, never a zero — and ``best_so_far`` carries forward across it.
+    """
+
+    idx: int
+    n_units: int = 0
+    #: Units that produced the objective. Below ``n_units`` when a cell ran but nothing it
+    #: produced was measurable, which is a coverage loss rather than a result.
+    n_scored: int = 0
+    min: Optional[float] = None
+    max: Optional[float] = None
+    mean: Optional[float] = None
+    best_so_far: Optional[float] = None
+
+
+class SearchHistory(BaseModel):
+    """A search's per-batch objective trajectory: how the objective MOVED, not just its best.
+
+    Answers "is this search still improving?", which the single ``Status.best_objective``
+    cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
+    on both lanes and still there for a finished campaign after a service restart.
+
+    ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
+    reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
+    (more than one objective, so there is no scalar column to trend — the values are in
+    ``objectives_json``), ``no_store`` (nothing readable).
+    """
+
+    objective_name: Optional[str] = None
+    direction: Optional[str] = None
+    batches: list[BatchObjective] = Field(default_factory=list)
+    unavailable: Optional[str] = None
+
+
 class ActionResult(BaseModel):
     """Generic ``ok``/``message`` result for state-changing actions."""
 
@@ -1682,6 +1721,14 @@ class Routes:
         return f"/campaigns/{campaign_id}/status"
 
     @staticmethod
+    def campaign_search_history(campaign_id: str) -> str:
+        # Namespaced under `search/` rather than a flat `search-history`: a quality-diversity
+        # archive and a multi-objective Pareto front are already produced by shipped strategies
+        # and have no live view, so `search/archive` and `search/front` are the obvious
+        # neighbours. A namespace costs nothing now and saves renaming a published route later.
+        return f"/campaigns/{campaign_id}/search/history"
+
+    @staticmethod
     def campaign_stop(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/stop"
 
@@ -2065,6 +2112,16 @@ class RobovastInterface(ABC):
     @abstractmethod
     def get_status(self, campaign_id: str) -> Status:
         """Return the campaign's live :class:`Status` (phase, progress, history)."""
+
+    @abstractmethod
+    def get_search_history(self, campaign_id: str) -> SearchHistory:
+        """Return a search's per-batch objective trajectory.
+
+        Deliberately its own call rather than a field on :meth:`get_status`: the status is
+        polled by every campaign card at 1.5s, and a series that grows with the batch count
+        does not belong on a payload whose cost is multiplied by campaigns on screen. This one
+        is read only when something is actually displaying it.
+        """
 
     @abstractmethod
     def get_campaign_logs(self, campaign_id: str, offset: int = 0) -> LogChunk:

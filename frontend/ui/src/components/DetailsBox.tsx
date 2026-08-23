@@ -4,9 +4,10 @@ import Box from '@mui/material/Box'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsCharts as Charts } from './DetailsCharts'
-import { robovast } from '@/lib/robovastClient'
+import { robovast, type SearchHistory } from '@/lib/robovastClient'
 import { formatBytes, formatDuration } from '@/lib/format'
 import {
   CPU_HEADROOM,
@@ -67,6 +68,14 @@ function TooFew({ height, runs }: { height: number; runs: number }) {
       </Typography>
     </Box>
   )
+}
+
+/** The headline for the Objective column: the last batch's best-so-far, which IS the campaign's
+ *  best by construction — the service folds it in the objective's declared direction, so this no
+ *  longer has to guess that a bigger number is a better one. */
+function bestOf(history: SearchHistory): string | undefined {
+  const last = [...history.batches].reverse().find((b) => b.best_so_far != null)
+  return last?.best_so_far == null ? undefined : `best ${last.best_so_far.toPrecision(3)}`
 }
 
 function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean) {
@@ -346,6 +355,16 @@ export function DetailsBox({
   // charge a page of twenty cards for twenty campaigns nobody asked about.
   const [open, setOpen] = useState(false)
   const { data, isLoading, isError, error } = useDetails(campaignId, open, postprocessed)
+  // Its own query rather than a fourth SQL statement in `useDetails`: this one is served by the
+  // service from `campaign.db` directly, which is what makes the identical chart work on a
+  // campaign that is still running (a SQL query cannot answer that on the cluster lane).
+  const objective = useQuery({
+    queryKey: ['search-history', campaignId, 'details'],
+    queryFn: () => robovast.getSearchHistory(campaignId),
+    enabled: open,
+    retry: false,
+    staleTime: Infinity,
+  })
 
   const model = useMemo(() => {
     if (!data) return null
@@ -364,8 +383,6 @@ export function DetailsBox({
   }, [data])
 
   const all = model?.batches[0]
-  const perBatch = model?.batches.slice(1) ?? []
-  const hasObjective = perBatch.some((b) => b.bestObjective !== null)
 
   // A histogram or a sweep curve drawn from one or two runs is a single full-width block with
   // an axis around it -- it looks like a finding and is none. Campaigns of one run are ordinary
@@ -544,14 +561,18 @@ export function DetailsBox({
                 )}
               </Column>
 
-              {hasObjective ? (
+              {/* The same chart the campaign card shows live, from the same route — so the
+                  panel and the live view cannot disagree about a search's trajectory, which two
+                  separately-derived charts eventually would. It also fixes what the local
+                  derivation got wrong: the per-batch summary here hardcoded `maximize`, so a
+                  MINIMIZING campaign reported its worst value as its best. Direction is the
+                  service's answer now, read from the campaign's own config. */}
+              {objective.data && !objective.data.unavailable ? (
                 <Column
                   title="Objective"
-                  meta={
-                    all.bestObjective === null ? undefined : `best ${all.bestObjective.toPrecision(3)}`
-                  }
+                  meta={bestOf(objective.data)}
                 >
-                  <Charts kind="objective" rows={perBatch} height={CHART_HEIGHT} />
+                  <BatchObjectiveChart history={objective.data} height={CHART_HEIGHT} />
                 </Column>
               ) : null}
             </Box>

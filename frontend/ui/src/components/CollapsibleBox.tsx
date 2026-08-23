@@ -27,6 +27,8 @@ export function CollapsibleBox({
   note,
   tone = 'neutral',
   variant = 'card',
+  subheader,
+  flush = false,
   open,
   onToggle,
   children,
@@ -42,8 +44,19 @@ export function CollapsibleBox({
   // the block as well as fire: the wrapper's own handler is stopped for this region.
   actions?: ReactNode
   // Always-visible text under the header row, independent of `open`. For the reason a thing
-  // is stuck — that has to be readable without unfolding anything.
+  // is stuck — that has to be readable without unfolding anything. NOT a click target: it
+  // holds tracebacks and log lines people drag across to copy, and folding the block out from
+  // under a selection takes the text away as they read it.
   note?: ReactNode
+  // Always-visible content under the header row that IS part of the header's click target.
+  // The sibling of `note`, and the distinction is the whole reason both exist: this is for
+  // something a reader would naturally click *at* — the batches meter, whose bar is the
+  // obvious thing to press to see the batches in detail — where `note` is for something they
+  // would select. Loosening `note` instead would have collapsed open tracebacks mid-drag.
+  subheader?: ReactNode
+  // Drop the header's horizontal padding, so a full-width `subheader` (a meter) lines up with
+  // whatever sits above and below the block rather than being inset by it.
+  flush?: boolean
   tone?: BoxTone
   // `card` is a standalone bordered block; `row` is a flat entry inside another block's body
   // (the job rows), which supplies the separation itself instead of nesting a second border.
@@ -74,7 +87,7 @@ export function CollapsibleBox({
         sx={{
           cursor: 'pointer',
           userSelect: 'none',
-          px: 1,
+          px: flush ? 0 : 1,
           py: 0.25,
           bgcolor: error ? 'error.main' : card ? 'action.hover' : 'transparent',
           color: error ? 'error.contrastText' : 'inherit',
@@ -130,6 +143,9 @@ export function CollapsibleBox({
             )}
           </IconButton>
         </Stack>
+        {/* Inside the header's click target, unlike `note` below it: clicking the meter folds
+            the block, which is the affordance a bar with no other purpose invites. */}
+        {subheader ? <Box sx={{ pb: 0.25 }}>{subheader}</Box> : null}
         {note ? (
           <Box sx={{ pb: 0.5, cursor: 'auto', userSelect: 'text' }} onClick={(e) => e.stopPropagation()}>
             {note}

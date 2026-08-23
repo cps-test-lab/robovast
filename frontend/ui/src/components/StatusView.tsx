@@ -23,7 +23,9 @@ import {
 } from '@/lib/eta'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
+import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock } from '@/lib/time'
+import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { containerColorer } from './containerColor'
 import { DetailsBox } from './DetailsBox'
@@ -206,6 +208,37 @@ export function StatusView({
         // Only the batch budget converts into time from what we can observe; every other
         // criterion is measured in units nothing here can turn into a duration.
         const batchesEta = estimateBatchesEtaSeconds(status, counts, b, etaSeconds)
+        const meta = (
+          <>
+            {b.current == null ? '—' : b.current} / {b.limit}
+            {batchesEta != null
+              ? ` · ~${formatDuration(batchesEta)} left (≈ ${formatLocalClock(batchesEta)})`
+              : ''}
+          </>
+        )
+        const bar = (
+          <MeterBar
+            height={10}
+            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
+            color="secondary.main"
+          />
+        )
+        // The batches bar, and only it, opens onto the objective's trajectory. Keyed on
+        // `kind` rather than on `label`, which is the user's own objective or metric name for
+        // every other criterion — a campaign that happens to name a metric "batches" must not
+        // grow a chart of a search it is not running.
+        if (cid && b.kind === 'batches') {
+          return (
+            <ObjectiveSection
+              key={b.label}
+              campaignId={cid}
+              label={b.label + (b.done ? ' ✓' : '')}
+              meta={meta}
+              bar={bar}
+              batchesDone={status.batches_done}
+            />
+          )
+        }
         return (
         <Box key={b.label}>
           <Stack direction="row" justifyContent="space-between">
@@ -214,17 +247,10 @@ export function StatusView({
               {b.done ? ' ✓' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {b.current == null ? '—' : b.current} / {b.limit}
-              {batchesEta != null
-                ? ` · ~${formatDuration(batchesEta)} left (≈ ${formatLocalClock(batchesEta)})`
-                : ''}
+              {meta}
             </Typography>
           </Stack>
-          <MeterBar
-            height={10}
-            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
-            color="secondary.main"
-          />
+          {bar}
         </Box>
         )
       })}
@@ -265,6 +291,73 @@ export function StatusView({
       ) : null}
       {cid && !hideLog ? <CampaignLog campaignId={cid} /> : null}
     </Stack>
+  )
+}
+
+// -- the search's objective over its batches ---------------------------------
+
+/** The batches budget bar, made foldable: the same bar as before, over a chart of how the
+ *  objective has moved.
+ *
+ *  Closed by default and fetched only while open. That gating is the whole reason this can sit on
+ *  a campaign card at all: the Monitor renders every campaign in the list, so anything a card does
+ *  unconditionally is paid for by the whole page — see `useDetails`, which is closed by default for
+ *  exactly this reason.
+ *
+ *  `batchesDone` is in the query key rather than a refetch interval. It is an integer already on
+ *  the polled status, and it is precisely the thing whose change makes this answer stale — so the
+ *  series is re-read once per completed batch (minutes apart) instead of on a timer that would
+ *  mostly re-fetch an unchanged answer.
+ */
+function ObjectiveSection({
+  campaignId,
+  label,
+  meta,
+  bar,
+  batchesDone,
+}: {
+  campaignId: string
+  label: string
+  meta: ReactNode
+  bar: ReactNode
+  batchesDone: number
+}) {
+  const [open, setOpen] = useState(false)
+  const history = useQuery({
+    queryKey: ['search-history', campaignId, batchesDone],
+    queryFn: () => robovast.getSearchHistory(campaignId),
+    enabled: open,
+    retry: false,
+    // Within one batch count the answer cannot change, so it is read once per round.
+    staleTime: Infinity,
+  })
+  return (
+    <CollapsibleBox
+      // `row`, not `card`: this bar sits in a stack of budget bars, and giving one of them a
+      // border and a tinted header would read as a different KIND of thing rather than as the
+      // one that opens. The chevron and the hover tint are the affordance.
+      variant="row"
+      flush
+      title={label}
+      meta={meta}
+      subheader={bar}
+      open={open}
+      onToggle={() => setOpen((o) => !o)}
+    >
+      <Box sx={{ p: 1 }}>
+        {history.isLoading ? (
+          <Typography variant="caption" color="text.secondary">
+            reading the search's rounds…
+          </Typography>
+        ) : history.isError ? (
+          <Typography variant="caption" color="text.secondary">
+            no objective history for this campaign ({(history.error as Error)?.message})
+          </Typography>
+        ) : history.data ? (
+          <BatchObjectiveChart history={history.data} />
+        ) : null}
+      </Box>
+    </CollapsibleBox>
   )
 }
 

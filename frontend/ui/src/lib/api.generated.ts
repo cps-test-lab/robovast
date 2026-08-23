@@ -744,6 +744,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/search/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Search History */
+        get: operations["get_search_history_campaigns__campaign_id__search_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/share/run": {
         parameters: {
             query?: never;
@@ -1365,6 +1382,37 @@ export interface components {
              * @default true
              */
             ok: boolean;
+        };
+        /**
+         * BatchObjective
+         * @description One search batch's objective figures.
+         *
+         *     ``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the
+         *     campaign maximizes before it can read a field name; ``best_so_far`` is the one figure that
+         *     applies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured
+         *     nothing — a gap, never a zero — and ``best_so_far`` carries forward across it.
+         */
+        BatchObjective: {
+            /** Best So Far */
+            best_so_far: number | null;
+            /** Idx */
+            idx: number;
+            /** Max */
+            max: number | null;
+            /** Mean */
+            mean: number | null;
+            /** Min */
+            min: number | null;
+            /**
+             * N Scored
+             * @default 0
+             */
+            n_scored: number;
+            /**
+             * N Units
+             * @default 0
+             */
+            n_units: number;
         };
         /** Body_describe_world_workspaces__workspace_id__world_post */
         Body_describe_world_workspaces__workspace_id__world_post: {
@@ -2989,6 +3037,29 @@ export interface components {
             world: string;
         };
         /**
+         * SearchHistory
+         * @description A search's per-batch objective trajectory: how the objective MOVED, not just its best.
+         *
+         *     Answers "is this search still improving?", which the single ``Status.best_objective``
+         *     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
+         *     on both lanes and still there for a finished campaign after a service restart.
+         *
+         *     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
+         *     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
+         *     (more than one objective, so there is no scalar column to trend — the values are in
+         *     ``objectives_json``), ``no_store`` (nothing readable).
+         */
+        SearchHistory: {
+            /** Batches */
+            batches: components["schemas"]["BatchObjective"][];
+            /** Direction */
+            direction: string | null;
+            /** Objective Name */
+            objective_name: string | null;
+            /** Unavailable */
+            unavailable: string | null;
+        };
+        /**
          * ServedContribution
          * @description A contribution as the service serves it: the geometry, plus what went wrong collecting it.
          *
@@ -3087,6 +3158,17 @@ export interface components {
          *     and nothing ever wrote it -- which is the shape of the mistake: the share is
          *     another system's state, so a copy of it on a campaign goes stale the first time
          *     somebody deletes an archive out of band. ``list_share_archives`` asks the share.
+         *
+         *     **Before adding a field: this is a hot fan-out payload.** The web UI renders every
+         *     campaign in the list as a card and each card polls ``GET /campaigns/{id}/status``
+         *     every 1.5 seconds, so anything here is paid for once per campaign on screen, per
+         *     poll, per open tab -- and some of it is computed per read (``health``). What belongs
+         *     here is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,
+         *     a batch index. A SERIES does not, however small it looks: ``batch_history`` was one
+         *     (a row per batch, growing all run long), nothing ever read it, and it was removed in
+         *     favour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while
+         *     something is displaying it, keyed on the ``batches_done`` cursor that lives here.
+         *     The rule, and where a live run view lands, is in ``docs/http_api.rst``.
          */
         Status: {
             /**
@@ -3094,10 +3176,6 @@ export interface components {
              * @default 0
              */
             batch: number;
-            /** Batch History */
-            batch_history: {
-                [key: string]: unknown;
-            }[];
             /** Batch Since */
             batch_since: number | null;
             /**
@@ -4832,6 +4910,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_search_history_campaigns__campaign_id__search_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchHistory"];
                 };
             };
             /** @description Validation Error */

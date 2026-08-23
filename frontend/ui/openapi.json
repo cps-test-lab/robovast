@@ -28,6 +28,80 @@
         "title": "ActionResult",
         "type": "object"
       },
+      "BatchObjective": {
+        "description": "One search batch's objective figures.\n\n``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the\ncampaign maximizes before it can read a field name; ``best_so_far`` is the one figure that\napplies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured\nnothing \u2014 a gap, never a zero \u2014 and ``best_so_far`` carries forward across it.",
+        "properties": {
+          "best_so_far": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best So Far"
+          },
+          "idx": {
+            "title": "Idx",
+            "type": "integer"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "n_scored": {
+            "default": 0,
+            "title": "N Scored",
+            "type": "integer"
+          },
+          "n_units": {
+            "default": 0,
+            "title": "N Units",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "best_so_far",
+          "idx",
+          "max",
+          "mean",
+          "min",
+          "n_scored",
+          "n_units"
+        ],
+        "title": "BatchObjective",
+        "type": "object"
+      },
       "Body_describe_world_workspaces__workspace_id__world_post": {
         "properties": {
           "backend": {
@@ -2339,6 +2413,59 @@
         "title": "SceneStatus",
         "type": "object"
       },
+      "SearchHistory": {
+        "description": "A search's per-batch objective trajectory: how the objective MOVED, not just its best.\n\nAnswers \"is this search still improving?\", which the single ``Status.best_objective``\ncannot. Read from ``campaign.db`` through the record directory, so it is live during a run\non both lanes and still there for a finished campaign after a service restart.\n\n``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list\nreads as \"measured, and there was nothing\": ``batch_mode`` (not a search), ``multi_objective``\n(more than one objective, so there is no scalar column to trend \u2014 the values are in\n``objectives_json``), ``no_store`` (nothing readable).",
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/BatchObjective"
+            },
+            "title": "Batches",
+            "type": "array"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "objective_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objective Name"
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable"
+          }
+        },
+        "required": [
+          "batches",
+          "direction",
+          "objective_name",
+          "unavailable"
+        ],
+        "title": "SearchHistory",
+        "type": "object"
+      },
       "ServedContribution": {
         "additionalProperties": false,
         "description": "A contribution as the service serves it: the geometry, plus what went wrong collecting it.\n\n``errors`` is not part of what a *variation* returns -- it is what the collection observed, one\nentry per hook that raised. Reported rather than swallowed: a view missing one variation's\nmarkers is indistinguishable from a variation that placed nothing.",
@@ -2468,20 +2595,12 @@
         "type": "object"
       },
       "Status": {
-        "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``importing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192\n``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change.\n\nWhat is on the share is deliberately *not* here. It was, as ``share_provider``,\nand nothing ever wrote it -- which is the shape of the mistake: the share is\nanother system's state, so a copy of it on a campaign goes stale the first time\nsomebody deletes an archive out of band. ``list_share_archives`` asks the share.",
+        "description": "The controller's live state, served by ``GET /campaigns/{id}/status``.\n\n``phase`` is an **open** string the controller advances through a documented\nvocabulary (``initializing`` \u2192 ``building`` \u2192 ``starting`` \u2192 ``variation`` \u2192\n``running`` \u2192 ``finishing`` \u2192 ``importing`` \u2192 ``postprocessing`` \u2192 ``sharing`` \u2192\n``finished`` / ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.\n``\"upload-to-share-done\"``) slot in without a schema change.\n\nWhat is on the share is deliberately *not* here. It was, as ``share_provider``,\nand nothing ever wrote it -- which is the shape of the mistake: the share is\nanother system's state, so a copy of it on a campaign goes stale the first time\nsomebody deletes an archive out of band. ``list_share_archives`` asks the share.\n\n**Before adding a field: this is a hot fan-out payload.** The web UI renders every\ncampaign in the list as a card and each card polls ``GET /campaigns/{id}/status``\nevery 1.5 seconds, so anything here is paid for once per campaign on screen, per\npoll, per open tab -- and some of it is computed per read (``health``). What belongs\nhere is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,\na batch index. A SERIES does not, however small it looks: ``batch_history`` was one\n(a row per batch, growing all run long), nothing ever read it, and it was removed in\nfavour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while\nsomething is displaying it, keyed on the ``batches_done`` cursor that lives here.\nThe rule, and where a live run view lands, is in ``docs/http_api.rst``.",
         "properties": {
           "batch": {
             "default": 0,
             "title": "Batch",
             "type": "integer"
-          },
-          "batch_history": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Batch History",
-            "type": "array"
           },
           "batch_since": {
             "anyOf": [
@@ -2653,7 +2772,6 @@
         },
         "required": [
           "batch",
-          "batch_history",
           "batch_since",
           "batches_done",
           "best_objective",
@@ -5512,6 +5630,48 @@
         "summary": "Campaign Screenshot",
         "tags": [
           "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/search/history": {
+      "get": {
+        "operationId": "get_search_history_campaigns__campaign_id__search_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Search History",
+        "tags": [
+          "campaigns"
         ]
       }
     },

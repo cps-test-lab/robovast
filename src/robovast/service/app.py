@@ -51,7 +51,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
-                                        RunShareRequest, SceneStatus, StagedArchive, Status,
+                                        RunShareRequest, SceneStatus, SearchHistory,
+                                        StagedArchive, Status,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
                                         ValidationReport, VariationTypesResponse, VersionInfo,
@@ -910,6 +911,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.campaign_status("{campaign_id}"), response_model=Status, tags=["campaigns"])
     def get_status(campaign_id: str) -> Status:
         return _guard(lambda: impl.get_status(campaign_id))
+
+    @app.get(Routes.campaign_search_history("{campaign_id}"), response_model=SearchHistory,
+             tags=["campaigns"])
+    def get_search_history(campaign_id: str) -> SearchHistory:
+        return _guard(lambda: impl.get_search_history(campaign_id))
 
     @app.get(Routes.campaign_logs("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
     def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:

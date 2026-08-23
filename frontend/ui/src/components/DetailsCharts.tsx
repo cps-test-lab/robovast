@@ -4,21 +4,14 @@ import { useTheme } from '@mui/material/styles'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import { AxisEnds, Note } from './chartPrimitives'
 import { containerColorer } from './containerColor'
 import { MeterBar } from './MeterBar'
 import { formatCpu } from '@/lib/campaignDetails'
-import {
-  formatAxisDuration,
-  linePercents,
-  linePoints,
-  niceMax,
-  objectiveDomain,
-  pct,
-} from '@/lib/detailsGeometry'
+import { formatAxisDuration, niceMax, pct } from '@/lib/detailsGeometry'
 import type {
   ActionPoint,
   ResourceStats,
-  BatchSummary,
   ContainerCpu,
   DurationBin,
 } from '@/lib/campaignDetails'
@@ -45,34 +38,7 @@ export type DetailsChartKind =
   | 'cpu'
   | 'memory'
   | 'histogram'
-  | 'objective'
   | 'actions'
-
-/** Where a chart would mislead, say why in its place — same footprint, no axes around nothing. */
-function Note({ height, children }: { height: number; children: React.ReactNode }) {
-  return (
-    <Box sx={{ height, display: 'flex', alignItems: 'center' }}>
-      <Typography variant="caption" color="text.secondary">
-        {children}
-      </Typography>
-    </Box>
-  )
-}
-
-/** The two ends of a shared axis, written out. The Vega version's labels were the thing nobody
- *  could read; these are ordinary text in a theme colour. */
-function AxisEnds({ left, right }: { left: string; right: string }) {
-  return (
-    <Stack direction="row" justifyContent="space-between" sx={{ mt: 0.25 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 9 }}>
-        {left}
-      </Typography>
-      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 9 }}>
-        {right}
-      </Typography>
-    </Stack>
-  )
-}
 
 /** A vertical marker inside a bar track, at `value` of `max`. */
 function Marker({
@@ -514,101 +480,13 @@ function DurationHistogram({ rows, height }: { rows: DurationBin[]; height: numb
   )
 }
 
-/** A search's best objective per round: a line through one point per batch.
- *
- *  Both axes are labelled, which the other columns can get away with skipping and this one cannot.
- *  Elsewhere the quantity is named by the column header and the unit is obvious (cores, seconds); an
- *  objective is whatever the campaign declared it to be, its scale is arbitrary, and it is usually a
- *  narrow band far from zero. Without the y range on the plot, a rising line says only "it went up
- *  by some amount" -- and a search that improved by 0.4% looks identical to one that doubled.
- *
- *  The y axis is NOT zero-based, for that same reason: forcing the origin in flattens the curve the
- *  chart exists to show. The labels are what make that honest. */
-function ObjectiveLine({ rows, height }: { rows: BatchSummary[]; height: number }) {
-  const theme = useTheme()
-  const data = rows
-    .filter((r) => r.batch !== null && r.bestObjective !== null)
-    .map((r) => ({ x: r.batch as number, y: r.bestObjective as number }))
-  if (data.length < 2) return <Note height={height}>one round</Note>
-  const plot = height - 14
-  const W = 100
-  const ys = data.map((d) => d.y)
-  // A rate-shaped objective is read against the whole unit interval; anything else keeps its own
-  // range. `objectiveDomain` owns that choice and says why.
-  const domain = objectiveDomain(ys)
-  const [low, high] = domain ?? [Math.min(...ys), Math.max(...ys)]
-  const tick = { fontSize: 9, lineHeight: 1, color: 'text.secondary' as const }
-  return (
-    <Box>
-      <Stack direction="row" spacing={0.5} alignItems="stretch">
-        {/* The y ticks, outside the plot so the line still gets the full width. High at the top,
-            low at the bottom, matching where each value actually sits. */}
-        <Stack justifyContent="space-between" sx={{ height: plot, flexShrink: 0 }}>
-          <Typography variant="caption" sx={tick} noWrap>
-            {domain ? high : high.toPrecision(3)}
-          </Typography>
-          <Typography variant="caption" sx={tick} noWrap>
-            {domain ? low : low.toPrecision(3)}
-          </Typography>
-        </Stack>
-        <Box sx={{ position: 'relative', height: plot, flexGrow: 1, minWidth: 0 }}>
-          <Box
-            component="svg"
-            viewBox={`0 0 ${W} ${plot}`}
-            preserveAspectRatio="none"
-            sx={{ width: '100%', height: plot, display: 'block', overflow: 'visible' }}
-          >
-            <Box
-              component="polyline"
-              points={linePoints(data, W, plot, domain)}
-              sx={{
-                fill: 'none',
-                // A concrete colour: `sx` does not resolve palette paths for `stroke`, so
-                // 'warning.main' reached the DOM verbatim and the line was never drawn.
-                stroke: theme.palette.warning.main,
-                strokeWidth: 1.5,
-                vectorEffect: 'non-scaling-stroke',
-              }}
-            />
-          </Box>
-          {/* The dots are DOM, not SVG, so each carries its own MUI hover and stays round under
-              the non-uniform scaling the viewBox applies to the line. */}
-          {linePercents(data, domain).map((p, i) => (
-            <Tooltip
-              key={data[i].x}
-              placement="top"
-              title={`batch ${data[i].x} — best ${data[i].y.toPrecision(4)}`}
-            >
-              <Box
-                sx={{
-                  position: 'absolute',
-                  left: `${p.x}%`,
-                  top: `${100 - p.y}%`,
-                  width: 5,
-                  height: 5,
-                  ml: '-2.5px',
-                  mt: '-2.5px',
-                  borderRadius: '50%',
-                  bgcolor: 'warning.main',
-                  cursor: 'help',
-                }}
-              />
-            </Tooltip>
-          ))}
-        </Box>
-      </Stack>
-      <AxisEnds left={`batch ${data[0].x}`} right={`batch ${data[data.length - 1].x}`} />
-    </Box>
-  )
-}
-
 export function DetailsCharts({
   kind,
   rows,
   height,
 }: {
   kind: DetailsChartKind
-  rows: ContainerCpu[] | DurationBin[] | BatchSummary[] | ActionPoint[]
+  rows: ContainerCpu[] | DurationBin[] | ActionPoint[]
   height: number
 }) {
   // An empty chart is worse than no chart: an axis pair around nothing reads as "measured, and it
@@ -623,7 +501,5 @@ export function DetailsCharts({
       return <ActionList rows={rows as ActionPoint[]} height={height} />
     case 'histogram':
       return <DurationHistogram rows={rows as DurationBin[]} height={height} />
-    case 'objective':
-      return <ObjectiveLine rows={rows as BatchSummary[]} height={height} />
   }
 }

@@ -224,6 +224,17 @@ class Status(BaseModel):
     and nothing ever wrote it -- which is the shape of the mistake: the share is
     another system's state, so a copy of it on a campaign goes stale the first time
     somebody deletes an archive out of band. ``list_share_archives`` asks the share.
+
+    **Before adding a field: this is a hot fan-out payload.** The web UI renders every
+    campaign in the list as a card and each card polls ``GET /campaigns/{id}/status``
+    every 1.5 seconds, so anything here is paid for once per campaign on screen, per
+    poll, per open tab -- and some of it is computed per read (``health``). What belongs
+    here is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,
+    a batch index. A SERIES does not, however small it looks: ``batch_history`` was one
+    (a row per batch, growing all run long), nothing ever read it, and it was removed in
+    favour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while
+    something is displaying it, keyed on the ``batches_done`` cursor that lives here.
+    The rule, and where a live run view lands, is in ``docs/http_api.rst``.
     """
     # validate_assignment so the controller can assign plain dicts to the typed
     # sub-fields (``runs``, ``budget``) and they coerce to the models.
@@ -271,7 +282,6 @@ class Status(BaseModel):
     budget: list[BudgetItem] = Field(default_factory=list)
     runs: RunProgress = Field(default_factory=RunProgress)
     best_objective: Optional[float] = None
-    batch_history: list[dict] = Field(default_factory=list)
     stop: Optional[dict] = None          # {kind, reason} once the loop ends
     # Human-readable failure reason (message + short traceback tail) when
     # ``phase == "failed"``. Surfaced in the CLI/UI/MCP so a controller crash no

@@ -63,6 +63,65 @@ def _progress_from_status(st) -> float | None:
     return None
 
 
+#: How many batches of the objective trajectory ride along on a status read. Bounded on purpose:
+#: this is an agent's context, which is the scarce resource here, and the useful signal for "is it
+#: still improving?" is the recent shape plus the level already reached — which the window's first
+#: `best_so_far` still carries. The whole history is queryable from `campaign.db` once the campaign
+#: ends; this is the live read.
+OBJECTIVE_HISTORY_WINDOW = 20
+
+
+def _attach_objective_history(result: dict, client, campaign_id: str) -> None:
+    """Add a search's objective trajectory to a status dict, in place.
+
+    On ``get_campaign_status`` rather than behind a tool of its own, and that is a deliberate
+    reversal. The first design put it in a separate ``get_search_progress`` on the grounds that a
+    per-batch array does not belong on a polled payload — true of the HTTP status, which every
+    campaign card fetches every 1.5s, and false here: this is an occasional agent call, and the
+    tooling steers agents to ``vast wait`` rather than to polling it. Meanwhile a second tool has to
+    be *discovered*, and an agent that must remember to make a follow-up call does not make it —
+    which is the same lesson ``_wait_next_step`` exists for.
+
+    ``batches_since_improvement`` is a FACT, not a verdict. Whether a flat stretch means "converged"
+    is only RoboVAST's to say when the campaign declared a ``no_improvement`` criterion — and then
+    ``budget`` already carries that criterion's progress and the campaign will stop itself. Same
+    rule as ``stalled: None`` when no timeout is declared: no verdict is possible, which is not the
+    same as "healthy".
+
+    Best-effort: a service that cannot answer leaves the status untouched rather than failing the
+    read, because the trajectory is a bonus on a call whose job is the phase.
+    """
+    try:
+        history = client.get_search_history(campaign_id)
+    except Exception:  # noqa: BLE001 - a status read must not fail over its garnish
+        return
+    if history.unavailable:
+        # Named rather than silent: "several objectives, so there is no scalar to trend" is a
+        # different fact from "this search has found nothing", and an absent field reads as the
+        # second one.
+        if history.unavailable == "multi_objective":
+            result["objective_history_unavailable"] = history.unavailable
+        return
+    batches = [b for b in history.batches if b.n_scored]
+    if not batches:
+        return
+    best = batches[-1].best_so_far
+    since = 0
+    for b in reversed(batches):
+        if b.best_so_far != best:
+            break
+        since += 1
+    result["objective_name"] = history.objective_name
+    result["objective_direction"] = history.direction
+    # Rounds completed since the best last MOVED, so the round that set it does not count itself.
+    result["batches_since_improvement"] = max(0, since - 1)
+    window = batches[-OBJECTIVE_HISTORY_WINDOW:]
+    omitted = len(batches) - len(window)
+    if omitted:
+        result["objective_history_omitted"] = omitted
+    result["objective_history"] = [b.model_dump() for b in window]
+
+
 def _status_to_dict(campaign_id: str, backend, st) -> dict:
     """Render a controller :class:`Status` into the MCP status dict.
 
@@ -315,13 +374,33 @@ def get_campaign_status(campaign_id: str) -> dict:
     ``postprocessing_error`` and no CSVs or ``data.db``. ``run_postprocessing`` fixes that
     without re-running anything.
 
+    **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
+    which ``best_objective`` alone cannot, since one number cannot say whether it moved.
+    ``objective_history`` is one row per batch (the most recent 20) carrying that round's
+    ``min``/``max``/``mean`` and the ``best_so_far`` after it, and ``batches_since_improvement``
+    counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
+    best-so-far with a wide range means the search is still exploring, while a range that has
+    collapsed onto the best value means it is re-sampling one region and further batches will buy
+    little. This is live during the run — the only route that is on the cluster lane, where a SQL
+    query reads a snapshot published only when the campaign ends.
+
+    Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
+    criterion may already be about to stop the search, and pre-empting a criterion the campaign
+    declared is how a search gets killed one batch before it would have converged. A search that
+    declares neither is one only you can stop.
+
     Args:
         campaign_id: The id from ``start_campaign``.
 
     Returns:
         ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
-        batch_runs_failed, batch_runs_no_result}``, plus ``progress_deadline_s`` +
+        batch_runs_failed, batch_runs_no_result}``, plus, on a search,
+        ``objective_name``/``objective_direction``/``batches_since_improvement``/
+        ``objective_history`` (and ``objective_history_omitted`` when older batches were
+        dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
+        declares more than one objective and so has no single value to trend), plus
+        ``progress_deadline_s`` +
         ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
         search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
         applies; or ``{error}``.
@@ -337,6 +416,8 @@ def get_campaign_status(campaign_id: str) -> dict:
         st = client.get_status(campaign_id)
         result = _status_to_dict(campaign_id, "service", st)
         result["stage"] = st.stage or ""  # a live marker string, not a log tail
+        if (st.mode or "").lower() == "search":
+            _attach_objective_history(result, client, campaign_id)
         next_step = _campaign_next_step(result)
         if next_step:
             result["next_step"] = next_step

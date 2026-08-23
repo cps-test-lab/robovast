@@ -154,9 +154,26 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // Live per-job listing (running count + the clickable jobs list). Polled while the
   // campaign runs, and re-read on return for the same reason as the status above.
   const terminal = isTerminalPhase((status.data as Status | undefined)?.phase)
+  // Whether this campaign was ALREADY over when the card first rendered — not whether it is
+  // over now, which is a different question with a different answer.
+  //
+  // A campaign at rest has no live jobs to list, and every card used to issue this request
+  // anyway: the query had no `enabled` gate, so a page of a hundred finished campaigns fired a
+  // hundred `listJobs` calls before the first status reply could turn polling off. On the
+  // cluster lane each of those is a Kubernetes API call, and they all leave at once — the page
+  // is served over HTTP/2, so nothing throttles the burst the way a connection limit would.
+  // Nothing is lost by skipping them: this view is `liveOnly`, so it already hides the
+  // completed jobs such a listing would return.
+  //
+  // Frozen at first render rather than tracking `summary.phase`, because a campaign that
+  // finishes while being watched still needs the final read below — gating on the live phase
+  // would disable the query at exactly the moment that read is due, leaving the last poll's
+  // `running` rows on screen forever.
+  const [bornAtRest] = useState(() => isTerminalPhase(summary.phase))
   const jobs = useQuery({
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
+    enabled: !bornAtRest,
     refetchInterval: () => (terminal ? false : 2000),
     refetchOnWindowFocus: true,
   })

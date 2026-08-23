@@ -22,7 +22,7 @@
  *  `run_view` rather than the postprocessed `runs` table, for the same reason `resultsTree.ts`
  *  uses it: it is a view over `campaign.db`, so a campaign with no `data.db` still has rows. */
 export const DETAILS_RUNS_SQL =
-  'SELECT config_name, run_id, batch, status, duration_s, start_time, objective FROM run_view ' +
+  'SELECT config_name, run_id, batch, status, duration_s, start_time FROM run_view ' +
   'ORDER BY batch, start_time'
 
 /** Per-container CPU, pooled over every tick of every run.
@@ -123,7 +123,6 @@ export interface RunRow {
   status?: string | null
   duration_s?: number | null
   start_time?: string | null
-  objective?: number | null
 }
 
 export interface CpuRow {
@@ -569,8 +568,6 @@ export interface BatchSummary {
   medianDuration: number | null
   /** Summed run durations for this row — the campaign's, or one batch's. */
   simulatedSeconds: number
-  /** By the campaign's declared direction; null when the campaign has no scalar objective. */
-  bestObjective: number | null
 }
 
 function median(values: number[]): number | null {
@@ -580,22 +577,17 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
-function summariseRows(rows: RunRow[], batch: number | null, maximize: boolean): BatchSummary {
+function summariseRows(rows: RunRow[], batch: number | null): BatchSummary {
   let passed = 0
   let failed = 0
   let killed = 0
   const durations: number[] = []
-  let best: number | null = null
   for (const row of rows) {
     if (row.status === PASSED) passed += 1
     else if (row.status === KILLED) killed += 1
     else if (row.status && FAILED.has(row.status)) failed += 1
     if (typeof row.duration_s === 'number' && Number.isFinite(row.duration_s)) {
       durations.push(row.duration_s)
-    }
-    if (typeof row.objective === 'number' && Number.isFinite(row.objective)) {
-      if (best === null) best = row.objective
-      else best = maximize ? Math.max(best, row.objective) : Math.min(best, row.objective)
     }
   }
   return {
@@ -607,7 +599,6 @@ function summariseRows(rows: RunRow[], batch: number | null, maximize: boolean):
     other: rows.length - passed - failed - killed,
     medianDuration: median(durations),
     simulatedSeconds: durations.reduce((n, v) => n + v, 0),
-    bestObjective: best,
   }
 }
 
@@ -617,7 +608,7 @@ function summariseRows(rows: RunRow[], batch: number | null, maximize: boolean):
  *  per-batch row would repeat the overview verbatim — it is omitted, and such a campaign shows
  *  one row. A search campaign's rounds are the thing worth reading (each is an ask/tell round
  *  the strategy proposed), so those become a row each beneath the overview. */
-export function summariseBatches(rows: RunRow[], maximize = true): BatchSummary[] {
+export function summariseBatches(rows: RunRow[]): BatchSummary[] {
   const byBatch = new Map<number, RunRow[]>()
   for (const row of rows) {
     if (typeof row.batch !== 'number') continue
@@ -625,11 +616,11 @@ export function summariseBatches(rows: RunRow[], maximize = true): BatchSummary[
     if (list) list.push(row)
     else byBatch.set(row.batch, [row])
   }
-  const all = summariseRows(rows, null, maximize)
+  const all = summariseRows(rows, null)
   if (byBatch.size < 2) return [all]
   const perBatch = [...byBatch.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([idx, batchRows]) => summariseRows(batchRows, idx, maximize))
+    .map(([idx, batchRows]) => summariseRows(batchRows, idx))
   return [all, ...perBatch]
 }
 

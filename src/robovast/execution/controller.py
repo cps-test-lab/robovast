@@ -166,7 +166,6 @@ class CampaignController:
         # ntfy push notifications (no-op when no topic is configured). Built bound
         # to this campaign id so concurrent campaigns report independently.
         self.notifier = notifier or Notifier.from_env(campaign_id)
-        self._history: list[dict] = []        # per-batch summaries for /status
         # Run-level progress poller plumbing (set up only when `state` is present
         # and the backend can introspect storage).
         self._poller = None
@@ -508,8 +507,7 @@ class CampaignController:
                                invalid_runs_count)
             self.state.update_runs(failed=failed_runs, killed=killed_runs,
                                    invalid=invalid_runs_count)
-            self.state.update(batches_done=1,
-                              batch_history=[{"idx": 0, "n_units": len(configs)}])
+            self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
@@ -594,10 +592,8 @@ class CampaignController:
             logger.info("📊  %s", " | ".join(
                 f"{p.label} {self._fmt(p.current)}/{self._fmt(p.limit)}" for p in progress))
             if self.state is not None:
-                self._history.append({"idx": batch_idx - 1, "n_units": len(evaluations)})
                 self.state.update(batches_done=batch_idx, best_objective=best_objective,
-                                  budget=[self._budget_item(p) for p in progress],
-                                  batch_history=list(self._history))
+                                  budget=[self._budget_item(p) for p in progress])
             self.notifier.batch_finished(batch_idx - 1, len(evaluations))
             result = stop.should_stop(snap)
             if not result and self.state is not None and self.state.stop_requested:

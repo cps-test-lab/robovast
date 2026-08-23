@@ -7,7 +7,15 @@
 // lands here.
 
 import { describe, expect, it } from 'vitest'
-import { formatAxisDuration, linePercents, linePoints, niceMax, pct } from './detailsGeometry'
+import {
+  bandDomain,
+  bandPoints,
+  formatAxisDuration,
+  linePercents,
+  linePoints,
+  niceMax,
+  pct,
+} from './detailsGeometry'
 
 describe('niceMax', () => {
   it('is never below the data, or a bar overflows its track', () => {
@@ -130,5 +138,55 @@ describe('a series that never moves', () => {
     // The centring must not cost the narrow-band behaviour it sits beside: a real spread still
     // fills the plot, or a 0.4% improvement would look identical to a doubling.
     expect(linePoints([{ x: 0, y: 1 }, { x: 1, y: 2 }], 100, 50)).toBe('0.00,50.00 100.00,0.00')
+  })
+})
+
+describe('bandDomain', () => {
+  it('keeps the unit interval for a rate-shaped objective', () => {
+    expect(bandDomain([0.1, 0.4, 0.9])).toEqual([0, 1])
+  })
+
+  it('uses the combined range of every series it is given', () => {
+    // The regression it guards: scaling the band and the line separately made the
+    // best-so-far line leave the band it is supposed to sit inside.
+    expect(bandDomain([2, 5, 9])).toEqual([2, 9])
+  })
+
+  it('widens a flat series so it reads as held rather than collapsed', () => {
+    const [lo, hi] = bandDomain([7, 7, 7])
+    expect(lo).toBeLessThan(7)
+    expect(hi).toBeGreaterThan(7)
+  })
+
+  it('survives having nothing finite to scale', () => {
+    expect(bandDomain([])).toEqual([0, 1])
+    expect(bandDomain([NaN])).toEqual([0, 1])
+  })
+})
+
+describe('bandPoints', () => {
+  const bands = [
+    { x: 0, lo: 0.2, hi: 0.6 },
+    { x: 1, lo: 0.4, hi: 0.8 },
+  ]
+
+  it('traces the highs left-to-right and the lows back again', () => {
+    const pts = bandPoints(bands, 100, 10, [0, 1])
+    const xs = pts.split(' ').map((p) => Number(p.split(',')[0]))
+    expect(xs).toEqual([0, 100, 100, 0])
+    const ys = pts.split(' ').map((p) => Number(p.split(',')[1]))
+    // y is inverted (0 at the top), so the `hi` edge sits above the `lo` edge.
+    expect(ys[0]).toBeLessThan(ys[3])
+  })
+
+  it('shares its scale with linePoints, so the band cannot drift from the line', () => {
+    const domain: [number, number] = [0, 1]
+    const band = bandPoints(bands, 100, 10, domain).split(' ')
+    const line = linePoints(bands.map((b) => ({ x: b.x, y: b.hi })), 100, 10, domain).split(' ')
+    expect(band.slice(0, 2)).toEqual(line)
+  })
+
+  it('draws nothing for a single batch, which has no band to trace', () => {
+    expect(bandPoints([{ x: 0, lo: 1, hi: 2 }], 100, 10, [0, 3])).toBe('')
   })
 })

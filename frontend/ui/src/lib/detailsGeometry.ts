@@ -140,3 +140,57 @@ export function linePercents(points: Point[], domain?: [number, number]): Point[
     y: heights[i] * 100,
   }))
 }
+
+/** One batch's spread: the lowest and highest objective it measured, at `x`. */
+export interface Band {
+  x: number
+  lo: number
+  hi: number
+}
+
+/** A CONCRETE y scale for a band chart, where the shaded region and the line over it must share
+ *  one.
+ *
+ *  `objectiveDomain` answers `undefined` for anything outside the unit interval, which lets each
+ *  series fall back to its own range — right for a single line, wrong the moment two things are
+ *  drawn on top of each other: the band would be scaled to the band's extent and the best-so-far
+ *  line to its own, so the line would leave the region it is supposed to sit inside. So the caller
+ *  passes every value that will be drawn and gets back one range for all of them.
+ *
+ *  A flat series is widened rather than left as a zero-height domain, preserving what `fractions`
+ *  does for its own scale: a search whose objective never moved should read as "held", drawn through
+ *  the middle, not as "collapsed" along the floor. */
+export function bandDomain(values: number[]): [number, number] {
+  const finite = values.filter((v) => Number.isFinite(v))
+  if (!finite.length) return [0, 1]
+  const unit = objectiveDomain(finite)
+  if (unit) return unit
+  const lo = Math.min(...finite)
+  const hi = Math.max(...finite)
+  return lo === hi ? [lo - 0.5, hi + 0.5] : [lo, hi]
+}
+
+/** SVG `points` for a filled band: forward along `hi`, back along `lo`, closed by the polygon.
+ *
+ *  Built from `linePoints` twice rather than with its own projection, so the band's edges cannot
+ *  drift from the lines drawn over them — one scale, one x mapping, one place to be wrong. The
+ *  reversed pass is what makes the return path trace `lo` right-to-left instead of cutting across.
+ *
+ *  `domain` is required here, unlike on `linePoints`: a band is never the only thing on its chart
+ *  (see `bandDomain`). */
+export function bandPoints(
+  bands: Band[],
+  width: number,
+  height: number,
+  domain: [number, number],
+): string {
+  if (bands.length < 2) return ''
+  const top = linePoints(bands.map((b) => ({ x: b.x, y: b.hi })), width, height, domain)
+  const back = linePoints(
+    [...bands].reverse().map((b) => ({ x: b.x, y: b.lo })),
+    width,
+    height,
+    domain,
+  )
+  return `${top} ${back}`
+}

@@ -210,10 +210,12 @@ way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
   ``_start_progress_poller`` return early, so nothing ever wrote the counters and a live
   local campaign also published a ``progress`` that could not move. It now counts the
   per-run ``test.xml`` files, and a backend that genuinely cannot count is logged rather
-  than passed over. What is still unverified is whether the *search* lane's
-  ``batch_history`` and the campaign row's aggregate agree with those counters over a
-  multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
-  from, so it wants one deliberate check before it is trusted.
+  than passed over. What is still unverified is whether the *search*
+  lane's per-batch record and the campaign row's aggregate agree with those counters over
+  a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
+  from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
+  this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
+  and ``unit`` tables, read by ``read_batch_objectives``.)
 
 **10. The cloud instance-type commands are untested.**
 ``get_instance_type_command`` is now wired into the generated entrypoint, so a run records

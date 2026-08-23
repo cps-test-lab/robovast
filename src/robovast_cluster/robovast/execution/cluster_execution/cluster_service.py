@@ -2686,6 +2686,24 @@ class ClusterService(LocalTransport):
     #: campaign without fetching any of its results.
     _RECORD_OBJECTS = ("campaign.db", "_execution/outcome.json")
 
+    def _rest_dir(self, cid: str):
+        """Where *cid*'s records already are on this pod's disk, without fetching any.
+
+        The inherited version looks only under the results root, which is right for a campaign
+        this process drives. Every *other* campaign here keeps its durable copy in the object
+        store and its local copy in the cache dir, so without this override the summary cache
+        would never find a key for them -- and they are the many, which is the whole point.
+
+        Whether a fetch is needed is deliberately not asked: this must stay free, because it is
+        called on the 1 Hz listing path precisely to avoid ``_record_dir``, whose ``_materialize``
+        re-validates its objects against the store by size on every call.
+        """
+        local = super()._rest_dir(cid)
+        if local is not None:
+            return local
+        cached = self._cache_dir(cid)
+        return cached if (cached / "campaign.db").is_file() else None
+
     def _record_dir(self, cid: str) -> Path:
         """Where *cid*'s recorded facts are, fetching the two small objects if needed.
 
