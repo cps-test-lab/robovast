@@ -299,7 +299,8 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
-                 buildkit_kwargs=None, **cluster_kwargs):
+                 buildkit_kwargs=None, data_node="", buildkit_node="",
+                 move_placement=False, **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
@@ -313,6 +314,14 @@ def setup_server(config_name=None, list_configs=False, force=False,
             (see ``buildkitd_deploy.apply_buildkitd``). Its own channel rather than a
             ``cluster_kwargs`` entry for the reason below: these are not provider options and
             must not be splatted into ``setup_cluster``.
+        data_node (str): Node to hold the workspaces, the registry and a node-local results
+            store. Empty means "keep the labelled one, or pick the emptiest disk the first
+            time" -- see :mod:`.node_placement`.
+        buildkit_node (str): Node to hold the build cache. Empty co-locates it with the data
+            node rather than auto-separating, because separating puts a 150 GB cache on
+            whichever node was left over.
+        move_placement (bool): Allow the two above to name a node other than the one already
+            holding data. The bytes are not migrated; the new node starts empty.
         **cluster_kwargs: Cluster-specific options to pass to setup_cluster()
 
     Named parameters rather than ``cluster_kwargs`` entries on purpose: ``cluster_kwargs``
@@ -322,7 +331,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     and unlike a stored number it cannot go stale.
 
     Returns:
-        None
+        dict: ``{"data_node", "data_source", "build_node", "build_source"}`` -- where this
+            deployment's node-local state was placed and which rule decided it, so the
+            caller can state it. Values are ``None`` where nothing is pinned (a provisioned
+            volume or an external bucket keeps nothing on a node).
 
     Raises:
         RuntimeError: If cluster is already set up
@@ -335,7 +347,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                 logger.info(f"  - {name}")
         else:
             logger.info("No cluster configurations available.")
-        return
+        return None
 
     if config_name is None:
         raise ValueError(
@@ -424,9 +436,58 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # RBAC for the in-cluster search controller pod (create/monitor jobs).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
 
+    # Where this deployment's node-local state lives, decided ONCE, here, for every workload
+    # that keeps something on a node -- and recorded as a node label so a later `cleanup` +
+    # `setup` returns to the same machine instead of letting the scheduler choose again. That
+    # re-choice is the bug: the service came up elsewhere with an empty registry, the old
+    # blobs stranded and unreachable, while setup reported success.
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        BUILD_NODE_LABEL, DATA_NODE_LABEL, labeled_nodes, resolve_placement)
+    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS  # pylint: disable=import-outside-toplevel
+
+    core = client.CoreV1Api()
+    service_kwargs = dict(service_kwargs or {})
+    buildkit_kwargs = dict(buildkit_kwargs or {})
+    # Node-local unless a StorageClass backs the volume: a nodeSelector on a provisioned
+    # volume is noise at best, and with a zonal disk it is unschedulable.
+    data_placement = resolve_placement(
+        core, DATA_NODE_LABEL,
+        node_local=not (service_kwargs.get("registry_storage_class")
+                        and service_kwargs.get("workspaces_storage_class")),
+        requested=data_node, allow_move=move_placement, extra_labels=control_node_labels)
+    service_kwargs["node_selector"] = data_placement.selector if data_placement else {}
+
+    # The build daemon tolerates the batch taint, so it is eligible on nodes the service is
+    # not -- but with nothing said it goes to the data node rather than to "the other one",
+    # because auto-separating puts a 150 GB cache on whichever node was left over.
+    #
+    # Only when the cluster has no build label yet, and only as a default: feeding this in as
+    # `requested` unconditionally would turn "the operator passed no flag" into "the operator
+    # asked for this node", and a cache deliberately placed elsewhere would then fail the
+    # move check on every single setup.
+    if not buildkit_node and data_placement is not None \
+            and not labeled_nodes(core, BUILD_NODE_LABEL):
+        buildkit_node = data_placement.node
+        logger.info("build cache co-locates with the data node; pass --buildkit-node to "
+                    "keep it on a different disk")
+    build_placement = resolve_placement(
+        core, BUILD_NODE_LABEL, node_local=not buildkit_kwargs.get("storage_class"),
+        requested=buildkit_node, allow_move=move_placement,
+        tolerations=KUEUE_JOB_TOLERATIONS)
+    buildkit_kwargs["node_selector"] = build_placement.selector if build_placement else {}
+
+    # The store is a pod like any other, so it takes the data node's selector -- ANDed with
+    # whatever pool the operator's `control.node_labels` allows, not replaced by it: a pool
+    # selector alone still lets the pod float within the pool, which is this same bug at a
+    # smaller scale.
+    store_selector = dict(control_node_labels or {})
+    if data_placement is not None and getattr(cluster_config, "store_is_node_local", False):
+        store_selector.update(data_placement.selector)
+
     cluster_config.setup_cluster(
         kube_context=kube_context,
-        control_node_labels=control_node_labels,
+        control_node_labels=store_selector or None,
         **cluster_kwargs,
     )
 
@@ -439,7 +500,6 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # single source of truth for every later command (read back via
     # read_service_config_from_cluster) — no local flag file to write.
     from .service_deploy import deploy_service, published_host, wait_for_service_ready
-    service_kwargs = dict(service_kwargs or {})
     # Keep the registry prefix a re-run cannot drop. It is baked from the Ingress host,
     # so a `setup` without --ingress-host used to make `_registry_env` return None: the
     # Secret went unlisted from the Deployment's envFrom, the pod lost the prefix, and
@@ -476,7 +536,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # next `apply_kueue_queues` (i.e. the next upgrade) counts it. Applying the daemon earlier
     # would trade that for a worse bug: it would come up with no CA and no pull credential.
     from .buildkitd_deploy import apply_buildkitd  # pylint: disable=import-outside-toplevel
-    apply_buildkitd(namespace, kube_context=kube_context, **(buildkit_kwargs or {}))
+    apply_buildkitd(namespace, kube_context=kube_context, **buildkit_kwargs)
 
     # Only now is the cluster actually set up. Returning at "Deployment created"
     # reported success for a pod that may never start.
@@ -486,9 +546,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # and fire-and-forget, because setup has already succeeded by this point.
     from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
     warm_family_images(namespace, kube_context)
+    return {
+        "data_node": data_placement.node if data_placement else None,
+        "data_source": data_placement.source if data_placement else None,
+        "build_node": build_placement.node if build_placement else None,
+        "build_source": build_placement.source if build_placement else None,
+    }
 
 
-def delete_server(config_name=None, **cluster_kwargs_override):
+def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_override):
     """Clean up transfer mechanism for cluster execution.
 
     Args:
@@ -572,3 +638,15 @@ def delete_server(config_name=None, **cluster_kwargs_override):
 
     cluster_config = get_cluster_config(config_name)
     cluster_config.cleanup_cluster(kube_context=kube_context, **cluster_kwargs)
+
+    # Last, and only when asked. The placement labels are cluster-scoped, so unlike
+    # everything above they SURVIVE this teardown -- which is the whole point: a later
+    # `setup` with no flags returns to the node that already holds the workspaces and the
+    # registry blobs, instead of letting the scheduler choose again and coming up empty.
+    # Clearing them by default would restore exactly the behaviour they exist to remove.
+    if forget_placement:
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+        from .node_placement import clear_labels  # pylint: disable=import-outside-toplevel
+        cleared = clear_labels(client.CoreV1Api())
+        logger.info("placement labels cleared from %s; the data under the hostPaths is "
+                    "untouched", ", ".join(cleared) if cleared else "no node")

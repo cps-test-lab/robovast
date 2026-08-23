@@ -823,10 +823,14 @@ def get_resource_usage() -> dict:
 
         Returns:
         ``{backend, cpu_capacity, cpu_used, memory_capacity_bytes, memory_used_bytes,
-        parallel_runs, jobs_running, jobs_pending, disk, store, disk_unavailable}`` —
+        parallel_runs, jobs_running, jobs_pending, disk, disk_node, store, store_node,
+        disk_unavailable}`` —
         cores and bytes — or ``{error}``. ``disk`` (what runs write into) and ``store``
         (the results store) are ``{capacity_bytes, used_bytes}`` of measured bytes, or
-        **null meaning the lane does not report it — never an empty disk**.
+        **null meaning the lane does not report it — never an empty disk**. On a cluster
+        ``disk`` is ONE node's filesystem, not a sum: the node carrying the service pod,
+        named in ``disk_node``, since that is the disk the workspaces sit on.
+        ``store_node`` is often a different node.
         ``jobs_running``/``jobs_pending`` are what the lane is *already* busy with across
         every campaign (executing, and accepted-but-not-executing), so a lane with free
         cores and a long pending queue is not as free as it looks. ``exec_container``

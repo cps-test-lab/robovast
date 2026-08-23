@@ -355,14 +355,11 @@ keeping per-pool quota alone. Either way the measured factor belongs in a run's 
 beside ``instance_type``, since a campaign whose runs were placed by fit has runs on
 different hardware and any comparison has to group by it.
 
-**Adjacent, and smaller.** ``execution.kubernetes.control.node_labels`` is stale
-independently of all this: it was written for the per-campaign controller pod, which no
-longer exists (see :mod:`~robovast.execution.cluster_execution.cluster_service`), and today
-reaches only the MinIO storage pod — never the ``robovast-service`` Deployment that drives
-campaigns, and nothing at all on external-storage configs, which deploy no helper pod. Also
-noted while tracing it: ``vast exec cluster upgrade`` calls ``deploy_service`` without
-``registry_node``, so a hostPath registry loses the ``nodeSelector`` that keeps its blobs on
-one node's disk.
+**Adjacent, and worth stating because it now cuts the other way.** RoboVAST's own
+infrastructure pods are pinned to one node (:ref:`cluster-node-local-storage`), which makes
+the single summed quota *more* misleading rather than less: the node holding the service, the
+registry and the build cache has materially less left for campaign work than the sum implies,
+and the queue does not know that.
 
 
 .. _future-gpu-usage:

@@ -128,7 +128,8 @@ def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
 
     hostPath is the default because a stock RKE2 cluster ships no StorageClass at all, so
     a PVC there stays Pending forever. It pins the registry's data to one node, which is
-    why :func:`registry_node_selector` exists.
+    why the pod carries the ``robovast.io/data-node`` selector
+    (:mod:`.node_placement`).
     """
     if storage_class:
         return {"name": REGISTRY_VOLUME_NAME,
@@ -151,20 +152,6 @@ def registry_pvc_manifest(namespace, storage_class, size="50Gi"):
                  "storageClassName": storage_class,
                  "resources": {"requests": {"storage": size}}},
     }
-
-
-def registry_node_selector(node_name):
-    """Pin the pod to *node_name*, or ``None``.
-
-    Only meaningful with hostPath storage: the blobs live on one node's disk, so a pod
-    rescheduled elsewhere would come up with an empty registry and every previously built
-    image would silently vanish. On a single-node cluster this is a formality; on a
-    multi-node one it is the difference between a registry and a cache that occasionally
-    forgets everything.
-    """
-    if not node_name:
-        return None
-    return {"kubernetes.io/hostname": node_name}
 
 
 #: Ingress annotations the registry needs to be usable, not merely reachable.

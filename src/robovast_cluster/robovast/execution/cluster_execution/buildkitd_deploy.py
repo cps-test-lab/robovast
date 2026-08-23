@@ -55,8 +55,8 @@ BUILDKITD_STORE_DIR = "/home/user/.local/share/buildkit"
 
 #: Default host directory backing the store when no StorageClass is given. A stock RKE2 cluster
 #: ships no StorageClass at all, so a PVC there stays ``Pending`` forever -- the same reason the
-#: in-cluster registry defaults to a hostPath. It pins the daemon to one node, which is why
-#: :func:`buildkitd_node_selector` exists.
+#: in-cluster registry defaults to a hostPath. It ties the cache to one node, which is why the
+#: daemon carries the ``robovast.io/build-node`` selector (:mod:`.node_placement`).
 DEFAULT_BUILDKITD_HOST_PATH = "/data/robovast-buildkit"
 
 #: Size of the PVC when one is used. Only meaningful on a cluster that has a StorageClass; the
@@ -217,20 +217,6 @@ def buildkitd_pvc_manifest(namespace: str, storage_class: str,
     }
 
 
-def buildkitd_node_selector(node_name: str) -> "dict | None":
-    """Pin the daemon to *node_name*, or ``None`` to leave it unpinned.
-
-    A hostPath store lives on whichever node the pod landed on, so without this a reschedule
-    silently starts again from an empty cache on a different disk.
-
-    Its own setting rather than the registry's ``--registry-node``, deliberately. Those two are
-    the deployment's two large on-disk tenants, and stacking a 150 GB builder store on the
-    registry's node -- which is also where the service pod is pinned -- makes DiskPressure evict
-    the API along with the builder.
-    """
-    return {"kubernetes.io/hostname": node_name} if node_name else None
-
-
 def _tolerations() -> list:
     """What the daemon must tolerate to be schedulable where the work is.
 
@@ -242,7 +228,7 @@ def _tolerations() -> list:
 
 
 def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
-                                  storage_class: str = "", node_name: str = "",
+                                  storage_class: str = "", node_selector=None,
                                   pull_secret_name: str = "", ca_configmap_name: str = "",
                                   host_aliases=None, cpu_request: str = BUILDKITD_CPU_REQUEST,
                                   memory_request: str = BUILDKITD_MEMORY_REQUEST,
@@ -354,9 +340,8 @@ def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
 
     pod_spec = {"containers": [container], "initContainers": [init_container],
                 "volumes": volumes, "tolerations": _tolerations()}
-    node_selector = buildkitd_node_selector(node_name)
     if node_selector:
-        pod_spec["nodeSelector"] = node_selector
+        pod_spec["nodeSelector"] = dict(node_selector)
     if pull_secret_name:
         pod_spec["imagePullSecrets"] = [{"name": pull_secret_name}]
     if host_aliases:
@@ -405,7 +390,7 @@ def buildkitd_service_manifest(namespace: str) -> dict:
 
 
 def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = "",
-                    storage_class: str = "", storage_size: str = "", node_name: str = "",
+                    storage_class: str = "", storage_size: str = "", node_selector=None,
                     pull_secret_name: str = "", ca_configmap_name: str = "",
                     registry_host: str = "", host_aliases=None,
                     cpu_request: str = "", memory_request: str = "",
@@ -452,9 +437,19 @@ def apply_buildkitd(namespace: str, *, kube_context=None, storage_path: str = ""
             raise
         core.replace_namespaced_config_map(f"{BUILDKITD_NAME}-config", namespace, cfg)
 
+    if node_selector is None:
+        # `None` is "resolve", `{}` is "explicitly unpinned" -- same three-valued contract as
+        # the service's, and for the same reason: a caller that forgets must not thereby unpin
+        # a hostPath cache. Auto-picking is refused; only `setup` decides a placement.
+        from .node_placement import (  # pylint: disable=import-outside-toplevel
+            BUILD_NODE_LABEL, resolve_placement)
+        placement = resolve_placement(core, BUILD_NODE_LABEL, node_local=not storage_class,
+                                      allow_auto_pick=False)
+        node_selector = placement.selector if placement else {}
+
     dep = buildkitd_deployment_manifest(
         namespace=namespace, storage_path=storage_path, storage_class=storage_class,
-        node_name=node_name, pull_secret_name=pull_secret_name,
+        node_selector=node_selector, pull_secret_name=pull_secret_name,
         ca_configmap_name=ca_configmap_name, host_aliases=host_aliases,
         cpu_request=cpu_request or BUILDKITD_CPU_REQUEST,
         memory_request=memory_request or BUILDKITD_MEMORY_REQUEST, stamp=stamp)
@@ -494,9 +489,9 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
     says so. The symptom is the one this component exists to remove: base images pulled again,
     which looks exactly like the daemon not being there.
 
-    ``node_name`` is here despite the name because it is a property of the store rather than of
-    scheduling: a hostPath store lives on the node the pod landed on, so losing the pin loses the
-    cache as thoroughly as losing the path does (see :func:`buildkitd_node_selector`).
+    ``node_selector`` is here despite not being a storage setting, because it is a property of
+    the store rather than of scheduling: a hostPath store lives on the node the pod landed on,
+    so losing the pin loses the cache as thoroughly as losing the path does.
 
     Returns ``{}`` when there is no Deployment -- the honest answer for a deployment that
     predates the daemon, and the caller then creates it from its own defaults. A cluster that
@@ -524,9 +519,10 @@ def buildkitd_storage_from_cluster(namespace: str, kube_context=None) -> dict:
     # they bounded it. Merged before the branches below, both of which return.
     settings = _gc_budget_from_cluster(namespace, core)
 
+    from .node_placement import BUILD_NODE_LABEL  # pylint: disable=import-outside-toplevel
     node_selector = pod_spec.node_selector or {}
-    if node_selector.get("kubernetes.io/hostname"):
-        settings["node_name"] = node_selector["kubernetes.io/hostname"]
+    if node_selector.get(BUILD_NODE_LABEL):
+        settings["node_selector"] = {BUILD_NODE_LABEL: node_selector[BUILD_NODE_LABEL]}
 
     store = next((v for v in (pod_spec.volumes or []) if v.name == _STORE_VOLUME), None)
     if store is not None and store.host_path is not None:

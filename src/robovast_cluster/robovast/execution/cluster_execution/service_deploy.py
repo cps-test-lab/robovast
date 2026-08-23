@@ -247,7 +247,7 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
                          env_secret_names=(), pull_secret="", restarted_at=None,
                          registry_storage_path="", registry_storage_class="",
                          workspaces_storage_path="", workspaces_storage_class="",
-                         registry_node=""):
+                         node_selector=None):
     """The robovast-service Deployment (1 replica, stateless — no PVC).
 
     Binds ``0.0.0.0`` inside the pod (reachable only via the ClusterIP Service +
@@ -314,9 +314,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
             registry_storage_path, registry_storage_class),
             workspaces_volume(workspaces_storage_path, workspaces_storage_class)],
     }
-    node_selector = registry_deploy.registry_node_selector(registry_node)
     if node_selector:
-        pod_spec["nodeSelector"] = node_selector
+        pod_spec["nodeSelector"] = dict(node_selector)
     if pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": pull_secret}]
     if git_secret:
@@ -1403,7 +1402,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       tls_secret="", issuer="", insecure_http=False,
                       public_origin=None, registry_host="", registry_storage_path="",
                       workspaces_storage_path="", workspaces_storage_class="",
-                      registry_storage_class="", registry_node=""):
+                      registry_storage_class="", node_selector=None):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -1558,7 +1557,7 @@ def service_manifests(namespace="default", image=None, env=None,
                              workspaces_storage_path=workspaces_storage_path,
                              workspaces_storage_class=workspaces_storage_class,
                              registry_storage_class=registry_storage_class,
-                             registry_node=registry_node),
+                             node_selector=node_selector),
         _service_manifest(namespace, ingress_class),
         *([ingress] if ingress else []),
     ]
@@ -1609,13 +1608,92 @@ def _delete_unconfigured_credentials(core, namespace, secrets, configmaps, *,
                 raise
 
 
+def _resolve_data_node(core, *, registry_storage_class="", workspaces_storage_class="",
+                       deployed_selector=None):
+    """The data-node selector for the service pod, preserving whatever is already deployed.
+
+    Node-local when **either** volume is a hostPath: the pod carries both, so one provisioned
+    volume does not free it to move. With both on a StorageClass there is nothing on a node to
+    keep and pinning would only make the pod harder to schedule.
+    """
+    from .node_placement import (  # pylint: disable=import-outside-toplevel
+        DATA_NODE_LABEL, resolve_placement)
+
+    node_local = not (registry_storage_class and workspaces_storage_class)
+    if not node_local:
+        return {}
+    placement = resolve_placement(core, DATA_NODE_LABEL, node_local=True,
+                                  allow_auto_pick=False)
+    if placement is not None:
+        return placement.selector
+    # No label anywhere. Keep whatever the live pod has rather than dropping to unpinned:
+    # this path is an upgrade, and an upgrade must not move data it was asked to leave alone.
+    return dict(deployed_selector or {})
+
+
+def service_storage_from_cluster(namespace="default", kube_context=None) -> dict:
+    """The service pod's storage settings, read back from the live Deployment.
+
+    The mirror of :func:`buildkitd_deploy.buildkitd_storage_from_cluster`, and it exists for
+    the same reason: ``--registry-storage-class`` / ``--workspaces-storage-class`` and their
+    paths arrive as ``setup`` flags and are recorded nowhere but the Deployment they produced.
+    An ``upgrade`` re-rendering from defaults therefore handed a PVC-backed registry a
+    ``hostPath`` -- a new empty registry on whichever node the pod next landed on, while the
+    old claim still held its space and nothing said so.
+
+    Returns ``{}`` when there is no Deployment yet; the caller then uses its own defaults. A
+    cluster that *fails* to answer is not that answer and is not swallowed -- defaulting there
+    is precisely the silent migration above.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
+
+    load_kube_config(kube_context)
+    try:
+        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+        logger.debug("no %s Deployment in %s; nothing to recover", SERVICE_NAME, namespace)
+        return {}
+
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
+
+    pod_spec = dep.spec.template.spec
+    settings = {}
+    for volume_name, prefix in ((registry_deploy.REGISTRY_VOLUME_NAME, "registry"),
+                                (WORKSPACES_VOLUME_NAME, "workspaces")):
+        volume = next((v for v in (pod_spec.volumes or []) if v.name == volume_name), None)
+        if volume is None:
+            continue
+        if volume.host_path is not None:
+            settings[f"{prefix}_storage_path"] = volume.host_path.path or ""
+        elif volume.persistent_volume_claim is not None:
+            claim = client.CoreV1Api().read_namespaced_persistent_volume_claim(
+                volume.persistent_volume_claim.claim_name, namespace)
+            storage_class = claim.spec.storage_class_name
+            if not storage_class:
+                # `registry_volume`/`workspaces_volume` take the PVC branch only for a
+                # non-empty class, so re-rendering from an empty one silently becomes a
+                # hostPath -- the exact migration this reader exists to prevent.
+                raise RuntimeError(
+                    f"the {prefix} volume is a PersistentVolumeClaim whose StorageClass "
+                    f"cannot be determined, so re-rendering it would silently fall back to "
+                    f"a hostPath and abandon the claim. Pass --{prefix}-storage-class.")
+            settings[f"{prefix}_storage_class"] = storage_class
+    if pod_spec.node_selector:
+        settings["node_selector"] = dict(pod_spec.node_selector)
+    return settings
+
+
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
                    public_origin=None, registry_host="", registry_storage_path="",
                    workspaces_storage_path="", workspaces_storage_class="",
-                   registry_storage_class="", registry_node=""):
+                   registry_storage_class="", node_selector=None):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
     ``dry_run=True`` performs a **server-side** dry run (validates against the
@@ -1637,6 +1715,26 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     rbac = client.RbacAuthorizationV1Api()
     apps = client.AppsV1Api()
     dr = "All" if dry_run else None
+
+    # Anything the caller did not state is RECOVERED, never defaulted. `upgrade` passes none
+    # of the storage or placement arguments, and "not passed" used to mean "unpinned, on a
+    # hostPath" -- so one upgrade unpinned the service pod and reverted a PVC-backed registry,
+    # silently, on the deployment whose data was the reason those flags were given.
+    deployed = service_storage_from_cluster(namespace, kube_context)
+    registry_storage_path = registry_storage_path or deployed.get("registry_storage_path", "")
+    registry_storage_class = registry_storage_class or deployed.get("registry_storage_class", "")
+    workspaces_storage_path = (workspaces_storage_path
+                               or deployed.get("workspaces_storage_path", ""))
+    workspaces_storage_class = (workspaces_storage_class
+                                or deployed.get("workspaces_storage_class", ""))
+    if node_selector is None:
+        # `None` is "resolve", `{}` is "explicitly unpinned". A caller cannot lose the pin by
+        # forgetting to pass it, which is the whole point of the constant label. Auto-picking
+        # is refused here: only `setup` decides a placement, and it passes one in.
+        node_selector = _resolve_data_node(
+            core, registry_storage_class=registry_storage_class,
+            workspaces_storage_class=workspaces_storage_class,
+            deployed_selector=deployed.get("node_selector"))
 
     # The service's own image may need registry auth. The Secret is usually NOT created
     # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,
@@ -1667,7 +1765,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         workspaces_storage_path=workspaces_storage_path,
         workspaces_storage_class=workspaces_storage_class,
         registry_storage_class=registry_storage_class,
-        registry_node=registry_node)
+        node_selector=node_selector)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
     role = by_kind["Role"]

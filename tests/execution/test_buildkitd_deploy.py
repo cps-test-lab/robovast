@@ -14,7 +14,7 @@ import pytest
 
 from robovast.execution.cluster_execution.buildkitd_deploy import (
     BUILDKITD_NAME, BUILDKITD_PORT, BUILDKITD_STORE_DIR, buildkitd_address,
-    buildkitd_deployment_manifest, buildkitd_node_selector, buildkitd_pvc_manifest,
+    buildkitd_deployment_manifest, buildkitd_pvc_manifest,
     buildkitd_service_manifest, buildkitd_toml, buildkitd_volume)
 
 
@@ -145,10 +145,13 @@ def test_parallelism_is_bounded():
 # ---------------------------------------------------------------------------
 
 def test_the_daemon_is_pinnable_because_a_hostpath_store_is_node_local():
-    assert buildkitd_node_selector("") is None
-    assert buildkitd_node_selector("node-a") == {"kubernetes.io/hostname": "node-a"}
-    assert _dep(node_name="node-a")["spec"]["template"]["spec"]["nodeSelector"] == {
-        "kubernetes.io/hostname": "node-a"}
+    """A constant label, not a hostname -- see test_registry_deploy for why."""
+    from robovast.execution.cluster_execution import node_placement as np
+
+    assert "nodeSelector" not in _dep()["spec"]["template"]["spec"]
+    selector = np.label_selector(np.BUILD_NODE_LABEL)
+    assert _dep(node_selector=selector)["spec"]["template"]["spec"]["nodeSelector"] == {
+        np.BUILD_NODE_LABEL: "true"}
 
 
 def test_clients_dial_a_service_name_not_a_pod():
@@ -340,10 +343,14 @@ def _api_error(status):
 
 
 @pytest.mark.parametrize("rendered,recovered", [
-    ({"storage_class": "fast", "storage_size": "300Gi", "node_name": "node-a"},
-     {"storage_class": "fast", "storage_size": "300Gi", "node_name": "node-a"}),
-    ({"storage_path": "/data/elsewhere", "node_name": "node-b"},
-     {"storage_path": "/data/elsewhere", "node_name": "node-b"}),
+    ({"storage_class": "fast", "storage_size": "300Gi",
+      "node_selector": {"robovast.io/build-node": "true"}},
+     {"storage_class": "fast", "storage_size": "300Gi",
+      "node_selector": {"robovast.io/build-node": "true"}}),
+    ({"storage_path": "/data/elsewhere",
+      "node_selector": {"robovast.io/build-node": "true"}},
+     {"storage_path": "/data/elsewhere",
+      "node_selector": {"robovast.io/build-node": "true"}}),
 ])
 def test_an_upgrade_re_renders_the_store_it_found(monkeypatch, rendered, recovered):
     """The point of the reader: converge the daemon without moving its cache.
@@ -510,13 +517,13 @@ def test_apply_accepts_every_setting_that_can_be_handed_to_it():
     accepted = set(inspect.signature(buildkitd_deploy.apply_buildkitd).parameters)
 
     recoverable = set(buildkitd_deploy._GC_KEYS.values()) | {
-        "storage_class", "storage_path", "storage_size", "node_name"}
+        "storage_class", "storage_path", "storage_size", "node_selector"}
     assert recoverable <= accepted, (
         f"buildkitd_storage_from_cluster can return {sorted(recoverable - accepted)}, which "
         "apply_buildkitd does not accept -- upgrade would raise TypeError")
 
     # The same contract on the other side: what `vast exec cluster setup` collects.
-    from_cli = {"storage_class", "storage_path", "storage_size", "node_name",
+    from_cli = {"storage_class", "storage_path", "storage_size", "node_selector",
                 "gc_max_used", "gc_min_free", "gc_reserved"}
     assert from_cli <= accepted, (
         f"the --buildkit-* flags supply {sorted(from_cli - accepted)}, which apply_buildkitd "

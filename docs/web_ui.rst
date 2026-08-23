@@ -710,12 +710,16 @@ hover tooltip spelling the numbers out:
   outstanding work (running + pending), not a capacity, so a full bar means the
   queue has drained.
 * **Disk** — the filesystem the backend's runs write into: the campaign results
-  root's filesystem locally, every node's filesystem summed on a cluster. Unlike
-  CPU and memory on a cluster, this is **measured** usage rather than a sum of
+  root's filesystem locally, and on a cluster the filesystem of **the node carrying
+  the service pod** — the disk its workspaces are a ``hostPath`` on, named in the
+  tooltip. Deliberately not a cluster-wide sum, which would report tens of terabytes
+  free while the one disk that decides whether a campaign can be written filled up.
+  Unlike CPU and memory on a cluster, this is **measured** usage rather than a sum of
   pod requests — nothing reserves disk, so a request sum would read near-empty on
   a full disk.
 * **Store** — the campaign results store, where the backend can measure one. Its
-  denominator is the store's own volume, not the summed **Disk** figure.
+  denominator is the store's own volume, not the **Disk** figure; the two can sit on
+  different nodes.
 
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a

@@ -39,6 +39,23 @@ def _no_image_warm(monkeypatch):
     monkeypatch.setattr(image_warm, "warm_family_images", lambda *a, **k: [])
 
 
+@pytest.fixture(autouse=True)
+def _decided_placement(monkeypatch):
+    """A decided placement, without a cluster to decide it against.
+
+    Setup resolves which node holds the node-local data before it applies anything, and
+    that is a live node list. Autouse for the same reason as the fixture above: it is a
+    precondition of driving setup, not a thing any test here is about.
+    """
+    from robovast.execution.cluster_execution import node_placement
+    monkeypatch.setattr(node_placement, "resolve_placement",
+                        lambda core, label, **kw: node_placement.Placement(
+                            "node-a", node_placement.label_selector(label), "auto"))
+    # Setup also asks whether a build label already exists, to decide whether co-locating
+    # the cache is a default or would override a deliberate placement.
+    monkeypatch.setattr(node_placement, "labeled_nodes", lambda core, label: [])
+
+
 def _template(manifest):
     return manifest["spec"]["template"]
 

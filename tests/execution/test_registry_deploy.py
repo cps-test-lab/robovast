@@ -57,10 +57,18 @@ def test_a_storage_class_switches_the_volume_to_a_pvc():
 
 def test_hostpath_storage_can_be_pinned_to_its_node():
     """hostPath puts the blobs on one node's disk; rescheduling elsewhere would come up
-    with an empty registry and every previously built image would silently be gone."""
+    with an empty registry and every previously built image would silently be gone.
+
+    The selector is the constant `robovast.io/data-node` label, never a hostname: a caller
+    that has no value to pass cannot drop the pin by forgetting it, which is exactly how
+    `upgrade` used to unpin this pod.
+    """
+    from robovast.execution.cluster_execution import node_placement as np
+
     assert "nodeSelector" not in _pod()
-    pod = _pod(registry_node="node-02")
-    assert pod["nodeSelector"] == {"kubernetes.io/hostname": "node-02"}
+    pod = _pod(node_selector=np.label_selector(np.DATA_NODE_LABEL))
+    assert pod["nodeSelector"] == {np.DATA_NODE_LABEL: "true"}
+    assert "kubernetes.io/hostname" not in pod["nodeSelector"]
 
 
 def test_the_registry_is_reachable_through_the_service():

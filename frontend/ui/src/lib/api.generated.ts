@@ -2717,11 +2717,13 @@ export interface components {
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
          *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
          *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
-         *     run writes into (the sum of every node's kubelet-reported *nodefs* on the cluster; the
-         *     campaign results root's filesystem locally); ``store`` is the results store, which on
-         *     the cluster is a different thing from ``disk`` and only some providers can measure. A
-         *     cluster total also cannot show that one node of many is nearly full -- a limitation of
-         *     a summed meter, not of the reading.
+         *     run writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying
+         *     the service pod, deliberately not a sum over the node set -- the workspaces are a
+         *     ``hostPath`` there, so that is the disk which decides whether a campaign can be
+         *     written, and a total would read as tens of terabytes free while it filled. Locally it
+         *     is the campaign results root's filesystem. ``store`` is the results store, which on the
+         *     cluster is a different thing from ``disk`` -- often on a different node -- and only
+         *     some providers can measure.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
          *     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -2752,6 +2754,8 @@ export interface components {
             /** Cpu Used */
             cpu_used: number;
             disk: components["schemas"]["DiskSpace"] | null;
+            /** Disk Node */
+            disk_node: string | null;
             /** Disk Unavailable */
             disk_unavailable: string | null;
             exec_container: components["schemas"]["ExecContainerState"] | null;
@@ -2772,6 +2776,8 @@ export interface components {
             /** Parallel Runs */
             parallel_runs: boolean;
             store: components["schemas"]["DiskSpace"] | null;
+            /** Store Node */
+            store_node: string | null;
         };
         /**
          * RetriggerAxis

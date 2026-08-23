@@ -79,6 +79,42 @@ spec:
 
 class MinikubeClusterConfig(BaseConfig):
 
+    #: The store is an ``emptyDir``: it is on the node's own filesystem, so which node the
+    #: pod lands on decides both how much room a sweep has and where the bytes are. Not a
+    #: durability claim -- an emptyDir is a transfer buffer either way.
+    store_is_node_local = True
+
+    @staticmethod
+    def _refuse_a_store_pod_on_the_wrong_node(namespace, pod_name, node_labels):
+        """Raise when a live store Pod sits somewhere the resolved placement does not want.
+
+        ``apply_manifests`` tolerates a 409 and **keeps** the existing object -- deliberately,
+        because recreating a running MinIO pod on every setup would be a far worse default.
+        The cost is that a changed ``nodeSelector`` does not take effect, and setup then prints
+        "completed successfully" over a store still on the old node, with the disk and store
+        meters reporting a machine nobody chose. Checked here rather than reported afterwards,
+        because a placement that is announced and not applied is the failure this whole
+        mechanism exists to remove.
+        """
+        if not node_labels:
+            return
+        try:
+            pod = client.CoreV1Api().read_namespaced_pod(pod_name, namespace)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return          # nothing live; the manifest will simply be created
+            raise
+        selector = pod.spec.node_selector or {}
+        if all(selector.get(k) == v for k, v in node_labels.items()):
+            return
+        raise RuntimeError(
+            f"the results store pod is already running on node {pod.spec.node_name} and "
+            f"cannot be moved by re-applying its manifest -- an existing pod is kept as it "
+            f"is, so the new placement would be reported but never take effect. Delete it "
+            f"(`kubectl delete pod {pod_name} -n {namespace}`) or run "
+            f"`vast exec cluster cleanup` first; the store is a transfer buffer, so nothing "
+            f"durable is lost.")
+
     def setup_cluster(self, **kwargs):
         """Set up MinIO S3 server for Minikube cluster.
 
@@ -99,6 +135,7 @@ class MinikubeClusterConfig(BaseConfig):
 
         yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
         namespace = kwargs.get('namespace', 'default')
+        self._refuse_a_store_pod_on_the_wrong_node(namespace, 'robovast', control_node_labels)
         try:
             apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
         except Exception as e:

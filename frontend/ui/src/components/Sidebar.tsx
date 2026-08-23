@@ -228,9 +228,18 @@ function ConnectionStatus() {
           // the service runs on, which is the disk its workspaces are a hostPath on and so
           // the one that decides whether a campaign can be written. A twenty-node sum read
           // as tens of terabytes free while that one disk filled.
+          // The node is NAMED, not just alluded to: this is the one meter whose meaning
+          // changes silently when a pod moves, and a capacity that halved after a re-setup
+          // is not a reading that drifted, it is a different disk.
           tip={`${formatBytes(u.disk.used_bytes)} used, ${formatBytes(
             Math.max(0, u.disk.capacity_bytes - u.disk.used_bytes),
-          )} free${u.backend === 'kubernetes' ? " on the service's node" : ''}`}
+          )} free${
+            u.disk_node
+              ? ` on ${u.disk_node}, the node carrying the service`
+              : u.backend === 'kubernetes'
+                ? " on the service's node"
+                : ''
+          }`}
           fraction={u.disk.used_bytes / u.disk.capacity_bytes}
           text={formatBytesPair(u.disk.used_bytes, u.disk.capacity_bytes)}
         />
@@ -244,10 +253,11 @@ function ConnectionStatus() {
           // else on that node, so its size was never a budget: it read 29 of 460 GiB on a
           // disk already 314 full. Named in the tip because it moves as the node fills,
           // which is the point rather than a wobble, and because it is NOT the Disk row's
-          // denominator -- on a multi-node cluster this is one node while Disk is the sum.
+          // denominator -- the store is its own pod and can be pinned to a different node,
+          // so one meter can be comfortable while the other is full.
           tip={`campaign results store: ${formatBytes(u.store.used_bytes)} used, ${formatBytes(
             Math.max(0, u.store.capacity_bytes - u.store.used_bytes),
-          )} still free to it`}
+          )} still free to it${u.store_node ? ` on ${u.store_node}` : ''}`}
           fraction={u.store.used_bytes / u.store.capacity_bytes}
           text={formatBytesPair(u.store.used_bytes, u.store.capacity_bytes)}
         />

@@ -830,11 +830,13 @@ class ResourceUsage(BaseModel):
     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
-    run writes into (the sum of every node's kubelet-reported *nodefs* on the cluster; the
-    campaign results root's filesystem locally); ``store`` is the results store, which on
-    the cluster is a different thing from ``disk`` and only some providers can measure. A
-    cluster total also cannot show that one node of many is nearly full -- a limitation of
-    a summed meter, not of the reading.
+    run writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying
+    the service pod, deliberately not a sum over the node set -- the workspaces are a
+    ``hostPath`` there, so that is the disk which decides whether a campaign can be
+    written, and a total would read as tens of terabytes free while it filled. Locally it
+    is the campaign results root's filesystem. ``store`` is the results store, which on the
+    cluster is a different thing from ``disk`` -- often on a different node -- and only
+    some providers can measure.
 
     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -872,12 +874,22 @@ class ResourceUsage(BaseModel):
     #: verdict"** -- an older service, or a backend whose disk could not be read -- and a
     #: consumer must then show nothing rather than a zero.
     disk: Optional[DiskSpace] = None
+    #: Which node ``disk`` was measured on, when the backend has nodes. This is the one
+    #: number here that names a machine, and it does so because it is the one number that
+    #: silently changes meaning when a pod moves: the meter follows the service pod, so a
+    #: capacity that halves after a re-setup is not a reading that drifted, it is a
+    #: different disk. ``None`` on a backend with no node concept, or an older service.
+    disk_node: Optional[str] = None
     #: The campaign **results store**, when it is separately measurable -- the embedded
     #: object store's volume on a cluster that hosts one. ``None`` on a provider backed by
     #: a cloud bucket (object storage has no capacity to fill, so there is no meter to draw
     #: -- not a failure to draw one), and locally, where the store *is* the filesystem
     #: ``disk`` already reports.
     store: Optional[DiskSpace] = None
+    #: Which node ``store`` was measured on. Often a *different* node from ``disk_node``:
+    #: the store is its own pod and may be pinned elsewhere, so one meter can be comfortable
+    #: while the other is full.
+    store_node: Optional[str] = None
     #: Why there is no ``disk``, when the backend tried and failed. Non-null only when
     #: ``disk`` is None *and* the reason is known -- a service too old to have this field
     #: leaves both absent, which reads identically to "did not try". Names counts and the

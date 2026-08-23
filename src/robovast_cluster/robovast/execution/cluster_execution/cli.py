@@ -471,6 +471,28 @@ def monitor(interval, once, kube_context, namespace):
         handle_cli_exception(e)
 
 
+def _echo_placement(placement):
+    """Say where this deployment's node-local data went, and how that was decided."""
+    reason = {
+        "label": "kept, from the existing node label",
+        "auto": "chosen automatically: most free disk",
+        "requested": "as requested",
+    }
+    data, build = placement.get("data_node"), placement.get("build_node")
+    if not data:
+        click.echo("  node-local data: nothing pinned (a StorageClass or bucket backs it)")
+        return
+    click.echo(f"  workspaces, registry and store on {data} "
+               f"({reason.get(placement.get('data_source'), 'decided')})")
+    if build and build != data:
+        click.echo(f"  build cache on {build}")
+    elif build:
+        click.echo(f"  build cache alongside it on {build} "
+                   "(--buildkit-node puts it on another disk)")
+    click.echo("  recorded as a node label, so a later cleanup + setup returns here "
+               "without any flag")
+
+
 @click.command()
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
@@ -516,10 +538,17 @@ def monitor(interval, once, kube_context, namespace):
 @click.option('--registry-storage-path', default='', metavar='PATH',
               help='Host directory backing the registry when using hostPath '
                    '(default: /var/lib/robovast-registry).')
-@click.option('--registry-node', default='', metavar='NODE',
-              help='Pin the service pod to this node. Needed with hostPath storage on a '
-                   'multi-node cluster: the registry blobs live on one node\'s disk, so '
-                   'a pod rescheduled elsewhere comes up with an empty registry.')
+@click.option('--data-node', default='', metavar='NODE',
+              help='Hold this deployment\'s node-local data on this node: the workspaces, '
+                   'the registry and (where it is an emptyDir) the results store. Rarely '
+                   'needed -- setup picks the node with the most free space the first time '
+                   'and records the choice as a node label, so later runs stay put. Naming '
+                   'a different node than the one already holding data is refused; pass '
+                   '--move-placement to override, and note the bytes are NOT migrated.')
+@click.option('--move-placement', is_flag=True,
+              help='Allow --data-node/--buildkit-node to move to a node other than the one '
+                   'already labelled. The existing data stays where it is and the new node '
+                   'starts empty.')
 @click.option('--buildkit-storage-class', default='', metavar='NAME',
               help='Back the shared build daemon\'s cache with a PVC from this '
                    'StorageClass instead of a hostPath. Prefer an SSD class: BuildKit\'s '
@@ -533,10 +562,11 @@ def monitor(interval, once, kube_context, namespace):
               help='Size of the build cache PVC (default: 200Gi). Ignored with hostPath, '
                    'where the node\'s disk and the daemon\'s GC ceiling bound it instead.')
 @click.option('--buildkit-node', default='', metavar='NODE',
-              help='Pin the build daemon to this node. Needed with hostPath storage on a '
-                   'multi-node cluster, or a reschedule starts again from an empty cache. '
-                   'Keep it OFF the registry\'s node: these are the deployment\'s two '
-                   'large on-disk tenants, and the service pod is pinned to that one.')
+              help='Hold the build cache on this node. Defaults to the data node, because '
+                   'auto-separating would put a 150 GB cache on whichever node was left '
+                   'over. Separate them where the disk is tight: these are the '
+                   'deployment\'s two large on-disk tenants, and a full builder disk on '
+                   'the service\'s node becomes DiskPressure evictions of the API.')
 @click.option('--buildkit-cache-max', default='', metavar='SIZE',
               help='Ceiling on the build cache, e.g. 150GB or 70%. Sized for the disk it '
                    'lands on: the default suits a large one, and a deployment whose /data is '
@@ -553,7 +583,8 @@ def monitor(interval, once, kube_context, namespace):
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
-          registry_storage_class, registry_storage_path, registry_node,
+          registry_storage_class, registry_storage_path, data_node,
+          move_placement,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
           buildkit_cache_reserved, cluster_config):
@@ -636,7 +667,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'insecure_http': insecure_http, 'rotate_token': rotate_token,
         'registry_storage_class': registry_storage_class,
         'registry_storage_path': registry_storage_path,
-        'registry_node': registry_node,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
@@ -645,7 +675,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'storage_class': buildkit_storage_class,
         'storage_path': buildkit_storage_path,
         'storage_size': buildkit_storage_size,
-        'node_name': buildkit_node,
         'gc_max_used': buildkit_cache_max,
         'gc_min_free': buildkit_cache_min_free,
         'gc_reserved': buildkit_cache_reserved,
@@ -655,10 +684,17 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # `-o` channel and is persisted as the cluster's recorded config, and it swallows
         # keys it does not know -- so a typo like `-o gpu_replica=24` would be accepted,
         # stored, and do nothing. A click option answers "no such option" instead.
-        setup_server(config_name=cluster_config, list_configs=False, force=force,
-                     service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
-                     no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs, **cluster_kwargs)
+        placement = setup_server(config_name=cluster_config, list_configs=False, force=force,
+                                 service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
+                                 no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
+                                 data_node=data_node, buildkit_node=buildkit_node,
+                                 move_placement=move_placement, **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
+        # Stated rather than only logged. No flag is the normal way to run this, so the
+        # node holding the workspaces and the registry is chosen without the operator
+        # naming it -- and a decision nobody sees is how this deployment ended up on a
+        # node nobody picked, with the disk meter reporting a machine nobody expected.
+        _echo_placement(placement or {})
         if ingress_host:
             scheme = 'http' if insecure_http else 'https'
             click.echo(f"  RoboVAST is at {scheme}://{ingress_host}")
@@ -917,9 +953,10 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
         #
         # Its storage settings are recovered from the live Deployment rather than defaulted:
         # they arrived as `setup` flags, nothing records them, and re-rendering from defaults
-        # would silently move a PVC-backed cache back to a hostPath -- the same trap
-        # `deploy_service` already falls into with the registry's, which is why that one is
-        # worth fixing separately.
+        # would silently move a PVC-backed cache back to a hostPath. `deploy_service` now
+        # recovers its own the same way (see `service_storage_from_cluster`), and both take
+        # their node pin from the constant label rather than from an argument this call site
+        # would have to remember to pass.
         from .buildkitd_deploy import (apply_buildkitd,  # pylint: disable=import-outside-toplevel
                                        buildkitd_storage_from_cluster)
         settings = buildkitd_storage_from_cluster(namespace, kube_context)
@@ -1065,7 +1102,12 @@ def cluster_token(namespace, kube_context, quiet):
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
-def cleanup(config_name, namespace, options, kube_context):
+@click.option('--forget-placement', is_flag=True,
+              help='Also remove the node labels recording where this deployment kept its '
+                   'data. Without this the labels stay, so a later setup lands on the same '
+                   'node with no flags -- which is the point of them. The on-disk data is '
+                   'not removed either way.')
+def cleanup(config_name, namespace, options, kube_context, forget_placement):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
@@ -1100,8 +1142,15 @@ def cleanup(config_name, namespace, options, kube_context):
                 sys.exit(1)
             key, value = option.split('=', 1)
             cluster_kwargs[key] = value
-        delete_server(config_name=config_name, **cluster_kwargs)
+        delete_server(config_name=config_name, forget_placement=forget_placement,
+                      **cluster_kwargs)
         click.echo("✓ Cluster cleanup completed successfully!")
+        if forget_placement:
+            click.echo("  placement labels removed; the next setup picks a node again")
+            click.echo("  the data under the hostPaths is NOT removed by this")
+        else:
+            click.echo("  placement labels kept, so the next setup returns to the same "
+                       "node (--forget-placement clears them)")
 
     except Exception as e:
         handle_cli_exception(e)

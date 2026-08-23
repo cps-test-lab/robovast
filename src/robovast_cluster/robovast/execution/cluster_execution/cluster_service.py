@@ -286,7 +286,7 @@ class ClusterService(LocalTransport):
                     mem_used += int(_parse_resource(requests.get("memory")))
 
         jobs_running, jobs_pending = self._scenario_job_tally()
-        disk, store, disk_unavailable = self._disk_and_store(node_names, service_node)
+        measured = self._disk_and_store(node_names, service_node)
         return ResourceUsage(
             backend="kubernetes",
             cpu_capacity=cpu_capacity,
@@ -296,13 +296,15 @@ class ClusterService(LocalTransport):
             parallel_runs=True,   # runs execute in parallel, bounded only by capacity
             jobs_running=jobs_running,
             jobs_pending=jobs_pending,
-            disk=disk,
-            store=store,
-            disk_unavailable=disk_unavailable,
+            disk=measured.get("disk"),
+            disk_node=measured.get("disk_node"),
+            store=measured.get("store"),
+            store_node=measured.get("store_node"),
+            disk_unavailable=measured.get("unavailable"),
         )
 
-    def _disk_and_store(self, node_names, service_node=None):
-        """``(disk, store, unavailable)`` from the kubelet Summary reads that are needed.
+    def _disk_and_store(self, node_names, service_node=None) -> dict:
+        """The kubelet-measured ``disk``/``store`` fields, and which node each came from.
 
         Read over the ``nodes/proxy`` subresource — the same channel
         :func:`robovast.common.execution._check_static_cpu_manager` reads ``configz`` on.
@@ -319,8 +321,7 @@ class ClusterService(LocalTransport):
         if cached is None or now - cached[0] >= self._DISK_CACHE_TTL:
             cached = (now, self._read_disk_and_store(sorted(node_names), service_node))
             self._disk_cache = cached
-        fields = cached[1]
-        return fields.get("disk"), fields.get("store"), fields.get("unavailable")
+        return cached[1]
 
     def _read_disk_and_store(self, node_names, service_node=None) -> dict:
         """The SERVICE's node filesystem, then let the provider name its results store.
@@ -348,6 +349,8 @@ class ClusterService(LocalTransport):
         out -- and the walk STOPS as soon as the provider recognises its store. On the
         clusters that have one that is one or two reads, whatever the node count.
         """
+        from .kube_client import (  # pylint: disable=import-outside-toplevel
+            read_node_summary, nodefs_used_available)
         v1 = self._k8s()
         deadline = time.monotonic() + self._DISK_BUDGET_SECONDS
         summaries = {}
@@ -361,29 +364,14 @@ class ClusterService(LocalTransport):
             if time.monotonic() > deadline:
                 break
             try:
-                # `_preload_content=False` for the RAW response, and it is load-bearing: the
-                # generated client declares this endpoint's response_type as 'str', so with
-                # preloading it parses the kubelet's JSON into a dict and then coerces it to
-                # the declared type with str() -- handing back a single-quoted Python repr
-                # that json.loads rejects at character 1 ("Expecting property name enclosed
-                # in double quotes"). Raw bytes skip the deserializer entirely.
-                resp = v1.connect_get_node_proxy_with_path(
-                    name, "stats/summary", _request_timeout=self._DISK_NODE_TIMEOUT,
-                    _preload_content=False)
-                try:
-                    summary = json.loads(resp.data)
-                finally:
-                    # Not a with-block: urllib3's response is not a context manager here,
-                    # and an unreleased connection leaks the pool one node at a time.
-                    resp.release_conn()
+                summary = read_node_summary(v1, name, self._DISK_NODE_TIMEOUT)
                 summaries[name] = summary
                 if name == service_node and "disk" not in fields:
-                    fs = ((summary.get("node") or {}).get("fs")) or {}
-                    used, available = fs.get("usedBytes"), fs.get("availableBytes")
-                    if used is not None and available is not None:
-                        fields["disk"] = DiskSpace(
-                            capacity_bytes=int(used) + int(available),
-                            used_bytes=int(used))
+                    used, available = nodefs_used_available(summary)
+                    if used is not None:
+                        fields["disk"] = DiskSpace(capacity_bytes=used + available,
+                                                   used_bytes=used)
+                        fields["disk_node"] = name
             except Exception as e:  # noqa: BLE001 - the other figure must still be answerable
                 # The node is named in the log, never in a returned reason: that string
                 # crosses the interface to a UI and an MCP client.
@@ -396,6 +384,9 @@ class ClusterService(LocalTransport):
             if store_used is not None and store_capacity is not None and store_capacity > 0:
                 fields["store"] = DiskSpace(capacity_bytes=store_capacity,
                                             used_bytes=store_used)
+                # The node whose Summary finally answered. The walk stops here, so this is
+                # the one that carries the store -- which is not necessarily the service's.
+                fields["store_node"] = name
                 break
         if "disk" not in fields and "unavailable" not in fields:
             fields["unavailable"] = (

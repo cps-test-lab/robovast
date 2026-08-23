@@ -439,6 +439,13 @@ class BaseConfig(object):
                     :func:`~robovast.execution.cluster_execution.service_deploy.read_service_config_from_cluster`.
         """
 
+    #: Whether this provider's results store lives on a node's own filesystem, and so
+    #: needs a node pin to stay put. ``False`` here because the interesting default is the
+    #: safe one: a provider backed by a PersistentVolume or an external bucket keeps nothing
+    #: on a node, and pinning its pod would be noise at best -- with a zonal disk, an
+    #: unschedulable pod. The bare-metal providers override it.
+    store_is_node_local = False
+
     @staticmethod
     def _apply_pod_node_selector(yaml_objects, node_labels):
         """Inject ``nodeSelector`` into all ``Pod`` objects.
@@ -457,7 +464,11 @@ class BaseConfig(object):
             return docs
         for doc in docs:
             if doc and doc.get('kind') == 'Pod':
-                doc.setdefault('spec', {})['nodeSelector'] = dict(node_labels)
+                # Merged, not replaced. Two intents reach here -- the operator's node pool
+                # from `control.node_labels` and the placement label -- and replacing would
+                # silently drop whichever arrived first.
+                selector = doc.setdefault('spec', {}).setdefault('nodeSelector', {})
+                selector.update(node_labels)
         return docs
 
 

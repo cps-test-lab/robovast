@@ -1108,8 +1108,9 @@ kubernetes.control
 
 **Required:** No
 
-Settings applied to the RoboVAST control pod (the pod that orchestrates
-the campaign — uploading configs, monitoring jobs, collecting results).
+Settings applied to RoboVAST's own infrastructure pods, as opposed to the
+campaign's job pods. (The name predates the current architecture: the
+per-campaign controller pod it was written for no longer exists.)
 
 kubernetes.control.node_labels
 '''''''''''''''''''''''''''''''
@@ -1118,9 +1119,17 @@ kubernetes.control.node_labels
 
 **Required:** No
 
-Node selector labels added to the control pod's ``nodeSelector``.
-Use this to schedule the orchestration workload on a separate, lighter
-node pool so that it does not compete with simulation jobs for resources.
+Node selector labels added to RoboVAST's own pods, so the orchestration
+workload runs on a separate, lighter node pool and does not compete with
+simulation jobs for resources.
+
+**Narrows, rather than decides.** Which single node holds this deployment's
+node-local data is decided at setup and recorded as a node label (see
+:ref:`cluster-node-local-storage`); these labels are ANDed with it, bounding
+the pool that choice may be made from. On their own they would still let the
+pod float within the pool, which is the same problem at a smaller scale.
+
+Read only from a ``.vast`` named explicitly with ``vast -V <file>``.
 
 .. code-block:: yaml
 

@@ -177,6 +177,104 @@ A named ``.vast`` that cannot be read is an error rather than a silent "no label
 config that fails to load cannot be asked whether labels were intended, and guessing
 "none" would scatter job and control pods across arbitrary nodes.
 
+.. _cluster-node-local-storage:
+
+Where this deployment's own data lives
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The selectors above place job and control pods. This places the deployment's **own** state,
+which is node-local by default: a stock cluster ships no StorageClass, so ``hostPath`` is
+what the registry, the workspaces and the build cache fall back to, and on ``rke2`` /
+``minikube`` the results store is an ``emptyDir``.
+
+**There is nothing to configure.** Setup decides once, and records the decision as a node
+label:
+
+.. code-block:: bash
+
+   vast execution cluster setup rke2
+
+.. code-block:: text
+
+   robovast.io/data-node: not found on any node -- picking by free space
+     node-a                            186.8 GB free  (kubelet-nodefs)  <- chosen
+     node-b                             48.6 GB free  (kubelet-nodefs)
+   node node-a labelled robovast.io/data-node=true
+   ✓ Cluster setup completed successfully!
+     workspaces, registry and store on node-a (chosen automatically: most free disk)
+     build cache alongside it on node-a (--buildkit-node puts it on another disk)
+     recorded as a node label, so a later cleanup + setup returns here without any flag
+
+Because a node label is **cluster-scoped**, it outlives ``vast execution cluster cleanup``.
+A later ``setup`` reads it back and lands on the same node with no flags at all:
+
+.. code-block:: text
+
+   robovast.io/data-node: node-a (existing label)
+
+That is the point of the label. Without one, a ``cleanup`` + ``setup`` left no trace of the
+previous placement, the scheduler was free to choose again, and on a heterogeneous cluster it
+did: the service came up on a different node with an **empty registry** -- the blobs still on
+the old node's disk, intact and unreachable -- while setup reported success. The **Disk**
+meter changed at the same moment, because it reports the filesystem of the node carrying the
+service pod (see :doc:`web_ui`), and that was a different machine.
+
+The pods carry the label as a **constant** ``nodeSelector``, never a hostname. That is what
+makes the pin impossible to lose: there is no node *value* for a caller to forget, which is
+how ``upgrade`` used to unpin the service pod.
+
+How the node is chosen
+~~~~~~~~~~~~~~~~~~~~~~
+
+In order, stopping at the first that applies:
+
+#. ``--data-node NODE`` / ``--buildkit-node NODE``, when given.
+#. The existing label -- the ordinary path on every run after the first.
+#. The eligible node with the most free space. *Eligible* means Ready, not cordoned, and
+   carrying no taint the pod does not tolerate: ranking on size alone would pick a
+   ``NoSchedule`` control-plane and leave the pod ``Pending`` while setup reported the
+   placement as chosen. Free space comes from the kubelet's ``stats/summary``, falling back
+   to ``allocatable.ephemeral-storage`` where ``nodes/proxy`` is not readable; the log names
+   which was used, because they measure different things.
+
+Two rules keep it sticky:
+
+* **The build cache defaults to the data node**, not to "the other one". Auto-separating
+  would put a 150 GB cache on whichever node was left over, which is usually the smaller.
+  Separate them with ``--buildkit-node`` where the disk is tight -- a full builder disk on
+  the service's node becomes DiskPressure evictions of the API.
+* **Naming a different node than the one already holding data is refused.** The bytes are
+  not migrated, so the new node would start empty; ``--move-placement`` overrides it as one
+  deliberate act.
+
+Nothing is pinned where nothing is on a node: pass ``--registry-storage-class`` /
+``--workspaces-storage-class`` (or use a provider whose store is a bucket) and the pods
+schedule freely, because a ``nodeSelector`` on a provisioned volume is noise at best and
+unschedulable at worst.
+
+``execution.kubernetes.control.node_labels`` still applies and is **ANDed** with the
+placement label rather than replaced by it: it narrows which nodes may be chosen, while the
+label decides which one of them holds the data. A pool selector alone still lets the pod
+float within the pool, which is this same problem at a smaller scale.
+
+Moving it, and forgetting it
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: bash
+
+   kubectl get nodes -L robovast.io/data-node -L robovast.io/build-node   # where is it?
+   vast execution cluster setup rke2 --data-node node-b --move-placement  # move it
+   vast execution cluster cleanup --forget-placement                      # forget it
+
+None of these move the **data**. The workspaces and registry bytes stay on the old node's
+disk; a moved deployment starts with an empty registry and rebuilds what it needs. The
+results store is an ``emptyDir`` transfer buffer, so it has nothing durable to lose.
+
+One thing a re-``setup`` cannot do by itself: applying a manifest over an object that already
+exists keeps the existing one, so a **running** store Pod cannot be relocated that way. Setup
+refuses rather than reporting a placement it did not apply -- delete the pod, or run
+``cleanup`` first.
+
 .. _cluster-gpu:
 
 GPU rendering

@@ -50,6 +50,7 @@ module depends on it *downward*.
 
 import contextlib
 import functools
+import json
 import logging
 import os
 
@@ -323,6 +324,52 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
         # success, and reporting 0 for the second would invent one.
         timed_out, code = True, 124
     return code, "".join(out), "".join(err), timed_out
+
+
+def read_node_summary(core, node: str, timeout_s: float = 2.0) -> dict:
+    """The kubelet's ``stats/summary`` for one node, parsed.
+
+    Read over the ``nodes/proxy`` subresource, which is the only source for filesystem
+    bytes: metrics-server publishes cpu and memory only, and a pod-request sum cannot
+    answer disk because ``ephemeral-storage`` is almost never requested.
+
+    ``_preload_content=False`` for the RAW response, and it is load-bearing: the generated
+    client declares this endpoint's ``response_type`` as ``'str'``, so with preloading it
+    parses the kubelet's JSON into a dict and then coerces it to the declared type with
+    ``str()`` -- handing back a single-quoted Python repr that ``json.loads`` rejects at
+    character 1 ("Expecting property name enclosed in double quotes"). Raw bytes skip the
+    deserializer entirely.
+
+    Raises whatever the API call raises; two callers want different things from a failure
+    (a disk meter needs a reason to show, a placement chooser needs to fall back to a
+    different signal), so neither is imposed here.
+    """
+    resp = core.connect_get_node_proxy_with_path(
+        node, "stats/summary", _request_timeout=timeout_s, _preload_content=False)
+    try:
+        return json.loads(resp.data)
+    finally:
+        # Not a with-block: urllib3's response is not a context manager here, and an
+        # unreleased connection leaks the pool one node at a time.
+        resp.release_conn()
+
+
+def nodefs_used_available(summary: dict):
+    """``(used_bytes, available_bytes)`` of a node's *nodefs*, or ``(None, None)``.
+
+    ``node.fs`` only, **not** summed with ``node.runtime.imageFs``: on a single-disk node
+    those are two views of the SAME device, so summing doubles capacity and used alike --
+    the ratio survives but the labelled numbers become fiction.
+
+    Callers derive capacity as ``used + available`` rather than reading ``capacityBytes``:
+    reserved blocks are in the capacity and cannot be written, so ``available`` is the only
+    honest denominator.
+    """
+    fs = ((summary.get("node") or {}).get("fs")) or {}
+    used, available = fs.get("usedBytes"), fs.get("availableBytes")
+    if used is None or available is None:
+        return None, None
+    return int(used), int(available)
 
 
 @contextlib.contextmanager

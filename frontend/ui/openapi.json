@@ -1960,7 +1960,7 @@
         "type": "object"
       },
       "ResourceUsage": {
-        "description": "Live compute capacity and current usage of the service's execution backend.\n\nBackend-neutral by design: the local\u2194cluster difference is resolved inside the\nservice (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``\nreads the Kubernetes nodes), so a consumer \u2014 the UI chip or the MCP tool \u2014 reads\nthe same fields regardless of where it runs and never branches on ``backend``.\n\n``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same\nquestion (\"how much is currently claimed\"): on the **cluster** they are the sum\nof resource *requests* of the non-terminal pods bound to a node (schedulability,\nmatching how Kueue reasons about quota \u2014 pods still queued for a node are\nreported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);\non **local** they are live host utilization. ``cpu_*`` are CPU cores;\n``memory_*`` are bytes.\n\n``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place\nthis model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot\nanswer it: ``ephemeral-storage`` is almost never requested, so a request sum would\nreport a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a\nrun writes into (the sum of every node's kubelet-reported *nodefs* on the cluster; the\ncampaign results root's filesystem locally); ``store`` is the results store, which on\nthe cluster is a different thing from ``disk`` and only some providers can measure. A\ncluster total also cannot show that one node of many is nearly full -- a limitation of\na summed meter, not of the reading.\n\n``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means\nscenario runs execute one at a time (local Docker is single-flight), ``True``\nmeans they run in parallel bounded only by free capacity (cluster). How many runs\nactually fit is left to the consumer, which knows each project's per-run\nreservation \u2014 the service does not.\n\n``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign\nthis backend is driving, not one. One definition, both lanes: ``running`` is what is\n**executing right now**, ``pending`` is work the backend has **accepted but is not\nexecuting**. On the cluster that means Kueue-waiting + pod-pending + blocked Jobs;\nlocally it is the remainder of the current batch, with ``running`` 0 or 1 because\nthe Docker lane is single-flight. So the pair can be read \u2014 and summed into an\n\"outstanding work\" total \u2014 without branching on ``backend``.\n\nThe two counts deliberately answer a different question from ``cpu_used`` above:\nthey include work that has been accepted but has no compute granted yet, which is\nwhy counting it as *usage* reported more cores in use than the cluster had.\n``completed`` and ``failed`` runs are past work and appear in neither; the\nper-campaign :class:`JobCounts` is the finer-grained view (it keeps ``waiting`` and\n``blocked`` apart, which a capacity meter has no use for).",
+        "description": "Live compute capacity and current usage of the service's execution backend.\n\nBackend-neutral by design: the local\u2194cluster difference is resolved inside the\nservice (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``\nreads the Kubernetes nodes), so a consumer \u2014 the UI chip or the MCP tool \u2014 reads\nthe same fields regardless of where it runs and never branches on ``backend``.\n\n``cpu_used`` / ``memory_used`` semantics differ by backend but answer the same\nquestion (\"how much is currently claimed\"): on the **cluster** they are the sum\nof resource *requests* of the non-terminal pods bound to a node (schedulability,\nmatching how Kueue reasons about quota \u2014 pods still queued for a node are\nreported by ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``);\non **local** they are live host utilization. ``cpu_*`` are CPU cores;\n``memory_*`` are bytes.\n\n``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place\nthis model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot\nanswer it: ``ephemeral-storage`` is almost never requested, so a request sum would\nreport a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a\nrun writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying\nthe service pod, deliberately not a sum over the node set -- the workspaces are a\n``hostPath`` there, so that is the disk which decides whether a campaign can be\nwritten, and a total would read as tens of terabytes free while it filled. Locally it\nis the campaign results root's filesystem. ``store`` is the results store, which on the\ncluster is a different thing from ``disk`` -- often on a different node -- and only\nsome providers can measure.\n\n``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means\nscenario runs execute one at a time (local Docker is single-flight), ``True``\nmeans they run in parallel bounded only by free capacity (cluster). How many runs\nactually fit is left to the consumer, which knows each project's per-run\nreservation \u2014 the service does not.\n\n``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign\nthis backend is driving, not one. One definition, both lanes: ``running`` is what is\n**executing right now**, ``pending`` is work the backend has **accepted but is not\nexecuting**. On the cluster that means Kueue-waiting + pod-pending + blocked Jobs;\nlocally it is the remainder of the current batch, with ``running`` 0 or 1 because\nthe Docker lane is single-flight. So the pair can be read \u2014 and summed into an\n\"outstanding work\" total \u2014 without branching on ``backend``.\n\nThe two counts deliberately answer a different question from ``cpu_used`` above:\nthey include work that has been accepted but has no compute granted yet, which is\nwhy counting it as *usage* reported more cores in use than the cluster had.\n``completed`` and ``failed`` runs are past work and appear in neither; the\nper-campaign :class:`JobCounts` is the finer-grained view (it keeps ``waiting`` and\n``blocked`` apart, which a capacity meter has no use for).",
         "properties": {
           "backend": {
             "title": "Backend",
@@ -1983,6 +1983,17 @@
                 "type": "null"
               }
             ]
+          },
+          "disk_node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Node"
           },
           "disk_unavailable": {
             "anyOf": [
@@ -2036,6 +2047,17 @@
                 "type": "null"
               }
             ]
+          },
+          "store_node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store Node"
           }
         },
         "required": [
@@ -2043,6 +2065,7 @@
           "cpu_capacity",
           "cpu_used",
           "disk",
+          "disk_node",
           "disk_unavailable",
           "exec_container",
           "jobs_pending",
@@ -2050,7 +2073,8 @@
           "memory_capacity_bytes",
           "memory_used_bytes",
           "parallel_runs",
-          "store"
+          "store",
+          "store_node"
         ],
         "title": "ResourceUsage",
         "type": "object"
