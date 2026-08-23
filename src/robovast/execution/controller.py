@@ -521,23 +521,28 @@ class CampaignController:
         if not stop.has_budget:
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
-        batch_idx = 0
         start = time.monotonic()
         best_objective = None          # best-so-far, in raw objective units
         result = None
+        # On `self`, not a local, and that is the whole point: the loop below runs in a
+        # callee, so a local here would still read 0 after the callee raised -- which is
+        # how the first campaign to exercise this path recorded `batches: 0` for 22
+        # batches of completed work. A count that survives the raise is the one fact this
+        # record exists to carry.
+        self._batches_done = 0
         try:
-            result, batch_idx, best_objective = self._search_loop(
-                campaign_id, stop, obj_name, start, batch_idx, best_objective)
+            result, best_objective = self._search_loop(
+                campaign_id, stop, obj_name, start, best_objective)
         except BaseException as exc:
             # A search that dies mid-loop never reached `record_outcome` below, so its
             # campaign row said NOTHING about why it stopped -- stop_kind, stop_reason and
             # batches all NULL, indistinguishable from a campaign that never ran a batch.
             # The one that motivated this had two batches of real data behind that silence.
             self.store.record_outcome(
-                campaign_id, batches=batch_idx, elapsed_s=time.monotonic() - start,
-                **self._abort_outcome(exc))
+                campaign_id, batches=self._batches_done,
+                elapsed_s=time.monotonic() - start, **self._abort_outcome(exc))
             raise
-        return self._finish_search(campaign_id, result, batch_idx, start)
+        return self._finish_search(campaign_id, result, self._batches_done, start)
 
     def _abort_outcome(self, exc) -> dict:
         """``stop_kind``/``stop_reason`` for a search that ended by raising.
@@ -566,10 +571,14 @@ class CampaignController:
                     _BAR)
         return report
 
-    def _search_loop(self, campaign_id, stop, obj_name, start, batch_idx,
-                     best_objective):
-        """The ask/evaluate/tell loop; returns ``(result, batch_idx, best_objective)``."""
+    def _search_loop(self, campaign_id, stop, obj_name, start, best_objective):
+        """The ask/evaluate/tell loop; returns ``(result, best_objective)``.
+
+        The batch count lives on ``self._batches_done`` rather than being returned,
+        because :meth:`_run_search` needs it on the path where this does NOT return.
+        """
         from robovast.search.stopping import StopResult, StopSnapshot
+        batch_idx = self._batches_done
         result = None
         while True:
             param_sets = self.strategy.ask(self.per_batch)
@@ -581,6 +590,8 @@ class CampaignController:
             evaluations = self._run_search_batch(param_sets, batch_idx, batch_id)
             self.strategy.tell(evaluations)
             batch_idx += 1
+            # Published immediately, so an abort anywhere after this counts this batch.
+            self._batches_done = batch_idx
             best_objective = self._update_best(best_objective, evaluations, obj_name)
 
             snap = StopSnapshot(batch=batch_idx,
@@ -605,7 +616,7 @@ class CampaignController:
                     self.state.update(stop={"kind": result.kind, "reason": result.reason})
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
-        return result, batch_idx, best_objective
+        return result, best_objective
 
     @staticmethod
     def _fmt(v):

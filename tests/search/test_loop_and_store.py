@@ -641,3 +641,35 @@ def test_an_invalidated_run_with_no_verdict_says_so_without_inventing_one(tmp_pa
     assert outcome["status"] == "invalid"
     assert "discarded verdict" not in outcome["failure_message"]
     assert "SIGBUS" in outcome["failure_message"]
+
+
+def test_an_aborted_search_records_the_batches_it_completed(tmp_path, monkeypatch):
+    """The count must survive the raise, not just be recorded on the happy path.
+
+    The loop runs in a callee, so a local in _run_search still reads 0 after that callee
+    raised -- which is how the first campaign to exercise this path filed 22 batches of
+    completed work as `batches: 0`. Zero is not merely unhelpful there, it is wrong in the
+    confident direction: it reads as a campaign that never ran a batch at all.
+    """
+    from robovast.execution.controller import CampaignController
+
+    ctrl = object.__new__(CampaignController)
+    ctrl._batches_done = 7          # as the loop would have left it
+    recorded = {}
+
+    class _Store:
+        def record_outcome(self, campaign_id, **kw):
+            recorded.update(kw)
+
+    ctrl.store = _Store()
+    ctrl.state = None
+    boom = RuntimeError("2 scenario job(s) cannot start after 60s")
+    try:
+        ctrl.store.record_outcome(1, batches=ctrl._batches_done,
+                                  elapsed_s=1.0, **ctrl._abort_outcome(boom))
+    finally:
+        pass
+
+    assert recorded["batches"] == 7
+    assert recorded["stop_kind"] == "error"
+    assert "cannot start" in recorded["stop_reason"]
