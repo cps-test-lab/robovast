@@ -516,6 +516,7 @@ class CampaignController:
     # -- search mode --------------------------------------------------------
 
     def _run_search(self, campaign_id: int):
+        from robovast.search.stopping import StopSnapshot
         stop = self.stop_conditions
         obj_name = self.strategy.single_objective.name
         if not stop.has_budget:
@@ -530,6 +531,22 @@ class CampaignController:
         # batches of completed work. A count that survives the raise is the one fact this
         # record exists to carry.
         self._batches_done = 0
+        # Publish the budget BEFORE the first batch, not only after it.
+        #
+        # Every criterion is reported from the end of the loop below, so until the first
+        # round closed a search published no budget at all -- no batches counter, no time
+        # cap, nothing -- and a reader saw the runs bar alone for however long that round
+        # took. On a batch of forty runs that is the entire window in which somebody is
+        # asking whether the search is going anywhere, and it is also the window in which
+        # the campaign card has no batches row to offer (or, since the objective chart
+        # hangs off that row, to open).
+        #
+        # Honest at t=0 rather than optimistic: `0 / 50` batches and `0s` elapsed are
+        # facts, and a `target_objective` with nothing to report yet comes through as NaN,
+        # which `_budget_item` renders as `None` and the readers show as `—`. A `metric`
+        # criterion reports nothing at all until the strategy has measured it, and
+        # `_progress` already omits that row rather than inventing a value for it.
+        self._publish_budget(stop, StopSnapshot(batch=0, elapsed=0.0))
         try:
             result, best_objective = self._search_loop(
                 campaign_id, stop, obj_name, start, best_objective)
@@ -621,6 +638,16 @@ class CampaignController:
     @staticmethod
     def _fmt(v):
         return f"{v:.4g}" if isinstance(v, float) else str(v)
+
+    def _publish_budget(self, stop, snap) -> None:
+        """Publish every criterion's progress for *snap*, when there is a state to publish to.
+
+        A separate step from the loop's own combined update because it is also called once
+        before the loop, where there is no batch count or best objective to report yet.
+        """
+        if self.state is None:
+            return
+        self.state.update(budget=[self._budget_item(p) for p in stop.progress(snap)])
 
     @staticmethod
     def _budget_item(p) -> dict:

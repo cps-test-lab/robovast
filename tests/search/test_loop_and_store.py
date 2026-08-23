@@ -673,3 +673,60 @@ def test_an_aborted_search_records_the_batches_it_completed(tmp_path, monkeypatc
     assert recorded["batches"] == 7
     assert recorded["stop_kind"] == "error"
     assert "cannot start" in recorded["stop_reason"]
+
+
+def test_budget_is_published_before_the_first_batch(tmp_path):
+    """A search reports its budget from the start, not from the end of round one.
+
+    Every criterion used to be published only at the end of the loop, so a campaign spent
+    its whole first batch reporting no budget at all -- and a batch is many runs long. The
+    reader saw the runs bar alone, with nothing saying `0 / 50 batches`, during exactly the
+    window in which the question is whether the search is going anywhere.
+
+    Asserted by making the first batch *raise*, so the loop never completes a round: what
+    is on the state afterwards can only have been published before it.
+    """
+    from robovast.execution.control_server import ControllerState
+
+    cfg = _cfg(batches=50, per_batch=2)
+    state = ControllerState()
+    controller, store, _ = _search_controller(cfg, tmp_path)
+    controller.state = state
+
+    def _die(*_a, **_k):
+        raise RuntimeError("the first batch never finished")
+
+    controller._run_search_batch = _die
+    campaign_id = store.create_campaign(name="c", config={}, mode="search", config_dir=".")
+    with pytest.raises(RuntimeError):
+        controller._run_search(campaign_id)
+
+    budget = state.snapshot().budget
+    assert [(b.label, b.current, b.limit, b.done) for b in budget] == [("batches", 0.0, 50.0, False)]
+    # `kind` is what a reader keys on to find this row among criteria named after the
+    # user's own metrics, so it has to be right from the first publish too.
+    assert budget[0].kind == "batches"
+    store.close()
+
+
+def test_an_unmeasured_target_objective_publishes_no_number(tmp_path):
+    """`target_objective` before any result is NaN, which is not JSON and is not zero.
+
+    It reaches the wire as ``None`` so a reader renders `—`. Reporting 0 would read as a
+    measured objective of zero -- the wrong answer in the confident direction, and on a
+    minimizing search it would look like the target had already been met.
+    """
+    from robovast.execution.control_server import ControllerState
+    from robovast.search.stopping import StopSnapshot, build_stop_conditions
+
+    cfg = _cfg(batches=5, per_batch=2, stopping=[{"target_objective": 0.9}])
+    state = ControllerState()
+    controller, store, _ = _search_controller(cfg, tmp_path)
+    controller.state = state
+
+    controller._publish_budget(build_stop_conditions(cfg), StopSnapshot(batch=0, elapsed=0.0))
+
+    by_kind = {b.kind: b for b in state.snapshot().budget}
+    assert by_kind["target_objective"].current is None
+    assert by_kind["batches"].current == 0.0
+    store.close()
