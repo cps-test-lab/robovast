@@ -1,11 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import {
-  estimateBatchesEtaSeconds,
-  estimateEtaSeconds,
-  finishedRuns,
-  noResultRuns,
-} from './eta'
+import { estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -108,5 +103,28 @@ describe('estimateBatchesEtaSeconds', () => {
   it('says nothing when the batch itself cannot be estimated', () => {
     freeze()
     expect(estimateBatchesEtaSeconds(status({ completed: 0 }), undefined, budget(), null)).toBeNull()
+  })
+})
+
+describe('isBatchesBudget', () => {
+  const row = (over: Partial<BudgetItem>): BudgetItem =>
+    ({ label: 'batches', current: 1, limit: 10, done: false, ...over }) as BudgetItem
+
+  it('reads the batch counter off `kind`', () => {
+    expect(isBatchesBudget(row({ kind: 'batches' }))).toBe(true)
+  })
+
+  it('refuses a metric somebody named `batches` when kind says otherwise', () => {
+    // The whole reason this is not a label match: `label` is the user's own metric or
+    // objective name for every criterion except batches and time.
+    expect(isBatchesBudget(row({ label: 'batches', kind: 'metric' }))).toBe(false)
+  })
+
+  it('falls back to the label when kind is absent', () => {
+    // `kind` is younger than the campaigns that have to render: a finished campaign replays
+    // the budget its controller recorded, so everything that ran before the field shipped
+    // reports null forever. Without this those cards lose the ETA and the objective chart.
+    expect(isBatchesBudget(row({ kind: null }))).toBe(true)
+    expect(isBatchesBudget(row({ label: 'coverage', kind: null }))).toBe(false)
   })
 })

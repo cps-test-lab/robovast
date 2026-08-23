@@ -17,6 +17,7 @@ import {
 } from '@/lib/robovastClient'
 import {
   estimateBatchesEtaSeconds,
+  isBatchesBudget,
   estimateEtaSeconds,
   finishedRuns,
   noResultRuns,
@@ -223,11 +224,9 @@ export function StatusView({
             color="secondary.main"
           />
         )
-        // The batches bar, and only it, opens onto the objective's trajectory. Keyed on
-        // `kind` rather than on `label`, which is the user's own objective or metric name for
-        // every other criterion — a campaign that happens to name a metric "batches" must not
-        // grow a chart of a search it is not running.
-        if (cid && b.kind === 'batches') {
+        // The batches bar, and only it, opens onto the objective's trajectory. Which row that
+        // is, and why it is not simply a label match, is `isBatchesBudget`'s question.
+        if (cid && isBatchesBudget(b)) {
           return (
             <ObjectiveSection
               key={b.label}

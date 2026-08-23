@@ -52,6 +52,23 @@ export function estimateEtaSeconds(
   return (status.runs.total - done) * (elapsed / done)
 }
 
+/** Whether a budget row is the BATCH COUNTER — the one row that can be read as rounds.
+ *
+ * `kind` is the authority, never the label: the label is the criterion type only for `batches`
+ * and `time` and the user's own metric or objective name otherwise (see CriterionProgress), so
+ * matching text alone would treat a metric somebody named `batches` as the round counter.
+ *
+ * The fallback exists because `kind` is younger than the campaigns that have to render. It is
+ * documented as `None` on a status written before the field existed, and a finished campaign's
+ * budget is replayed from the `outcome.json` its controller wrote at the time — so every campaign
+ * that ran before `kind` shipped reports `null` here forever. Without the fallback those cards
+ * silently lose both the batches ETA and the objective chart, which is every campaign now on the
+ * page. Only consulted when `kind` is absent, so a modern status still decides on `kind` alone:
+ * a metric named `batches` there carries `kind: "metric"` and is correctly refused. */
+export function isBatchesBudget(b: BudgetItem): boolean {
+  return b.kind == null ? b.label === 'batches' : b.kind === 'batches'
+}
+
 /** Seconds until the `batches` budget is exhausted, or null when that is not this row.
  *
  * The current batch's remaining time, plus a whole batch for each round after it — each
@@ -60,10 +77,7 @@ export function estimateEtaSeconds(
  * the rounds are equal-sized by construction and the current rate is the better
  * predictor of the next one; it also needs no per-batch history on the wire.
  *
- * Keyed on `kind`, never on `label`: the label is the criterion type only for `batches`
- * and `time`, and the user's own metric or objective name otherwise (see
- * CriterionProgress) — so matching the text would hang this estimate on a metric
- * somebody happened to name `batches`.
+ * Which row is the batch counter is `isBatchesBudget`'s question, not this one's.
  *
  * It answers when this BUDGET runs out, not when the search stops: any other stopping
  * criterion may fire first. That is the same honesty the runs estimate has — it says
@@ -74,7 +88,7 @@ export function estimateBatchesEtaSeconds(
   b: BudgetItem,
   runsEta: number | null,
 ): number | null {
-  if (b.kind !== 'batches' || runsEta === null || !status.batch_since) return null
+  if (!isBatchesBudget(b) || runsEta === null || !status.batch_since) return null
   const perRun = (Date.now() / 1000 - status.batch_since) / finishedRuns(status, counts)
   // `current` is written when a round ENDS, so during round k it still reads k — the one
   // in flight is already covered by runsEta, hence the extra -1. Floored, because between
