@@ -138,6 +138,88 @@ def _build_context_advisories(config_path):
         f"accident -- if by accident, move it out of the project directory.")]
 
 
+def _resource_advisories(config_path):
+    """Advise when a container declares ``resources.cpu`` and no ``resources.memory``.
+
+    An **advisory**, never an error: a campaign may legitimately leave memory
+    unconstrained, and this cannot tell an intentional choice from an oversight. What it
+    can see is the *asymmetry* -- a file that sized the CPU and not the memory reads as one
+    where the sizing was done, and it is the half that is missing which bites.
+
+    Two concrete consequences, and neither announces itself. ``AVAILABLE_MEM`` comes from
+    the downward API's ``limits.memory``, so with no limit the run is told it has the whole
+    node's memory as its budget. And the pod's ``/dev/shm`` is a memory-backed ``emptyDir``
+    shared by every container of the run; with no limits to size it from, it too is sized
+    from the node. A container that overruns shared memory dies of SIGBUS -- ``exit 135``,
+    not ``OOMKilled`` -- so the death arrives with no reason attached to it at all.
+
+    Deliberately NOT triggered when neither is declared: that is the unconstrained default
+    a quick local run legitimately uses, and warning about it would be noise on every
+    example in the repository.
+
+    Lane-agnostic, because a ``.vast`` does not carry a lane -- and the local lane has the
+    same gap from the other side, falling back to ``/proc/meminfo`` for the same reason.
+    """
+    raw, problem = _safe_load(config_path)
+    if problem or not isinstance(raw, dict):
+        return []
+    containers = ((raw.get("execution") or {}).get("containers") or {})
+    if not isinstance(containers, dict):
+        return []
+    bare = []
+    for name, block in containers.items():
+        if not isinstance(block, dict):
+            continue
+        resources = block.get("resources")
+        if not isinstance(resources, dict):
+            continue
+        if resources.get("cpu") is not None and resources.get("memory") is None:
+            bare.append(name)
+    if not bare:
+        return []
+    named = ", ".join(f"execution.containers.{n}" for n in sorted(bare))
+    return [_problem(
+        "resources",
+        f"{named} declare resources.cpu but no resources.memory. Without a memory limit "
+        "the run's AVAILABLE_MEM (downward API limits.memory) reports the NODE's memory "
+        "as its budget, and the pod's shared /dev/shm — a memory-backed emptyDir mounted "
+        "into every container — is sized from the node too. Overrunning shared memory "
+        "kills a container with SIGBUS (exit 135) rather than a clean OOM, so it arrives "
+        "unexplained. Declare resources.memory for every container that declares "
+        "resources.cpu, and set execution.shm_size alongside it: adding memory limits "
+        "alone shrinks an unbounded /dev/shm down to them. "
+        "get_campaign_summary on a comparable finished campaign reports what it used.")]
+
+
+def _liveness_advisories(config_path):
+    """Advise when the project declares no ``execution.timeout``.
+
+    An **advisory**, never an error: a campaign runs perfectly well without one. What it
+    cannot do is be *judged*. ``stalled`` is asserted only against a declared per-run
+    budget (see :func:`~robovast.common.config.declared_per_run_seconds`), so with none
+    the verdict is ``null`` forever -- a wedged run and a slow one stay the same picture,
+    and ``vast wait`` has nothing to exit 4 on.
+
+    Said here rather than shown in a reader, because a reader can only repeat it on every
+    poll for the life of the campaign, and by then the fix costs a re-run. Here it costs a
+    line in the file, before any compute.
+    """
+    raw, problem = _safe_load(config_path)
+    if problem or not isinstance(raw, dict):
+        return []
+    if ((raw.get("execution") or {}).get("timeout")):
+        return []
+    return [_problem(
+        "liveness",
+        "execution.timeout is not declared, so a wedged run is never reported: stalled "
+        "stays null and `vast wait` cannot exit 4 on it. The enforcement backstop is "
+        "deliberately not used to judge -- it would call a dead run healthy for an hour. "
+        "Set execution.timeout to the longest a single run should legitimately take; "
+        "get_campaign_summary on a comparable finished campaign reports what its runs "
+        "took.",
+        field="execution.timeout")]
+
+
 def _problem(stage, message, config=None, field=None):
     """Build one structured problem entry."""
     return {"stage": stage, "config": config, "field": field, "message": message}
@@ -1039,7 +1121,10 @@ def _batch_composition_report(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-    return {"valid": True, "problems": _build_context_advisories(config_path),
+    return {"valid": True,
+            "problems": (_build_context_advisories(config_path)
+                         + _resource_advisories(config_path)
+                         + _liveness_advisories(config_path)),
             "configs": len(configs), "runs_per_config": runs_per_config,
             "total_trials": len(configs) * runs_per_config}
 
@@ -1082,6 +1167,9 @@ def _search_composition_report(config_path):
     # infeasible, neither of which is knowable before it runs.
     configs = sample["composed"]
     runs_per_config = sample["runs_per_config"]
-    return {"valid": True, "problems": problems + _build_context_advisories(config_path),
+    return {"valid": True,
+            "problems": (problems + _build_context_advisories(config_path)
+                         + _resource_advisories(config_path)
+                         + _liveness_advisories(config_path)),
             "configs": configs, "runs_per_config": runs_per_config,
             "total_trials": configs * runs_per_config}

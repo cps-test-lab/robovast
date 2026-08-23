@@ -1,4 +1,10 @@
 
+#: The name of the pod's one REGULAR container -- the ``scenario`` role. Every other
+#: container in a scenario pod is a native sidecar named for the role that declared it
+#: (``sut``, ``simulation``, an ad-hoc key), so this is the single name that does not
+#: appear in a ``.vast``. Must match the template below; ``test_job_manifest`` pins it.
+MAIN_CONTAINER_NAME = "robovast"
+
 JOB_TEMPLATE = """apiVersion: batch/v1
 kind: Job
 metadata:

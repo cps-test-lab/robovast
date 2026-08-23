@@ -21,6 +21,8 @@ from unittest import mock
 
 from robovast.execution.cluster_execution.cluster_execution import (blocked_job_reasons, job_phase,
                                                                     list_jobs_with_phase,
+                                                                    pod_container_failures,
+                                                                    pod_invalidating_restart,
                                                                     pod_restarted_containers,
                                                                     pod_termination_reason,
                                                                     restarted_job_reasons,
@@ -35,7 +37,7 @@ def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
 
 
 def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason=None,
-         unschedulable=None, restarts=None):
+         unschedulable=None, restarts=None, sidecar=True, limits=None):
     """A pod for *job_name*.
 
     ``waiting=(reason, message)`` puts its container in that ``waiting`` state (as
@@ -48,6 +50,14 @@ def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason
     them on. ``restarts=(container, count, last_reason, exit_code)`` gives a container a
     non-zero ``restart_count`` plus the ``last_state.terminated`` it died with, leaving
     the phase Running: that combination is the point, a pod that still looks healthy.
+
+    A restarted container is a NATIVE SIDECAR by default -- declared in ``initContainers``
+    with ``restartPolicy: Always``, its status in ``init_container_statuses`` -- because
+    that is the only shape a scenario pod can actually produce. The pod itself is
+    ``restartPolicy: Never``, so its regular container and its one-shot ``s3-init`` are
+    never restarted at all; ``sidecar=False`` builds that impossible-but-worth-refusing
+    case. ``limits={"memory": "4Gi"}`` gives the restarted container declared limits; the
+    default of none is what the campaigns in question actually ran.
     """
     container_statuses = None
     reason_attr = None
@@ -75,22 +85,44 @@ def _pod(job_name, phase="Running", *, waiting=None, terminated=None, pod_reason
         phase = "Pending"
         conditions = [types.SimpleNamespace(
             type="PodScheduled", status="False", reason=reason, message=message)]
+    init_container_statuses = None
+    extra_init = []
     if restarts is not None:
         cname, count, last_reason, exit_code = restarts
-        container_statuses = [types.SimpleNamespace(
+        status = types.SimpleNamespace(
             name=cname,
+            image="an-image",
+            image_id="an-image@sha256:abc",
             restart_count=count,
             state=types.SimpleNamespace(waiting=None, terminated=None),
             last_state=types.SimpleNamespace(
-                terminated=types.SimpleNamespace(reason=last_reason,
-                                                 exit_code=exit_code)))]
+                terminated=types.SimpleNamespace(
+                    reason=last_reason, exit_code=exit_code, signal=None, message=None,
+                    started_at=None, finished_at=None)))
+        extra_init = [_container(cname, restart_policy="Always" if sidecar else None,
+                                 limits=limits)]
+        if sidecar:
+            init_container_statuses = [status]
+        else:
+            container_statuses = [status]
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod", labels={"batch.kubernetes.io/job-name": job_name}),
+        spec=types.SimpleNamespace(
+            node_name="a-node",
+            containers=[_container("robovast", limits={"cpu": "1.25"})],
+            init_containers=[_container("s3-init")] + extra_init),
         status=types.SimpleNamespace(
             phase=phase, container_statuses=container_statuses,
-            init_container_statuses=None, reason=reason_attr, message=message_attr,
-            conditions=conditions))
+            init_container_statuses=init_container_statuses,
+            reason=reason_attr, message=message_attr, conditions=conditions))
+
+
+def _container(name, *, restart_policy=None, limits=None):
+    """One container spec, as ``pod_workload_containers`` reads it."""
+    return types.SimpleNamespace(
+        name=name, restart_policy=restart_policy,
+        resources=types.SimpleNamespace(limits=limits or {}))
 
 
 class _Batch:
@@ -339,15 +371,116 @@ def test_a_restarted_container_is_reported_while_the_pod_still_runs():
     pod and the scenario carries on against a simulator that lost all its state. The
     restart is therefore the signal -- not the pod phase, which is still Running."""
     pod = _pod("j", restarts=("simulation", 1, "Error", 139))
-    assert pod_restarted_containers(pod) == (
-        "ContainerRestarted", "container simulation restarted 1x after Error (exit 139)")
+    assert pod_invalidating_restart(pod) == (
+        "ContainerRestarted",
+        "container simulation restarted 1x after Error (exit 139, SIGSEGV)")
     assert restarted_job_reasons(_Core([pod]), "ns", "sel") == {
-        "j": "ContainerRestarted: container simulation restarted 1x after Error (exit 139)"}
+        "j": "ContainerRestarted: container simulation restarted 1x after Error "
+             "(exit 139, SIGSEGV)"}
 
 
 def test_a_clean_pod_reports_no_restart():
-    assert pod_restarted_containers(_pod("j", "Running")) is None
+    assert pod_invalidating_restart(_pod("j", "Running")) is None
     assert restarted_job_reasons(_Core([_pod("j", "Running")]), "ns", "sel") == {}
+
+
+def test_a_sidecar_that_finished_its_work_is_not_an_invalidating_restart():
+    """The recorded regression: a PASSING run marked failed by `container sut restarted 1x
+    after Completed (exit 0)`. A native sidecar whose workload ends exits 0 and the kubelet
+    restarts it, because that is what restartPolicy Always means -- the trial is untouched.
+    Reading that as a crash is a guard that shrinks a sweep silently."""
+    pod = _pod("j", restarts=("sut", 1, "Completed", 0))
+    assert pod_invalidating_restart(pod) is None
+    assert restarted_job_reasons(_Core([pod]), "ns", "sel") == {}
+
+
+def test_the_rollout_watcher_still_sees_every_restart():
+    """`pod_restarted_containers` keeps the unconditional reading: on a long-lived service
+    replica a container that exits 0 and comes back IS a crash-loop."""
+    pod = _pod("j", restarts=("sut", 1, "Completed", 0))
+    assert pod_restarted_containers(pod) == (
+        "ContainerRestarted", "container sut restarted 1x after Completed (exit 0)")
+
+
+def test_exit_135_is_reported_as_sigbus():
+    """128 + 7. The campaign that motivated this had the translation done by hand, from a
+    log line, after its pod was gone."""
+    record, = pod_container_failures(_pod("j", restarts=("sut", 1, "Error", 135)))
+    assert (record["signal"], record["signal_name"]) == (7, "SIGBUS")
+    assert record["role"] == "sut"
+    assert record["invalidating"] is True
+
+
+def test_a_container_with_no_memory_limit_records_that_as_a_finding():
+    """None means NO limit, and the absence is the finding: such a container is told by the
+    downward API that it has the whole node."""
+    record, = pod_container_failures(_pod("j", restarts=("sut", 1, "Error", 135)))
+    assert record["memory_limit"] is None
+    assert record["cpu_limit"] is None
+    with_limits = _pod("j", restarts=("sut", 1, "Error", 135), limits={"memory": "4Gi"})
+    assert pod_container_failures(with_limits)[0]["memory_limit"] == "4Gi"
+
+
+def test_a_one_shot_init_container_restart_does_not_invalidate_a_trial():
+    """The pod is restartPolicy Never, so `s3-init` cannot be restarted by it at all. If
+    one ever is, record it -- but it is not the trial that was invalidated."""
+    pod = _pod("j", restarts=("s3-init", 1, "Error", 1), sidecar=False)
+    record, = pod_container_failures(pod)
+    assert record["role"] == "init"
+    assert record["invalidating"] is False
+    assert pod_invalidating_restart(pod) is None
+
+
+def test_every_restarted_container_is_recorded_not_just_the_first():
+    """Their order is declaration order, not causal order. Stopping at the first reports a
+    coin toss between the cause and the consequence."""
+    pod = _pod("j", restarts=("sut", 1, "Error", 135))
+    pod.status.init_container_statuses.append(
+        types.SimpleNamespace(
+            name="simulation", image="i", image_id="i@sha", restart_count=2,
+            state=types.SimpleNamespace(waiting=None, terminated=None),
+            last_state=types.SimpleNamespace(terminated=types.SimpleNamespace(
+                reason="OOMKilled", exit_code=137, signal=None, message=None,
+                started_at=None, finished_at=None))))
+    pod.spec.init_containers.append(
+        _container("simulation", restart_policy="Always"))
+    records = pod_container_failures(pod)
+    assert [r["container"] for r in records] == ["sut", "simulation"]
+    assert [r["signal_name"] for r in records] == ["SIGBUS", "SIGKILL"]
+    _, detail = pod_invalidating_restart(pod)
+    assert detail.endswith("; and 1 other container")
+
+
+def test_restarts_are_scoped_to_the_jobs_asked_about():
+    """Jobs linger for ttlSecondsAfterFinished and the label selector is campaign-wide, so
+    an earlier batch's pod is still listed while a later batch runs. Without the scope, one
+    restart is re-reported to -- and acted on by -- every batch that follows it."""
+    old = _pod("previous-batch-job", restarts=("sut", 1, "Error", 135))
+    mine = _pod("this-batch-job", restarts=("sut", 1, "Error", 135))
+    core = _Core([old, mine])
+    assert set(restarted_job_reasons(core, "ns", "sel")) == {
+        "previous-batch-job", "this-batch-job"}
+    assert set(restarted_job_reasons(core, "ns", "sel",
+                                     job_names=["this-batch-job"])) == {"this-batch-job"}
+
+
+def test_an_unreadable_pod_spec_is_read_strictly():
+    """No spec means no workload set. Treat that as no filter rather than no containers:
+    an unreadable cluster yields the stricter answer, as it does for a blocked job."""
+    pod = _pod("j", restarts=("sut", 1, "Error", 135))
+    pod.spec = None
+    record, = pod_container_failures(pod)
+    assert record["invalidating"] is True
+
+
+def test_a_restart_the_kubelet_has_not_explained_is_treated_as_a_crash():
+    """A missing last_state means the kubelet has not said what the previous instance died
+    of. Treating silence as a clean exit is how a broken trial gets believed."""
+    pod = _pod("j", restarts=("sut", 1, "Error", 135))
+    pod.status.init_container_statuses[0].last_state = None
+    record, = pod_container_failures(pod)
+    assert record["exit_code"] is None
+    assert record["invalidating"] is True
 
 
 def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():

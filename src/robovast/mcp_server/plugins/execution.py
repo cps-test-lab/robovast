@@ -112,6 +112,11 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # somebody deliberately ended — and the reader goes looking for a fault there is none.
     if st.runs and st.runs.killed:
         result["batch_runs_killed"] = st.runs.killed
+    # Same rule, and the sharper case: an invalidated run may have written a PASSING
+    # verdict against a container that had lost its state. Silence here would leave a
+    # reader counting it among the results.
+    if st.runs and st.runs.invalid:
+        result["batch_runs_invalid"] = st.runs.invalid
     if st.batches_done:
         result["batches_done"] = st.batches_done
     if st.best_objective is not None:

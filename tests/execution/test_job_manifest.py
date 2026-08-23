@@ -435,3 +435,73 @@ def test_a_sut_gpu_is_not_requested_on_a_cpu_only_cluster(monkeypatch):
     assert _sidecar(_job_manifest(r), "sut")["resources"]["limits"]["nvidia.com/gpu"] == "1"
     # ... and the pre-flight is told, so the queue is checked before any job is created.
     assert r.gpu_resources_requested() is True
+
+
+# --- /dev/shm, and which containers the kubelet can restart -------------------------------
+
+def _dshm(manifest):
+    spec = manifest["spec"]["template"]["spec"]
+    return next(v for v in spec["volumes"] if v["name"] == "dshm")
+
+
+def test_dev_shm_is_unbounded_unless_the_campaign_says_otherwise(monkeypatch):
+    """The default is preserved deliberately: bounding it for every existing campaign would
+    change what they run, and a tmpfs that is suddenly too small kills a container with
+    SIGBUS rather than failing loudly."""
+    r = _runner(monkeypatch)
+    volume = _dshm(r.create_job_manifest(r._build_jobs()[0], total_jobs=1))
+    assert volume["emptyDir"] == {"medium": "Memory"}
+
+
+def test_shm_size_bounds_the_shared_dev_shm(monkeypatch):
+    """Without a sizeLimit a memory-backed emptyDir is sized from the pod's memory limits,
+    so a campaign that declares none is handed the whole NODE's memory as its /dev/shm --
+    charged to whichever container faults the page, and fatal by SIGBUS when it runs out."""
+    r = _runner(monkeypatch, execution={"shm_size": "1Gi"})
+    volume = _dshm(r.create_job_manifest(r._build_jobs()[0], total_jobs=1))
+    assert volume["emptyDir"] == {"medium": "Memory", "sizeLimit": "1Gi"}
+
+
+def test_every_container_shares_the_one_dev_shm(monkeypatch):
+    """Which is the point of it -- ROS 2's default Fast DDS uses shared memory across the
+    scenario / sut / simulation boundary -- and also why sizing it is a pod-level knob
+    rather than a per-container one."""
+    r = _runner(monkeypatch, execution={
+        "containers": {"sut": {"image": "an-image"},
+                       "simulation": {"image": "another-image"}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+    mounted = [c["name"] for c in spec["containers"] + spec["initContainers"]
+               if any(m["mountPath"] == "/dev/shm" for m in c.get("volumeMounts") or [])]
+    assert "robovast" in mounted and "sut" in mounted and "simulation" in mounted
+
+
+def test_only_native_sidecars_can_be_restarted(monkeypatch):
+    """The invariant `pod_invalidating_restart` rests on: the pod is restartPolicy Never,
+    so its regular container and the one-shot s3-init are never restarted by the kubelet at
+    all. Only the native sidecars carry restartPolicy Always -- which is why the useful
+    filter on a restart is the EXIT CODE, not the container's name."""
+    r = _runner(monkeypatch, execution={
+        "containers": {"sut": {"image": "an-image"},
+                       "simulation": {"image": "another-image"}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+
+    assert spec["restartPolicy"] == "Never"
+    assert r.campaign_data is not None
+    assert spec["initContainers"][0]["name"] == "s3-init"
+    assert "restartPolicy" not in spec["initContainers"][0]
+    sidecars = {c["name"]: c for c in spec["initContainers"][1:]}
+    assert set(sidecars) == {"sut", "simulation"}
+    assert all(c["restartPolicy"] == "Always" for c in sidecars.values())
+
+
+def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
+    """`_container_role` maps this one name onto the `scenario` role; it is the single
+    container name that never appears in a .vast."""
+    from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
+
+    r = _runner(monkeypatch)
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+    assert [c["name"] for c in spec["containers"]] == [MAIN_CONTAINER_NAME]

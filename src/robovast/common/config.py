@@ -366,6 +366,20 @@ class ExecutionConfig(BaseModel):
     # Results stay keyed by configuration name / run number regardless, so packing
     # is invisible to downstream processing.
     runs_per_job: int = 1
+    # Size of the pod's shared ``/dev/shm`` (e.g. ``1Gi``). One tmpfs is mounted into every
+    # container of the run, which is what lets ROS 2's default Fast DDS use its
+    # shared-memory transport across the scenario / sut / simulation boundary.
+    #
+    # ``None`` keeps each lane's own default, which is what every existing campaign gets.
+    # Those defaults DISAGREE, and both are traps: the cluster lane's memory-backed
+    # ``emptyDir`` has no size limit, so it is sized from the pod's memory limits -- or,
+    # with none declared, from the whole node -- while the local lane inherits Docker's
+    # 64 MB. A container that overruns it dies of SIGBUS (exit 135), not a clean OOM.
+    #
+    # Declare it together with ``resources.memory``, never instead of it: adding memory
+    # limits alone SHRINKS an unbounded ``/dev/shm`` down to them, so sizing one without
+    # the other can make the failure more likely rather than less.
+    shm_size: Optional[str] = None
 
     @field_validator('env')
     @classmethod

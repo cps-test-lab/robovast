@@ -251,8 +251,8 @@ class Command(BasePostprocessingPlugin):
             return False, f"Error executing command: {e}"
 
 
-def _killed_job_dirs(results_dir: str) -> list:
-    """Campaign-relative artifact dirs of the jobs an operator stopped by hand.
+def _interrupted_job_dirs(results_dir: str) -> list:
+    """Campaign-relative artifact dirs of the jobs that were cut short rather than run out.
 
     **The shared seam for this pipeline's missing-data rule.** A step that cannot read
     something a stopped job should have produced *describes the gap and succeeds* — it does
@@ -267,6 +267,14 @@ def _killed_job_dirs(results_dir: str) -> list:
     the metrics of every job that did finish. Any future step that *scans* rather than
     iterating the run table should consult this rather than inventing a second answer.
 
+    Two kinds qualify, for one reason. ``killed``: an operator stopped the job by hand.
+    ``invalid``: the runner threw the trial away because a container it depended on crashed
+    and was restarted under it. Both end with ``delete_namespaced_job`` at
+    ``grace_period_seconds=0``, i.e. a recorder SIGKILLed mid-write and a bag that can never
+    be opened — so treating them differently here would reintroduce exactly the failure the
+    rule above exists to prevent, one layer down: one invalidated trial costing the metrics
+    of every job in the campaign that did finish.
+
     ``[]`` for every campaign nobody intervened in — the ledger file does not exist — so
     this costs one missing-file check on the normal path and changes nothing about it.
 
@@ -274,12 +282,14 @@ def _killed_job_dirs(results_dir: str) -> list:
     campaign is (in-cluster, against the object-store mount), and its plugins take their
     inputs from ``results_dir``; there is no caller in that process holding the kill.
     """
-    from robovast.common.campaign_data import KIND_KILLED, read_interventions
+    from robovast.common.campaign_data import (KIND_INVALID, KIND_KILLED,
+                                                read_interventions)
     try:
-        entries = read_interventions(results_dir, KIND_KILLED)
+        entries = read_interventions(results_dir)
     except Exception:  # noqa: BLE001 - never let the ledger break postprocessing
         return []
-    return sorted({e["job_dir"] for e in entries if e.get("job_dir")})
+    return sorted({e["job_dir"] for e in entries
+                   if e.get("job_dir") and e.get("kind") in (KIND_KILLED, KIND_INVALID)})
 
 
 class RosbagsProcess(BasePostprocessingPlugin):
@@ -357,11 +367,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:
             cmd.extend(["--bag-dir", bag_dir])
-        # A job an operator stopped by hand was SIGKILLed mid-write, so its rosbag is
-        # unfinalized and cannot be opened — ever. Without this the campaign's whole
-        # postprocessing step fails on that one bag, which would mean using the per-job
-        # stop costs the analysis of every job that DID finish.
-        for job_dir in _killed_job_dirs(results_dir):
+        # A job stopped by an operator, or invalidated by the runner after a container
+        # crashed under it, was SIGKILLed mid-write — so its rosbag is unfinalized and
+        # cannot be opened, ever. Without this the campaign's whole postprocessing step
+        # fails on that one bag, which would mean one interrupted job costs the analysis of
+        # every job that DID finish.
+        for job_dir in _interrupted_job_dirs(results_dir):
             cmd.extend(["--tolerate-under", job_dir])
         if debug:
             cmd.append("--debug")

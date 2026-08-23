@@ -60,12 +60,16 @@ import re
 import shlex
 import tempfile
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 from kubernetes import client
 
 from robovast.common import (COMPAT_VERSION, MIN_IMAGE_COMPAT, get_execution_env_variables,
                              plan_containers, prepare_campaign_configs, scenario_env)
+from robovast.common.campaign_data import (KIND_INVALID, record_container_failures,
+                                           record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import per_run_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents, create_job_links,
@@ -81,7 +85,7 @@ from . import in_pod_storage
 from .cluster_context import resolve_resources
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
-                                restarted_job_reasons)
+                                previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .kubernetes_kueue import KUEUE_QUEUE_NAME
 from .manifests import JOB_TEMPLATE
@@ -288,6 +292,15 @@ class BatchJobRunner:
     #: are still suspended. Much slower than the 2s poll: a queue does not break every
     #: two seconds, and a normal quota wait must not spam the campaign log.
     _SUSPEND_CHECK_INTERVAL_SECONDS = 30.0
+
+    #: Jobs already invalidated by :meth:`_invalidate_restarted_jobs`. A restart keeps
+    #: being reported on every poll until its pod is gone, and deleting a Job is
+    #: asynchronous, so without this one crash is recorded -- and its trial discarded --
+    #: several times over. ``None`` here rather than a set because the class is populated
+    #: attribute by attribute (see :meth:`for_batch`) and a mutable class attribute would
+    #: be shared by every runner in the process; :meth:`_invalidate_restarted_jobs`
+    #: replaces it with a per-instance set on first use.
+    _invalidated = None
     #: How often a batch that is blocked repeats why, so a long wait for
     #: capacity stays visible in the log instead of scrolling past.
     _BLOCKED_LOG_INTERVAL_SECONDS = 60.0
@@ -478,10 +491,23 @@ class BatchJobRunner:
 
         # Volumes: config (populated by initContainer), out (shared output), dshm (shared /dev/shm),
         # ipc (named sockets between main and secondary containers)
+        #
+        # `dshm` is mounted into EVERY container of the pod, which is what lets ROS 2's
+        # default Fast DDS use its shared-memory transport between the scenario, the sut
+        # and the simulator. Without a `sizeLimit` a memory-backed emptyDir is sized from
+        # the pod's memory limits -- and a campaign that declares none is therefore handed
+        # the whole node's memory as its /dev/shm, charged to whichever container faults
+        # the page. Overrunning it kills that container with SIGBUS (exit 135), not with a
+        # clean OOMKilled, which is why such a death arrives unexplained. `execution.shm_size`
+        # bounds it; unset keeps the previous behaviour so no existing campaign changes.
+        dshm = {'medium': 'Memory'}
+        shm_size = (self.campaign_data.get('execution', {}) or {}).get('shm_size')
+        if shm_size:
+            dshm['sizeLimit'] = shm_size
         spec['volumes'] = [
             {'name': 'config', 'emptyDir': {}},
             {'name': 'out', 'emptyDir': {}},
-            {'name': 'dshm', 'emptyDir': {'medium': 'Memory'}},
+            {'name': 'dshm', 'emptyDir': dshm},
             {'name': 'ipc', 'emptyDir': {}},
             {'name': 'tmp', 'emptyDir': {}},
         ]
@@ -1130,6 +1156,121 @@ class BatchJobRunner:
         # Raises when the queue is structurally broken; a busy queue keeps waiting.
         self._verify_admission_path()
 
+    def _invalidate_restarted_jobs(self, job_label, job_names, jobs_by_name,
+                                   campaign_root, storage, bucket_name,
+                                   campaign_prefix) -> None:
+        """Drop every job of this batch whose container crashed and was restarted.
+
+        The response to a restart, and the whole of it. Each job is recorded in the
+        intervention ledger, its evidence captured while the pod still exists, and then
+        deleted -- ``get_remaining_jobs`` treats a gone Job as finished, so the batch drains
+        around the hole exactly as it does for an operator's ``stop_job``. Its siblings
+        finish, the cell scores over the samples it has left, and a cell that lost all of
+        them degrades to ``no_sample``, which the search loop already handles.
+
+        Order matters and is the same as ``stop_job``'s: record, publish, *then* delete. The
+        pod dies asynchronously and takes its evidence with it.
+        """
+        try:
+            restarted = restarted_job_forensics(self.k8s_client, self.namespace,
+                                                job_label, job_names=job_names)
+        except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+            logger.warning("Batch %s: could not check for restarted containers: %s",
+                           self._batch_tag, exc)
+            return
+        if self._invalidated is None:
+            self._invalidated = set()
+        for job_name, entry in sorted(restarted.items()):
+            if job_name in self._invalidated:
+                continue
+            self._invalidated.add(job_name)
+            job = jobs_by_name.get(job_name)
+            runs = tuple(f"{it.config_name}/{it.run_number}" for it in job.items) if job \
+                else ()
+            job_dir = f"_jobs/{self._job_artifact_path(job.index)}" if job else ""
+            logger.warning(
+                "Batch %s: invalidating job %s -- %s. Its %d run(s) are discarded; the "
+                "rest of the batch continues.",
+                self._batch_tag, job_name, entry["detail"], len(runs) or 1)
+            # Evidence first, and never at the cost of the response: a diagnostic that
+            # raises would turn the failure it documents into a different, worse one.
+            try:
+                self._capture_container_failures(entry, job_name, job_dir, runs,
+                                                 campaign_root, storage, bucket_name,
+                                                 campaign_prefix)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Batch %s: could not capture evidence for %s: %s",
+                               self._batch_tag, job_name, exc)
+            try:
+                record_intervention(
+                    Path(campaign_root), kind=KIND_INVALID, job_dir=job_dir,
+                    job_name=job_name, source="runner", detail=entry["detail"], runs=runs)
+                self._publish_execution_file(storage, campaign_root, bucket_name,
+                                             campaign_prefix, "interventions.json")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Batch %s: could not record the invalidation of %s: %s",
+                               self._batch_tag, job_name, exc)
+            try:
+                self.k8s_batch_client.delete_namespaced_job(
+                    job_name, self.namespace, grace_period_seconds=0,
+                    propagation_policy="Background")
+            except client.exceptions.ApiException as exc:
+                if exc.status != 404:
+                    raise
+
+    def _capture_container_failures(self, entry, job_name, job_dir, runs, campaign_root,
+                                    storage, bucket_name, campaign_prefix) -> None:
+        """Write what the dead containers of *job_name* died of, before the pod is gone.
+
+        The one artifact with a deadline. A restarted container's previous log lives only
+        as long as the kubelet keeps its pod, and this method is called moments before the
+        Job is deleted -- so this is the last point at which the question "why did it die?"
+        can still be answered at all. The campaign that motivated this had it answered by a
+        single formatted sentence, hours later, with the pod long collected.
+
+        Published immediately rather than left for ``finalize_campaign``: search-mode
+        postprocessing runs per batch, and a campaign that ends by being stopped never
+        finalizes at all.
+        """
+        records = []
+        for container in entry.get("containers") or ():
+            record = dict(container)
+            pod_name = record.get("pod_name")
+            log_text, log_status = ("", "unavailable")
+            if pod_name:
+                log_text, log_status = previous_container_log(
+                    self.k8s_client, self.namespace, pod_name, record["container"])
+            record.update({
+                "job_name": job_name,
+                "job_dir": job_dir,
+                "runs": list(runs),
+                "batch": self._batch_tag,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+                "log_status": log_status,
+                "log_lines": len(log_text.splitlines()) if log_text else 0,
+                "log_tail": log_text,
+            })
+            records.append(record)
+        record_container_failures(Path(campaign_root), records)
+        self._publish_execution_file(storage, campaign_root, bucket_name, campaign_prefix,
+                                     "container_failures.json")
+
+    def _publish_execution_file(self, storage, campaign_root, bucket_name,
+                                campaign_prefix, filename) -> None:
+        """Push one ``_execution/`` file to the object store now, best-effort.
+
+        Best-effort because it is a mirror: the local copy is already written, and a
+        transfer that fails must not cost the record it was copying.
+        """
+        path = Path(campaign_root) / "_execution" / filename
+        if not path.is_file():
+            return
+        try:
+            storage.upload_file(str(path), bucket_name,
+                                f"{campaign_prefix}_execution/{filename}")
+        except Exception as exc:  # noqa: BLE001 - a mirror, not the record
+            logger.debug("Could not publish %s: %s", filename, exc)
+
     def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
         """Upload, run and download one batch; this batch's results and the
         campaign-level snapshot (``_config``/``_transient``) land under *campaign_root*.
@@ -1176,6 +1317,11 @@ class BatchJobRunner:
                     raise
         logger.info("Batch %s: created %d job(s); waiting for completion...",
                     self._batch_tag, len(job_names))
+        # Job name -> its planned work, so a restart can be resolved to the runs it ruins
+        # and to the artifact dir the ledger keys on. Built here and NOT read back from
+        # ``_transient/job_links.yaml``: that manifest is downloaded after this loop
+        # (`_write_job_links`), so on the first batch it does not exist yet.
+        jobs_by_name = dict(zip(job_names, jobs))
 
         job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
         blocked_since = None
@@ -1254,23 +1400,17 @@ class BatchJobRunner:
                 # A successful probe that found nothing blocked clears the timer.
                 blocked_since = None
             # No grace period, deliberately: unlike a blocked pod, a restart has already
-            # happened. The simulator lost its state, so every extra second spent waiting
+            # happened. The container lost its state, so every extra second spent waiting
             # buys a more convincing wrong answer rather than a chance of recovery.
-            try:
-                restarted = restarted_job_reasons(self.k8s_client, self.namespace,
-                                                  job_label)
-            except Exception as exc:  # noqa: BLE001 - probe failed this iteration
-                logger.warning("Batch %s: could not check for restarted containers: %s",
-                               self._batch_tag, exc)
-                restarted = None
-            if restarted:
-                detail = "; ".join(f"{job}: {why}" for job, why in sorted(restarted.items()))
-                raise CampaignConfigError(
-                    f"{len(restarted)} scenario job(s) had a container restarted, which "
-                    f"invalidates the trial — the simulator runs as a native sidecar, so "
-                    f"the kubelet restarts it on a crash without failing the pod, and the "
-                    f"scenario carries on against a simulator that lost all its state. "
-                    f"{detail}")
+            #
+            # What is NOT deliberate is failing the campaign for it, which is what this
+            # used to do. One flaky sidecar in one job of one batch ended a 50-batch
+            # search and orphaned the batches that had already finished. The trial is what
+            # the restart invalidates; the batch around it is fine and the 47 batches after
+            # it were never in question. So: drop that job, record why, and keep going.
+            self._invalidate_restarted_jobs(
+                job_label, job_names, jobs_by_name, campaign_root,
+                storage, bucket_name, campaign_prefix)
             # blocked is None (probe failed) => leave blocked_since unchanged.
             # A Kueue-suspended Job has no pod at all, so the probe above cannot see it
             # and activeDeadlineSeconds never fires (its timer does not run while
@@ -1287,6 +1427,23 @@ class BatchJobRunner:
         if self._state is not None and self._state.stop_requested:
             raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                   f"{self._batch_tag}")
+        # The loop breaks on an empty `remaining` BEFORE probing, so a restart in the last
+        # job's last seconds is otherwise never seen. The pods are still here -- cleanup
+        # runs at the end of this method -- so ask once more.
+        self._invalidate_restarted_jobs(
+            job_label, job_names, jobs_by_name, campaign_root,
+            storage, bucket_name, campaign_prefix)
+        if self._invalidated and len(job_names) > 1 and \
+                len(self._invalidated) >= len(job_names):
+            # Every job of a multi-job batch losing a container is not a flake, it is a
+            # fault they share -- a world file that does not exist, an image that cannot
+            # run here. Carrying on would spend the rest of the budget producing cells with
+            # no sample, so this is the one restart case still worth ending the campaign
+            # for. A single-job batch is exempt: one flake is 100% of one job.
+            raise CampaignConfigError(
+                f"every job in batch {self._batch_tag} ({len(job_names)}) had a container "
+                f"restarted -- that is a fault they share, not a flake. Evidence: "
+                f"_execution/container_failures.json, and the container_failure table.")
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
         self._capture_image_digest(job_label)
         if self._deadline_killed:

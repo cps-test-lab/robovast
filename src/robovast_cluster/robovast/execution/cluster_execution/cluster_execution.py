@@ -27,16 +27,19 @@ toolkit that actually builds/submits Jobs lives in
 import contextlib
 import logging
 import re
+import signal as _signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from kubernetes import client
 
+from robovast.common.config import SCENARIO_CONTAINER
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kube_client import pod_workload_containers
 from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
+from .manifests import MAIN_CONTAINER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -251,42 +254,209 @@ def pod_termination_reason(pod) -> "tuple[str, str] | None":
     return None
 
 
-def pod_restarted_containers(pod) -> "tuple[str, str] | None":
-    """``(reason, message)`` if a container of *pod* has been restarted, else ``None``.
+#: Exit codes in ``(128, 192)`` are ``128 + signal`` -- the convention the kubelet reports
+#: verbatim. Nothing above 63 is a real signal number, so the upper bound is generous.
+_SIGNAL_EXIT_BASE = 128
 
-    A campaign job is one-shot -- ``backoffLimit: 0``, one pod, never retried -- so no
-    container here is ever *meant* to restart. The simulator, however, runs as a native
-    sidecar (``restartPolicy: Always``, see the manifest builder), which means the
-    kubelet restarts it on a crash and does **not** fail the pod. The scenario then
-    keeps running against a simulator that has lost all of its state: the trial either
-    times out or, worse, completes and writes data. An EGL or VRAM failure mid-run is
-    exactly this shape, and it is indistinguishable from a genuine trial failure --
-    and, in the worst case, from a success.
 
-    So the restart is the signal, not the exit code: it is reported even while the pod
-    is still ``Running``, and ``last_state.terminated`` supplies what the container died
-    of. A restarted simulator invalidates the trial whatever the cause.
+def _signal_from_exit(exit_code, signal) -> "tuple[int | None, str | None]":
+    """``(number, name)`` of the signal a container died on, or ``(None, None)``.
+
+    ``exit 135`` is ``128 + 7``, and reading that as ``SIGBUS`` is the difference between a
+    number nobody recognises and the one word that names the failure. Doing it here rather
+    than leaving it to whoever reads the record is the point: the translation was done by
+    hand once, on a campaign whose pod was already gone.
+
+    ``terminated.signal`` is filled only sometimes, so the exit code is the reliable source
+    and the explicit field is the fallback rather than the other way round.
     """
-    status = pod.status
+    number = signal or None
+    if number is None and isinstance(exit_code, int) and (
+            _SIGNAL_EXIT_BASE < exit_code < _SIGNAL_EXIT_BASE + 64):
+        number = exit_code - _SIGNAL_EXIT_BASE
+    if not number:
+        return None, None
+    try:
+        return number, _signal.Signals(number).name
+    except ValueError:
+        return number, None
+
+
+def _container_role(name: str, workload_names: "set[str]") -> str:
+    """What this container *is*, in the vocabulary the ``.vast`` uses.
+
+    The pod's single regular container is named ``robovast`` and runs the ``scenario``
+    role; every sidecar is named for the role that declared it (``sut``, ``simulation``, or
+    an ad-hoc key). Anything outside the workload set is one-shot staging.
+    """
+    if name == MAIN_CONTAINER_NAME:
+        return SCENARIO_CONTAINER
+    return name if name in workload_names else "init"
+
+
+def pod_container_failures(pod) -> "list[dict]":
+    """One record per restarted container of *pod*, newest state and all, or ``[]``.
+
+    Everything :func:`pod_restarted_containers` used to format into a sentence and throw
+    away. A restart is the only campaign signal whose evidence dies with the pod -- the
+    container is gone, its logs are one API call away for a few minutes, and after that the
+    whole diagnosis is whatever string got logged. So this captures rather than formats,
+    and the formatting is a thin layer on top.
+
+    **Every** restarted container, not just the first. Their order in
+    ``init_container_statuses + container_statuses`` is declaration order, not causal
+    order, so stopping at the first one reports whichever happened to be declared earlier
+    -- and in a pod where the SUT dies and takes the simulator with it, that is a coin
+    toss between the cause and the consequence.
+
+    ``invalidating`` marks the ones a campaign should act on: a workload container that
+    died non-zero. See :func:`pod_invalidating_restart` for why that is the right cut.
+
+    Pure -- no API calls. Enriching a record with the dead container's own log costs a
+    request per container and belongs at the one place that acts on it, not in a probe
+    that runs every couple of seconds for every batch.
+    """
+    status = getattr(pod, "status", None)
     if status is None:
-        return None
+        return []
+    workload_names = {getattr(c, "name", None) for c in pod_workload_containers(pod)}
+    workload_names.discard(None)
+    metadata = getattr(pod, "metadata", None)
+    records = []
     statuses = list(getattr(status, "init_container_statuses", None) or []) + \
         list(getattr(status, "container_statuses", None) or [])
     for cs in statuses:
-        if (getattr(cs, "restart_count", 0) or 0) < 1:
+        restart_count = getattr(cs, "restart_count", 0) or 0
+        if restart_count < 1:
             continue
         cname = getattr(cs, "name", None) or "?"
-        last = getattr(cs, "last_state", None)
-        term = getattr(last, "terminated", None) if last else None
-        why = getattr(term, "reason", None) if term else None
-        code = getattr(term, "exit_code", None) if term else None
-        detail = f"container {cname} restarted {cs.restart_count}x"
-        if why:
-            detail += f" after {why}"
-        if code is not None:
-            detail += f" (exit {code})"
-        return "ContainerRestarted", detail
+        term = getattr(getattr(cs, "last_state", None), "terminated", None)
+        exit_code = getattr(term, "exit_code", None) if term else None
+        signal_number, signal_name = _signal_from_exit(
+            exit_code, getattr(term, "signal", None) if term else None)
+        # A container outside the workload set cannot be restarted by this pod's policy
+        # (``restartPolicy: Never``), so if one ever is, something is wrong in a way worth
+        # recording -- but it is not this pod's trial that was invalidated.
+        is_workload = cname in workload_names or not workload_names
+        records.append({
+            "pod_name": getattr(metadata, "name", None),
+            "node_name": getattr(getattr(pod, "spec", None), "node_name", None),
+            "pod_phase": getattr(status, "phase", None),
+            "container": cname,
+            "role": _container_role(cname, workload_names),
+            "image": getattr(cs, "image", None),
+            "image_id": getattr(cs, "image_id", None),
+            "restart_count": restart_count,
+            "reason": getattr(term, "reason", None) if term else None,
+            "exit_code": exit_code,
+            "signal": signal_number,
+            "signal_name": signal_name,
+            "message": getattr(term, "message", None) if term else None,
+            "started_at": _isoformat(getattr(term, "started_at", None) if term else None),
+            "finished_at": _isoformat(getattr(term, "finished_at", None) if term else None),
+            "cpu_limit": _container_limit(pod, cname, "cpu"),
+            "memory_limit": _container_limit(pod, cname, "memory"),
+            # ``exit_code is None`` means the kubelet has not reported what the previous
+            # instance died of. Unknown is not innocent: stay on the strict side, the same
+            # way an unreadable node list makes every blocked job unrecoverable.
+            "invalidating": is_workload and exit_code != 0,
+            "detail": _restart_detail(cname, restart_count, term, signal_name),
+        })
+    return records
+
+
+def _isoformat(value) -> "str | None":
+    """A Kubernetes timestamp as ISO 8601 text, or ``None``. Never raises on a odd type."""
+    if value is None:
+        return None
+    try:
+        return value.isoformat()
+    except AttributeError:
+        return str(value)
+
+
+def _container_limit(pod, container_name: str, key: str) -> "str | None":
+    """*container_name*'s declared limit for *key*, or ``None`` -- **meaning no limit**.
+
+    Recorded because the absence is a finding, not a blank: a container with no memory
+    limit is told by the downward API that it has the whole node, and the memory-backed
+    ``/dev/shm`` it shares with its siblings is sized the same way. Reconstructing that
+    after the fact means finding the ``.vast`` that ran; reading it off the pod does not.
+    """
+    for container in list(getattr(getattr(pod, "spec", None), "containers", None) or []) + \
+            list(getattr(getattr(pod, "spec", None), "init_containers", None) or []):
+        if getattr(container, "name", None) != container_name:
+            continue
+        limits = getattr(getattr(container, "resources", None), "limits", None) or {}
+        value = limits.get(key)
+        return None if value is None else str(value)
     return None
+
+
+def _restart_detail(cname, restart_count, term, signal_name) -> str:
+    """``container sut restarted 1x after Error (exit 135, SIGBUS)`` -- the human sentence."""
+    detail = f"container {cname} restarted {restart_count}x"
+    why = getattr(term, "reason", None) if term else None
+    code = getattr(term, "exit_code", None) if term else None
+    if why:
+        detail += f" after {why}"
+    if code is not None:
+        detail += f" (exit {code}{f', {signal_name}' if signal_name else ''})"
+    return detail
+
+
+def _format_restarts(records: "list[dict]") -> "tuple[str, str] | None":
+    """``(reason, message)`` over *records*, naming how many others there were."""
+    if not records:
+        return None
+    detail = records[0]["detail"]
+    if len(records) > 1:
+        others = len(records) - 1
+        detail += f"; and {others} other container{'s' if others > 1 else ''}"
+    return "ContainerRestarted", detail
+
+
+def pod_restarted_containers(pod) -> "tuple[str, str] | None":
+    """``(reason, message)`` if ANY container of *pod* has been restarted, else ``None``.
+
+    The unconditional reading of a restart, kept for the service rollout watcher
+    (``service_deploy``), where the pod is a long-lived Deployment replica and a container
+    that exits for any reason and comes back IS a crash-loop.
+
+    A campaign job is the other case and wants :func:`pod_invalidating_restart`: its pod is
+    one-shot (``backoffLimit: 0``, ``restartPolicy: Never``), its sidecars are native
+    sidecars whose clean exit the kubelet answers with a restart, and reading that as a
+    crash marked a *passing* trial failed.
+    """
+    return _format_restarts(pod_container_failures(pod))
+
+
+def pod_invalidating_restart(pod) -> "tuple[str, str] | None":
+    """``(reason, message)`` if a restart of *pod* invalidated the trial, else ``None``.
+
+    The campaign lane's reading, and it turns on the exit code rather than on which
+    container it was.
+
+    A campaign pod runs ``restartPolicy: Never``, so its regular container and its one-shot
+    ``s3-init`` are never restarted at all: the only containers that *can* restart are the
+    native sidecars, which carry ``restartPolicy: Always`` so that the pod's life is tied
+    to the scenario's rather than to whichever container runs longest. Filtering by name
+    would therefore exclude nothing -- and would exclude the wrong thing if it tried, since
+    ``plan_containers`` maps the ``simulation`` role onto ``sut`` whenever nothing declares
+    a separate simulator, so "the simulator" is not a fixed container name.
+
+    What does separate the cases is *how* the container left. A sidecar that finished its
+    work exits 0 and the kubelet restarts it because that is what ``Always`` means; the
+    trial is untouched and the run's own verdict stands. A sidecar that CRASHED -- non-zero,
+    OOM-killed, or dead on a signal -- takes its state with it, and the scenario carries on
+    against a simulator that no longer remembers the trial. That result is worthless
+    whether it says failed or, worse, passed.
+
+    Unknown counts as invalidating: a missing ``last_state`` means the kubelet has not said
+    what the previous instance died of, and treating silence as a clean exit is how a
+    broken trial gets believed.
+    """
+    return _format_restarts([r for r in pod_container_failures(pod) if r["invalidating"]])
 
 
 def _after_last(lines, needle):
@@ -295,6 +465,46 @@ def _after_last(lines, needle):
         if lines[i] == needle:
             return lines[i + 1:]
     return None
+
+
+#: Lines of the dead container's own output kept as evidence. The reason a container
+#: crashed is at the END of its log, and 400 lines is a few tens of kB -- nothing beside a
+#: rosbag, and bounded so a chatty simulator cannot make the invalidation path slow.
+PREVIOUS_LOG_TAIL_LINES = 400
+
+
+def previous_container_log(core, namespace: str, pod_name: str, container: str,
+                           tail_lines: int = PREVIOUS_LOG_TAIL_LINES) -> "tuple[str, str]":
+    """``(text, status)`` -- the output of the container instance that DIED, or why there
+    is none.
+
+    The one artifact that answers "what happened", and the only one with a deadline: the
+    kubelet keeps a restarted container's previous log for as long as it keeps the pod, and
+    a campaign that deletes the job has minutes. Nothing in robovast has ever read it, so
+    every restart so far has been diagnosed from a single formatted sentence.
+
+    **Never raises.** It runs on the path that handles a failure, and a diagnostic that can
+    fail the thing it is diagnosing is worse than no diagnostic. Every outcome is instead a
+    *status*: ``captured``, ``gone`` (the kubelet no longer has it), ``empty`` (it had one
+    and it was blank), or ``unavailable[: <code>]``. That distinction is the point -- "we
+    looked and there was nothing" and "we never looked" are different facts, and collapsing
+    them is how the previous campaign lost its evidence.
+    """
+    try:
+        text = core.read_namespaced_pod_log(
+            name=pod_name, namespace=namespace, container=container,
+            previous=True, tail_lines=tail_lines, timestamps=True)
+    except client.ApiException as exc:
+        # 400 is what the API answers when there is no previous instance retained, 404
+        # when the pod itself has gone. Both mean the same thing to a reader.
+        status = "gone" if exc.status in (400, 404) else f"unavailable: {exc.status}"
+        logger.debug("No previous log for %s/%s: %s", pod_name, container, exc)
+        return "", status
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must not raise
+        logger.debug("Could not read previous log for %s/%s: %s", pod_name, container, exc)
+        return "", "unavailable"
+    text = text or ""
+    return text, ("captured" if text.strip() else "empty")
 
 
 class PodLogTail:
@@ -492,9 +702,12 @@ def _pod_signals(k8s_core, namespace,
     ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
     errors). ``terminated_reasons``: Job name → reason string for a pod that ended
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
-    a *failed* job can explain itself. ``restarted``: Job name → reason string for a pod
-    whose container the kubelet restarted (see :func:`pod_restarted_containers`) -- the
-    one signal here that condemns a job which still looks healthy. ``contended``: the
+    a *failed* job can explain itself. ``restarted``: Job name → ``{"detail", "containers"}`` for a
+    pod whose container the kubelet restarted after a CRASH (see
+    :func:`pod_invalidating_restart`) -- the one signal here that condemns a job which
+    still looks healthy. The records travel with the reason because the pod they came from
+    is about to be deleted, and nothing else can answer what the container died of
+    afterwards. ``contended``: the
     subset of ``blocked`` that is only waiting for a busy cluster (see
     :func:`unschedulable_is_contention` and :func:`pod_fits_any_node`) and would start
     on its own -- a distinction the caller needs because it is the difference between a
@@ -541,10 +754,12 @@ def _pod_signals(k8s_core, namespace,
         if term:
             r, msg = term
             terminated[name] = f"{r}: {msg}" if msg else r
-        restart = pod_restarted_containers(pod)
-        if restart:
-            r, msg = restart
-            restarted[name] = f"{r}: {msg}" if msg else r
+        invalidating = [r for r in pod_container_failures(pod) if r["invalidating"]]
+        formatted = _format_restarts(invalidating)
+        if formatted:
+            r, msg = formatted
+            restarted[name] = {"detail": f"{r}: {msg}" if msg else r,
+                               "containers": invalidating}
     return phases, blocked, terminated, restarted, contended
 
 
@@ -576,16 +791,36 @@ def blocked_and_contended_reasons(k8s_core, namespace,
     return blocked, contended
 
 
-def restarted_job_reasons(k8s_core, namespace, label_selector) -> dict:
-    """Job name → ``"<reason>: <message>"`` for Jobs whose pod had a container restarted
-    (see :func:`pod_restarted_containers`). Empty when nothing restarted.
+def restarted_job_forensics(k8s_core, namespace, label_selector,
+                            job_names=None) -> dict:
+    """Job name → ``{"detail", "containers"}`` for Jobs whose pod had a container CRASH and
+    be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
 
     Separate from :func:`blocked_job_reasons` because it needs the opposite response.
     Blocked means "cannot start yet", so it is given a grace period. A restart has
-    *already happened* and cannot be undone: the trial's simulator lost its state, and
-    waiting only produces a confidently wrong result. Callers fail immediately.
+    *already happened* and cannot be undone: the trial ran on against a simulator that had
+    lost its state, so no amount of waiting makes its result mean anything. What the caller
+    does about it is invalidate that ONE trial -- not the batch, and not the campaign.
+
+    *job_names* scopes the answer, and a batch caller must pass it. The label selector
+    available at the call site is ``jobgroup=scenario-runs,campaign-id=<campaign>``, which
+    is campaign-wide, and Jobs linger for ``ttlSecondsAfterFinished`` after they finish --
+    so without this an already-recorded restart from an earlier batch is re-reported to
+    every batch that follows, and acted on again.
     """
-    return _pod_signals(k8s_core, namespace, label_selector)[3]
+    restarted = _pod_signals(k8s_core, namespace, label_selector)[3]
+    if job_names is None:
+        return restarted
+    wanted = set(job_names)
+    return {name: entry for name, entry in restarted.items() if name in wanted}
+
+
+def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -> dict:
+    """Job name → ``"<reason>: <message>"``; :func:`restarted_job_forensics` without the
+    evidence, for the display paths that only want the sentence."""
+    return {name: entry["detail"] for name, entry
+            in restarted_job_forensics(k8s_core, namespace, label_selector,
+                                       job_names).items()}
 
 
 def _suspended_job_reasons(job_list, namespace) -> dict:
@@ -672,7 +907,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # that is exactly the case worth surfacing -- a job on its way to a plausible
         # result its simulator can no longer justify.
         if not detail:
-            detail = restarted.get(job.metadata.name)
+            detail = (restarted.get(job.metadata.name) or {}).get("detail")
         out.append((job, phase, detail))
     return out
 

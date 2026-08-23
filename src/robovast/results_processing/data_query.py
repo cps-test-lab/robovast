@@ -232,7 +232,7 @@ def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
 #: :func:`_create_campaign_views` does.
 #: Names of the views, in listing order. The bodies are built per store by
 #: :func:`_campaign_view_sql`, which adapts to the tables that store actually has.
-_CAMPAIGN_VIEW_NAMES = ("run_view", "config_view")
+_CAMPAIGN_VIEW_NAMES = ("run_view", "config_view", "container_failure_view")
 
 
 def _tables_in(conn: sqlite3.Connection, schema: str) -> set:
@@ -299,6 +299,24 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
             FROM {schema}.unit u
             {bjoin}
             WHERE u.status = 'composition_failed'
+        """
+    if "container_failure" in have:
+        # What a container died of, expanded to one row per RUN it took down, so the
+        # question "which runs were invalidated, and by what?" is one query and joins
+        # straight onto run_view on ``config_name || '/' || run_id``.
+        #
+        # The UNION ALL is the same guard run_view uses for composition_failed units, and
+        # for the same reason: ``json_each('[]')`` yields NO rows, so a failure whose runs
+        # could not be resolved would vanish entirely from the view -- silently, and
+        # exactly in the case where something already went wrong enough that the runner
+        # could not name them.
+        views["container_failure_view"] = f"""
+            SELECT cf.*, je.value AS run_key
+            FROM {schema}.container_failure cf, json_each(cf.runs_json) je
+            UNION ALL
+            SELECT cf.*, NULL AS run_key
+            FROM {schema}.container_failure cf
+            WHERE cf.runs_json IS NULL OR json_array_length(cf.runs_json) = 0
         """
     if "campaign" in have:
         # The .vast as rows. ``atom`` (not ``value``) is load-bearing: it is NULL for
@@ -466,7 +484,16 @@ _TABLE_DESCRIPTIONS = {
         "placement): it never ran, so run_id and every run column are NULL and "
         "config_name falls back to paramset_id. Exclude those rows (WHERE run_id IS NOT "
         "NULL) for run statistics; count them to see how much of the search space is "
-        "infeasible."),
+        "infeasible. "
+        "status='invalid' marks a run the RUNNER threw away because a container the trial "
+        "ran against crashed and was restarted under it: the trial carried on against a "
+        "process that had lost its state, so its result means nothing. It is the one "
+        "status that overrides a written verdict — such a run may well have recorded "
+        "'passed', and that is exactly why it is excluded rather than trusted. Like "
+        "'killed' it is not a verdict on the system under test, so for pass-rate "
+        "statistics use WHERE status NOT IN ('killed','invalid'). What died, on which "
+        "node, of what signal, and the dead container's own last log lines are in "
+        "container_failure_view, joined on config_name || '/' || run_id = run_key."),
     ("temp", "config_view"): (
         "The campaign's .vast configuration as rows, one per key. Query unqualified: "
         "FROM config_view. Columns: fullkey (JSON path, e.g. '$.execution.containers.scenario.image'), key, "
@@ -477,6 +504,29 @@ _TABLE_DESCRIPTIONS = {
         "This is the config AS RUN, with defaults filled in — a defaulted key is "
         "indistinguishable from one the author wrote, and comments and anchors are gone. "
         "For what the author actually wrote, read /results/<campaign>/_config/*.vast."),
+    ("temp", "container_failure_view"): (
+        "What a container DIED of, when the kubelet restarted it under a running trial — "
+        "one row per RUN the dead container took down. Query unqualified: FROM "
+        "container_failure_view. This is the post-mortem for status='invalid' runs in "
+        "run_view, joined on run_key = config_name || '/' || run_id. "
+        "It is written by the runner at the moment of the restart and lives in "
+        "campaign.db, so it is READABLE ON A CAMPAIGN THAT FAILED AND NEVER "
+        "POSTPROCESSED — the campaign that most needs it. "
+        "signal_name is the answer most questions want: exit_code 135 is 128+7, i.e. "
+        "SIGBUS, and 137 is SIGKILL (an OOM kill). memory_limit/cpu_limit are what the "
+        "container DECLARED — NULL means no limit was set at all, which is itself a "
+        "finding: such a container is told by the downward API that it has the whole "
+        "node. log_tail is the dead instance's own final output (log_status says whether "
+        "it could be captured: captured / gone / empty / unavailable). run_key is NULL "
+        "when the runner could not resolve which runs the job was carrying; those rows "
+        "are kept rather than dropped. "
+        "The whole story of one incident: SELECT run_key, node_name, container, role, "
+        "exit_code, signal_name, reason, memory_limit FROM container_failure_view "
+        "ORDER BY run_key."),
+    ("campaign", "container_failure"): (
+        "One row per (job, container) that died and was restarted — the base table behind "
+        "container_failure_view, which expands runs_json into one row per run. Prefer the "
+        "view unless you want incidents rather than affected runs."),
     ("main", "poses"): (
         "One row per entity per sample: where a thing was, and when. Follows the POSE CONTRACT, "
         "so this and 'sim_poses' share these columns and UNION ALL cleanly. This one is derived "
@@ -570,8 +620,10 @@ _TABLE_DESCRIPTIONS = {
         "where the draw could not be built at all and never ran."),
     ("campaign", "run"): (
         "One row per individual run, child of unit via unit_id and of a job via job_id. "
-        "status is passed/failed/error/killed/unknown (unknown = test.xml missing or "
-        "unparseable; killed = an operator stopped the job by hand), passed is 0/1, with "
+        "status is passed/failed/error/killed/invalid/unknown (unknown = test.xml missing "
+        "or unparseable; killed = an operator stopped the job by hand; invalid = the "
+        "runner discarded the trial after a container restarted under it), passed is 0/1, "
+        "with "
         "errors/failures/tests/duration_s/start_time/failure_message. "
         "Available before postprocessing. "
         "run_id is the index WITHIN its config and is not unique on its own; config_name "

@@ -16,7 +16,7 @@ import json
 
 from robovast.results_processing.data.rosbags_common import (is_under_tolerated_root,
                                                              resolve_tolerated_roots)
-from robovast.results_processing.postprocessing_plugins import _killed_job_dirs
+from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
 
 
 def _ledger(campaign, entries):
@@ -29,7 +29,7 @@ def _ledger(campaign, entries):
 
 def test_no_ledger_means_nothing_to_tolerate(tmp_path):
     """The default path: a campaign nobody intervened in passes no flags at all."""
-    assert _killed_job_dirs(str(tmp_path)) == []
+    assert _interrupted_job_dirs(str(tmp_path)) == []
 
 
 def test_killed_job_dirs_are_read_from_the_ledger(tmp_path):
@@ -39,7 +39,7 @@ def test_killed_job_dirs_are_read_from_the_ledger(tmp_path):
         {"job_dir": "_jobs/batch-0/job-5", "job_name": "j5", "source": "mcp",
          "reason": None, "runs": []},
     ])
-    assert _killed_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-2",
+    assert _interrupted_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-2",
                                                "_jobs/batch-0/job-5"]
 
 
@@ -51,14 +51,14 @@ def test_the_same_job_killed_twice_is_listed_once(tmp_path):
         {"job_dir": "_jobs/batch-0/job-2", "job_name": "j2", "source": "cli",
          "reason": "b", "runs": []},
     ])
-    assert _killed_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-2"]
+    assert _interrupted_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-2"]
 
 
 def test_a_local_kill_with_no_job_dir_contributes_nothing(tmp_path):
     """The local lane records a run key and may have no job dir; that is not a path filter."""
     _ledger(tmp_path, [{"job_dir": "", "job_name": "cfgA/0", "source": "webui",
                         "reason": "x", "runs": ["cfgA/0"]}])
-    assert _killed_job_dirs(str(tmp_path)) == []
+    assert _interrupted_job_dirs(str(tmp_path)) == []
 
 
 def test_a_broken_ledger_never_breaks_postprocessing(tmp_path):
@@ -66,7 +66,7 @@ def test_a_broken_ledger_never_breaks_postprocessing(tmp_path):
     exec_dir = tmp_path / "_execution"
     exec_dir.mkdir(parents=True)
     (exec_dir / "killed_jobs.json").write_text("{ not json")
-    assert _killed_job_dirs(str(tmp_path)) == []
+    assert _interrupted_job_dirs(str(tmp_path)) == []
 
 
 # -- which bags are tolerated ------------------------------------------------------------
@@ -157,3 +157,27 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
                         plugins=[{"type": "rosout_to_csv"}])
 
     assert "--tolerate-under" not in seen["cmd"]
+
+
+def test_an_invalidated_jobs_bag_is_tolerated_too(tmp_path):
+    """A job the runner invalidated is deleted at grace_period_seconds=0, exactly as a
+    stopped one is -- so its recorder was SIGKILLed mid-write and its bag is unopenable for
+    the identical reason. Treating only the operator's kill would mean one crashed sidecar
+    still costs the whole campaign's metrics, which is the bug one layer down."""
+    _ledger(tmp_path, [
+        {"kind": "killed", "job_dir": "_jobs/batch-0/job-1", "job_name": "j1",
+         "source": "cli", "reason": None, "runs": []},
+        {"kind": "invalid", "job_dir": "_jobs/batch-0/job-3", "job_name": "j3",
+         "source": "runner", "detail": "ContainerRestarted: ... (exit 135, SIGBUS)",
+         "runs": ["cfgA/0"]},
+    ])
+    assert _interrupted_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-1",
+                                                    "_jobs/batch-0/job-3"]
+
+
+def test_a_probe_does_not_make_a_bag_unreadable(tmp_path):
+    """`probed` is the third kind and the run carried on afterwards: its bag is fine, and
+    tolerating it would hide a genuine conversion error."""
+    _ledger(tmp_path, [{"kind": "probed", "job_dir": "_jobs/batch-0/job-4",
+                        "job_name": "j4", "source": "mcp", "runs": []}])
+    assert _interrupted_job_dirs(str(tmp_path)) == []

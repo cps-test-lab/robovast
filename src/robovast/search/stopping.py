@@ -56,11 +56,19 @@ class StopResult:
 
 @dataclass
 class CriterionProgress:
-    """One criterion's current value vs its limit, for the run-time progress line."""
+    """One criterion's current value vs its limit, for the run-time progress line.
+
+    ``label`` is what a reader *prints*; ``kind`` is what the criterion *is*. They
+    coincide for ``batches`` and ``time`` and diverge for the rest, where the label is
+    the user's own objective or metric name -- so anything deciding behaviour from a
+    criterion (rather than just showing it) must key on ``kind``, or a metric somebody
+    named ``batches`` gets treated as the batch counter.
+    """
     label: str
     current: float
     limit: float
     done: bool
+    kind: str = ""            # the criterion's `type`; see the class docstring
 
 
 def _fmt(v: float) -> str:
@@ -163,14 +171,15 @@ class StopConditions:
     def _progress(self, crit, snap: StopSnapshot) -> Optional[CriterionProgress]:
         t = crit.type
         if t == 'batches':
-            return CriterionProgress('batches', snap.batch, crit.value, snap.batch >= crit.value)
+            return CriterionProgress('batches', snap.batch, crit.value,
+                                    snap.batch >= crit.value, kind=t)
         if t == 'time':
             return CriterionProgress('time', round(snap.elapsed, 1), crit.seconds,
-                                     snap.elapsed >= crit.seconds)
+                                     snap.elapsed >= crit.seconds, kind=t)
         if t == 'target_objective':
             cur = snap.best_objective if snap.best_objective is not None else float('nan')
             done = snap.best_objective is not None and self._meets_target(snap.best_objective, crit.value)
-            return CriterionProgress(self.objective_name, cur, crit.value, done)
+            return CriterionProgress(self.objective_name, cur, crit.value, done, kind=t)
         if t == 'no_improvement':
             h = self._best_history
             stale = 0
@@ -179,12 +188,14 @@ class StopConditions:
                 if self._improved_by(h[-k], h[-k - 1], crit.min_delta):
                     break
                 stale += 1
-            return CriterionProgress('stale_batches', stale, crit.patience, stale >= crit.patience)
+            return CriterionProgress('stale_batches', stale, crit.patience,
+                                    stale >= crit.patience, kind=t)
         if t == 'metric':
             val = snap.metrics.get(crit.name)
             if val is None:
                 return None
-            return CriterionProgress(crit.name, val, crit.value, _OPS[crit.op](val, crit.value))
+            return CriterionProgress(crit.name, val, crit.value,
+                                    _OPS[crit.op](val, crit.value), kind=t)
         return None
 
 

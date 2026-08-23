@@ -49,16 +49,6 @@ def _fmt_size(n):
     return f"{n / 1024 / 1024:.1f} MiB"
 
 
-def _fmt_duration(seconds):
-    """Format an elapsed time with an adaptive unit ("42s", "7m 12s", "1h 04m")."""
-    total = int(max(0, seconds))
-    if total < 60:
-        return f"{total}s"
-    if total < 3600:
-        return f"{total // 60}m {total % 60:02d}s"
-    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
-
-
 def _fmt_rate(bps):
     """Format a transfer rate (bytes/s) with an adaptive unit."""
     if bps >= 1024 * 1024:
@@ -156,19 +146,12 @@ def _monitor_via_service(namespace, kube_context, interval, once):
                 # each job's detail; the campaign fails with it after a grace window.
                 run_line += f"  Blocked: {c['blocked']}"
         lines.append(run_line)
-        # How long since a run last completed, and the stall verdict when the campaign
-        # declared a per-run budget. A campaign spends its whole life in one `running`
-        # phase, so without this a wedged run and a slow one are the same picture.
+        # A campaign spends its whole life in one `running` phase, so the only thing worth
+        # saying about its clock is the verdict: this run is wedged, not merely slow. The
+        # bare age of the last completion used to ride here too and said nothing a reader
+        # could act on -- and it could not be judged at all without a declared per-run
+        # budget, which is now reported once by `validate_project` instead.
         stall = stall_report(Status.model_validate(status))
-        if stall.get("progress_age_s") is not None and (completed or total):
-            age_line = f"  Last run completed: {_fmt_duration(stall['progress_age_s'])} ago"
-            if stall.get("stalled"):
-                age_line += "   *** STALLED ***"
-            elif stall.get("stalled") is None:
-                # Tri-state: no declared execution.timeout, so silence here would read
-                # as "fine". Say the verdict is unavailable instead.
-                age_line += "   (no execution.timeout — stall unjudged)"
-            lines.append(age_line)
         if stall.get("stall_reason"):
             lines.append(f"  Stalled: {stall['stall_reason']}")
         up = (status.get("extra") or {}).get("upload")

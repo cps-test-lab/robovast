@@ -15,6 +15,12 @@ import {
   type ListJobsResponse,
   type Status,
 } from '@/lib/robovastClient'
+import {
+  estimateBatchesEtaSeconds,
+  estimateEtaSeconds,
+  finishedRuns,
+  noResultRuns,
+} from '@/lib/eta'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
 import { formatLocalClock } from '@/lib/time'
@@ -32,32 +38,10 @@ const DONE_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'killed'])
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
 
-// Estimated seconds until the current batch completes, or null when it can't be
-// stated soundly. `runs` counts only the current batch and resets each batch, and
-// the campaign's `started_at` equals the batch start only for batch 0 — so we
-// estimate exactly when: not terminal, on the first batch, and ≥1 run has finished
-// (needed to have any per-run rate). No fabricated number otherwise.
-function estimateEtaSeconds(
-  status: Status,
-  startedAt: string | null | undefined,
-  terminal: boolean,
-): number | null {
-  const { runs } = status
-  if (terminal || !startedAt || status.batch !== 0) return null
-  if (runs.total <= 0 || runs.completed <= 0) return null
-  const start = Date.parse(startedAt)
-  if (Number.isNaN(start)) return null
-  const elapsed = (Date.now() - start) / 1000
-  if (!(elapsed > 0)) return null
-  const perRun = elapsed / runs.completed
-  return (runs.total - runs.completed) * perRun
-}
-
 export function StatusView({
   status,
   campaignId,
   jobs,
-  startedAt,
   hideLog = false,
   liveOnly = false,
   newest = true,
@@ -75,9 +59,6 @@ export function StatusView({
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
-  // Campaign start time (CampaignSummary.started_at), used to estimate the ETA.
-  // Optional — the ETA simply isn't shown when it's absent.
-  startedAt?: string | null
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
@@ -109,10 +90,9 @@ export function StatusView({
   const terminal = isTerminalPhase(status.phase)
   const counts = jobs?.counts
   const running = counts?.running ?? 0
-  // Runs that delivered nothing, for the bar's dim red segment: prefer the live job
-  // count so a failure shows in real time (the status counters only settle once the
-  // batch reaches a terminal state). runs.no_result is the fallback.
-  const noResult = counts?.failed ?? runs.no_result
+  // Runs that delivered nothing, for the bar's dim red segment. See noResultRuns: the
+  // live job count is the only source while the batch runs.
+  const noResult = noResultRuns(status, counts)
   // Green is *successes*, not "produced a result". `runs.completed` counts every run
   // that delivered a result artifact, including the ones whose own verdict is a
   // failure — so painting `completed` green reported a campaign whose every trial
@@ -160,11 +140,12 @@ export function StatusView({
     .filter(Boolean)
     .join(' · ')
   // This is a progress view, so a run is "done" whether it produced a result or
-  // delivered none — both have reached a terminal state. Count the resultless ones
-  // toward the numerator (and the bar) so `done/total` reaches total when the batch is
-  // over. Runs that produced a *failing* result are already in `completed`.
-  const done = runs.completed + runs.no_result
-  const etaSeconds = estimateEtaSeconds(status, startedAt, terminal)
+  // delivered none — both have reached a terminal state. Counting the resultless ones
+  // toward the numerator is what makes `done/total` reach total when the batch is over,
+  // and what keeps this number, the meter and the estimate the same number. Runs that
+  // produced a *failing* result are already in `completed`.
+  const done = finishedRuns(status, counts)
+  const etaSeconds = estimateEtaSeconds(status, counts, terminal)
   return (
     <Stack spacing={1.5}>
       <Box>
@@ -221,7 +202,11 @@ export function StatusView({
         />
       </Box>
 
-      {budget.map((b) => (
+      {budget.map((b) => {
+        // Only the batch budget converts into time from what we can observe; every other
+        // criterion is measured in units nothing here can turn into a duration.
+        const batchesEta = estimateBatchesEtaSeconds(status, counts, b, etaSeconds)
+        return (
         <Box key={b.label}>
           <Stack direction="row" justifyContent="space-between">
             <Typography variant="caption" color="text.secondary">
@@ -230,6 +215,9 @@ export function StatusView({
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {b.current == null ? '—' : b.current} / {b.limit}
+              {batchesEta != null
+                ? ` · ~${formatDuration(batchesEta)} left (≈ ${formatLocalClock(batchesEta)})`
+                : ''}
             </Typography>
           </Stack>
           <MeterBar
@@ -238,7 +226,8 @@ export function StatusView({
             color="secondary.main"
           />
         </Box>
-      ))}
+        )
+      })}
 
       {status.best_objective != null ? (
         <Typography variant="caption" color="text.secondary">

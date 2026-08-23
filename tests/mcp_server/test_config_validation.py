@@ -136,6 +136,10 @@ def test_valid_project_reports_counts(tmp_path):
         "execution:\n"
         "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  runs: 2\n"
+        # Declared so this stays a project with *nothing* to say about it: without a
+        # per-run budget it would carry the liveness advisory, and `problems == []`
+        # below is the assertion that a fully-declared project is advised about nothing.
+        "  timeout: 300\n"
         "  scenario_file: scenario.osc\n"
     )
     report = validate_project_file(str(vast))
@@ -234,3 +238,108 @@ def test_results_are_not_advised(tmp_path):
     from robovast.common.config_validation import _build_context_advisories
     _fat(tmp_path / "results" / "camp-1" / "run.bag", 60)
     assert _build_context_advisories(tmp_path / "x.vast") == []
+
+
+# --- cpu without memory ------------------------------------------------------------------
+#
+# A campaign that sized its CPU and not its memory reads as one where the sizing was done.
+# The half that is missing is the half that bites: with no memory limit, AVAILABLE_MEM
+# reports the node's memory as the run's budget, and the pod's shared /dev/shm is sized
+# from the node too -- and overrunning shared memory kills a container with SIGBUS
+# (exit 135), not a clean OOM, so it arrives with no reason attached.
+
+def _vast(tmp_path, name, containers):
+    path = tmp_path / f"{name}.vast"
+    path.write_text("version: 2\nexecution:\n  containers:\n" + containers)
+    return str(path)
+
+
+def test_cpu_without_memory_is_advised(tmp_path):
+    from robovast.common.config_validation import _resource_advisories
+
+    path = _vast(tmp_path, "bare", "    sut:\n      resources:\n        cpu: 3.25\n")
+    advisory, = _resource_advisories(path)
+    assert advisory["stage"] == "resources"
+    assert "execution.containers.sut" in advisory["message"]
+    assert "SIGBUS" in advisory["message"]
+    assert "shm_size" in advisory["message"]
+
+
+def test_cpu_and_memory_together_are_not_advised(tmp_path):
+    from robovast.common.config_validation import _resource_advisories
+
+    path = _vast(tmp_path, "sized",
+                 "    sut:\n      resources:\n        cpu: 3.25\n        memory: 4Gi\n")
+    assert _resource_advisories(path) == []
+
+
+def test_declaring_neither_is_not_advised(tmp_path):
+    """The deliberate asymmetry: an unconstrained container is the default a quick local
+    run legitimately uses, and warning about it would be noise on every example here."""
+    from robovast.common.config_validation import _resource_advisories
+
+    path = _vast(tmp_path, "unset", "    sut:\n      image: an-image\n")
+    assert _resource_advisories(path) == []
+
+
+def test_every_bare_container_is_named(tmp_path):
+    """One advisory, naming all of them: three separate warnings for one mistake reads as
+    three mistakes."""
+    from robovast.common.config_validation import _resource_advisories
+
+    path = _vast(tmp_path, "three",
+                 "    scenario:\n      resources:\n        cpu: 1.25\n"
+                 "    sut:\n      resources:\n        cpu: 3.25\n"
+                 "    simulation:\n      resources:\n        cpu: 0.75\n        memory: 2Gi\n")
+    advisory, = _resource_advisories(path)
+    assert "execution.containers.scenario" in advisory["message"]
+    assert "execution.containers.sut" in advisory["message"]
+    assert "execution.containers.simulation" not in advisory["message"]
+
+
+def test_an_advisory_never_makes_a_project_invalid(tmp_path):
+    """It rides the composition-report path, where `valid` is already True. Adding it to
+    validate_project_file's own problems list would have flipped the verdict instead."""
+    from robovast.common.config_validation import _resource_advisories
+
+    path = _vast(tmp_path, "adv", "    sut:\n      resources:\n        cpu: 3.25\n")
+    for problem in _resource_advisories(path):
+        assert problem["stage"] == "resources"
+        assert "message" in problem
+
+
+# --- no declared per-run budget -----------------------------------------------------------
+#
+# A campaign without `execution.timeout` runs perfectly well. What it cannot do is be
+# judged: `stalled` is asserted only against a *declared* budget, so the verdict stays
+# null forever and a wedged run and a slow one are the same picture -- with nothing for
+# `vast wait` to exit 4 on. Said once here, before compute, rather than shown on every
+# poll for the life of the campaign, by when the fix costs a re-run.
+
+def test_a_missing_execution_timeout_is_advised(tmp_path):
+    from robovast.common.config_validation import _liveness_advisories
+
+    path = tmp_path / "untimed.vast"
+    path.write_text("version: 2\nexecution:\n  runs: 3\n")
+    advisory, = _liveness_advisories(str(path))
+    assert advisory["stage"] == "liveness"
+    assert advisory["field"] == "execution.timeout"
+    assert "vast wait" in advisory["message"]
+
+
+def test_a_declared_timeout_is_not_advised(tmp_path):
+    from robovast.common.config_validation import _liveness_advisories
+
+    path = tmp_path / "timed.vast"
+    path.write_text("version: 2\nexecution:\n  timeout: 300\n")
+    assert _liveness_advisories(str(path)) == []
+
+
+def test_a_project_with_no_execution_block_is_still_advised(tmp_path):
+    """Declaring nothing is not the deliberate default it is for resources: an absent
+    budget is exactly as unjudgeable as an absent timeout inside a present block."""
+    from robovast.common.config_validation import _liveness_advisories
+
+    path = tmp_path / "bare.vast"
+    path.write_text("version: 2\nscenario: x.osc\n")
+    assert len(_liveness_advisories(str(path))) == 1

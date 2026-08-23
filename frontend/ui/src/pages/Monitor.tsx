@@ -279,21 +279,21 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     phaseSince && PRE_RUN_PHASES.has(phase)
       ? formatDuration(Math.max(0, Date.now() / 1000 - phaseSince))
       : null
-  // Once running, the *phase* age is noise but the **progress** age is not: the run
-  // counter was assumed to carry that signal and does not — a wedged run sat at
-  // `progress: 0` indefinitely and looked identical to a slow one. `stalled` is only
-  // asserted against the declared per-run budget; with none, the age is shown alone
-  // rather than a threshold being invented here.
+  // Once running, the *phase* age is noise, and so is the bare progress age: a duration
+  // next to the campaign id says nothing a reader can act on. The **verdict** is what
+  // matters — this run is wedged, not merely slow — so the clock is kept only to assert
+  // it. `stalled` is asserted against the declared per-run budget alone; a project that
+  // declares none gets no verdict here and is told so once, by `validate_project`,
+  // where the missing budget is still fixable.
   const progressSince = status.data?.progress_since
   const progressDeadline = status.data?.progress_deadline_s
   const progressAgeS =
     progressSince && running && !PRE_RUN_PHASES.has(phase)
       ? Math.max(0, Date.now() / 1000 - progressSince)
       : null
-  const progressAge = progressAgeS === null ? null : formatDuration(progressAgeS)
   // Tri-state, matching the status contract: true / false / null ("no declared
-  // execution.timeout, so no verdict"). Rendering null as "not stalled" would put a
-  // reassuring grey label on a run that may already be dead.
+  // execution.timeout, so no verdict"). Only `true` renders — rendering null as "not
+  // stalled" would put a reassuring label on a run that may already be dead.
   const stalled =
     progressAgeS === null || !progressDeadline ? null : progressAgeS > progressDeadline
   // A finished campaign can still carry a post-run step failure (postprocessing / share);
@@ -355,23 +355,17 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
             {phaseAge}
           </Typography>
         ) : null}
-        {progressAge ? (
+        {stalled ? (
           <Typography
             variant="caption"
-            color={stalled ? 'error.main' : 'text.secondary'}
+            color="error.main"
             title={
-              stalled
-                ? `No run has completed for ${progressAge}, past the ${progressDeadline}s expected ` +
-                  `per run — the run is not merely slow. Read what it is repeating in the log ` +
-                  `panel below.`
-                : stalled === null
-                  ? `Time since a run last completed. This .vast declares no ` +
-                    `execution.timeout, so there is no budget to judge it against — ` +
-                    `compare it yourself against how long one run should take.`
-                  : `Time since a run last completed (within the declared per-run budget).`
+              `No run has completed for ${formatDuration(progressAgeS!)}, past the ` +
+              `${progressDeadline}s expected per run — the run is not merely slow. Read ` +
+              `what it is repeating in the log panel below.`
             }
           >
-            {stalled ? `stalled ${progressAge}` : progressAge}
+            stalled {formatDuration(progressAgeS!)}
           </Typography>
         ) : null}
         <CampaignOrigin origin={summary.origin}>
@@ -645,7 +639,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           status={status.data}
           campaignId={id}
           jobs={jobs.data}
-          startedAt={summary.started_at}
           liveOnly
           newest={newest}
           showDetails={canExplore}

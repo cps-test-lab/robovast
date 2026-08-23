@@ -660,8 +660,11 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
    * - ``_execution/interventions.json``
-     - File — what a human did to a campaign *while it ran*, keyed by job artifact
-       dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a live read).
+     - File — what was done to a campaign's runs *other than running them*, keyed by job
+       artifact dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a
+       live read; ``invalid`` — the runner discarded the trial after a container restarted
+       under it) and ``source`` naming the actor (``webui``/``mcp``/``cli`` for a person,
+       ``runner`` for the campaign itself — the ledger is no longer only human acts).
        It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
        the separate ``runs.probed`` column in ``data.db`` — orthogonal on purpose, since a

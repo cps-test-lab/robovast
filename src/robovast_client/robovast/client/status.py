@@ -139,6 +139,14 @@ class RunProgress(BaseModel):
       nothing, which is exactly why it was recorded — so it explains part of that number
       rather than adding to it.
 
+    * ``invalid`` — the runner threw the trial away, because a container it ran against
+      crashed and was restarted under it (see
+      :func:`~robovast.execution.cluster_execution.cluster_execution.pod_invalidating_restart`).
+      Counted apart from ``failed`` for the same reason ``killed`` is, and for a sharper
+      one: the trial may well have written a *passing* verdict, against a simulator that
+      had lost its state. Unlike ``killed`` it is not a subset of ``no_result`` — an
+      invalidated run can have delivered a result, which is precisely the danger.
+
     ``completed`` counts runs that produced results — including failing ones — and
     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
     failed=1`` means every run delivered data and one trial did not pass: 24 usable.
@@ -153,6 +161,7 @@ class RunProgress(BaseModel):
     no_result: int = 0
     failed: int = 0
     killed: int = 0
+    invalid: int = 0
 
 
 class HealthFinding(BaseModel):
@@ -193,6 +202,13 @@ class BudgetItem(BaseModel):
     current: Optional[float] = None      # None when not-yet-defined (e.g. NaN)
     limit: float
     done: bool = False
+    # Which *kind* of criterion this is, from the stopping vocabulary (``batches``,
+    # ``time``, ``target_objective``, ``no_improvement``, ``metric``). ``label`` cannot
+    # answer that: it is the criterion type only for ``batches``/``time`` and the user's
+    # own objective or metric name otherwise, so a reader keying on it would treat a
+    # metric somebody named ``batches`` as the batch counter. ``None`` on a status
+    # written before this field existed.
+    kind: Optional[str] = None
 
 
 class Status(BaseModel):
@@ -238,6 +254,15 @@ class Status(BaseModel):
     # recoverable, a false accusation against a healthy long run is not.
     # ``None`` when the controller never recorded one — then no reader may claim a stall.
     progress_deadline_s: Optional[int] = None
+    # Wall-clock start of the **current batch's** runs. ``RunProgress`` is per-batch and
+    # every counter in it resets when a batch begins, while the campaign's ``started_at``
+    # does not -- so without this a reader can only date run progress from the campaign,
+    # which is right for batch 0 and wrong for every batch after it. That is exactly how
+    # a search past its first round lost the only clock its run counters could be read
+    # against. ``None`` when no batch has begun, and on a status reconstructed from disk
+    # (``status_recovery``), which has no current batch to be relative to -- the same
+    # caveat ``RunProgress`` carries.
+    batch_since: Optional[float] = None
     stage: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None

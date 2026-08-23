@@ -184,3 +184,194 @@ def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):
     be.finalize_campaign(str(tmp_path / "camp-2026-07-17-120000"))
 
     assert called == []  # finalize must not create execution.yaml anymore
+
+
+# --- A restarted container invalidates its trial, not the campaign -------------------
+#
+# The guard this replaces raised CampaignConfigError out of the wait loop, which ended the
+# whole campaign. One sidecar crash in one job of one batch ended a 50-batch search and
+# orphaned the two batches that had already finished (rr-roqsim-full-2026-08-23-03124069).
+
+class _FakeBatchClient:
+    """Records the jobs deleted; creation is a no-op."""
+
+    def __init__(self):
+        self.deleted = []
+
+    def create_namespaced_job(self, namespace, body):
+        return None
+
+    def delete_namespaced_job(self, name, namespace, **kwargs):
+        self.deleted.append(name)
+
+
+def _job(index, config_name, runs=1):
+    """A JobSpec-shaped stand-in: what `_build_jobs` hands the wait loop."""
+    items = [types.SimpleNamespace(config_name=config_name, run_number=n)
+             for n in range(runs)]
+    return types.SimpleNamespace(index=index, items=items)
+
+
+def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=()):
+    """A runner whose wait loop sees *forensics* on its first poll."""
+    storage = _FakeStorage()
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
+        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
+        lambda core, ns, label, job_names=None: forensics)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.previous_container_log",
+        lambda core, ns, pod, container, tail_lines=400: ("boom\ntraceback\n", "captured"))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend"
+        ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
+
+    runner = _runner_for_download_test([{"name": "cfgA"}])
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    runner.k8s_batch_client = _FakeBatchClient()
+    runner._build_jobs = lambda: jobs
+    runner.create_job_manifest = lambda job, total: {
+        "metadata": {"name": f"rrroqs-x-{job.index}"}}
+    polls = [list(remaining_after), []]
+    runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
+    runner._report_suspended_jobs = lambda remaining: None
+    return runner, storage
+
+
+_SUT_CRASH = {
+    "detail": "ContainerRestarted: container sut restarted 1x after Error "
+              "(exit 135, SIGBUS)",
+    "containers": [{
+        "pod_name": "rrroqs-x-0-pod", "node_name": "a-node", "pod_phase": "Running",
+        "container": "sut", "role": "sut", "image": "an-image",
+        "image_id": "an-image@sha256:abc", "restart_count": 1, "reason": "Error",
+        "exit_code": 135, "signal": 7, "signal_name": "SIGBUS", "message": None,
+        "started_at": None, "finished_at": None,
+        "cpu_limit": "3.25", "memory_limit": None, "invalidating": True,
+        "detail": "container sut restarted 1x after Error (exit 135, SIGBUS)",
+    }],
+}
+
+
+def test_a_restarted_job_is_deleted_and_the_batch_continues(monkeypatch, tmp_path):
+    """The point of the whole change: one job goes, the batch drains around the hole.
+
+    `get_remaining_jobs` treats a deleted Job as finished, which is the same seam
+    `stop_job` uses -- so the siblings run to completion and the batch still projects its
+    results, instead of the campaign ending here.
+    """
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+
+    runner.run_batch_in_pod(str(tmp_path))  # must NOT raise
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+
+
+def test_the_invalidated_job_is_recorded_in_the_ledger(monkeypatch, tmp_path):
+    """A discarded trial must be visible as discarded, not merely absent."""
+    import json
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path))
+
+    entry, = json.loads(
+        (tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["kind"] == "invalid"
+    assert entry["source"] == "runner"
+    assert entry["job_dir"] == "_jobs/batch-0/job-0"
+    assert entry["runs"] == ["cfgA/0"]
+    assert "SIGBUS" in entry["detail"]
+
+
+def test_the_evidence_is_captured_before_the_pod_is_deleted(monkeypatch, tmp_path):
+    """The dead container's log lives only as long as its pod, and the next thing this
+    code does is delete the Job. Nothing in robovast read it before."""
+    import json
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path))
+
+    record, = json.loads(
+        (tmp_path / "_execution" / "container_failures.json").read_text())
+    assert record["signal_name"] == "SIGBUS"
+    assert record["exit_code"] == 135
+    assert record["node_name"] == "a-node"
+    assert record["memory_limit"] is None      # the absence IS the finding
+    assert record["log_status"] == "captured"
+    assert "traceback" in record["log_tail"]
+    assert record["runs"] == ["cfgA/0"]
+
+
+def test_a_packed_jobs_runs_are_all_invalidated(monkeypatch, tmp_path):
+    """One container death ruins every run the job was carrying, not just the current one:
+    they shared the process that lost its state."""
+    import json
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA", runs=3), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path))
+
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["runs"] == ["cfgA/0", "cfgA/1", "cfgA/2"]
+
+
+def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):
+    """A restart is reported on every poll until the pod is gone, and deleting a Job is
+    asynchronous -- so without the guard one crash is recorded on every pass."""
+    import json
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH},
+        remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path))
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    assert len(json.loads(
+        (tmp_path / "_execution" / "interventions.json").read_text())) == 1
+
+
+def test_a_restart_seen_after_the_last_job_finished_still_lands(monkeypatch, tmp_path):
+    """The wait loop breaks on an empty `remaining` BEFORE it probes, so a crash in the
+    last job's last seconds was never observed at all."""
+    import json
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA")], {"rrroqs-x-0": _SUT_CRASH})
+    runner.run_batch_in_pod(str(tmp_path))
+
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["runs"] == ["cfgA/0"]
+
+
+def test_a_batch_whose_every_job_lost_a_container_still_fails(monkeypatch, tmp_path):
+    """Not a flake but a fault they share -- a missing world file, an image that cannot run
+    here. Carrying on would spend the rest of the budget producing cells with no sample."""
+    from robovast.execution.backends import CampaignConfigError
+
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH, "rrroqs-x-1": _SUT_CRASH})
+
+    with pytest.raises(CampaignConfigError, match="every job in batch"):
+        runner.run_batch_in_pod(str(tmp_path))
+
+
+def test_a_single_job_batch_is_exempt_from_that(monkeypatch, tmp_path):
+    """One flake is 100% of one job. A pilot must not be reclassified as a systematic
+    fault by arithmetic."""
+    runner, _ = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA")], {"rrroqs-x-0": _SUT_CRASH})
+    runner.run_batch_in_pod(str(tmp_path))  # must NOT raise
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]

@@ -28,10 +28,11 @@ def test_snapshot_reflects_state_updates():
     assert body["phase"] == "running"
     assert body["mode"] == "search"
     assert body["batch"] == 2 and body["batches_done"] == 2
-    # no_result (delivered nothing), failed (delivered a failing verdict) and killed
-    # (an operator stopped its job) are distinct counters — see RunProgress.
+    # no_result (delivered nothing), failed (delivered a failing verdict), killed
+    # (an operator stopped its job) and invalid (the runner threw the trial away) are
+    # distinct counters — see RunProgress.
     assert body["runs"] == {"completed": 3, "total": 8, "no_result": 0, "failed": 0,
-                            "killed": 0}
+                            "killed": 0, "invalid": 0}
     assert body["budget"][0]["label"] == "batches"
     assert body["best_objective"] == 0.25
     assert len(body["batch_history"]) == 2

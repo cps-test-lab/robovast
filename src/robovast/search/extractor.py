@@ -24,9 +24,14 @@ It is the one place SUT-specific evaluation lives — and is parameterized from 
 ``measures`` are named dicts so single- and multi-objective use the same shape.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from robovast.common.campaign_data import invalid_runs
+
+logger = logging.getLogger(__name__)
 
 
 class NoSampleError(RuntimeError):
@@ -73,12 +78,40 @@ def run_dirs(config_dir: Path) -> list[Path]:
 
 
 def completed_run_dirs(config_dir: Path) -> list[Path]:
-    """Run subdirectories that produced a result (``test.xml``).
+    """Run subdirectories that produced a **trustworthy** result (``test.xml``).
 
     The canonical "completed sample" notion, shared by extractors (aggregation
     denominator) and the framework (``n_samples``).
+
+    A run the runner invalidated is excluded even though it wrote a ``test.xml``: a
+    container the trial depended on crashed and was restarted under it, so what that file
+    records is a simulator that had lost its state, and it is at its most dangerous when it
+    says the run passed. The filter lives HERE and not in each extractor because this is
+    the shared definition and extractors *outside this repository* call it directly -- a
+    rule they have to opt into is a rule that will be missed, silently, in the direction of
+    believing a broken trial.
+
+    Costs one ``is_file`` miss per config for every campaign nobody intervened in, which is
+    nearly all of them. A config directory copied out of its campaign has no ledger beside
+    it and gets the old behaviour; that is the honest degradation.
     """
-    return [d for d in run_dirs(config_dir) if (d / "test.xml").exists()]
+    invalid = _invalidated_runs(config_dir)
+    return [d for d in run_dirs(config_dir)
+            if (d / "test.xml").exists() and f"{config_dir.name}/{d.name}" not in invalid]
+
+
+def _invalidated_runs(config_dir: Path) -> "set[str]":
+    """``{"<config>/<run>"}`` the runner threw away, from the campaign's ledger.
+
+    The campaign root is ``config_dir``'s parent -- every caller builds the config dir as
+    ``campaign_root / config_name`` -- so the ledger is reachable without threading a new
+    argument through the extractor API that third-party extractors implement.
+    """
+    try:
+        return set(invalid_runs(config_dir.parent))
+    except Exception:  # noqa: BLE001 - a missing or odd ledger must not stop extraction
+        logger.debug("Could not read the intervention ledger beside %s", config_dir)
+        return set()
 
 
 @dataclass

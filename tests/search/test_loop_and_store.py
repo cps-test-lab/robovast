@@ -502,3 +502,142 @@ def test_an_extractor_bug_still_aborts_the_campaign(tmp_path):
     with pytest.raises(KeyError):
         controller.run()
     store.close()
+
+
+# --- A restarted container invalidates its trial, not the campaign ---------------------
+
+def _passing_run(config_dir, run_id):
+    """A run that wrote a PASSING test.xml -- the dangerous case."""
+    d = config_dir / str(run_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "test.xml").write_text(
+        '<testsuite name="t" tests="1" failures="0" errors="0" time="1.0">'
+        '<testcase name="c"/></testsuite>')
+    return d
+
+
+def _invalidate(campaign_root, *run_keys, job_dir="_jobs/batch-0/job-0"):
+    from robovast.common.campaign_data import KIND_INVALID, record_intervention
+    record_intervention(campaign_root, kind=KIND_INVALID, job_dir=job_dir,
+                        job_name="rrroqs-x-0", source="runner",
+                        detail="ContainerRestarted: container sut restarted 1x after "
+                               "Error (exit 135, SIGBUS)",
+                        runs=tuple(run_keys))
+
+
+def test_an_invalidated_run_is_not_a_completed_sample(tmp_path):
+    """n_samples is len(completed_run_dirs), so the cell must score over what is left."""
+    from robovast.search.extractor import completed_run_dirs
+
+    cfg = tmp_path / "cfg-1"
+    _passing_run(cfg, 0)
+    _passing_run(cfg, 1)
+    _invalidate(tmp_path, "cfg-1/1")
+
+    assert [d.name for d in completed_run_dirs(cfg)] == ["0"]
+
+
+def test_invalid_overrides_a_passing_verdict(tmp_path):
+    """The point of the whole change, as one assertion.
+
+    A trial whose simulator crashed and restarted under it carried on against a process
+    that had lost its state. When such a run writes `passed`, nothing else about it looks
+    wrong -- which is precisely why the verdict must not be believed."""
+    from robovast.common.campaign_data import read_run_outcomes
+
+    cfg = tmp_path / "cfg-1"
+    _passing_run(cfg, 0)
+    _passing_run(cfg, 1)
+    _invalidate(tmp_path, "cfg-1/1")
+
+    by_id = {o["run_id"]: o for o in read_run_outcomes(cfg, tmp_path)}
+    assert by_id[0]["status"] == "passed"
+    assert by_id[1]["status"] == "invalid"
+    assert by_id[1]["passed"] == 0
+    assert "SIGBUS" in by_id[1]["failure_message"]
+
+
+def test_the_discarded_verdict_is_still_on_disk(tmp_path):
+    """Discarding is not destroying: the test.xml stays, so the override is reversible and
+    anyone can check what was thrown away."""
+    cfg = tmp_path / "cfg-1"
+    run = _passing_run(cfg, 0)
+    _invalidate(tmp_path, "cfg-1/0")
+    assert (run / "test.xml").is_file()
+
+
+def test_a_cell_whose_every_run_was_invalidated_has_no_sample(tmp_path):
+    """Which is what makes the campaign survive: the search loop already records
+    `no_sample` and carries on rather than aborting."""
+    from robovast.search.extractor import completed_run_dirs
+
+    cfg = tmp_path / "cfg-1"
+    _passing_run(cfg, 0)
+    _passing_run(cfg, 1)
+    _invalidate(tmp_path, "cfg-1/0", "cfg-1/1")
+
+    assert completed_run_dirs(cfg) == []
+
+
+def test_invalid_is_not_counted_as_a_failure(tmp_path):
+    """An infrastructure fault is not evidence against the system under test."""
+    from robovast.execution.controller import _tally_outcomes
+
+    outcomes = [{"status": "passed"}, {"status": "failed"}, {"status": "invalid"},
+                {"status": "killed"}]
+    assert _tally_outcomes(outcomes) == (1, 1, 1)
+
+
+def test_aggregate_status_skips_invalidated_runs(tmp_path):
+    """Neither a pass nor a strike: it is a measurement that was never made."""
+    from robovast.common.campaign_data import aggregate_run_status
+
+    cfg = tmp_path / "cfg-1"
+    runs = [_passing_run(cfg, 0), _passing_run(cfg, 1)]
+    assert aggregate_run_status(runs) == "passed"
+    assert aggregate_run_status(runs, invalid={"cfg-1/1"}) == "passed"
+    assert aggregate_run_status(runs, invalid={"cfg-1/0", "cfg-1/1"}) == "no_sample"
+
+
+def test_a_config_dir_outside_its_campaign_degrades_honestly(tmp_path):
+    """No ledger beside it means the old behaviour, not an error. Stated because it is a
+    real limitation of resolving the campaign root from the config dir's parent."""
+    from robovast.search.extractor import completed_run_dirs
+
+    cfg = tmp_path / "loose" / "cfg-1"
+    _passing_run(cfg, 0)
+    assert len(completed_run_dirs(cfg)) == 1
+
+
+def test_the_discarded_verdict_is_named_in_the_message(tmp_path):
+    """Overriding a verdict silently would be its own kind of data loss. The run says which
+    verdict it discarded, so a reader who remembers a passing run is told why it now reads
+    `invalid` instead of having to go and find the ledger."""
+    from robovast.common.campaign_data import read_run_outcomes
+
+    cfg = tmp_path / "cfg-1"
+    _passing_run(cfg, 0)
+    (cfg / "1").mkdir(parents=True)
+    (cfg / "1" / "test.xml").write_text(
+        '<testsuite name="t" tests="1" failures="1" errors="0" time="1.0">'
+        '<testcase name="c"><failure/></testcase></testsuite>')
+    _invalidate(tmp_path, "cfg-1/0", "cfg-1/1")
+
+    by_id = {o["run_id"]: o for o in read_run_outcomes(cfg, tmp_path)}
+    assert "discarded verdict: passed" in by_id[0]["failure_message"]
+    assert "discarded verdict: failed" in by_id[1]["failure_message"]
+
+
+def test_an_invalidated_run_with_no_verdict_says_so_without_inventing_one(tmp_path):
+    """A job deleted at grace_period_seconds=0 often never wrote a test.xml at all. The
+    message then names the cause and stops, rather than claiming a verdict was discarded."""
+    from robovast.common.campaign_data import read_run_outcomes
+
+    cfg = tmp_path / "cfg-1"
+    (cfg / "0").mkdir(parents=True)          # no test.xml
+    _invalidate(tmp_path, "cfg-1/0")
+
+    outcome, = read_run_outcomes(cfg, tmp_path)
+    assert outcome["status"] == "invalid"
+    assert "discarded verdict" not in outcome["failure_message"]
+    assert "SIGBUS" in outcome["failure_message"]

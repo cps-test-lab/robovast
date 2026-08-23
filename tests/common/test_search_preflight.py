@@ -79,7 +79,10 @@ def test_all_draws_feasible_reports_real_counts(tmp_path):
     vast = _search_project(tmp_path, low=0.0, high=0.4, per_batch=4)
     report = validate_project_file(str(vast))
     assert report["valid"] is True
-    assert report["problems"] == []
+    # Nothing to say about the *search space*. Advisories about the rest of the file
+    # (this fixture declares no execution.timeout) are a different question, so they are
+    # filtered out rather than allowed to make this a test of how many advisories exist.
+    assert [p for p in report["problems"] if p["stage"] == "search-composition"] == []
     assert report["configs"] == 4
     assert report["runs_per_config"] == 3
     assert report["total_trials"] == 12
@@ -95,9 +98,9 @@ def test_infeasible_draws_are_reported_with_their_params(tmp_path):
     # Every draw is infeasible here, but the file itself is well-formed.
     assert report["valid"] is True
     assert report["configs"] == 0
-    assert len(report["problems"]) == 1
-    problem = report["problems"][0]
-    assert problem["stage"] == "search-composition"
+    composition = [p for p in report["problems"] if p["stage"] == "search-composition"]
+    assert len(composition) == 1
+    problem, = composition
     assert "4 of 4" in problem["message"]
     assert "speed" in problem["message"]        # the offending params are named
     assert problem["field"] == "search.search_space"

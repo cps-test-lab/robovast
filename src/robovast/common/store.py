@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
     unit_id         INTEGER NOT NULL REFERENCES unit(id),
     run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
-    status          TEXT,               -- passed / failed / error / killed / unknown
+    status          TEXT,               -- passed / failed / error / killed / invalid / unknown
     passed          INTEGER,            -- 0/1
     errors          INTEGER,
     failures        INTEGER,
@@ -180,6 +180,37 @@ CREATE TABLE IF NOT EXISTS run (
     job_id          INTEGER REFERENCES job(id)
 );
 CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
+CREATE TABLE IF NOT EXISTS container_failure (
+    id            INTEGER PRIMARY KEY,
+    campaign_id   INTEGER NOT NULL REFERENCES campaign(id),
+    detected_at   TEXT,               -- ISO 8601, when the runner saw the restart
+    batch         TEXT,               -- the batch tag, e.g. batch-2
+    job_name      TEXT,               -- the Kubernetes Job
+    job_dir       TEXT,               -- campaign-relative, e.g. _jobs/batch-2/job-7
+    runs_json     TEXT,               -- ["<config>/<run>", ...] this job was executing
+    pod_name      TEXT,
+    node_name     TEXT,
+    container     TEXT,
+    role          TEXT,               -- scenario / sut / simulation / <ad-hoc> / init
+    image         TEXT,
+    image_id      TEXT,               -- the digest that actually ran
+    restart_count INTEGER,
+    reason        TEXT,               -- last_state.terminated.reason
+    exit_code     INTEGER,
+    signal        INTEGER,
+    signal_name   TEXT,               -- SIGBUS for 135; nobody should redo that by hand
+    message       TEXT,
+    started_at    TEXT,
+    finished_at   TEXT,
+    pod_phase     TEXT,
+    cpu_limit     TEXT,               -- as declared; NULL means NO LIMIT, itself a finding
+    memory_limit  TEXT,
+    log_status    TEXT,               -- captured / gone / empty / unavailable[: <code>]
+    log_lines     INTEGER,
+    log_tail      TEXT                -- the dead container's own last words
+);
+CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
+    ON container_failure (campaign_id);
 """
 
 # 0 -> 1: the initial schema, frozen as it shipped. This is deliberately NOT
@@ -327,8 +358,48 @@ ALTER TABLE campaign ADD COLUMN origin_config_path    TEXT;
 ALTER TABLE campaign ADD COLUMN origin_from_campaign  TEXT;
 """
 
+# 7 -> 8: what a container died of, when the kubelet restarted it under a running trial.
+# Its own table rather than columns on ``run`` because the grain is the JOB: one container
+# death invalidates every run the job was carrying, so one row records one fact once
+# instead of duplicating a log tail per run. And because it must be writable when there are
+# no ``run`` rows at all -- a campaign that dies mid-batch never records any, which is
+# precisely the campaign whose evidence went missing.
+_MIGRATION_ADD_CONTAINER_FAILURE = """
+CREATE TABLE IF NOT EXISTS container_failure (
+    id            INTEGER PRIMARY KEY,
+    campaign_id   INTEGER NOT NULL REFERENCES campaign(id),
+    detected_at   TEXT,               -- ISO 8601, when the runner saw the restart
+    batch         TEXT,               -- the batch tag, e.g. batch-2
+    job_name      TEXT,               -- the Kubernetes Job
+    job_dir       TEXT,               -- campaign-relative, e.g. _jobs/batch-2/job-7
+    runs_json     TEXT,               -- ["<config>/<run>", ...] this job was executing
+    pod_name      TEXT,
+    node_name     TEXT,
+    container     TEXT,
+    role          TEXT,               -- scenario / sut / simulation / <ad-hoc> / init
+    image         TEXT,
+    image_id      TEXT,               -- the digest that actually ran
+    restart_count INTEGER,
+    reason        TEXT,               -- last_state.terminated.reason
+    exit_code     INTEGER,
+    signal        INTEGER,
+    signal_name   TEXT,               -- SIGBUS for 135; nobody should redo that by hand
+    message       TEXT,
+    started_at    TEXT,
+    finished_at   TEXT,
+    pod_phase     TEXT,
+    cpu_limit     TEXT,               -- as declared; NULL means NO LIMIT, itself a finding
+    memory_limit  TEXT,
+    log_status    TEXT,               -- captured / gone / empty / unavailable[: <code>]
+    log_lines     INTEGER,
+    log_tail      TEXT                -- the dead container's own last words
+);
+CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
+    ON container_failure (campaign_id);
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -345,6 +416,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_CREATED_BY,
     _MIGRATION_ADD_CODE_REVISION,
     _MIGRATION_ADD_ORIGIN,
+    _MIGRATION_ADD_CONTAINER_FAILURE,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -618,6 +690,43 @@ class CampaignStore:
         )
         self._conn.commit()
 
+    #: The ``container_failure`` columns a record supplies, in insert order.
+    _CONTAINER_FAILURE_COLUMNS = (
+        "detected_at", "batch", "job_name", "job_dir", "runs_json", "pod_name",
+        "node_name", "container", "role", "image", "image_id", "restart_count", "reason",
+        "exit_code", "signal", "signal_name", "message", "started_at", "finished_at",
+        "pod_phase", "cpu_limit", "memory_limit", "log_status", "log_lines", "log_tail",
+    )
+
+    def record_container_failures(self, campaign_id: int, records) -> None:
+        """Record what containers died of, from ``_execution/container_failures.json``.
+
+        Idempotent on ``(job_name, container, detected_at)``: the file is the durable
+        record and this table is an index into it, so re-ingesting a campaign -- which
+        :mod:`campaign_index` does whenever a store is rebuilt from disk -- must not
+        multiply its incidents.
+
+        ``runs`` arrives as a list and is stored as JSON so one row can name every run the
+        job was carrying, which is the honest grain: they shared the container that died.
+        """
+        for record in records or ():
+            row = dict(record)
+            row["runs_json"] = json.dumps(row.get("runs") or [])
+            existing = self._conn.execute(
+                "SELECT 1 FROM container_failure WHERE campaign_id = ? AND job_name IS ? "
+                "AND container IS ? AND detected_at IS ?",
+                (campaign_id, row.get("job_name"), row.get("container"),
+                 row.get("detected_at"))).fetchone()
+            if existing:
+                continue
+            columns = ("campaign_id",) + self._CONTAINER_FAILURE_COLUMNS
+            values = (campaign_id,) + tuple(row.get(c) for c
+                                            in self._CONTAINER_FAILURE_COLUMNS)
+            self._conn.execute(
+                f"INSERT INTO container_failure ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' * len(columns))})", values)
+        self._conn.commit()
+
     def record_elapsed(self, campaign_id: int, elapsed_s: float) -> None:
         """Record the campaign's wall-clock duration.
 
@@ -712,6 +821,7 @@ class CampaignStore:
             "num_failed": by_status.get("failed", 0),
             "num_errors": by_status.get("error", 0),
             "num_killed": by_status.get("killed", 0),
+            "num_invalid": by_status.get("invalid", 0),
             "num_composition_failed": composition_failed,
             "num_no_sample": no_sample,
         }

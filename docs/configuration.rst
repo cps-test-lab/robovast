@@ -586,6 +586,39 @@ Packing is invisible to results: every run's output is always written to
    execution:
      runs_per_job: 200   # pack up to 200 runs per job (one sim setup)
 
+shm_size
+^^^^^^^^
+
+**Type:** String (e.g. ``1Gi``, ``512Mi``)
+
+**Required:** No (default: unset — each lane's own default)
+
+Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into **every** container of
+the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport across
+the ``scenario`` / ``sut`` / ``simulation`` boundary.
+
+Unset, the two lanes disagree and both defaults are traps. On the cluster, ``/dev/shm`` is a
+memory-backed ``emptyDir`` with no size limit, so it is sized from the pod's memory limits —
+or, when no container declares ``resources.memory``, from the whole node. Locally, the
+sidecars share the main container's IPC namespace and inherit Docker's 64 MB. A container
+that overruns shared memory dies of **SIGBUS** (``exit 135``), not a clean ``OOMKilled``,
+so the death arrives with no reason attached to it.
+
+.. warning::
+
+   Declare it **together with** ``resources.memory``, never instead of it. Adding memory
+   limits alone *shrinks* an unbounded ``/dev/shm`` down to them, so sizing one without the
+   other can make the failure more likely rather than less. ``validate_project`` advises
+   when a container declares ``resources.cpu`` and no ``resources.memory``.
+
+.. code-block:: yaml
+
+   execution:
+     shm_size: 1Gi
+     containers:
+       sut:
+         resources: {cpu: 3.25, memory: 6Gi}
+
 timeout
 ^^^^^^^
 

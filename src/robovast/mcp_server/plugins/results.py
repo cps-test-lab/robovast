@@ -31,6 +31,7 @@ decoder takes a path rather than an address. Those tools return an image, so the
 where the SQL ones return ``{"error": ...}`` — an image response has no dict to carry one.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -164,7 +165,17 @@ def get_campaign_summary(campaign_id: str) -> dict:
         ``num_killed`` counts runs an operator stopped by hand (``stop_job``). They are
         **not** in ``num_failed``: nobody learned anything about the system under test
         from them, so they are missing measurements rather than negative results, and a
-        config is not ranked ``worst`` for carrying them.
+        config is not ranked ``worst`` for carrying them. ``num_invalid`` counts runs the
+        runner discarded after a container restarted under them, on the same terms and for
+        a sharper reason: such a run may have written a *passing* verdict, against a
+        process that had lost its state.
+
+        ``container_failures`` appears when a container died and was restarted: what died,
+        on which node, of what signal. It is reported **even when there is no run data at
+        all**, because a campaign that dies mid-batch records no runs and never
+        postprocesses -- and that is precisely the campaign whose failure needs explaining.
+        ``query_campaign_data_sql`` over ``container_failure_view`` has the detail,
+        including the dead container's own last log lines.
 
         ``advice`` is what this campaign's measurements say the next one should reserve --
         cpu and memory, per container and per pod, with the evidence behind each item.
@@ -177,10 +188,21 @@ def get_campaign_summary(campaign_id: str) -> dict:
                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS success,
                SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed,
                SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) AS unknown,
-               SUM(CASE WHEN status = 'killed' THEN 1 ELSE 0 END) AS killed
+               SUM(CASE WHEN status = 'killed' THEN 1 ELSE 0 END) AS killed,
+               SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) AS invalid
         FROM run_view GROUP BY config_name ORDER BY config_name
     """)
+    container_failures = _container_failures(campaign_id)
     if not per_config:
+        # A campaign that died mid-batch has no run rows -- and is exactly the campaign
+        # someone is asking this about. Answering "no run data" there is a refusal at the
+        # moment the tool is most useful, so say what killed it instead.
+        if container_failures:
+            return {"campaign_id": campaign_id, "num_configs": 0, "num_runs": 0,
+                    "num_container_failures": len(container_failures),
+                    "container_failures": container_failures,
+                    "note": "This campaign recorded no runs, but a container died under "
+                            "it. See container_failure_view for the full evidence."}
         return {"error": f"No run data for campaign {campaign_id!r}. It may not have "
                          "started, or have no campaign.db — check list_campaigns() and "
                          "get_campaign_status()."}
@@ -195,6 +217,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "failed": _int(c.get("failed")),
         "unknown": _int(c.get("unknown")),
         **({"killed": _int(c.get("killed"))} if _int(c.get("killed")) else {}),
+        **({"invalid": _int(c.get("invalid"))} if _int(c.get("invalid")) else {}),
     } for c in per_config]
 
     result: dict[str, Any] = {
@@ -215,6 +238,12 @@ def get_campaign_summary(campaign_id: str) -> dict:
         # Omitted when zero, like every other optional field on this surface: a campaign
         # nobody intervened in should not carry a key saying so.
         result["num_killed"] = num_killed
+    num_invalid = sum(c.get("invalid", 0) for c in configs_info)
+    if num_invalid:
+        result["num_invalid"] = num_invalid
+    if container_failures:
+        result["num_container_failures"] = len(container_failures)
+        result["container_failures"] = container_failures
 
     # What this campaign's own measurements say the NEXT one should reserve. Advice rather
     # than data, so it is additive: an agent that ignores the key loses nothing, and one that
@@ -663,3 +692,34 @@ class ResultsPlugin:
         """Register all tool functions with the MCP server."""
         for fn in _TOOLS:
             mcp.tool()(fn)
+
+def _container_failures(campaign_id: str) -> list:
+    """One entry per container that died and was restarted, newest first.
+
+    Read separately from the run rollup because it must answer on a campaign that has NO
+    run rows -- one that died mid-batch never recorded any. Best-effort: a store that
+    predates the table simply has nothing to say, and a summary must not fail because its
+    post-mortem section could not be built.
+    """
+    try:
+        rows = data_access.rows(campaign_id, """
+            SELECT detected_at, job_name, node_name, container, role, reason, exit_code,
+                   signal_name, memory_limit, cpu_limit, log_status, runs_json
+            FROM campaign.container_failure ORDER BY detected_at DESC
+        """)
+    except Exception:  # noqa: BLE001 - no table, no store, nothing to report
+        return []
+    out = []
+    for row in rows or ():
+        entry = {k: row.get(k) for k in
+                 ("detected_at", "job_name", "node_name", "container", "role", "reason",
+                  "exit_code", "signal_name", "log_status")}
+        # Surfaced explicitly rather than left NULL: "no memory limit was declared" is a
+        # finding about the campaign, not a gap in the record.
+        entry["memory_limit"] = row.get("memory_limit") or "none declared"
+        try:
+            entry["runs"] = json.loads(row.get("runs_json") or "[]")
+        except (TypeError, ValueError):
+            entry["runs"] = []
+        out.append(entry)
+    return out

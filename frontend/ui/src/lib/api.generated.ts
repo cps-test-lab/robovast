@@ -1465,6 +1465,8 @@ export interface components {
              * @default false
              */
             done: boolean;
+            /** Kind */
+            kind: string | null;
             /** Label */
             label: string;
             /** Limit */
@@ -2813,6 +2815,14 @@ export interface components {
          *       nothing, which is exactly why it was recorded — so it explains part of that number
          *       rather than adding to it.
          *
+         *     * ``invalid`` — the runner threw the trial away, because a container it ran against
+         *       crashed and was restarted under it (see
+         *       :func:`~robovast.execution.cluster_execution.cluster_execution.pod_invalidating_restart`).
+         *       Counted apart from ``failed`` for the same reason ``killed`` is, and for a sharper
+         *       one: the trial may well have written a *passing* verdict, against a simulator that
+         *       had lost its state. Unlike ``killed`` it is not a subset of ``no_result`` — an
+         *       invalidated run can have delivered a result, which is precisely the danger.
+         *
          *     ``completed`` counts runs that produced results — including failing ones — and
          *     ``total`` is the number expected. So ``total=25, completed=25, no_result=0,
          *     failed=1`` means every run delivered data and one trial did not pass: 24 usable.
@@ -2834,6 +2844,11 @@ export interface components {
              * @default 0
              */
             failed: number;
+            /**
+             * Invalid
+             * @default 0
+             */
+            invalid: number;
             /**
              * Killed
              * @default 0
@@ -3083,6 +3098,8 @@ export interface components {
             batch_history: {
                 [key: string]: unknown;
             }[];
+            /** Batch Since */
+            batch_since: number | null;
             /**
              * Batches Done
              * @default 0

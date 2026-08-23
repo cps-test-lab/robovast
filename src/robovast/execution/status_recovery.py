@@ -82,6 +82,11 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     campaign from disk must not turn a human intervention into a trial failure, which is
     exactly what dropping it did — the live status said ``killed: 1`` and the recovered
     one said ``0``, for the same campaign.
+
+    ``invalid`` — a trial the runner threw away after a container restarted under it — is
+    carried through on the same terms and kept out of ``failed`` for the same reason. It
+    lands inside ``no_result`` here because ``completed`` counts only verdicts that still
+    stand, and an invalidated run's does not.
     """
     failed = counts.get("num_failed", 0) + counts.get("num_errors", 0)
     completed = counts.get("num_passed", 0) + failed
@@ -91,6 +96,7 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     total = max(total, counts.get("num_runs", 0), completed)
     return {"completed": completed, "total": total, "failed": failed,
             "killed": counts.get("num_killed", 0),
+            "invalid": counts.get("num_invalid", 0),
             "no_result": max(0, total - completed)}
 
 

@@ -200,6 +200,17 @@
             "title": "Done",
             "type": "boolean"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -212,6 +223,7 @@
         "required": [
           "current",
           "done",
+          "kind",
           "label",
           "limit"
         ],
@@ -2059,7 +2071,7 @@
         "type": "object"
       },
       "RunProgress": {
-        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n* ``killed`` \u2014 an operator stopped the run's job by hand (see\n  :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and\n  *not* part of ``failed``: a run somebody ended says nothing about the system under\n  test, so counting it as a trial failure would put a human intervention into the\n  campaign's measured outcome. It is a subset of ``no_result`` \u2014 a killed run delivered\n  nothing, which is exactly why it was recorded \u2014 so it explains part of that number\n  rather than adding to it.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to.",
+        "description": "Per-run progress for the current batch.\n\nTwo different things can go wrong with a run, and conflating them let a sweep\nreport itself as clean while a trial had failed:\n\n* ``no_result`` \u2014 the run delivered **nothing**: no result artifact reached storage\n  (``total - completed``). Only meaningful once the batch's jobs have all reached a\n  terminal state; it stays 0 while the batch runs, since an unfinished run is not\n  yet a lost one.\n* ``failed`` \u2014 the run delivered a result whose **own verdict is a failure** (the\n  scenario reported a failure or error). Its job may have completed normally: a\n  failing trial is still a successful execution. Set when the batch's outcomes are\n  recorded, so 0 before then.\n\n* ``killed`` \u2014 an operator stopped the run's job by hand (see\n  :meth:`~robovast.service.interface.RobovastInterface.stop_job`). Its own counter and\n  *not* part of ``failed``: a run somebody ended says nothing about the system under\n  test, so counting it as a trial failure would put a human intervention into the\n  campaign's measured outcome. It is a subset of ``no_result`` \u2014 a killed run delivered\n  nothing, which is exactly why it was recorded \u2014 so it explains part of that number\n  rather than adding to it.\n\n* ``invalid`` \u2014 the runner threw the trial away, because a container it ran against\n  crashed and was restarted under it (see\n  :func:`~robovast.execution.cluster_execution.cluster_execution.pod_invalidating_restart`).\n  Counted apart from ``failed`` for the same reason ``killed`` is, and for a sharper\n  one: the trial may well have written a *passing* verdict, against a simulator that\n  had lost its state. Unlike ``killed`` it is not a subset of ``no_result`` \u2014 an\n  invalidated run can have delivered a result, which is precisely the danger.\n\n``completed`` counts runs that produced results \u2014 including failing ones \u2014 and\n``total`` is the number expected. So ``total=25, completed=25, no_result=0,\nfailed=1`` means every run delivered data and one trial did not pass: 24 usable.\nA reader showing ``completed`` as a success count is therefore wrong; successes are\n``completed - failed``.\n\nThe per-batch scope holds for a **live** status. One recovered from disk\n(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) reports\nthe whole campaign instead \u2014 there is no current batch for it to be relative to.",
         "properties": {
           "completed": {
             "default": 0,
@@ -2069,6 +2081,11 @@
           "failed": {
             "default": 0,
             "title": "Failed",
+            "type": "integer"
+          },
+          "invalid": {
+            "default": 0,
+            "title": "Invalid",
             "type": "integer"
           },
           "killed": {
@@ -2090,6 +2107,7 @@
         "required": [
           "completed",
           "failed",
+          "invalid",
           "killed",
           "no_result",
           "total"
@@ -2465,6 +2483,17 @@
             "title": "Batch History",
             "type": "array"
           },
+          "batch_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Since"
+          },
           "batches_done": {
             "default": 0,
             "title": "Batches Done",
@@ -2625,6 +2654,7 @@
         "required": [
           "batch",
           "batch_history",
+          "batch_since",
           "batches_done",
           "best_objective",
           "budget",

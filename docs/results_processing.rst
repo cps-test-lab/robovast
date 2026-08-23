@@ -588,6 +588,70 @@ already written a valid ``test.xml`` keeps its real verdict. That matters when a
 several runs (``runs_per_job`` > 1), where the earlier ones routinely finish before anyone
 stops the job — their results are measurement and are never overwritten.
 
+
+A trial the runner threw away: ``invalid``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``invalid`` means a container the trial ran against **crashed and was restarted under it**.
+The simulator (or the system under test) came back with no memory of the run and the
+scenario carried on regardless, so whatever verdict that trial reached describes a process
+that had lost its state.
+
+**It is the one status that overrides a written verdict**, and that inverts the rule stated
+for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
+than another kill:
+
+* a *killed* run's ``test.xml`` was written **before** the intervention landed, so it is
+  real measurement and overwriting it would destroy data;
+* an *invalid* run's ``test.xml`` was written **by** the trial the restart broke — it is
+  the confidently wrong result the detection exists to prevent, and it is at its most
+  dangerous when it says ``passed``, because nothing else about the run looks wrong.
+
+Discarding is not destroying. The ``test.xml`` stays on disk, and the verdict being
+overridden is recorded in the ledger entry, so the override is auditable and reversible.
+
+Like ``killed``, it is **not** a trial failure — it is an infrastructure fault, not evidence
+about the system under test — so it is counted apart (``num_invalid``) and excluded from
+pass rates::
+
+   SELECT config_name, COUNT(*) FILTER (WHERE status = 'passed') AS passed,
+          COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed
+   FROM run_view WHERE status NOT IN ('killed','invalid') GROUP BY config_name
+
+A cell that loses *every* run this way scores ``no_sample`` rather than a fabricated 0.0,
+and the search carries on. That is the point of the whole mechanism: before it, one crashed
+sidecar in one job of one batch raised out of the batch wait loop and ended the campaign,
+taking every completed batch with it.
+
+What killed it: ``container_failure_view``
+""""""""""""""""""""""""""""""""""""""""""
+
+The post-mortem is captured at the moment of the restart — while the pod still exists,
+because it is about to be deleted — and lands in **two** places, deliberately:
+
+``_execution/container_failures.json``
+   the record: every field of the container's termination state, plus the last 400 lines of
+   the **dead instance's own log** (``kubectl logs --previous``, which nothing read before).
+
+``campaign.db`` → ``container_failure_view``
+   the index into it, so the question is one query. It is in ``campaign.db`` and not
+   ``data.db`` on purpose: ``data.db`` is built by postprocessing, and a campaign that dies
+   mid-batch never postprocesses — which is exactly the campaign that needs explaining.
+
+::
+
+   SELECT run_key, node_name, container, role, exit_code, signal_name, reason, memory_limit
+   FROM container_failure_view ORDER BY run_key
+
+``signal_name`` is usually the answer: ``exit_code`` 135 is ``128 + 7``, i.e. ``SIGBUS``, and
+137 is ``SIGKILL`` (an OOM kill). A ``NULL`` ``memory_limit`` means no limit was declared at
+all, which is itself a finding — such a container is told by the downward API that it has
+the whole node, and the pod's shared ``/dev/shm`` is sized the same way. Join back onto
+``run_view`` on ``config_name || '/' || run_id = run_key``.
+
+An invalidated job's rosbag is unreadable for the same reason a stopped job's is (it is
+deleted at ``grace_period_seconds=0``), and postprocessing tolerates both identically.
+
 The kills themselves are recorded in ``_execution/interventions.json``, which exists only for a
 campaign somebody intervened in. **One ledger holds every kind of intervention**, each entry
 carrying a ``kind`` -- ``killed`` for a job stopped by hand, ``probed`` for a run somebody read

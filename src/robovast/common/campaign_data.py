@@ -412,10 +412,17 @@ def read_execution_outcome(campaign_dir: Path):
 #: are different writers, and sharing one SQLite file between them is a race, not a design.
 _INTERVENTIONS_FILENAME = "interventions.json"
 
-#: The kinds recorded. ``killed`` ends a run; ``probed`` only observed one, but both mean the run
-#: is no longer untouched, which is why they share a file rather than a status.
+#: The kinds recorded. ``killed`` ends a run; ``probed`` only observed one; ``invalid`` throws
+#: one away. All three mean the run is no longer untouched, which is why they share a file
+#: rather than a status.
+#:
+#: ``invalid`` is the one whose actor is not a person. The ledger began as "what a human did",
+#: and the runner joining them is the case the one-file-with-a-kind shape was built for: it
+#: needed no new file, no new reader and no new doc section. ``source`` names who acted --
+#: ``"webui"`` / ``"mcp"`` / ``"cli"`` for a person, ``"runner"`` for the campaign itself.
 KIND_KILLED = "killed"
 KIND_PROBED = "probed"
+KIND_INVALID = "invalid"
 
 
 def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_name: str,
@@ -434,7 +441,8 @@ def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_nam
         job_name: The job as the caller named it -- ``<config>/<run>`` locally, the Kubernetes Job
             name on the cluster. Recorded for the audit trail; it is lane-specific, so it is not
             what resolution keys on.
-        source: Which surface did it -- ``"webui"``, ``"mcp"`` or ``"cli"``. Not a user identity:
+        source: Which surface did it -- ``"webui"``, ``"mcp"``, ``"cli"``, or ``"runner"`` when
+            the campaign invalidated its own trial. Not a user identity:
             the service is unauthenticated (see ``service/app.py``'s ``serve``), so a name here
             would be invented rather than known.
         detail: The operator's optional explanation, or what was run.
@@ -538,6 +546,106 @@ def probed_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
     the same reason ``killed`` is kept out of ``num_failed``.
     """
     return intervened_runs(campaign_dir, KIND_PROBED)
+
+
+def invalid_runs(campaign_dir: Path) -> dict[str, dict[str, Any]]:
+    """Which runs the runner threw away. :func:`intervened_runs`, filtered to invalidations.
+
+    The consequence differs from both siblings, and in the direction that matters: an invalidated
+    run's ``test.xml`` is **overridden**, where a killed run's is kept. See
+    :func:`read_run_outcome` for why the inversion is deliberate.
+    """
+    return intervened_runs(campaign_dir, KIND_INVALID)
+
+
+def invalid_failure_message(entry: dict[str, Any],
+                            superseded: "str | None" = None) -> str:
+    """The ``failure_message`` a run the runner threw away carries.
+
+    Names what was discarded as well as why. The trial may have written a verdict, and a
+    reader who sees ``invalid`` where they remember a ``passed`` deserves to be told so in
+    the same sentence rather than left to go and find the ledger. *superseded* is that
+    verdict, supplied by :func:`read_run_outcome`, which is the only caller that can see it.
+    """
+    reason = (entry.get("detail") or "").strip()
+    text = f"trial invalidated by the runner: {reason}" if reason else (
+        "trial invalidated by the runner")
+    if superseded:
+        text += f" (discarded verdict: {superseded})"
+    return text
+
+
+def _verdict_word(result: dict[str, Any]) -> str:
+    """``passed`` / ``error`` / ``failed`` for a parsed ``test.xml``. One mapping, twice used."""
+    if result.get("success"):
+        return "passed"
+    return "error" if int(result.get("errors", 0)) else "failed"
+
+
+#: What a container DIED of, when the kubelet restarted it under a running trial. Its own
+#: file beside the intervention ledger, and for the same reasons: the *runner* writes it
+#: while the run's own records are written by the run, and it must survive a campaign that
+#: never postprocesses -- which is exactly the campaign that needs it.
+#:
+#: Separate from ``interventions.json`` rather than a fatter entry in it because the two
+#: answer different questions and are read by different callers. The ledger answers "was
+#: this run touched?" and every status derivation asks it on every campaign; this answers
+#: "what happened to the container?" and only a post-mortem asks it. Folding a 400-line log
+#: tail into the file that :func:`intervened_runs` reads for every config would make the
+#: common path pay for the rare one.
+_CONTAINER_FAILURES_FILENAME = "container_failures.json"
+
+
+def record_container_failures(campaign_root: Path,
+                              entries: "list[dict[str, Any]]") -> None:
+    """Append container-death records to ``_execution/container_failures.json``.
+
+    Appends rather than replaces: a campaign may lose several containers over its life, and
+    each is its own event with its own evidence.
+    """
+    if not entries:
+        return
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    path = exec_dir / _CONTAINER_FAILURES_FILENAME
+    existing = read_container_failures(campaign_root)
+    existing.extend(entries)
+    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+
+def read_container_failures(campaign_dir: Path) -> list[dict[str, Any]]:
+    """The campaign's container-death records; ``[]`` when there are none.
+
+    Degrades to ``[]`` on a corrupt file rather than raising, like the intervention ledger:
+    this is evidence *about* a failure, and a reader that dies on it turns one lost trial
+    into a lost campaign -- the shape of the very bug it was written to record.
+    """
+    path = Path(campaign_dir) / "_execution" / _CONTAINER_FAILURES_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def container_failure_message(record: dict[str, Any]) -> str:
+    """One sentence naming what died and how, built once so every reader says the same.
+
+    Prefers the signal name over the raw code: ``SIGBUS`` is a diagnosis and ``135`` is a
+    number that has to be looked up, and the looking-up is what did not happen last time.
+    """
+    container = record.get("container") or "a container"
+    reason = record.get("reason")
+    code = record.get("exit_code")
+    signal_name = record.get("signal_name")
+    how = signal_name or (f"exit {code}" if code is not None else "an unreported cause")
+    node = record.get("node_name")
+    text = f"{container} died of {how}"
+    if reason:
+        text += f" ({reason})"
+    if node:
+        text += f" on {node}"
+    return text
 
 
 def killed_failure_message(entry: dict[str, Any]) -> str:
@@ -889,7 +997,8 @@ def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any
 
 def read_run_outcome(run_dir: Path,
                      campaign_root: Path | None = None,
-                     killed: "dict[str, dict[str, Any]] | None" = None) -> dict[str, Any]:
+                     killed: "dict[str, dict[str, Any]] | None" = None,
+                     invalid: "dict[str, dict[str, Any]] | None" = None) -> dict[str, Any]:
     """Per-run outcome for the ``run`` table, derived from ``test.xml``.
 
     The single place the JUnit result is mapped to a normalized ``status`` —
@@ -906,6 +1015,18 @@ def read_run_outcome(run_dir: Path,
     run that delivered nothing, which is what makes this whole distinction additive:
     no run that ever produced a verdict changes status.
 
+    ``invalid`` is the exact inverse, and it is the ONLY status that overrides a written
+    verdict. The inversion is the whole reason it is a separate kind rather than another
+    ``killed``: a killed run's ``test.xml`` was written *before* the intervention, so it is
+    measurement; an invalidated run's was written *by* the trial the intervention says was
+    broken. A container the trial depended on crashed under it and came back with no memory
+    of the run, and the scenario carried on — so the file records what a simulator that had
+    lost its state produced. That is at its most dangerous when it says ``passed``, because
+    nothing else about the run looks wrong. Trusting it is the data loss; discarding it is
+    not: the ``test.xml`` stays on disk, and the verdict being overridden is named in the
+    run's ``failure_message`` ("discarded verdict: passed"), so the override is auditable
+    and reversible rather than merely silent.
+
     Args:
         run_dir: The run's directory (``<campaign>/<config>/<run>``).
         campaign_root: The campaign root, which adds ``job_dir`` / ``sysinfo`` from
@@ -915,16 +1036,38 @@ def read_run_outcome(run_dir: Path,
             Passed in rather than read here so a whole config's runs share one read of
             the ledger; ``None`` means "look it up", and an empty mapping means "nothing
             was killed" — the default.
+        invalid: An :func:`invalid_runs` mapping, on the same terms.
 
     Returns a dict keyed exactly like the ``run`` columns: ``run_id``, ``status``,
     ``passed`` (0/1), ``errors``, ``failures``, ``tests``, ``duration_s``,
     ``start_time``, ``failure_message``.
     """
     run_id = int(run_dir.name) if run_dir.name.isdigit() else -1
+    run_key = f"{run_dir.parent.name}/{run_dir.name}"
     job: dict[str, Any] = {}
     if campaign_root is not None:
         job_dir, sysinfo = read_run_job(run_dir, campaign_root)
         job = {"job_dir": job_dir, "sysinfo": sysinfo}
+    # Checked BEFORE the verdict is read, not in the handler for a missing one: this is the
+    # status that overrides what the trial wrote, so reading it first is the point.
+    if invalid is None and campaign_root is not None:
+        invalid = invalid_runs(campaign_root)
+    invalid_entry = (invalid or {}).get(run_key)
+    if invalid_entry is not None:
+        # Read the verdict being discarded, and name it in the message. The runner could
+        # not: at the moment it invalidates a job the trial may not have written one yet,
+        # and it has no access to the run directory. Here it is known, and saying "the
+        # discarded verdict was passed" out loud is what keeps the override auditable
+        # instead of merely silent.
+        try:
+            superseded = _verdict_word(read_test_result(run_dir))
+        except (OSError, ET.ParseError, ValueError):
+            superseded = None
+        return {"run_id": run_id, "status": "invalid", "passed": 0,
+                "errors": 0, "failures": 0, "tests": 0,
+                "duration_s": None, "start_time": None,
+                "failure_message": invalid_failure_message(invalid_entry, superseded),
+                **job}
     try:
         tr = read_test_result(run_dir)
     except (OSError, ET.ParseError, ValueError):
@@ -934,7 +1077,7 @@ def read_run_outcome(run_dir: Path,
         # (``FileNotFoundError``); ``ET.ParseError``/``ValueError`` the malformed one.
         if killed is None and campaign_root is not None:
             killed = killed_runs(campaign_root)
-        entry = (killed or {}).get(f"{run_dir.parent.name}/{run_dir.name}")
+        entry = (killed or {}).get(run_key)
         if entry is not None:
             # Deliberately stopped, not lost: ``unknown`` would file this with the runs
             # whose result went missing for reasons nobody chose.
@@ -949,7 +1092,7 @@ def read_run_outcome(run_dir: Path,
     passed = 1 if tr.get("success") else 0
     errors = int(tr.get("errors", 0))
     failures = int(tr.get("failures", 0))
-    status = "passed" if passed else "error" if errors else "failed"
+    status = _verdict_word(tr)
     return {
         "run_id": run_id, "status": status, "passed": passed,
         "errors": errors, "failures": failures, "tests": int(tr.get("tests", 0)),
@@ -963,13 +1106,24 @@ def read_run_outcomes(config_dir: Path,
                       campaign_root: Path | None = None) -> list[dict[str, Any]]:
     """:func:`read_run_outcome` for every numeric run dir under *config_dir*.
 
-    The manual-kill ledger is resolved **once** here and shared across the config's runs,
+    The intervention ledger is resolved **once** here and shared across the config's runs,
     rather than per run: with no ledger that is a single ``is_file`` miss for the whole
     config, and the outcomes are then identical to what this returned before the ledger
     existed.
+
+    Read unfiltered and split by kind locally rather than calling :func:`killed_runs` and
+    :func:`invalid_runs` in turn — two calls would be two file reads and two manifest reads,
+    which is exactly the per-config cost this promises not to pay.
     """
-    killed = killed_runs(campaign_root) if campaign_root is not None else {}
-    return [read_run_outcome(rd, campaign_root, killed)
+    killed: dict[str, dict[str, Any]] = {}
+    invalid: dict[str, dict[str, Any]] = {}
+    if campaign_root is not None:
+        for run_key, entry in intervened_runs(campaign_root).items():
+            if entry.get("kind") == KIND_KILLED:
+                killed[run_key] = entry
+            elif entry.get("kind") == KIND_INVALID:
+                invalid[run_key] = entry
+    return [read_run_outcome(rd, campaign_root, killed, invalid)
             for rd in list_run_dirs(config_dir)]
 
 
@@ -1045,6 +1199,7 @@ def get_vast_configuration_info(
         - num_passed: int - Number of passed tests
         - num_failed: int - Number of failed tests
         - num_errors: int - Number of errors
+        - num_invalid: int - Runs the runner discarded (a container restarted under them)
         - total_duration_sec: float - Total execution time in seconds
         - execution_info: dict - Execution metadata (version, type, image, etc.)
         - configs: list[dict] - Per-configuration statistics
@@ -1054,6 +1209,10 @@ def get_vast_configuration_info(
     """
     # Get execution metadata
     exec_meta = read_execution_metadata(campaign_dir)
+    # This is the ``test.xml`` walk used when ``campaign.db`` is absent, so it must consult
+    # the ledger for itself: an invalidated run's ``test.xml`` may say ``passed``, and a
+    # recovery path that believes it would report the very verdict the runner discarded.
+    invalidated = set(invalid_runs(campaign_dir))
 
     # Discover config directories if not provided
     if config_dirs is None:
@@ -1079,6 +1238,7 @@ def get_vast_configuration_info(
     num_passed = 0
     num_failed = 0
     num_errors = 0
+    num_invalid = 0
     total_duration = 0.0
 
     for config_dir in config_dirs:
@@ -1089,9 +1249,13 @@ def get_vast_configuration_info(
         config_passed = 0
         config_failed = 0
         config_errors = 0
+        config_invalid = 0
         config_duration = 0.0
 
         for run_dir in run_dirs:
+            if f"{config_name}/{run_dir.name}" in invalidated:
+                config_invalid += 1
+                continue
             try:
                 result = read_test_result(run_dir)
                 if result["success"]:
@@ -1112,6 +1276,7 @@ def get_vast_configuration_info(
             "passed": config_passed,
             "failed": config_failed,
             "errors": config_errors,
+            **({"invalid": config_invalid} if config_invalid else {}),
             "duration_sec": config_duration,
         })
 
@@ -1119,6 +1284,7 @@ def get_vast_configuration_info(
         num_passed += config_passed
         num_failed += config_failed
         num_errors += config_errors
+        num_invalid += config_invalid
         total_duration += config_duration
 
     return {
@@ -1128,6 +1294,7 @@ def get_vast_configuration_info(
         "num_passed": num_passed,
         "num_failed": num_failed,
         "num_errors": num_errors,
+        "num_invalid": num_invalid,
         "total_duration_sec": total_duration,
         "execution_info": {
             "execution_time": exec_meta.get("execution_time"),
@@ -1163,15 +1330,30 @@ def list_run_dirs(config_dir: Path) -> list[Path]:
         return []
 
 
-def aggregate_run_status(run_dirs: list[Path]) -> str:
+def aggregate_run_status(run_dirs: list[Path], *,
+                         invalid: "set[str] | None" = None) -> str:
     """Aggregate per-run pass/fail (from each run's ``test.xml``) into one status.
 
     Returns ``passed`` (all runs passed), ``failed`` (none passed), ``mixed``
-    (some of each), or ``no_runs`` (no runs present). A run missing ``test.xml``
-    counts against the config.
+    (some of each), ``no_sample`` (runs present but every one invalidated), or
+    ``no_runs`` (no runs present). A run missing ``test.xml`` counts against the config.
+
+    *invalid* is a set of ``"<config>/<run>"`` keys (see :func:`invalid_runs`). Those runs
+    are skipped in **both** tallies: a trial the runner threw away is neither a pass nor a
+    strike against the configuration, and counting it as a failure would put an
+    infrastructure fault into the measured result.
+
+    A config whose every run was invalidated returns ``no_sample`` rather than ``failed`` or
+    ``no_runs``. That word already exists in ``unit.status`` with exactly this meaning --
+    it ran and produced nothing measurable -- so reusing it adds no vocabulary and keeps
+    "we measured nothing" apart from "we measured nothing good".
     """
-    passed = failed = 0
+    invalid = invalid or set()
+    passed = failed = counted = 0
     for run_dir in run_dirs:
+        if f"{run_dir.parent.name}/{run_dir.name}" in invalid:
+            continue
+        counted += 1
         try:
             result = read_test_result(run_dir)
         except FileNotFoundError:
@@ -1183,6 +1365,8 @@ def aggregate_run_status(run_dirs: list[Path]) -> str:
             failed += 1
     if not run_dirs:
         return "no_runs"
+    if not counted:
+        return "no_sample"
     if failed == 0:
         return "passed"
     if passed == 0:

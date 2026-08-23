@@ -559,6 +559,13 @@ def _build_packed_compose_yaml(
         lines.append("    runtime: nvidia")
     if has_secondaries:
         lines.append("    ipc: shareable")
+    shm_size = (execution or {}).get('shm_size')
+    # The sidecars join this container's IPC namespace below, so they share its /dev/shm --
+    # Docker's default 64 MB unless this says otherwise. Set on the main container only,
+    # because that is the one whose namespace the others inherit. Same `execution.shm_size`
+    # as the cluster lane, so one .vast means the same thing on both.
+    if shm_size:
+        lines.append(f"    shm_size: {shm_size}")
 
     lines.append("    volumes:")
     lines.append(f'      - "{quote(out_path)}:/out"')

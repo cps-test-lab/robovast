@@ -48,7 +48,8 @@ from datetime import datetime
 from pathlib import Path
 
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
-from robovast.common.campaign_data import (aggregate_run_status, list_run_dirs,
+from robovast.common.campaign_data import (aggregate_run_status, invalid_runs,
+                                           list_run_dirs, read_container_failures,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_per_run_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
@@ -243,6 +244,7 @@ class CampaignController:
             raise
         finally:
             self._record_execution_provenance(campaign_id, time.monotonic() - run_started)
+            self._record_container_failures(campaign_id)
             self._stop_progress_poller()
             # The heartbeat deliberately outlives run(): share and postprocessing are
             # the longest stretch of a campaign in which nothing else reports, and
@@ -267,6 +269,26 @@ class CampaignController:
         if declared is None:
             return None
         return declared * int(execution.get("runs_per_job") or 1)
+
+    def _record_container_failures(self, campaign_id: int) -> None:
+        """Lift ``_execution/container_failures.json`` into the ``container_failure`` table.
+
+        In the ``finally`` of :meth:`run` for the same reasons as
+        :meth:`_record_execution_provenance`, and one sharper one: the campaign this exists
+        for is the one that DIED. A campaign that fails mid-batch records no ``run`` rows
+        at all and never postprocesses, so ``data.db`` is never built -- and the query
+        interface fetches only ``campaign.db`` and ``_execution/data.db``. Writing here is
+        what makes the evidence reachable by SQL for exactly the campaigns that need it.
+
+        The JSON file stays the record; this is an index into it. Best-effort throughout:
+        bookkeeping about a failure must never become a second failure.
+        """
+        try:
+            records = read_container_failures(Path(self.campaign_root))
+            if records:
+                self.store.record_container_failures(campaign_id, records)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Could not record container failures.", exc_info=True)
 
     def _record_execution_provenance(self, campaign_id: int, elapsed_s: float) -> None:
         """Lift ``_execution/execution.yaml`` onto the campaign row, and stamp elapsed.
@@ -401,8 +423,11 @@ class CampaignController:
         self._batch_total = total
         # A new batch resets every counter, so this one replaces the sub-model rather
         # than merging: a previous batch's failures must not carry into this one.
+        # ``batch_since`` is stamped with them, and for the same reason: the counters
+        # are only readable as a rate against the clock they reset with.
         self.state.update(runs={"completed": 0, "total": total, "no_result": 0,
-                                "failed": 0})
+                                "failed": 0},
+                          batch_since=time.time())
         self._batch_active.set()
 
     def _end_batch_progress(self) -> None:
@@ -449,6 +474,10 @@ class CampaignController:
 
         failed_runs = 0
         killed_runs = 0
+        invalid_runs_count = 0
+        # Resolved once for the whole batch: the ledger is a single ``is_file`` miss for
+        # every campaign nobody intervened in, which is nearly all of them.
+        invalidated = set(invalid_runs(Path(self.campaign_root)))
         for cfg in configs:
             name = cfg["name"]
             cdir = os.path.join(self.campaign_root, name)
@@ -456,7 +485,8 @@ class CampaignController:
             unit_id = self.store.record_unit(
                 batch_id=batch_id, paramset_id=name, config_name=name,
                 params=cfg.get("config", {}) or {}, objectives={}, measures={},
-                n_samples=len(run_dirs), status=aggregate_run_status(run_dirs),
+                n_samples=len(run_dirs),
+                status=aggregate_run_status(run_dirs, invalid=invalidated),
                 result_dir=os.path.relpath(cdir, self.campaign_root))
             outcomes = read_run_outcomes(Path(cdir), Path(self.campaign_root))
             self.store.record_runs(unit_id, outcomes)
@@ -464,15 +494,20 @@ class CampaignController:
             # live state is what makes a failing trial visible to a status poll. Without
             # it the only failure count was "produced no result", which a scenario that
             # ran and failed does not trip — so the campaign reported itself clean.
-            cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+            cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
             failed_runs += cfg_failed
             killed_runs += cfg_killed
+            invalid_runs_count += cfg_invalid
         if self.state is not None:
             if failed_runs:
                 logger.warning("Batch complete: %d run(s) did not pass.", failed_runs)
             if killed_runs:
                 logger.warning("Batch complete: %d run(s) stopped manually.", killed_runs)
-            self.state.update_runs(failed=failed_runs, killed=killed_runs)
+            if invalid_runs_count:
+                logger.warning("Batch complete: %d trial(s) invalidated by the runner.",
+                               invalid_runs_count)
+            self.state.update_runs(failed=failed_runs, killed=killed_runs,
+                                   invalid=invalid_runs_count)
             self.state.update(batches_done=1,
                               batch_history=[{"idx": 0, "n_units": len(configs)}])
         self.notifier.batch_finished(0, len(configs))
@@ -483,7 +518,6 @@ class CampaignController:
     # -- search mode --------------------------------------------------------
 
     def _run_search(self, campaign_id: int):
-        from robovast.search.stopping import StopResult, StopSnapshot
         stop = self.stop_conditions
         obj_name = self.strategy.single_objective.name
         if not stop.has_budget:
@@ -492,6 +526,52 @@ class CampaignController:
         batch_idx = 0
         start = time.monotonic()
         best_objective = None          # best-so-far, in raw objective units
+        result = None
+        try:
+            result, batch_idx, best_objective = self._search_loop(
+                campaign_id, stop, obj_name, start, batch_idx, best_objective)
+        except BaseException as exc:
+            # A search that dies mid-loop never reached `record_outcome` below, so its
+            # campaign row said NOTHING about why it stopped -- stop_kind, stop_reason and
+            # batches all NULL, indistinguishable from a campaign that never ran a batch.
+            # The one that motivated this had two batches of real data behind that silence.
+            self.store.record_outcome(
+                campaign_id, batches=batch_idx, elapsed_s=time.monotonic() - start,
+                **self._abort_outcome(exc))
+            raise
+        return self._finish_search(campaign_id, result, batch_idx, start)
+
+    def _abort_outcome(self, exc) -> dict:
+        """``stop_kind``/``stop_reason`` for a search that ended by raising.
+
+        A cooperative stop is classified as one even when it arrives as an exception, the
+        same way :meth:`run` reclassifies it: the operator asked, and recording that as an
+        error would file a deliberate act under faults.
+        """
+        stopped = isinstance(exc, CampaignStopped) or (
+            self.state is not None and self.state.stop_requested)
+        if stopped:
+            return {"stop_kind": "stopped", "stop_reason": str(exc) or "stop requested"}
+        return {"stop_kind": "error", "stop_reason": f"{type(exc).__name__}: {exc}"}
+
+    def _finish_search(self, campaign_id, result, batch_idx, start):
+        """Record the outcome of a search that ended the way it meant to, and report."""
+        elapsed_s = time.monotonic() - start
+        self.store.record_outcome(
+            campaign_id, stop_kind=result.kind, stop_reason=result.reason,
+            batches=batch_idx, elapsed_s=elapsed_s)
+        report = self.strategy.report()
+        report.extra['stop'] = {"kind": result.kind, "reason": result.reason,
+                                "batches": batch_idx, "elapsed_s": elapsed_s}
+        logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s) "
+                    "(%s)\n%s", _BAR, batch_idx, len(report.evaluations), result.reason,
+                    _BAR)
+        return report
+
+    def _search_loop(self, campaign_id, stop, obj_name, start, batch_idx,
+                     best_objective):
+        """The ask/evaluate/tell loop; returns ``(result, batch_idx, best_objective)``."""
+        from robovast.search.stopping import StopResult, StopSnapshot
         result = None
         while True:
             param_sets = self.strategy.ask(self.per_batch)
@@ -529,17 +609,7 @@ class CampaignController:
                     self.state.update(stop={"kind": result.kind, "reason": result.reason})
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
-
-        elapsed_s = time.monotonic() - start
-        self.store.record_outcome(
-            campaign_id, stop_kind=result.kind, stop_reason=result.reason,
-            batches=batch_idx, elapsed_s=elapsed_s)
-        report = self.strategy.report()
-        report.extra['stop'] = {"kind": result.kind, "reason": result.reason,
-                                "batches": batch_idx, "elapsed_s": elapsed_s}
-        logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s) "
-                    "(%s)\n%s", _BAR, batch_idx, len(report.evaluations), result.reason, _BAR)
-        return report
+        return result, batch_idx, best_objective
 
     @staticmethod
     def _fmt(v):
@@ -556,7 +626,7 @@ class CampaignController:
         cur = float(p.current)
         return {"label": p.label,
                 "current": None if math.isnan(cur) else cur,
-                "limit": float(p.limit), "done": bool(p.done)}
+                "limit": float(p.limit), "done": bool(p.done), "kind": p.kind}
 
     def _update_best(self, best, evaluations, obj_name):
         """Fold this batch's objective values into the best-so-far (raw units,
@@ -612,6 +682,7 @@ class CampaignController:
         evaluations = []
         failed_runs = 0
         killed_runs = 0
+        invalid_runs_count = 0
         try:
             for reps, group in sorted(groups.items()):
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
@@ -672,9 +743,10 @@ class CampaignController:
                         # the evaluation that could not use them.
                         outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                         self.store.record_runs(unit_id, outcomes)
-                        cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+                        cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
                         failed_runs += cfg_failed
                         killed_runs += cfg_killed
+                        invalid_runs_count += cfg_invalid
                         continue
                     evaluations.append(ev)
                     unit_id = self.store.record_unit(
@@ -684,20 +756,26 @@ class CampaignController:
                         result_dir=result_dir)
                     outcomes = read_run_outcomes(config_dir, Path(self.campaign_root))
                     self.store.record_runs(unit_id, outcomes)
-                    cfg_failed, cfg_killed = _tally_outcomes(outcomes)
+                    cfg_failed, cfg_killed, cfg_invalid = _tally_outcomes(outcomes)
                     failed_runs += cfg_failed
                     killed_runs += cfg_killed
+                    invalid_runs_count += cfg_invalid
         finally:
             # Same tally as batch mode: a trial that ran and failed is invisible in the
             # resultless count, so surface it before the batch's progress is closed out.
-            if self.state is not None and (failed_runs or killed_runs):
+            if self.state is not None and (failed_runs or killed_runs
+                                           or invalid_runs_count):
                 if failed_runs:
                     logger.warning("Batch %d: %d run(s) did not pass.",
                                    batch_idx, failed_runs)
                 if killed_runs:
                     logger.warning("Batch %d: %d run(s) stopped manually.",
                                    batch_idx, killed_runs)
-                self.state.update_runs(failed=failed_runs, killed=killed_runs)
+                if invalid_runs_count:
+                    logger.warning("Batch %d: %d trial(s) invalidated by the runner.",
+                                   batch_idx, invalid_runs_count)
+                self.state.update_runs(failed=failed_runs, killed=killed_runs,
+                                       invalid=invalid_runs_count)
             self._end_batch_progress()
         return evaluations
 
@@ -807,18 +885,29 @@ def _finalize(backend: ExecutionBackend, campaign_root: str) -> None:
         logger.warning("Campaign finalize hook failed", exc_info=True)
 
 
-def _tally_outcomes(outcomes) -> tuple[int, int]:
-    """``(failed, killed)`` over one config's run outcomes.
+#: Statuses that are not a verdict about the system under test, and so are counted apart
+#: from ``failed`` everywhere. ``killed``: an operator stopped the job by hand.
+#: ``invalid``: the runner threw the trial away because a container it depended on crashed
+#: under it. Folding either into ``failed`` would report an intervention or an
+#: infrastructure fault as evidence against the thing being measured.
+NOT_A_VERDICT = ("killed", "invalid")
+
+
+def _tally_outcomes(outcomes) -> tuple[int, int, int]:
+    """``(failed, killed, invalid)`` over one config's run outcomes.
 
     One definition, shared by batch and search mode, so the two cannot come to disagree
-    about what counts as a failure. ``killed`` — a job an operator stopped by hand — is
-    counted apart and deliberately kept **out** of ``failed``: it is not a verdict about
-    the system under test, so folding it in would report a human intervention as a trial
-    failure in the live status, the notification, and every reader downstream of them.
+    about what counts as a failure. ``killed`` and ``invalid`` are counted apart and
+    deliberately kept **out** of ``failed`` (see :data:`NOT_A_VERDICT`): neither is a
+    verdict about the system under test, so folding them in would report a human
+    intervention or a crashed sidecar as a trial failure in the live status, the
+    notification, and every reader downstream of them.
     """
     killed = sum(1 for o in outcomes if o.get("status") == "killed")
-    failed = sum(1 for o in outcomes if o.get("status") not in ("passed", "killed"))
-    return failed, killed
+    invalid = sum(1 for o in outcomes if o.get("status") == "invalid")
+    failed = sum(1 for o in outcomes
+                 if o.get("status") not in ("passed",) + NOT_A_VERDICT)
+    return failed, killed, invalid
 
 
 def outcome_summary(snap) -> tuple[str, bool]:
@@ -1178,7 +1267,11 @@ def _record_controller_outcome(campaign_root, campaign_id, state, backend):
         # image never reaches _finalize at all, and the live build log dies with the
         # build Job at ttlSecondsAfterFinished — this copy is the only surviving record
         # of why the image never arrived.
-        for name in ("outcome.json", "controller.log", "variation.log", "build.log"):
+        # container_failures.json is here and not only in the whole-root finalize upload
+        # because this path runs for a campaign that FAILED, and finalize does not run for
+        # one that was stopped -- which is exactly when the evidence matters most.
+        for name in ("outcome.json", "controller.log", "variation.log", "build.log",
+                     "container_failures.json", "interventions.json"):
             path = os.path.join(exec_dir, name)
             if os.path.isfile(path):
                 storage.upload_file(path, bucket, f"{prefix}_execution/{name}")
