@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import yaml
 from kubernetes import client
@@ -43,6 +44,26 @@ KUEUE_WORKLOAD_GROUP = "kueue.x-k8s.io"
 KUEUE_WORKLOAD_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
 KUEUE_RESOURCE_FLAVOR_NAME = "default-flavor"
+
+#: Kueue reads a Job's priority off this **label** (an annotation is ignored, exactly as
+#: for the queue-name label). It names a WorkloadPriorityClass, which orders the
+#: ClusterQueue's *pending* workloads only -- unlike a pod ``priorityClassName`` it never
+#: reaches kube-scheduler, so a higher-priority campaign never preempts running work.
+KUEUE_PRIORITY_LABEL = "kueue.x-k8s.io/priority-class"
+KUEUE_PRIORITY_CLASS_PLURAL = "workloadpriorityclasses"
+
+#: ``jobgroup`` value on a campaign's WorkloadPriorityClass. The class carries the same
+#: ``jobgroup``/``campaign-id`` labels as the campaign's Jobs and Pods so it is removed by
+#: the ordinary campaign-scoped cleanup selector rather than by a GC pass of its own.
+CAMPAIGN_PRIORITY_JOBGROUP = "campaign-priority"
+CAMPAIGN_PRIORITY_CLASS_PREFIX = "robovast-campaign-"
+
+#: Priority is ``_PRIORITY_BASE - seconds since _PRIORITY_REF``, so an older campaign
+#: outranks a younger one forever and no label is ever rewritten as campaigns come and go.
+#: The origin is arbitrary but fixed: it only has to keep the result inside int32, which
+#: it does for ~63 years.
+_PRIORITY_REF = datetime(2026, 1, 1)
+_PRIORITY_BASE = 2_000_000_000
 
 #: The taint a campaign node may carry, and so what anything that has to run *where campaigns
 #: run* must tolerate. Named here because this is where the ResourceFlavor granting it is
@@ -150,6 +171,139 @@ def _queue_manifests(namespace, queue_name, cluster_queue, cpu_quota, memory_quo
             "spec": {"clusterQueue": cluster_queue},
         },
     ]
+
+
+def campaign_priority_value(campaign_id: str) -> int:
+    """The Kueue priority for *campaign_id*: higher means started earlier.
+
+    Kueue orders a ClusterQueue's pending workloads by priority, then by Workload
+    ``creationTimestamp``. That timestamp is the wrong key for a search campaign: its
+    batches are submitted one after another, so a long-running campaign's later batches
+    are always *younger* than a campaign that started after it, and the two end up
+    taking turns instead of the older one finishing first.
+
+    Deriving the priority from the campaign's own start time fixes that, and because the
+    value is monotone in that start time the ordering is permanent -- no label is ever
+    rewritten, and nothing has to know which campaigns are currently live.
+
+    The start time is read back out of the campaign id (``<name>-YYYY-MM-DD-HHMMSScc``),
+    which is where it already lives; see ``campaign_id_for``. The two datetimes are
+    subtracted **naively**, never via ``.timestamp()``: this must be monotone in the
+    wall-clock label, and going through epoch seconds would fold the repeated hour of a
+    DST fall-back onto itself and invert two campaigns' order.
+
+    Raises:
+        CampaignConfigError: *campaign_id* carries no parsable timestamp. Every campaign
+            id has one by construction (``is_campaign_dir`` enforces the shape), and
+            quietly handing an odd one the lowest possible priority would starve it
+            behind every other campaign for as long as it ran.
+    """
+    from robovast.common.errors import CampaignConfigError
+    from robovast.common.execution import get_campaign_timestamp
+
+    stamp = get_campaign_timestamp(campaign_id)
+    try:
+        # Hundredths of a second may follow HHMMSS; seconds resolution is plenty to
+        # separate two campaigns, and the ids are unique regardless.
+        started = datetime.strptime(stamp[:17], "%Y-%m-%d-%H%M%S")
+    except ValueError as exc:
+        raise CampaignConfigError(
+            f"Campaign id '{campaign_id}' has no parsable "
+            f"'<name>-YYYY-MM-DD-HHMMSS' timestamp, so its Kueue priority cannot be "
+            f"derived and the campaign would queue behind every other one."
+        ) from exc
+    return _PRIORITY_BASE - int((started - _PRIORITY_REF).total_seconds())
+
+
+def campaign_priority_class_name(campaign_id: str) -> str:
+    """Name of the WorkloadPriorityClass carrying *campaign_id*'s priority."""
+    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415 - avoids a cycle
+
+    # _label_safe_campaign already yields an RFC 1123 name; the prefix keeps these
+    # distinguishable from any priority class an operator defined by hand.
+    return (CAMPAIGN_PRIORITY_CLASS_PREFIX + _label_safe_campaign(campaign_id))[:253]
+
+
+def campaign_priority_class_manifest(campaign_id: str) -> dict:
+    """The WorkloadPriorityClass for *campaign_id*, as a manifest dict."""
+    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415 - avoids a cycle
+
+    return {
+        "apiVersion": f"{KUEUE_WORKLOAD_GROUP}/{KUEUE_WORKLOAD_VERSION}",
+        "kind": "WorkloadPriorityClass",
+        "metadata": {
+            "name": campaign_priority_class_name(campaign_id),
+            # The same pair every Job and Pod of the campaign carries, so the ordinary
+            # campaign-scoped cleanup selector removes this too.
+            "labels": {
+                "jobgroup": CAMPAIGN_PRIORITY_JOBGROUP,
+                "campaign-id": _label_safe_campaign(campaign_id),
+            },
+        },
+        "value": campaign_priority_value(campaign_id),
+        "description": f"RoboVAST campaign {campaign_id}, prioritized by start time",
+    }
+
+
+def ensure_campaign_priority_class(campaign_id, kube_context=None) -> str:
+    """Create *campaign_id*'s WorkloadPriorityClass if absent; return its name.
+
+    Idempotent, so every batch may call it: the campaign's priority never changes, and a
+    second create is a 409 that means the first one worked.
+
+    Fails loudly on anything else. Kueue rejects a Job whose priority-class label names a
+    class that does not exist, so submitting the batch anyway would fail job-by-job with
+    a webhook error instead of once, here, with the reason.
+    """
+    from .kube_client import load_kube_config
+
+    load_kube_config(context=kube_context)
+    manifest = campaign_priority_class_manifest(campaign_id)
+    name = manifest["metadata"]["name"]
+    try:
+        client.CustomObjectsApi().create_cluster_custom_object(
+            group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+            plural=KUEUE_PRIORITY_CLASS_PLURAL, body=manifest)
+        logger.info("Created Kueue priority class '%s' (value %d) for campaign '%s'",
+                    name, manifest["value"], campaign_id)
+    except client.rest.ApiException as exc:
+        if exc.status != 409:
+            raise
+        logger.debug("Kueue priority class '%s' already exists", name)
+    return name
+
+
+def cleanup_campaign_priority_classes(campaign=None, kube_context=None):
+    """Delete the WorkloadPriorityClass(es) RoboVAST created for campaigns.
+
+    Scoped to *campaign* when given, otherwise every campaign priority class -- the same
+    two-way scoping the Job and Pod cleanups use, off the same labels.
+
+    Must run **after** the campaign's Workloads and Jobs are gone. Deleting the class
+    cannot disturb work already queued (Kueue copies the resolved value onto each
+    Workload when it creates it), but a Job created against a missing class is rejected,
+    so removing it while the campaign still submits would break the campaign.
+    """
+    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415 - avoids a cycle
+
+    selector = f"jobgroup={CAMPAIGN_PRIORITY_JOBGROUP}"
+    if campaign is not None:
+        selector += f",campaign-id={_label_safe_campaign(campaign)}"
+    try:
+        client.CustomObjectsApi().delete_collection_cluster_custom_object(
+            group=KUEUE_WORKLOAD_GROUP, version=KUEUE_WORKLOAD_VERSION,
+            plural=KUEUE_PRIORITY_CLASS_PLURAL, label_selector=selector,
+            body=client.V1DeleteOptions(grace_period_seconds=0,
+                                        propagation_policy="Background"))
+        logger.debug("Deleted Kueue priority classes matching '%s'", selector)
+    except client.rest.ApiException as e:
+        if e.status == 404:
+            logger.debug("WorkloadPriorityClass CRD not found; skipping priority cleanup")
+        else:
+            # Advisory: a leftover priority class is inert (nothing references it once the
+            # campaign's jobs are gone) and the next full cleanup removes it. Failing the
+            # campaign's teardown over it would be worse than the litter.
+            logger.warning("Could not delete Kueue priority classes (%s): %s", selector, e)
 
 
 def _parse_resource(val):
@@ -875,6 +1029,9 @@ _KUEUE_CRDS = [
     "clusterqueues.kueue.x-k8s.io",
     "resourceflavors.kueue.x-k8s.io",
     "localqueues.kueue.x-k8s.io",
+    # Every campaign creates one of these to be admitted in start-time order; without the
+    # CRD the priority class cannot be created and no batch can be submitted at all.
+    "workloadpriorityclasses.kueue.x-k8s.io",
 ]
 
 

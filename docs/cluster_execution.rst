@@ -907,6 +907,28 @@ indefinitely**, and a suspended job still counts as active, so a campaign would 
 creating any job and fails with the remedy instead. If you see that error, re-run
 ``vast execution cluster setup`` (or ``upgrade``, which reconciles the queues too).
 
+**Older campaigns finish first.** When several campaigns run at once, Kueue admits the
+one that started earliest first. Every job carries a priority derived from its campaign's
+start time, so each slot that frees up goes to the oldest campaign that still has work
+queued — a campaign is no longer overtaken by one launched after it. There is nothing to
+configure and no way to get it wrong: the priority comes from the campaign id.
+
+Two properties are worth stating, because they are what make this safe to leave on:
+
+* **It never stops work that is already running.** Priority orders the *queue* only. A
+  younger campaign's runs finish undisturbed; nothing is preempted, and no partial run
+  data is produced. The older campaign takes the capacity as it is released, not by
+  taking it away.
+* **The cluster still stays full.** A high-priority job that does not fit does not block
+  smaller ones behind it, so a younger campaign keeps using capacity the older one cannot.
+  Utilization is unchanged; only the order in which queued jobs are admitted changes.
+
+The one thing this does not do is reserve capacity. A search campaign postprocesses
+between batches, and while it is composing its next batch it has nothing queued — so a
+younger campaign legitimately fills the cluster in that window, and the older one
+reclaims the slots as they free. That is the intended trade: the alternative is idling
+the cluster to hold capacity for a campaign that is not yet asking for it.
+
 **Jobs waiting is normal.** A campaign whose jobs sit in the queue is healthy: it
 is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
 and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,

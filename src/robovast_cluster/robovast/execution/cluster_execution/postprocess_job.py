@@ -45,7 +45,9 @@ import time
 
 from robovast.common.execution import resolve_sidecar_image
 
-from .kubernetes_kueue import KUEUE_QUEUE_NAME
+from .kubernetes_kueue import (KUEUE_PRIORITY_LABEL, KUEUE_QUEUE_NAME,
+                               campaign_priority_class_name,
+                               ensure_campaign_priority_class)
 
 logger = logging.getLogger(__name__)
 
@@ -435,6 +437,11 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                 "campaign-id": safe,
                 # Kueue keys queue membership off the label, not an annotation.
                 "kueue.x-k8s.io/queue-name": KUEUE_QUEUE_NAME,
+                # Carries the campaign's own priority, like its scenario jobs. A search
+                # postprocesses between batches, so leaving this job at the default
+                # priority would park the oldest campaign behind a younger one's
+                # scenario jobs at exactly the point where it has nothing else pending.
+                KUEUE_PRIORITY_LABEL: campaign_priority_class_name(campaign_id),
             },
         },
         "spec": {
@@ -542,6 +549,14 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     except KueueCheckUnavailable as e:
         logger.warning("Cannot verify the Kueue admission path (%s); submitting "
                        "postprocessing anyway.", e)
+
+    # The job below names this campaign's priority class and Kueue rejects a job whose
+    # class is missing. Usually the campaign's scenario jobs already created it, but a
+    # postprocessing re-run after cleanup is exactly the case where they have not.
+    try:
+        ensure_campaign_priority_class(campaign_id, kube_context=kube_context)
+    except Exception as e:  # noqa: BLE001 - reported, like every other failure here
+        return False, f"postprocessing cannot be scheduled: {e}"
 
     from .cluster_execution import resolve_pull_secret  # noqa: PLC0415
 

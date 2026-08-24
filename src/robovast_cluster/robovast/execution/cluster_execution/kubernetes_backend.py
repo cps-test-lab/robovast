@@ -87,7 +87,9 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .kubernetes_kueue import KUEUE_QUEUE_NAME
+from .kubernetes_kueue import (KUEUE_PRIORITY_LABEL, KUEUE_QUEUE_NAME,
+                               campaign_priority_class_name,
+                               ensure_campaign_priority_class)
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -917,9 +919,13 @@ class BatchJobRunner:
         # Kueue keys queue membership off the label (not an annotation); an
         # annotation is not honored by Kueue 0.16.x, so the job would never be
         # suspended/admitted and would run unmanaged.
-        manifest.setdefault("metadata", {}).setdefault("labels", {})[
-            "kueue.x-k8s.io/queue-name"
-        ] = KUEUE_QUEUE_NAME
+        job_labels = manifest.setdefault("metadata", {}).setdefault("labels", {})
+        job_labels["kueue.x-k8s.io/queue-name"] = KUEUE_QUEUE_NAME
+        # Read off a label for the same reason. Orders this campaign's pending jobs
+        # against every other campaign's by campaign start time, so the oldest campaign
+        # takes each slot that frees; it never preempts, so a younger campaign's runs
+        # finish undisturbed. See kubernetes_kueue.campaign_priority_value.
+        job_labels[KUEUE_PRIORITY_LABEL] = campaign_priority_class_name(self.campaign)
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
@@ -1124,6 +1130,20 @@ class BatchJobRunner:
                            "proceeding. If jobs never start, check that ClusterQueue "
                            "and LocalQueue exist.", self._batch_tag, exc)
 
+    def _ensure_priority_class(self):
+        """Create this campaign's Kueue priority class, so its jobs can name it.
+
+        A method rather than a bare call for the same reason :meth:`_verify_admission_path`
+        is one: it is a side-effecting cluster step in the middle of batch submission, and
+        the callers that build a runner without one -- manifest emit, tests -- stub it out.
+
+        Unlike that check this one does not tolerate failure. Kueue rejects a Job whose
+        priority-class label names a class that does not exist, so a batch submitted
+        without it fails job-by-job with a webhook error instead of once, here, with the
+        reason.
+        """
+        ensure_campaign_priority_class(self.campaign, kube_context=self.kube_context)
+
     def _report_suspended_jobs(self, remaining):
         """Log why still-suspended jobs are waiting, and re-check the admission path.
 
@@ -1301,6 +1321,11 @@ class BatchJobRunner:
         # before creating anything, so the campaign dies here with the reason instead
         # of in the wait loop with none.
         self._verify_admission_path()
+        # Same reasoning one step further: every job also names this campaign's priority
+        # class, and Kueue rejects a job whose class does not exist. Creating it here
+        # (idempotent, so every batch may call it) keeps that a single up-front failure
+        # rather than one per job.
+        self._ensure_priority_class()
         jobs = self._build_jobs()
         total_jobs = len(jobs)
         job_names = []

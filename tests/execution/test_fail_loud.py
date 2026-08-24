@@ -356,3 +356,60 @@ def test_pre_existing_hold_is_preserved():
                     "_queue_object", return_value={"spec": {"stopPolicy": "Hold"}}):
         cluster_execution.cleanup_cluster_campaign(namespace="ns", campaign=None)
     assert written == ["Hold", "Hold"]
+
+
+# -- A7: the campaign's Kueue priority class ---------------------------------
+#
+# Every scenario/postprocess Job also names a WorkloadPriorityClass -- the value that
+# gets an older campaign admitted ahead of a younger one. Kueue REJECTS a Job whose
+# priority-class label names a class that does not exist, so the failure here is loud
+# by nature; what must not happen is submitting the batch anyway and taking that
+# rejection once per job instead of once, up front, with the reason.
+
+def _priority_api(create_status=None):
+    """A CustomObjectsApi double whose create raises *create_status* (None = succeeds)."""
+    from kubernetes.client import rest
+
+    api = mock.Mock()
+    if create_status is not None:
+        api.create_cluster_custom_object.side_effect = rest.ApiException(
+            status=create_status, reason="boom")
+    return api
+
+
+def _ensure(api, campaign="nav-2026-08-24-101500"):
+    from robovast.execution.cluster_execution import kubernetes_kueue
+    with mock.patch.object(kubernetes_kueue.client, "CustomObjectsApi",
+                           return_value=api), \
+         mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"):
+        return kubernetes_kueue.ensure_campaign_priority_class(campaign)
+
+
+def test_priority_class_create_failure_aborts_the_batch():
+    """Anything but a 409 must propagate before a single Job is created."""
+    from kubernetes.client import rest
+
+    with pytest.raises(rest.ApiException):
+        _ensure(_priority_api(create_status=403))
+
+
+def test_priority_class_already_exists_is_not_an_error():
+    """Every batch calls this, and the campaign's priority never changes -- a 409 means
+    an earlier batch already created it, which is success, not a conflict to report."""
+    name = _ensure(_priority_api(create_status=409))
+    assert name == "robovast-campaign-nav-2026-08-24-101500"
+
+
+def test_priority_class_is_created_with_the_campaigns_own_value():
+    """The submitted body must carry the age-derived value and the cleanup labels --
+    a class created without them would never be deleted with the campaign."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import (
+        campaign_priority_value)
+
+    api = _priority_api()
+    _ensure(api)
+    body = api.create_cluster_custom_object.call_args.kwargs["body"]
+    assert body["kind"] == "WorkloadPriorityClass"
+    assert body["value"] == campaign_priority_value("nav-2026-08-24-101500")
+    assert body["metadata"]["labels"]["jobgroup"] == "campaign-priority"
+    assert body["metadata"]["labels"]["campaign-id"] == "nav-2026-08-24-101500"

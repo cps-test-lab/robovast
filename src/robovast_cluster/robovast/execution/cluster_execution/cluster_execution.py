@@ -38,7 +38,8 @@ from robovast.common.config import SCENARIO_CONTAINER
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kube_client import pod_workload_containers
-from .kubernetes_kueue import cleanup_kueue_workloads, cluster_queue_held
+from .kubernetes_kueue import (cleanup_campaign_priority_classes, cleanup_kueue_workloads,
+                               cluster_queue_held)
 from .manifests import MAIN_CONTAINER_NAME
 
 logger = logging.getLogger(__name__)
@@ -1105,6 +1106,14 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
         cleanup_aux_pods(namespace=namespace, kube_context=context, campaign=campaign)
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Failed to clean up aux pods: %s", exc)
+
+    # Step 10: The campaign's Kueue priority class, scoped by the same
+    # jobgroup/campaign-id labels as everything above. LAST, after the Workloads and Jobs
+    # are gone: deleting it cannot disturb work Kueue has already queued (the resolved
+    # value is copied onto each Workload at creation), but a Job created against a
+    # missing class is rejected, so removing it any earlier could break a campaign that
+    # is still submitting.
+    cleanup_campaign_priority_classes(campaign=campaign, kube_context=context)
 
 
 #: One counter per phase :func:`list_jobs_with_phase` can report.

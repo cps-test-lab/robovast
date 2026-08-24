@@ -13,6 +13,7 @@ behind a safety net instead of blind.
 from robovast.execution.backends import RunOptions  # noqa: F401  # pylint: disable=unused-import  (import parity)
 from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
+from robovast.execution.cluster_execution.kubernetes_kueue import campaign_priority_class_name
 
 
 class _FakeClusterConfig:
@@ -68,6 +69,11 @@ def test_base_manifest_has_kueue_label_and_deadline(monkeypatch):
     r = _runner(monkeypatch, execution={"timeout": 30})
     # Kueue admits off the queue-name *label* (an annotation is ignored by Kueue).
     assert r.manifest["metadata"]["labels"]["kueue.x-k8s.io/queue-name"]
+    # Same for the priority class, which is what orders this campaign's pending jobs
+    # against a concurrent campaign's by start time. An annotation would be ignored and
+    # every campaign would silently fall back to equal priority.
+    assert (r.manifest["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
+            == campaign_priority_class_name("camp-2026-07-17-120000"))
     # Every Job is wall-clock capped so a stuck scenario is force-killed.
     assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # per-run * runs_per_job(1)
 

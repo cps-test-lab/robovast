@@ -1710,7 +1710,8 @@ behind it. RoboVAST targets Kueue |kueue_version|.
 homogeneous node pool; a ``ClusterQueue`` (``robovast-cluster-queue``) holds the
 combined CPU/memory quota, sized from ``allocatable − requested`` at setup time;
 a ``LocalQueue`` named ``robovast`` in the execution namespace is the submission
-target. Each generated Job carries the **label**
+target; and one ``WorkloadPriorityClass`` per campaign carries its admission
+priority (see *Campaign priority* below). Each generated Job carries the **label**
 ``kueue.x-k8s.io/queue-name: robovast`` — Kueue 0.16 keys queue membership off
 the label, not an annotation.
 
@@ -1750,6 +1751,53 @@ The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
 **existing** deployment must be redeployed to pick them up — until then the check
 reports "cannot verify" and the campaign proceeds, since a missing read
 permission should never block a run that would otherwise work.
+
+**Campaign priority (oldest first).** Kueue orders a ClusterQueue's pending workloads
+by priority, then by Workload ``creationTimestamp``. That second key is the wrong one for
+a search campaign, whose batches are submitted one after another: campaign A's batch *n+1*
+Jobs are only created once batch *n* has finished, so their Workloads are *younger* than
+those of a campaign B that started later. With equal priorities A then queues behind B's
+whole batch, B behind A's next one, and the two take turns instead of A finishing first.
+
+Every scenario and postprocess Job therefore also carries the **label**
+``kueue.x-k8s.io/priority-class``, naming a per-campaign ``WorkloadPriorityClass`` whose
+value is ``_PRIORITY_BASE − seconds since _PRIORITY_REF`` — so an earlier start time is a
+higher value. Points worth knowing:
+
+* **The value is derived, never stored.** It is computed from the timestamp already in the
+  campaign id (``<name>-YYYY-MM-DD-HHMMSS``) by ``campaign_priority_value()``. Because it
+  is monotone in the start time, the ordering is permanent: no label is ever rewritten as
+  campaigns come and go, and nothing has to know which campaigns are live. The two
+  datetimes are subtracted **naively** rather than via ``.timestamp()``, so the repeated
+  hour of a DST fall-back cannot fold two campaigns onto the same value. Resolution is one
+  second; two campaigns started within the same second tie and fall back to Kueue's second
+  key, which is the pre-existing behaviour for that pair alone.
+* **A ``WorkloadPriorityClass``, not a pod ``PriorityClass``.** The former orders admission
+  only; the latter reaches kube-scheduler and would **preempt** a younger campaign's
+  running scenario pods, discarding compute and leaving partial run data. ``preemption`` is
+  left unset on the ClusterQueue (so ``Never``) for the same reason, and
+  ``queueingStrategy`` is left at Kueue's default ``BestEffortFIFO`` so a high-priority
+  workload that does not fit cannot stall smaller ones behind it.
+* **Why one object per campaign.** Kueue resolves a *Job's* priority only through a named
+  object. A fixed ladder created once at setup cannot express it: fine-grained ordering
+  needs a rung per distinct start time, and coarsening to age buckets ties exactly the
+  campaigns launched minutes apart that this exists to separate. Setting
+  ``Workload.spec.priority`` directly would avoid the object — it is a bare int32 in
+  v1beta2 — but its correctness would rest on Kueue's webhook permitting the update and
+  the Job reconciler not reverting it, neither documented, and the failure mode is silent.
+* **Lifecycle.** ``ensure_campaign_priority_class()`` runs beside the admission preflight,
+  before any Job exists (idempotent; a 409 means an earlier batch created it). It fails
+  loudly, because Kueue *rejects* a Job naming a class that does not exist. The class
+  carries the same ``jobgroup``/``campaign-id`` labels as the campaign's Jobs and Pods, so
+  ``cleanup_campaign_priority_classes()`` removes it with one more label-scoped
+  ``delete_collection`` at the end of the ordinary campaign cleanup — there is no GC pass
+  of its own. It must run **last**: deleting the class cannot disturb workloads Kueue has
+  already created (the resolved value is copied onto each at creation), but removing it
+  while the campaign still submits would break that campaign.
+
+The class is cluster-scoped, so ``create``/``delete`` on ``workloadpriorityclasses`` is on
+the service's **ClusterRole** — the first write that role grants. An existing deployment
+must be redeployed to pick it up.
 
 **Holding the queue during cleanup.** ``stopPolicy`` lives on the single,
 cluster-scoped ``ClusterQueue`` that every campaign shares. Holding it stops

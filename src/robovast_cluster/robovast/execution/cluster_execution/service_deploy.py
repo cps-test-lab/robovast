@@ -209,11 +209,15 @@ def _service_rbac_manifests(namespace):
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
                         "name": role_name},
         },
-        # Cluster-scoped reads: nodes for the /usage endpoint (cluster resources, not
+        # Cluster-scoped grants: nodes for the /usage endpoint (cluster resources, not
         # grantable via a namespaced Role) with cluster-wide pod requests for the true
         # "used" figure across tenants, and the ClusterQueue behind the LocalQueue for
-        # the admission preflight. Read-only (get/list). The ClusterRole name is
-        # namespaced so parallel robovast deployments don't collide.
+        # the admission preflight. The ClusterRole name is namespaced so parallel
+        # robovast deployments don't collide.
+        #
+        # Read-only apart from workloadpriorityclasses: each campaign owns one, carrying
+        # the priority that gets it admitted in start-time order, and a WorkloadPriority-
+        # Class is cluster-scoped so the namespaced Role above cannot grant it.
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -229,6 +233,11 @@ def _service_rbac_manifests(namespace):
                 {"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["clusterqueues"],
                  "verbs": ["get", "list"]},
+                # One per campaign, created before its first Job and deleted with the rest
+                # of the campaign's resources (kubernetes_kueue.ensure_campaign_priority_
+                # class / cleanup_campaign_priority_classes).
+                {"apiGroups": ["kueue.x-k8s.io"], "resources": ["workloadpriorityclasses"],
+                 "verbs": ["get", "list", "create", "delete", "deletecollection"]},
             ],
         },
         {
