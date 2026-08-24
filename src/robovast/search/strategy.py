@@ -70,7 +70,19 @@ class SearchStrategy(ABC):
 
     @abstractmethod
     def tell(self, evaluations: list[Evaluation]) -> None:
-        """Ingest the evaluations of a previously proposed generation."""
+        """Ingest the evaluations of a previously proposed generation.
+
+        **The list may be shorter than what :meth:`ask` proposed, and an implementation
+        must cope.** A draw the variation pipeline cannot realize composes into no
+        config, so it never runs and has no evaluation; so does a cell whose every run
+        was lost to infrastructure. The batch loop records both and carries on with the
+        rest, because discarding a batch — or the campaign — over one unusable draw
+        throws away every batch already finished.
+
+        Cope means ingest what arrived. It does not mean invent the rest: a strategy that
+        cannot take a short generation must skip the generation, not fill it with a
+        fabricated objective or measure (see :meth:`QDStrategy._tell_incomplete`).
+        """
 
     @abstractmethod
     def report(self) -> SearchReport:

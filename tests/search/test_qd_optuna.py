@@ -137,3 +137,87 @@ def test_file_extractor_via_evaluator(tmp_path):
         '<testsuite errors="0" failures="1" tests="1"><testcase name="t" time="1"/></testsuite>')
     ev = Evaluator(cfg, vast_dir=str(tmp_path)).evaluate(config_dir, ParamSet(values={"x": 0.5}))
     assert ev.objectives == {"obj": 0.7} and ev.measures == {"m": 0.4} and ev.n_samples == 1
+
+
+# ---- QD: a generation that comes back short ----
+
+def _drive_qd(strategy, gens, *, drop=()):
+    """Run *gens* generations, withholding the evaluation of the ask-order indices in
+    *drop* on every generation — what the batch loop hands back when a draw could not be
+    composed into a config, or when every run of a cell was lost."""
+    rng = random.Random(0)
+    for _ in range(gens):
+        ps = strategy.ask(strategy.cfg.per_batch)
+        evs = [Evaluation(params=p, objectives={"obj": rng.random()},
+                          measures={"m1": rng.random(), "m2": rng.random() * 4})
+               for i, p in enumerate(ps) if i not in drop]
+        strategy.tell(evs)
+
+
+def _qd(per_batch=8):
+    return build_strategy(_cfg(
+        "qd", QUAD_SPACE, [{"name": "obj", "direction": "maximize"}], per_batch=per_batch,
+        strategy_parameters={"archive": {"type": "grid",
+            "measures": {"m1": {"low": 0, "high": 1, "bins": 8},
+                         "m2": {"low": 0, "high": 4, "bins": 8}}}}))
+
+
+def test_qd_survives_a_draw_that_produced_no_evaluation():
+    """One unrealizable draw must not end the search.
+
+    pyribs needs one row per solution it emitted, so a short generation used to raise
+    KeyError out of the batch loop and fail the campaign — which is how a 50-batch search
+    died on batch 33 with eight hours of finished work behind it.
+    """
+    pytest.importorskip("ribs")
+    s = _qd()
+    _drive_qd(s, 4, drop={3})
+    assert s.report().extra["batches"] == 4
+
+
+def test_qd_keeps_the_measured_cells_of_a_short_generation():
+    """Skipping the emitter update must not throw away the runs that DID happen: the
+    seven cells that ran are seven cells of archive, and they cost a batch of compute."""
+    pytest.importorskip("ribs")
+    s = _qd()
+    _drive_qd(s, 1, drop={0})
+    assert s.report().extra["num_elites"] > 0
+
+
+def test_qd_invents_nothing_for_the_missing_draw():
+    """Every elite must trace back to an evaluation. A worst-case objective standing in
+    for the unevaluated draw would need invented measures too, and those land the fake in
+    a real cell where the search then chases it."""
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=4)
+    dropped = []
+    rng = random.Random(0)
+    for _ in range(3):
+        ps = s.ask(s.cfg.per_batch)
+        dropped.append(ps[1].values)
+        s.tell([Evaluation(params=p, objectives={"obj": rng.random()},
+                           measures={"m1": rng.random(), "m2": rng.random() * 4})
+                for i, p in enumerate(ps) if i != 1])
+    elites = [e["params"] for e in s.report().extra["elites"]]
+    for values in dropped:
+        assert values not in elites
+
+
+def test_qd_recovers_a_full_generation_after_a_short_one():
+    """The abandoned generation costs one round of adaptation, not the search: the next
+    ask/tell pair must go through the scheduler normally."""
+    pytest.importorskip("ribs")
+    s = _qd()
+    _drive_qd(s, 1, drop={2})
+    _drive_qd(s, 2)                      # full generations, straight through pyribs
+    assert s.report().extra["batches"] == 3
+    assert s.report().extra["num_elites"] > 0
+
+
+def test_qd_survives_a_generation_with_no_evaluations_at_all():
+    """The degenerate end of the same case — every draw in the batch unrealizable."""
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=4)
+    _drive_qd(s, 1, drop={0, 1, 2, 3})
+    _drive_qd(s, 1)
+    assert s.report().extra["num_elites"] > 0
