@@ -18,6 +18,7 @@
 """Kueue installation, queue setup, and workload cleanup for cluster execution."""
 
 import contextlib
+import hashlib
 import logging
 import os
 import subprocess
@@ -215,13 +216,39 @@ def campaign_priority_value(campaign_id: str) -> int:
     return _PRIORITY_BASE - int((started - _PRIORITY_REF).total_seconds())
 
 
+#: Kubernetes' cap on a label VALUE. Lower than the 253 a label value's *object* namesake
+#: may use, and the binding one here: this string is both the WorkloadPriorityClass's name
+#: and the value every Job carries under :data:`KUEUE_PRIORITY_LABEL` to reference it.
+_LABEL_VALUE_MAX = 63
+
+
 def campaign_priority_class_name(campaign_id: str) -> str:
-    """Name of the WorkloadPriorityClass carrying *campaign_id*'s priority."""
+    """Name of the WorkloadPriorityClass carrying *campaign_id*'s priority.
+
+    Bounded by what a **label value** may be, not by what an object name may be. The two
+    limits differ -- 63 against 253 -- and this string has to satisfy both, because the
+    Jobs reference the class by carrying its name as a label. Capping at 253 produced a
+    Job the API server refused outright (``422 ... must be no more than 63 characters``)
+    for every campaign whose id ran past 45 characters, which with the 20-character
+    timestamp means any campaign *name* over about 25. It failed at Job creation -- after
+    the image build and the whole variation phase -- and surfaced as a raw Kubernetes
+    traceback rather than as anything about the name.
+
+    A long id keeps a digest of itself rather than being truncated flat. Truncation alone
+    would be worse than the error it fixes: two long names collapse onto one class, so two
+    campaigns would silently share a priority, and the campaign-scoped cleanup that removes
+    the class by label would take the other one's with it.
+    """
     from .cluster_execution import _label_safe_campaign  # noqa: PLC0415 - avoids a cycle
 
     # _label_safe_campaign already yields an RFC 1123 name; the prefix keeps these
     # distinguishable from any priority class an operator defined by hand.
-    return (CAMPAIGN_PRIORITY_CLASS_PREFIX + _label_safe_campaign(campaign_id))[:253]
+    name = CAMPAIGN_PRIORITY_CLASS_PREFIX + _label_safe_campaign(campaign_id)
+    if len(name) <= _LABEL_VALUE_MAX:
+        return name
+    digest = hashlib.sha256(campaign_id.encode()).hexdigest()[:8]
+    # rstrip: a label value may not end in a separator, which a cut can easily land on.
+    return name[:_LABEL_VALUE_MAX - len(digest) - 1].rstrip("-.") + "-" + digest
 
 
 def campaign_priority_class_manifest(campaign_id: str) -> dict:

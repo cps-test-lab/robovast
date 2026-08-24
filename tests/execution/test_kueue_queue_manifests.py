@@ -84,3 +84,48 @@ def test_quota_covers_cpu_and_memory():
     assert group["flavors"][0]["resources"] == [
         {"name": "cpu", "nominalQuota": 96},
         {"name": "memory", "nominalQuota": "125Gi"}]
+
+
+# --- The priority-class name is a LABEL VALUE, so 63 is the limit that binds ------------
+#
+# It is also the WorkloadPriorityClass's object name, where 253 would be legal -- and the
+# Jobs reference the class by carrying it under KUEUE_PRIORITY_LABEL. Capping at 253 made
+# the API server refuse every Job of a campaign whose id ran past 45 characters, at Job
+# creation, after the image build and the whole variation phase
+# (optuna-pilot-fullmigration-2026-08-25-01000676: 64 characters, one over).
+
+def test_a_long_campaign_id_still_yields_a_usable_label_value():
+    from robovast.execution.cluster_execution.kubernetes_kueue import \
+        campaign_priority_class_name
+    name = campaign_priority_class_name(
+        "optuna-pilot-fullmigration-2026-08-25-01000676")
+    assert len(name) <= 63, name
+
+
+def test_an_ordinary_campaign_id_is_left_alone():
+    """The digest is for the ids that need it; a normal one must read as itself."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import \
+        campaign_priority_class_name
+    assert campaign_priority_class_name("nav-2026-08-25-01004390") == \
+        "robovast-campaign-nav-2026-08-25-01004390"
+
+
+def test_two_long_ids_do_not_collapse_onto_one_class():
+    """Truncating flat would be worse than the error it fixes: two campaigns would share a
+    priority, and the campaign-scoped cleanup would delete the other one's class."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import \
+        campaign_priority_class_name
+    a = campaign_priority_class_name("a-very-long-campaign-name-alpha-2026-08-25-010043")
+    b = campaign_priority_class_name("a-very-long-campaign-name-beta-2026-08-25-010043")
+    assert a != b
+    assert len(a) <= 63 and len(b) <= 63
+
+
+def test_the_value_never_ends_in_a_separator():
+    """A label value must start and end alphanumeric, and a cut lands on a hyphen often."""
+    from robovast.execution.cluster_execution.kubernetes_kueue import \
+        campaign_priority_class_name
+    for n in range(40, 60):
+        value = campaign_priority_class_name("x" * n + "-2026-08-25-010043")
+        assert value[-1].isalnum(), value
+        assert len(value) <= 63
