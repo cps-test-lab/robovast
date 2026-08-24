@@ -27,7 +27,7 @@ barrier. So the objective is the STL-style minimum over one margin per failure m
 
     robustness = min( clearance_margin,   # min_clearance - contact threshold
                       time_margin,        # 1 - t_trial / timeout
-                      goal_margin )       # 1 - final_distance / xy_goal_tolerance
+                      goal_margin )       # 1 - final_distance / arrival_radius
 
 Continuous, signed, negative means failed, and it degrades gracefully: a run that merely
 *nearly* collided scores just above zero rather than jumping to "passed".
@@ -74,7 +74,8 @@ class NavExtract(Extractor):
     ``params``:
         ``metrics``            per-run CSV written by the postprocessing plugin
         ``contact_threshold``  clearance [m] at which a crossing counts as unsafe
-        ``goal_tolerance``     [m]; matches nav2's ``xy_goal_tolerance``
+        ``arrival_radius``     [m]; ground-truth distance within which a track counts as
+                               arrived. NOT nav2's ``xy_goal_tolerance`` -- see below
         ``timeout``            [s]; matches the scenario's own ``timeout()``
         ``aggregate``          ``worst`` (default) / ``quantile`` / ``mean``
     """
@@ -93,7 +94,17 @@ class NavExtract(Extractor):
 
         metrics_file = self.params.get('metrics', 'nav_metrics.csv')
         contact = float(self.params.get('contact_threshold', 0.05))
-        goal_tol = float(self.params.get('goal_tolerance', 0.25))
+        # DELIBERATELY not nav2's xy_goal_tolerance, and larger than it. nav2 declares
+        # success against its AMCL-ESTIMATED pose at the instant it stops; this is measured
+        # in the GROUND-TRUTH frame at the last recorded sample, so it carries the
+        # localization error and whatever settling happened after the bag closed. They are
+        # different quantities and comparing one against the other's threshold is a category
+        # error: measured on a 16-cell grid, runs that PASSED ended 0.23-0.51 m out, so a
+        # 0.25 threshold scored six of seven of them at -1, maximum severity. 0.6 separates
+        # the observed populations cleanly (passing <= 0.51, failing >= 0.99); re-measure it
+        # if the room, the robot or the goal changes.
+        goal_tol = float(self.params.get('arrival_radius',
+                                         self.params.get('goal_tolerance', 0.6)))
         timeout = float(self.params.get('timeout', 120.0))
         how = self.params.get('aggregate', 'worst')
 
