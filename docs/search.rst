@@ -307,6 +307,24 @@ Needs the extra: ``pip install 'robovast[qd]'``.
        sigma: 0.15
        emitters: 1
 
+
+**A measure may be categorical.** The most useful behaviour axis is often not a number --
+"it collided" / "it timed out" / "it never reached the goal" is the answer an engineer
+wants -- so an axis states either ``low``/``high`` or ``values``, never both::
+
+   archive:
+     type: grid
+     measures:
+       failure_mode:  {values: [collision, timeout, goal_miss, stuck]}
+       min_clearance: {low: 0.0, high: 1.5}
+
+The categories fix the axis: *k* of them give *k* bins, one per category, so the bounds
+and bin count are derived rather than restated (two sources of truth for one fact could
+disagree). An extractor returns the category **by name**; a name the archive does not
+declare is refused, because clamping or dropping it would put a behaviour the archive
+cannot represent into a cell that means something else, and a diversity map whose cells
+mean the wrong thing is worse than one missing a cell.
+
 optuna — TPE / Bayesian optimization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

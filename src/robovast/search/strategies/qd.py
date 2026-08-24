@@ -28,10 +28,10 @@ extra to use it.
 
 import logging
 import math
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..space import SearchSpaceCodec
 from ..strategy import SearchStrategy
@@ -41,10 +41,74 @@ logger = logging.getLogger(__name__)
 
 
 class MeasureSpec(BaseModel):
+    """One behaviour axis of the archive: a numeric range, or a set of categories.
+
+    A QD archive answers "how many *distinct kinds* of behaviour are there", and the most
+    useful kind is frequently not a number -- "it collided" / "it timed out" / "it never
+    reached the goal" is what an engineer wants back. Expressing that on a numeric axis
+    would mean the extractor inventing an encoding and the reader decoding it from a
+    comment, with nothing checking that the two agreed.
+
+    So an axis either states ``low``/``high`` (numeric) or ``values`` (categorical), never
+    both: the bounds and bin count of a categorical axis follow from its categories, and
+    stating them separately would be two sources of truth for one fact.
+    """
     model_config = ConfigDict(extra='forbid')
-    low: float
-    high: float
+    low: Optional[float] = None
+    high: Optional[float] = None
     bins: int = 20          # grid archive only
+    #: Category names, in archive order. Their count fixes the axis and its bins.
+    values: Optional[list[str]] = None
+
+    @model_validator(mode='after')
+    def _one_kind_of_axis(self):
+        if self.values is not None:
+            if self.low is not None or self.high is not None:
+                raise ValueError(
+                    "a measure states either 'values' (categorical) or 'low'/'high' "
+                    "(numeric), not both -- the categories already fix the axis")
+            if not self.values:
+                raise ValueError("measure 'values' must not be empty")
+            if len(set(self.values)) != len(self.values):
+                raise ValueError(f"measure 'values' must be unique, got {self.values}")
+            # Derived, so a k-category axis has exactly k bins and no two categories can
+            # share one.
+            object.__setattr__(self, 'low', 0.0)
+            object.__setattr__(self, 'high', float(len(self.values)))
+            object.__setattr__(self, 'bins', len(self.values))
+        elif self.low is None or self.high is None:
+            raise ValueError(
+                "a numeric measure needs 'low' and 'high' (or declare 'values' for a "
+                "categorical one)")
+        return self
+
+
+def measure_value(spec: MeasureSpec, raw, name: str) -> float:
+    """One evaluation's value on ``spec``'s axis, as the archive's coordinate.
+
+    A categorical value arrives as its name and leaves as the **centre** of its bin: an
+    integer index sits exactly on a bin edge, where which side it falls is the binning
+    library's business rather than ours.
+
+    An unrecognised category is refused rather than clamped or dropped. Both alternatives
+    put a behaviour the archive cannot represent into a cell that means something else,
+    and a diversity map whose cells mean the wrong thing is worse than one that is missing
+    a cell.
+    """
+    if spec.values is not None:
+        try:
+            index = spec.values.index(raw)
+        except ValueError:
+            raise ValueError(
+                f"measure '{name}' got category {raw!r}, which the archive does not "
+                f"declare (have: {spec.values})") from None
+        return index + 0.5
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"measure '{name}' is numeric (low/high) but got {raw!r}; declare "
+            f"'values' if it is categorical") from None
 
 
 class ArchiveConfig(BaseModel):
@@ -78,6 +142,9 @@ class QDStrategy(SearchStrategy):
 
         self.codec = SearchSpaceCodec(cfg.search_space)
         self.measure_names = list(params.archive.measures.keys())
+        #: Kept so an evaluation's raw measure can be turned into the archive's
+        #: coordinate -- a categorical axis needs its own declaration to do that.
+        self._measure_specs = dict(params.archive.measures)
         ranges = [(m.low, m.high) for m in params.archive.measures.values()]
         # Solution space is the normalized unit cube (see SearchSpaceCodec), so a
         # single scalar sigma is meaningful across all dimensions.
@@ -135,7 +202,8 @@ class QDStrategy(SearchStrategy):
             ev = by_id[ps_id]
             value = float(ev.objectives[name])
             obj_batch.append(-value if self._direction == 'minimize' else value)
-            meas_batch.append([float(ev.measures[m]) for m in self.measure_names])
+            meas_batch.append([measure_value(self._measure_specs[m], ev.measures[m], m)
+                               for m in self.measure_names])
         self.scheduler.tell(np.array(obj_batch), np.array(meas_batch))
         self._batches_done += 1
 
@@ -176,7 +244,8 @@ class QDStrategy(SearchStrategy):
             value = float(ev.objectives[name])
             sols.append(sol)
             obj_batch.append(-value if self._direction == 'minimize' else value)
-            meas_batch.append([float(ev.measures[m]) for m in self.measure_names])
+            meas_batch.append([measure_value(self._measure_specs[m], ev.measures[m], m)
+                               for m in self.measure_names])
         logger.warning(
             "QD batch came back short: %d of %d draw(s) produced no evaluation (%s). "
             "The %d measured one(s) still enter the archive; the emitters skip this "
