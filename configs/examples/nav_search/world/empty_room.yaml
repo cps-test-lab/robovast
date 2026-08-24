@@ -1,0 +1,75 @@
+# TurtleBot 4 crossing a walled room, past an UNMAPPED barrier and one oblivious pedestrian.
+#
+# Every factor these campaigns vary is a key in this file, reached through the `sim:` channel --
+# which is why all ten of them share one scenario. A difference in their results is attributable
+# to the search strategy and to nothing else.
+#
+# Run it by hand with:
+#   roqsim sim world/empty_room.yaml
+
+sim:
+  # The built-in walled room: 10 x 10 m, four perimeter walls. Its Nav2 map (files/empty_room.yaml,
+  # origin [-5,-5]) is co-registered with it, so map == world and one pose serves both frames --
+  # unlike Depot, where map = world + (8, 0) and every analysis has to remember the offset.
+  world: empty_room
+  pacing: realtime
+  # Sensor degradation is PRESENT but not searched. It is part of the problem -- and part of why
+  # outcomes are stochastic -- without spending a search dimension on a variable whose effect is
+  # monotonic and unsurprising. `robot.lidar.range_stddev` is addressable if a campaign wants it.
+  seed: 0
+
+components:
+  # Start pose. Must match scenario_roqsim.osc's start_pose, which is what seeds AMCL.
+  - spawn_robot: {model: turtlebot4, pos: [-2.5, 0.0], yaw: 0.0}
+    name: robot
+    components:
+      # The lidar the manifest already supplies, named here only to carry the noise. Nothing else
+      # is restated: rays, max_range and frame_id keep coming from the model.
+      - lidar: {range_stddev: 0.03, dropout_percent: 2.0}
+      # Ground truth for offline evaluation, deliberately OUT of the localization chain -- AMCL
+      # runs off drifting wheel odometry. This is the frame min_clearance is measured from.
+      # A component of the robot, so it builds before the bridge: the bridge binds ctx.interface
+      # once in its own configure(), and a producer registered after it is never published.
+      - ground_truth_pose: {}
+      # THE FAILURE ORACLE. Collision by exclusion: every contact of the robot's kinematic subtree
+      # except the floor, so a wheel clipping the barrier counts exactly as much as the bumper
+      # does, and the perimeter walls count too. Publishes std_msgs/Bool on /collision at 30 Hz.
+      - contact_monitor: {ignore: [floor], min_force: 1.0}
+
+  # THE BARRIER AND ITS DOORWAY. Declared EMPTY on purpose: variations/doorway.py replaces
+  # `instances` wholesale per configuration, computing two wall segments from gap_width about a
+  # centred doorway. The name is load-bearing -- it is the override address
+  # (`sim: components.barrier.instances`) -- and an override matching no component is refused, so
+  # a typo fails loudly rather than silently running an empty room.
+  #
+  # UNMAPPED by design: the map stays the bare empty_room, so AMCL localizes against the perimeter
+  # walls while the global planner first routes straight through the barrier and must replan once
+  # the lidar sees it. That is the stack being exercised, and it costs nothing to arrange.
+  - boxes: {instances: []}
+    name: barrier
+
+  # THE PEDESTRIAN. `avoidance: false` is deliberate: an oblivious walker that does NOT yield.
+  # The robot is the system under test, so the robot must do the avoiding.
+  #
+  # The patrol crosses the robot's route just past the doorway. `speed` and `dwell` are the searched
+  # timing knobs -- dwell shifts the patrol's phase, so a campaign controls WHEN the walker is at
+  # the crossing relative to the robot's arrival. Scalar dwell, never a [lo, hi] range: random dwell
+  # would put uncontrolled randomness inside a search dimension.
+  - walker:
+      walker: MaleVisitorWalk
+      speed: 1.0
+      dwell: 0.0
+      avoidance: false
+      loop: true
+      arrival_radius: 0.25
+      # Patrol only: declares no goal endpoint, so the bridge needs no NavigateThroughPoses
+      # handler and this world drops that dependency.
+      goal_endpoint: false
+      waypoints:
+        - [1.2, -3.0]
+        - [1.2,  3.0]
+    name: pedestrian
+
+  # robot_state_publisher owns the URDF static TF; two publishers for one transform is a conflict.
+  - ros2_bridge: {publish_static_tf: false}
+  - sim_interfaces: {}
