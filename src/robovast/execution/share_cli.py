@@ -355,16 +355,25 @@ def _read_archive_identity(tarfile_mod, path):
     campaign id is the single top-level directory (an archive with more than one is
     not a campaign and is refused here rather than halfway through an upload), and
     the variant is whether postprocessing's ``_execution/data.db`` is a member.
+
+    The same pass answers a third question for free -- does this archive carry a frozen
+    ``_config/`` -- and refuses it if not. An archive without one uploads and downloads
+    exactly like a good one and fails only at the far end, on somebody else's service,
+    where the source is out of reach. The service-side exports refuse the same shape; a
+    push of a file somebody built earlier is the remaining way onto a share.
     """
     from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
         POSTPROCESSED, RAW)
+    from robovast.service.ingest import \
+        missing_for_import  # pylint: disable=import-outside-toplevel
     try:
         with tarfile_mod.open(path, "r:*") as tar:
-            tops, has_db = set(), False
+            tops, rels, has_db = set(), set(), False
             for member in tar:
-                head = member.name.split("/", 1)[0]
+                head, _, rel = member.name.partition("/")
                 if head not in (".", ""):
                     tops.add(head)
+                    rels.add(rel)
                 if member.name.endswith("/_execution/data.db"):
                     has_db = True
     except tarfile_mod.TarError as exc:
@@ -375,6 +384,12 @@ def _read_archive_identity(tarfile_mod, path):
             f"'{path}' does not hold exactly one campaign (top-level entries: "
             f"{', '.join(sorted(tops)) or 'none'}). A campaign archive has one "
             "directory named after the campaign.")
+    missing = missing_for_import(rels)
+    if missing:
+        raise click.ClickException(
+            f"'{path}' has no " + " ".join(missing) +
+            " No deployment could import it, including this one, so it is refused here "
+            "rather than at the far end of a transfer.")
     return tops.pop(), (POSTPROCESSED if has_db else RAW)
 
 

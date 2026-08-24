@@ -3103,6 +3103,9 @@ class ClusterService(LocalTransport):
                 "(ROBOVAST_SHARE_TYPE is unset in this service's environment).\n"
                 "Set it and its credentials in the environment / .env that 'vast serve' "
                 "runs with, then re-run the export.")
+        # Before the share is touched at all, and after the cheap env read: a campaign that
+        # can never be imported is not worth a round trip to a provider to find out.
+        self._refuse_unimportable(campaign_id)
         in_pod_upload.verify_share_access(provider)
 
         variant = campaign_variant(campaign_root)
@@ -3130,9 +3133,35 @@ class ClusterService(LocalTransport):
             progress.finish()
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
 
+    def _refuse_unimportable(self, campaign_id: str) -> None:
+        """Refuse to upload an archive no deployment could ever take back in.
+
+        The guard above answers "is this id a campaign here"; this answers "is what is
+        stored under it importable". They are different questions, and only the second
+        catches a campaign that died before its ``_config/`` was published: it is indexed,
+        it lists, it has an ``_execution/`` full of logs, and every byte of it tars and
+        uploads happily into an archive whose only possible future is an ingest refusal on
+        somebody else's service.
+
+        Only the ``_config/`` prefix is listed. Nothing else decides the answer, and a
+        campaign's full key listing is the one thing an export of a large campaign should
+        not pay for twice.
+        """
+        from robovast.common.errors import CampaignConfigError
+        from robovast.service.ingest import missing_for_import
+        storage, bucket, prefix = self._campaign_object_location(campaign_id)
+        objects, _sub_prefixes = storage.list_entries(bucket, f"{prefix}_config")
+        missing = missing_for_import(key[len(prefix):] for key, _size in objects)
+        if missing:
+            raise CampaignConfigError(
+                f"Cannot export {campaign_id}: it has no " + " ".join(missing) +
+                "\nAn archive written from it could not be imported by any deployment, "
+                "including this one, so it is refused here rather than at the far end of "
+                "a transfer.")
+
     # -- taking a campaign in ------------------------------------------------
     #
-    # The import sequence itself is the inherited one; only the three questions it asks
+    # The import sequence itself is the inherited one; only the four questions it asks
     # about durability differ here, because a pod's scratch is not where a campaign lives.
 
     def _campaign_is_here(self, campaign_id: str) -> bool:
@@ -3201,6 +3230,59 @@ class ClusterService(LocalTransport):
             self._index_cache = None
         # The pod's copy has served its purpose; the durable home is the store, and a
         # multi-gigabyte campaign left on scratch is how a service pod fills its disk.
+        shutil.rmtree(target, ignore_errors=True)
+
+    def _publish_failed_import(self, campaign_id: str, target) -> None:
+        """Publish a failed import's ``_execution/`` — the account, not the campaign.
+
+        A failed import never reaches :meth:`_publish_imported_campaign`, so on this lane
+        its ``import.log`` and ``import.json`` used to stay on the pod's scratch while
+        ``list_files``/``read_file`` read the object store: the campaign card showed the
+        refusal and ``/results/<id>`` answered *no directory* for the one campaign whose
+        files anybody wanted to open -- the reason written down, and unreachable.
+
+        Only ``_execution/`` goes up. The rest of the tree is whatever the archive held,
+        which by definition this deployment could not make sense of, and a failed import of
+        a large campaign must not spend a full upload explaining itself. The scratch copy is
+        dropped either way — the pod's disk is not a place to leave an unusable tree.
+
+        The campaign is indexed, so it survives a restart and ``vast results delete`` finds
+        it. That also makes :meth:`_campaign_is_here` true for the id, so a retry needs
+        ``force`` — which is what the failure already tells the reader to use, and
+        :meth:`_release_durable_campaign` already clears.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+        from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
+
+        from robovast.common.store import \
+            read_campaign_created_at  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution import \
+            in_pod_storage  # pylint: disable=import-outside-toplevel
+
+        execution = Path(target) / "_execution"
+        try:
+            cfg = self._cluster_config()
+            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+            storage = in_pod_storage.storage_client_for(cfg)
+            if execution.is_dir():
+                count = storage.upload_dir(str(execution),
+                                           bucket, f"{prefix.rstrip('/')}/_execution")
+                logger.info("Published %d objects accounting for the failed import of %s",
+                            count, campaign_id)
+            # The archive's own start time when it brought a readable store, so a failed
+            # import sorts where the campaign belongs rather than at the top of the list;
+            # now() when it did not, which is most of them -- that is often what failed.
+            created_at = (read_campaign_created_at(target)
+                          or datetime.now(timezone.utc).isoformat())
+            in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
+            with self._index_lock:
+                self._index_cache = None
+        except Exception:  # pylint: disable=broad-except
+            # Best-effort, like `_record_failed_import`: the import already failed, and
+            # failing to publish the account of it must not replace that reason with a
+            # second, less useful one. The service log still holds the whole sequence.
+            logger.warning("Could not publish the failed import of %s to the object store",
+                           campaign_id, exc_info=True)
         shutil.rmtree(target, ignore_errors=True)
 
     def campaign_tar_stream(self, campaign_id: str):

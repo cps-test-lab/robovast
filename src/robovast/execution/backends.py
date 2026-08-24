@@ -192,6 +192,7 @@ class ExecutionBackend(ABC):
         """
         from robovast.execution import campaign_archive
         from robovast.execution.share_providers.naming import archive_name, campaign_variant
+        self._refuse_unimportable(campaign_root)
         results_dir = os.path.dirname(os.path.normpath(campaign_root))
         archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
             results_dir, "_archives")
@@ -206,6 +207,31 @@ class ExecutionBackend(ABC):
             on_member=on_member)
         if on_member is not None:
             progress_callback.finish()
+
+    @staticmethod
+    def _refuse_unimportable(campaign_root: str) -> None:
+        """Refuse to write an archive no deployment could ever take back in.
+
+        The share is a one-way door as far as diagnosis goes: an archive missing its frozen
+        configuration uploads, lists and downloads exactly like a good one, and only fails
+        at the far end -- on somebody else's service, after a full transfer, with an
+        ingest refusal and no way to repair the source. Campaigns that die before their
+        config is frozen do occur, so this is a real shape and not a hypothetical one.
+
+        Checked here rather than in ``make_campaign_tarball``: the tarball writer is also
+        how a campaign is *downloaded*, and taking a partial campaign's files off a service
+        is a legitimate thing to want. It is offering it as an importable campaign that is
+        not.
+        """
+        from robovast.service.ingest import missing_for_import_in
+        missing = missing_for_import_in(campaign_root)
+        if missing:
+            campaign_id = os.path.basename(os.path.normpath(campaign_root))
+            raise CampaignConfigError(
+                f"Cannot export {campaign_id}: it has no " + " ".join(missing) +
+                "\nAn archive written from it could not be imported by any deployment, "
+                "including this one, so it is refused here rather than at the far end of "
+                "a transfer.")
 
     #: The per-run JUnit report a finished run publishes. Counting these is what
     #: "a run completed" means to the progress poller, on either lane — the object

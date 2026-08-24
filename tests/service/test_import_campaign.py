@@ -162,6 +162,74 @@ def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, mo
     assert "failed" in outcome
 
 
+def test_a_failed_import_publishes_its_reason_on_a_lane_that_drops_the_scratch(
+        service, tmp_path, monkeypatch):
+    """Keeping the tree is only half the promise: it has to be kept where clients read.
+
+    Found live on the cluster lane. Publishing happens only on success, and that lane's
+    ``list_files``/``read_file`` answer from the object store -- so a failed import left
+    ``import.log`` and ``import.json`` on a pod's scratch, and ``/results/<id>`` answered
+    *no directory* for the one campaign whose files anybody wanted to open. The card showed
+    the refusal and nothing behind it could be read: the "worst of both" the keep-the-tree
+    fix was written against, still standing on the lane where campaigns actually run.
+
+    The local lane cannot catch it -- publishing is a no-op there and the scratch *is* the
+    durable home -- so the lane under test drops its tree the way a real one does.
+    """
+    import shutil
+
+    published = {}
+
+    def _publish_and_drop(self, campaign_id, target):
+        published[campaign_id] = (Path(target) / "_execution" / "import.log").read_text(
+            encoding="utf-8")
+        shutil.rmtree(target, ignore_errors=True)
+
+    def _boom(*_a, **_k):
+        raise OSError("disk went away mid-extraction")
+
+    monkeypatch.setattr("robovast.service.ingest.extract_archive", _boom)
+    monkeypatch.setattr(type(service), "_publish_failed_import", _publish_and_drop)
+
+    ref = service.import_campaign(ImportCampaignRequest(
+        archive_path=str(_archive(tmp_path))))
+    status = _wait_done(service, ref.campaign_id)
+
+    assert status.phase == Phase.FAILED
+    assert ref.campaign_id in published, "the failure must be published, not only recorded"
+    # Published *after* the log handler is closed and the outcome written, or what goes up
+    # is a truncated account of a failure -- the one file that exists to explain it.
+    assert "disk went away mid-extraction" in published[ref.campaign_id]
+
+
+def test_an_archive_that_is_not_the_campaign_it_was_fetched_as_is_refused(
+        service, tmp_path, monkeypatch):
+    """The id is claimed from the object's *name*; the tree lands under the tar's own.
+
+    Nothing compared them. A mismatch extracted as some other campaign, ingested the empty
+    directory claimed here, and reported that directory's symptom -- ``config, layout`` --
+    under an id that was not the one that failed, while the campaign that did arrive sat in
+    the results root unregistered. Every part of that is silent, and the reader's first
+    question ("why does the error name a different campaign?") had no answer anywhere.
+    """
+    archive = _archive(tmp_path, name="renamed.tar.gz")
+    # The share path takes the id from the object name, so this is a fetch that hands back
+    # an archive of some *other* campaign -- a mislabelled object, or a name reused.
+    monkeypatch.setattr(type(service), "_resolve_import_source",
+                        lambda self, request: ("other-2026-01-01-000000",
+                                               lambda _log: (archive, False), True))
+
+    ref = service.import_campaign(ImportCampaignRequest(share_archive="whatever"))
+    status = _wait_done(service, ref.campaign_id)
+
+    assert status.phase == Phase.FAILED
+    assert _SOURCE.name in status.error and "other-2026-01-01-000000" in status.error, \
+        "both names, or the reader cannot tell which of the two is wrong"
+    results = service._campaigns_root()  # pylint: disable=protected-access
+    assert not (results / _SOURCE.name).exists(), \
+        "and nothing is extracted: a stray unregistered campaign is what this prevents"
+
+
 def test_an_import_names_exactly_one_source(service, tmp_path):
     with pytest.raises(ValueError, match="exactly one source"):
         service.import_campaign(ImportCampaignRequest())

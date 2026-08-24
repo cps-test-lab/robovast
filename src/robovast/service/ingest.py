@@ -34,6 +34,11 @@ already upgrades on open through its own append-only ladder, and deliberately re
 store best-effort rather than refusing -- its queries name columns explicitly, so unknown ones
 are ignored. That decision is respected here and surfaced as a caveat rather than overridden.
 
+The same question is asked on the way *out*, by :func:`missing_for_import`: an export that
+writes an archive no deployment could ingest has produced a failure that can only surface at
+the far end of a transfer, on somebody else's service. Both sides ask one predicate so they
+cannot drift apart.
+
 The steps above :func:`ingest_campaign` are here too, and separate rather than one
 ``import_archive``: :func:`read_campaign_id`, :func:`claim_campaign_dir`, :func:`extract_archive`.
 The importer interleaves other work between them -- it opens the campaign's ``import.log`` once
@@ -216,6 +221,64 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
                       if stage["verdict"] in BLOCKING_STAGES)
     return {"campaign_id": campaign_dir.name, "ok": not blocking,
             "blocking": blocking, "stages": stages}
+
+
+def blocking_summary(report: dict) -> str:
+    """Why *report* refuses the campaign, in the words each stage already wrote.
+
+    The stage *names* are an index, not a diagnosis: ``config, layout`` is what every
+    incomplete archive says, and it says the same whether the ``.vast`` is missing,
+    unparseable, or from a robovast that does not exist yet. Each stage already
+    composed the sentence that distinguishes them -- and until this existed that sentence
+    reached only ``import.log`` and ``import.json``, both of which live *inside* the
+    campaign and are therefore unreadable on a lane that publishes a campaign only once
+    the import succeeds. So the one place the reason was guaranteed to be visible carried
+    the one form of it that says nothing.
+    """
+    return " ".join(f"{name}: {report['stages'][name]['detail']}"
+                    for name in report["blocking"])
+
+
+def missing_for_import(rel_paths) -> list:
+    """What these **campaign-relative** paths lack that an import would refuse them for.
+
+    Paths rather than a directory, because the two callers hold different things: a local
+    export walks a tree, a cluster export lists object keys and has no tree to stat. Each
+    strips its own prefix -- only the caller knows whether it has archive members, object
+    keys or a directory walk -- and what arrives here is what a reader would find *inside*
+    the campaign.
+
+    This is the export side of the question :func:`ingest_campaign` asks on the way in, and
+    it exists so the two cannot disagree about what a campaign is. An archive written
+    without this check is one no deployment can ever take in: it uploads, lists and
+    downloads fine and then fails at the far end, where nobody can do anything about it.
+    Refusing to write it is the cheaper failure by a whole transfer.
+
+    Deliberately only what *blocks*. A campaign with no ``data.db`` is raw, not broken, and
+    raw is the normal thing to share.
+    """
+    rels = {str(path).replace('\\', '/').lstrip('/') for path in rel_paths}
+    if not any(rel == "_config" or rel.startswith("_config/") for rel in rels):
+        return ["_config/, so this is not a campaign anything can be reconstructed from. "
+                "A raw archive of run outputs is not enough: the frozen configuration is "
+                "what makes it re-runnable."]
+    if not any(rel.startswith("_config/") and rel.endswith(".vast") for rel in rels):
+        return ["_config/<name>.vast, the frozen campaign configuration. Without it an "
+                "import can list the archive's files and nothing else."]
+    return []
+
+
+def missing_for_import_in(campaign_root) -> list:
+    """:func:`missing_for_import` for a campaign on disk, without walking it.
+
+    Only ``_config/`` decides the answer, so only ``_config/`` is read. An export of a
+    campaign with tens of thousands of run artifacts must not pay a full tree walk to
+    learn whether one directory is there.
+    """
+    config = Path(campaign_root) / "_config"
+    if not config.is_dir():
+        return missing_for_import([])
+    return missing_for_import(["_config"] + [f"_config/{p.name}" for p in config.iterdir()])
 
 
 def _check_layout(campaign_dir: Path) -> dict:

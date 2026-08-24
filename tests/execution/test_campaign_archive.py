@@ -90,6 +90,41 @@ def test_iter_tar_with_custom_add_members_injects_objects():
     assert members["cid/sub/b.txt"].size == 4
 
 
+def test_share_refuses_a_campaign_no_import_could_take_back_in(tmp_path, monkeypatch):
+    """An unimportable archive must not be written, let alone uploaded.
+
+    A campaign that dies before its ``_config/`` is frozen still has an ``_execution/``
+    full of logs, so it archives, uploads, lists and downloads exactly like a good one --
+    and fails only at the far end, on somebody else's service, with an ingest refusal and
+    no way to repair the source. That happened: a share ended up holding an archive whose
+    every future import was a refusal, and the message the reader got named the ingest
+    stages rather than the missing directory.
+
+    Refusing here costs a directory listing. Refusing at the far end costs a transfer and
+    tells the wrong person.
+    """
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.backends import DockerBackend
+
+    root = tmp_path / "camp-2026-01-01-000000"
+    _make_campaign(str(root))
+    os.makedirs(os.path.join(root, "_execution"))
+    archive_dir = tmp_path / "_archives"
+
+    with pytest.raises(CampaignConfigError, match="_config/"):
+        DockerBackend().share_campaign(str(root), None)
+    assert not archive_dir.exists(), "and nothing is written on the way to the refusal"
+
+    # The same campaign with its frozen config exports normally: the guard is about what
+    # is missing, not about the shape of a campaign that never ran anything.
+    os.makedirs(os.path.join(root, "_config"))
+    with open(os.path.join(root, "_config", "nav.vast"), "w") as fh:
+        fh.write("version: 1\n")
+    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(archive_dir))
+    DockerBackend().share_campaign(str(root), None)
+    assert list(archive_dir.iterdir()), "a complete campaign still exports"
+
+
 def test_writer_error_propagates_on_close():
     def boom(_tar):
         raise ValueError("kaboom")

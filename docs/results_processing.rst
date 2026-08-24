@@ -967,9 +967,20 @@ campaign this deployment never ran, from an archive
 on into ``postprocessing``, because a campaign without its metric tables is not one
 anybody can query. Its per-stage verdicts land in ``_execution/import.json`` and its
 narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
-rather than a failure; a genuine failure removes the half-imported directory
-entirely, since a tree that merely looks like a campaign would be listed by every
-client from then on.
+rather than a failure.
+
+A genuine failure is **kept, as a failed campaign**, and the refusal names what was
+missing rather than which check noticed. Deleting the half-imported tree was tried and
+was strictly worse: registering the campaign is what makes it visible while it arrives,
+so the entry outlives the failure either way and removing the directory only took away
+the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
+an object store the campaign's ``_execution/`` is published so the account is readable
+where the campaign is read, not left on a pod's scratch. Remove it with
+``vast results delete``, or import again with ``--force``.
+
+The mirror of that check runs on the way **out**: an export refuses a campaign with no
+frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
+refusal on somebody else's service, after a full transfer, with the source out of reach.
 
 A re-trigger through the service is **dispatched in the background and returns
 immediately** — postprocessing can take minutes to hours, so the campaign simply

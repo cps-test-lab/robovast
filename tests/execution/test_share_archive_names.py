@@ -59,3 +59,41 @@ def test_the_variant_is_read_off_the_campaign_not_passed_in(tmp_path):
     assert campaign_variant(campaign) == RAW
     (campaign / "_execution" / "data.db").write_bytes(b"")
     assert campaign_variant(campaign) == POSTPROCESSED
+
+
+def _tar(tmp_path, name, members):
+    """A tar holding *members* (campaign-relative paths) under one top-level dir."""
+    import tarfile
+    root = tmp_path / name
+    for rel in members:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    out = tmp_path / f"{name}.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(root, arcname=name)
+    return out
+
+
+def test_a_push_refuses_an_archive_that_could_never_be_imported(tmp_path):
+    """``share push`` is the remaining way a bad archive reaches a share.
+
+    Both service-side exports refuse a campaign with no frozen ``_config/``, but a push
+    uploads a file somebody built earlier and never looked inside beyond its top-level
+    name. Such an archive uploads, lists and downloads exactly like a good one and fails
+    only at the far end, on somebody else's service, where the source is out of reach --
+    and the identity read already walks every member, so refusing costs nothing.
+    """
+    import tarfile
+
+    import click
+
+    from robovast.execution.share_cli import _read_archive_identity
+
+    good = _tar(tmp_path, CAMPAIGN, ["_config/nav.vast", "_execution/controller.log"])
+    assert _read_archive_identity(tarfile, str(good)) == (CAMPAIGN, RAW)
+
+    # A campaign that died before its config was frozen: logs and nothing to re-run.
+    bad = _tar(tmp_path, "died-2026-08-20-110402", ["_execution/controller.log"])
+    with pytest.raises(click.ClickException, match="_config/"):
+        _read_archive_identity(tarfile, str(bad))

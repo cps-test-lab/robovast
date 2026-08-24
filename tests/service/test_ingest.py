@@ -21,7 +21,8 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, ingest_campaign)
+                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
+                                     missing_for_import, missing_for_import_in)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -198,3 +199,53 @@ def test_every_stage_carries_an_actionable_detail(campaign):
     assert set(report["stages"]) == {"layout", "config", "campaign_store", "analysis_db"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
+
+
+def test_a_refusal_reports_the_reason_and_not_only_which_check_failed(tmp_path):
+    """The stage names are an index, not a diagnosis.
+
+    ``config, layout`` is what *every* incomplete archive says -- the same three words
+    whether the ``.vast`` is missing, unparseable, or from a robovast that does not exist
+    yet. The sentence that distinguishes them is already written by each stage, and until
+    ``blocking_summary`` existed it reached only ``import.log``/``import.json``, which live
+    inside the campaign and are therefore unreadable on a lane that publishes a campaign
+    only once its import succeeded. The one message guaranteed to be seen carried the one
+    form of the answer that says nothing.
+    """
+    bare = tmp_path / "c-2026-01-01-000000"
+    (bare / "_execution").mkdir(parents=True)
+    summary = blocking_summary(ingest_campaign(bare))
+    assert "layout:" in summary and "config:" in summary, "each blocking stage is named"
+    assert "_config/" in summary, "and says what is actually missing"
+
+
+def test_the_export_refuses_what_the_import_would_refuse(campaign):
+    """One definition of "is this a campaign", asked on the way out as well as in.
+
+    An archive with no frozen config uploads, lists and downloads exactly like a good one
+    and fails only at the far end of a transfer, on somebody else's service, where nobody
+    can repair the source. The predicate that refuses it there has to be the same one, or
+    the two drift and the export starts writing archives the import has learned to reject.
+    """
+    assert missing_for_import_in(campaign) == [], "the fixture is a complete campaign"
+    assert ingest_campaign(campaign)["ok"] is True
+
+    shutil.rmtree(campaign / "_config")
+    assert missing_for_import_in(campaign), "and this is the shape the import refuses"
+    assert ingest_campaign(campaign)["ok"] is False
+
+
+def test_the_export_check_reads_object_keys_as_readily_as_a_tree():
+    """Paths, not a directory: the cluster lane exports from an object store.
+
+    It has no tree to stat, so a predicate written against the filesystem would simply not
+    be asked there -- which is the lane where the campaign that produced the bad archive
+    lives. Both callers hand over campaign-relative paths and get the same answer.
+    """
+    assert missing_for_import(["_execution/controller.log", "config1/1/test.xml"]), \
+        "no _config/ at all is the shape a campaign that died before setup exports as"
+    assert missing_for_import(["_config/", "_config/scenario.osc"]), \
+        "a _config/ carrying no .vast is refused for the .vast, not for the directory"
+    assert missing_for_import(["_config/nav.vast", "_execution/data.db"]) == []
+    # Absence of derived data is not incompleteness: raw is the normal thing to share.
+    assert missing_for_import(["_config/nav.vast"]) == []

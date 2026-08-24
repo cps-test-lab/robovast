@@ -32,6 +32,13 @@ import { formatBytes } from '@/lib/format'
 export function ShareInventory({ presentIds }: { presentIds: Set<string> }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
+  // Archives this panel has dispatched an import for. An import registers its campaign
+  // before any bytes move, so without this the row you clicked drops out of `elsewhere`
+  // about a second later and every row below it slides up -- under the pointer, while the
+  // list is still being read. Two adjacent ids and one further click is all it takes to
+  // import an archive nobody chose, and the panel's only account of it is a campaign card
+  // under the other id. Keeping the row put costs nothing and removes the whole class.
+  const [started, setStarted] = useState<Set<string>>(() => new Set())
 
   const listing = useQuery({
     queryKey: ['shareArchives'],
@@ -42,6 +49,9 @@ export function ShareInventory({ presentIds }: { presentIds: Set<string> }) {
 
   const importing = useMutation({
     mutationFn: (a: ShareArchive) => robovast.importFromShare(a.campaign_id),
+    onMutate: (a: ShareArchive) => {
+      setStarted((prev) => new Set(prev).add(a.campaign_id))
+    },
     onSuccess: () => {
       // The campaign appears in the live list on its own (the service pushes the list on
       // every change, and it is registered at phase `importing` before any bytes move),
@@ -56,7 +66,9 @@ export function ShareInventory({ presentIds }: { presentIds: Set<string> }) {
   // reach a secondary system.
   if (!listing.data?.configured || listing.isError) return null
 
-  const elsewhere = listing.data.archives.filter((a) => !presentIds.has(a.campaign_id))
+  const elsewhere = listing.data.archives.filter(
+    (a) => !presentIds.has(a.campaign_id) || started.has(a.campaign_id),
+  )
   if (!elsewhere.length) return null
 
   return (
@@ -77,7 +89,8 @@ export function ShareInventory({ presentIds }: { presentIds: Set<string> }) {
       <Collapse in={open}>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
           Importing has the service fetch the archive, so nothing comes through this browser.
-          A raw archive is postprocessed once it lands.
+          A raw archive is postprocessed once it lands. The import continues in the
+          background, so how it ends is reported on the campaign&apos;s own card, not here.
         </Typography>
 
         {importing.isError ? (
@@ -114,13 +127,17 @@ export function ShareInventory({ presentIds }: { presentIds: Set<string> }) {
                   </IconButton>
                 </Tooltip>
               ) : null}
+              {/* Only this row's button is disabled once it has been sent. Disabling every
+                  button on any pending mutation made the whole panel look broken for the
+                  moment the request was in flight, and said nothing about which archive
+                  had gone. */}
               <Button
                 size="small"
                 variant="outlined"
-                disabled={importing.isPending}
+                disabled={started.has(a.campaign_id)}
                 onClick={() => importing.mutate(a)}
               >
-                Import
+                {started.has(a.campaign_id) ? 'Importing…' : 'Import'}
               </Button>
             </Stack>
           ))}

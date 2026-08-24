@@ -189,3 +189,40 @@ def test_export_of_an_unknown_campaign_is_refused_before_anything_is_created(svc
     monkeypatch.setattr(in_pod_upload, "load_provider_from_env", _no_provider)
     with pytest.raises(KeyError, match="camp-nope"):
         svc._stream_campaign_to_share("camp-nope", "/nonexistent", MagicMock())  # pylint: disable=protected-access
+
+
+def test_export_of_a_campaign_with_no_frozen_config_is_refused(svc, monkeypatch):
+    """Indexed is not the same as importable, and only the second decides the archive.
+
+    A campaign that died before its ``_config/`` was published is a real shape: it is
+    indexed, it lists, its ``_execution/`` is full of logs, and every byte of it tars and
+    uploads happily. What comes out the far end is an archive whose only possible future is
+    an ingest refusal on somebody else's service, after a full transfer, with the source
+    out of reach. Found live -- a share was holding one.
+
+    Only ``_config/`` is listed: nothing else decides the answer, and an export of a large
+    campaign must not pay for its whole key listing twice.
+    """
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_execution import in_pod_upload
+
+    listed = []
+
+    class _Storage:
+        def list_entries(self, bucket, prefix, delimited=False):
+            listed.append(prefix)
+            return [], []
+
+    monkeypatch.setattr(svc, "_campaign_is_here", lambda cid: True)
+    monkeypatch.setattr(in_pod_upload, "load_provider_from_env",
+                        lambda: MagicMock(SHARE_TYPE="fake"))
+    monkeypatch.setattr(svc, "_campaign_object_location",
+                        lambda cid, **k: (_Storage(), "bucket", f"campaigns/{cid}/"))
+
+    def _no_access(_provider):
+        raise AssertionError("the share was contacted for an unexportable campaign")
+
+    monkeypatch.setattr(in_pod_upload, "verify_share_access", _no_access)
+    with pytest.raises(CampaignConfigError, match="_config/"):
+        svc._stream_campaign_to_share("camp-1", "/nonexistent", MagicMock())  # pylint: disable=protected-access
+    assert listed == ["campaigns/camp-1/_config"], "one listing, of the one prefix that decides"

@@ -1152,11 +1152,20 @@ class LocalTransport(RobovastInterface):
         that explains it. It behaves like any other failed campaign, including being
         removed by ``vast results delete``, and the archive is untouched, so a retry with
         force costs only the transfer.
+
+        "In the campaign" has to mean *where clients read the campaign*, which is the half
+        this originally got wrong. Publishing runs only on the success path, so on a lane
+        whose durable home is an object store the log and the report stayed on a pod's
+        scratch while ``list_files`` answered from the store -- the same undiagnosable
+        failed campaign as before, reached by a different route.
+        :meth:`_publish_failed_import` closes it: the account goes up, the scratch goes
+        away, and the campaign reads the same on both lanes.
         """
         from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
             add_campaign_log_handler, remove_campaign_log_handler)
         from robovast.service.ingest import (  # pylint: disable=import-outside-toplevel
-            claim_campaign_dir, extract_archive, ingest_campaign)
+            blocking_summary, claim_campaign_dir, extract_archive, ingest_campaign,
+            read_campaign_id)
         from robovast.service.interface import \
             IngestReport  # pylint: disable=import-outside-toplevel
 
@@ -1172,6 +1181,20 @@ class LocalTransport(RobovastInterface):
 
         try:
             archive, owned = fetch(logger.info)
+            # The archive must be the campaign it was asked for. On the share path the id
+            # comes from the *object's name* while extraction lands the tree under whatever
+            # name the tar carries, and nothing downstream compares them: a mismatch
+            # extracts as some other campaign, ingests the empty directory claimed here,
+            # and reports `config, layout` -- the archive's own symptom -- under an id that
+            # is not the one that failed. Reading the id costs the tar's index, which the
+            # upload path already pays (`_resolve_import_source`); this closes the other.
+            inner = read_campaign_id(archive)
+            if inner != campaign_id:
+                raise RuntimeError(
+                    f"the archive fetched for {campaign_id} holds campaign {inner!r}. "
+                    f"Refusing to extract it: it would land as {inner!r} while "
+                    f"{campaign_id!r} was ingested as an empty directory, and neither name "
+                    f"would then mean what it says.")
             logger.info("extracting %s into %s ...", Path(archive).name,
                         self._campaigns_root())
             extract_archive(archive, self._campaigns_root(), remove_archive=owned)
@@ -1186,7 +1209,7 @@ class LocalTransport(RobovastInterface):
                 encoding="utf-8")
             if not report["ok"]:
                 raise RuntimeError(
-                    f"{campaign_id} could not be ingested: {', '.join(report['blocking'])}")
+                    f"{campaign_id} could not be ingested. {blocking_summary(report)}")
             logger.info("\u2713 imported %s", campaign_id)
         except Exception as e:  # noqa: BLE001 - recorded on the campaign, which is kept
             detail = failure_detail(e)
@@ -1198,6 +1221,13 @@ class LocalTransport(RobovastInterface):
             # Durable, so the failure still reads as a failure after a service restart --
             # the tracked entry that carries it now lives only in this process.
             self._record_failed_import(target, detail)
+            # ...and durable *where clients read*, which on a lane whose home is an object
+            # store is not this disk. Publishing happens only on success, so a failed
+            # import used to leave import.log and import.json on a pod's scratch, where
+            # `list_files` -- pointed at the store -- answers "no directory" for the very
+            # campaign whose card is showing the failure. That is the "worst of both" this
+            # method's docstring says was fixed; it was fixed only for the local lane.
+            self._publish_failed_import(campaign_id, target)
             state.update(error=detail)
             state.set_phase(Phase.FAILED)
             return
@@ -1291,11 +1321,11 @@ class LocalTransport(RobovastInterface):
                      share_error=status.share_error)
         state.set_phase(Phase.FINISHED)
 
-    # -- the three things an import means something different by, per lane -----
+    # -- the four things an import means something different by, per lane ------
     #
-    # Local disk is both the working area and the durable home, so all three are trivial
+    # Local disk is both the working area and the durable home, so all four are trivial
     # here. A lane whose home is an object store overrides them; nothing else in the
-    # import differs, which is why they are three small questions rather than a second
+    # import differs, which is why they are four small questions rather than a second
     # copy of the sequence.
 
     def _campaign_is_here(self, campaign_id: str) -> bool:
@@ -1311,6 +1341,17 @@ class LocalTransport(RobovastInterface):
 
     def _publish_imported_campaign(self, campaign_id: str, target: Path) -> None:
         """Make the imported campaign durable. Locally it already is."""
+
+    def _publish_failed_import(self, campaign_id: str, target: Path) -> None:
+        """Make a FAILED import's account of itself durable. Locally it already is.
+
+        Separate from :meth:`_publish_imported_campaign` rather than a flag on it, because
+        the two publish different things for different reasons: a successful import
+        publishes the *campaign*, this publishes only the few kilobytes that say why there
+        is no campaign. A failed import can be gigabytes of a tree nobody can use, and
+        uploading that to explain a missing ``_config/`` would spend a full transfer on a
+        diagnosis.
+        """
 
     # -- interface ----------------------------------------------------------
 
