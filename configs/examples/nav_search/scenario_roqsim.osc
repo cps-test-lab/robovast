@@ -2,6 +2,10 @@ import osc.helpers
 import osc.ros
 import osc.nav2
 import osc.remote
+# set_yaml_value lives here, not in helpers -- a scenario that mutates the stack's own
+# parameters needs it, and the parser's complaint is "unknown behavior", which reads like a
+# typo rather than a missing import.
+import osc.dataops
 
 # One crossing of the room, and the same one for every campaign in this directory.
 #
