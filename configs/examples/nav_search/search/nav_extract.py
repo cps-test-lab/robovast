@@ -155,9 +155,11 @@ class NavExtract(Extractor):
             # carry on, and this defect affects every cell equally.
             raise ValueError(
                 f"{config_dir}: no run recorded a clearance value, so the robustness margin "
-                f"cannot include it. Declare clearance_monitor as a component of the robot "
-                f"in the world, and record its topic (/clearance) in the scenario's "
-                f"bag_record.")
+                f"cannot include it. Three things have to line up, and the likeliest is the "
+                f"last: clearance_monitor declared as a component of the robot in the world; "
+                f"/clearance in the scenario's bag_record; and the rosbag->CSV plugins listed "
+                f"in *search.postprocessing*, not only in results_processing -- the search "
+                f"loop scores each batch before the campaign-level block ever runs.")
 
         failures = sum(1 for r in runs if not read_test_result(r)['success'])
         return ExtractResult(

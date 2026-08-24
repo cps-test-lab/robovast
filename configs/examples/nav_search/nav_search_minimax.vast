@@ -40,6 +40,19 @@ search:
       scenario: max_speed
       values: [[$max_speed, 0.0, 2.0]]
   postprocessing:
+  # The FULL chain, not just the metrics plugin. `search.postprocessing` runs inside the
+  # loop, before each batch is scored, and nothing else has converted the bags yet: the
+  # results_processing block below runs only once the campaign is over. Listing only
+  # NavMetrics here leaves it reading poses.csv and rosbag2_clearance.csv that do not exist,
+  # and the extractor then refuses the batch -- correctly, but for a reason that reads like
+  # a missing plugin in the world.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - search/nav_metrics.py:NavMetrics
   extract:
     plugin: search/nav_extract.py:NavExtract
