@@ -1,0 +1,88 @@
+version: 2
+metadata:
+  name: nav_search_random
+  title: Random sampling over the doorway and the walker (the honest denominator)
+  description: |
+    Uniform draws over the two environment factors. It assumes nothing and covers
+    everything badly -- which is exactly the point: it is the reference every other
+    strategy here has to beat, and the number it reports (what fraction of the space
+    fails, with an interval) is the one the others are read against.
+  keywords: [robotics, navigation, ROS2, roqsim, nav2, search, coverage]
+
+search:
+  strategy: random
+  search_space:
+    gap_width:    {type: float, low: 0.4, high: 1.6}
+    walker_dwell: {type: float, low: 0.0, high: 8.0}
+  variations:
+  - variations/doorway.py:DoorwayVariation:
+      sim: {instances: components.barrier.instances}
+      gap_width: $gap_width
+  - ParameterVariationList:
+      sim: components.pedestrian.dwell
+      values: [$walker_dwell]
+  postprocessing:
+  - search/nav_metrics.py:NavMetrics
+  extract:
+    plugin: search/nav_extract.py:NavExtract
+    params: {aggregate: worst, timeout: 120.0}
+  objectives:
+  - {name: robustness, direction: minimize}
+  per_batch: 8
+  # Bounded by RUNS, not batches: that is what makes this and nav_search_halton a fair
+  # contest. Two strategies given the same number of batches are not given the same
+  # amount of simulator, once repetitions stop being constant.
+  budget:
+  - runs: 144
+  seed: 1
+
+execution:
+  containers:
+    # roqsim, from the deployment's project. Nothing here names an image: which registry it
+    # comes from is ROBOVAST_PROJECT's business, and naming one pins the example to a site.
+    simulation:
+      backend: roqsim
+      config: world/empty_room.yaml
+      resources: {cpu: 1, memory: 2Gi}
+    # The system under test, kept vanilla: a nav2 image plus the TB4 description. That is
+    # the claim this shape makes -- point it at any nav2 image and it works.
+    sut:
+      image: family:robovast
+      system_packages:
+      - ros-jazzy-nav2-minimal-tb4-description
+      resources: {cpu: 4, memory: 4Gi}
+    scenario:
+      resources: {cpu: 1.25, memory: 2Gi}
+  mode: ros2
+  # Declared with the memory limits, not instead of them: adding limits alone shrinks an
+  # otherwise-unbounded /dev/shm down to them, and a run that overruns shared memory dies of
+  # SIGBUS (exit 135) rather than a clean OOM -- which arrives with nothing explaining it.
+  shm_size: 1Gi
+  runs: 3
+  # Declared, unlike every other example in this repo. Without it `stalled` is null, no
+  # verdict about a wedged run is possible, and `vast wait` cannot exit on one. The trial
+  # bounds itself at 120 s; this is the outer backstop for a run that wedges before its own
+  # timeout arms.
+  timeout: 300
+  scenario_file: scenario_roqsim.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also sweeps
+  # __pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbs it.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+results_processing:
+  postprocessing:
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - search/nav_metrics.py:NavMetrics

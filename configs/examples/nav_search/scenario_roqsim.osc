@@ -6,12 +6,18 @@ import osc.remote
 # One crossing of the room, and the same one for every campaign in this directory.
 #
 # Copied from basic_nav/scenario_roqsim.osc, whose bring-up gate and remote() launch are
-# hard-won, and then made SMALLER: no nav2 parameter mutation, no dynamic-obstacle trigger,
-# no per-configuration map, no set_entity_state. Everything these campaigns vary -- the
-# doorway, the walker's timing, the lidar noise, the seed -- rides the `sim:` channel into
-# the compiled world, so nothing about a trial has to happen at run time and all ten
-# campaigns share this file unedited. A difference in their results is then attributable to
-# the search strategy and to nothing else.
+# hard-won, and then made smaller: no dynamic-obstacle trigger, no per-configuration map, no
+# set_entity_state. Everything about the WORLD that these campaigns vary -- the doorway, the
+# walker's timing, the lidar noise, the seed -- rides the `sim:` channel into the compiled
+# model, so nothing about the environment has to happen at run time.
+#
+# What does happen here is the nav2 parameter mutation below, and it has to: those are the
+# system under test's own settings, not the world's, and there is no channel into a stack
+# that is launched rather than compiled. Their defaults match the checked-in params file, so
+# the campaigns that vary none of them run exactly what the file says.
+#
+# All ten campaigns share this file unedited, which is what makes a difference in their
+# results attributable to the search strategy and to nothing else.
 
 scenario test_scenario:
     # Short by design: a ~5 m crossing is 20-30 s of driving. Bounded well above that so a
@@ -27,9 +33,33 @@ scenario test_scenario:
     start_pose: pose_3d = pose_3d(position: position_3d(x: -2.5m, y: 0.0m))
     goal_pose:  pose_3d = pose_3d(position: position_3d(x:  2.5m, y: 0.0m))
 
+    # THE STACK UNDER TEST. Defaults match files/nav2_params.yaml, so a campaign that varies
+    # neither writes back exactly what was already there and the adversarial campaigns are
+    # unaffected. They exist because a trade-off is only meaningful over things somebody
+    # CHOOSES: searching the environment finds what breaks a fixed stack, and searching the
+    # stack asks what a tuning costs -- and only the second is a design decision.
+    inflation_radius: float = 0.55
+    max_speed: list of float = [0.5, 0.0, 2.0]
+
     robot: differential_drive_robot
 
     do serial:
+        # THIS CONFIGURATION'S nav2 PARAMETERS, written into a copy so the checked-in file
+        # stays the record of the defaults.
+        run_process("cp /config/files/nav2_params.yaml /out/nav2_params.yaml")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius",
+            value: inflation_radius,
+            value_type: "float")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius",
+            value: inflation_radius,
+            value_type: "float")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "velocity_smoother.ros__parameters.max_velocity",
+            value: max_speed,
+            value_type: "list")
+
         # Gate the LAUNCH, not the activation. Two cross-container lifecycle service_calls
         # cannot work (service_call fires call_async once with no wait_for_service, so the
         # request is dropped into a container whose server it has not finished matching),
@@ -52,7 +82,7 @@ scenario test_scenario:
                        qos_profile: qos_preset_profiles!sensor_data)
         parallel:
             ros_launch('', '/config/files/nav2_sut.launch.py',
-                [key_value('params_file', '/config/files/nav2_params.yaml'),
+                [key_value('params_file', '/out/nav2_params.yaml'),   # the MUTATED copy
                  key_value('map', '/config/files/empty_room.yaml'),
                  key_value('autostart', 'true')],
                 wait_for_shutdown: false) with:

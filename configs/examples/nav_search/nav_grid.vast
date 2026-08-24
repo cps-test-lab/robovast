@@ -1,0 +1,102 @@
+version: 2
+metadata:
+  name: nav_grid
+  title: A fixed grid over the doorway and the walker's timing (the reference)
+  description: |
+    Batch mode, no search block. A factorial grid over the two environment factors, run so
+    the search campaigns beside it have something to be compared against: it is the only
+    campaign here that covers the space exhaustively, and therefore the only one that can
+    say what the others missed.
+
+    It is also the campaign to PILOT with. `config_filter` is refused for search campaigns
+    (a search has no named configurations until it proposes them), so a single-cell dry run
+    has to go through this file.
+  keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, search-baseline]
+
+configuration:
+- name: grid
+  variations:
+  # Doorway width, as the gaps 0.4 / 0.8 / 1.2 / 1.6 m -- the same range the search
+  # campaigns declare, so the grid covers the space they explore rather than a different one.
+  #
+  # The numbers are derived from that range by the same arithmetic variations/doorway.py
+  # uses (two segments spanning wall to wall, length (10 - gap)/2, centred at
+  # -+(5 + gap/2)/2) and are written out because batch mode has no way to feed a swept
+  # scalar INTO a variation plugin -- ParameterVariationList sets a value, it does not
+  # parameterise another variation.
+  #
+  # Getting this wrong once already cost a sweep: an earlier version used 0.8-2.6 m, every
+  # width of which the robot passed, so the geometry axis was inert and all four failures
+  # came from the walker. 0.4 m is marginal against the TB4's ~0.36 m footprint; if every
+  # cell still passes at 0.4, the axis needs to go narrower still.
+  - ParameterVariationList:
+      sim: components.barrier.instances
+      values:
+      - [{pos: [0.0, -2.60], size: [0.2, 4.8, 1.0]}, {pos: [0.0, 2.60], size: [0.2, 4.8, 1.0]}]
+      - [{pos: [0.0, -2.70], size: [0.2, 4.6, 1.0]}, {pos: [0.0, 2.70], size: [0.2, 4.6, 1.0]}]
+      - [{pos: [0.0, -2.80], size: [0.2, 4.4, 1.0]}, {pos: [0.0, 2.80], size: [0.2, 4.4, 1.0]}]
+      - [{pos: [0.0, -2.90], size: [0.2, 4.2, 1.0]}, {pos: [0.0, 2.90], size: [0.2, 4.2, 1.0]}]
+  # When the pedestrian is at the crossing, relative to the robot's arrival. Dwell shifts
+  # the patrol's phase, so this is the encounter timing -- the factor that makes the
+  # failure region a band rather than a threshold.
+  - ParameterVariationList:
+      sim: components.pedestrian.dwell
+      values: [0.0, 2.0, 4.0, 6.0]
+
+execution:
+  containers:
+    # roqsim, from the deployment's project. Nothing here names an image: which registry it
+    # comes from is ROBOVAST_PROJECT's business, and naming one pins the example to a site.
+    simulation:
+      backend: roqsim
+      config: world/empty_room.yaml
+      resources: {cpu: 1, memory: 2Gi}
+    # The system under test, kept vanilla: a nav2 image plus the TB4 description. That is
+    # the claim this shape makes -- point it at any nav2 image and it works.
+    sut:
+      image: family:robovast
+      system_packages:
+      - ros-jazzy-nav2-minimal-tb4-description
+      resources: {cpu: 4, memory: 4Gi}
+    scenario:
+      resources: {cpu: 1.25, memory: 2Gi}
+  mode: ros2
+  # Declared with the memory limits, not instead of them: adding limits alone shrinks an
+  # otherwise-unbounded /dev/shm down to them, and a run that overruns shared memory dies of
+  # SIGBUS (exit 135) rather than a clean OOM -- which arrives with nothing explaining it.
+  shm_size: 1Gi
+  runs: 3
+  # Declared, unlike every other example in this repo. Without it `stalled` is null, no
+  # verdict about a wedged run is possible, and `vast wait` cannot exit on one. The trial
+  # bounds itself at 120 s; this is the outer backstop for a run that wedges before its own
+  # timeout arms.
+  timeout: 300
+  scenario_file: scenario_roqsim.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also sweeps
+  # __pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbs it.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+results_processing:
+  postprocessing:
+  # `all` extracts every TF child frame that resolves against map, so a world that later
+  # gains a walker frame shows it without editing this. `require` names what the analysis is
+  # measured from, and a run missing any of them fails loudly rather than quietly scoring.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  # Declared explicitly so "no collision" and "no oracle" stay distinguishable, and so the
+  # clearance series exists as a table rather than only inside the bag.
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  # Derives per-run nav_metrics.csv from those tables. Same plugin the search campaigns
+  # use, so a number in a figure here is the number a search optimises there.
+  - search/nav_metrics.py:NavMetrics

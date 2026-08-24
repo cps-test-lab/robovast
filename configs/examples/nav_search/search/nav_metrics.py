@@ -44,11 +44,30 @@ from robovast.results_processing.postprocessing_plugins import \
     BasePostprocessingPlugin
 
 
+#: What ``rosbags_to_csv`` names a topic's table, and the plain name a hand-written test or
+#: another converter might use. Tried in order. Recorded rather than guessed: the pilot wrote
+#: ``rosbag2_clearance.csv`` while this plugin read ``clearance.csv``, so every run reported an
+#: empty clearance AND a `collided` of 0 that no file had supplied -- a fabricated measurement
+#: that looked exactly like a clean crossing.
+_CLEARANCE_FILES = ('rosbag2_clearance.csv', 'clearance.csv')
+_COLLISION_FILES = ('rosbag2_collision.csv', 'collision.csv')
+_BEHAVIOR_FILES = ('nav2_behaviors.csv', 'behaviors.csv')
+
+
 def _rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with open(path, newline='', encoding='utf-8') as handle:
         return list(csv.DictReader(handle))
+
+
+def _first(run_dir: Path, names) -> Path | None:
+    """The first of ``names`` that exists in this run, or ``None``."""
+    for name in names:
+        path = run_dir / name
+        if path.exists():
+            return path
+    return None
 
 
 def _floats(rows: list[dict], *keys) -> list[float]:
@@ -91,11 +110,25 @@ def _metrics_for_run(run_dir: Path, poses_file: str, gt_frame: str, goal) -> dic
     # The recorded clearance series. Empty means the world ran no clearance_monitor, which
     # is a configuration mistake rather than an infinitely safe run -- reported as an empty
     # cell so the extractor drops that margin instead of scoring a fabricated one.
-    clearances = _floats(_rows(run_dir / 'clearance.csv'), 'data', 'current', 'clearance')
+    clearance_csv = _first(run_dir, _CLEARANCE_FILES)
+    clearances = _floats(_rows(clearance_csv), 'data', 'current', 'clearance') \
+        if clearance_csv else []
+
+    collision_csv = _first(run_dir, _COLLISION_FILES)
+    if collision_csv is None:
+        # The oracle's table is missing, and `collided = False` here would be a fabricated
+        # measurement indistinguishable from a clean crossing -- the single most misleading
+        # value this plugin could write, because every downstream consumer trusts it for the
+        # verdict. Refuse the run instead; the extractor then records the cell as unmeasured.
+        raise FileNotFoundError(
+            f"{run_dir}: no collision table ({' or '.join(_COLLISION_FILES)}). Is /collision "
+            f"in the scenario's bag_record and in rosbags_to_csv's topics?")
     collided = any((r.get('data') or '').strip().lower() in ('true', '1')
-                   for r in _rows(run_dir / 'collision.csv'))
+                   for r in _rows(collision_csv))
+
+    behaviour_csv = _first(run_dir, _BEHAVIOR_FILES)
     recoveries = sum(
-        1 for r in _rows(run_dir / 'behaviors.csv')
+        1 for r in _rows(behaviour_csv) if behaviour_csv
         if any(k in (r.get('behavior_name') or '').lower()
                for k in ('spin', 'backup', 'wait', 'clear'))
         and (r.get('status_name') or '').upper().startswith('RUNNING'))
