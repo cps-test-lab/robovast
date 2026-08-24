@@ -31,6 +31,7 @@ spec:
       initContainers:
         - name: compat-check
           image: {image}
+          imagePullPolicy: {pull_policy}
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -60,6 +61,7 @@ spec:
       containers:
         - name: robovast
           image: {image}
+          imagePullPolicy: {pull_policy}
           command: ["/usr/bin/tini", "--", "/bin/bash", "/config/entrypoint.sh"]
           env:
           - name: AVAILABLE_CPUS

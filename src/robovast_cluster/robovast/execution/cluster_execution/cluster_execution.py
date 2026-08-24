@@ -109,6 +109,13 @@ POD_BLOCKED_REASONS = frozenset({
 })
 
 
+#: The subset of :data:`POD_BLOCKED_REASONS` that reports on a *pull attempt*, and so the
+#: only reasons whose message can name a rate limit (see :func:`image_pull_is_throttled`).
+#: A name that cannot be parsed, an image the node may not pull, a container config the
+#: kubelet rejects: none of those involve a registry, and none can be transient.
+POD_PULL_REASONS = frozenset({"ImagePullBackOff", "ErrImagePull"})
+
+
 #: Why the scheduler refused to place a pod. Unlike :data:`POD_BLOCKED_REASONS` this is a
 #: pod *condition*, and it is the shape every capacity or quota mistake takes: the
 #: workload is admitted, the kubelet has nowhere to put it, and the pod sits ``Pending``
@@ -132,13 +139,18 @@ POD_UNSCHEDULABLE_REASONS = frozenset({"Unschedulable", "SchedulerError"})
 BLOCKED_GRACE_SECONDS = 60.0
 
 
-#: The same tolerance, for the one unschedulable cause that *does* recover on its own:
-#: a pod the scheduler refused because the resource it asks for is momentarily held by
-#: something else (see :func:`unschedulable_is_contention`). The job fits a node, so it
-#: starts as soon as a neighbour finishes — most often a neighbour in a *different*
-#: campaign, which is why this shows up when several run at once and never when one does.
-#: Sixty seconds is sized for a registry blip and failed such campaigns for the single
-#: condition that fixes itself; fifteen minutes outlasts a typical trial.
+#: The same tolerance, for the causes that *do* recover on their own. Two of them, and
+#: both appear when several campaigns run at once and never when one does:
+#:
+#: * a pod the scheduler refused because the resource it asks for is momentarily held by
+#:   something else (see :func:`unschedulable_is_contention`) — the job fits a node, so
+#:   it starts as soon as a neighbour finishes;
+#: * a pull the kubelet or the registry is rate-limiting (see
+#:   :func:`image_pull_is_throttled`) — the image is there and the credential works; the
+#:   pull is queued behind the other pulls a batch of jobs asked for at the same instant.
+#:
+#: Sixty seconds is sized for a registry blip and failed such campaigns for the very
+#: conditions that fix themselves; fifteen minutes outlasts a typical trial.
 #:
 #: Deliberately finite. A pod nobody reports on hangs the batch until
 #: ``activeDeadlineSeconds`` fires and then blames a scenario timeout for what was an
@@ -667,6 +679,39 @@ def unschedulable_is_contention(message: str) -> bool:
     return True
 
 
+#: Kubelet / registry phrasings for "this pull is rate-limited", lowercased. Deliberately
+#: an allowlist of the throttling *vocabulary* rather than a list of the errors to fail
+#: on: an unrecognised message keeps the strict answer, so a new registry error nobody
+#: anticipated fails fast instead of sitting for the long grace on a guess.
+#:
+#: ``pull qps exceeded`` is the kubelet's own limiter (``registryPullQPS``/``registryBurst``,
+#: 5/10 by default) deferring a pull; ``toomanyrequests`` / ``rate limit`` are what a
+#: registry says when the node asks for images faster than the account may pull them.
+_PULL_THROTTLE_PHRASES = ("pull qps exceeded", "toomanyrequests", "rate limit")
+
+
+def image_pull_is_throttled(message: str) -> bool:
+    """Is *message* a pull the kubelet or the registry is merely rate-limiting?
+
+    True for a queue, false for a verdict. A throttled pull has an image that exists and
+    a credential that works — it is waiting its turn, and it takes its turn without
+    anyone doing anything. A batch of jobs created in one instant asks one kubelet for
+    every image at once, so this is the image-side twin of
+    :func:`unschedulable_is_contention`: invisible on a quiet cluster, routine when two
+    campaigns start a batch together, and self-clearing in both cases.
+
+    It matters because the two live on different clocks. Failing a throttled pull on the
+    sixty-second blip timer ends the campaign for the one image condition that fixes
+    itself — which is what happened to a 50-batch search on its 34th batch, with two
+    jobs of thirty-five affected and eight hours of finished work behind it.
+
+    Everything else — a manifest that does not exist, a registry that refuses the
+    credential, a host that does not resolve — reads identically in fifteen minutes and
+    keeps the short grace.
+    """
+    return any(phrase in message.lower() for phrase in _PULL_THROTTLE_PHRASES)
+
+
 def pod_fits_any_node(pod, nodes) -> bool:
     """Could *pod* be placed on some node in *nodes* if that node were empty?
 
@@ -709,13 +754,16 @@ def _pod_signals(k8s_core, namespace,
     still looks healthy. The records travel with the reason because the pod they came from
     is about to be deleted, and nothing else can answer what the container died of
     afterwards. ``contended``: the
-    subset of ``blocked`` that is only waiting for a busy cluster (see
-    :func:`unschedulable_is_contention` and :func:`pod_fits_any_node`) and would start
-    on its own -- a distinction the caller needs because it is the difference between a
-    campaign that is slow and one that is broken.
+    subset of ``blocked`` that is only waiting its turn and would start on its own --
+    for the node it needs (:func:`unschedulable_is_contention` plus
+    :func:`pod_fits_any_node`) or for the pull it asked for
+    (:func:`image_pull_is_throttled`). The caller needs the distinction because it is the
+    difference between a campaign that is slow and one that is broken.
 
-    A node list that cannot be read leaves ``contended`` empty, so an unreadable cluster
-    yields the stricter answer: every blocked job is treated as one that will not recover.
+    A node list that cannot be read leaves the *scheduling* half of ``contended`` empty,
+    so an unreadable cluster yields the stricter answer there: a pod refused for capacity
+    is treated as one that will not recover. A throttled pull needs no node list -- there
+    is no node fact that could make it permanent -- so it is unaffected.
 
     Raises on a pod-list error rather than returning empties: a silent empty result
     is indistinguishable from "nothing is blocked", which let the run loop's grace
@@ -741,6 +789,10 @@ def _pod_signals(k8s_core, namespace,
         if reason:
             r, msg = reason
             blocked[name] = f"{r}: {msg}" if msg else r
+            if r in POD_PULL_REASONS and msg and image_pull_is_throttled(msg):
+                # No node list needed: unlike a reservation that may be larger than any
+                # machine, a throttled pull has nothing that could make it permanent.
+                contended[name] = blocked[name]
             if r == "Unschedulable" and msg and unschedulable_is_contention(msg):
                 if nodes is None:
                     try:
@@ -782,7 +834,7 @@ def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
 def blocked_and_contended_reasons(k8s_core, namespace,
                                   label_selector) -> "tuple[dict, dict]":
     """``(blocked, contended)`` from a single pod list — :func:`blocked_job_reasons` plus
-    the subset of it that is merely waiting for a busy cluster.
+    the subset of it that is merely waiting its turn, for a node or for a pull.
 
     ``contended`` is always a subset of ``blocked``; ``blocked - contended`` is what will
     not recover on its own. One call because the escalation loop needs both every couple

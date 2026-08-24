@@ -1012,6 +1012,37 @@ the subtraction above and complements it: the kubelet reservation protects the m
 the subtraction protects the schedule.
 
 
+Which image bytes a run uses
+----------------------------
+
+Before the first batch creates a Job, every image ref the campaign's pods will run is
+resolved against the registry to the digest it names right now (one ``HEAD`` per distinct
+ref, cached for the campaign), and each container carries an explicit
+``imagePullPolicy``: ``IfNotPresent`` for a digest ref, ``Always`` for anything still a
+tag.
+
+Both halves matter, and the second is the one that bites. Kubernetes defaults the policy
+to ``IfNotPresent`` — *except* for a ``:latest`` tag, where it silently becomes
+``Always``. A campaign image is a floating tag in the ordinary case, so every container of
+every scenario pod re-contacted the registry on every start for an image the node already
+had. A batch of 35 pods is then ~140 registry round trips in one instant, against a
+kubelet whose image-pull limiter is five per second (``registryPullQPS``, burst ten): the
+pods past the burst come back ``ErrImagePull: pull QPS exceeded``, and that is arithmetic
+rather than bad luck. Pinning removes the round trips; writing the policy out removes the
+dependence on how the tag happens to read.
+
+It is also what makes a campaign one experiment: a floating tag can be re-pushed between
+batch 1 and batch 50, and a system under test that changes underneath a sweep invalidates
+the comparison the sweep exists to make. ``_execution/execution.yaml`` then records what
+ran rather than what was asked for.
+
+Resolution is **fail-soft**. An unreachable registry, a ref this deployment holds no
+credential for, or a registry that omits the digest header leaves the ref exactly as it
+was — which is what would have run anyway — and it keeps ``Always``, correct for a name
+that may move. A campaign never fails to start because this could not be applied; the log
+says which refs stayed unpinned.
+
+
 Waiting, blocked, and merely busy
 ---------------------------------
 
@@ -1022,30 +1053,44 @@ differently:
    Kueue has not admitted it. Normal, and unbounded — see above.
 
 busy
-   Admitted, but the scheduler cannot place it *yet*: the resource exists on a node and
-   something else is holding it, usually another campaign's run. It starts by itself
-   when a neighbour finishes, so the batch waits **15 minutes** (``CONTENDED_GRACE_SECONDS``)
-   before giving up, and repeats the reason in the log each minute meanwhile. Failing
-   this on the short timer threw campaigns away for the one condition that resolves
-   itself.
+   Admitted, but waiting its turn — for a node or for a pull. Either the resource exists
+   on a node and something else is holding it, usually another campaign's run; or the
+   image exists and the credential works, and the pull is rate-limited behind the other
+   pulls a whole batch of jobs asked for at the same instant (the kubelet's own
+   ``registryPullQPS`` limiter, or the registry's account limit). Both start by
+   themselves, so the batch waits **15 minutes** (``CONTENDED_GRACE_SECONDS``) before
+   giving up, and repeats the reason in the log each minute meanwhile. Failing either on
+   the short timer threw campaigns away for the very conditions that resolve themselves.
 
 ``blocked``
-   It will not start on its own: a bad image reference or missing pull credentials, or a
-   reservation no node can satisfy — one larger than the biggest machine, or a GPU that
-   no node advertises because its device plugin is down. These look the same in ten
-   minutes as in one, so the batch fails after **60 seconds** (``BLOCKED_GRACE_SECONDS``)
-   with Kubernetes' own message.
+   It will not start on its own: an image reference that names nothing, missing pull
+   credentials, or a reservation no node can satisfy — one larger than the biggest
+   machine, or a GPU that no node advertises because its device plugin is down. These
+   look the same in ten minutes as in one, so the batch fails after **60 seconds**
+   (``BLOCKED_GRACE_SECONDS``) with Kubernetes' own message.
 
 The job *listing* (``vast execution cluster monitor``, the web UI, ``list_campaign_jobs``)
 reports the last two alike, as ``blocked`` with Kubernetes' message as the detail — the
 distinction is about how long to wait, and it lives in the run loop and its log.
 
-The split is made per job, from the scheduler's message plus what the nodes advertise:
-``Insufficient <resource>`` counts as busy only when the pod's own requests fit inside
-some node's ``allocatable``. Any other stated cause — an untolerated taint, an unmatched
-node selector — is blocked. If a batch reaches the 15-minute limit, the cluster is
-oversubscribed rather than busy: check what else is running, and whether the queue
-admits more than the nodes can hold.
+The split is made per job, and on each side it is an allowlist of what is known to clear
+by itself — so a reason nobody anticipated is blocked, and fails fast, rather than
+sitting for the long grace on a guess.
+
+*Scheduling*: the scheduler's message plus what the nodes advertise. ``Insufficient
+<resource>`` counts as busy only when the pod's own requests fit inside some node's
+``allocatable``; any other stated cause — an untolerated taint, an unmatched node
+selector — is blocked, as is every cause when the node list cannot be read.
+
+*Pulling*: the kubelet's message alone, since no node fact can make a throttled pull
+permanent. Only a pull-attempt reason (``ErrImagePull``, ``ImagePullBackOff``) whose
+message names a rate limit counts as busy; a manifest that is not there, a registry that
+refuses the credential, a host that does not resolve, and every non-pull reason are
+blocked.
+
+If a batch reaches the 15-minute limit, the cluster is oversubscribed rather than busy:
+check what else is running and whether the queue admits more than the nodes can hold —
+or, for a pull reason, run fewer jobs at once than the registry will serve.
 
 
 Selecting a Cluster Context
@@ -1366,6 +1411,22 @@ or ``POST /campaigns/{id}/share/run`` — and it works from the stored campaign 
 it is available even after the service was restarted. A re-trigger uses the share
 provider currently configured in the environment, so adjusting ``ROBOVAST_SHARE_TYPE``
 and re-triggering uploads to a different provider.
+
+A re-trigger runs in the **service**, not the driver, and stages nothing on the way: the
+campaign's objects are tarred straight out of the object store into the provider's
+request body, the same no-scratch path that serves ``GET /campaigns/{id}/archive``. Only
+the campaign's small status objects (``_execution/outcome.json``, ``_execution/data.db``,
+``campaign.db``) are pulled down, because the outcome is edited and published back. The
+variant is read off what is there, so a campaign that has since been postprocessed goes
+up as ``postprocessed`` where the campaign-end upload sent ``raw``.
+
+**Watching it.** The campaign enters the ``sharing`` phase and publishes live progress
+into its status (``extra.upload``), which the campaign view renders as a bar and
+``vast exec cluster monitor`` prints. Because the archive is gzipped on the fly its
+compressed length is unknown until the last byte, so the **bar measures the campaign
+bytes going into the archive** (``source_done``/``source_total``) and the bytes actually
+sent are reported beside it — the two differ by the compression ratio. A provider or lane
+that can offer no total leaves ``percent`` null and the bar indeterminate.
 
 The destination is whatever ``ROBOVAST_SHARE_TYPE`` (and its variables) name in the
 service's ``.env`` — the launch flag is a pure on/off switch and carries no

@@ -128,6 +128,31 @@ def _download_progress_logger(batch_tag, interval=_DOWNLOAD_PROGRESS_INTERVAL):
     return on_file
 
 
+def pull_policy_for(image_ref: str) -> str:
+    """The ``imagePullPolicy`` a container running *image_ref* must carry.
+
+    ``IfNotPresent`` for a digest-pinned ref, ``Always`` for anything else, and **always
+    written out** -- never left to Kubernetes' default, which is the trap this exists to
+    close. That default is ``IfNotPresent`` *except* for a ``:latest`` tag, where it
+    silently becomes ``Always``; the campaign image is a floating ``:latest`` in the
+    ordinary case, so every container of every scenario pod re-contacted the registry on
+    every start even though the node already had the image.
+
+    A batch of thirty-five pods is then ~140 registry round trips delivered in one
+    instant, against a kubelet whose image-pull limiter is five per second
+    (``registryPullQPS``, burst ten). The pods past the burst come back
+    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch, and
+    it ended a 50-batch search on its 34th (qd-bt-coverage-full-2026-08-24-01031052).
+
+    The policy follows the ref rather than being chosen: a digest names the bytes, so
+    "if not present" cannot serve anything stale, while a tag can be re-pushed under us
+    and must be re-checked. That is why pinning (:meth:`BatchJobRunner._pin_image_refs`)
+    is the half that does the work -- this half only stops the answer depending on
+    whether the tag happens to read ``latest``.
+    """
+    return "IfNotPresent" if "@sha256:" in (image_ref or "") else "Always"
+
+
 def _instance_type_command(cluster_config) -> str | None:
     """The provider's shell line for recording the node's instance type, or ``None``.
 
@@ -295,12 +320,14 @@ class BatchJobRunner:
     #: two seconds, and a normal quota wait must not spam the campaign log.
     _SUSPEND_CHECK_INTERVAL_SECONDS = 30.0
 
-    #: Jobs already invalidated by :meth:`_invalidate_restarted_jobs`. A restart keeps
-    #: being reported on every poll until its pod is gone, and deleting a Job is
-    #: asynchronous, so without this one crash is recorded -- and its trial discarded --
-    #: several times over. ``None`` here rather than a set because the class is populated
-    #: attribute by attribute (see :meth:`for_batch`) and a mutable class attribute would
-    #: be shared by every runner in the process; :meth:`_invalidate_restarted_jobs`
+    #: Jobs already dropped by :meth:`_drop_job` -- a restarted container or a pod that
+    #: never started. Either keeps being reported on every poll until its pod is gone, and
+    #: deleting a Job is asynchronous, so without this one fault is recorded -- and its
+    #: trial discarded -- several times over. It is also the batch's tally of what it
+    #: lost, which the end of :meth:`run_batch` reads to tell a flaky cluster from a fault
+    #: every job of the batch shares. ``None`` here rather than a set because the class is
+    #: populated attribute by attribute (see :meth:`for_batch`) and a mutable class
+    #: attribute would be shared by every runner in the process; :meth:`_drop_job`
     #: replaces it with a per-instance set on first use.
     _invalidated = None
     #: How often a batch that is blocked repeats why, so a long wait for
@@ -310,7 +337,7 @@ class BatchJobRunner:
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
-                  built_images=None):
+                  built_images=None, image_digest_cache=None):
         self = cls()
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -331,6 +358,10 @@ class BatchJobRunner:
         self.image = image
         self._resolved_image_digest = None
         self._resolved_image_digests = {}
+        # Set for real by _pin_image_refs; the plain ref until then, so an offline caller
+        # (manifest emit, tests) that never reaches a cluster still renders a valid pod.
+        self._sidecar_image = resolve_sidecar_image()
+        self._registry_ca_file = None
         # ``None`` ⇒ classic single-batch layout; the controller sets
         # a tag per search batch so jobs/param files/storage prefix don't collide.
         self._batch_tag = batch_tag
@@ -340,9 +371,21 @@ class BatchJobRunner:
         self.post_command = execution_params.get("post_command")
         self.run_as_user = execution_params.get("run_as_user", 1000)
 
+        # Declared before anything may reach the cluster: _pin_image_refs below asks the
+        # registry, which needs these to exist. They stay None for every offline caller
+        # (manifest emit, tests), whose _ensure_k8s_initialized finds no kubeconfig.
+        self.k8s_client = None
+        self.k8s_batch_client = None
+        self.k8s_api_client = None
+        self._k8s_initialized = False
+
         # One container plan, shared with the local lane and exec_in_container.
         self.plan = plan_containers(execution_params, images=built_images,
                                     explicit_main=image)
+        # Before anything is put in a manifest: every ref these pods will run, resolved
+        # to the bytes it names right now. Shared across the campaign's batches by the
+        # backend, so a sweep asks the registry once and not once per batch.
+        self._pin_image_refs(image_digest_cache)
         # Once per campaign, not per job: a `list_node()` per job would add an API call to
         # every one of a sweep's runs to answer a question whose answer cannot change
         # between them.
@@ -372,10 +415,6 @@ class BatchJobRunner:
         # once per job rather than every poll.
         self._deadline_killed = set()
 
-        self.k8s_client = None
-        self.k8s_batch_client = None
-        self.k8s_api_client = None
-        self._k8s_initialized = False
         return self
 
     def _ensure_k8s_initialized(self):
@@ -524,7 +563,8 @@ class BatchJobRunner:
         spec['initContainers'] = [
             {
                 'name': 's3-init',
-                'image': resolve_sidecar_image(),
+                'image': self._sidecar_image,
+                'imagePullPolicy': pull_policy_for(self._sidecar_image),
                 'command': ['sh', '-c', init_cmd],
                 'env': init_env,
                 'volumeMounts': [
@@ -629,6 +669,7 @@ class BatchJobRunner:
             secondary_spec = {
                 'name': sc_name,
                 'image': sc.image,
+                'imagePullPolicy': pull_policy_for(sc.image),
                 # A NATIVE SIDECAR: an init container with restartPolicy Always. That is
                 # what ties the pod's lifetime to the scenario rather than to whichever
                 # container happens to run longest. As an ordinary container, a sidecar
@@ -912,6 +953,7 @@ class BatchJobRunner:
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
         yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
+                                       pull_policy=pull_policy_for(image),
                                        compat_version=COMPAT_VERSION,
                                        min_compat_version=MIN_IMAGE_COMPAT)
         manifest = yaml.safe_load(yaml_str)
@@ -953,6 +995,133 @@ class BatchJobRunner:
                             'value': str(value)
                         })
         return manifest
+
+    def _pin_image_refs(self, cache) -> None:
+        """Resolve every image ref this campaign's pods run to the digest it names now.
+
+        The root-cause half of the pull-storm fix (see :func:`pull_policy_for`), and a
+        provenance fix in the same move. Robovast already recorded the digest -- but
+        *after* a batch had run, read back off the pods (:meth:`_capture_image_digest`).
+        Resolving it *before* the pods are written gets three things at once:
+
+        * the kubelet stops re-contacting the registry for an image the node already has,
+          because a digest ref takes ``IfNotPresent``;
+        * every pod of the campaign provably runs the same bytes, instead of a floating
+          tag that may be re-pushed between batch 1 and batch 50 -- a campaign whose
+          system under test changes underneath it is not one experiment;
+        * ``execution.yaml`` records what ran rather than what was asked for.
+
+        *cache* is the backend's per-campaign dict, so a sweep asks the registry once for
+        each distinct ref and not once per batch.
+
+        **Fail-soft, deliberately.** An unreachable registry, a ref in a registry this
+        deployment holds no credential for, a registry that omits the digest header: the
+        ref is left exactly as it was, which is what would have run anyway. A campaign
+        must not fail to start because an optimisation could not be applied -- and the
+        unpinned ref then keeps ``Always``, which is correct for a name that may move.
+        """
+        if cache is None:
+            cache = {}
+        try:
+            self._ensure_k8s_initialized()
+        except Exception:  # noqa: BLE001 - offline manifest emit and tests reach no cluster
+            logger.debug("no cluster to resolve image digests against", exc_info=True)
+        sidecar = resolve_sidecar_image()
+        refs = {c.image for c in self.plan.containers if c.image}
+        refs.add(sidecar)
+        if self.image:
+            refs.add(self.image)
+        for ref in sorted(refs):
+            if ref in cache:
+                continue
+            cache[ref] = self._resolve_digest(ref)
+
+        def pinned(ref):
+            return cache.get(ref) or ref
+
+        import dataclasses  # noqa: PLC0415 - only this method rebuilds the plan
+        self.plan = dataclasses.replace(self.plan, containers=tuple(
+            dataclasses.replace(c, image=pinned(c.image)) if c.image else c
+            for c in self.plan.containers))
+        self._sidecar_image = pinned(sidecar)
+        self.image = pinned(self.image) if self.image else self.image
+        moved = {ref: got for ref, got in cache.items() if got and got != ref}
+        if moved:
+            logger.info("Pinned %d image ref(s) to their digests for %s: %s",
+                        len(moved), self.campaign,
+                        ", ".join(f"{r} -> {d.rsplit('@', 1)[-1]}"
+                                  for r, d in sorted(moved.items())))
+        unpinned = sorted(ref for ref in refs if not cache.get(ref))
+        if unpinned:
+            logger.warning(
+                "Could not resolve %d image ref(s) to a digest: %s. They keep their tag "
+                "and imagePullPolicy 'Always', so every pod re-checks them with the "
+                "registry -- which a wide batch can rate-limit itself out of. The pods "
+                "also carry no guarantee of running the same bytes for the whole "
+                "campaign.", len(unpinned), ", ".join(unpinned))
+
+    def _resolve_digest(self, ref: str) -> str:
+        """*ref* as ``repo@sha256:…`` if this deployment's registry will say, else ``""``.
+
+        Uses the **pull** credential, because the question is what the kubelet will
+        resolve the ref to, and the kubelet uses that one.
+        """
+        from .registry_client import manifest_digest  # noqa: PLC0415 - optional path
+        try:
+            registry = self.cluster_config.get_registry_config()
+        except Exception:  # noqa: BLE001 - a registry is optional
+            return ""
+        try:
+            return manifest_digest(
+                ref, dockerconfigjson=self._registry_dockerconfig(registry),
+                insecure=getattr(registry, "insecure", False),
+                ca_path=self._registry_ca_path(registry))
+        except Exception:  # noqa: BLE001 - never block a campaign on an optimisation
+            logger.warning("could not resolve %s to a digest", ref, exc_info=True)
+            return ""
+
+    def _registry_dockerconfig(self, registry) -> str:
+        """The pull Secret's ``.dockerconfigjson``, or ``""``. Never returned to a client."""
+        import base64  # noqa: PLC0415
+        name = getattr(registry, "pull_secret_name", "") or getattr(
+            registry, "push_secret_name", "")
+        if not name:
+            return ""
+        try:
+            secret = self.k8s_client.read_namespaced_secret(name, self.namespace)
+        except Exception:  # noqa: BLE001 - the probe is optional, the campaign is not
+            return ""
+        data = (secret.data or {}).get(".dockerconfigjson")
+        if not data:
+            return ""
+        try:
+            return base64.b64decode(data).decode()
+        except (ValueError, UnicodeDecodeError):
+            return ""
+
+    def _registry_ca_path(self, registry) -> str:
+        """The registry CA materialised to a file for ``requests``' ``verify=``, or ``""``.
+
+        Cached on the instance: one file per runner, not one per ref.
+        """
+        name = getattr(registry, "ca_configmap_name", "")
+        if not name:
+            return ""
+        if self._registry_ca_file is not None:
+            return self._registry_ca_file
+        self._registry_ca_file = ""
+        try:
+            cm = self.k8s_client.read_namespaced_config_map(name, self.namespace)
+            pem = (cm.data or {}).get("ca.pem", "")
+        except Exception:  # noqa: BLE001
+            pem = ""
+        if pem:
+            fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the process
+                mode="w", suffix=".pem", prefix="robovast-registry-ca-", delete=False)
+            fd.write(pem)
+            fd.close()
+            self._registry_ca_file = fd.name
+        return self._registry_ca_file
 
     def _discover_gpu_support(self) -> None:
         """Record whether this cluster can schedule GPUs, and how they must be requested.
@@ -1198,45 +1367,88 @@ class BatchJobRunner:
             logger.warning("Batch %s: could not check for restarted containers: %s",
                            self._batch_tag, exc)
             return
+        for job_name, entry in sorted(restarted.items()):
+            self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
+                           campaign_root=campaign_root, storage=storage,
+                           bucket_name=bucket_name, campaign_prefix=campaign_prefix,
+                           forensics=entry)
+
+    def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name, campaign_root,
+                           storage, bucket_name, campaign_prefix) -> None:
+        """Drop the jobs of this batch whose pod never started, once their grace is spent.
+
+        The counterpart of :meth:`_invalidate_restarted_jobs` for the other way a job can
+        fail to deliver a trial. A pod that cannot start has nothing to capture -- no
+        container ever ran -- so this is that method without the forensics.
+
+        The caller has already established that this is a *subset* of the batch (see the
+        run loop); a whole batch that cannot start is a configuration fault and fails the
+        campaign instead.
+        """
+        for job_name in sorted(expired):
+            self._drop_job(job_name, f"pod never started -- {reasons_by_job[job_name]}",
+                           jobs_by_name=jobs_by_name, campaign_root=campaign_root,
+                           storage=storage, bucket_name=bucket_name,
+                           campaign_prefix=campaign_prefix)
+
+    def _drop_job(self, job_name, detail, *, jobs_by_name, campaign_root, storage,
+                  bucket_name, campaign_prefix, forensics=None) -> None:
+        """Discard one job of this batch, record why, and let the batch drain around it.
+
+        The single response to a job that cannot deliver a usable trial, whichever way it
+        got there: a container the kubelet restarted (its state is gone) or a pod that
+        never started at all. The job is recorded in the intervention ledger, its evidence
+        captured while the pod still exists, and then deleted -- ``get_remaining_jobs``
+        treats a gone Job as finished, so the batch drains around the hole exactly as it
+        does for an operator's ``stop_job``. Its siblings finish, the cell scores over the
+        samples it has left, and a cell that lost all of them degrades to ``no_sample``,
+        which the search loop already handles.
+
+        Order matters and is the same as ``stop_job``'s: record, publish, *then* delete.
+        The pod dies asynchronously and takes its evidence with it.
+
+        *forensics* is the restart record whose container logs must be captured before the
+        pod is collected; a job whose pod never started has none and passes ``None``.
+        """
         if self._invalidated is None:
             self._invalidated = set()
-        for job_name, entry in sorted(restarted.items()):
-            if job_name in self._invalidated:
-                continue
-            self._invalidated.add(job_name)
-            job = jobs_by_name.get(job_name)
-            runs = tuple(f"{it.config_name}/{it.run_number}" for it in job.items) if job \
-                else ()
-            job_dir = f"_jobs/{self._job_artifact_path(job.index)}" if job else ""
-            logger.warning(
-                "Batch %s: invalidating job %s -- %s. Its %d run(s) are discarded; the "
-                "rest of the batch continues.",
-                self._batch_tag, job_name, entry["detail"], len(runs) or 1)
-            # Evidence first, and never at the cost of the response: a diagnostic that
-            # raises would turn the failure it documents into a different, worse one.
+        if job_name in self._invalidated:
+            return
+        self._invalidated.add(job_name)
+        job = jobs_by_name.get(job_name)
+        runs = tuple(f"{it.config_name}/{it.run_number}" for it in job.items) if job \
+            else ()
+        job_dir = f"_jobs/{self._job_artifact_path(job.index)}" if job else ""
+        logger.warning(
+            "Batch %s: invalidating job %s -- %s. Its %d run(s) are discarded; the "
+            "rest of the batch continues.",
+            self._batch_tag, job_name, detail, len(runs) or 1)
+        # Evidence first, and never at the cost of the response: a diagnostic that
+        # raises would turn the failure it documents into a different, worse one.
+        if forensics is not None:
             try:
-                self._capture_container_failures(entry, job_name, job_dir, runs,
+                self._capture_container_failures(forensics, job_name, job_dir, runs,
                                                  campaign_root, storage, bucket_name,
                                                  campaign_prefix)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Batch %s: could not capture evidence for %s: %s",
                                self._batch_tag, job_name, exc)
-            try:
-                record_intervention(
-                    Path(campaign_root), kind=KIND_INVALID, job_dir=job_dir,
-                    job_name=job_name, source="runner", detail=entry["detail"], runs=runs)
-                self._publish_execution_file(storage, campaign_root, bucket_name,
-                                             campaign_prefix, "interventions.json")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Batch %s: could not record the invalidation of %s: %s",
-                               self._batch_tag, job_name, exc)
-            try:
-                self.k8s_batch_client.delete_namespaced_job(
-                    job_name, self.namespace, grace_period_seconds=0,
-                    propagation_policy="Background")
-            except client.exceptions.ApiException as exc:
-                if exc.status != 404:
-                    raise
+        try:
+            record_intervention(
+                Path(campaign_root), kind=KIND_INVALID, job_dir=job_dir,
+                job_name=job_name, source="runner", detail=detail, runs=runs)
+            self._publish_execution_file(storage, campaign_root, bucket_name,
+                                         campaign_prefix, "interventions.json")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Batch %s: could not record the invalidation of %s: %s",
+                           self._batch_tag, job_name, exc)
+        try:
+            self.k8s_batch_client.delete_namespaced_job(
+                job_name, self.namespace, grace_period_seconds=0,
+                propagation_policy="Background")
+        except client.exceptions.ApiException as exc:
+            if exc.status != 404:
+                raise
 
     def _capture_container_failures(self, entry, job_name, job_dir, runs, campaign_root,
                                     storage, bucket_name, campaign_prefix) -> None:
@@ -1349,7 +1561,10 @@ class BatchJobRunner:
         jobs_by_name = dict(zip(job_names, jobs))
 
         job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
-        blocked_since = None
+        # Per job, not per batch: two jobs can be blocked for different reasons, become
+        # blocked at different moments, and deserve different tolerances. One shared
+        # timer answered for all of them and so had to pick the shortest.
+        blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
         last_suspend_check = time.monotonic()
         while True:
@@ -1368,6 +1583,13 @@ class BatchJobRunner:
             try:
                 blocked, contended = blocked_and_contended_reasons(
                     self.k8s_client, self.namespace, job_label)
+                # The label selector is campaign-wide and finished Jobs linger for
+                # ``ttlSecondsAfterFinished``, so scope the answer to THIS batch --
+                # the same reason ``restarted_job_forensics`` takes ``job_names``.
+                # Without it an earlier batch's job could be counted against this
+                # one's tally, which is what decides config fault vs cluster.
+                blocked = {k: v for k, v in blocked.items() if k in set(job_names)}
+                contended = {k: v for k, v in contended.items() if k in blocked}
             except Exception as exc:  # noqa: BLE001 - probe failed this iteration
                 # Could not check pods this cycle. Treat as "unknown", NOT as
                 # "nothing blocked": clearing blocked_since here would silently reset
@@ -1377,53 +1599,76 @@ class BatchJobRunner:
                                self._batch_tag, exc)
                 blocked, contended = None, {}
             if blocked:
+                now = time.monotonic()
                 reasons = "; ".join(sorted(set(blocked.values())))
                 # Two tolerances, because "cannot start" covers two different futures.
-                # A pod refused for capacity that a node does advertise starts by itself
-                # the moment a neighbour finishes -- and the neighbour is usually another
-                # campaign, which is why this appears only when several run at once.
-                # Failing it on the registry-blip timer threw away campaigns for the one
-                # condition that recovers. Anything else here (a bad image, a request no
-                # node can hold) looks the same in ten minutes as in one, and still fails
-                # on the short timer.
-                unrecoverable = {job for job in blocked if job not in contended}
-                grace = (self._BLOCKED_GRACE_SECONDS if unrecoverable
-                         else self._CONTENDED_GRACE_SECONDS)
-                if blocked_since is None:
-                    blocked_since = time.monotonic()
-                    last_blocked_log = blocked_since
-                    logger.warning("Batch %s: %d job(s) cannot start%s: %s",
-                                   self._batch_tag, len(blocked),
-                                   "" if unrecoverable else " yet (cluster busy)",
-                                   reasons)
-                elif time.monotonic() - blocked_since >= grace:
-                    if unrecoverable:
-                        raise CampaignConfigError(
-                            f"{len(blocked)} scenario job(s) cannot start after "
-                            f"{grace:.0f}s and will not recover — "
-                            f"Kubernetes reports: {reasons}. An image reason points at "
-                            f"the execution image reference and pull credentials; an "
-                            f"Unschedulable one at cluster capacity or a resource no node "
-                            f"can satisfy (the message above names it).")
-                    raise CampaignConfigError(
-                        f"{len(blocked)} scenario job(s) waited {grace:.0f}s for capacity "
-                        f"that never came free — Kubernetes reports: {reasons}. The "
-                        f"reservation fits a node, so this is contention rather than a "
-                        f"run too large to place: other work is holding the resource for "
-                        f"longer than a trial takes. Check what else the cluster is "
-                        f"running, and whether the queue admits more than the nodes can "
-                        f"hold (`vast execution cluster setup` re-sizes it).")
-                elif time.monotonic() - last_blocked_log >= self._BLOCKED_LOG_INTERVAL_SECONDS:
+                # A pod waiting its turn starts by itself: for a node, once the neighbour
+                # holding the capacity finishes; for an image, once the pull the kubelet
+                # is rate-limiting comes up its queue. Both appear when several campaigns
+                # run at once and never when one does, and failing either on the
+                # registry-blip timer threw away campaigns for the very conditions that
+                # recover. Anything else here (an image that does not exist, a request no
+                # node can hold) looks the same in ten minutes as in one, and still gets
+                # the short timer.
+                fresh = [job for job in blocked if job not in blocked_since]
+                for job in fresh:
+                    blocked_since[job] = now
+                for job in [j for j in blocked_since if j not in blocked]:
+                    del blocked_since[job]      # it started after all
+                # Deleting a Job is asynchronous, so one already dropped keeps reporting
+                # itself blocked for a poll or two; skipping it here keeps the timers and
+                # the log honest without a second pass through `_drop_job`.
+                dropped = self._invalidated or ()
+                expired = [job for job, since in blocked_since.items()
+                           if job not in dropped
+                           and now - since >= (self._CONTENDED_GRACE_SECONDS
+                                               if job in contended
+                                               else self._BLOCKED_GRACE_SECONDS)]
+                if fresh:
+                    last_blocked_log = now
+                    logger.warning(
+                        "Batch %s: %d of %d job(s) cannot start%s: %s",
+                        self._batch_tag, len(blocked), len(job_names),
+                        "" if any(j not in contended for j in blocked)
+                        else " yet (waiting their turn)", reasons)
+                elif now - last_blocked_log >= self._BLOCKED_LOG_INTERVAL_SECONDS:
                     # Re-state it periodically: at 2s per iteration the "still running"
                     # line below otherwise buries a 15-minute wait under 450 lines that
                     # look like progress.
-                    last_blocked_log = time.monotonic()
-                    logger.warning("Batch %s: %d job(s) still cannot start after %.0fs "
-                                   "(of %.0fs): %s", self._batch_tag, len(blocked),
-                                   time.monotonic() - blocked_since, grace, reasons)
+                    last_blocked_log = now
+                    logger.warning("Batch %s: %d of %d job(s) still cannot start after "
+                                   "%.0fs: %s", self._batch_tag, len(blocked),
+                                   len(job_names), now - min(blocked_since.values()),
+                                   reasons)
+                if expired:
+                    # The whole batch, or part of it — and that is the whole distinction.
+                    # Every job of a batch runs the same images with the same reservation,
+                    # so a cause that lives in the CONFIGURATION blocks all of them: a
+                    # reference that names nothing, a credential the registry refuses, a
+                    # reservation no node can hold. Such a campaign must still fail here,
+                    # and fail fast, because no batch of it will ever run.
+                    #
+                    # A cause that blocks only SOME of them is, by that fact alone, not in
+                    # the configuration — it is the cluster this batch happened to land in.
+                    # Failing the campaign for it ended a 50-batch search on its 34th batch
+                    # over two jobs of thirty-five, with eight hours of finished work
+                    # behind it. So those jobs are dropped, exactly as a restarted one is,
+                    # and the batch runs on with what is left.
+                    if len(blocked) == len(job_names):
+                        raise CampaignConfigError(
+                            f"none of this batch's {len(job_names)} scenario job(s) could "
+                            f"start — Kubernetes reports: {reasons}. Every job of a batch "
+                            f"runs the same images with the same reservation, so a whole "
+                            f"batch blocked points at the campaign rather than at the "
+                            f"cluster: an image reason at the execution image reference "
+                            f"and its pull credentials, an Unschedulable one at a "
+                            f"reservation no node can satisfy (the message above names "
+                            f"it).")
+                    self._drop_blocked_jobs(expired, blocked, jobs_by_name, campaign_root,
+                                            storage, bucket_name, campaign_prefix)
             elif blocked is not None:
-                # A successful probe that found nothing blocked clears the timer.
-                blocked_since = None
+                # A successful probe that found nothing blocked clears the timers.
+                blocked_since.clear()
             # No grace period, deliberately: unlike a blocked pod, a restart has already
             # happened. The container lost its state, so every extra second spent waiting
             # buys a more convincing wrong answer rather than a chance of recovery.
@@ -1460,15 +1705,19 @@ class BatchJobRunner:
             storage, bucket_name, campaign_prefix)
         if self._invalidated and len(job_names) > 1 and \
                 len(self._invalidated) >= len(job_names):
-            # Every job of a multi-job batch losing a container is not a flake, it is a
-            # fault they share -- a world file that does not exist, an image that cannot
-            # run here. Carrying on would spend the rest of the budget producing cells with
-            # no sample, so this is the one restart case still worth ending the campaign
-            # for. A single-job batch is exempt: one flake is 100% of one job.
+            # Every job of a multi-job batch dropped is not a flake, it is a fault they
+            # share -- a world file that does not exist, an image that cannot run here.
+            # Carrying on would spend the rest of the budget producing cells with no
+            # sample, so this is the case still worth ending the campaign for, and it is
+            # the backstop for dropping jobs one at a time rather than failing the batch
+            # around them: losing part of a batch is survivable, losing all of it is a
+            # verdict. A single-job batch is exempt: one flake is 100% of one job.
             raise CampaignConfigError(
-                f"every job in batch {self._batch_tag} ({len(job_names)}) had a container "
-                f"restarted -- that is a fault they share, not a flake. Evidence: "
-                f"_execution/container_failures.json, and the container_failure table.")
+                f"every job in batch {self._batch_tag} ({len(job_names)}) was dropped -- a "
+                f"container restarted, or a pod that never started. That is a fault they "
+                f"share, not a flake. Evidence: _execution/interventions.json for what was "
+                f"dropped and why; _execution/container_failures.json and the "
+                f"container_failure table for the crashes among them.")
         logger.info("Batch %s: all jobs finished.", self._batch_tag)
         self._capture_image_digest(job_label)
         if self._deadline_killed:
@@ -1582,6 +1831,11 @@ class KubernetesBackend(ExecutionBackend):
         # Lazily-built read-only storage client for count_run_artifacts (the
         # controller's progress poller); separate from the write path.
         self._progress_storage = None
+        # image ref -> the digest ref it resolved to, for this backend's lifetime. On the
+        # backend rather than the runner because a search builds a fresh runner per batch,
+        # and re-asking the registry fifty times answers a question that must not change
+        # between batches anyway (see BatchJobRunner._pin_image_refs).
+        self._image_digest_cache: dict = {}
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
@@ -1601,6 +1855,7 @@ class KubernetesBackend(ExecutionBackend):
             log_tree=self.log_tree or options.log_tree,
             state=self._state,
             built_images=options.images,
+            image_digest_cache=self._image_digest_cache,
         )
         runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
 

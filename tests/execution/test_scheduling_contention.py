@@ -16,16 +16,22 @@
 
 """Telling a busy cluster from a broken one.
 
-Both leave a pod ``Unschedulable`` with the same shape of message, and the batch loop
-answers them differently: a run waiting behind a neighbour's run starts on its own, a
-run larger than any machine never does. Getting this backwards costs a campaign.
+Twice over, because a pod that cannot start yet is indistinguishable from one that never
+will -- and the batch loop answers them differently. On the scheduling side both leave
+the pod ``Unschedulable`` with the same shape of message, but a run waiting behind a
+neighbour's run starts on its own and a run larger than any machine never does. On the
+image side both leave it ``ErrImagePull``, but a pull the kubelet or registry is
+rate-limiting comes up the queue and a manifest that does not exist stays absent.
+
+Getting either backwards costs a campaign: each of these mistakes has already ended a
+50-batch search two thirds of the way through.
 """
 
 import types
 
 from robovast.execution.cluster_execution.cluster_execution import (
     BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS, blocked_and_contended_reasons,
-    pod_fits_any_node, unschedulable_is_contention)
+    image_pull_is_throttled, pod_fits_any_node, unschedulable_is_contention)
 
 #: What the scheduler actually wrote when two campaigns filled the node.
 BUSY = ("0/1 nodes are available: 1 Insufficient cpu. no new claims to deallocate, "
@@ -146,7 +152,7 @@ def test_a_run_too_big_for_the_cluster_is_blocked_but_not_contended():
     assert blocked and not contended
 
 
-def test_an_image_failure_is_never_contention():
+def test_an_image_verdict_is_never_contention():
     core = _Core([_pod("run-7", waiting=("ImagePullBackOff", "no such image"))])
     blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
     assert blocked == {"run-7": "ImagePullBackOff: no such image"}
@@ -163,3 +169,63 @@ def test_unreadable_nodes_give_the_strict_answer():
 
 def test_contention_is_given_more_room_than_a_registry_blip():
     assert CONTENDED_GRACE_SECONDS > BLOCKED_GRACE_SECONDS
+
+
+# -- the image side of the same distinction -----------------------------------
+
+#: What the kubelet actually wrote when two campaigns started a batch at the same second.
+THROTTLED = "Back-off pulling image: pull QPS exceeded"
+
+
+def test_a_rate_limited_pull_reads_as_throttled():
+    assert image_pull_is_throttled(THROTTLED)
+    assert image_pull_is_throttled(
+        "toomanyrequests: You have reached your pull rate limit.")
+
+
+def test_a_verdict_about_the_image_is_not_throttling():
+    """No amount of waiting produces an image that is not there, a credential the
+    registry will not accept, or a host that does not resolve."""
+    assert not image_pull_is_throttled(
+        'manifest for repo/img:tag not found: manifest unknown')
+    assert not image_pull_is_throttled("unauthorized: authentication required")
+    assert not image_pull_is_throttled(
+        'dial tcp: lookup registry.example.com: no such host')
+    assert not image_pull_is_throttled("")
+
+
+def test_a_throttled_pull_is_reported_as_contended():
+    """The failure this exists to prevent: two of thirty-five jobs rate-limited on their
+    pull, failed on the sixty-second timer, and a 50-batch search ended on batch 34."""
+    core = _Core([_pod("run-7", waiting=("ErrImagePull", "pull QPS exceeded"))])
+    blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert blocked == {"run-7": "ErrImagePull: pull QPS exceeded"}
+    assert contended == blocked
+
+
+def test_a_throttled_pull_needs_no_node_list():
+    """Unlike a reservation, a throttled pull has no node fact that could make it
+    permanent -- so an unreadable node list must not downgrade it to unrecoverable."""
+    core = _Core([_pod("run-7", waiting=("ErrImagePull", THROTTLED))],
+                 node_error=RuntimeError("nodes forbidden"))
+    _, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert contended == {"run-7": f"ErrImagePull: {THROTTLED}"}
+
+
+def test_a_throttled_pull_beside_a_broken_one_still_leaves_work_to_fail():
+    """`contended` is a subset, never a verdict on the batch: the batch loop fails on the
+    short timer while ANY blocked job is missing from it."""
+    core = _Core([_pod("run-7", waiting=("ErrImagePull", THROTTLED)),
+                  _pod("run-8", waiting=("InvalidImageName", "could not parse reference"))])
+    blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert set(blocked) == {"run-7", "run-8"}
+    assert set(blocked) - set(contended) == {"run-8"}
+
+
+def test_only_a_pull_reason_can_be_throttled():
+    """A container config the kubelet rejects never involved a registry, so a message
+    that happens to contain the vocabulary must not buy it the long grace."""
+    core = _Core([_pod("run-7", waiting=("CreateContainerConfigError",
+                                         "secret rate limit not found"))])
+    blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
+    assert blocked and not contended

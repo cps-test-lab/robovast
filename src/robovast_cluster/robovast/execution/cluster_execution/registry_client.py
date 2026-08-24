@@ -140,14 +140,19 @@ def manifest_exists(image_ref: str, *, dockerconfigjson: str = "",
                           insecure=insecure, ca_path=ca_path) == PRESENT
 
 
-def manifest_state(image_ref: str, *, dockerconfigjson: str = "",
-                   insecure: bool = False, ca_path: str = "") -> str:
-    """``PRESENT`` / ``ABSENT`` / ``UNKNOWN`` for *image_ref*'s manifest.
+def _head_manifest(image_ref: str, *, dockerconfigjson: str = "",
+                   insecure: bool = False, ca_path: str = ""):
+    """The registry's ``HEAD`` response for *image_ref*'s manifest, or ``None``.
 
     Speaks just enough of the v2 API: a ``HEAD`` on the manifest, retried once with a
-    Bearer token when the registry issues an auth challenge. Only a 200 and a 404 are
-    answers; everything else — no usable credentials, an unreachable host, a status neither
-    of those — is ``UNKNOWN``, because the registry did not say.
+    Bearer token when the registry issues an auth challenge. ``None`` means the registry
+    could not be asked at all -- an unparseable ref, credentials it would not accept, a
+    host that did not answer -- as distinct from a response that says 404.
+
+    Shared by the two questions worth asking of a manifest without downloading it: is it
+    there (:func:`manifest_state`), and what does the tag currently point at
+    (:func:`manifest_digest`). One implementation because they differ only in which part
+    of the same response they read.
     """
     import requests
 
@@ -155,7 +160,7 @@ def manifest_state(image_ref: str, *, dockerconfigjson: str = "",
         host, repository, tag = split_image_ref(image_ref)
     except ValueError as e:
         logger.warning("registry check: %s", e)
-        return UNKNOWN
+        return None
 
     scheme = "http" if insecure else "https"
     url = f"{scheme}://{host}/v2/{repository}/manifests/{tag}"
@@ -179,18 +184,64 @@ def manifest_state(image_ref: str, *, dockerconfigjson: str = "",
                     logger.warning(
                         "registry check: %s needs authentication that could not be "
                         "satisfied", host)
-                    return UNKNOWN
+                    return None
                 resp = session.head(url, verify=verify, timeout=_TIMEOUT,
                                     headers={**headers,
                                              "Authorization": f"Bearer {token}"})
-            if resp.status_code == 200:
-                return PRESENT
-            if resp.status_code == 404:
-                return ABSENT
-            logger.warning(
-                "registry check: unexpected status %s for %s; the registry did not say "
-                "whether the image is there", resp.status_code, image_ref)
-            return UNKNOWN
+            return resp
     except Exception as e:  # noqa: BLE001 - never let a cache probe break a build
         logger.warning("registry check: could not reach %s (%s)", host, e)
+        return None
+
+
+def manifest_state(image_ref: str, *, dockerconfigjson: str = "",
+                   insecure: bool = False, ca_path: str = "") -> str:
+    """``PRESENT`` / ``ABSENT`` / ``UNKNOWN`` for *image_ref*'s manifest.
+
+    Only a 200 and a 404 are answers; everything else — no usable credentials, an
+    unreachable host, a status neither of those — is ``UNKNOWN``, because the registry
+    did not say.
+    """
+    resp = _head_manifest(image_ref, dockerconfigjson=dockerconfigjson,
+                          insecure=insecure, ca_path=ca_path)
+    if resp is None:
         return UNKNOWN
+    if resp.status_code == 200:
+        return PRESENT
+    if resp.status_code == 404:
+        return ABSENT
+    logger.warning(
+        "registry check: unexpected status %s for %s; the registry did not say "
+        "whether the image is there", resp.status_code, image_ref)
+    return UNKNOWN
+
+
+def manifest_digest(image_ref: str, *, dockerconfigjson: str = "",
+                    insecure: bool = False, ca_path: str = "") -> str:
+    """What *image_ref* points at **right now**, as ``repo@sha256:…``; ``""`` if unknown.
+
+    The registry answers this in the ``Docker-Content-Digest`` header of a ``HEAD``, so it
+    costs one round trip and no layer bytes.
+
+    A ref that already carries a digest is returned unchanged without asking anyone: it
+    already names the bytes, and re-resolving it could only introduce a difference.
+
+    Empty on every uncertainty -- an unreachable registry, a tag that is not there, a
+    registry that omits the header. The caller keeps the tag it had, which is what it
+    would have used anyway; a digest is an improvement to make when it is available, never
+    a reason to refuse to run.
+    """
+    if "@sha256:" in image_ref:
+        return image_ref
+    resp = _head_manifest(image_ref, dockerconfigjson=dockerconfigjson,
+                          insecure=insecure, ca_path=ca_path)
+    if resp is None or resp.status_code != 200:
+        return ""
+    digest = (resp.headers.get("Docker-Content-Digest") or "").strip()
+    if not digest.startswith("sha256:"):
+        return ""
+    try:
+        host, repository, _ = split_image_ref(image_ref)
+    except ValueError:
+        return ""
+    return f"{host}/{repository}@{digest}"
