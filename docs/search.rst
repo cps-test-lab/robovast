@@ -222,8 +222,8 @@ Strategies
 ----------
 
 All strategies share the universal core and differ only in how they propose the
-next batch and what ``report()`` returns. The three built-ins are complementary —
-coverage (``random``), diversity (``qd``) and exploitation (``optuna``).
+next batch and what ``report()`` returns. The built-ins are complementary —
+coverage (``random``, ``halton``), diversity (``qd``) and exploitation (``optuna``).
 
 random
 ^^^^^^
@@ -240,6 +240,35 @@ Ships in the base install.
    search:
      strategy: random
      # no strategy_parameters
+
+halton — low-discrepancy coverage
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The same job as ``random``, done better. Uniform draws clump and leave holes, so a
+failure region can sit between samples and an estimate carries more variance than its
+sample size suggests. A Halton sequence fills the space evenly *by construction*: the
+same budget answers the same question with a tighter interval. When two campaigns exist
+only to be compared — "does this strategy beat blind sampling?" — the blind one should at
+least be good at being blind.
+
+Scrambled by default and seeded from ``search.seed``: the textbook sequence is
+deterministic, so two campaigns with different seeds would otherwise draw identical
+points and their comparison would measure nothing. The sequence **continues across
+batches**; restarting it per batch would re-draw the same points and cover less than
+random. Ships in the base install.
+
+.. code-block:: yaml
+
+   search:
+     strategy: halton
+     strategy_parameters:
+       scramble: true        # default; false gives the textbook (identical) sequence
+
+Halton rather than Sobol for one reason: Sobol needs direction-number tables and in
+practice a scipy dependency, and a *baseline* that only runs when an extra is installed
+is not a baseline. Halton's known weakness is high dimensions, where the larger prime
+bases correlate — it is refused above 20 dimensions rather than quietly degrading, and a
+search space of the size these campaigns declare is nowhere near that.
 
 qd — quality-diversity (pyribs MAP-Elites)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

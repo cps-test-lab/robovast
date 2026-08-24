@@ -169,6 +169,7 @@ webdav = "robovast.execution.share_providers.webdav:WebDavShareProvider"
 
 [tool.poetry.plugins."robovast.search_strategies"]
 random = "robovast.search.strategies.random_search:RandomSearch"
+halton = "robovast.search.strategies.halton:HaltonSearch"
 qd = "robovast.search.strategies.qd:QDStrategy"
 optuna = "robovast.search.strategies.optuna:OptunaStrategy"
 
