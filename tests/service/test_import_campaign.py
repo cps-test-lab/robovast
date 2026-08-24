@@ -15,6 +15,7 @@ Three properties this defends, each of which was a wrong answer at some point:
   with no log and no report -- listed *and* undiagnosable.
 """
 
+import json
 import tarfile
 import time
 from pathlib import Path
@@ -23,20 +24,34 @@ import pytest
 
 from robovast.client.status import Phase
 from robovast.service.interface import ImportCampaignRequest
+from robovast.execution.status_recovery import reconstruct_status_from_disk
 from robovast.service.local_transport import LocalTransport
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 _SOURCE = _FIXTURES / "v1-campaign-2025-03-04-101500"
 
 
-def _archive(tmp_path, *, postprocessed=False, name="camp.tar.gz") -> Path:
-    """A campaign archive, raw or postprocessed, built from the historic fixture."""
+def _archive(tmp_path, *, postprocessed=False, name="camp.tar.gz",
+             runs: int = 0) -> Path:
+    """A campaign archive, raw or postprocessed, built from the historic fixture.
+
+    *runs* writes an ``_execution/outcome.json`` carrying that run tally, which is what a
+    real archive holds -- the historic fixtures predate the durable outcome and have none,
+    so a test about what an import REPORTS needs one or it asserts 0 == 0.
+    """
     import shutil
     staged = tmp_path / "staged" / _SOURCE.name
     shutil.copytree(_SOURCE, staged)
     (staged / "_execution").mkdir(exist_ok=True)
     if postprocessed:
         (staged / "_execution" / "data.db").write_bytes(b"")
+    if runs:
+        (staged / "_execution" / "outcome.json").write_text(json.dumps({
+            "phase": "finished", "mode": "batch", "batches_done": 1,
+            "postprocessed": postprocessed,
+            "runs": {"completed": runs, "total": runs,
+                     "no_result": 0, "failed": 0, "killed": 0, "invalid": 0},
+        }))
     out = tmp_path / name
     with tarfile.open(out, "w:gz") as tar:
         tar.add(staged, arcname=_SOURCE.name)
@@ -175,3 +190,40 @@ def test_a_campaigns_job_symlinks_survive_the_hardened_extraction(service, tmp_p
     _wait_done(service, ref.campaign_id)
     landed = service._campaigns_root() / ref.campaign_id / "config-a" / "0" / "job"  # pylint: disable=protected-access
     assert landed.is_symlink()
+
+
+def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
+    """The tracked entry must adopt the campaign's own record before it finishes.
+
+    That entry is constructed EMPTY -- it exists so the campaign is visible while its
+    bytes arrive -- and it shadows the durable ``outcome.json`` for as long as it lives.
+    So an import ended reporting ``0 runs`` and ``postprocessed: false`` over a campaign
+    whose tables were all present, and the status went on to advise running postprocessing
+    that would recompute every one of them.
+    """
+    archive = _archive(tmp_path, postprocessed=True, runs=26)
+    ref = service.import_campaign(ImportCampaignRequest(archive_path=str(archive)))
+    status = _wait_done(service, ref.campaign_id)
+
+    on_disk = reconstruct_status_from_disk(
+        service._campaign_dir(ref.campaign_id))  # pylint: disable=protected-access
+    assert on_disk.runs.total > 0, "fixture must carry runs for this to test anything"
+
+    assert status.postprocessed is True
+    assert status.runs.total == on_disk.runs.total
+    assert status.runs.completed == on_disk.runs.completed
+    assert status.mode == on_disk.mode
+
+
+def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):
+    """The raw path recorded the postprocessing verdict but never the run tally.
+
+    Both arrival paths go through the same adoption, so neither can report an empty
+    campaign; this is the half that a fix aimed only at the postprocessed branch misses.
+    """
+    monkeypatch.setattr(type(service), "_postprocess_campaign",
+                        lambda self, cid, d, **k: (True, "ok"))
+    ref = service.import_campaign(ImportCampaignRequest(
+        archive_path=str(_archive(tmp_path, runs=26))))
+    status = _wait_done(service, ref.campaign_id)
+    assert status.runs.total == 26

@@ -1252,8 +1252,8 @@ class LocalTransport(RobovastInterface):
         share holds -- and a campaign with no metric tables is not one anybody can ask
         anything. A postprocessed archive is left exactly as it arrived.
         """
-        from robovast.execution.status_recovery import \
-            record_step_outcome  # pylint: disable=import-outside-toplevel
+        from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
+            record_step_outcome, reconstruct_status_from_disk)
 
         if (target / "_execution" / "data.db").exists():
             logger.info("%s arrived postprocessed; nothing to compute", campaign_id)
@@ -1261,13 +1261,27 @@ class LocalTransport(RobovastInterface):
             logger.info("%s arrived raw; running postprocessing", campaign_id)
             state.set_phase(Phase.POSTPROCESSING)
             ok, message = self._postprocess_campaign(campaign_id, target)
-            status = record_step_outcome(target, postprocessing=(ok, message))
-            state.update(postprocessed=status.postprocessed,
-                         postprocessing_error=status.postprocessing_error)
+            record_step_outcome(target, postprocessing=(ok, message))
         # Last, and after postprocessing rather than before: on a lane whose durable home
         # is elsewhere this is where the campaign actually becomes durable, and publishing
         # first would have published a campaign without the tables just computed.
         self._publish_imported_campaign(campaign_id, target)
+        # Adopt what the campaign says about itself. The tracked entry an import runs under
+        # is constructed EMPTY -- it exists to make the campaign visible while its bytes
+        # arrive -- and it shadows the durable ``outcome.json`` for as long as it lives. So
+        # an import used to end reporting ``0 runs`` and ``postprocessed: false`` over a
+        # campaign whose every table was present, and the status advised running
+        # postprocessing that would recompute all of it. Both arrival paths need this: the
+        # raw one recorded only the postprocessing verdict, never the run tally, and the
+        # postprocessed one recorded nothing at all -- having nothing to *compute* is not
+        # having nothing to *report*.
+        status = reconstruct_status_from_disk(target)
+        state.update(mode=status.mode, runs=status.runs,
+                     batches_done=status.batches_done,
+                     best_objective=status.best_objective,
+                     postprocessed=status.postprocessed,
+                     postprocessing_error=status.postprocessing_error,
+                     share_error=status.share_error)
         state.set_phase(Phase.FINISHED)
 
     # -- the three things an import means something different by, per lane -----
