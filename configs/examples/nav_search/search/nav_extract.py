@@ -135,6 +135,19 @@ class NavExtract(Extractor):
             recoveries.append(_f(row, 'recovery_count', 0.0))
             modes.append(self._mode(passed, collided, duration, timeout, to_goal, goal_tol))
 
+        if not clearances:
+            # Every run of this cell recorded a pose track but no clearance, which is a
+            # misconfigured world rather than an unlucky draw: without that term the
+            # robustness margin quietly reduces to time-and-goal, so a near-miss scores
+            # exactly like a roomy crossing and the search optimises a flat landscape while
+            # every run looks healthy. Not NoSampleError -- that would record the cell and
+            # carry on, and this defect affects every cell equally.
+            raise ValueError(
+                f"{config_dir}: no run recorded a clearance value, so the robustness margin "
+                f"cannot include it. Declare clearance_monitor as a component of the robot "
+                f"in the world, and record its topic (/clearance) in the scenario's "
+                f"bag_record.")
+
         failures = sum(1 for r in runs if not read_test_result(r)['success'])
         return ExtractResult(
             objectives={

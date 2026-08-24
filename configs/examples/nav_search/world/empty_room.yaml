@@ -35,6 +35,16 @@ components:
       # except the floor, so a wheel clipping the barrier counts exactly as much as the bumper
       # does, and the perimeter walls count too. Publishes std_msgs/Bool on /collision at 30 Hz.
       - contact_monitor: {ignore: [floor], min_force: 1.0}
+      # HOW CLOSE it came, beside whether it touched. Contact is the failure criterion and a
+      # bit, so every crossing that does not touch scores the same and a search has nothing
+      # to climb; distance is the same question asked continuously. Measured against real
+      # geometry at 200 Hz, so the doorway edge and the walker's nearest LIMB are what it
+      # finds -- not a circle drawn round either of them.
+      #
+      # The two `ignore` lists must agree: if one excluded the floor and the other did not,
+      # clearance would read zero forever while contact read clean, and the two would be
+      # describing different worlds.
+      - clearance_monitor: {ignore: [floor], distmax: 3.0}
 
   # THE BARRIER AND ITS DOORWAY. Declared EMPTY on purpose: variations/doorway.py replaces
   # `instances` wholesale per configuration, computing two wall segments from gap_width about a
