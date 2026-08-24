@@ -1947,9 +1947,19 @@ class KubernetesBackend(ExecutionBackend):
         object_name = archive_name(campaign_id, variant)
         logger.info("Streaming %s campaign %s to %s share as %s...",
                     variant, campaign_id, provider.SHARE_TYPE, object_name)
-        with campaign_archive.campaign_tar_stream(campaign_root) as stream:
+        # The denominator for the progress bar. Compression means the request body's
+        # length stays unknown to the last byte, so what is counted is the payload going
+        # *in*; a metadata walk is cheap next to the upload that reads all of it anyway.
+        on_member = getattr(progress_callback, "on_member", None)
+        if on_member is not None:
+            progress_callback.set_source_total(
+                campaign_archive.campaign_source_bytes(campaign_root))
+        with campaign_archive.campaign_tar_stream(campaign_root,
+                                                  on_member=on_member) as stream:
             provider.upload_archive_stream(stream, object_name,
                                            progress_callback=progress_callback)
+        if on_member is not None:
+            progress_callback.finish()
         logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
 
     def count_run_artifacts(self, campaign_id: str,

@@ -34,7 +34,7 @@ class _FakeProvider:
 
 def _patch_stream(monkeypatch, payload=b"tar-bytes"):
     @contextlib.contextmanager
-    def _fake_stream(campaign_root, exclude=None):
+    def _fake_stream(campaign_root, exclude=None, on_member=None):
         yield io.BytesIO(payload)
     monkeypatch.setattr(campaign_archive, "campaign_tar_stream", _fake_stream)
 

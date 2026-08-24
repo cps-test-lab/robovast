@@ -52,39 +52,91 @@ DEFAULT_EXCLUDE = frozenset({".cache"})
 _CHUNK = 1024 * 1024
 
 
-def _make_filter(exclude):
+def _make_filter(exclude, on_member=None):
     """Return a ``tarfile.add`` filter dropping any member under an *exclude* name.
 
     Excluding a *directory* prunes its whole subtree: ``tarfile.add`` does not
     recurse into a member whose filter returns ``None``. That is how internal
     staging like ``_postproc/`` is kept out of a downloaded campaign.
+
+    *on_member*, when given, is called with each **kept** member's byte size as it
+    is added. It is the source-side counter behind the upload progress bar: the
+    archive is gzipped on the fly, so nothing knows the compressed total, and
+    counting what goes *in* is the only cheap denominator there is (see
+    :func:`campaign_source_bytes`). It rides on the filter because ``tarfile.add``
+    already calls that once per member -- a second walk would cost a stat per file
+    for a number the first walk has in hand.
     """
     exclude = frozenset(exclude or ())
-    if not exclude:
+    if not exclude and on_member is None:
         return None
 
     def _filter(tarinfo):
         # tarinfo.name is the arcname (``<campaign>/<rel>``); drop the member if any
         # path component matches an excluded name.
-        if exclude.intersection(tarinfo.name.split("/")):
+        if exclude and exclude.intersection(tarinfo.name.split("/")):
             return None
+        if on_member is not None:
+            # Directories and symlinks carry size 0, so this counts file payload only --
+            # the same bytes `campaign_source_bytes` sums.
+            on_member(tarinfo.size)
         return tarinfo
 
     return _filter
 
 
-def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
+def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
+    """Sum the payload bytes :func:`campaign_tar_stream` would read from *campaign_root*.
+
+    The denominator for a streamed upload's progress. Deliberately a metadata-only
+    walk -- `os.scandir` carries the size, so this is one directory read per level and
+    no file is opened -- because it runs *before* an upload that will read every one of
+    those bytes anyway.
+
+    Mirrors the archiver's two rules exactly, or the bar would end somewhere other
+    than 100%: an excluded name prunes its whole subtree, and symlinks are members
+    rather than paths to follow (``dereference=False``), so they are not recursed
+    into and contribute nothing.
+    """
+    exclude = frozenset(exclude or ())
+    total = 0
+    stack = [os.path.normpath(str(campaign_root))]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            # A campaign is live until it is not; a directory that vanished under the
+            # walk costs the bar some accuracy and must not cost the upload its run.
+            continue
+        for entry in entries:
+            if entry.name in exclude:
+                continue
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+                continue
+            try:
+                total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude,
+                       on_member=None) -> None:
     """Add the whole campaign tree under ``<campaign-id>/`` into *tar*.
 
     Relies on the TarFile's ``dereference=False`` (the default) so ``job`` symlinks
     are stored as symlink members and not followed/recursed.
     """
     arcname = os.path.basename(os.path.normpath(campaign_root))
-    tar.add(campaign_root, arcname=arcname, filter=_make_filter(exclude))
+    tar.add(campaign_root, arcname=arcname, filter=_make_filter(exclude, on_member))
 
 
 def make_campaign_tarball(campaign_root: str, archive_dir: str,
-                          exclude=DEFAULT_EXCLUDE, name: "str | None" = None) -> str:
+                          exclude=DEFAULT_EXCLUDE, name: "str | None" = None,
+                          on_member=None) -> str:
     """Write the campaign at *campaign_root* into *archive_dir*; return its path.
 
     *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. The local
@@ -101,7 +153,7 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
     os.makedirs(archive_dir, exist_ok=True)
     out_path = os.path.join(archive_dir, name or f"{arcname}.tar.gz")
     with tarfile.open(out_path, "w:gz") as tar:
-        _add_campaign_tree(tar, campaign_root, exclude)
+        _add_campaign_tree(tar, campaign_root, exclude, on_member)
     logger.info("Wrote campaign archive %s", out_path)
     return out_path
 
@@ -188,9 +240,12 @@ def iter_tar(add_members, chunk_size: int = _CHUNK):
         pipe.close()
 
 
-def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE):
-    """CM yielding a readable gzip stream of the local directory *campaign_root*."""
-    return tar_stream(lambda tar: _add_campaign_tree(tar, campaign_root, exclude))
+def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=None):
+    """CM yielding a readable gzip stream of the local directory *campaign_root*.
+
+    *on_member* is the source-side progress counter described in :func:`_make_filter`.
+    """
+    return tar_stream(lambda tar: _add_campaign_tree(tar, campaign_root, exclude, on_member))
 
 
 def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK):

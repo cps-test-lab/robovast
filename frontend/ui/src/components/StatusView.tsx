@@ -13,7 +13,9 @@ import {
   isTerminalPhase,
   type JobSummary,
   type ListJobsResponse,
+  readUploadProgress,
   type Status,
+  type UploadProgress,
 } from '@/lib/robovastClient'
 import {
   estimateBatchesEtaSeconds,
@@ -22,7 +24,7 @@ import {
   finishedRuns,
   noResultRuns,
 } from '@/lib/eta'
-import { formatDuration } from '@/lib/format'
+import { formatBytes, formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
 import { useQuery } from '@tanstack/react-query'
 import { formatLocalClock } from '@/lib/time'
@@ -31,6 +33,58 @@ import { CollapsibleBox } from './CollapsibleBox'
 import { containerColorer } from './containerColor'
 import { DetailsBox } from './DetailsBox'
 import { MeterBar } from './MeterBar'
+
+// The upload-to-share bar, shown only while the campaign is in the `sharing` phase.
+//
+// The bar measures the CAMPAIGN bytes fed into the archive, not the bytes on the wire:
+// the archive is gzipped on the fly, so its compressed length is unknown until the last
+// byte and there is no wire denominator to divide by. `sent` is reported beside it as
+// text, which is also why the two numbers disagree — that difference is the compression
+// ratio, not an error.
+//
+// With no total (a provider or lane that cannot say), the bar goes indeterminate rather
+// than showing a made-up 0%: a bar pinned at zero through a multi-hour upload is the
+// exact failure this replaced.
+function UploadSection({ upload }: { upload: UploadProgress }) {
+  const { percent, sourceDone, sourceTotal, sent, rate } = upload
+  const meta = [
+    sourceTotal > 0 ? `${formatBytes(sourceDone)} / ${formatBytes(sourceTotal)}` : null,
+    `${formatBytes(sent)} sent`,
+    rate != null && rate > 0 ? `${formatBytes(rate)}/s` : null,
+    percent != null && rate != null && rate > 0 && sourceTotal > sourceDone
+      ? `~${formatDuration(estimateUploadEtaSeconds(upload))} left`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <Box>
+      <Stack direction="row" justifyContent="space-between">
+        <Typography variant="caption" color="text.secondary">
+          upload to share
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {meta}
+        </Typography>
+      </Stack>
+      {percent == null ? (
+        <MeterBar segments={[{ fraction: 1, color: 'info.main', striped: true }]} />
+      ) : (
+        <MeterBar fraction={percent / 100} color="info.main" text={`${percent.toFixed(1)}%`} />
+      )}
+    </Box>
+  )
+}
+
+// Time left on the upload, from the rate the wire is actually moving at. The remaining
+// SOURCE bytes are scaled by the compression ratio observed so far (sent/done), because
+// `rate` counts compressed bytes and the remainder is counted uncompressed — dividing one
+// by the other directly would over-estimate the wait by exactly that ratio.
+function estimateUploadEtaSeconds(upload: UploadProgress): number {
+  const { sourceDone, sourceTotal, sent, rate } = upload
+  const ratio = sourceDone > 0 ? sent / sourceDone : 1
+  return Math.max(0, ((sourceTotal - sourceDone) * ratio) / (rate ?? 1))
+}
 
 // Job states that mean the job is over, so the live view stops showing a row for it. A
 // *failed* job is deliberately not here: a failure is the thing the reader came to look at.
@@ -149,8 +203,13 @@ export function StatusView({
   // produced a *failing* result are already in `completed`.
   const done = finishedRuns(status, counts)
   const etaSeconds = estimateEtaSeconds(status, counts, terminal)
+  // Upload-to-share is the one phase with real progress that the run meter cannot show:
+  // the runs are over and their bar is frozen, while gigabytes move to somebody else's
+  // storage. Rendered first because during `sharing` it is the only thing happening.
+  const upload = status.phase === 'sharing' ? readUploadProgress(status) : null
   return (
     <Stack spacing={1.5}>
+      {upload ? <UploadSection upload={upload} /> : null}
       <Box>
         <Stack direction="row" justifyContent="space-between">
           {/* Just "runs". The batch counter that used to ride here -- `batch 2 (3 done)` --

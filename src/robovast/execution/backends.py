@@ -184,20 +184,28 @@ class ExecutionBackend(ABC):
         ``$ROBOVAST_ARCHIVE_DIR`` or a ``_archives/`` sibling of the campaign dirs
         (kept outside every campaign dir so it can't perturb postprocessing's
         hash-cache) — there is no external share locally, so the file is the
-        deliverable, and *progress_callback* goes unused because nothing is
-        transferred. The :class:`KubernetesBackend` overrides this to stream the
-        archive to the configured share provider, and does report progress.
+        deliverable. Nothing crosses a network, but writing it still reads the whole
+        campaign, so *progress_callback* is driven off the bytes going into the tar —
+        the same source-side counter the cluster lane reports, which is what lets one
+        reader render both. The :class:`KubernetesBackend` overrides this to stream the
+        archive to the configured share provider.
         """
-        _ = progress_callback
         from robovast.execution import campaign_archive
         from robovast.execution.share_providers.naming import archive_name, campaign_variant
         results_dir = os.path.dirname(os.path.normpath(campaign_root))
         archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
             results_dir, "_archives")
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        on_member = getattr(progress_callback, "on_member", None)
+        if on_member is not None:
+            progress_callback.set_source_total(
+                campaign_archive.campaign_source_bytes(campaign_root))
         campaign_archive.make_campaign_tarball(
             campaign_root, archive_dir,
-            name=archive_name(campaign_id, campaign_variant(campaign_root)))
+            name=archive_name(campaign_id, campaign_variant(campaign_root)),
+            on_member=on_member)
+        if on_member is not None:
+            progress_callback.finish()
 
     #: The per-run JUnit report a finished run publishes. Counting these is what
     #: "a run completed" means to the progress poller, on either lane — the object

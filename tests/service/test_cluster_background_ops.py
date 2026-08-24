@@ -121,3 +121,71 @@ def test_postprocess_campaign_forwards_the_context(monkeypatch):
         postprocess_job.postprocess_campaign(
             MagicMock(), "camp-1", "/nonexistent", "ns", kube_context="local")
     assert seen.get("kube_context") == "local"
+
+
+def test_run_share_streams_from_the_store_without_staging_the_campaign(svc, monkeypatch):
+    """The export must not materialise the campaign in the pod first.
+
+    It used to open with ``fetch_campaign(force=True)``: the whole campaign came down
+    into this pod's scratch before a byte reached the share — a second full copy the pod
+    has no room for at campaign scale, and a wait reported nowhere the campaign view
+    looks. Only the few small objects carrying the campaign's *status* may be pulled,
+    because the outcome is edited and published back.
+    """
+    seen = _capture(svc, monkeypatch)
+    svc.run_share(RunShareRequest(campaign_id="camp-1"))
+
+    def _no(*_a, **_k):
+        raise AssertionError("the export fetched the campaign instead of streaming it")
+
+    monkeypatch.setattr(svc, "fetch_campaign", _no)
+    materialized = {}
+
+    def _materialize(campaign_id, rel_paths, subject, **_k):
+        materialized["paths"] = tuple(rel_paths)
+        return svc._cache_dir(campaign_id)  # pylint: disable=protected-access
+
+    monkeypatch.setattr(svc, "_materialize", _materialize)
+    streamed = {}
+    monkeypatch.setattr(svc, "_stream_campaign_to_share",
+                        lambda cid, root, state: streamed.update(campaign_id=cid))
+    monkeypatch.setattr(svc, "_publish_execution", lambda cid, root: None)
+    monkeypatch.setattr(
+        "robovast.execution.status_recovery.record_step_outcome",
+        lambda *_a, **_k: MagicMock(share_error=None))
+
+    seen["work"](MagicMock())
+
+    assert streamed["campaign_id"] == "camp-1"
+    # The status trio, and nothing that would drag the run tree down with it.
+    assert materialized["paths"] == ClusterService._SHARE_STATUS_OBJECTS
+
+
+def test_export_without_a_configured_share_says_so(svc, monkeypatch):
+    """A share that is not configured must fail loudly, naming the variable to set."""
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_execution import in_pod_upload
+
+    monkeypatch.setattr(svc, "_campaign_is_here", lambda cid: True)
+    monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: None)
+    with pytest.raises(CampaignConfigError, match="ROBOVAST_SHARE_TYPE"):
+        svc._stream_campaign_to_share("camp-1", "/nonexistent", MagicMock())  # pylint: disable=protected-access
+
+
+def test_export_of_an_unknown_campaign_is_refused_before_anything_is_created(svc, monkeypatch):
+    """An id that is not here must not produce a valid, empty archive on the share.
+
+    ``_materialize`` skips an object that is absent and ``add_campaign_members`` tars an
+    empty prefix without complaint, so the export would upload a well-formed archive
+    holding nothing, under the campaign's name, and report success.
+    """
+    from robovast.execution.cluster_execution import in_pod_upload
+
+    monkeypatch.setattr(svc, "_campaign_is_here", lambda cid: False)
+
+    def _no_provider():
+        raise AssertionError("the share was contacted for a campaign that is not here")
+
+    monkeypatch.setattr(in_pod_upload, "load_provider_from_env", _no_provider)
+    with pytest.raises(KeyError, match="camp-nope"):
+        svc._stream_campaign_to_share("camp-nope", "/nonexistent", MagicMock())  # pylint: disable=protected-access

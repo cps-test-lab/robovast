@@ -117,6 +117,37 @@ export type BudgetItem = Schemas['BudgetItem']
 
 export type Status = Schemas['Status']
 
+// What an upload-to-share is doing right now, published by the controller/service into
+// `Status.extra.upload` while the phase is `sharing` (see controller.UploadProgress).
+// `extra` is an open dict on the wire, so this is a read helper rather than a schema type.
+//
+// Two counters, because the archive is gzipped on the fly and nothing knows the compressed
+// length until the last byte: `sourceDone/sourceTotal` are the campaign bytes going *into*
+// the archive (the only honest denominator, hence the bar) and `sent` is what has left on
+// the wire. `percent` is null when no total is known — render an indeterminate bar, never a
+// fabricated 0%.
+export interface UploadProgress {
+  sent: number
+  sourceDone: number
+  sourceTotal: number
+  percent: number | null
+  rate: number | null
+}
+
+export function readUploadProgress(status: Status | undefined): UploadProgress | null {
+  const up = status?.extra?.['upload'] as Record<string, unknown> | undefined
+  if (!up || typeof up !== 'object') return null
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const sourceTotal = num(up['source_total']) ?? 0
+  return {
+    sent: num(up['sent']) ?? 0,
+    sourceDone: num(up['source_done']) ?? 0,
+    sourceTotal,
+    percent: sourceTotal > 0 ? num(up['percent']) : null,
+    rate: num(up['rate']),
+  }
+}
+
 // A search's per-batch objective trajectory (interface.py:SearchHistory). Its own route rather
 // than a field on Status: every campaign card polls the status at 1.5s, so a series that grows
 // with the batch count would be paid for by every card on screen whether or not anything is

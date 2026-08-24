@@ -1112,34 +1112,133 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         # controller's ``provider.SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
-def make_upload_progress_cb(state):
-    """Return a ``(bytes_sent, total_bytes)`` callback that publishes throttled
-    upload progress into ``Status.extra['upload']``, or ``None`` if there is no
-    control channel.
 
-    The callback derives transfer *rate* from the gap between published samples
-    (the providers report only sent/total) and throttles writes to ≥1% advance or
-    ≥0.5 s elapsed (plus the final 100% sample) to keep lock churn low. A fresh
-    callback is created per upload attempt so its rate baseline resets on retry.
+class UploadProgress:
+    """Publishes an upload's progress into ``Status.extra['upload']``.
+
+    Callable as the providers’ ``(bytes_sent, total_bytes)`` ``progress_callback``,
+    so it drops into every existing call site unchanged.
+
+    **Two counters, because one cannot answer the question.** A campaign is tarred and
+    gzipped straight into the request body, so the compressed length is unknown until
+    the last byte — the provider can only ever report bytes *sent* against a total of
+    ``0``. What a reader wants is "how far through the campaign am I?", and that is
+    knowable: :func:`~robovast.execution.campaign_archive.campaign_source_bytes` gives
+    the payload total up front and :meth:`on_member` counts it off as the archiver
+    consumes it. So the bar tracks the **source** side and ``sent`` reports the wire
+    side beside it — they differ by the compression ratio, which is why both are
+    published rather than one being derived from the other.
+
+    Either counter alone still works: with no source total the record carries ``sent``
+    and a rate and a reader shows an indeterminate bar.
+    """
+
+    def __init__(self, state):
+        self._state = state
+        # The archiver's writer thread calls `on_member` while the sending thread calls
+        # `__call__` -- the whole point of the streamed path is that the two run at once.
+        self._lock = threading.Lock()
+        self._sent = 0
+        self._source_done = 0
+        self._source_total = 0
+        self._last_t = None
+        self._last_sent = 0
+        self._last_pct = -1.0
+        self._rate = None
+        # True when the denominator came from the provider rather than the archiver:
+        # then `sent` IS the source counter (the body is a finished file, not a stream
+        # being built), so the two must stay in step on every sample.
+        self._wire_denominated = False
+
+    def set_source_total(self, total: int) -> None:
+        """Declare the payload byte count the archive will be built from."""
+        with self._lock:
+            self._source_total = max(0, int(total or 0))
+            self._publish(force=True)
+
+    def on_member(self, nbytes: int) -> None:
+        """Count *nbytes* of campaign payload as consumed by the archiver."""
+        with self._lock:
+            self._source_done += max(0, int(nbytes or 0))
+            self._publish()
+
+    def __call__(self, sent, total) -> None:
+        """The providers’ progress callback: *sent* bytes on the wire so far."""
+        with self._lock:
+            self._sent = sent
+            # A provider that knows its total (the path-based, resumable upload) has a
+            # denominator of its own; adopt it when the source side has none.
+            if total and (self._wire_denominated or not self._source_total):
+                self._wire_denominated = True
+                self._source_total = total
+                self._source_done = sent
+            self._publish(final=bool(total) and sent >= total)
+
+    def finish(self) -> None:
+        """Publish the true final numbers, unthrottled.
+
+        Needed because the two counters do not end together: the source side hits 100%
+        when the archiver has read the last file, while bytes keep going out for as long
+        as the compressor's buffer takes to drain. Every sample after that has neither a
+        percentage advance nor (on a short upload) half a second behind it, so it is
+        throttled away — leaving a record that says 100% and ``0 B sent``. Called by the
+        backends once the transfer has actually returned.
+        """
+        with self._lock:
+            self._publish(force=True)
+
+    def _percent(self):
+        if self._source_total <= 0:
+            return None
+        return min(100.0, self._source_done / self._source_total * 100.0)
+
+    def _publish(self, *, force: bool = False, final: bool = False) -> None:
+        now = time.time()
+        pct = self._percent()
+        # Throttle on whichever signal exists. The previous rule ANDed a
+        # `sent < total` clause in, which on the streamed path (total always 0)
+        # is false for every sample -- so nothing was ever throttled and a large
+        # campaign published a status update per 256 KiB chunk.
+        # Landing on 100% is never throttled: the bar's last frame is the one a reader
+        # is most likely to be looking at, and a transfer that stops at 97% reads as one
+        # that stopped.
+        if pct is not None and self._last_pct < 100.0 <= pct:
+            final = True
+        if not force and not final and self._last_t is not None:
+            advanced = pct is not None and pct - self._last_pct >= 1.0
+            if not advanced and now - self._last_t < 0.5:
+                return
+        # Only re-derive the rate when the wire counter actually moved: `on_member`
+        # samples advance the source side while `sent` stands still, and dividing that
+        # zero delta by the elapsed time would report a stalled transfer.
+        if self._last_t is not None and now > self._last_t and self._sent > self._last_sent:
+            self._rate = (self._sent - self._last_sent) / (now - self._last_t)
+            self._last_sent = self._sent
+        self._last_t = now
+        if pct is not None:
+            self._last_pct = pct
+        self._state.update(extra={"upload": {
+            "sent": self._sent,
+            # A back-compat alias for `source_total`: this key predates the two-counter
+            # record and meant "the denominator", which is what it still is. New readers
+            # want the explicit pair below.
+            "total": self._source_total,
+            "source_done": self._source_done,
+            "source_total": self._source_total,
+            "percent": pct,
+            "rate": self._rate,
+            "updated_at": now,
+        }})
+
+
+def make_upload_progress_cb(state):
+    """Return an :class:`UploadProgress` for *state*, or ``None`` with no control channel.
+
+    A fresh one per upload attempt, so its rate baseline resets on a retry.
     """
     if state is None:
         return None
-    last = {"t": None, "sent": 0, "pushed_pct": -1.0}
-
-    def _cb(sent, total):
-        now = time.time()
-        pct = (sent / total * 100.0) if total else 0.0
-        if (last["t"] is not None and pct - last["pushed_pct"] < 1.0
-                and now - last["t"] < 0.5 and sent < total):
-            return
-        rate = None
-        if last["t"] is not None and now > last["t"]:
-            rate = (sent - last["sent"]) / (now - last["t"])
-        last.update(t=now, sent=sent, pushed_pct=pct)
-        state.update(extra={"upload": {"sent": sent, "total": total,
-                                       "rate": rate, "updated_at": now}})
-
-    return _cb
+    return UploadProgress(state)
 
 
 def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> None:

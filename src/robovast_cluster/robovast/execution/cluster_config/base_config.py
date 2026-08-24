@@ -133,7 +133,25 @@ class BaseConfig(object):
         """
         raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
 
-    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=()) -> None:
+    def campaign_object_bytes(self, campaign_id: str, exclude_prefixes=()) -> int:
+        """Sum the stored bytes :meth:`add_campaign_members` would put into a tar.
+
+        The denominator for a streamed upload's progress bar. A listing pass only —
+        object sizes come back with the keys, so this moves no data and costs one
+        request per 1000 objects, which is nothing beside the transfer it measures.
+        """
+        from robovast.execution.cluster_execution import \
+            in_pod_storage  # pylint: disable=import-outside-toplevel
+        bucket, prefix = in_pod_storage.campaign_storage_location(self, campaign_id)
+        access_key, secret_key = self.get_s3_credentials()
+        return _s3_campaign_bytes(
+            bucket, endpoint=self.get_driver_s3_endpoint(),
+            access_key=access_key, secret_key=secret_key,
+            prefix=prefix or None, region=self.get_s3_region(),
+            exclude_prefixes=exclude_prefixes)
+
+    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=(),
+                             on_member=None) -> None:
         """Stream this campaign's stored objects into the open *tar* (no local copy).
 
         Powers the postprocessed-download stream (``/campaigns/{id}/archive``): each
@@ -154,7 +172,7 @@ class BaseConfig(object):
             endpoint=self.get_driver_s3_endpoint(),
             access_key=access_key, secret_key=secret_key,
             prefix=prefix or None, region=self.get_s3_region(),
-            exclude_prefixes=exclude_prefixes)
+            exclude_prefixes=exclude_prefixes, on_member=on_member)
 
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
         """Verify the storage infrastructure is ready before launching a run.
@@ -500,9 +518,43 @@ def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
         tar.addfile(tarinfo)
 
 
+def _s3_client(endpoint, access_key, secret_key, region):
+    """Return a driver-side S3 client (shared by the streaming and sizing passes)."""
+    import boto3  # pylint: disable=import-outside-toplevel
+    from botocore.config import Config  # pylint: disable=import-outside-toplevel
+
+    return boto3.client(
+        "s3", endpoint_url=endpoint,
+        aws_access_key_id=access_key, aws_secret_access_key=secret_key,
+        region_name=region,
+        config=Config(signature_version="s3v4",
+                      s3={"addressing_style": "path"},
+                      request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required"))
+
+
+def _s3_campaign_bytes(bucket, *, endpoint, access_key, secret_key,
+                       prefix=None, region="us-east-1", exclude_prefixes=()) -> int:
+    """Sum the sizes of the objects :func:`_s3_add_members` would add. Listing only."""
+    prefix = prefix.rstrip("/") + "/" if prefix else None
+    excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
+    s3 = _s3_client(endpoint, access_key, secret_key, region)
+    paginate_kwargs = {"Bucket": bucket}
+    if prefix:
+        paginate_kwargs["Prefix"] = prefix
+    total = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(**paginate_kwargs):
+        for obj in page.get("Contents", []):
+            relative_key = obj["Key"][len(prefix):] if prefix else obj["Key"]
+            if excluded and relative_key.startswith(excluded):
+                continue
+            total += obj["Size"]
+    return total
+
+
 def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
                     secret_key, prefix=None, region="us-east-1",
-                    exclude_prefixes=()) -> None:
+                    exclude_prefixes=(), on_member=None) -> None:
     """Stream every object of *bucket*/*prefix* into the open *tar*.
 
     Each object is fetched and added on the fly (no local copy). The archive's single
@@ -511,20 +563,10 @@ def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
     prefixes to skip (e.g. ``"_postproc"`` — internal staging that is not part of the
     clean campaign layout).
     """
-    import boto3  # pylint: disable=import-outside-toplevel
-    from botocore.config import Config  # pylint: disable=import-outside-toplevel
-
     prefix = prefix.rstrip("/") + "/" if prefix else None
     excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
 
-    s3 = boto3.client(
-        "s3", endpoint_url=endpoint,
-        aws_access_key_id=access_key, aws_secret_access_key=secret_key,
-        region_name=region,
-        config=Config(signature_version="s3v4",
-                      s3={"addressing_style": "path"},
-                      request_checksum_calculation="when_required",
-                      response_checksum_validation="when_required"))
+    s3 = _s3_client(endpoint, access_key, secret_key, region)
 
     paginate_kwargs = {"Bucket": bucket}
     if prefix:
@@ -544,4 +586,6 @@ def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
                 0o755 if response.get("Metadata", {}).get("executable") == "yes"
                 else 0o644)
             tar.addfile(tarinfo, response["Body"])
+            if on_member is not None:
+                on_member(tarinfo.size)
     _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)

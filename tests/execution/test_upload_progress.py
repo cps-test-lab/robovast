@@ -116,3 +116,129 @@ def test_progress_cb_publishes_sent_total_and_rate():
 def test_progress_cb_none_without_state():
     from robovast.execution.controller import make_upload_progress_cb
     assert make_upload_progress_cb(None) is None
+
+
+# ---------------------------------------------------------------------------
+# UploadProgress — the streamed path, where the provider's total is always 0
+# ---------------------------------------------------------------------------
+
+class _CountingState:
+    """A ControllerState stand-in that also counts how often it was written."""
+
+    def __init__(self):
+        self.extra = {}
+        self.writes = 0
+
+    def update(self, **fields):
+        if "extra" in fields:
+            self.extra = fields["extra"]
+            self.writes += 1
+
+
+def test_unknown_total_does_not_defeat_the_throttle():
+    """A streamed upload reports ``(sent, 0)``; that must still be throttled.
+
+    The old guard ANDed in ``sent < total``, which with ``total == 0`` is false for
+    every sample — so the "publish the final sample regardless" clause silently became
+    "publish every sample", and a campaign-sized upload wrote a status update per
+    256 KiB chunk.
+    """
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    for i in range(1, 2001):
+        cb(i * 256 * 1024, 0)
+    # Time-throttled at 0.5 s, so a tight loop publishes once or twice — never per call.
+    # (The very last sample may therefore go unpublished; that is what throttling *is*,
+    # and the source counter reaching 100% is what guarantees the bar's final frame.)
+    assert state.writes <= 5, f"{state.writes} status writes for 2000 chunks"
+    assert state.extra["upload"]["sent"] > 0
+
+
+def test_source_counters_drive_the_percentage():
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    cb.set_source_total(1000)
+    assert state.extra["upload"]["source_total"] == 1000
+    assert state.extra["upload"]["percent"] == 0.0
+    # A wire sample first, so the compressed count is in the record before the source
+    # side finishes: the two are reported side by side, not one derived from the other.
+    cb(123, 0)
+    for _ in range(10):
+        cb.on_member(100)
+    up = state.extra["upload"]
+    assert up["source_done"] == 1000
+    # Landing on 100% is published even though the throttle window has not elapsed.
+    assert up["percent"] == 100.0
+    assert up["sent"] == 123
+
+
+def test_percent_is_none_without_a_source_total():
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    cb(4096, 0)
+    up = state.extra["upload"]
+    assert up["percent"] is None      # a reader shows an indeterminate bar, not 0%
+    assert up["sent"] == 4096
+
+
+def test_a_known_provider_total_still_fills_the_bar():
+    """The path-based (resumable) upload knows its total; it must not lose the bar."""
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    cb(500, 1000)
+    assert state.extra["upload"]["percent"] == 50.0
+    cb(1000, 1000)
+    assert state.extra["upload"]["percent"] == 100.0
+
+
+def test_rate_survives_a_source_only_sample():
+    """`on_member` advances the source side while `sent` stands still.
+
+    Re-deriving the rate from that zero delta would report a stalled transfer in the
+    middle of a healthy one.
+    """
+    import time as _time
+
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    cb.set_source_total(10_000)
+    cb(1_000, 0)
+    _time.sleep(0.6)
+    cb(5_000, 0)
+    rate = state.extra["upload"]["rate"]
+    assert rate is not None and rate > 0
+    for _ in range(50):
+        cb.on_member(100)             # source moves, wire does not
+    assert state.extra["upload"]["rate"] == rate
+
+
+def test_finish_publishes_the_last_wire_sample():
+    """The two counters do not end together, so the final frame needs forcing.
+
+    The source side reaches 100% when the archiver reads the last file; bytes keep
+    leaving while the compressor's buffer drains. Those trailing samples advance no
+    percentage and (on a short upload) are inside the half-second window, so they are
+    throttled away — which left the record reading ``100%`` and ``0 B sent``.
+    """
+    from robovast.execution.controller import make_upload_progress_cb
+
+    state = _CountingState()
+    cb = make_upload_progress_cb(state)
+    cb.set_source_total(1000)
+    for _ in range(10):
+        cb.on_member(100)             # source hits 100% and publishes
+    cb(900, 0)                        # ... then the wire drains, throttled away
+    assert state.extra["upload"]["sent"] == 0
+    cb.finish()
+    assert state.extra["upload"]["sent"] == 900
+    assert state.extra["upload"]["percent"] == 100.0

@@ -3011,40 +3011,54 @@ class ClusterService(LocalTransport):
         return self._dispatch_background(
             request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
 
+    #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is
+    #: postprocessing's internal staging and ``.cache`` its rebuildable hash cache.
+    #: The first is what the download stream already drops; the second is
+    #: ``campaign_archive.DEFAULT_EXCLUDE``, so an exported archive and one the
+    #: campaign uploaded itself hold the same thing.
+    _SHARE_EXCLUDE_PREFIXES = frozenset({"_postproc", ".cache"})
+
+    #: What `record_step_outcome` needs to reconstruct the campaign's Status, and all it
+    #: needs: the durable outcome, the run table, and the postprocessing marker. Pulling
+    #: these three beats pulling the campaign (see `run_share`).
+    _SHARE_STATUS_OBJECTS = ("_execution/outcome.json", "_execution/data.db", "campaign.db")
+
     def run_share(self, request) -> ActionResult:
         """(Re)trigger upload-to-share for a cluster campaign, as a monitored background
-        operation. Fetches the campaign and streams it to the env-configured provider
-        (``preflight_upload_to_share`` fails loudly if ``ROBOVAST_SHARE_TYPE`` is unset);
-        the outcome (clear/set ``share_error``) is recorded and published. Adjusting the
-        share env and re-triggering re-uploads to the new provider.
+        operation. The outcome (clear/set ``share_error``) is recorded and published;
+        adjusting the share env and re-triggering re-uploads to the new provider.
+
+        **Nothing is staged on the way.** This used to ``fetch_campaign(force=True)``
+        first — materialising the entire campaign in this pod's scratch before a byte
+        reached the share, which on a campaign of any size is a second full copy the pod
+        has no room for and a long wait reported nowhere the campaign view looks. The
+        objects are tarred straight out of the store into the request body instead, the
+        same no-scratch path ``campaign_tar_stream`` already serves the download from.
+        Only the three small objects that carry the campaign's *status* are pulled down,
+        because the outcome has to be edited and published back.
         """
         from robovast.client.status import failure_detail
-        from robovast.execution.backends import RunOptions
-        from robovast.execution.control_server import ControllerState
-        from robovast.execution.controller import make_upload_progress_cb
         from robovast.execution.status_recovery import record_step_outcome
 
         def work(state):
             from robovast.client.logging_config import (add_campaign_log_handler,
                                                         remove_campaign_log_handler)
-            campaign_root = self.fetch_campaign(request.campaign_id, force=True)
+            campaign_root = self._materialize(
+                request.campaign_id, self._SHARE_STATUS_OBJECTS, "the campaign's outcome")
             # A SHARE phase file, same as the local lane, and written *before*
             # `_publish_execution` below so the account of the upload rides up to the object
             # store with the rest of `_execution` rather than staying in this service's scratch.
             handler = None
             try:
+                (Path(campaign_root) / "_execution").mkdir(parents=True, exist_ok=True)
                 handler = add_campaign_log_handler(
                     str(Path(campaign_root) / "_execution" / "share.log"))
             except Exception:  # pylint: disable=broad-except
                 logger.warning("Could not open share.log for %s", request.campaign_id,
                                exc_info=True)
-            backend = self._build_backend(ControllerState())
-            options = RunOptions(gui=False, upload_to_share=True, namespace=self.namespace)
             try:
                 logger.info("upload-to-share: %s", request.campaign_id)
-                backend.preflight_upload_to_share()
-                backend.share_campaign(str(campaign_root), options,
-                                       progress_callback=make_upload_progress_cb(state))
+                self._stream_campaign_to_share(request.campaign_id, campaign_root, state)
                 ok, message = True, "upload-to-share complete"
                 logger.info("✓ %s", message)
             except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
@@ -3059,6 +3073,62 @@ class ClusterService(LocalTransport):
 
         return self._dispatch_background(
             request.campaign_id, phase=Phase.SHARING, work=work)
+
+    def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
+        """Tar the campaign's stored objects straight into the share. No scratch.
+
+        *campaign_root* supplies only the variant (``_execution/data.db`` present or
+        not), so the name an export writes and the name the campaign-end upload writes
+        are decided by the same rule.
+        """
+        from robovast.common.errors import CampaignConfigError
+        from robovast.execution import campaign_archive
+        from robovast.execution.controller import make_upload_progress_cb
+        from robovast.execution.share_providers.naming import archive_name, campaign_variant
+
+        from . import in_pod_upload
+
+        # Before anything is created on the share. `_materialize` skips an object that is
+        # not there, and `add_campaign_members` tars an empty prefix without complaint, so
+        # without this an unknown id uploads a valid, empty archive under that name and
+        # reports success -- the worst possible answer. The predicate is the one
+        # `list_campaigns` answers with, so this and the listing cannot disagree.
+        if not self._campaign_is_here(campaign_id):
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+
+        provider = in_pod_upload.load_provider_from_env()
+        if provider is None:
+            raise CampaignConfigError(
+                "Cannot export to the share: no share provider is configured "
+                "(ROBOVAST_SHARE_TYPE is unset in this service's environment).\n"
+                "Set it and its credentials in the environment / .env that 'vast serve' "
+                "runs with, then re-run the export.")
+        in_pod_upload.verify_share_access(provider)
+
+        variant = campaign_variant(campaign_root)
+        object_name = archive_name(campaign_id, variant)
+        cfg = self._cluster_config()
+        excludes = set(self._SHARE_EXCLUDE_PREFIXES)
+
+        progress = make_upload_progress_cb(state)
+        on_member = getattr(progress, "on_member", None)
+        if on_member is not None:
+            # A listing pass, not a transfer: the sizes come back with the keys. It is
+            # the only denominator available, because the archive is gzipped on the fly
+            # and its compressed length is unknown until the last byte.
+            progress.set_source_total(
+                cfg.campaign_object_bytes(campaign_id, exclude_prefixes=excludes))
+
+        logger.info("Streaming %s campaign %s from the object store to the %s share as %s...",
+                    variant, campaign_id, provider.SHARE_TYPE, object_name)
+        with campaign_archive.tar_stream(
+                lambda tar: cfg.add_campaign_members(
+                    tar, campaign_id, exclude_prefixes=excludes,
+                    on_member=on_member)) as stream:
+            provider.upload_archive_stream(stream, object_name, progress_callback=progress)
+        if on_member is not None:
+            progress.finish()
+        logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
 
     # -- taking a campaign in ------------------------------------------------
     #

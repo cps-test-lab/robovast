@@ -32,7 +32,7 @@ from robovast.client.project_config import get_vast_file_override
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.client.status import Status, stall_report
+from robovast.client.status import Phase, Status, stall_report
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +155,21 @@ def _monitor_via_service(namespace, kube_context, interval, once):
         if stall.get("stall_reason"):
             lines.append(f"  Stalled: {stall['stall_reason']}")
         up = (status.get("extra") or {}).get("upload")
-        if status.get("phase") == "uploading" and up:
-            u_bar, u_pct = _progress_bar(up.get("sent", 0), up.get("total", 0))
-            up_line = (f"  Upload: [{u_bar}] {u_pct:5.1f}%  "
-                       f"{_fmt_size(up.get('sent', 0))}/{_fmt_size(up.get('total', 0))}")
+        # `Phase.SHARING`, spelled as the enum spells it. This read `"uploading"` -- a
+        # phase no part of RoboVAST ever sets -- so the bar never drew once, for anyone.
+        if status.get("phase") == Phase.SHARING and up:
+            # The archive is gzipped on the fly, so the wire total is unknown; the bar
+            # tracks the campaign bytes going in and `sent` reports what has left.
+            done = up.get("source_done", 0)
+            total = up.get("source_total", 0)
+            up_line = "  Upload: "
+            if total:
+                u_bar, u_pct = _progress_bar(done, total)
+                up_line += (f"[{u_bar}] {u_pct:5.1f}%  "
+                            f"{_fmt_size(done)}/{_fmt_size(total)}")
+            else:
+                up_line += "in progress"
+            up_line += f"   sent {_fmt_size(up.get('sent', 0))}"
             if up.get("rate") is not None:
                 up_line += f"   {_fmt_rate(up['rate'])}"
             lines.append(up_line)

@@ -356,7 +356,8 @@ file) have read/write access to it.
         """Return ``'gcs'`` to indicate native GCS storage (not the S3-compat path)."""
         return "gcs"
 
-    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=()) -> None:
+    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=(),
+                             on_member=None) -> None:
         """Stream the campaign's GCS objects into the open *tar* (no local copy).
 
         Native GCS override of the S3 default: each object is fetched and added to the
@@ -365,7 +366,23 @@ file) have read/write access to it.
         """
         _gcs_add_members(
             tar, campaign_id, self.get_s3_bucket(), self.get_gcs_key_json(),
-            exclude_prefixes=exclude_prefixes)
+            exclude_prefixes=exclude_prefixes, on_member=on_member)
+
+    def campaign_object_bytes(self, campaign_id: str, exclude_prefixes=()) -> int:
+        """Sum the campaign's stored GCS bytes. Listing only -- moves no data."""
+        key_data = json.loads(self.get_gcs_key_json())
+        prefix = f"{campaign_id}/"
+        excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
+        token = _gcs_get_access_token(key_data)
+        total = 0
+        for name, size in _gcs_list_blobs(self.get_s3_bucket(), prefix, token):
+            relative = name[len(prefix):]
+            if not relative or name.endswith("/"):
+                continue
+            if excluded and relative.startswith(excluded):
+                continue
+            total += size
+        return total
 
     def get_gcs_key_file(self) -> Optional[str]:
         """Return the path to the GCS service-account key JSON file, or ``None``."""
@@ -681,7 +698,7 @@ def _gcs_add_job_link_entries(tar, bucket: str, prefix: str, archive_name: str,
 
 
 def _gcs_add_members(tar, campaign: str, bucket: str, key_json: str,
-                     *, exclude_prefixes=()) -> None:
+                     *, exclude_prefixes=(), on_member=None) -> None:
     """Stream every GCS object under ``<campaign>/`` into the open *tar* (no local copy).
 
     Each object is fetched and added on the fly (serial, since a tar is sequential), so
@@ -703,4 +720,6 @@ def _gcs_add_members(tar, campaign: str, bucket: str, key_json: str,
         tarinfo.mode = 0o644
         with _gcs_stream_blob(bucket, name, token) as resp:
             tar.addfile(tarinfo, resp)
+        if on_member is not None:
+            on_member(tarinfo.size)
     _gcs_add_job_link_entries(tar, bucket, prefix, campaign, token)
