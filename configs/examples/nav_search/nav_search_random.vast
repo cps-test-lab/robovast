@@ -26,30 +26,17 @@ search:
   # each batch is scored, while results_processing runs once the campaign is over. Without
   # it the extractor reads a poses.csv that does not exist yet and refuses the batch.
   #
-  # `rosbags_process` and not the `rosbags_*_to_csv` names the campaign-level block uses:
-  # only the campaign-level orchestrator knows how to batch those into one, so naming them
-  # here is reported as "Unknown postprocessing plugin", SKIPPED, and the campaign then
-  # fails at the extractor for a reason that points at the world instead.
-  #
-  # KNOWN LIMITATION, and it blocks these campaigns on a cluster lane today: search
-  # postprocessing runs IN THE CONTROLLER PROCESS (controller._run_postprocessing calls
-  # run_postprocessing_commands directly), while campaign-level postprocessing is dispatched
-  # in-cluster. So `rosbags_process` tries to launch its aux container from the controller
-  # and resolves the image against the default project rather than the deployment's --
-  # "cannot determine the container protocol version of ghcr.io/cps-test-lab/robovast:latest"
-  # -- and exits 1. Everything downstream then sees no CSVs.
-  #
-  # The batch-mode grid is unaffected: its chain lives in results_processing, which is
-  # dispatched properly. Until search postprocessing gets the same dispatch, a search
-  # campaign on this lane cannot compute ROS-derived metrics inside its loop.
-  - rosbags_process:
-      plugins:
-      - type: tf_to_csv
-        frames: all
-        require: [base_link, odom, turtlebot4_base_link_gt]
-      - type: to_csv
-        topics: [/collision, /clearance]
-      - type: nav2_bt_to_csv
+  # Written exactly as results_processing below, because it is now dispatched the same way:
+  # the commands that need the campaign's own image go to an in-cluster conversion Job and
+  # the rest run in the controller. Before that, everything ran in the controller and the
+  # converters failed there, so the extractor refused every batch.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - search/nav_metrics.py:NavMetrics
   extract:
     plugin: search/nav_extract.py:NavExtract

@@ -111,6 +111,20 @@ class BasePostprocessingPlugin:
     execution (e.g. helper scripts referenced by the plugin).
     """
 
+    #: Whether this plugin must run in the **campaign's own execution image** rather than
+    #: in whatever process is orchestrating it.
+    #:
+    #: Declared by the plugin instead of listed in the caller, so a new one that needs the
+    #: image -- another deserializer, a tool only the SUT image carries -- is dispatched
+    #: correctly without anyone editing the orchestrator. A name list there would silently
+    #: serve only the plugins that existed when it was written.
+    #:
+    #: The concrete case: deserializing a rosbag needs the ROS 2 message definitions the
+    #: runs recorded with, which exist only in that image. Running such a plugin in the
+    #: orchestrating process instead resolves an image against the wrong project and exits
+    #: non-zero, and everything downstream then reads files that were never written.
+    needs_execution_image: bool = False
+
     def __call__(
         self,
         results_dir: str,
@@ -293,6 +307,9 @@ def _interrupted_job_dirs(results_dir: str) -> list:
 
 
 class RosbagsProcess(BasePostprocessingPlugin):
+    # Reads rosbags, so it needs the image whose message definitions wrote them.
+    needs_execution_image = True
+
     """Unified single-pass rosbag processor with internal plugin system.
 
     Reads each rosbag exactly once and dispatches messages to all configured

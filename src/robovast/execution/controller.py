@@ -877,12 +877,113 @@ class CampaignController:
         # Imported lazily to avoid importing the results_processing stack (and its
         # heavier deps) unless a search actually configures postprocessing.
         from robovast.results_processing.postprocessing import run_postprocessing_commands
-        run_postprocessing_commands(
-            self.postprocessing, results_dir=self.campaign_root,
-            config_dir=self.vast_dir, output=logger.info)
+
+        # Deserializing a rosbag needs the image the runs recorded it with, which is why the
+        # campaign-level block dispatches an in-cluster Job rather than importing anything.
+        # A search's block runs every batch and used to run entirely here, so a converter
+        # named in it launched its aux container from the controller, resolved the image
+        # against the default project instead of the deployment's, and exited 1 -- and every
+        # plugin after it read files that were never written.
+        container, local = split_container_postprocessing(
+            self.postprocessing, config_dir=self.vast_dir)
+        if container:
+            self._convert_bags_in_cluster(container)
+        if local:
+            run_postprocessing_commands(
+                local, results_dir=self.campaign_root,
+                config_dir=self.vast_dir, output=logger.info)
+
+    def _convert_bags_in_cluster(self, rosbag_cmds: list) -> None:
+        """Run a search batch's bag conversion the way the campaign-level path does.
+
+        Same Job, same image resolution (the campaign's own ``_execution/execution.yaml``,
+        so bags deserialize against the image that wrote them), same cluster context. On a
+        local backend there is no Job to submit and the in-process path is already correct,
+        so the commands fall through to it.
+
+        A failure is reported and does not raise: the extractor is the thing that decides
+        whether a batch is scorable, and it refuses loudly when its inputs are missing --
+        which is a better message than one from here about a Job.
+        """
+        cluster_config = getattr(self.backend, "cluster_config", None)
+        if cluster_config is None:
+            from robovast.results_processing.postprocessing import run_postprocessing_commands
+            run_postprocessing_commands(
+                rosbag_cmds, results_dir=self.campaign_root,
+                config_dir=self.vast_dir, output=logger.info)
+            return
+        try:
+            from robovast.execution.cluster_execution.postprocess_job import (
+                campaign_execution_image, run_conversion_job)
+            ok, message = run_conversion_job(
+                cluster_config, self.campaign_id,
+                os.environ.get("ROBOVAST_NAMESPACE", "default"),
+                campaign_execution_image(self.campaign_root), rosbag_cmds,
+                kube_context=getattr(self.backend, "kube_context", None))
+            logger.info("Batch bag conversion: %s", message)
+            if not ok:
+                logger.warning("Batch bag conversion failed; this batch's metrics will be "
+                               "missing and the extractor will say so: %s", message)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Batch bag conversion could not run: %s", exc, exc_info=True)
 
 
 # -- builders ---------------------------------------------------------------
+
+def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
+    """Split postprocessing into what needs the campaign's execution image, and what does not.
+
+    Returns ``(container_commands, local_commands)``. The caller runs the container half
+    first, because the local half is what reads its output.
+
+    Which half a command belongs in is the **plugin's** call, via
+    :attr:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.needs_execution_image`,
+    not a list kept here. A future plugin that needs the image -- another deserializer, a
+    tool only the SUT image carries -- is then dispatched correctly without this function
+    changing; a name list here would silently serve only what existed when it was written.
+
+    The ``rosbags_*`` names are the one thing resolved by name rather than by class, and
+    they have to be: they are not plugins at all but shorthand the orchestrator batches into
+    a single ``rosbags_process`` per bag (so a bag is read once rather than once per
+    handler), exactly as the campaign-level path batches them. The batch map is their
+    declaration.
+
+    A command that cannot be resolved is left local. It will fail loudly where it runs,
+    which is a better message than one invented here about dispatch.
+    """
+    from robovast.results_processing.postprocessing import (ROSBAG_BATCH_NAMES,
+                                                            _batch_rosbags_commands,
+                                                            resolve_postprocessing_plugin)
+    if not commands:
+        return [], []
+
+    def _name(command):
+        return command if isinstance(command, str) else next(iter(command))
+
+    def _needs_image(command) -> bool:
+        name = _name(command)
+        if name in ROSBAG_BATCH_NAMES:
+            return True
+        try:
+            plugin = resolve_postprocessing_plugin(name, config_dir)
+        except Exception:  # pylint: disable=broad-except
+            return False
+        return bool(getattr(plugin, "needs_execution_image", False))
+
+    def _is_rosbag(command) -> bool:
+        return _name(command) in ROSBAG_BATCH_NAMES or _name(command) == "rosbags_process"
+
+    rosbag_cmds = [c for c in commands if _is_rosbag(c)]
+    # Batched only when there is something to batch: `_batch_rosbags_commands` also injects
+    # the infrastructure-bag handlers, and running those for a campaign that asked for no
+    # bag conversion at all would convert a bag nobody wanted, once per batch.
+    container = list(_batch_rosbags_commands(rosbag_cmds)) if rosbag_cmds else []
+    # Anything else that declares it needs the image travels with them, unbatched: batching
+    # is a rosbag-specific optimisation, not the dispatch rule.
+    container += [c for c in commands if not _is_rosbag(c) and _needs_image(c)]
+    local = [c for c in commands if not _is_rosbag(c) and not _needs_image(c)]
+    return container, local
+
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                           campaign_id: str, state=None,
