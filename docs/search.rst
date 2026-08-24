@@ -223,7 +223,8 @@ Strategies
 
 All strategies share the universal core and differ only in how they propose the
 next batch and what ``report()`` returns. The built-ins are complementary —
-coverage (``random``, ``halton``), diversity (``qd``) and exploitation (``optuna``).
+coverage (``random``, ``halton``), diversity (``qd``), exploitation (``optuna``)
+and boundary tracing (``boundary``).
 
 random
 ^^^^^^
@@ -269,6 +270,47 @@ practice a scipy dependency, and a *baseline* that only runs when an extra is in
 is not a baseline. Halton's known weakness is high dimensions, where the larger prime
 bases correlate — it is refused above 20 dimensions rather than quietly degrading, and a
 search space of the size these campaigns declare is nowhere near that.
+
+boundary — trace a level set
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+"Maximize failures" has a trivial answer — crank the worst factor to its limit — and a
+search that finds it reports something you could have guessed. The engineering question
+is narrower: *where does it start failing?* No budget spent deep inside the failure
+region answers that, and a maximizing search spends all of it there.
+
+``boundary`` samples the contour where the objective crosses a stated ``level`` instead:
+zero for a signed margin (the failure boundary), 0.5 for a rate (the coin-flip contour,
+where the outcome is genuinely uncertain). ``level`` is required — which contour matters
+is a property of the experiment, and a default would silently trace the wrong one.
+
+.. code-block:: yaml
+
+   search:
+     strategy: boundary
+     objectives:
+     - {name: clearance_margin, direction: minimize}
+     strategy_parameters:
+       level: 0.0            # required: the contour to trace
+       neighbours: 5         # k for the surrogate
+       candidates: 512       # scored per proposal -- arithmetic, not runs
+       exploration: 0.35     # keeps a batch spread along the contour
+
+**The level is a strategy parameter, not an objective direction.** ``direction`` means
+"which way is better", and a target answers a different question: there is no better, only
+nearer. Putting it on the objective would also collide by name with
+``stopping: target_objective``, which is a stopping criterion rather than an optimisation
+target — two different ``target``\ s in one file format is a confusion nobody needs.
+
+The surrogate is inverse-distance-weighted k-nearest-neighbour, needing nothing beyond
+numpy. A Gaussian process would model the landscape better and would also make the
+strategy unavailable without an optional extra, on campaigns whose budgets are tens of
+evaluations rather than thousands — the regime where a GP's advantage is smallest. With
+fewer than two evaluations there is no level to seek, so a cold start draws from the same
+low-discrepancy sequence ``halton`` uses; nothing is wasted, since those points are what
+the model is built from. ``report()`` gives ``level`` and ``closest_to_level``: a boundary
+search that never approached its contour found no boundary, and that must be visible
+rather than inferred from a best-objective number that means nothing here.
 
 qd — quality-diversity (pyribs MAP-Elites)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
