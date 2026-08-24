@@ -27,7 +27,9 @@ components:
       # is restated: rays, max_range and frame_id keep coming from the model.
       - lidar: {range_stddev: 0.03, dropout_percent: 2.0}
       # Ground truth for offline evaluation, deliberately OUT of the localization chain -- AMCL
-      # runs off drifting wheel odometry. This is the frame min_clearance is measured from.
+      # runs off drifting wheel odometry. It is what the path, the trial duration and the
+      # distance-to-goal are measured from -- NOT the clearance, which the simulator
+      # measures against real geometry below rather than deriving from these samples.
       # A component of the robot, so it builds before the bridge: the bridge binds ctx.interface
       # once in its own configure(), and a producer registered after it is never published.
       - ground_truth_pose: {}
