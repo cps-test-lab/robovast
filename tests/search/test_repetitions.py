@@ -144,3 +144,37 @@ def test_repetitions_defaults_to_absent():
                        objectives=[{'name': 'failure_rate'}], per_batch=4,
                        budget=[{'batches': 2}])
     assert cfg.repetitions is None
+
+
+# -- seed delivery is not plumbed yet, and says so ---------------------------
+
+def test_seed_parameter_is_refused_until_per_run_delivery_exists():
+    """Accepting it silently would be the worst outcome available.
+
+    A simulator override document is written per CONFIGURATION, so every repetition of a
+    cell reads the same one: delivering a seed down that channel would give all N runs of
+    a cell identical noise, turning repetitions into duplicates and collapsing
+    failure_rate back into a bit -- strictly worse than the current behaviour, where an
+    unseeded run draws its own.
+
+    The simulator's own episode counter cannot stand in for it either: jobs are packed by
+    simulator settings, not by configuration (execution/packer.py, FixedK groups on
+    WorkItem.sim_key), so one process's episodes run across several cells and "episode i"
+    is not "repetition i". Refuse until a per-run seed exists.
+    """
+    with pytest.raises(ValueError, match='per-run'):
+        RepetitionsConfig(policy='adaptive', seed_parameter={'sim': 'seed'})
+
+
+def test_paired_requires_seeds_and_so_is_refused_for_the_same_reason():
+    """`paired` means "reuse one seed list across cells". With no way to deliver a
+    per-run seed there is no list to reuse, so claiming pairing would be a lie."""
+    with pytest.raises(ValueError, match='per-run'):
+        RepetitionsConfig(policy='adaptive', paired=True)
+
+
+def test_repetitions_without_seeding_is_still_useful():
+    """The allocation half stands on its own: unseeded repetitions still vary, they
+    just cannot be paired or replayed."""
+    cfg = RepetitionsConfig(policy='adaptive', min=1, max=8)
+    assert cfg.paired is False and cfg.seed_parameter is None

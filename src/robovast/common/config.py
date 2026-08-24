@@ -1327,6 +1327,26 @@ class RepetitionsConfig(BaseModel):
         if self.max < self.min:
             raise ValueError(
                 f"repetitions max ({self.max}) must be >= min ({self.min})")
+        if self.seed_parameter is not None or self.paired:
+            # Refused rather than accepted-and-ignored. Pairing needs repetition i of every cell
+            # to draw the same noise, and neither channel available today delivers that:
+            #
+            #   - a simulator override document is written per CONFIG, so every repetition of a
+            #     cell would read one seed and stop varying -- strictly worse than the present
+            #     behaviour, where an unseeded run draws its own;
+            #   - the simulator's own episode counter cannot stand in for it, because jobs are
+            #     packed by simulator settings rather than by configuration (see
+            #     execution/packer.py: FixedK groups on WorkItem.sim_key), so one process's
+            #     episodes run across several cells and "episode i" is not "repetition i".
+            #
+            # What it needs is a per-run seed on the execution backend. Until that exists, saying
+            # 'paired' would claim a comparison the data cannot support.
+            raise ValueError(
+                "repetitions 'paired'/'seed_parameter' need a per-run seed, which no execution "
+                "backend delivers yet: a simulator override document is written per configuration, "
+                "so every repetition of a cell would receive the SAME seed and stop varying. Drop "
+                "them -- the allocation half works unseeded (repetitions still vary; they simply "
+                "cannot be paired or replayed).")
         return self
 
 

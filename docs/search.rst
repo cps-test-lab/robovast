@@ -91,6 +91,27 @@ aggregates over a config's runs; the framework records how many samples backed
 each result. Metric *computation* lives in a postprocessing plugin; the extractor
 just reads, aggregates and names.
 
+*How* it aggregates is a real choice, and the obvious answer is usually the wrong
+one. Averaging hides the run you care about — four comfortable landings and one that
+nearly tipped over average to "comfortable" — and on a quality-diversity archive it
+collapses the very spread the archive exists to map: measured on a quadrotor QD
+campaign, behaviour measures averaged over five runs filled 3 of 512 cells, because
+averaging pulled every cell toward the middle of the behaviour space before the
+archive saw it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
+(the default), ``quantile`` (a pessimistic tail that one freak run cannot define) and
+``mean`` (which must be asked for by name)::
+
+   from robovast.search.aggregate import aggregate
+
+   clearance = aggregate(per_run_clearances, how='worst')            # least room seen
+   duration  = aggregate(per_run_times, how='quantile', quantile=0.1,
+                         higher_is_safer=False)                      # slow tail
+
+``higher_is_safer`` says which end is the bad end, and is deliberately *not* the
+objective's ``maximize``/``minimize``: an adversarial search minimizes a safety margin
+on purpose, and that margin is still a quantity where higher means safer. Conflating
+the two aggregates from the wrong tail.
+
 **objectives** — named optimized values with a ``direction`` (``maximize`` /
 ``minimize``). One entry today (multi-objective is forward-compatible since
 objectives are already a named list).
