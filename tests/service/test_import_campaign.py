@@ -215,6 +215,34 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
     assert status.mode == on_disk.mode
 
 
+def test_the_report_survives_a_lane_that_drops_its_scratch_copy(service, tmp_path,
+                                                               monkeypatch):
+    """A lane whose durable home is elsewhere DELETES the tree once it is published.
+
+    The cluster service does exactly that -- a multi-gigabyte campaign left on a pod's
+    scratch is how the pod fills its disk -- so anything that reads the campaign after
+    publishing reads a directory that is gone and reconstructs zeros. That is the empty
+    report this whole adoption exists to prevent, and the local lane cannot catch it:
+    publishing is a no-op there, so the tree survives whatever the order.
+    """
+    import shutil
+
+    dropped = []
+
+    def _publish_and_drop(self, campaign_id, target):
+        dropped.append(campaign_id)
+        shutil.rmtree(target, ignore_errors=True)
+
+    monkeypatch.setattr(type(service), "_publish_imported_campaign", _publish_and_drop)
+    ref = service.import_campaign(ImportCampaignRequest(
+        archive_path=str(_archive(tmp_path, postprocessed=True, runs=26))))
+    status = _wait_done(service, ref.campaign_id)
+
+    assert dropped == [ref.campaign_id], "the lane under test must have dropped the tree"
+    assert status.runs.total == 26
+    assert status.postprocessed is True
+
+
 def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):
     """The raw path recorded the postprocessing verdict but never the run tally.
 

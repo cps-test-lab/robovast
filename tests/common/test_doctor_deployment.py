@@ -301,6 +301,45 @@ def test_two_dirty_trees_are_not_claimed_to_match():
     assert "dirty" in checks[0].detail.lower()
 
 
+def test_the_same_commit_abbreviated_differently_is_not_a_mismatch():
+    """The two sides abbreviate independently -- the deployment's sha is baked into the
+    image, this one comes from the local checkout -- so the same commit routinely arrives
+    as `a9c955a` and `a9c955a7`. Compared with `==` that read as a mismatch and sent people
+    re-releasing a service that was already current, from the one check whose whole job is
+    answering "is my change loaded?"."""
+    checks = _revision_checks(_version(code_revision="a9c955a"), here="a9c955a7")
+    assert checks[0].ok is True
+    assert "roll" not in (checks[0].fix or "").lower()
+
+    # ...and the other way round, since which side is shorter is not fixed either.
+    assert _revision_checks(_version(code_revision="a9c955a7"), here="a9c955a")[0].ok is True
+
+
+def test_a_dirty_checkout_on_the_deployed_commit_is_not_reported_as_a_different_one():
+    """The case a dirty working tree produces constantly. It is the same commit, so the row
+    must not read `a9c955a deployed, a9c955a7+dirty here` -- which looks like two commits --
+    while still refusing to claim the code matches, because it may well not."""
+    checks = _revision_checks(_version(code_revision="a9c955a"), here="a9c955a7+dirty")
+    assert checks[0].ok is True
+    assert "same commit" in checks[0].detail
+    assert "dirty" in checks[0].detail.lower()
+
+
+def test_a_genuinely_different_commit_still_warns():
+    """The prefix comparison must not make every revision look equal: a real mismatch is
+    what this row exists to catch."""
+    checks = _revision_checks(_version(code_revision="abc1234"), here="def5678")
+    assert checks[0].ok is False
+
+
+def test_a_truncated_revision_does_not_match_everything():
+    """A prefix test is only as trustworthy as the shorter string. Git never abbreviates
+    below 4, so anything shorter is malformed rather than short and must not be treated as
+    naming a commit -- otherwise an empty-ish value would match every deployment."""
+    checks = _revision_checks(_version(code_revision="abc1234"), here="a")
+    assert checks[0].ok is False
+
+
 def test_neither_side_having_one_says_nothing():
     """A client-only install talking to an older service: the remedy for "cannot report" is
     a re-release, which is not this user's job, and the service may be current anyway."""

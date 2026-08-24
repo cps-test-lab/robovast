@@ -1262,20 +1262,27 @@ class LocalTransport(RobovastInterface):
             state.set_phase(Phase.POSTPROCESSING)
             ok, message = self._postprocess_campaign(campaign_id, target)
             record_step_outcome(target, postprocessing=(ok, message))
-        # Last, and after postprocessing rather than before: on a lane whose durable home
-        # is elsewhere this is where the campaign actually becomes durable, and publishing
-        # first would have published a campaign without the tables just computed.
-        self._publish_imported_campaign(campaign_id, target)
-        # Adopt what the campaign says about itself. The tracked entry an import runs under
-        # is constructed EMPTY -- it exists to make the campaign visible while its bytes
-        # arrive -- and it shadows the durable ``outcome.json`` for as long as it lives. So
-        # an import used to end reporting ``0 runs`` and ``postprocessed: false`` over a
-        # campaign whose every table was present, and the status advised running
-        # postprocessing that would recompute all of it. Both arrival paths need this: the
-        # raw one recorded only the postprocessing verdict, never the run tally, and the
-        # postprocessed one recorded nothing at all -- having nothing to *compute* is not
-        # having nothing to *report*.
+        # Read what the campaign says about itself BEFORE publishing, because publishing is
+        # where the tree stops being readable: on a lane whose durable home is elsewhere,
+        # `_publish_imported_campaign` drops the pod's copy once it is in the object store
+        # (a multi-gigabyte campaign left on scratch is how a service pod fills its disk).
+        # Reading after it reconstructs from a directory that is gone, which yields zeros --
+        # exactly the empty report this is here to prevent, and invisible to a test on the
+        # local lane, where publishing is a no-op and the tree survives either way.
+        #
+        # The tracked entry an import runs under is constructed EMPTY -- it exists to make
+        # the campaign visible while its bytes arrive -- and it shadows the durable
+        # ``outcome.json`` for as long as it lives. So an import used to end reporting
+        # ``0 runs`` and ``postprocessed: false`` over a campaign whose every table was
+        # present, and the status advised running postprocessing that would recompute all of
+        # it. Both arrival paths need this: the raw one recorded only the postprocessing
+        # verdict, never the run tally, and the postprocessed one recorded nothing at all --
+        # having nothing to *compute* is not having nothing to *report*.
         status = reconstruct_status_from_disk(target)
+        # After postprocessing rather than before: this is where the campaign actually
+        # becomes durable, and publishing first would have published a campaign without the
+        # tables just computed.
+        self._publish_imported_campaign(campaign_id, target)
         state.update(mode=status.mode, runs=status.runs,
                      batches_done=status.batches_done,
                      best_objective=status.best_objective,

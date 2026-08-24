@@ -556,15 +556,23 @@ def _check_service_revision(info: "VersionInfo | None",
         # client-only or non-git install is a perfectly good one. Report what the service
         # said and stop.
         return [Check("service revision", True, f"{deployed} (nothing here to compare it to)")]
-    if here == deployed:
-        detail = f"{deployed} (matches this checkout)"
-        if deployed.endswith("+dirty"):
-            # Equal strings, possibly different code: the marker records *that* a tree was
-            # dirty, and cannot distinguish two dirty trees. Saying "matches" flatly here
-            # would be the one place this check lies.
-            detail = f"{deployed} (matches this checkout — but '+dirty' cannot tell two " \
-                     "dirty trees apart)"
-        return [Check("service revision", True, detail)]
+    here_sha, here_dirty = _split_revision(here)
+    deployed_sha, deployed_dirty = _split_revision(deployed)
+
+    if _same_commit(here_sha, deployed_sha):
+        if here_dirty or deployed_dirty:
+            # Same commit, and at least one side has uncommitted changes on top of it. Not
+            # a match to assert and not a mismatch to report: the marker records *that* a
+            # tree was dirty and can say nothing about what is in it, so the honest row
+            # names the commit they share and stops short of claiming the code is equal.
+            whose = ("both sides are" if here_dirty and deployed_dirty
+                     else "this checkout is" if here_dirty else "the deployment is")
+            return [Check(
+                "service revision", True,
+                f"{deployed_sha} (same commit, but {whose} '+dirty' — the marker cannot "
+                "say what is on top of it)")]
+        return [Check("service revision", True, f"{deployed} (matches this checkout)")]
+
     return [Check(
         "service revision", False, f"{deployed} deployed, {here} here",
         "The service loaded its code at startup, so nothing edited since then is in it. "
@@ -572,6 +580,30 @@ def _check_service_revision(info: "VersionInfo | None",
         "'vast exec cluster upgrade' for a cluster, or restart 'vast serve' for a local "
         "one. Expected, and fine, when you are pointed at someone else's deployment.",
         optional=True)]
+
+
+def _split_revision(revision: str) -> tuple:
+    """``<short-sha>[+dirty]`` -> ``(sha, dirty)``."""
+    sha, _, suffix = revision.partition("+")
+    return sha, suffix == "dirty"
+
+
+def _same_commit(here_sha: str, deployed_sha: str) -> bool:
+    """Do two abbreviated shas name the same commit?
+
+    Prefix comparison, not equality, because **the two sides abbreviate independently**:
+    the deployment's is baked into the image by whatever produced it and this one comes
+    from the local checkout, so the same commit routinely arrives as ``a9c955a`` and
+    ``a9c955a7``. Compared with ``==`` that reads as a mismatch and sends someone
+    re-releasing a service that is already current -- a false alarm from the one check
+    whose entire job is answering "is my change loaded?".
+
+    Guarded on length because a prefix test is only as trustworthy as the shorter string:
+    git never abbreviates below 4, and anything shorter here is malformed rather than
+    short, so it is not treated as naming a commit at all.
+    """
+    shorter, longer = sorted((here_sha, deployed_sha), key=len)
+    return len(shorter) >= 4 and longer.startswith(shorter)
 
 
 def _check_build_capability(info: "VersionInfo | None",
