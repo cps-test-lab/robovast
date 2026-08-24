@@ -27,8 +27,8 @@ from robovast.search.strategy import SearchStrategy, build_strategy
 from robovast.search.types import ParamSet, SearchReport
 
 
-def _cfg(batches=2, per_batch=3, stopping=None):
-    budget = [{"batches": batches}]
+def _cfg(batches=2, per_batch=3, stopping=None, budget=None):
+    budget = budget if budget is not None else [{"batches": batches}]
     return SearchConfig(
         strategy="random",
         search_space={"x": {"type": "float", "low": 0, "high": 1}},
@@ -175,6 +175,68 @@ def test_no_stopping_runs_full_budget(tmp_path):
     conn = sqlite3.connect(store.db_path)
     assert conn.execute("SELECT stop_kind FROM campaign").fetchone()[0] == "batches"
     conn.close()
+    store.close()
+
+
+def test_runs_budget_halts_the_loop(tmp_path):
+    """`runs` bounds EXECUTIONS. per_batch=3 x runs=2 -> 6 runs/batch, so a cap of 7
+    must stop after the second batch (12 > 7) and not run the third."""
+    cfg = _cfg(per_batch=3, budget=[{"runs": 7}, {"batches": 10}])
+    controller, store, backend = _search_controller(cfg, tmp_path, runs=2)
+    report = controller.run()
+    assert len(backend.batch_runs) == 2
+    assert report.extra["stop"]["kind"] == "runs"
+    store.close()
+
+
+def test_evaluations_budget_halts_the_loop(tmp_path):
+    """`evaluations` counts parameter sets scored: per_batch=3 with a cap of 5 stops
+    after the second batch (6 >= 5)."""
+    cfg = _cfg(per_batch=3, budget=[{"evaluations": 5}, {"batches": 10}])
+    controller, store, backend = _search_controller(cfg, tmp_path, runs=1)
+    report = controller.run()
+    assert len(backend.batch_runs) == 2
+    assert report.extra["stop"]["kind"] == "evaluations"
+    store.close()
+
+
+def test_runs_budget_counts_adaptive_repetitions(tmp_path):
+    """The reason `runs` exists: with per-set n_reps, batches x per_batch x runs
+    predicts nothing. 5+5+2 = 12 executions in ONE batch must trip a cap of 10."""
+    cfg = _cfg(per_batch=3, budget=[{"runs": 10}, {"batches": 10}])
+    param_sets = [ParamSet(values={"x": 0.1}, n_reps=5),
+                  ParamSet(values={"x": 0.2}, n_reps=5),
+                  ParamSet(values={"x": 0.3})]
+    controller, store, backend = _search_controller(
+        cfg, tmp_path, strategy=_Fixed(cfg, param_sets), runs=2)
+    report = controller.run()
+    assert len(backend.batch_runs) == 2          # one batch's worth of reps-groups
+    assert report.extra["stop"]["kind"] == "runs"
+    store.close()
+
+
+def test_repetition_policy_drives_reps_through_the_loop(tmp_path):
+    """The policy sits between ask() and compose, so a `fixed` policy of 1 must make
+    the backend run ONE run per cell even though the campaign default is 2."""
+    from robovast.common.config import RepetitionsConfig
+    from robovast.search.repetitions import build_repetition_policy
+    cfg = _cfg(batches=1, per_batch=3)
+    policy = build_repetition_policy(
+        RepetitionsConfig(policy='fixed'), cfg.search_space, default_runs=1)
+    controller, store, backend = _search_controller(cfg, tmp_path, runs=2)
+    controller.repetition_policy = policy
+    controller.run()
+    assert backend.batch_runs == [1]               # policy's 1, not the campaign's 2
+    store.close()
+
+
+def test_no_repetition_policy_leaves_reps_alone(tmp_path):
+    """Absence of a `repetitions:` block must behave exactly as before it existed."""
+    cfg = _cfg(batches=1, per_batch=3)
+    controller, store, backend = _search_controller(cfg, tmp_path, runs=2)
+    assert controller.repetition_policy is None
+    controller.run()
+    assert backend.batch_runs == [2]
     store.close()
 
 

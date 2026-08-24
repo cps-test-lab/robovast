@@ -50,8 +50,13 @@ A ``search:`` section is self-contained: its configurations are synthesized from
      objectives:                # what to optimize (>=1 entries)
      - {name: failure_rate, direction: maximize}
      per_batch: 16              # parameter sets proposed per batch
+     repetitions:               # OPTIONAL: how many runs each cell gets
+       policy: adaptive         #   (see "Repetitions and noisy systems")
+       min: 1
+       max: 8
      budget:                    # resource caps (see "When does a search stop?")
      - batches: 20
+     - runs: 800                #   what actually bounds wall-clock
      seed: 0
      # ---- strategy-specific (one block; the strategy validates it) ----
      strategy_parameters:
@@ -287,6 +292,8 @@ uniform progress snapshot, so the **same criteria work for every strategy**
      budget:                 # resource caps — "how much will I spend?"
      - batches: 50
      - time: 3600
+     - evaluations: 200      # parameter sets scored
+     - runs: 800             # individual executions
      stopping:               # convergence / quality — "stop early on results"
      - target_objective: 0.9
      - no_improvement: {patience: 5, min_delta: 0.01}
@@ -301,6 +308,19 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
 * ``batches`` — stop after this many ask/tell batches (with fixed ``per_batch``
   and ``execution.runs`` this already bounds total evaluations and executions).
 * ``time`` — stop after this many seconds of wall-clock time since the search started.
+* ``evaluations`` — stop after this many parameter sets have been **scored**. A draw
+  that composed to nothing, or whose every run was lost, never reaches ``tell()`` and
+  is not counted.
+* ``runs`` — stop after this many individual **executions**. Counted from what each
+  batch asks for, so it bounds wall-clock rather than results.
+
+``evaluations`` and ``runs`` are two counts and not one because neither predicts the
+other: one evaluation costs as many runs as it was given repetitions. While every cell
+gets the same ``execution.runs`` the product ``batches × per_batch × runs`` predicts
+the total, and ``batches`` alone is enough; a strategy that varies repetitions per
+parameter set (``ParamSet.n_reps``) breaks that product, which is when a run cap starts
+earning its place. It is also what makes two strategies comparable — a fair contest
+gives both the same number of executions, not the same number of batches.
 
 **stopping** — result-dependent early-exits:
 
@@ -329,12 +349,105 @@ of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
 Repetitions and noisy systems
 -----------------------------
 
-Robotic systems are non-deterministic, so an objective is a point estimate over
-``execution.runs`` repetitions (the extractor aggregates them). Every
-``Evaluation`` carries ``n_samples`` so a noise-aware strategy can weigh
-confidence, and a strategy may set ``ParamSet.n_reps`` to request more
-repetitions for a borderline set (the loop groups a batch by effective
-repetition count and launches each group accordingly).
+Robotic systems are non-deterministic, so an objective is never a measurement —
+it is a **point estimate** over ``execution.runs`` repetitions, which the extractor
+aggregates. Every ``Evaluation`` carries ``n_samples`` so a strategy can weigh how
+much to trust it.
+
+Why a fixed repetition count wastes most of its runs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``execution.runs`` spends the same number of runs on every cell, which is
+simultaneously too many and too few. A cell whose runs all agree was decided by its
+first one; a cell on a failure boundary is exactly where more samples buy something.
+
+Measured on a quadrotor search campaign: **3 of 32 configurations produced a mixed
+outcome across 5 repetitions**. The other 29 spent 5 runs each to establish a single
+bit — 145 of 160 runs. At three milliseconds a run that is invisible; at ninety
+seconds a run it is the campaign's whole budget.
+
+The ``repetitions`` block
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   execution:
+     runs: 3                  # still the default for every cell
+   search:
+     repetitions:
+       policy: adaptive       # fixed | adaptive        (default: fixed)
+       min: 1                 # floor: the cheapest a cell can be evaluated
+       max: 8                 # ceiling: the cost guard
+       neighbours: 5          # how many evaluated neighbours judge "contested"
+       paired: false          # reuse one seed list across cells (see below)
+
+Omitting the block entirely is not a policy of uniformity — it is the *absence* of a
+policy, and every cell runs ``execution.runs`` times exactly as it always did.
+
+* ``fixed`` — every cell gets the same count. Today's behaviour, stated explicitly.
+* ``adaptive`` — a cell whose nearest already-evaluated neighbours **agree** gets
+  ``min``; one sitting where they **disagree** gets up to ``max``.
+
+Why disagreement, and not a confidence interval
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A confidence rule has to know what the objective *means*: a proportion is uncertain
+near 0.5, a safety margin is uncertain near zero, a duration is never "uncertain" in
+that sense at all. Such a rule must be told the objective's type and threshold, and is
+wrong whenever it is told wrong.
+
+Spread among nearby evaluations needs none of that. It reads how much the
+*measurements* disagree, which is the thing extra samples actually resolve, and it
+works unchanged for a rate, a margin or a time. Distances are measured in the
+normalized unit cube, so a dimension in metres and one in percent contribute
+comparably to "nearby" rather than whichever happens to have the larger raw range.
+
+Two consequences worth knowing:
+
+* With **no history** (the first batch) nothing is known about the landscape, so every
+  cell gets ``min``. Guessing high would rebuild the uniform waste with a different
+  constant.
+* When **every observation so far agrees**, no neighbourhood can be contested and
+  everything gets ``min``. That is the 29-of-32 case, and spending the floor on it is
+  the correct answer, not a degenerate one.
+
+A strategy still outranks the policy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ParamSet.n_reps`` is the strategy's own channel and is **never overridden**: the
+policy only supplies a default for sets that did not ask for anything. A strategy that
+reasons about noise itself therefore keeps full control, and the policy exists so that
+strategies which do *not* — ``random``, ``qd``, ``optuna``, anything you write — still
+benefit. This is why it is a policy layer rather than a noise-aware strategy: it
+composes with every strategy instead of being one of them.
+
+The loop groups each batch by effective repetition count and launches each group
+accordingly, so a batch may become several execution groups.
+
+Budgeting a search whose repetitions vary
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once repetitions are adaptive, ``batches × per_batch × execution.runs`` no longer
+predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
+executions directly. This is also what makes two strategies comparable: a fair contest
+gives both the same number of runs, not the same number of batches.
+
+Pairing, and what it does not buy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``paired: true`` reuses one seed list across every cell, so two cells are compared
+run-for-run instead of only in distribution — a variance reduction that lets a real
+difference show up in far fewer runs.
+
+Be clear about its limits. Pairing covers the **simulator's** seeded noise. A system
+under test running asynchronously in its own container — message timing, callback
+order, CPU contention — is not replayable, so a single run is never reproducible even
+paired, and every claim a search makes remains distributional: *"this configuration
+fails about 40% of the time"*, never *"this run fails"*.
+
+``seed_parameter`` names the variation channel the per-repetition seed is delivered on
+(e.g. ``{sim: seed}``). Without it, repetitions still differ — they are simply
+unseeded, so neither pairing nor replay is available.
 
 Postprocessing: one mechanism, two lists
 -----------------------------------------

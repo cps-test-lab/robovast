@@ -131,8 +131,8 @@ class CampaignController:
                  options: RunOptions, store: CampaignStore, campaign_config_dump: dict,
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
-                 stop_conditions=None, state=None, notifier=None, description="",
-                 created_by="", origin=None):
+                 stop_conditions=None, repetition_policy=None, state=None,
+                 notifier=None, description="", created_by="", origin=None):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -160,6 +160,14 @@ class CampaignController:
         # Combined budget + stopping evaluator (search mode); drives loop end and
         # the per-batch progress line. None in batch mode.
         self.stop_conditions = stop_conditions
+        # Optional repetition allocation policy, applied between ask() and compose.
+        # None means the .vast declared no `repetitions:` block, and every cell runs
+        # `execution.runs` times exactly as before -- absence of a policy, not a
+        # policy of uniformity.
+        self.repetition_policy = repetition_policy
+        #: Every evaluation scored so far, in order. The repetition policy reads it to
+        #: judge where the landscape is contested; nothing else depends on it.
+        self._history: list = []
         # Optional control-channel state (cluster mode). When set, the controller
         # publishes loop phase/progress and honours the cooperative `stop` command.
         self.state = state
@@ -531,6 +539,10 @@ class CampaignController:
         # batches of completed work. A count that survives the raise is the one fact this
         # record exists to carry.
         self._batches_done = 0
+        # Same reason as _batches_done above: on `self`, so a raise in the callee does
+        # not lose the counts the stop record and the progress line are built from.
+        self._evaluations_done = 0
+        self._runs_done = 0
         # Publish the budget BEFORE the first batch, not only after it.
         #
         # Every criterion is reported from the end of the loop below, so until the first
@@ -599,21 +611,35 @@ class CampaignController:
         result = None
         while True:
             param_sets = self.strategy.ask(self.per_batch)
+            if self.repetition_policy is not None:
+                param_sets = self.repetition_policy.assign(param_sets, self._history)
             batch_id = self.store.open_batch(campaign_id, batch_idx, ".")
             if self.state is not None:
                 self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
                         _BAR, batch_idx, len(param_sets), _BAR)
+            # Counted BEFORE the batch runs, from what was asked for: this is the
+            # wall-clock cap, so it must count executions attempted, not the subset
+            # that produced a sample. A draw that composes to nothing costs no run and
+            # contributes none, which is why it is summed over param_sets here rather
+            # than taken from self.runs * per_batch.
+            self._runs_done += sum((ps.n_reps or self.runs) for ps in param_sets)
             evaluations = self._run_search_batch(param_sets, batch_idx, batch_id)
             self.strategy.tell(evaluations)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx
+            # Parameter sets actually SCORED -- a composition_failed or no_sample draw
+            # never reaches tell(), so it is not an evaluation.
+            self._evaluations_done += len(evaluations)
+            self._history.extend(evaluations)
             best_objective = self._update_best(best_objective, evaluations, obj_name)
 
             snap = StopSnapshot(batch=batch_idx,
                                 elapsed=time.monotonic() - start,
                                 best_objective=best_objective,
+                                evaluations=self._evaluations_done,
+                                runs=self._runs_done,
                                 metrics=self.strategy.report().extra if stop.needs_metrics else {})
             progress = stop.progress(snap)
             # Live progress toward every budget/stopping criterion.
@@ -1293,6 +1319,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     """
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
+    from robovast.search.repetitions import build_repetition_policy
     from robovast.search.stopping import build_stop_conditions
     from robovast.search.strategy import build_strategy
 
@@ -1330,7 +1357,10 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         compose=Compose(vast_file, image_project=opts.image_project,
                         image_project_tag=opts.image_project_tag),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
-        stop_conditions=build_stop_conditions(search_cfg), state=state, notifier=notifier,
+        stop_conditions=build_stop_conditions(search_cfg),
+        repetition_policy=build_repetition_policy(
+            search_cfg.repetitions, search_cfg.search_space, runs),
+        state=state, notifier=notifier,
         description=description, created_by=created_by, origin=origin)
     try:
         return controller.run()

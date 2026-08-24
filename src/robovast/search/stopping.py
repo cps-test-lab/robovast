@@ -20,7 +20,7 @@ A search ends when **any** configured criterion fires. Criteria come from two
 parallel ``.vast`` lists, both evaluated here so a single component knows them all
 (needed for both the stop decision and the live progress line):
 
-* ``budget`` — resource caps: ``batches`` / ``time``.
+* ``budget`` — resource caps: ``batches`` / ``time`` / ``evaluations`` / ``runs``.
 * ``stopping`` — convergence / quality: ``target_objective`` / ``no_improvement``
   / ``metric``.
 
@@ -45,6 +45,11 @@ class StopSnapshot:
     elapsed: float                          # wall-clock seconds since search start
     best_objective: Optional[float] = None  # best objective SO FAR, in RAW units
     metrics: dict = field(default_factory=dict)  # strategy report().extra (e.g. coverage)
+    #: Parameter sets SCORED so far, and individual RUNS executed so far. Two counts
+    #: and not one: a cell evaluated once can cost any number of repetitions, so
+    #: neither predicts the other once ``search.repetitions`` is adaptive.
+    evaluations: int = 0
+    runs: int = 0
 
 
 @dataclass
@@ -148,6 +153,13 @@ class StopConditions:
         elif t == 'time':
             if snap.elapsed >= crit.seconds:
                 return f"time budget reached ({snap.elapsed:.0f}s >= {crit.seconds:.0f}s)"
+        elif t == 'evaluations':
+            if snap.evaluations >= crit.value:
+                return (f"evaluations budget reached "
+                        f"({snap.evaluations} >= {crit.value})")
+        elif t == 'runs':
+            if snap.runs >= crit.value:
+                return f"runs budget reached ({snap.runs} >= {crit.value})"
         elif t == 'target_objective':
             if snap.best_objective is not None and self._meets_target(snap.best_objective, crit.value):
                 return (f"target_objective reached ({self.objective_name}="
@@ -176,6 +188,12 @@ class StopConditions:
         if t == 'time':
             return CriterionProgress('time', round(snap.elapsed, 1), crit.seconds,
                                      snap.elapsed >= crit.seconds, kind=t)
+        if t == 'evaluations':
+            return CriterionProgress('evaluations', snap.evaluations, crit.value,
+                                     snap.evaluations >= crit.value, kind=t)
+        if t == 'runs':
+            return CriterionProgress('runs', snap.runs, crit.value,
+                                     snap.runs >= crit.value, kind=t)
         if t == 'target_objective':
             cur = snap.best_objective if snap.best_objective is not None else float('nan')
             done = snap.best_objective is not None and self._meets_target(snap.best_objective, crit.value)

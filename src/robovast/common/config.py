@@ -1280,9 +1280,99 @@ class TimeBudget(BaseModel):
         return v
 
 
+class RepetitionsConfig(BaseModel):
+    """How many times each parameter set is evaluated — a policy, not a constant.
+
+    ``execution.runs`` gives every cell the same number of repetitions. That is the
+    right default and the wrong one in the same campaign: a cell whose runs all agree
+    was decided by the first one, while a cell on a failure boundary is exactly where
+    more samples buy something. Measured on a quadrotor search: 3 of 32 configurations
+    produced a mixed outcome over 5 repetitions, so 145 of 160 runs bought one bit each.
+
+    This is a **policy layer, not a strategy**: it is applied between ``ask()`` and
+    composition, so it composes with every strategy instead of being one of them. A
+    strategy that is noise-aware may still speak for itself -- a ``ParamSet`` that
+    already carries ``n_reps`` is left alone.
+
+    ``adaptive`` allocates from *local disagreement*: a candidate whose nearest already
+    evaluated neighbours agree gets ``min``, one sitting where they disagree gets up to
+    ``max``. Objective-agnostic on purpose -- it reads spread, not a threshold, so it
+    works for a rate, a margin or a time without being told which it is.
+    """
+    model_config = ConfigDict(extra='forbid')
+    policy: Literal['fixed', 'adaptive'] = 'fixed'
+    min: int = 1
+    max: int = 1
+    #: Neighbours consulted when judging local disagreement (``adaptive`` only).
+    neighbours: int = 5
+    #: Reuse one seed list across every cell, so two cells are compared run-for-run
+    #: instead of only in distribution. Pairing covers the SIMULATOR's seeded noise
+    #: only -- a stack running asynchronously in its own container is not replayable --
+    #: so it reduces variance without making a single run reproducible.
+    paired: bool = False
+    #: Where the per-repetition seed is delivered, as a variation channel mapping
+    #: (e.g. ``{sim: seed}``). Absent means repetitions stay unseeded: they still
+    #: differ, but neither pairing nor replay is possible.
+    seed_parameter: Optional[dict] = None
+
+    @field_validator('min', 'max', 'neighbours')
+    @classmethod
+    def _positive(cls, v: int, info) -> int:
+        if v < 1:
+            raise ValueError(f"repetitions {info.field_name} must be >= 1, got {v}")
+        return v
+
+    @model_validator(mode='after')
+    def _ordered(self):
+        if self.max < self.min:
+            raise ValueError(
+                f"repetitions max ({self.max}) must be >= min ({self.min})")
+        return self
+
+
+class EvaluationsBudget(BaseModel):
+    """Resource cap: stop after this many parameter sets have been SCORED.
+
+    Counts evaluations, not executions -- a cell evaluated once may have cost many
+    repetitions. Use :class:`RunsBudget` to bound wall-clock.
+    """
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['evaluations']
+    value: int
+
+    @field_validator('value')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"budget evaluations value must be >= 1, got {v}")
+        return v
+
+
+class RunsBudget(BaseModel):
+    """Resource cap: stop after this many individual RUNS have executed.
+
+    The cap that actually bounds wall-clock. ``batches x per_batch x execution.runs``
+    predicts the run count only while every cell gets the same number of repetitions;
+    once ``search.repetitions`` makes that adaptive it predicts nothing, which is
+    exactly when a run cap is needed. It is also what makes two strategies comparable:
+    a fair contest gives both the same number of executions, not the same number of
+    batches.
+    """
+    model_config = ConfigDict(extra='forbid')
+    type: Literal['runs']
+    value: int
+
+    @field_validator('value')
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"budget runs value must be >= 1, got {v}")
+        return v
+
+
 # A resource cap; the search stops when ANY budget criterion is hit.
 BudgetCriterion = Annotated[
-    Union[BatchesBudget, TimeBudget],
+    Union[BatchesBudget, TimeBudget, EvaluationsBudget, RunsBudget],
     Field(discriminator='type')]
 
 
@@ -1331,7 +1421,8 @@ StopCriterion = Annotated[
 # key is the criterion name; a scalar value is shorthand for the field named below
 # (criteria with several required fields must use a mapping). The ``type``
 # discriminator is injected from the key so the unions above still validate.
-_BUDGET_SCALAR = {'batches': 'value', 'time': 'seconds'}
+_BUDGET_SCALAR = {'batches': 'value', 'time': 'seconds',
+                  'evaluations': 'value', 'runs': 'value'}
 _STOPPING_SCALAR = {'target_objective': 'value', 'no_improvement': 'patience'}
 
 
@@ -1390,6 +1481,8 @@ class SearchConfig(BaseModel):
     # lists, all OR-combined and evaluated by the controller after each batch. At
     # least one criterion across the two is required (a search needs a way to end).
     budget: Optional[list[BudgetCriterion]] = None
+    #: Repetition allocation policy; absent keeps `execution.runs` for every cell.
+    repetitions: Optional[RepetitionsConfig] = None
     stopping: Optional[list[StopCriterion]] = None
     seed: Optional[int] = None
     # Optional variation template + fixed scenario params, identical in shape to a
