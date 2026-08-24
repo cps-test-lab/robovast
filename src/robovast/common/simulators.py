@@ -183,12 +183,17 @@ class SimulatorBackend:
         it to check a campaign's overrides before any compute is spent, so the reply shape is
         RoboVAST's contract::
 
-            {"plugins": [{"key": "floorplan", "paths": ["plugins.floorplan.mesh"]}]}
+            {"plugins": [{"address": "robot.lidar", "paths": ["components.robot.lidar.rays"]}],
+             "addresses": ["robot", "robot.lidar"]}
 
-        Only ``key`` is checked. A *path* a world leaves at its default is legitimately
-        absent from ``paths``, so an unlisted one is unverifiable rather than wrong -- but a
-        plugin key matching nothing is refused by the simulator at load time, which is the
-        error worth catching before an image pull.
+        Only ``addresses`` is checked, and it is the set that simulator's own resolution accepts.
+        A *path* a world leaves at its default is legitimately absent from ``paths``, so an
+        unlisted one is unverifiable rather than wrong -- but an address matching nothing is
+        refused at load time, which is the error worth catching before an image pull.
+
+        An address is itself a path (``robot.lidar``), not a single name: a component may live
+        inside another, and a sensor a model's manifest supplies -- the thing a campaign most often
+        wants to sweep -- is only reachable that way.
 
         *entities* asks for ``{"entities": [...]}`` as well -- the names the world compiles.
         It is separate because answering it means building the model, which a caller only
@@ -615,22 +620,64 @@ class ContainerQuery:
         self.documents = dict(documents or {})
 
 
-#: Sentinel kept out of the public surface; see ``sim_override_keys``.
+#: Sentinel kept out of the public surface; see ``sim_override_paths``.
 DOTTED_ROOT_UNSET = object()
 
 
-def sim_override_keys(backend: SimulatorBackend, block: dict) -> set:
-    """The plugin keys a resolved ``sim`` block's overrides address.
+#: The keys a simulator's override document holds its component list under. ``plugins`` is roqsim's
+#: former spelling of ``components``, still accepted there and so still possible here.
+_COMPONENT_ROOTS = ("components", "plugins")
 
-    ``overrides.plugins.floorplan.size`` -> ``floorplan``. Only the plugin key, because that is
-    the part a simulator refuses outright; a key inside a plugin's config may be absent from the
-    world and still valid.
+
+def sim_override_paths(backend: SimulatorBackend, block: dict) -> set:
+    """The component paths a resolved ``sim`` block's overrides address, as segment tuples.
+
+    ``overrides.components.robot.lidar.rays`` -> ``("robot", "lidar", "rays")``. The whole path,
+    because a component's ADDRESS is a path too (``robot.lidar``) and is not a fixed number of
+    segments -- the first one alone told you nothing once a sensor could live inside a robot.
+    A caller pairs these with the addresses a simulator publishes; see :func:`unknown_override_paths`.
+
+    Dotted keys are split, because an override document may spell one address either way and both
+    mean the same assignment where it is applied.
     """
     root = getattr(backend, "DOTTED_ROOT", None)
     if not root:
         return set()
-    plugins = ((block or {}).get(root) or {}).get("plugins")
-    return set(plugins) if isinstance(plugins, dict) else set()
+    tree = (block or {}).get(root) or {}
+    for key in _COMPONENT_ROOTS:
+        node = tree.get(key)
+        if isinstance(node, dict):
+            return {tuple(p) for p in _leaf_paths(node)}
+    return set()
+
+
+def _leaf_paths(node, prefix=()):
+    """Every root-to-leaf path through *node*, with dotted keys split into segments."""
+    if isinstance(node, dict) and node:
+        for key, value in node.items():
+            yield from _leaf_paths(value, prefix + tuple(str(key).split(".")))
+        return
+    yield prefix
+
+
+def unknown_override_paths(paths: set, addresses) -> list:
+    """Which of *paths* no published address accounts for.
+
+    An address accounts for a path when its segments are a PREFIX of it: everything after the
+    address is a path into that component's config, and a key absent from the world may still be
+    valid (a plugin accepts keys its world leaves at the default). So the check is on the half a
+    simulator refuses outright -- the address -- and nothing more.
+
+    That deliberately mirrors the acceptance set of the simulator's own resolution rather than being
+    stricter than it. A path under a real address is accepted here even if the next segment names no
+    component, because the simulator will accept it too: it is then a config key, and the two are not
+    distinguishable from either side. Being stricter would turn a working campaign into a refused
+    one, which is worse than the mistake it would catch.
+    """
+    known = [tuple(a.split(".")) for a in addresses]
+    return sorted(
+        ".".join(p) for p in paths if not any(p[: len(a)] == a for a in known if a)
+    )
 
 def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
     """The image this execution's simulator runs in: the campaign's, else the backend's own.

@@ -550,7 +550,11 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     build still gets the cheaper one. Each half that goes unchecked says so.
     """
     from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import resolve_backend, sim_override_keys
+    from robovast.common.simulators import (
+        resolve_backend,
+        sim_override_paths,
+        unknown_override_paths,
+    )
 
     name = backend_name(execution or {})
     if not name:
@@ -567,7 +571,7 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
                             (block, []))[1].append(config)
 
     for block, sharing in by_block.values():
-        wanted = sim_override_keys(backend, block)
+        wanted = sim_override_paths(backend, block)
         named = set()
         for config in sharing:
             params = config.get("config") or {}
@@ -596,12 +600,14 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
             if payload is None:
                 # Say so. At debug level this silently disarmed the check for exactly the
                 # campaigns most in need of it -- one whose world ships in its own built image
-                # answers nothing, and a misspelled plugin key then sailed through to the
+                # answers nothing, and a misspelled component address then sailed through to the
                 # container.
                 logger.warning(
                     "sim overrides were not pre-checked (%s): %s. They are still refused in the "
                     "container if they are wrong.",
-                    exc, ", ".join(sorted(wanted)) or "the entities this scenario names")
+                    exc,
+                    ", ".join(sorted(".".join(w) for w in wanted))
+                    or "the entities this scenario names")
                 return
             if named:
                 logger.warning(
@@ -621,11 +627,23 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
                 "refused in the container if they are wrong.",
                 "; ".join(f"{k}: {v}" for k, v in sorted(errors.items())), ", ".join(sorted(named)))
 
-        available = {str(p.get("key")) for p in (payload.get("plugins") or [])}
-        unknown = sorted(k for k in wanted if k not in available)
+        # `addresses` is the set the simulator says an override may name, and it is exactly what
+        # that simulator's own resolution accepts.
+        available = payload.get("addresses")
+        if not isinstance(available, list):
+            # An image that does not publish it cannot be checked against. Deriving the set from
+            # something else would be worse than not checking: an older describe names components
+            # the way it used to, which no longer matches the paths an override carries, so every
+            # comparison would fail and a working campaign would be refused for it.
+            logger.warning(
+                "sim overrides were not pre-checked: this world's simulator does not report the "
+                "addresses an override may name, so there is nothing to check them against. They "
+                "are still refused in the container if they are wrong.")
+            return
+        unknown = unknown_override_paths(wanted, available)
         if unknown:
             raise ValueError(
-                f"sim override targets no plugin in this world: {', '.join(unknown)}. "
+                f"sim override targets no component in this world: {', '.join(unknown)}. "
                 f"The world has: {', '.join(sorted(available)) or '(none)'}")
 
         compiled = payload.get("entities")

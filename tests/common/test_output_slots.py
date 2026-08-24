@@ -500,7 +500,8 @@ def test_a_simulator_too_old_for_the_overrides_still_gets_the_plugin_half_checke
             if "--override" in command:
                 emit("roqsim scenes describe: error: unrecognized arguments: --override")
                 raise RuntimeError("exit 2")
-            emit(json.dumps({"plugins": [{"key": "boxes", "ref": "boxes"}], "entities": None}))
+            emit(json.dumps({"plugins": [{"address": "boxes", "ref": "boxes"}], "addresses": ["boxes"],
+                            "entities": None}))
 
         def close(self):
             pass
@@ -511,7 +512,7 @@ def test_a_simulator_too_old_for_the_overrides_still_gets_the_plugin_half_checke
     configs = [{"name": "c", "sim": block, "config": {}}]
     original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
-        with pytest.raises(ValueError, match="targets no plugin in this world"):
+        with pytest.raises(ValueError, match="targets no component in this world"):
             cg._check_sim_against_world(execution, configs, str(tmp_path), None)
     finally:
         cg._make_container_runner = original
@@ -564,21 +565,24 @@ def test_a_query_document_is_written_where_its_command_looks(tmp_path):
 @pytest.mark.requires_simulator
 def test_an_override_targeting_no_plugin_is_refused_before_the_image_pull(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}}
-    with pytest.raises(ValueError, match="targets no plugin"):
-        _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
+    with pytest.raises(ValueError, match="targets no component"):
+        _check(block, {"plugins": [{"address": "floorplan", "paths": []}],
+                "addresses": ["floorplan"]}, tmp_path)
 
 
 @pytest.mark.requires_simulator
 def test_the_error_names_what_the_world_does_have(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"nope": {}}}}
     with pytest.raises(ValueError, match="floorplan, lidar"):
-        _check(block, {"plugins": [{"key": "lidar"}, {"key": "floorplan"}]}, tmp_path)
+        _check(block, {"plugins": [{"address": "lidar"}, {"address": "floorplan"}],
+                "addresses": ["floorplan", "lidar"]}, tmp_path)
 
 
 @pytest.mark.requires_simulator
 def test_a_real_plugin_passes(tmp_path):
     block = {"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}}
-    _check(block, {"plugins": [{"key": "floorplan", "paths": []}]}, tmp_path)
+    _check(block, {"plugins": [{"address": "floorplan", "paths": []}],
+                "addresses": ["floorplan"]}, tmp_path)
 
 
 @pytest.mark.requires_simulator
@@ -586,7 +590,8 @@ def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
     """`paths` lists what exists; a plugin may accept a key its world never sets."""
     block = {"config": "w.yaml",
              "overrides": {"plugins": {"floorplan": {"never_set_in_this_world": 1}}}}
-    _check(block, {"plugins": [{"key": "floorplan", "paths": ["plugins.floorplan.mesh"]}]},
+    _check(block, {"plugins": [{"address": "floorplan", "paths": ["components.floorplan.mesh"]}],
+                  "addresses": ["floorplan"]},
            tmp_path)
 
 
@@ -618,7 +623,7 @@ def test_an_entity_the_world_never_compiled_is_refused(tmp_path):
     """Nothing can create it at run time, so this is a run that fails on a service call."""
     with pytest.raises(ValueError, match="does not compile: obstacle_9"):
         _check({"config": "w.yaml"},
-               {"plugins": [], "entities": ["obstacle_0", "obstacle_1"]},
+               {"plugins": [], "addresses": [], "entities": ["obstacle_0", "obstacle_1"]},
                tmp_path,
                params={"static_objects": [{"entity_name": "obstacle_9"}]},
                scenario_parameters=_SPAWN_PARAMS)
@@ -627,7 +632,7 @@ def test_an_entity_the_world_never_compiled_is_refused(tmp_path):
 @pytest.mark.requires_simulator
 def test_entities_the_world_compiled_pass(tmp_path):
     _check({"config": "w.yaml"},
-           {"plugins": [], "entities": ["obstacle_0", "obstacle_1"]},
+           {"plugins": [], "addresses": [], "entities": ["obstacle_0", "obstacle_1"]},
            tmp_path,
            params={"static_objects": [{"entity_name": "obstacle_0"},
                                       {"entity_name": "obstacle_1"}]},
@@ -639,7 +644,8 @@ def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
     """A build that failed costs the entity check, not the plugin-key check -- and says which."""
     with caplog.at_level(logging.WARNING):
         _check({"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}},
-               {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+               {"plugins": [{"address": "floorplan", "paths": []}], "addresses": ["floorplan"],
+                "entities": None,
                 "errors": {"build": "unresolved plugins: ros2_bridge"}},
                tmp_path,
                params={"static_objects": [{"entity_name": "obstacle_0"}]},
@@ -652,9 +658,10 @@ def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
 @pytest.mark.requires_simulator
 def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
     """The plugin keys came back, so a misspelt one is refused exactly as it always was."""
-    with pytest.raises(ValueError, match="targets no plugin"):
+    with pytest.raises(ValueError, match="targets no component"):
         _check({"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}},
-               {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+               {"plugins": [{"address": "floorplan", "paths": []}], "addresses": ["floorplan"],
+                "entities": None,
                 "errors": {"build": "unresolved plugins: ros2_bridge"}},
                tmp_path)
 
@@ -663,7 +670,7 @@ def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
 def test_only_entity_typed_parameters_are_read(tmp_path):
     """A pose parameter is not an entity reference, whatever its fields are called."""
     _check({"config": "w.yaml"},
-           {"plugins": [], "entities": []},
+           {"plugins": [], "addresses": [], "entities": []},
            tmp_path,
            params={"spawn_trigger_point": {"entity_name": "not_an_entity"}},
            scenario_parameters=[{"name": "spawn_trigger_point", "type": "position_3d"}])

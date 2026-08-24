@@ -157,7 +157,8 @@ def test_a_non_zero_exit_that_printed_a_payload_is_a_partial_answer(monkeypatch)
 
     from robovast.common import config_generation
 
-    reply = {"plugins": [{"key": "floorplan", "paths": []}], "entities": None,
+    reply = {"plugins": [{"address": "floorplan", "paths": []}], "addresses": ["floorplan"],
+             "entities": None,
              "errors": {"build": "unresolved plugins: ros2_bridge"}}
 
     class _Runner:
