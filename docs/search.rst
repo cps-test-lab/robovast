@@ -113,8 +113,22 @@ on purpose, and that margin is still a quantity where higher means safer. Confla
 the two aggregates from the wrong tail.
 
 **objectives** — named optimized values with a ``direction`` (``maximize`` /
-``minimize``). One entry today (multi-objective is forward-compatible since
-objectives are already a named list).
+``minimize``). One entry gives a scalar search with a ``best``; **two or more give a
+Pareto search**, whose deliverable is ``SearchReport.front`` — the set of evaluations no
+other beats on every objective at once.
+
+There is no ``best`` in that case, deliberately: nothing ranks "close but fast" against
+"slow but safe" without a weighting the campaign never supplied, so nominating a winner
+would invent one. ``target_objective`` and ``no_improvement`` are refused with more than
+one objective for the same reason (they compare a scalar); bound such a search with
+``batches`` / ``time`` / ``runs`` / ``evaluations``, or with a ``metric`` the strategy
+reports.
+
+The front is computed by the framework from whatever a strategy reports, so a strategy
+does not have to know the concept — one whose optimiser tracks a front natively fills
+``front`` itself and is left alone. For Optuna, multi-objective means
+``strategy_parameters: {sampler: nsga2}``; the scalar samplers are refused by name with
+several objectives rather than quietly optimising the first.
 
 **strategy_parameters** — algorithm-specific tuning, owned and validated by the
 chosen strategy plugin (so a new algorithm adds nothing to the core schema). See

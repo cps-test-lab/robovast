@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 class OptunaParams(BaseModel):
     """``strategy_parameters`` schema for the Optuna strategy."""
     model_config = ConfigDict(extra='forbid')
-    sampler: Literal['tpe', 'cmaes', 'random'] = 'tpe'
+    sampler: Literal['tpe', 'cmaes', 'random', 'nsga2'] = 'tpe'
     constant_liar: bool = True          # better batched (per-batch) asks for TPE
     n_startup_trials: Optional[int] = None
 
@@ -73,8 +73,22 @@ class OptunaStrategy(SearchStrategy):
                 "pip install 'robovast[optuna]'") from e
 
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-        spec = self.single_objective
-        if params.sampler == 'cmaes':
+        multi = len(self.objectives) > 1
+        if multi and params.sampler != 'nsga2':
+            # Named rather than silently scalarised. optuna's scalar samplers cannot take two
+            # values, and quietly optimising the first objective (or some invented weighting of
+            # both) would answer a different question while looking like this one.
+            raise ValueError(
+                f"optuna sampler '{params.sampler}' is single-objective but "
+                f"{len(self.objectives)} objectives were configured; use sampler: nsga2")
+        if not multi and params.sampler == 'nsga2':
+            raise ValueError(
+                "optuna sampler 'nsga2' searches a Pareto front, which needs more than one "
+                "objective; declare a second or choose tpe/cmaes/random")
+        if params.sampler == 'nsga2':
+            from optuna.samplers import NSGAIISampler
+            sampler = NSGAIISampler(seed=cfg.seed)
+        elif params.sampler == 'cmaes':
             sampler = CmaEsSampler(seed=cfg.seed)
         elif params.sampler == 'random':
             sampler = RandomSampler(seed=cfg.seed)
@@ -84,8 +98,14 @@ class OptunaStrategy(SearchStrategy):
                 tpe_kwargs["n_startup_trials"] = params.n_startup_trials
             sampler = TPESampler(**tpe_kwargs)
 
-        self._study = optuna.create_study(direction=spec.direction, sampler=sampler)
-        self._objective_name = spec.name
+        if multi:
+            self._study = optuna.create_study(
+                directions=[o.direction for o in self.objectives], sampler=sampler)
+        else:
+            self._study = optuna.create_study(
+                direction=self.objectives[0].direction, sampler=sampler)
+        self._multi = multi
+        self._objective_name = self.objectives[0].name
         self._batches_done = 0
         self._trials: dict[str, object] = {}     # ParamSet.id -> Trial (current batch)
         self._history: list[Evaluation] = []
@@ -108,14 +128,24 @@ class OptunaStrategy(SearchStrategy):
             trial = self._trials.get(ev.params.id)
             if trial is None:
                 continue
-            self._study.tell(trial, float(ev.objectives[self._objective_name]))
+            if self._multi:
+                self._study.tell(trial, [float(ev.objectives[o.name]) for o in self.objectives])
+            else:
+                self._study.tell(trial, float(ev.objectives[self._objective_name]))
         self._history.extend(evaluations)
         self._batches_done += 1
 
     def report(self) -> SearchReport:
+        extra = {"batches": self._batches_done, "n_trials": len(self._history)}
+        if self._multi:
+            # No `best`: with several objectives the deliverable is the trade-off set, and
+            # nominating one of its members would imply a weighting the campaign never gave.
+            from robovast.search.pareto import pareto_front
+            front = pareto_front(self._history, self.objectives)
+            extra["front_size"] = len(front)
+            return SearchReport(evaluations=list(self._history), front=front, extra=extra)
         ranked = sorted(self._history, key=self.objective_value, reverse=True)
         best = ranked[0] if ranked else None
-        extra = {"batches": self._batches_done, "n_trials": len(self._history)}
         if self._study.best_trials:
             bt = self._study.best_trials[0]
             extra["optuna_best"] = {"value": bt.value, "params": bt.params}

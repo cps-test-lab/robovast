@@ -526,7 +526,14 @@ class CampaignController:
     def _run_search(self, campaign_id: int):
         from robovast.search.stopping import StopSnapshot
         stop = self.stop_conditions
-        obj_name = self.strategy.single_objective.name
+        # A scalar best exists only when there is one objective. With several, "best" is not
+        # merely unknown but undefined -- nothing ranks "close but fast" against "slow but
+        # safe" without a weighting nobody has -- so the loop folds no best and the
+        # deliverable is the non-dominated front instead. Asking the strategy for
+        # `single_objective` here is what used to kill a two-objective campaign before its
+        # first batch, and it asked on behalf of a strategy that had not been consulted.
+        objectives = self.strategy.objectives
+        obj_name = objectives[0].name if len(objectives) == 1 else None
         if not stop.has_budget:
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
@@ -593,6 +600,13 @@ class CampaignController:
             campaign_id, stop_kind=result.kind, stop_reason=result.reason,
             batches=batch_idx, elapsed_s=elapsed_s)
         report = self.strategy.report()
+        # Computed here rather than in each strategy: a front is the shape of the answer, not a
+        # way of searching, so every strategy that reports its evaluations gets one without
+        # knowing the concept. A strategy that fills `front` itself (one whose optimiser tracks
+        # it natively) is left alone.
+        if len(self.strategy.objectives) > 1 and not report.front:
+            from robovast.search.pareto import pareto_front
+            report.front = pareto_front(report.evaluations, self.strategy.objectives)
         report.extra['stop'] = {"kind": result.kind, "reason": result.reason,
                                 "batches": batch_idx, "elapsed_s": elapsed_s}
         logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s) "
@@ -690,8 +704,14 @@ class CampaignController:
 
     def _update_best(self, best, evaluations, obj_name):
         """Fold this batch's objective values into the best-so-far (raw units,
-        direction-aware via the strategy's objective spec)."""
-        spec = self.strategy.single_objective
+        direction-aware via the strategy's objective spec).
+
+        ``obj_name`` is ``None`` for a multi-objective search, where there is no scalar to
+        fold; the front computed at report time is that search's answer.
+        """
+        if obj_name is None:
+            return None
+        spec = self.strategy.objectives[0]
         for ev in evaluations:
             v = ev.objectives.get(obj_name)
             if v is None:
