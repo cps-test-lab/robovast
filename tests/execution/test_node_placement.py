@@ -118,24 +118,43 @@ def test_upgrade_may_not_pick():
     assert _resolve(core, allow_auto_pick=False) is None
 
 
-# --- moving data is an error, not a default ---------------------------------------
+# --- moving data is loud, not guarded ---------------------------------------------
 
-def test_requesting_another_node_refuses_while_data_exists():
+def test_naming_a_node_moves_the_placement_without_a_second_flag():
+    """Typing a node name is already the deliberate act."""
     core = _Core(_Node("node-a", labels={LABEL: "true"}), _Node("node-b"),
                  summaries={"node-a": 1, "node-b": 2})
-    with pytest.raises(np.PlacementConflict) as excinfo:
-        _resolve(core, requested="node-b")
-    message = str(excinfo.value)
-    assert "node-a" in message and "not migrated" in message.lower()
-    assert core.patches == []
-
-
-def test_the_move_is_possible_when_asked_for_explicitly():
-    core = _Core(_Node("node-a", labels={LABEL: "true"}), _Node("node-b"),
-                 summaries={"node-a": 1, "node-b": 2})
-    placement = _resolve(core, requested="node-b", allow_move=True)
+    placement = _resolve(core, requested="node-b")
     assert placement.node == "node-b"
     assert core.nodes[0].metadata.labels == {}      # the old label is taken off
+
+
+def test_the_move_names_the_node_the_data_stays_on():
+    """The bytes are not migrated, and once the label is off nothing else names that node.
+
+    Without `previous` the operator is left with a healthy deployment, an empty registry
+    and no way to find out where the old blobs went.
+    """
+    core = _Core(_Node("node-a", labels={LABEL: "true"}), _Node("node-b"),
+                 summaries={"node-a": 1, "node-b": 2})
+    assert _resolve(core, requested="node-b").previous == "node-a"
+
+
+def test_staying_put_reports_no_move():
+    """`previous` must be empty when nothing was abandoned, or every setup reads as a move."""
+    core = _Core(_Node("node-a", labels={LABEL: "true"}), _Node("node-b"),
+                 summaries={"node-a": 1, "node-b": 2})
+    assert _resolve(core, requested="node-a").previous is None
+    assert _resolve(core).previous is None
+
+
+def test_requesting_an_ineligible_node_is_still_refused():
+    """A move is the operator's call; a node that cannot host the pod is not."""
+    core = _Core(_Node("node-a", labels={LABEL: "true"}),
+                 _Node("node-b", cordoned=True))
+    with pytest.raises(np.PlacementConflict):
+        _resolve(core, requested="node-b")
+    assert core.nodes[0].metadata.labels == {LABEL: "true"}     # nothing was moved
 
 
 def test_two_labelled_nodes_is_ambiguous_not_a_coin_flip():

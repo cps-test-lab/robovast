@@ -281,8 +281,9 @@ def test_a_build_cache_placed_elsewhere_is_not_dragged_back_every_setup(
     """The regression: co-location is a DEFAULT, not a request.
 
     Feeding the data node in as `requested` unconditionally turns "the operator passed no
-    flag" into "the operator asked for this node" -- so a cache deliberately kept on another
-    disk would fail the move check on every setup, with no flag to explain why.
+    flag" into "the operator asked for this node", and a cache deliberately kept on another
+    disk would then be dragged back onto the service's node by a setup that was passed
+    nothing at all.
     """
     from robovast.execution.cluster_execution import node_placement
 
@@ -291,18 +292,44 @@ def test_a_build_cache_placed_elsewhere_is_not_dragged_back_every_setup(
 
     build = next(kw for label, kw in calls if label == node_placement.BUILD_NODE_LABEL)
     assert build["requested"] == ""
-    assert build["allow_move"] is False
 
 
 def test_an_explicit_data_node_reaches_the_resolver(monkeypatch, deploy_stubs):
     from robovast.execution.cluster_execution import node_placement
 
     calls = _placement_spy(monkeypatch)
-    setup_server(config_name="rke2", namespace="default", data_node="node-c",
-                 move_placement=True)
+    setup_server(config_name="rke2", namespace="default", data_node="node-c")
 
     data = next(kw for label, kw in calls if label == node_placement.DATA_NODE_LABEL)
-    assert (data["requested"], data["allow_move"]) == ("node-c", True)
+    assert data["requested"] == "node-c"
+
+
+def test_an_explicit_data_node_takes_the_build_cache_with_it(monkeypatch, deploy_stubs):
+    """One name moves the whole of this deployment's on-disk state.
+
+    The cache is the other large tenant, and leaving it on the old node while the registry
+    moves is the stranded-bytes surprise `--data-node` exists to make visible -- so an
+    existing build label does NOT hold it back the way it does when no flag was passed.
+    """
+    from robovast.execution.cluster_execution import node_placement
+
+    calls = _placement_spy(monkeypatch, labelled=["node-b"])
+    setup_server(config_name="rke2", namespace="default", data_node="node-c")
+
+    build = next(kw for label, kw in calls if label == node_placement.BUILD_NODE_LABEL)
+    assert build["requested"] == "node-a"      # the resolved data placement, stubbed
+
+
+def test_an_explicit_buildkit_node_still_splits_the_two(monkeypatch, deploy_stubs):
+    """Where the disk is tight the cache belongs elsewhere, and saying so wins."""
+    from robovast.execution.cluster_execution import node_placement
+
+    calls = _placement_spy(monkeypatch)
+    setup_server(config_name="rke2", namespace="default", data_node="node-c",
+                 buildkit_node="node-d")
+
+    build = next(kw for label, kw in calls if label == node_placement.BUILD_NODE_LABEL)
+    assert build["requested"] == "node-d"
 
 
 def test_a_provisioned_registry_and_workspaces_are_not_pinned(monkeypatch, deploy_stubs):

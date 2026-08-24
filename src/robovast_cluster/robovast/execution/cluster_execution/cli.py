@@ -500,6 +500,15 @@ def _echo_placement(placement):
     elif build:
         click.echo(f"  build cache alongside it on {build} "
                    "(--buildkit-node puts it on another disk)")
+    # The one line the operator cannot reconstruct afterwards: once the label is off the
+    # old node, nothing in the deployment names it again, and the bytes are still there.
+    moved = sorted({n for n in (placement.get("data_previous"),
+                                placement.get("build_previous")) if n})
+    if moved:
+        click.echo(f"  moved here from {', '.join(moved)}; the bytes written there are NOT "
+                   "migrated")
+        click.echo("  so this deployment starts with an empty registry and rebuilds what "
+                   "it needs")
     click.echo("  recorded as a node label, so a later cleanup + setup returns here "
                "without any flag")
 
@@ -551,15 +560,12 @@ def _echo_placement(placement):
                    '(default: /var/lib/robovast-registry).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
-                   'the registry and (where it is an emptyDir) the results store. Rarely '
-                   'needed -- setup picks the node with the most free space the first time '
-                   'and records the choice as a node label, so later runs stay put. Naming '
-                   'a different node than the one already holding data is refused; pass '
-                   '--move-placement to override, and note the bytes are NOT migrated.')
-@click.option('--move-placement', is_flag=True,
-              help='Allow --data-node/--buildkit-node to move to a node other than the one '
-                   'already labelled. The existing data stays where it is and the new node '
-                   'starts empty.')
+                   'the registry, (where it is an emptyDir) the results store and, unless '
+                   '--buildkit-node says otherwise, the build cache. Rarely needed -- setup '
+                   'picks the node with the most free space the first time and records the '
+                   'choice as a node label, so later runs stay put without any flag. Naming '
+                   'a node moves the placement off whatever node holds it now and says so; '
+                   'the bytes are NOT migrated, so the new node starts empty.')
 @click.option('--buildkit-storage-class', default='', metavar='NAME',
               help='Back the shared build daemon\'s cache with a PVC from this '
                    'StorageClass instead of a hostPath. Prefer an SSD class: BuildKit\'s '
@@ -595,7 +601,6 @@ def _echo_placement(placement):
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, data_node,
-          move_placement,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
           buildkit_cache_reserved, cluster_config):
@@ -699,7 +704,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
-                                 move_placement=move_placement, **cluster_kwargs)
+                                 **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
         # node holding the workspaces and the registry is chosen without the operator

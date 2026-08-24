@@ -42,8 +42,11 @@ The fix is a **node label**, not a hostname threaded through the call graph:
 * No hostname appears in any manifest, which the threaded form could not avoid.
 
 Stickiness beats cleverness. Free space decides only the **first** placement on a cluster;
-after that an existing label wins, and a request to move data that already exists is an
-error rather than a silent re-place. See :func:`resolve_placement`.
+after that an existing label wins. Naming a node explicitly is the one thing that overrides
+it, in one flag -- typing a node name is already the deliberate act, so a second confirming
+flag only stood between the operator and what they had asked for. The move is not silent:
+the node the label came off is reported, because the bytes stay there and nothing else in
+the deployment will ever mention them again. See :func:`resolve_placement`.
 """
 
 import logging
@@ -77,11 +80,12 @@ _NO_TOLERATIONS = ()
 
 
 class PlacementConflict(RuntimeError):
-    """A placement was requested that would abandon data already on another node.
+    """No placement can be resolved: the named node cannot host the role, no node can, or
+    two nodes carry the label and the pod would float between them.
 
     Raised rather than warned, because the outcome it prevents is invisible: the service
-    comes up healthy on the new node with an empty registry, and the first symptom is a
-    campaign that cannot pull an image it was built with, hours later and somewhere else.
+    comes up healthy with an empty registry, and the first symptom is a campaign that
+    cannot pull an image it was built with, hours later and somewhere else.
     """
 
 
@@ -93,12 +97,17 @@ class Placement(NamedTuple):
     :func:`resolve_placement` fired (``requested`` / ``label`` / ``auto``)
     and ``signal`` names the measurement an ``auto`` pick used, so the setup log can state
     on what evidence it chose.
+
+    ``previous`` names the node the label was taken off, when this placement moved it, and
+    is ``None`` otherwise. The caller prints it: the data stays on that node, and once the
+    label is gone nothing in the deployment refers to it again.
     """
 
     node: str
     selector: dict
     source: str
     signal: Optional[str] = None
+    previous: Optional[str] = None
 
 
 def label_selector(label: str) -> dict:
@@ -225,21 +234,27 @@ def _parse_quantity(value) -> int:
         return 0
 
 
-def ensure_labeled(core, node: str, label: str, dry_run: bool = False) -> None:
-    """Put *label* on *node*, and take it off every other node.
+def ensure_labeled(core, node: str, label: str, dry_run: bool = False) -> list:
+    """Put *label* on *node*, take it off every other node, and return those others.
 
     Both halves matter. Adding without removing leaves two labelled nodes, and a
     ``nodeSelector`` then matches either -- the float this module exists to stop, only
     harder to see because the labels say the decision was made.
+
+    The unlabelled nodes are returned rather than only logged: they are where the data
+    still is, and that is the one fact the caller has to be able to put on screen.
     """
+    removed = []
     for other in labeled_nodes(core, label):
         if other != node:
             logger.info("removing %s from node %s", label, other)
             if not dry_run:
                 core.patch_node(other, {"metadata": {"labels": {label: None}}})
+            removed.append(other)
     if not dry_run:
         core.patch_node(node, {"metadata": {"labels": {label: LABEL_VALUE}}})
     logger.info("node %s labelled %s=%s", node, label, LABEL_VALUE)
+    return removed
 
 
 def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:
@@ -258,7 +273,7 @@ def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:
 
 
 def resolve_placement(core, label: str, *, node_local: bool = True, requested: str = "",
-                      allow_auto_pick: bool = True, allow_move: bool = False,
+                      allow_auto_pick: bool = True,
                       tolerations=_NO_TOLERATIONS, extra_labels=None,
                       dry_run: bool = False):
     """Decide which node holds this role, label it, and return the :class:`Placement`.
@@ -274,8 +289,10 @@ def resolve_placement(core, label: str, *, node_local: bool = True, requested: s
     0. ``node_local`` is false -- nothing to pin. An explicit *requested* is still reported
        rather than dropped, because silently ignoring a flag the operator typed is how a
        deployment ends up somewhere nobody chose.
-    1. *requested* -- an explicit ``--data-node``. Must be eligible. If a **different** node
-       already carries the label, that is a :class:`PlacementConflict` unless *allow_move*.
+    1. *requested* -- an explicit ``--data-node``. Must be eligible. It wins outright,
+       including over a label already on another node: naming a node *is* the deliberate
+       act. The move is not silent -- the abandoned node comes back as
+       :attr:`Placement.previous` and its bytes are **not** migrated.
     2. The existing label. Exactly one node -- the ordinary path on every run after the
        first, and the reason a ``cleanup`` + ``setup`` returns to where it was.
     3. Free space, most first, among eligible nodes. Only with *allow_auto_pick*: ``setup``
@@ -300,17 +317,14 @@ def resolve_placement(core, label: str, *, node_local: bool = True, requested: s
                 f"node {requested!r} cannot host this role: it is not Ready, is cordoned, "
                 f"carries a taint the pod does not tolerate, or is outside the configured "
                 f"node pool. Eligible: {', '.join(eligible) or '(none)'}")
-        stale = [n for n in labelled if n != requested]
-        if stale and not allow_move:
-            raise PlacementConflict(
-                f"{', '.join(stale)} already holds this deployment's data "
-                f"({label}). Moving it to {requested} would come up with an empty "
-                f"registry and empty workspaces -- the existing bytes stay on "
-                f"{', '.join(stale)} and are NOT migrated. Re-run with "
-                f"--move-placement to move anyway, or drop the flag to keep the "
-                f"current placement.")
-        ensure_labeled(core, requested, label, dry_run)
-        return Placement(requested, label_selector(label), "requested")
+        moved_from = ", ".join(ensure_labeled(core, requested, label, dry_run))
+        if moved_from:
+            logger.warning(
+                "%s moves from %s to %s. The workspaces, registry blobs and cache already "
+                "written stay on %s and are NOT migrated -- the new node starts empty and "
+                "rebuilds what it needs.", label, moved_from, requested, moved_from)
+        return Placement(requested, label_selector(label), "requested",
+                         previous=moved_from or None)
 
     if len(labelled) == 1:
         logger.info("%s: %s (existing label)", label, labelled[0])

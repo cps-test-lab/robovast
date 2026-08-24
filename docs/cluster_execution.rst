@@ -239,13 +239,18 @@ In order, stopping at the first that applies:
 
 Two rules keep it sticky:
 
-* **The build cache defaults to the data node**, not to "the other one". Auto-separating
-  would put a 150 GB cache on whichever node was left over, which is usually the smaller.
-  Separate them with ``--buildkit-node`` where the disk is tight -- a full builder disk on
-  the service's node becomes DiskPressure evictions of the API.
-* **Naming a different node than the one already holding data is refused.** The bytes are
-  not migrated, so the new node would start empty; ``--move-placement`` overrides it as one
-  deliberate act.
+* **The build cache follows the data node**, not "the other one". Auto-separating would put
+  a 150 GB cache on whichever node was left over, which is usually the smaller. So
+  ``--data-node`` alone moves *both* labels -- one name for the whole of this deployment's
+  on-disk state, because a cache left behind on the old node is exactly the stranded-bytes
+  surprise the flag exists to make visible. Separate them with ``--buildkit-node`` where the
+  disk is tight: a full builder disk on the service's node becomes DiskPressure evictions of
+  the API, and once named, the cache stays where it was put.
+* **Naming a node is enough to move the placement.** Typing a node name is already the
+  deliberate act, so there is no second confirming flag. What the move costs is *reported*
+  rather than guarded: setup names the node the label came off, and the bytes there are
+  **not** migrated -- the new node starts with an empty registry and rebuilds what it
+  needs.
 
 Nothing is pinned where nothing is on a node: pass ``--registry-storage-class`` /
 ``--workspaces-storage-class`` (or use a provider whose store is a bucket) and the pods
@@ -263,8 +268,17 @@ Moving it, and forgetting it
 .. code-block:: bash
 
    kubectl get nodes -L robovast.io/data-node -L robovast.io/build-node   # where is it?
-   vast execution cluster setup rke2 --data-node node-b --move-placement  # move it
+   vast execution cluster setup rke2 --data-node node-b                   # move it
    vast execution cluster cleanup --forget-placement                      # forget it
+
+The move says what it abandoned, which is the only place that node is ever named again:
+
+.. code-block:: text
+
+     workspaces, registry and store on node-b (as requested)
+     build cache alongside it on node-b (--buildkit-node puts it on another disk)
+     moved here from node-a; the bytes written there are NOT migrated
+     so this deployment starts with an empty registry and rebuilds what it needs
 
 None of these move the **data**. The workspaces and registry bytes stay on the old node's
 disk; a moved deployment starts with an empty registry and rebuilds what it needs. The

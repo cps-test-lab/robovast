@@ -300,7 +300,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
-                 move_placement=False, **cluster_kwargs):
+                 **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
     Args:
@@ -315,13 +315,14 @@ def setup_server(config_name=None, list_configs=False, force=False,
             ``cluster_kwargs`` entry for the reason below: these are not provider options and
             must not be splatted into ``setup_cluster``.
         data_node (str): Node to hold the workspaces, the registry and a node-local results
-            store. Empty means "keep the labelled one, or pick the emptiest disk the first
-            time" -- see :mod:`.node_placement`.
-        buildkit_node (str): Node to hold the build cache. Empty co-locates it with the data
-            node rather than auto-separating, because separating puts a 150 GB cache on
-            whichever node was left over.
-        move_placement (bool): Allow the two above to name a node other than the one already
-            holding data. The bytes are not migrated; the new node starts empty.
+            store -- and, unless *buildkit_node* says otherwise, the build cache too, so one
+            name moves the whole deployment's on-disk state. Naming a node moves it off
+            whatever node holds it now, without a second confirming flag; the bytes are not
+            migrated, and the node they stay on is reported. Empty means "keep the labelled
+            one, or pick the emptiest disk the first time" -- see :mod:`.node_placement`.
+        buildkit_node (str): Node to hold the build cache, where it belongs on a different
+            disk from the rest. Empty follows the data node rather than auto-separating,
+            because separating puts a 150 GB cache on whichever node was left over.
         **cluster_kwargs: Cluster-specific options to pass to setup_cluster()
 
     Named parameters rather than ``cluster_kwargs`` entries on purpose: ``cluster_kwargs``
@@ -331,10 +332,12 @@ def setup_server(config_name=None, list_configs=False, force=False,
     and unlike a stored number it cannot go stale.
 
     Returns:
-        dict: ``{"data_node", "data_source", "build_node", "build_source"}`` -- where this
-            deployment's node-local state was placed and which rule decided it, so the
-            caller can state it. Values are ``None`` where nothing is pinned (a provisioned
-            volume or an external bucket keeps nothing on a node).
+        dict: ``{"data_node", "data_source", "data_previous", "build_node",
+            "build_source", "build_previous"}`` -- where this deployment's node-local state
+            was placed, which rule decided it, and the node it was taken off if this run
+            moved it, so the caller can state all three. Values are ``None`` where nothing
+            is pinned (a provisioned volume or an external bucket keeps nothing on a node)
+            or where nothing moved.
 
     Raises:
         RuntimeError: If cluster is already set up
@@ -455,26 +458,28 @@ def setup_server(config_name=None, list_configs=False, force=False,
         core, DATA_NODE_LABEL,
         node_local=not (service_kwargs.get("registry_storage_class")
                         and service_kwargs.get("workspaces_storage_class")),
-        requested=data_node, allow_move=move_placement, extra_labels=control_node_labels)
+        requested=data_node, extra_labels=control_node_labels)
     service_kwargs["node_selector"] = data_placement.selector if data_placement else {}
 
     # The build daemon tolerates the batch taint, so it is eligible on nodes the service is
     # not -- but with nothing said it goes to the data node rather than to "the other one",
     # because auto-separating puts a 150 GB cache on whichever node was left over.
     #
-    # Only when the cluster has no build label yet, and only as a default: feeding this in as
-    # `requested` unconditionally would turn "the operator passed no flag" into "the operator
-    # asked for this node", and a cache deliberately placed elsewhere would then fail the
-    # move check on every single setup.
+    # It follows the data node when the operator named one -- `--data-node` moves the whole
+    # of this deployment's on-disk state, cache included, because a cache left behind on the
+    # old node is exactly the stranded-bytes surprise the flag exists to make visible. With
+    # no flag at all it is a default for a cluster that has no build label yet, and nothing
+    # more: feeding it in as `requested` on every run would turn "the operator passed no
+    # flag" into "the operator asked for this node" and quietly drag back a cache someone
+    # put on its own disk on purpose.
     if not buildkit_node and data_placement is not None \
-            and not labeled_nodes(core, BUILD_NODE_LABEL):
+            and (data_node or not labeled_nodes(core, BUILD_NODE_LABEL)):
         buildkit_node = data_placement.node
-        logger.info("build cache co-locates with the data node; pass --buildkit-node to "
+        logger.info("build cache follows the data node; pass --buildkit-node to "
                     "keep it on a different disk")
     build_placement = resolve_placement(
         core, BUILD_NODE_LABEL, node_local=not buildkit_kwargs.get("storage_class"),
-        requested=buildkit_node, allow_move=move_placement,
-        tolerations=KUEUE_JOB_TOLERATIONS)
+        requested=buildkit_node, tolerations=KUEUE_JOB_TOLERATIONS)
     buildkit_kwargs["node_selector"] = build_placement.selector if build_placement else {}
 
     # The store is a pod like any other, so it takes the data node's selector -- ANDed with
@@ -549,8 +554,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     return {
         "data_node": data_placement.node if data_placement else None,
         "data_source": data_placement.source if data_placement else None,
+        "data_previous": data_placement.previous if data_placement else None,
         "build_node": build_placement.node if build_placement else None,
         "build_source": build_placement.source if build_placement else None,
+        "build_previous": build_placement.previous if build_placement else None,
     }
 
 
