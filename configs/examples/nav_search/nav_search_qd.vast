@@ -63,6 +63,16 @@ search:
   - metric: {name: coverage, op: '>=', value: 0.35}
   seed: 1
 
+visualization:
+  results:
+    explorer:
+      notebooks:
+      # One campaign view per strategy: four cells, one figure, and headline numbers
+      # computed from the campaign rather than written into the prose -- so a notebook
+      # cannot claim a finding its own data does not support.
+      - Analysis:
+          campaign: analysis/nav_search_qd.ipynb
+
 execution:
   containers:
     # roqsim, from the deployment's project. Nothing here names an image: which registry it
