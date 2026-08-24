@@ -643,36 +643,45 @@ def test_an_invalidated_run_with_no_verdict_says_so_without_inventing_one(tmp_pa
     assert "SIGBUS" in outcome["failure_message"]
 
 
-def test_an_aborted_search_records_the_batches_it_completed(tmp_path, monkeypatch):
-    """The count must survive the raise, not just be recorded on the happy path.
+def test_an_aborted_search_records_the_batches_it_completed(tmp_path):
+    """A search that dies mid-loop records the rounds it finished, not zero.
 
-    The loop runs in a callee, so a local in _run_search still reads 0 after that callee
-    raised -- which is how the first campaign to exercise this path filed 22 batches of
-    completed work as `batches: 0`. Zero is not merely unhelpful there, it is wrong in the
-    confident direction: it reads as a campaign that never ran a batch at all.
+    The count is kept on the controller rather than in a local of ``_run_search``, because
+    the loop it counts runs in a callee: a local would still read 0 after ``_search_loop``
+    raised, and the abort path would file that 0. The campaign that motivated this recorded
+    `batches: 0` for 22 batches of completed work -- wrong in the confident direction,
+    since it is indistinguishable from a search that never ran a batch at all.
+
+    So the real loop runs here and the third batch raises from inside it. Anything that
+    reintroduced the local would report 0 while two rounds sit in the store.
     """
-    from robovast.execution.controller import CampaignController
+    cfg = _cfg(batches=50, per_batch=2)      # a budget the loop cannot reach before it dies
+    controller, store, _ = _search_controller(cfg, tmp_path)
+    real_batch = controller._run_search_batch
 
-    ctrl = object.__new__(CampaignController)
-    ctrl._batches_done = 7          # as the loop would have left it
-    recorded = {}
+    def _die_on_the_third(param_sets, batch_idx, batch_id):
+        if batch_idx == 2:
+            raise RuntimeError("2 scenario job(s) cannot start after 60s")
+        return real_batch(param_sets, batch_idx, batch_id)
 
-    class _Store:
-        def record_outcome(self, campaign_id, **kw):
-            recorded.update(kw)
+    controller._run_search_batch = _die_on_the_third
+    campaign_id = store.create_campaign(name="c", config={}, mode="search", config_dir=".")
+    with pytest.raises(RuntimeError):
+        controller._run_search(campaign_id)
 
-    ctrl.store = _Store()
-    ctrl.state = None
-    boom = RuntimeError("2 scenario job(s) cannot start after 60s")
-    try:
-        ctrl.store.record_outcome(1, batches=ctrl._batches_done,
-                                  elapsed_s=1.0, **ctrl._abort_outcome(boom))
-    finally:
-        pass
-
-    assert recorded["batches"] == 7
-    assert recorded["stop_kind"] == "error"
-    assert "cannot start" in recorded["stop_reason"]
+    conn = sqlite3.connect(store.db_path)
+    batches, kind, reason = conn.execute(
+        "SELECT batches, stop_kind, stop_reason FROM campaign").fetchone()
+    # Three batch rows exist: `open_batch` runs at the top of each round, so the one that
+    # died is opened too. That is exactly why the recorded count cannot be "rows opened" --
+    # it is rounds *completed*, which is two, and it is published from inside the loop
+    # rather than returned from it.
+    assert conn.execute("SELECT COUNT(*) FROM batch").fetchone()[0] == 3
+    assert batches == 2
+    assert kind == "error"
+    assert "cannot start" in reason
+    conn.close()
+    store.close()
 
 
 def test_budget_is_published_before_the_first_batch(tmp_path):
