@@ -6,9 +6,9 @@
 
 optuna's ``CmaEsSampler`` constructs fine without the ``cmaes`` distribution and imports it
 lazily, inside ``sample_relative`` -- so the failure lands on the first ``ask``, which is
-after the campaign has started, staged its configs and taken a lane. Measured: a campaign
-died with a bare ``No module named 'cmaes'`` from inside optuna's sampler, having produced
-nothing.
+after the campaign has started, staged its configs and taken a lane. What surfaces there is
+a bare ``No module named 'cmaes'`` from inside optuna's sampler, on a campaign that has
+produced nothing.
 
 Declaring the dependency (the ``optuna`` extra now carries ``cmaes``) fixes it going
 forward. This check is what protects a deployment whose image predates that, and it turns a
