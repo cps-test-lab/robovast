@@ -1943,10 +1943,21 @@ is the whole grammar — pure, React-free, and the only place a hash is parsed o
    #/results/<view>/<campaign>?batch=<i>         ...a search campaign's round
    #/results/explorer/<campaign>/…?tab=<name>    ...and which of its notebook tabs
    #/config/campaign/<campaign>                  the frozen ``_config/`` of one campaign
+   #/execution?import=<search>                    the campaign view, share-import dialog on <search>
 
 ``navFromHash`` parses into ``Nav``; ``hashFor`` spells one back; ``nextNav`` is the transition
 behind a sidebar click. Three rules live there rather than in a page, and each is pinned by
 ``hashNav.test.ts``:
+
+The last form is the odd one out and says so in its own comment: ``?import=`` is a *request
+carried by a link*, not an address. It is parsed for the ``execution`` topic **only** — every
+page stays mounted (``KeepAlive``), so a ``#/config?import=x`` that resolved would have the
+campaign view open a dialog over a page nobody is looking at, whereas a ``?tab=`` a view
+ignores is simply inert. The campaign view clears it once taken, so the address stops
+claiming a dialog that has been closed. It is also the one URL form with a reader outside the
+browser: ``vast share import`` parses the same fragment (``share_cli.campaign_from_ui_link``),
+parse-only, so the copy button produces something that works in both places a campaign is
+imported.
 
 * **The node address is positional**, matching the on-disk and ``/results`` spelling of a run
   (:ref:`file-address-space`) rather than inventing ``cfg``/``run`` markers. ``ResultsSel`` is a
@@ -1997,7 +2008,11 @@ What not to do, because each of these costs far more than it protects here:
   is also where the ``@`` alias comes from, so a spec needs no path config of its own).
 
 Note that CI does not build ``frontend/ui`` at all, so these run locally and in agent
-sessions rather than as a gate — another reason to keep them few and fast.
+sessions rather than as a gate — another reason to keep them few and fast. They are ``npm run
+test`` inside ``frontend/ui``; the Python suite is ``make test`` at the repo root (or ``make
+test-<subtree>``, e.g. ``make test-service``, to re-run only what you are editing). CI calls
+``make test`` too, so the command a developer runs and the one that gates a merge cannot
+drift apart.
 
 **One colour scheme.** Every colour the UI paints that is not a one-off comes from
 ``frontend/ui/src/colors.ts``. A ``Style`` object holds them; ``buildTheme(style)`` in

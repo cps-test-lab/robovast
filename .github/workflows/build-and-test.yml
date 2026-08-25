@@ -48,9 +48,10 @@ jobs:
         run: |
           bash .github/test_commands.sh
 
+      # `make test`, not a bare pytest: the target is what a developer runs, and a
+      # workflow spelling the command itself is how the two drift apart.
       - name: Run unit tests
-        run: |
-          . venv/bin/activate && pytest tests/ -q
+        run: make test
 
       # Two questions review does not reliably answer: did the config schema change without
       # a version bump, and did the version move when nothing required it. `fetch-depth: 0`

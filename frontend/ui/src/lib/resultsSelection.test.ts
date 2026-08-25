@@ -32,6 +32,7 @@ const FALLBACK: Nav = {
   sel: CAMPAIGN_SEL,
   tab: '',
   configCampaignId: '',
+  shareImport: '',
 }
 
 const CID = 'tb4-office-nav-local-2026-08-21-10395724'

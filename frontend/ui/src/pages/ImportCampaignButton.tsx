@@ -3,9 +3,10 @@ import { useMutation } from '@tanstack/react-query'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
-import IconButton from '@mui/material/IconButton'
+import ListItemIcon from '@mui/material/ListItemIcon'
+import ListItemText from '@mui/material/ListItemText'
+import MenuItem from '@mui/material/MenuItem'
 import Stack from '@mui/material/Stack'
-import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 
@@ -17,7 +18,9 @@ import { describeImport, describeImportError } from '@/lib/ingestReport'
 import type { IngestReport, StageRow } from '@/lib/ingestReport'
 
 // Bringing a campaign somebody else produced into this deployment: pick a .tar.gz, upload it,
-// and it becomes a campaign here. The counterpart of a campaign card's archive download.
+// and it becomes a campaign here. The counterpart of a campaign card's archive download, and
+// one of the two entries in the campaign view's import menu — the other takes an archive off
+// the configured share, which the service fetches itself (see `ShareImportDialog`).
 //
 // Two calls, mirroring the service: the bytes are staged, then imported. Only the first is a
 // transfer — the import itself is a TRACKED background operation, so the POST returns as soon
@@ -64,17 +67,23 @@ function StageLine({ row }: { row: StageRow }) {
 
 /** The import control and its outcome panel, as two separately placeable pieces.
  *
- *  A hook rather than one component because the two do not belong in the same box: the button
- *  is an item in the header's ROW, while the report is a block that has to sit under it. A
- *  component returning both would put a multi-line report inside the flex row beside the
- *  heading. The state is shared, so it lives in one place and hands back two elements.
+ *  A hook rather than one component because the two do not belong in the same box: the control
+ *  is an item in the header's MENU, while the report is a block that has to sit under the
+ *  header row. A component returning both would put a multi-line report inside that flex row
+ *  beside the heading. The state is shared, so it lives in one place and hands back two
+ *  elements.
  *
  *  `campaigns` is the live list the campaign view already has. It is passed in rather than
  *  fetched again because it is how this hook learns that the import it started has finished —
- *  the same stream the user is watching, so the panel and the row can never disagree. */
+ *  the same stream the user is watching, so the panel and the row can never disagree.
+ *
+ *  `onPicked` fires once a file has actually been chosen, which is when the menu holding the
+ *  item should close. Cancelling the picker fires nothing and leaves it open, which is what
+ *  somebody who cancelled a file dialog is likely to want next. */
 export function useCampaignImport(
   campaigns: CampaignSummary[] | undefined,
   onStarted?: () => void,
+  onPicked?: () => void,
 ) {
   const [started, setStarted] = useState<{ id: string; note: string } | null>(null)
   const [report, setReport] = useState<IngestReport | null>(null)
@@ -146,33 +155,32 @@ export function useCampaignImport(
   const outcome = report ? describeImport(report) : null
   const error = failure ? describeImportError(failure.status, failure.message) : null
 
-  const button = (
-    <Tooltip title={busy ? 'Uploading…' : 'Import a campaign archive (.tar.gz)'}>
-      {/* `component="label"` makes the whole button the file input's label, which is the only
-          way to open a picker without a visible <input> — the shape the config page's file
-          upload already uses. */}
-      <IconButton
-        size="small"
-        component="label"
-        aria-label="Import a campaign archive"
-        disabled={busy}
-        sx={{ color: 'common.white' }}
-      >
+  const menuItem = (
+    /* `component="label"` makes the whole item the file input's label, which is the only way
+       to open a picker without a visible <input> — the shape the config page's file upload
+       already uses, and the reason the input stays INSIDE this element: a hook cannot render
+       a tree, so an input handed back separately would be one the caller had to remember to
+       place, and forgetting it breaks the picker silently. */
+    <MenuItem component="label" disabled={busy}>
+      <ListItemIcon>
         {busy ? <CircularProgress size={18} /> : <UploadFileRoundedIcon fontSize="small" />}
-        <input
-          hidden
-          type="file"
-          accept=".tar.gz,.tgz,.tar,application/gzip,application/x-tar"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            // Cleared so picking the same file twice fires again — after a refusal the user's
-            // next move may well be the same archive.
-            e.target.value = ''
-            if (file) doImport.mutate({ file })
-          }}
-        />
-      </IconButton>
-    </Tooltip>
+      </ListItemIcon>
+      <ListItemText>{busy ? 'Uploading…' : 'Import archive…'}</ListItemText>
+      <input
+        hidden
+        type="file"
+        accept=".tar.gz,.tgz,.tar,application/gzip,application/x-tar"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          // Cleared so picking the same file twice fires again — after a refusal the user's
+          // next move may well be the same archive.
+          e.target.value = ''
+          if (!file) return
+          doImport.mutate({ file })
+          onPicked?.()
+        }}
+      />
+    </MenuItem>
   )
 
   const panel = (
@@ -238,7 +246,11 @@ export function useCampaignImport(
     </>
   )
 
-  return { button, panel: started || outcome || error ? panel : null }
+  // `busy` is handed out because the menu holding `menuItem` is CLOSED while the upload runs
+  // -- it closes as soon as a file is picked -- so the item's own spinner is not on screen for
+  // any of it. The caller puts it on the control that opens the menu, which is; without that a
+  // multi-gigabyte upload shows nothing at all until it finishes.
+  return { menuItem, busy, panel: started || outcome || error ? panel : null }
 }
 
 /** The campaign id of *id*'s import once it has stopped working, else null.

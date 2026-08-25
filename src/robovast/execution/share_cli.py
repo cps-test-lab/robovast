@@ -43,12 +43,17 @@ borrow the service's credentials to get around that -- doing so would let any
 authenticated RoboVAST user delete share content the share itself would not let them
 touch. Only ``export`` uses the service's write access, which is its whole purpose
 and exactly what the campaign-end upload already does.
+
+``import`` additionally accepts an **import link copied from the web UI**, so the one
+thing a person is handed works in both places they might paste it. Only the link's
+fragment is read; see :func:`campaign_from_ui_link`.
 """
 
 import fnmatch
 import os
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 import click
@@ -131,6 +136,42 @@ def _archives(provider):
         found.append((object_name, campaign_id, variant, size))
     found.sort(key=lambda rec: rec[1])
     return found
+
+
+#: The web UI's campaign view, and the query it carries a share-import request in. Written
+#: out here because the CLI cannot import the grammar's one definition (`hashNav.ts`); the
+#: block in ``docs/developer_guide.rst`` is what both sides are written against.
+_UI_IMPORT_PATH = "/execution"
+_UI_IMPORT_QUERY = "import"
+
+
+def campaign_from_ui_link(text: str):
+    """The campaign a web-UI share-import link names, or ``None`` if *text* is not one.
+
+    The web UI's import dialog offers a link per campaign so that "here, take this one"
+    is a thing you can paste to somebody. Half of the people it reaches will paste it
+    into a terminal, so ``vast share import`` reads it too -- otherwise the copy button
+    produces something that works in exactly one of the two places a campaign is imported.
+
+    Only the **fragment** is read, never the host: that makes a full URL, a deployment
+    served under a sub-path, and a bare ``#/execution?import=...`` pasted without its host
+    all the same input, and it means no deployment's address has to be known here.
+
+    Parse-only, deliberately. Nothing in Python writes one of these -- the UI is the only
+    thing that mints them -- so this cannot drift into a second, disagreeing definition of
+    what the link looks like.
+    """
+    fragment = urllib.parse.urlparse(text).fragment
+    if not fragment:
+        return None
+    path, _, query = fragment.partition("?")
+    if path.rstrip("/") != _UI_IMPORT_PATH:
+        return None
+    value = urllib.parse.parse_qs(query).get(_UI_IMPORT_QUERY, [""])[0].strip()
+    # An empty `?import=` addresses no campaign. Returning "" would send the resolver
+    # looking for an archive named nothing; None puts the argument back on the path that
+    # reports "that is not on the share" against what the user actually typed.
+    return value or None
 
 
 def _select(archives, patterns, *, what="download"):
@@ -518,6 +559,11 @@ def export_cmd(campaign_id):
 def import_cmd(campaigns, force, rebuild_store):
     """Take campaigns from the share into the service.
 
+    Each CAMPAIGN is a campaign id, a full archive name (``<id>.raw.tar.gz``, which is
+    how you ask for one *variant* of a campaign the share holds twice), or an **import
+    link copied from the web UI's** *Import from Share* **dialog** -- so the link somebody
+    pastes you works here as well as in a browser.
+
     The **service** downloads from the share -- the archive never touches this
     machine, which is the point: a campaign can be many gigabytes and your laptop is
     not on the path between two servers. When what arrives is a raw archive,
@@ -533,10 +579,19 @@ def import_cmd(campaigns, force, rebuild_store):
     from robovast.service.interface import \
         ImportCampaignRequest  # pylint: disable=import-outside-toplevel
 
+    # Resolved before the service is contacted, and reported under the header below, so a
+    # link that was NOT recognised (a truncated paste, a link to another view) shows up as
+    # the odd request it is rather than as a puzzling "no archive for 'https://...'" from
+    # the far end.
+    wanted = [(arg, campaign_from_ui_link(arg)) for arg in campaigns]
+
     started, failed = [], False
     with service_client(require_service=True) as (client, label):
-        click.echo(f"Importing {len(campaigns)} campaign(s) from the share via {label} ...")
-        for campaign_id in campaigns:
+        click.echo(f"Importing {len(wanted)} campaign(s) from the share via {label} ...")
+        for arg, from_link in wanted:
+            if from_link:
+                click.echo(f"  link -> {from_link}")
+            campaign_id = from_link or arg
             try:
                 ref = client.import_campaign(ImportCampaignRequest(
                     share_archive=campaign_id, force=force, rebuild_store=rebuild_store))

@@ -89,6 +89,11 @@ It provides four views:
   narrow exception to the snapshot being a record of what ran, and it is why the
   read-only config view calls that snapshot *frozen* rather than *immutable*. The
   browser equivalent of ``vast exec cluster monitor``.
+  Its **Export to share** entry names the variant it will write — *(raw)* or
+  *(postprocessed)*. That is not a setting: which one a campaign yields is read off the
+  campaign itself, and once postprocessing has written into its tree the raw campaign no
+  longer exists to export. A campaign ends up on the share as *both* by being uploaded at
+  campaign end (before postprocessing, hence raw) and exported again afterwards.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
   runs per configuration, *Postprocess when done* and *Upload to share when done*
   toggles) and watches its live status. The browser equivalent of ``vast exec
@@ -202,12 +207,15 @@ still changing.
 Bringing a campaign in
 ----------------------
 
-The **upload button** at the right-hand end of the campaign list takes a campaign archive
-(``.tar.gz``) off your machine and makes it a campaign on this deployment — a colleague's
-results, a published dataset, or a campaign from a service you have since torn down. It is
-the other direction of a campaign card's **Download**, and it is the same operation as
-``vast results import`` and the ``import_campaign`` MCP tool: the browser is only how the
-bytes get there (:doc:`http_api`).
+The **import menu** at the right-hand end of the campaign list offers the two ways a
+campaign gets here. *Import archive…* takes a campaign archive (``.tar.gz``) off your
+machine — a colleague's results, a published dataset, or a campaign from a service you have
+since torn down. It is the other direction of a campaign card's **Download**, and it is the
+same operation as ``vast results import`` and the ``import_campaign`` MCP tool: the browser
+is only how the bytes get there (:doc:`http_api`). The other entry, *Import from Share*,
+takes one off the configured share instead and is described under
+:ref:`web-ui-share-import`; there the service does the fetching and no bytes pass through
+your browser at all.
 
 **Extracting is not importing.** Listings, this page and every query answer from the
 campaign's ``campaign.db``, not from its results tree, so an archive that was merely unpacked
@@ -247,21 +255,53 @@ discarding it to keep a verdict clean would throw away the data. Only a stage th
 blocks fails the import, and the one thing nothing here can fix is an archive from a *newer*
 robovast: a schema cannot be migrated downwards, so that one asks you to upgrade.
 
-The **Share** view
-------------------
+.. _web-ui-share-import:
 
-What the configured share holds, read by the service with the service's own credentials —
-a browser has none of its own. Most rows correspond to a campaign already here, and those
-are reachable from the campaign's own download menu instead. The rows worth this page are
-the others: an archive whose campaign was cleaned up from this deployment, or one produced
-somewhere else entirely. Each offers **Import** (the service fetches it, so the bytes never
-come through your browser) and **Copy share link**.
+Importing from the share
+------------------------
+
+*Import from Share*, the second entry in the campaign list's import menu, opens what the
+configured share holds — read by the service with the service's own credentials, since a
+browser has none of its own. Pressing **Import** on a row has the service fetch that
+archive, so the bytes never come through your browser, and the dialog closes: the campaign
+appears in the list at phase ``importing`` and its own row is the progress from then on.
+One import per visit; a refusal instead keeps the dialog open, because a refused import
+creates no row to be reported on.
+
+This used to be a panel *below* the campaign list. On a deployment with a hundred campaigns
+it was off the bottom of the page, collapsed, which is a poor place for the only feature
+that brings somebody else's work in — hence a menu entry, a search box, and newest first.
+
+**Newest campaign first**, ordered by the timestamp inside each campaign id. Not by when the
+archive was written: no share provider reports a modification time, and when the campaign
+*ran* is the more useful fact anyway. The id carries it in plain sight, which is why there is
+no separate date column.
+
+**One row per campaign, and the row says which archive it will fetch.** A campaign can be on
+the share *twice* — the campaign-end upload writes a ``raw`` archive before postprocessing,
+a later export adds a ``postprocessed`` one, and nothing removes the first. The dialog takes
+the postprocessed archive where there is one, because it arrives complete; a ``raw`` one is
+postprocessed after it lands, so that campaign runs on into a second phase. To name a
+specific variant, use the CLI: ``vast share import <campaign-id>.raw.tar.gz``.
+
+**Campaigns already here are listed too**, marked *already here* with their Import disabled.
+They are not filtered out, so that a link to a campaign you already have still explains
+itself.
+
+**Copy link** on a row copies a URL that opens this dialog with that campaign in the search
+box — hand it to a colleague and they only have to press *Import*. The same string works in a
+terminal: ``vast share import '<link>'`` reads it. The link carries **this** deployment's
+address, which is right for colleagues on the same one and wrong for anybody else; a bare
+campaign id is the portable form.
 
 The share is deliberately not treated as a subset of what this deployment has — the two
-overlap, and an archive with no campaign here is the ordinary case this page exists for, not
-an anomaly to be filtered out. Nothing about the share is cached on a campaign either: it is
-another system's state, and a copy of it would be wrong the first time somebody deleted an
-archive out of band.
+overlap, and an archive with no campaign here is the ordinary case this dialog exists for,
+not an anomaly to be filtered out. Nothing about the share is cached on a campaign either: it
+is another system's state, and a copy of it would be wrong the first time somebody deleted an
+archive out of band. When this deployment has no share at all, the menu entry is greyed out —
+but only then. A listing that is still loading, or one that failed because the share is
+unreachable, leaves it enabled and the dialog says which happened; greying it out would report
+a network problem as a deployment without a share.
 
 .. _web-ui-origin:
 

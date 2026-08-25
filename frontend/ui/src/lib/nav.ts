@@ -31,6 +31,7 @@ export function openResultsView(
     // Run view has no notebook tabs at all, so there would be nothing to bring.)
     tab: '',
     configCampaignId: '',
+    shareImport: '',
   }
   window.location.hash = `#${hashFor(nav)}`
 }
@@ -41,4 +42,28 @@ export function openResultsView(
  *  picker, so this link is the entire access path (see `Nav.configCampaignId`). */
 export function openCampaignConfig(campaignId: string): void {
   window.location.hash = `#/config/${CAMPAIGN_SEGMENT}/${campaignId}`
+}
+
+/** The absolute URL that opens the campaign view's share-import dialog on *search*.
+ *
+ *  Not a navigation but a link to *hand somebody*: the import dialog offers one per campaign so
+ *  that "here, take this one" is a thing you can paste, and the recipient only has to press
+ *  Import. `vast share import` reads the same string, so it works in a terminal too.
+ *
+ *  Absolute, and therefore **deployment-scoped** — it carries this deployment's origin, which is
+ *  right for colleagues on the same one and wrong for anybody else. The origin comes off the
+ *  current URL rather than being composed, so a deployment served under a sub-path is included
+ *  for free; the hash comes from `hashFor` for the reason `openResultsView` gives — one grammar,
+ *  not two. */
+export function shareImportLink(search: string): string {
+  const nav: Nav = {
+    topicId: 'execution',
+    viewId: '',
+    campaignId: '',
+    sel: { level: 'campaign' },
+    tab: '',
+    configCampaignId: '',
+    shareImport: search,
+  }
+  return `${window.location.href.split('#')[0]}#${hashFor(nav)}`
 }

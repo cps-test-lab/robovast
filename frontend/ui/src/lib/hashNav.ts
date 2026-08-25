@@ -11,6 +11,7 @@
 //   #/results/<view>/<campaign>?batch=<i>         ...a search campaign's round
 //   #/results/explorer/<campaign>/…?tab=<name>    ...and which of its notebook tabs
 //   #/config/campaign/<campaign>                  the deep link into one campaign's frozen config
+//   #/execution?import=<search>                   the campaign view, share-import dialog on <search>
 //
 // The node's address is *positional*, and deliberately the same spelling RoboVAST uses for a run
 // everywhere else -- `<campaign>/<config>/<run>` is the on-disk layout and the `/results` REST
@@ -24,6 +25,11 @@ export interface NavTopicShape {
   id: string
   views?: { id: string }[]
 }
+
+/** The Campaigns topic. Named here because the grammar mentions it: `?import=` is a request
+ *  only that page can act on, and `navFromHash` refuses to read one addressed anywhere else
+ *  (see `shareImport`). */
+const EXECUTION_TOPIC = 'execution'
 
 /** The Results sub-views. Declared here, with the grammar, because two of them appear in it by
  *  name: only the Explorer can show a node that is not a run, and only it has notebook tabs. */
@@ -72,6 +78,16 @@ export interface Nav {
    *  in the sidebar, because that click means "my workspaces" and a campaign's config is a hidden
    *  view reachable only from its card. One field each, with one rule each. */
   configCampaignId: string
+  /** A search string the campaign view's share-import dialog opens on — the deep link
+   *  somebody is handed so that importing an archive off the share is one click.
+   *
+   *  Like `configCampaignId` this is carried by a link and nothing else: `nextNav` drops it,
+   *  because a sidebar click on Campaigns means "the list", never somebody else's import
+   *  request. Unlike `tab` it is also *parsed* for one topic only — every page stays mounted
+   *  (App's KeepAlive), so a `#/config?import=x` that resolved would have the campaign view
+   *  open a dialog over a page nobody is looking at. A tab a view ignores is inert; this is
+   *  not. */
+  shareImport: string
 }
 
 /** Marks the third segment as a campaign id rather than a view, for a leaf topic.
@@ -136,6 +152,12 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
       sel: CAMPAIGN_SEL,
       tab: '',
       configCampaignId: rawView === CAMPAIGN_SEGMENT ? decodeSegment(rawCampaign ?? '') : '',
+      // Read for the campaign view alone. Every other leaf topic gets '' no matter what its
+      // query says — see `shareImport` for why this one is not parsed everywhere `tab` is.
+      shareImport:
+        topic.id === EXECUTION_TOPIC
+          ? (new URLSearchParams(rawQuery).get('import') ?? '')
+          : '',
     }
   }
   const view = topic.views.find((v) => v.id === rawView)?.id ?? topic.views[0]?.id ?? ''
@@ -151,6 +173,8 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
     sel: selFromHash(rawConfig, rawRun, query),
     tab: query.get('tab') ?? '',
     configCampaignId: '',
+    // A topic with views is never the campaign view, which is a leaf.
+    shareImport: '',
   }
 }
 
@@ -182,8 +206,13 @@ function selFor(viewId: string, sel: ResultsSel): ResultsSel {
 export function hashFor(nav: Nav): string {
   const { topicId, viewId, campaignId, configCampaignId } = nav
   if (!viewId) {
-    return configCampaignId
-      ? `/${topicId}/${CAMPAIGN_SEGMENT}/${encodeURIComponent(configCampaignId)}`
+    if (configCampaignId) {
+      return `/${topicId}/${CAMPAIGN_SEGMENT}/${encodeURIComponent(configCampaignId)}`
+    }
+    // Spelled for the campaign view only, the same shape as `tab` being spelled by the
+    // Explorer alone: a view's address may not carry a request another view would act on.
+    return topicId === EXECUTION_TOPIC && nav.shareImport
+      ? `/${topicId}?import=${encodeURIComponent(nav.shareImport)}`
       : `/${topicId}`
   }
   if (!campaignId) return `/${topicId}/${viewId}`
@@ -222,5 +251,8 @@ export function nextNav(
     // through the explicit link": carrying it would reopen a campaign's config on a plain sidebar
     // click.
     configCampaignId: '',
+    // Dropped for the same reason: an import request belongs to the link it arrived on, and
+    // carrying it would re-open the share dialog every time somebody clicked Campaigns.
+    shareImport: '',
   }
 }
