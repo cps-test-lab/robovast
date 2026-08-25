@@ -1041,6 +1041,47 @@ def _clock_map_info(campaign_path, config_name: str, run_id: int):
     return clock_map.find_run_clock_map(str(run_dir)).info
 
 
+def _shm_info(campaign_path, config_name: str, run_id: int):
+    """``(peak used, limit in force)`` of this run's ``/dev/shm``, in bytes.
+
+    Read here for the reason :func:`_clock_map_info` is: ``runs`` is where a reader asks what
+    this run was given and what it did with it, and the shared-memory pool is one of those
+    facts. ``available_mem_bytes`` beside it is process memory only -- the pool is a tmpfs
+    charged to the pod on top of it, and a container that overruns it dies of SIGBUS (exit
+    135) rather than a clean OOM, so the number that would explain such a death has to be
+    somewhere a query can reach.
+
+    ``(None, None)`` for a run recorded before the monitor sampled the pool, and for a
+    runtime that has no ``/dev/shm``. Both are unmeasured, which is not the same answer as
+    "used none of it" and must not be stored as ``0``.
+    """
+    from . import resource_usage  # pylint: disable=import-outside-toplevel
+
+    path = Path(campaign_path) / config_name / str(run_id) / resource_usage.FILENAME
+    used = total = None
+    try:
+        with open(path, newline="", encoding="utf-8", errors="replace") as handle:
+            for row in csv.DictReader(handle):
+                used = _max_bytes(used, row.get("shm_used_bytes"))
+                total = _max_bytes(total, row.get("shm_total_bytes"))
+    except OSError:
+        # No per-run resource table: the monitor did not run, or postprocessing has not
+        # sliced it yet. Nothing to say, and nothing that makes the run's other columns wrong.
+        return None, None
+    return used, total
+
+
+def _max_bytes(current: Optional[int], value) -> Optional[int]:
+    """Fold one CSV cell into a running maximum, treating empty and unparsable as absent."""
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return current
+    if parsed < 0:
+        return current
+    return parsed if current is None else max(current, parsed)
+
+
 def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     """Create a ``runs`` dimension table: per-run status/duration + scenario params.
 
@@ -1170,6 +1211,13 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                  # so only the name separates a slow machine from a fast one.
                  "instance_type", "node_name", "cpu_name",
                  "available_cpus", "available_mem_bytes",
+                 # The run's shared-memory pool: what it peaked at, and the limit that was in
+                 # force. Beside ``available_mem_bytes`` because it is the same kind of fact
+                 # and the wrong one to read alone -- that column is process memory, while the
+                 # pool is a tmpfs charged to the pod on top of it. NULL means unmeasured (a
+                 # run from before the monitor sampled it, or a runtime with no /dev/shm),
+                 # which is not "used none": see execution.shm_size in the config docs.
+                 "shm_peak_bytes", "shm_limit_bytes",
                  # What this run's log timestamps are worth. A reader that finds sim_time
                  # NULL in run_log needs to know whether the run was not aligned or simply
                  # logged nothing before the clock started, and "which source said so" is
@@ -1197,7 +1245,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     # cores, and an INTEGER column would silently truncate a 0.5-core reservation to 0 — which
     # then reads as "this run had no CPU" in every query that joins to it.
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
-                                  "available_mem_bytes", "clock_map_samples", "probed")
+                                  "available_mem_bytes", "shm_peak_bytes", "shm_limit_bytes",
+                                  "clock_map_samples", "probed")
                  else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s",
                                     "clock_map_sim_span_s", "available_cpus")
                  else TEXT)
@@ -1243,10 +1292,12 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             (instance_type, node_name, cpu_name,
              avail_cpus, avail_mem) = _sysinfo_fields(o)
             clock_info = _clock_map_info(campaign_path, config_name, run_id)
+            shm_peak, shm_limit = _shm_info(campaign_path, config_name, run_id)
             base_vals = [config_name, run_id, status, passed, duration,
                          errors, failures, objective,
                          start_time, end_time,
                          instance_type, node_name, cpu_name, avail_cpus, avail_mem,
+                         shm_peak, shm_limit,
                          clock_info.source, clock_info.samples, clock_info.wall_span_s,
                          clock_info.sim_span_s,
                          1 if f"{config_name}/{run_id}" in probed else 0]
@@ -1262,6 +1313,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
                      None, None, None,
                      None, None,
                      None, None, None, None, None,
+                     None, None,
                      None, None, None, None, 0]
         param_vals = [params.get(k) for k in param_keys]
         conn.execute(insert_sql, [sql_value(v, types[c])

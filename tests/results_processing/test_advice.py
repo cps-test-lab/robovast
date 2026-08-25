@@ -227,3 +227,87 @@ def test_a_campaign_that_declares_no_shm_size_is_advised_exactly_as_before():
     with_key = _by_kind(A.resource_advice(usage, declared))["memory_over_reserved"]
     assert with_key["evidence"]["suggested_pod"] == "1280Mi"
     assert "shm_size" not in with_key["evidence"]
+
+
+# -- sizing execution.shm_size from what the pool actually held ---------------------------
+#
+# The measured half of the same subject. Every case below turns on one question: did this
+# campaign use shared memory at all? Where it did not, the right output is nothing.
+
+_MIB = 1024 ** 2
+_GIB = 1024 ** 3
+
+
+def _measured(peak=None, limit=None):
+    return [{"shm_peak": peak, "shm_limit": limit}]
+
+
+def test_no_advice_when_the_pool_was_never_measured():
+    """NULL is a campaign recorded before the monitor sampled the pool, or a runtime with no
+    /dev/shm. Neither is "used none of it", so neither may produce a size.
+
+    The empty-list case is a data.db built before the columns existed: the query fails and
+    ``data_access.rows`` hands back ``[]``, which has to read as "nothing to say" rather than
+    take out the whole summary the advice is one key of.
+    """
+    assert A.shm_advice(_measured(None, None), _shm("1Gi")) == []
+    assert A.shm_advice([], _shm("1Gi")) == []
+
+
+@pytest.mark.parametrize("peak", [0, 4 * _MIB, 64 * _MIB])
+def test_a_campaign_that_does_not_use_shared_memory_is_told_nothing(peak):
+    """Shared memory is not always used: a single-container run, a non-DDS middleware, or
+    nodes co-located in one process all touch almost none of it. A peak that fits in what the
+    smallest lane hands out for free needs no declaration and no reduction -- so there is
+    nothing to say, including nothing about a declaration that is larger than it needs."""
+    assert A.shm_advice(_measured(peak, 64 * _MIB), []) == []
+    assert A.shm_advice(_measured(peak, _GIB), _shm("1Gi")) == []
+
+
+def test_a_campaign_that_uses_the_pool_and_declares_nothing_is_warned():
+    """It survives on the cluster, where an undeclared pool is sized from the pod's limits or
+    the node, and dies on the local lane's 64Mi -- of SIGBUS, which is not an OOM kill."""
+    item = _by_kind(A.shm_advice(_measured(700 * _MIB, 8 * _GIB), []))["shm_not_declared"]
+    assert item["severity"] == "warning"
+    # 700Mi x 1.25 = 875Mi, rounded up to the next 128Mi.
+    assert item["evidence"]["suggested"] == "896Mi"
+    assert item["evidence"]["peak"] == "700Mi"
+    assert "declared" not in item["evidence"]
+
+
+def test_a_declaration_the_peak_is_closing_on_is_warned():
+    item = _by_kind(A.shm_advice(_measured(900 * _MIB, _GIB),
+                                _shm("1Gi")))["shm_under_reserved"]
+    assert item["severity"] == "warning"
+    assert item["evidence"]["suggested"] == "1152Mi"
+    assert item["evidence"]["declared"] == "1Gi"
+
+
+def test_a_declaration_far_above_the_peak_is_a_suggestion_not_a_warning():
+    """Over-declaring costs the pod's memory budget on every job, not a dead run."""
+    item = _by_kind(A.shm_advice(_measured(100 * _MIB, 4 * _GIB),
+                                _shm("4Gi")))["shm_over_reserved"]
+    assert item["severity"] == "suggestion"
+    assert item["evidence"]["suggested"] == "128Mi"
+    assert item["evidence"]["throughput_factor"] > 1
+
+
+def test_a_declaration_that_covers_the_peak_without_waste_says_nothing():
+    assert A.shm_advice(_measured(700 * _MIB, _GIB), _shm("1Gi")) == []
+
+
+def test_every_item_carries_the_limit_the_run_actually_saw():
+    """Which is how "did my declaration take effect?" is answered without a rule of its own:
+    a declared size the mount never got is otherwise indistinguishable from an honoured one."""
+    item = _by_kind(A.shm_advice(_measured(900 * _MIB, 64 * _MIB),
+                                _shm("1Gi")))["shm_under_reserved"]
+    assert item["evidence"]["observed_limit"] == "64Mi"
+    assert item["evidence"]["declared"] == "1Gi"
+
+
+def test_a_fallback_to_udp_reads_as_under_reserved_not_over_reserved():
+    """The ordering matters. A peak that is small BECAUSE the cap was too small sits at its
+    cap, so it is caught as under-reserved -- it must never be advised to shrink further."""
+    kinds = _by_kind(A.shm_advice(_measured(64 * _MIB + 1, 64 * _MIB), _shm("64Mi")))
+    assert "shm_under_reserved" in kinds
+    assert "shm_over_reserved" not in kinds

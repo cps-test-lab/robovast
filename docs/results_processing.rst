@@ -649,6 +649,14 @@ all, which is itself a finding — such a container is told by the downward API 
 the whole node, and the pod's shared ``/dev/shm`` is sized the same way. Join back onto
 ``run_view`` on ``config_name || '/' || run_id = run_key``.
 
+For a ``SIGBUS`` the sizing half of the answer is in ``runs``: ``shm_peak_bytes`` is what the
+run's shared-memory pool held at its fullest and ``shm_limit_bytes`` is the size that was in
+force, so "it ran out" and "it was never that big" are one query apart. Both are ``NULL`` for a
+campaign recorded before the monitor sampled the pool, which is unmeasured rather than unused.
+Per-tick values are in ``resource_usage`` (``shm_used_bytes`` / ``shm_total_bytes``) for seeing
+*when* it grew — one pool for the whole run, repeated on the tick's rows, so ``MAX`` is the only
+aggregate over them that means anything. Sizing it: :ref:`configuration` under ``shm_size``.
+
 An invalidated job's rosbag is unreadable for the same reason a stopped job's is (it is
 deleted at ``grace_period_seconds=0``), and postprocessing tolerates both identically.
 

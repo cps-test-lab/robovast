@@ -185,3 +185,55 @@ def test_runs_table_tolerates_missing_sysinfo(tmp_path):
     _build_runs_table(conn, tmp_path, [cfg])
     row = conn.execute("SELECT instance_type, node_name, cpu_name FROM runs").fetchone()
     assert row == (None, None, None)
+
+
+# -- the run's shared-memory pool ---------------------------------------------------------
+
+
+def _campaign_with_one_run(tmp_path, resource_rows=None):
+    """A campaign of one run, optionally with the per-run resource table postprocessing
+    writes. *resource_rows* are ``(shm_used, shm_total)`` cells, written verbatim."""
+    conn0 = sqlite3.connect(tmp_path / "campaign.db")
+    conn0.execute("CREATE TABLE unit (config_name TEXT, params_json TEXT, objective REAL)")
+    conn0.execute("INSERT INTO unit VALUES ('cfg-a', '{}', NULL)")
+    conn0.commit()
+    conn0.close()
+
+    cfg = tmp_path / "cfg-a"
+    _write_run(cfg / "0", start_ts=1_700_000_000.0, duration=5.0)
+    if resource_rows is not None:
+        (cfg / "0" / "resource_usage.csv").write_text(
+            "timestamp,wall_ts,in_window,container,name,cpu_percent,memory_rss_bytes,"
+            "num_pids,shm_used_bytes,shm_total_bytes\n"
+            + "".join(f",{100 + i}.0,1,robovast,gzserver,10.00,1024,1,{used},{total}\n"
+                      for i, (used, total) in enumerate(resource_rows)),
+            encoding="utf-8")
+    conn = sqlite3.connect(":memory:")
+    _build_runs_table(conn, tmp_path, [cfg])
+    return conn
+
+
+def test_runs_carries_the_shm_high_water_mark(tmp_path):
+    """The figure ``execution.shm_size`` has to cover, beside ``available_mem_bytes`` --
+    which is process memory only, while the pool is a tmpfs charged to the pod on top of it.
+    A container that overruns it dies of SIGBUS (exit 135) rather than a clean OOM, so this
+    is the number that explains such a death."""
+    conn = _campaign_with_one_run(tmp_path, [(5_000_000, 1_073_741_824),
+                                             (900_000_000, 1_073_741_824),
+                                             (7_000_000, 1_073_741_824)])
+    assert conn.execute(
+        "SELECT shm_peak_bytes, shm_limit_bytes FROM runs").fetchone() == (
+            900_000_000, 1_073_741_824)
+
+
+def test_an_unmeasured_pool_is_null_rather_than_zero(tmp_path):
+    """Two runs reach this: one recorded before the monitor sampled the pool (no columns at
+    all) and one on a runtime without /dev/shm (empty cells). Neither used none of it, and a
+    0 here would report both as a campaign that measured an empty pool."""
+    assert _campaign_with_one_run(tmp_path).execute(
+        "SELECT shm_peak_bytes, shm_limit_bytes FROM runs").fetchone() == (None, None)
+
+    other = tmp_path / "other"
+    other.mkdir()
+    assert _campaign_with_one_run(other, [("", "")]).execute(
+        "SELECT shm_peak_bytes, shm_limit_bytes FROM runs").fetchone() == (None, None)

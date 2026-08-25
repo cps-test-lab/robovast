@@ -283,3 +283,87 @@ def test_campaign_totals_carry_every_counter_a_job_reported():
             continue
         value = getattr(totals, spec.name)
         assert value in (3, ["x"]), f"{spec.name} was not folded"
+
+
+# -- the shared-memory pool ----------------------------------------------------
+#
+# One tmpfs for the whole run, sampled once per tick and repeated across the tick's process
+# rows. Two things must hold: a file from before the monitor sampled it still reads (that is
+# every campaign recorded so far), and the pool is never folded like a per-process figure.
+
+_SHM_HEADER = ("timestamp,pid,name,cpu_percent,memory_rss_bytes,"
+               "shm_used_bytes,shm_total_bytes\n")
+
+
+def _shm_csv(path, rows):
+    """*rows* are ``(ts, pid, name, cpu, mem, shm_used, shm_total)``."""
+    path.write_text(_SHM_HEADER + "".join(",".join(str(c) for c in r) + "\n" for r in rows))
+    return str(path)
+
+
+def test_a_file_without_the_shm_columns_still_reads(tmp_path):
+    """The regression guard for every campaign recorded before the monitor sampled the pool.
+
+    The columns are optional for exactly this reason: requiring them would turn each of those
+    files from readable into unreadable, losing the CPU and memory that IS in them to gain a
+    column that never could be.
+    """
+    stats = resource_usage.ScanStats()
+    samples = resource_usage.read_container_csv(
+        _csv(tmp_path / "resource_usage_main.csv", [(100.0, 1, "gzserver", 50.0, 1024)]),
+        "robovast", stats)
+    assert not stats.unreadable
+    assert [(s.memory_rss_bytes, s.shm_used_bytes, s.shm_total_bytes) for s in samples] == [
+        (1024, None, None)]
+
+
+def test_the_pool_is_read_per_tick_not_per_process(tmp_path):
+    """MAX over the tick's rows, not SUM: they are one measurement the writer repeats."""
+    stats = resource_usage.ScanStats()
+    path = _shm_csv(tmp_path / "resource_usage_main.csv", [
+        (100.0, 1, "a", 10.0, 1024, 5_000_000, 1_073_741_824),
+        (100.0, 2, "b", 10.0, 2048, 5_000_000, 1_073_741_824),
+    ])
+    ticks = resource_usage.collect_job_ticks(
+        str(tmp_path), {"robovast": "resource_usage_main.csv"}, stats)
+    assert len(ticks) == 1
+    assert (ticks[0].shm_used_bytes, ticks[0].shm_total_bytes) == (5_000_000, 1_073_741_824)
+    assert path  # the file the tick came from
+
+
+def test_an_unmeasured_pool_is_absent_not_zero(tmp_path):
+    """A runtime without /dev/shm and a run that used none of it are different answers."""
+    stats = resource_usage.ScanStats()
+    _shm_csv(tmp_path / "resource_usage_main.csv", [(100.0, 1, "a", 10.0, 1024, "", "")])
+    ticks = resource_usage.collect_job_ticks(
+        str(tmp_path), {"robovast": "resource_usage_main.csv"}, stats)
+    assert (ticks[0].shm_used_bytes, ticks[0].shm_total_bytes) == (None, None)
+    rows = resource_usage.rows_for_slice(ticks, _slice(tmp_path))
+    assert [(r["shm_used_bytes"], r["shm_total_bytes"]) for r in rows] == [("", "")]
+
+
+def test_the_peak_covers_bring_up_not_just_the_trial_window(tmp_path):
+    """A participant allocates its segments as it starts, and a SIGBUS there loses the run.
+
+    So the high-water mark is taken over every tick the run CLAIMS, which includes bring-up,
+    rather than over the ticks inside the trial window.
+    """
+    ticks = [
+        resource_usage.Tick(wall_ts=90.0, container="robovast", processes={"a": (1.0, 1, 1)},
+                            shm_used_bytes=900_000_000, shm_total_bytes=1_073_741_824),
+        resource_usage.Tick(wall_ts=150.0, container="robovast", processes={"a": (1.0, 1, 1)},
+                            shm_used_bytes=1_000_000, shm_total_bytes=1_073_741_824),
+    ]
+    slice_ = _slice(tmp_path, start=100.0, end=200.0)
+    assert [r["in_window"] for r in resource_usage.rows_for_slice(ticks, slice_)] == [0, 1]
+    assert resource_usage.peak_shm(ticks, slice_) == (900_000_000, 1_073_741_824)
+
+
+def test_a_tick_no_run_claims_is_left_out_of_the_peak(tmp_path):
+    """Same partition as the rows: another run's pool is not this run's peak."""
+    ticks = [resource_usage.Tick(wall_ts=50.0, container="robovast",
+                                 processes={"a": (1.0, 1, 1)},
+                                 shm_used_bytes=900_000_000,
+                                 shm_total_bytes=1_073_741_824)]
+    assert resource_usage.peak_shm(
+        ticks, _slice(tmp_path, claim_start=100.0, claim_end=200.0)) == (None, None)

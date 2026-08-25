@@ -579,7 +579,12 @@ _TABLE_DESCRIPTIONS = {
         "params are JSON-encoded — use json_extract/json_each), and the host it ran on "
         "(node_name — which machine, NULL for a local run; instance_type, cpu_name, "
         "available_cpus, available_mem_bytes — bytes, so "
-        "divide by 1024*1024*1024 for GiB). Join to any metric table on (config_name, "
+        "divide by 1024*1024*1024 for GiB). shm_peak_bytes/shm_limit_bytes are the run's "
+        "shared-memory pool: what /dev/shm held at its fullest, and the size that was in "
+        "force — the pair that sizes execution.shm_size, and that explains an exit_code 135 "
+        "(SIGBUS) in container_failure_view. Both NULL means unmeasured (a campaign recorded "
+        "before the monitor sampled it), which is not 'used none'. "
+        "Join to any metric table on (config_name, "
         "run_id). Exists only after postprocessing; run_view answers the same per-run "
         "questions before it. "
         "clock_map_sim_span_s / clock_map_wall_span_s is the run's realtime factor — "
@@ -657,6 +662,10 @@ _TABLE_DESCRIPTIONS = {
         "belongs to exactly one run, so SUM over a job's runs is what that job consumed. "
         "Load per container over time: SELECT container, wall_ts, SUM(cpu_percent) FROM "
         "resource_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1,2. "
+        "shm_used_bytes/shm_total_bytes are the exception to the row grain: /dev/shm is ONE "
+        "pool for the whole run, so the same value repeats across a tick's process rows and "
+        "across containers — MAX, never SUM. For the run's high-water mark read "
+        "runs.shm_peak_bytes instead; these columns are for seeing when it grew. "
         "Join on (config_name, run_id)."),
 }
 

@@ -43,7 +43,7 @@ from __future__ import annotations
 import csv
 import os
 from dataclasses import dataclass, field, fields
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import run_slices
 
@@ -51,16 +51,30 @@ from . import run_slices
 FILENAME = "resource_usage.csv"
 
 #: The table's columns, in reading order: when, where from, what.
+#:
+#: The two ``shm_`` columns are the odd ones out and are named so that it shows: they are the
+#: TICK's shared-memory pool, not the process's. ``/dev/shm`` is one tmpfs for the whole run,
+#: so the same value repeats across every row of a tick and ``SUM`` over it means nothing --
+#: ``MAX`` is the only aggregate that does. The per-run high-water mark is lifted out of here
+#: into ``runs.shm_peak_bytes`` / ``runs.shm_limit_bytes``, which is what advice and most
+#: queries should read; these columns are for seeing *when* the pool grew.
 FIELDNAMES = [
     "timestamp", "wall_ts", "in_window",
     "container", "name",
     "cpu_percent", "memory_rss_bytes", "num_pids",
+    "shm_used_bytes", "shm_total_bytes",
 ]
 
 #: What ``monitor_resources.py`` writes. Checked against the file's actual header, because
 #: a reader that assumes column order turns a changed writer into wrong numbers instead of
 #: an error.
 RAW_FIELDNAMES = ("timestamp", "pid", "name", "cpu_percent", "memory_rss_bytes")
+
+#: Columns the writer gained later. Optional on purpose: they are absent from every campaign
+#: recorded before the monitor sampled ``/dev/shm``, and requiring them would turn each of
+#: those files from readable into ``unreadable`` -- losing the CPU and memory that IS in them
+#: to add a column that never could be.
+RAW_OPTIONAL_FIELDNAMES = ("shm_used_bytes", "shm_total_bytes")
 
 _CSV_PREFIX = "resource_usage_"
 
@@ -113,6 +127,23 @@ class ScanStats:
                 f"({self.samples} samples in {self.ticks} tick(s) from {self.files} file(s))")
 
 
+class Sample(NamedTuple):
+    """One row of the monitor's CSV: a process at an instant, plus that instant's shm pool.
+
+    Named rather than a bare tuple because the last two fields do not belong to the process:
+    ``/dev/shm`` is one pool for the whole run, so every sample of a tick carries the same
+    pair. Reading them off by position is how that distinction gets lost.
+    """
+    wall_ts: float
+    name: str
+    cpu_percent: float
+    memory_rss_bytes: int
+    #: ``None`` on a campaign recorded before the monitor sampled the pool, and on a runtime
+    #: without ``/dev/shm``. Never ``0`` for either -- see ``monitor_resources._shm_bytes``.
+    shm_used_bytes: Optional[int] = None
+    shm_total_bytes: Optional[int] = None
+
+
 @dataclass(frozen=True)
 class Tick:
     """One container's processes at one sampling instant, grouped by process name."""
@@ -120,6 +151,12 @@ class Tick:
     container: str
     #: ``{process name: (cpu_percent, memory_rss_bytes, num_pids)}``
     processes: Dict[str, Tuple[float, int, int]]
+    #: The tick's shared-memory pool -- used, and the limit in force. A property of the RUN,
+    #: not of this container: one tmpfs is mounted into all of them (locally, shared through
+    #: the main container's IPC namespace), so every container of a tick reports the same
+    #: pair. ``None`` when the monitor did not record it.
+    shm_used_bytes: Optional[int] = None
+    shm_total_bytes: Optional[int] = None
 
 
 def _as_float(value: Optional[str]) -> Optional[float]:
@@ -129,9 +166,24 @@ def _as_float(value: Optional[str]) -> Optional[float]:
         return None
 
 
+def _as_int(value: Optional[str]) -> Optional[int]:
+    """An optional byte count: absent, empty and unparsable all mean "not measured"."""
+    parsed = _as_float(value)
+    return None if parsed is None or parsed < 0 else int(parsed)
+
+
+def _max_opt(a: Optional[int], b: Optional[int]) -> Optional[int]:
+    """The larger of two optional counts, where ``None`` is absence rather than zero."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
 def read_container_csv(path: str, container: str, stats: ScanStats,
-                       label: str = "") -> List[Tuple[float, str, float, int]]:
-    """One container's samples as ``[(wall_ts, name, cpu_percent, memory_rss_bytes)]``.
+                       label: str = "") -> List[Sample]:
+    """One container's samples as a list of :class:`Sample`.
 
     Written to survive the cluster's damage mode. Every container of a job mirrors the same
     shared ``/out``, and the main container uploads while a sidecar is still appending; if
@@ -155,15 +207,18 @@ def read_container_csv(path: str, container: str, stats: ScanStats,
 
 
 def parse_container_rows(lines, container: str, stats: ScanStats,
-                         label: str = "") -> List[Tuple[float, str, float, int]]:
+                         label: str = "") -> List[Sample]:
     """:func:`read_container_csv` on any line source — a file, or a live tail.
 
     Split out so that reading a **running** job's CSV, which arrives over an exec rather than as
     a path, shares one definition of the column contract and of the damaged-tail rule. Two
     parsers for one writer is how a changed column becomes wrong numbers in one place and an
     error in the other.
+
+    The header is checked against :data:`RAW_FIELDNAMES` only, so a file from before the
+    monitor sampled ``/dev/shm`` reads exactly as it did: its shm fields come back ``None``.
     """
-    samples: List[Tuple[float, str, float, int]] = []
+    samples: List[Sample] = []
     bad_here = 0
     where = f"{label}:{container}" if label else container
     reader = csv.DictReader(lines)
@@ -187,14 +242,16 @@ def parse_container_rows(lines, container: str, stats: ScanStats,
             stats.bad_rows += 1
             bad_here += 1
             continue
-        samples.append((wall, row["name"] or "", cpu, int(mem)))
+        samples.append(Sample(wall, row["name"] or "", cpu, int(mem),
+                              _as_int(row.get("shm_used_bytes")),
+                              _as_int(row.get("shm_total_bytes"))))
 
     if not samples:
         stats.empty.append(where)
         return []
     if bad_here:
-        last = max(wall for wall, _, _, _ in samples)
-        samples = [s for s in samples if s[0] != last]
+        last = max(s.wall_ts for s in samples)
+        samples = [s for s in samples if s.wall_ts != last]
         stats.dropped_tail_ticks += 1
         stats.truncated.append(f"{where} ({bad_here} bad row(s), last tick dropped)")
     stats.samples += len(samples)
@@ -244,13 +301,24 @@ def collect_job_ticks(job_dir: str, expected: Optional[Dict[str, str]],
                 wanted[container] = path
 
     grouped: Dict[Tuple[float, str], Dict[str, Tuple[float, int, int]]] = {}
+    #: The tick's shm pool, kept beside the process roll-up rather than in it: it is one
+    #: value the whole tick repeats, so it is folded with MAX (which a row cut off mid-tick
+    #: cannot drag down) instead of summed like a per-process figure.
+    shm: Dict[Tuple[float, str], Tuple[Optional[int], Optional[int]]] = {}
     for container, path in sorted(wanted.items()):
-        for wall, name, cpu, mem in read_container_csv(path, container, stats, label):
-            bucket = grouped.setdefault((wall, container), {})
-            cpu_sum, mem_sum, pids = bucket.get(name, (0.0, 0, 0))
-            bucket[name] = (cpu_sum + cpu, mem_sum + mem, pids + 1)
+        for sample in read_container_csv(path, container, stats, label):
+            key = (sample.wall_ts, container)
+            bucket = grouped.setdefault(key, {})
+            cpu_sum, mem_sum, pids = bucket.get(sample.name, (0.0, 0, 0))
+            bucket[sample.name] = (cpu_sum + sample.cpu_percent,
+                                   mem_sum + sample.memory_rss_bytes, pids + 1)
+            used, total = shm.get(key, (None, None))
+            shm[key] = (_max_opt(used, sample.shm_used_bytes),
+                        _max_opt(total, sample.shm_total_bytes))
 
-    ticks = [Tick(wall_ts=wall, container=container, processes=processes)
+    ticks = [Tick(wall_ts=wall, container=container, processes=processes,
+                  shm_used_bytes=shm.get((wall, container), (None, None))[0],
+                  shm_total_bytes=shm.get((wall, container), (None, None))[1])
              for (wall, container), processes in sorted(grouped.items())]
     stats.ticks += len(ticks)
     return ticks
@@ -280,8 +348,37 @@ def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[d
                 "cpu_percent": f"{cpu:.2f}",
                 "memory_rss_bytes": mem,
                 "num_pids": pids,
+                # Repeated across the tick's process rows because the pool belongs to the
+                # tick, not to any one of them. Empty, never 0, where it was not measured.
+                "shm_used_bytes": ("" if tick.shm_used_bytes is None
+                                   else tick.shm_used_bytes),
+                "shm_total_bytes": ("" if tick.shm_total_bytes is None
+                                    else tick.shm_total_bytes),
             })
     return rows
+
+
+def peak_shm(ticks: Sequence[Tick],
+             slice_: run_slices.RunSlice) -> Tuple[Optional[int], Optional[int]]:
+    """``(peak used, limit in force)`` for one run, or ``(None, None)`` if unmeasured.
+
+    The run's high-water mark, which is the figure ``execution.shm_size`` has to cover. Taken
+    over every tick the run claims and **not** filtered to the trial window: a participant
+    allocates its shared-memory segments as it starts up, and a SIGBUS during bring-up loses
+    the run just as completely as one mid-trial.
+
+    Containers are pooled rather than compared. They all mount the same tmpfs, so their
+    figures agree by construction; MAX over them is that one series, and a per-container
+    breakdown would only invite the reader to explain a difference that cannot exist.
+    """
+    used: Optional[int] = None
+    total: Optional[int] = None
+    for tick in ticks:
+        if not slice_.claims(tick.wall_ts):
+            continue
+        used = _max_opt(used, tick.shm_used_bytes)
+        total = _max_opt(total, tick.shm_total_bytes)
+    return used, total
 
 
 def expected_container_files(plan) -> Optional[Dict[str, str]]:

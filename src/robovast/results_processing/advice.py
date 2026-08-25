@@ -72,6 +72,25 @@ UNDER_RESERVED_RATIO = 1.0
 #: it. Mirrors ``common/log_tail.MAIN_CONTAINER``.
 MEASURED_MAIN_CONTAINER = "robovast"
 
+#: Headroom over the shared-memory peak. Same rule as memory, and for a sharper version of
+#: the same reason: overrunning ``/dev/shm`` is a SIGBUS, and one that arrives without even
+#: the "OOMKilled" label to explain it.
+SHM_HEADROOM = 1.25
+
+#: Below this, nothing is said about ``/dev/shm`` at all.
+#:
+#: Shared memory is not always used. A single-container run, a run whose middleware is not
+#: DDS, and one whose nodes are co-located in a process all touch almost none of it -- and
+#: Fast DDS falls back to UDP where shared memory is unavailable. Measuring such a campaign
+#: is right (a peak of nearly nothing is a real answer about the experiment), but advising it
+#: about a size is not.
+#:
+#: The threshold is the LOCAL lane's own default rather than a number chosen here: a peak that
+#: fits in what the smallest lane hands out for free needs no declaration to survive anywhere,
+#: and reducing a declaration below it would buy nothing. One condition, and it covers every
+#: shape above without naming any of them.
+SHM_ADVICE_FLOOR_BYTES = 64 * 1024 * 1024
+
 #: Per-container CPU and memory, pooled over every tick of every run.
 #:
 #: The inner query is load-bearing: one row of ``resource_usage`` is one PROCESS NAME, not a
@@ -88,6 +107,18 @@ USAGE_SQL = """
           FROM resource_usage WHERE in_window = 1
           GROUP BY container, config_name, run_id, timestamp)
     GROUP BY container
+"""
+
+#: The run's shared-memory pool: the highest any run peaked at, and the limit that was in
+#: force. From ``runs`` rather than from the per-tick table because that is where the builder
+#: puts the high-water mark -- and because an older campaign then yields NULLs instead of a
+#: missing table, which is a value this module can reason about rather than an error.
+#:
+#: Not filtered to the trial window, unlike :data:`USAGE_SQL`: a participant allocates its
+#: segments while it starts up, and a SIGBUS during bring-up loses the run just as completely.
+SHM_SQL = """
+    SELECT MAX(shm_peak_bytes) AS shm_peak, MAX(shm_limit_bytes) AS shm_limit
+    FROM runs
 """
 
 #: The containers the campaign declared, and what it reserved for each. The bare container
@@ -351,10 +382,101 @@ def _basis(what: str) -> str:
             "an OOM kill rather than throttling.")
 
 
+def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+    """Advice about ``execution.shm_size``. Empty unless the campaign actually uses the pool.
+
+    Silence is the normal answer and the most important behaviour here. Nothing is said when
+    the pool was not measured, and nothing is said when the peak fits inside
+    :data:`SHM_ADVICE_FLOOR_BYTES` -- which is the case for every campaign that does not talk
+    over shared memory at all. Advising those would be advice derived from the absence of a
+    measurement, and it would train the reader to ignore the items that do mean something.
+
+    Args:
+        shm_rows: rows of :data:`SHM_SQL`.
+        declared_rows: rows of :data:`DECLARED_SQL`.
+    """
+    row = (shm_rows or [{}])[0]
+    peak = row.get("shm_peak")
+    if peak is None:
+        # Unmeasured: a campaign from before the monitor sampled the pool, or a runtime with
+        # no /dev/shm. NOT "used none" -- so nothing is claimed about it either way.
+        return []
+    peak = int(peak)
+    if peak <= SHM_ADVICE_FLOOR_BYTES:
+        return []
+
+    limit = row.get("shm_limit")
+    _, _, _, declared = _declared(declared_rows)
+    suggested = ceil_to(peak * SHM_HEADROOM, MEM_GRANULARITY_BYTES)
+    evidence: dict[str, Any] = {"peak": format_memory(peak),
+                                "suggested": format_memory(suggested)}
+    if limit is not None:
+        # The tmpfs's own size, as the run saw it. Carried on every item because it answers
+        # "did my declaration take effect?" -- a declared value the mount never got is
+        # otherwise indistinguishable from one that was honoured.
+        evidence["observed_limit"] = format_memory(int(limit))
+    if declared:
+        evidence["declared"] = format_memory(declared)
+
+    if not declared:
+        return [{
+            "kind": "shm_not_declared",
+            "severity": "warning",
+            "title": (f"Uses up to {format_memory(peak)} of shared memory and declares no "
+                      f"execution.shm_size; set it to {format_memory(suggested)}"),
+            "detail": (
+                "The lanes disagree about what an undeclared /dev/shm gets: on the cluster it "
+                "is sized from the pod's memory limits, or from the whole node when none are "
+                f"declared, while locally it is Docker's "
+                f"{format_memory(SHM_ADVICE_FLOOR_BYTES)}. This campaign's peak is above that, "
+                "so the same .vast that survives on the cluster dies locally -- of SIGBUS "
+                "(exit 135), which is not reported as an out-of-memory kill. "
+                + _SHM_BASIS),
+            "evidence": evidence,
+        }]
+
+    if declared < suggested:
+        return [{
+            "kind": "shm_under_reserved",
+            "severity": "warning",
+            "title": (f"execution.shm_size is {format_memory(declared)} and shared memory "
+                      f"peaked at {format_memory(peak)}"),
+            "detail": (
+                "A container that overruns the pool is killed with SIGBUS (exit 135) rather "
+                "than a clean OOM, so the run dies with no reason attached to it. "
+                f"Raise it to {format_memory(suggested)}. " + _SHM_BASIS),
+            "evidence": evidence,
+        }]
+
+    ratio = declared / suggested
+    if ratio >= OVER_RESERVED_RATIO:
+        return [{
+            "kind": "shm_over_reserved",
+            "severity": "suggestion",
+            "title": (f"execution.shm_size is {format_memory(declared)} and "
+                      f"{format_memory(suggested)} would cover the peak"),
+            "detail": (
+                "The pool is a tmpfs charged to the pod, so its declared size is added to "
+                "what the containers' memory limits have to total -- on the cluster that is "
+                "paid on every job of every sweep. Lowering it reserves less for the same "
+                "headroom. " + _SHM_BASIS),
+            "evidence": {**evidence, "throughput_factor": round(ratio, 2)},
+        }]
+    return []
+
+
+#: Why the suggested size is what it is. Its own constant because all three items end with it.
+_SHM_BASIS = (f"Sized on the PEAK plus {round((SHM_HEADROOM - 1) * 100)}% headroom, rounded up "
+              "to 128Mi, over every tick of every run including bring-up -- a participant "
+              "allocates its segments as it starts, and a SIGBUS there loses the run too.")
+
+
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
     Returns ``{"advice": [...]}`` -- a key rather than a bare list so a caller can merge it
     into a larger summary, and so a future non-resource advice source has somewhere to land.
     """
-    return {"advice": resource_advice(query_rows(USAGE_SQL), query_rows(DECLARED_SQL))}
+    declared = query_rows(DECLARED_SQL)
+    return {"advice": (resource_advice(query_rows(USAGE_SQL), declared)
+                       + shm_advice(query_rows(SHM_SQL), declared))}

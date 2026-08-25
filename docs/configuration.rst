@@ -619,6 +619,33 @@ so the death arrives with no reason attached to it.
        sut:
          resources: {cpu: 3.25, memory: 6Gi}
 
+**Picking the number.** Do not guess it twice: every run records what the pool actually held,
+so a campaign that has run once says what its successor should declare.
+
+.. code-block:: sql
+
+   SELECT MAX(shm_peak_bytes), MAX(shm_limit_bytes) FROM runs;
+
+``shm_peak_bytes`` is the high-water mark over every tick of the run, bring-up included — a
+participant allocates its segments as it starts, and a SIGBUS there loses the run just as
+completely as one mid-trial. ``shm_limit_bytes`` is the size that was in force, which is how a
+declaration is *checked* rather than assumed: it shows what an undeclared campaign was really
+given, and whether a declared value reached the mount. ``NULL`` in either means unmeasured — a
+campaign recorded before the monitor sampled the pool, or a runtime without ``/dev/shm`` — and
+is not the same answer as "used none of it".
+
+``get_campaign_summary`` turns the same two numbers into advice (``shm_not_declared``,
+``shm_under_reserved``, ``shm_over_reserved``), sized on the peak plus 25% headroom.
+
+.. note::
+
+   **Shared memory is not always used, and then there is nothing to declare.** A
+   single-container run, a middleware that is not DDS, and nodes co-located in one process all
+   touch almost none of it — and Fast DDS falls back to UDP where shared memory is unavailable.
+   A peak that fits inside the 64 MiB the local lane hands out for free needs no ``shm_size``,
+   so no advice is offered for it. The measurement is still recorded: a peak of nearly nothing
+   is a real answer about the experiment.
+
 timeout
 ^^^^^^^
 

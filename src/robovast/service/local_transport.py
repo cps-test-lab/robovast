@@ -3419,11 +3419,12 @@ class LocalTransport(RobovastInterface):
             samples = parse_container_rows(lines, container, stats)
             if not samples:
                 continue
-            newest = max(wall for wall, _, _, _ in samples)
+            newest = max(s.wall_ts for s in samples)
             out[container] = {
                 "at": newest,
-                "processes": [{"name": name, "cpu_percent": cpu, "memory_rss_bytes": mem}
-                              for wall, name, cpu, mem in samples if wall == newest],
+                "processes": [{"name": s.name, "cpu_percent": s.cpu_percent,
+                               "memory_rss_bytes": s.memory_rss_bytes}
+                              for s in samples if s.wall_ts == newest],
             }
         if not out:
             # The parser's own account of why, which names a changed header or an empty file --

@@ -57,7 +57,7 @@ import pandas as pd
 #: Bump this when the builder's layout changes. It does not gate reads: what decides whether a
 #: query works is whether the columns are there, which :func:`read_table`'s ``require`` checks
 #: directly. The version only sharpens the error when they are not.
-DATA_DB_SCHEMA_VERSION = 1
+DATA_DB_SCHEMA_VERSION = 2
 
 _LEVELS = ("campaign", "config", "run")
 
