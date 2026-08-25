@@ -280,6 +280,30 @@ def resolve_image_digest(container_statuses, image: str) -> str | None:
     return None
 
 
+def all_jobs_waiting_for_capacity(remaining, contended) -> bool:
+    """Whether NOTHING of this batch can currently run because it is queued.
+
+    True only when every remaining job is *contended* -- waiting its turn for capacity or
+    for an image pull the kubelet is rate-limiting, both of which recover on their own. While
+    that holds, no run of this campaign can complete, so the per-run no-progress deadline is
+    measuring a queue rather than the campaign, and a reader must not return a verdict.
+
+    False while ANY job can run: that job completing is exactly the progress the deadline
+    watches for, so the verdict stands.
+
+    False for a job that is *blocked* but not contended -- an image that does not exist, a
+    request no node can hold. Those look the same in ten minutes as in one, and hiding them
+    behind a queue that does not exist is how a dead campaign gets a health certificate.
+
+    False when the probe could not read the cluster (``contended`` is None): unknown is not
+    "queued", and treating it as such would silence the deadline exactly when the cluster is
+    unreadable.
+    """
+    if not remaining or not contended:
+        return False
+    return all(job in contended for job in remaining)
+
+
 class BatchJobRunner:
     """Build, submit and clean up the Kubernetes Jobs for **one** batch.
 
@@ -850,6 +874,21 @@ class BatchJobRunner:
         write_job_links_manifest(
             transient_dir, jobs, self._batch_tag,
             base=read_job_links(campaign_root) if campaign_root else None)
+
+    def _publish_capacity_wait(self, waiting: bool) -> None:
+        """Tell the status whether this batch is queued, if anyone is listening.
+
+        Best-effort and idempotent: a campaign driven without a control state (the local
+        lane, a unit test) simply has nobody to tell, and reporting a queue must never be
+        able to fail a batch.
+        """
+        if self._state is None:
+            return
+        try:
+            self._state.update(waiting_for_capacity=waiting)
+        except Exception:  # noqa: BLE001 - status reporting must not fail a batch
+            logger.debug("Could not publish capacity wait for batch %s",
+                         self._batch_tag, exc_info=True)
 
     def get_remaining_jobs(self, job_names):
         running_jobs = []
@@ -1588,6 +1627,11 @@ class BatchJobRunner:
                                       f"{self._batch_tag}")
             remaining = self.get_remaining_jobs(job_names)
             if not remaining:
+                # Cleared on the way out, not left to the next batch's first probe: between
+                # those two moments the campaign is still in `running`, and a flag that
+                # outlived its wait would suppress a verdict for a batch that is not queued
+                # at all. Same failure `stage` had before a phase change learned to clear it.
+                self._publish_capacity_wait(False)
                 break
             # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
             # "active" with a Pending pod forever, so this loop would otherwise spin
@@ -1613,6 +1657,12 @@ class BatchJobRunner:
                 logger.warning("Batch %s: could not check for blocked jobs: %s",
                                self._batch_tag, exc)
                 blocked, contended = None, {}
+            # Publish whether this batch can run at all. A reader cannot judge a per-run
+            # deadline while every job is queued for capacity, and only this loop knows.
+            # Written every cycle, including the False case, so the flag never outlives the
+            # wait that set it -- the failure `stage` had, where a marker true once was
+            # still being reported long after.
+            self._publish_capacity_wait(all_jobs_waiting_for_capacity(remaining, contended))
             if blocked:
                 now = time.monotonic()
                 reasons = "; ".join(sorted(set(blocked.values())))

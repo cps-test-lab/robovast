@@ -264,6 +264,13 @@ class Status(BaseModel):
     # stall is recoverable, a false accusation against a healthy long run is not.
     # ``None`` when the controller never recorded one — then no reader may claim a stall.
     progress_deadline_s: Optional[int] = None
+    # Whether every job of the current batch is queued for capacity it does not control.
+    # A bounded flag, which is what this payload allows: no series, no per-read computation.
+    # While it is set no stall verdict is possible -- the deadline is a per-RUN budget and no
+    # run can be running -- which is the same rule ``stall_report`` already applies to a
+    # phase that executes no runs. Written by the lane that has a queue; the local lane has
+    # none and leaves it False, so nothing about a local campaign changes.
+    waiting_for_capacity: bool = False
     # Wall-clock start of the **current batch's** runs. ``RunProgress`` is per-batch and
     # every counter in it resets when a batch begins, while the campaign's ``started_at``
     # does not -- so without this a reader can only date run progress from the campaign,
@@ -371,6 +378,12 @@ NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so t
 #: with the advice to go inspect a job that had already succeeded. ``{phase}`` is named because
 #: the useful next read differs per phase, and the age is re-described because ``set_phase``
 #: restarts ``progress_since`` on every phase change: outside ``running`` it *is* the phase's age.
+NO_STALL_VERDICT_QUEUED = (
+    "cannot judge: every job of the current batch is queued for cluster capacity, so no run "
+    "of this campaign is running and none can complete. The no-progress deadline is a "
+    "per-run budget, and this is a queue rather than a stalled run. It resolves itself when "
+    "capacity frees; get_resource_usage() shows what the lane is busy with.")
+
 NO_STALL_VERDICT_OFF_RUN = (
     "cannot judge: the campaign is in '{phase}', where no run executes, and the only budget "
     "declared is the per-run one — there is nothing here for it to measure. progress_age_s is "
@@ -394,8 +407,12 @@ def stall_report(status: "Status") -> dict:
       - ``True``  — past the declared budget; not merely slow. ``stall_reason`` says
         what to do next.
       - ``False`` — inside the declared budget.
-      - ``None``  — no verdict is possible: either no ``execution.timeout`` was
-        declared, or the campaign is live in a phase that executes no runs (below).
+      - ``None``  — no verdict is possible: no ``execution.timeout`` was declared, the
+        campaign is live in a phase that executes no runs (below), or every job of its
+        current batch is queued for cluster capacity, so no run is running and none can
+        complete. That last one is the same argument as the phase case, applied inside
+        ``running``: the budget is per-run, and a queue the campaign does not control is
+        not a stalled run.
         ``stall_verdict`` says which, and how to get one. Never a substituted
         backstop: the cluster's force-kill default exists so a run cannot hang
         forever, which is a fine reason to kill at one hour and a terrible reason to
@@ -427,6 +444,13 @@ def stall_report(status: "Status") -> dict:
         # a phase it cannot judge is what invited the comparison in the first place.
         return {"progress_age_s": age, "stalled": None,
                 "stall_verdict": NO_STALL_VERDICT_OFF_RUN.format(phase=status.phase)}
+    if status.waiting_for_capacity:
+        # Before the budget check, for the same reason the phase check is: this is the more
+        # specific reason no verdict is possible. The age is still reported -- suppressing
+        # the verdict must not hide how long the wait has been, which is the number an
+        # operator acts on.
+        return {"progress_age_s": age, "stalled": None,
+                "stall_verdict": NO_STALL_VERDICT_QUEUED}
     deadline = status.progress_deadline_s
     if not deadline:
         return {"progress_age_s": age, "stalled": None,
