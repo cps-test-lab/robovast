@@ -21,7 +21,7 @@ jobs:
       - name: Check for uncommitted changes
         run: |
           if [[ $(git diff --stat) != '' ]]; then
-            echo 'Notebooks are not clean. Please run tools/cleanup_notebooks.sh and commit the changes.'
+            echo 'Notebooks are not clean. Please run tools/cleanup_notebooks.py and commit the changes.'
             exit 1
           fi
         shell: bash
