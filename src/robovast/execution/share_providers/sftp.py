@@ -21,13 +21,33 @@ import os
 import urllib.parse
 
 import click
-import paramiko
 
 from .naming import parse_archive_name
 
 from .base import BaseShareProvider
 
 __all__ = ["SftpShareProvider"]
+
+
+def _paramiko():
+    """The ``paramiko`` module, or a ``UsageError`` naming what to install.
+
+    Deferred rather than imported at module scope, like the GCS provider's
+    ``google-auth``: this module *is* the ``sftp`` entry point, so a top-level import
+    made ``load_share_provider_plugins`` -- which loads every registered provider,
+    on every share operation and on every campaign import -- fail this one and warn
+    about it in any install without the optional extra. Nobody using a WebDAV share
+    needs to hear about paramiko. The dependency is still required to *use* SFTP, and
+    that is where it is now reported.
+    """
+    try:
+        import paramiko  # pylint: disable=import-outside-toplevel
+    except ImportError as exc:
+        raise click.UsageError(
+            f"Share type 'sftp' needs paramiko, which is not installed: {exc}\n"
+            "Install it with: pip install 'robovast[sftp]'"
+        ) from exc
+    return paramiko
 
 
 class SftpShareProvider(BaseShareProvider):
@@ -124,13 +144,15 @@ class SftpShareProvider(BaseShareProvider):
     # Internal helper: open a paramiko SFTP connection
     # ------------------------------------------------------------------
 
-    def _connect(self) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
+    def _connect(self):
         """Open an SSH/SFTP connection using the current environment.
 
         Returns:
-            A ``(ssh_client, sftp_client)`` tuple.  The caller is responsible
-            for closing both when done.
+            A paramiko ``(SSHClient, SFTPClient)`` tuple.  The caller is responsible
+            for closing both when done. Unannotated on purpose: the types live in the
+            optional dependency this method is the first to require.
         """
+        paramiko = _paramiko()
         host = os.environ["ROBOVAST_SFTP_HOST"]
         port = int(os.environ.get("ROBOVAST_SFTP_PORT", "22"))
         user = os.environ["ROBOVAST_SFTP_USER"]
@@ -160,6 +182,7 @@ class SftpShareProvider(BaseShareProvider):
         """Parse an inline PEM private key, trying the common key types."""
         import io  # pylint: disable=import-outside-toplevel
 
+        paramiko = _paramiko()
         for cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
             try:
                 return cls.from_private_key(io.StringIO(pem))

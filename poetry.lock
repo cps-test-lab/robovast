@@ -3898,7 +3898,7 @@ tests = ["pytest", "pytest-cov"]
 
 [[package]]
 name = "robovast-client"
-version = "2.0.0"
+version = "2.1.0"
 description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
 optional = false
 python-versions = ">=3.12,<3.14"
@@ -3916,7 +3916,7 @@ url = "src/robovast_client"
 
 [[package]]
 name = "robovast-nav"
-version = "2.0.0"
+version = "2.1.0"
 description = "Navigation-specific variation types for RoboVAST"
 optional = true
 python-versions = ">=3.12,<3.14"
@@ -5248,14 +5248,14 @@ analysis = ["matplotlib", "scipy"]
 docs = ["sphinx", "sphinx-click", "sphinx-rtd-theme", "sphinxcontrib-spelling"]
 fair = ["pyld", "rdflib"]
 nav = ["robovast-nav"]
-notebooks = ["ipykernel", "lxml-html-clean", "nbconvert", "nbformat"]
+notebooks = ["ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbformat"]
 optuna = ["optuna"]
 qd = ["ribs", "shapely"]
 roqsim = ["robovast-sim-roqsim"]
 sftp = ["paramiko"]
-test = ["ipykernel", "lxml-html-clean", "nbconvert", "nbformat", "optuna", "pyld", "pytest", "rdflib", "ribs", "shapely"]
+test = ["ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbformat", "optuna", "pyld", "pytest", "rdflib", "ribs", "shapely"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "ad6bb8a19d334a01bb623310a9818f9387ddeda49db2e54fe5ea0d58615c2209"
+content-hash = "534f88e03ad97674eff0d4f44ba0423670b21cb3f5a8c3e2425166ea8309618a"

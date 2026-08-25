@@ -995,8 +995,8 @@ def _share_env_from_host():
     """
     import os
 
-    from robovast.execution.share_providers import \
-        load_share_provider_plugins  # pylint: disable=import-outside-toplevel
+    from robovast.execution.share_providers import (  # pylint: disable=import-outside-toplevel
+        load_share_provider_plugins, unavailable_share_type_message)
 
     share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
     if not share_type:
@@ -1005,10 +1005,7 @@ def _share_env_from_host():
     providers = load_share_provider_plugins()
     if share_type not in providers:
         import click  # pylint: disable=import-outside-toplevel
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"ROBOVAST_SHARE_TYPE='{share_type}' has no registered provider. "
-            f"Available: {available}.")
+        raise click.UsageError(unavailable_share_type_message(share_type, providers))
 
     provider = providers[share_type]()  # constructor validates required env vars
     return {"ROBOVAST_SHARE_TYPE": share_type, **provider.build_pod_env()}

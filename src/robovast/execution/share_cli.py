@@ -56,7 +56,8 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
 from robovast.common import make_transfer_progress_callback
-from robovast.execution.share_providers import load_share_provider_plugins
+from robovast.execution.share_providers import (load_share_provider_plugins,
+                                                unavailable_share_type_message)
 from robovast.execution.share_providers.naming import (VARIANTS, archive_name,
                                                        parse_archive_name)
 
@@ -77,7 +78,8 @@ def share():
     ROBOVAST_GCS_BUCKET   — bucket             (gcs)
     ROBOVAST_WEBDAV_URL   — collection URL     (webdav; plus _USER / _PASSWORD)
     ROBOVAST_SHARE_URL    — public share link  (nextcloud)
-    ROBOVAST_SFTP_HOST    — host               (sftp; plus _USER / _REMOTE_DIR)
+    ROBOVAST_SFTP_HOST    — host               (sftp; plus _USER / _REMOTE_DIR;
+                            needs paramiko: pip install 'robovast[sftp]')
 
     Your credentials may be read-only, and that is a supported way to be set up:
     ``list`` and ``download`` work, ``upload`` and ``remove`` are refused by the share.
@@ -104,9 +106,7 @@ def _provider():
             "  ROBOVAST_GCS_BUCKET=my-robovast-results")
     providers = load_share_provider_plugins()
     if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\nAvailable providers: {available}")
+        raise click.UsageError(unavailable_share_type_message(share_type, providers))
     return share_type, providers[share_type]()
 
 

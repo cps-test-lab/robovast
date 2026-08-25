@@ -1341,11 +1341,23 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         batch: int | None = None,
     ):
         from fastapi.responses import HTMLResponse  # pylint: disable=import-outside-toplevel
-        from nbclient.exceptions import \
-            CellExecutionError  # pylint: disable=import-outside-toplevel
+        try:
+            from nbclient.exceptions import \
+                CellExecutionError  # pylint: disable=import-outside-toplevel
 
-        from robovast.results_processing.notebook_render import \
-            message_page_html  # pylint: disable=import-outside-toplevel
+            from robovast.results_processing.notebook_render import \
+                message_page_html  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:
+            # The notebook toolchain is an optional extra (`robovast[notebooks]`), so a
+            # service installed without it serves everything else and only this endpoint
+            # is unavailable. Say which piece is missing and what installs it: the raw
+            # ModuleNotFoundError reached the browser as a 500 with no detail the
+            # Explorer could show, and named nothing to do about it.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"This service cannot render notebooks: {exc}. Install the "
+                        "notebook toolchain with: pip install 'robovast[notebooks]'")
+            ) from exc
 
         def _render():
             try:

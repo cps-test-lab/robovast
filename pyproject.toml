@@ -35,6 +35,11 @@ matplotlib = {version = "^3.10", optional = true}
 # through, so they are runtime requirements of the same extra.
 nbformat = {version = "^5.9", optional = true}
 nbconvert = {version = "^7.16", optional = true}
+# nbconvert pulls nbclient in itself, but the service's notebook endpoint imports it
+# directly (to recognise a CellExecutionError), so it is named rather than assumed.
+# Range rather than a caret: this declaration must not fight nbconvert's own resolution
+# of the same package -- naming it is about it being installed, not about which version.
+nbclient = {version = ">=0.10,<1.0", optional = true}
 lxml-html-clean = {version = "^0.1", optional = true}
 scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
@@ -45,8 +50,9 @@ pyld = {version = "^2.0", optional = true}
 ipykernel = {version = "^7.1.0", optional = true}
 python-dotenv = "^1.0"
 fastmcp = "3.4.4"
-# The SFTP share provider only. A provider whose import fails is skipped with a
-# warning by `load_share_provider_plugins`, so the others keep working without it.
+# The SFTP share provider only, and imported by it lazily (see share_providers/sftp.py):
+# an install without this extra loads the `sftp` provider like any other and reports the
+# missing dependency only if a share of that type is actually used.
 paramiko = {version = "^4.0", optional = true}
 psutil = "^7.0"
 requests = "^2.32"
@@ -100,7 +106,7 @@ sphinx-click = "^5.0.0"
 nav = ["robovast-nav"]
 roqsim = ["robovast-sim-roqsim"]
 analysis = ["matplotlib", "scipy"]
-notebooks = ["nbformat", "nbconvert", "ipykernel", "lxml-html-clean"]
+notebooks = ["nbformat", "nbconvert", "nbclient", "ipykernel", "lxml-html-clean"]
 fair = ["rdflib", "pyld"]
 sftp = ["paramiko"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
@@ -116,7 +122,7 @@ optuna = ["optuna"]
 # hit the collection error. Deliberately NOT paramiko: test_cli_startup_weight lists
 # it as forbidden at CLI startup.
 test = ["pytest", "ribs", "shapely", "optuna", "rdflib", "pyld", "nbformat",
-        "nbconvert", "ipykernel", "lxml-html-clean"]
+        "nbconvert", "nbclient", "ipykernel", "lxml-html-clean"]
 
 # No [tool.poetry.scripts] here: the `vast` entry point belongs to robovast-client, which
 # owns the root command group. Declaring it in both would have two distributions racing to

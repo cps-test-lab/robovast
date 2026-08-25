@@ -17,13 +17,22 @@
 
 """Share provider plugin loading, and building the configured one from the environment."""
 
+import logging
 import os
 from importlib.metadata import entry_points
 
 from .base import BaseShareProvider
 
 __all__ = ["BaseShareProvider", "load_share_provider_plugins", "share_type_configured",
-           "load_provider_from_env"]
+           "load_provider_from_env", "unavailable_share_type_message"]
+
+logger = logging.getLogger(__name__)
+
+#: Why a registered provider could not be loaded, ``entry-point name -> reason``.
+#: Written by every :func:`load_share_provider_plugins` scan and read by
+#: :func:`unavailable_share_type_message`, so a share type that is registered but broken
+#: is not reported as one nobody ever heard of.
+_LOAD_ERRORS: dict[str, str] = {}
 
 
 def load_share_provider_plugins() -> dict[str, type[BaseShareProvider]]:
@@ -38,17 +47,35 @@ def load_share_provider_plugins() -> dict[str, type[BaseShareProvider]]:
         the provider class.
     """
     plugins: dict[str, type[BaseShareProvider]] = {}
+    _LOAD_ERRORS.clear()
     eps = entry_points(group="robovast.share_providers")
     for ep in eps:
         try:
             provider_class = ep.load()
             plugins[ep.name] = provider_class
         except Exception as exc:  # pylint: disable=broad-except
-            import logging  # pylint: disable=import-outside-toplevel
-            logging.getLogger(__name__).warning(
+            _LOAD_ERRORS[ep.name] = str(exc)
+            logger.warning(
                 "Failed to load share provider plugin '%s': %s", ep.name, exc
             )
     return plugins
+
+
+def unavailable_share_type_message(share_type: str,
+                                   providers: dict[str, type[BaseShareProvider]]) -> str:
+    """Why *share_type* cannot be used, given the *providers* that did load.
+
+    Every caller that looks a share type up needs this sentence, and "unknown share
+    type" is the wrong one for a type that is registered and merely failed to import --
+    it sends the reader looking for a typo in a name that is spelled correctly. When the
+    last scan recorded a load failure for exactly this name, that failure is the answer.
+    """
+    reason = _LOAD_ERRORS.get(share_type)
+    if reason:
+        return (f"Share type '{share_type}' is registered but its provider failed to "
+                f"load: {reason}")
+    available = ", ".join(sorted(providers)) or "(none installed)"
+    return f"Unknown share type '{share_type}'. Available providers: {available}"
 
 
 def share_type_configured() -> bool:
@@ -90,7 +117,5 @@ def load_provider_from_env(overrides: "dict | None" = None):
 
     providers = load_share_provider_plugins()
     if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise ValueError(
-            f"Unknown share type '{share_type}'. Available providers: {available}")
+        raise ValueError(unavailable_share_type_message(share_type, providers))
     return providers[share_type]()
