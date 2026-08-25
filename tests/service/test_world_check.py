@@ -88,9 +88,33 @@ def test_an_override_document_travels_with_the_command(tmp_path):
     runner.run(["roqsim", "scenes", "describe", "w.yaml",
                 "--override", "/aux/sim.overrides.yaml"])
     script = exec_call.requests[-1].command
-    assert "/aux/sim.overrides.yaml" in script
     assert "components:" in script, "the document's content has to reach the container"
     assert "mkdir -p" in script
+
+
+def test_a_document_is_staged_where_this_container_may_actually_write(tmp_path):
+    """The path a backend names on argv is an aux Pod's ``emptyDir``, and this is not that Pod.
+
+    Writing the document there verbatim ran ``mkdir -p /aux`` as an unprivileged user, which
+    failed before the simulator was asked anything -- and the campaign's own world was then
+    reported as one that does not load. So the file is staged somewhere writable and argv is
+    rewritten onto it, the same mechanism a directory already used.
+    """
+    document = tmp_path / "sim.overrides.yaml"
+    document.write_text("components:\n  robot:\n    pos: [1, 2]\n")
+    exec_call = _Exec()
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    runner.expose(str(document), "/aux/sim.overrides.yaml")
+    runner.run(["roqsim", "scenes", "describe", "w.yaml",
+                "--override", "/aux/sim.overrides.yaml"])
+    script = exec_call.requests[-1].command
+    assert "/aux" not in script, (
+        "neither the write nor argv may name a mount point this container does not have")
+    staged = "/tmp/robovast-world-query/sim.overrides.yaml"
+    assert f"cat > {staged}" in script, "the document has to be written where it may be written"
+    assert f"--override {staged}" in script, (
+        "argv has to name the staged path, or the simulator reads a file nothing wrote")
 
 
 def test_a_document_is_written_as_data_not_as_shell():

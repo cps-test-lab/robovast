@@ -39,7 +39,11 @@ Two lane facts it reconciles, and both are the whole substance of the class:
 * **A held container cannot gain a mount.** Mounts are fixed when a container is created,
   and the point of the query pool is that the container outlives the call. So ``expose``
   of a *file* — which in practice is the ``sim`` override document, the one thing argv
-  cannot carry — is honoured by writing it in ahead of the command with a heredoc.
+  cannot carry — is honoured by writing it in ahead of the command with a heredoc, into
+  a writable directory rather than at the path the caller named. That path is an aux
+  Pod's declared ``emptyDir``, which this lane's container does not have and, running
+  unprivileged, cannot create: staging it verbatim failed on ``mkdir`` before the
+  simulator was ever asked, and reported it as a world that does not load.
 """
 
 import logging
@@ -48,6 +52,12 @@ import shlex
 import tempfile
 
 logger = logging.getLogger(__name__)
+
+#: Where a staged document is written. Writable by an unprivileged container, unlike the
+#: mount point a backend names on argv: that is an ``emptyDir`` an aux Pod declares, and the
+#: query pool's container is not that Pod. Per-call uniqueness is not needed — the pool
+#: serialises a slot's commands, and each writes the document it is about to read.
+_STAGE_DIR = "/tmp/robovast-world-query"
 
 #: Heredoc delimiter for a staged document. Long and specific because the document is
 #: YAML written by a campaign author: a short delimiter could plausibly occur in it, and
@@ -106,14 +116,23 @@ class ExecSlotContainerRunner:
 
         A **file** is written in with the command (see :meth:`run`), because a held
         container's mounts were fixed when it was created and this one is meant to outlive
-        the call.
+        the call. It lands in :data:`_STAGE_DIR` rather than at *container_path*, which on
+        this lane is an aux Pod's mount point that an unprivileged query container may
+        neither find nor create; argv is rewritten to the staged path, exactly as it is
+        for a directory.
         """
         if os.path.isdir(host_path):
             self._rewrites[container_path.rstrip("/")] = (
                 f"/sources/{self._workspace_id}")
             return
+        staged = f"{_STAGE_DIR}/{os.path.basename(container_path)}"
         with open(host_path, "r", encoding="utf-8") as handle:
-            self._documents[container_path] = handle.read()
+            self._documents[staged] = handle.read()
+        # Same mechanism as a directory: the file IS reachable, just spelled differently,
+        # so argv is rewritten instead of the container being asked for a mount it cannot
+        # have. Registered as a rewrite and not only written, or the command would still
+        # name the path nothing wrote to.
+        self._rewrites[container_path] = staged
 
     def run(self, command, progress_update_callback=None) -> None:
         """Run *command* in the query container; raise on a non-zero exit.
