@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Box from '@mui/material/Box'
 import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
@@ -78,6 +78,7 @@ const DEFAULT_NAV: Nav = {
   sel: CAMPAIGN_SEL,
   tab: '',
   configCampaignId: '',
+  shareImport: '',
 }
 
 const readNav = () => navFromHash(window.location.hash, TOPICS, DEFAULT_NAV)
@@ -97,6 +98,19 @@ export function App() {
     setNav(next)
     window.location.hash = hashFor(next)
   }
+
+  // A share-import request has been delivered to the campaign view, so the URL stops carrying
+  // it. replaceState for the same reason `setResults` uses it -- this reflects something that
+  // already happened on screen and must not cost a Back press to get past. Clearing it is also
+  // what makes pasting the same link twice work: the second paste is then a real hash change.
+  const clearShareImport = useCallback(() => {
+    setNav((prev) => {
+      if (!prev.shareImport) return prev
+      const next = { ...prev, shareImport: '' }
+      window.history.replaceState(null, '', `#${hashFor(next)}`)
+      return next
+    })
+  }, [])
 
   // What the Results views are showing — the campaign, the node within it, and which of that
   // node's tabs — written from inside them (a picker, the Explorer tree, or the self-heal that
@@ -139,7 +153,7 @@ export function App() {
           <ConfigPage campaignId={nav.configCampaignId} onExit={() => select('config')} />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'execution'}>
-          <Monitor />
+          <Monitor shareImport={nav.shareImport} onShareImportConsumed={clearShareImport} />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>
           <ResultsPage

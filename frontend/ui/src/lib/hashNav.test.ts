@@ -34,6 +34,7 @@ const DEFAULT_NAV: Nav = {
   viewId: '',
   campaignId: '',
   configCampaignId: '',
+  shareImport: '',
   sel: CAMPAIGN_SEL,
   tab: '',
 }
@@ -52,9 +53,24 @@ describe('navFromHash', () => {
       viewId: '',
       campaignId: '',
       configCampaignId: '',
+      shareImport: '',
       sel: CAMPAIGN_SEL,
       tab: '',
     })
+  })
+
+  it('reads the share-import deep link', () => {
+    expect(at('#/execution?import=nav-2026-08-12').shareImport).toBe('nav-2026-08-12')
+    expect(at('#/execution?import=my%20campaign').shareImport).toBe('my campaign')
+  })
+
+  it('refuses a share-import request addressed to another topic', () => {
+    // Not fastidiousness: every page stays mounted (App's KeepAlive), so a `shareImport` set
+    // while the hash names Config would have the campaign view open a dialog over a page
+    // nobody is looking at. `tab` is parsed unconditionally because a tab a view ignores is
+    // inert; this one is not.
+    expect(at('#/config?import=nav-2026-08-12').shareImport).toBe('')
+    expect(at('#/results/explorer/nav-1?import=nav-2026-08-12').shareImport).toBe('')
   })
 
   it('reads the campaign-config deep link', () => {
@@ -70,6 +86,7 @@ describe('navFromHash', () => {
       viewId: '',
       campaignId: '',
       configCampaignId: '',
+      shareImport: '',
       sel: CAMPAIGN_SEL,
       tab: '',
     })
@@ -82,6 +99,7 @@ describe('navFromHash', () => {
       viewId: 'run',
       campaignId: 'nav-2026-08-12',
       configCampaignId: '',
+      shareImport: '',
     })
     // An unknown view falls back to the topic's first, rather than rejecting the hash.
     expect(at('#/results/nope').viewId).toBe('explorer')
@@ -148,6 +166,7 @@ describe('hashFor — what each view is allowed to spell', () => {
     sel,
     tab,
     configCampaignId: '',
+    shareImport: '',
   })
 
   it('gives the Explorer the whole selection and its tab', () => {
@@ -192,9 +211,20 @@ describe('hashFor', () => {
       '#/results/explorer/nav-2026-08-12/goal-1/2?tab=nav_report',
       `#/results/explorer/nav-2026-08-12/goal-1/2?tab=${LOG_TAB_SLUG}`,
       '#/results/run/nav-2026-08-12/goal-1/2',
+      // The share-import link. A round trip is the whole promise of it: the button copies
+      // what `hashFor` writes and the recipient's browser hands it back to `navFromHash`.
+      '#/execution?import=nav-2026-08-12',
     ]) {
       expect(`#${hashFor(at(hash))}`).toBe(hash)
     }
+  })
+
+  it('spells a share-import request for the campaign view only', () => {
+    const asked = { ...DEFAULT_NAV, shareImport: 'nav-2026-08-12' }
+    expect(hashFor(asked)).toBe('/execution?import=nav-2026-08-12')
+    // Carried on any other topic it is not part of that view's address, so it is not spelled
+    // — the same rule that keeps `?tab=` off every view but the Explorer.
+    expect(hashFor({ ...asked, topicId: 'config' })).toBe('/config')
   })
 })
 
@@ -204,6 +234,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     viewId: 'run',
     campaignId: 'c1',
     configCampaignId: '',
+    shareImport: '',
     sel: CAMPAIGN_SEL,
     tab: '',
   }
@@ -212,9 +243,18 @@ describe('nextNav — which campaign survives a navigation', () => {
     viewId: '',
     campaignId: '',
     configCampaignId: 'c1',
+    shareImport: '',
     sel: CAMPAIGN_SEL,
     tab: '',
   }
+
+  it('drops a share-import request', () => {
+    // It belongs to the link it arrived on. Carried, it would re-open the share dialog every
+    // time somebody clicked Campaigns in the sidebar.
+    const asked: Nav = { ...withResults, topicId: 'execution', viewId: '', shareImport: 'c9' }
+    expect(nextNav(asked, TOPICS, 'execution').shareImport).toBe('')
+    expect(nextNav(asked, TOPICS, 'results', 'explorer').shareImport).toBe('')
+  })
 
   it('carries the results campaign across topics', () => {
     // A change of lens on one campaign, not a request for a different one.
@@ -251,6 +291,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     expect(nextNav(withConfig, TOPICS, 'results', 'explorer')).toMatchObject({
       campaignId: '',
       configCampaignId: '',
+      shareImport: '',
     })
   })
 })

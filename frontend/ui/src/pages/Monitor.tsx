@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { lazyView } from '@/lib/lazyView'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
@@ -27,6 +27,8 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
+import CloudDownloadRoundedIcon from '@mui/icons-material/CloudDownloadRounded'
+import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
@@ -37,11 +39,13 @@ import {
   type CampaignSummary,
   type JobSummary,
   type ListCampaignsResponse,
+  type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
-import { ShareInventory } from './ShareInventory'
+import { ShareImportDialog } from './ShareImportDialog'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
+import { preferredArchive } from '@/lib/shareArchives'
 import { formatLocalTime } from '@/lib/time'
 import { formatDuration } from '@/lib/format'
 import { useLiveStream } from '@/lib/liveStream'
@@ -362,7 +366,15 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
     staleTime: 60_000,
     retry: false,
   })
-  const shareCopy = shareArchives.data?.archives.find((a) => a.campaign_id === id) ?? null
+  // Reduced with the same preference the import dialog applies, not `find`: a campaign the
+  // share holds twice -- raw from the campaign-end upload, postprocessed from a later export
+  // -- would otherwise give this card whichever the provider happened to list first, so the
+  // link it copies and the archive that dialog imports could be two different files.
+  const shareCopy =
+    shareArchives.data?.archives
+      .filter((a) => a.campaign_id === id)
+      .reduce<ShareArchive | null>((best, a) => (best ? preferredArchive(best, a) : a), null)
+    ?? null
   const [downloadAnchor, setDownloadAnchor] = useState<HTMLElement | null>(null)
 
   // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
@@ -499,11 +511,18 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
                 </ListItemIcon>
                 <ListItemText>Retrigger postprocessing</ListItemText>
               </MenuItem>
+              {/* Named, because which variant lands is not a choice here and never was:
+                  `campaign_variant` reads it off the campaign directory, and once
+                  postprocessing has written into that tree the raw campaign no longer exists
+                  to export. Saying which one this will write is the whole of what the reader
+                  could not otherwise know. */}
               <MenuItem onClick={onShare} disabled={share.isPending}>
                 <ListItemIcon>
                   <CloudUploadRoundedIcon fontSize="small" />
                 </ListItemIcon>
-                <ListItemText>Export to share</ListItemText>
+                <ListItemText>
+                  {`Export to share (${summary.postprocessed ? 'postprocessed' : 'raw'})`}
+                </ListItemText>
               </MenuItem>
               <MenuItem onClick={onDelete} sx={{ color: 'error.main' }}>
                 <ListItemIcon>
@@ -747,12 +766,50 @@ function useCampaignStream() {
   return { data, error, live: state === 'open', reconnect }
 }
 
-export function Monitor() {
+export function Monitor({
+  shareImport,
+  onShareImportConsumed,
+}: {
+  /** A search string from a `#/execution?import=` link: open the share dialog on it. */
+  shareImport?: string
+  /** Called once that request has been taken, so the URL stops carrying a spent one. */
+  onShareImportConsumed?: () => void
+}) {
   const { data, error, live, reconnect } = useCampaignStream()
+  const [importAnchor, setImportAnchor] = useState<HTMLElement | null>(null)
+  const [shareOpen, setShareOpen] = useState<string | null>(null)
   // The list is handed to the importer because it is how the import reports itself: the campaign
   // appears at phase `importing` and its stage report is read once it settles. Reconnecting on
   // start is belt-and-braces for a stream that has silently died meanwhile.
-  const importer = useCampaignImport(data?.campaigns, reconnect)
+  const importer = useCampaignImport(data?.campaigns, reconnect,
+                                     () => setImportAnchor(null))
+
+  // Whether this deployment has a share at all -- the one thing that greys the menu entry out.
+  // Same react-query key every campaign card uses, so the page still makes one request.
+  const shareListing = useQuery({
+    queryKey: ['shareArchives'],
+    queryFn: () => robovast.listShareArchives(),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const noShare = shareListing.data?.configured === false
+
+  // Held stable across renders because the dialog memoises its rows on it: a fresh Set every
+  // render would recompute them on every campaign the stream pushes, which is a memo that
+  // never hits and reads as though it does.
+  const presentIds = useMemo(
+    () => new Set((data?.campaigns ?? []).map((c) => c.campaign_id)),
+    [data?.campaigns],
+  )
+
+  // A link somebody was handed. Taken once and cleared: delivering the request is what spends
+  // it, so the address stops claiming a dialog after it is closed and pasting the same link
+  // again is a real hash change that opens it afresh.
+  useEffect(() => {
+    if (!shareImport) return
+    setShareOpen(shareImport)
+    onShareImportConsumed?.()
+  }, [shareImport, onShareImportConsumed])
 
   return (
     // `cursor` is inherited, so this one rule covers the whole view: nothing here is
@@ -765,7 +822,7 @@ export function Monitor() {
 
       {/* Refresh sits beside the title, as it does in the Explorer and the run view: it acts on
           the list this heading names, and a control next to what it governs needs no label. The
-          import button is the one thing here pushed right — it adds to the list rather than
+          import menu is the one thing here pushed right — it adds to the list rather than
           reloading it, and belongs at the end of the row for the same reason. */}
       <Stack direction="row" alignItems="center" spacing={1}>
         <Typography variant="h6">Campaigns</Typography>
@@ -785,7 +842,63 @@ export function Monitor() {
           </Typography>
         ) : null}
         <Box flexGrow={1} />
-        {importer.button}
+        {/* A menu rather than a bare button, like both of a campaign card's own controls: a
+            campaign can come from a file on your machine or off the configured share, and
+            those are two transfers, not one with a setting. */}
+        <Tooltip title={importer.busy ? 'Uploading…' : 'Bring a campaign in'}>
+          <IconButton
+            size="small"
+            aria-label="import a campaign"
+            onClick={(e) => setImportAnchor(e.currentTarget)}
+            sx={{ color: 'common.white' }}
+          >
+            {/* The upload's only sign while it runs: picking a file closes this menu, so the
+                item's own spinner is off screen for the whole transfer. */}
+            {importer.busy ? (
+              <CircularProgress size={18} />
+            ) : (
+              <UploadFileRoundedIcon fontSize="small" />
+            )}
+          </IconButton>
+        </Tooltip>
+        <Menu
+          anchorEl={importAnchor}
+          open={Boolean(importAnchor)}
+          onClose={() => setImportAnchor(null)}
+        >
+          {importer.menuItem}
+          {/* Disabled only for a deployment that HAS no share. A listing still in flight, or
+              one that failed because the share is unreachable, leaves it enabled — the dialog
+              says which of those happened, and greying it out would report a network problem
+              as a deployment without a share.
+              The tooltip appears only in that disabled case, and only then is the item wrapped
+              in a span: a disabled item fires no events for a tooltip to listen to, but a
+              wrapper around an ENABLED one hides it from MenuList's keyboard navigation. */}
+          {noShare ? (
+            <Tooltip title="No share is configured for this deployment">
+              <span>
+                <MenuItem disabled>
+                  <ListItemIcon>
+                    <CloudDownloadRoundedIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText>Import from Share</ListItemText>
+                </MenuItem>
+              </span>
+            </Tooltip>
+          ) : (
+            <MenuItem
+              onClick={() => {
+                setImportAnchor(null)
+                setShareOpen('')
+              }}
+            >
+              <ListItemIcon>
+                <CloudDownloadRoundedIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Import from Share</ListItemText>
+            </MenuItem>
+          )}
+        </Menu>
       </Stack>
 
       {/* Under the header row, not in it: an import's report is four stage lines, which inside
@@ -808,12 +921,17 @@ export function Monitor() {
           <CampaignCard key={c.campaign_id} summary={c} newest={i === 0} />
         ))
       )}
-      {/* Below the cards, and only when it has something to say: archives on the share
-          whose campaign is not here. Those cannot appear on a card -- there is no card --
-          and they are exactly what import is for. */}
-      <ShareInventory
-        presentIds={new Set((data?.campaigns ?? []).map((c) => c.campaign_id))}
-      />
+      {/* Mounted only while open, so its search box and its list start fresh each visit. Not
+          `lazyView`: unlike the postprocessing dialog it drags in no editor, and a chunk
+          fetched on click would only add a spinner between the menu and the list. */}
+      {shareOpen !== null ? (
+        <ShareImportDialog
+          open
+          initialSearch={shareOpen}
+          presentIds={presentIds}
+          onClose={() => setShareOpen(null)}
+        />
+      ) : null}
     </Stack>
   )
 }

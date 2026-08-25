@@ -605,7 +605,12 @@ campaign-end upload and a later ``vast share export`` cannot disagree.
 while its archive stays up there — that overlap, not a hierarchy, is why
 ``vast share import`` exists and why nothing caches "does this campaign have a share
 copy" on the campaign. ``GET /share/archives`` asks the share, with the service's own
-credentials, for the callers (a browser) that can hold none.
+credentials, for the callers (a browser) that can hold none. It answers **newest campaign
+first**, keyed on the timestamp inside each campaign id: no provider reports a modification
+time, and when the campaign ran is what a reader of that listing is after. A campaign present
+as both variants is two entries sharing an id, ordered by object name between themselves so
+that two calls cannot disagree — and an importer names the *archive*, not the campaign, when
+it means one of them in particular.
 
 Analysis postprocessing is **editable and re-runnable**: the raw rosbags are
 always preserved, so ``results_processing.postprocessing`` entries can be changed
