@@ -43,7 +43,7 @@ def _campaign(tmp_path, image="harbor/x@sha256:" + "a" * 64, backend="roqsim"):
     block = (f"    simulation:\n      backend: {backend}\n      config: pkg:depot\n"
              f"      image: {image}\n") if backend else "    sut: {}\n"
     (root / "_config" / "p.vast").write_text(
-        "version: 2\nexecution:\n  mode: ros2\n  containers:\n" + block, encoding="utf-8")
+        "version: 3\nexecution:\n  mode: ros2\n  containers:\n" + block, encoding="utf-8")
     return str(root)
 
 

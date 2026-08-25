@@ -305,8 +305,8 @@ def test_pinned_dir_is_editable_in_place(pinned):
     store, wid, src = pinned
     assert "configuration" in store.resolve(wid, "demo.vast").read_text()
 
-    store.write_file(wid, "x.vast", "version: 2\n")
-    assert (src / "x.vast").read_text() == "version: 2\n"
+    store.write_file(wid, "x.vast", "version: 3\n")
+    assert (src / "x.vast").read_text() == "version: 3\n"
 
     store.edit_file(wid, "demo.vast", "configuration", "configuration  # edited")
     assert "# edited" in (src / "demo.vast").read_text()

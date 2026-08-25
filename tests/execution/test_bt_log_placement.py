@@ -173,10 +173,12 @@ def test_local_lane_compose_carries_the_flag(tmp_path):
     assert "- BT_LOG=true" in yaml_text
 
 
-def test_local_lane_compose_states_an_opt_out(tmp_path):
+def test_local_lane_compose_states_the_topics_it_records(tmp_path):
+    """Fixed at what the merged run_log needs. Stated for the same reason BT_LOG is: the
+    compose file says what the run recorded rather than deferring to an image default."""
     from robovast.execution.execution_utils.execute_local import _build_packed_compose_yaml
 
-    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1, "bt_log": False},
+    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1},
                      "scenario_file": "scenario.osc"}
     yaml_text = _build_packed_compose_yaml(
         docker_image="img:test", out_path=str(tmp_path), results_dir_var="${RESULTS}",
@@ -184,4 +186,4 @@ def test_local_lane_compose_states_an_opt_out(tmp_path):
         run_files=[], env_vars={}, pre_command=None, post_command=None, uid=1000, gid=1000,
         main_cpu=1, main_memory=None, main_gpu=False, plan=_plan(),
         use_gui_block=False, scenario_env_vars=scenario_env(campaign_data))
-    assert "- BT_LOG=false" in yaml_text
+    assert "- LOG_TOPICS=/rosout /clock" in yaml_text

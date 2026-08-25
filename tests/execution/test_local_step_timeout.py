@@ -45,12 +45,13 @@ def test_a_declared_timeout_bounds_every_compose_step(tmp_path):
         assert "timeout --signal=TERM --kill-after=30s 120 " in step
 
 
-def test_the_limit_is_scaled_by_runs_per_job_exactly_as_the_cluster_scales_it(tmp_path):
-    # execution.timeout is per *run*; a packed step holds several, so an unscaled limit
-    # would kill a legitimate step early. This is kubernetes_backend's own arithmetic.
+def test_the_limit_is_the_declared_budget_exactly_as_the_cluster_uses_it(tmp_path):
+    # execution.timeout is the budget for a whole JOB, and a compose step IS a job, so
+    # packing does not stretch it. The same number kubernetes_backend puts on a Job's
+    # activeDeadlineSeconds -- one key meaning one thing on both lanes.
     _path, script = _run_script(tmp_path, timeout=120, runs_per_job=3)
-    assert "kill-after=30s 360 " in script
-    assert "Per-step limit: 360s" in script
+    assert "kill-after=30s 120 " in script
+    assert "Per-step limit: 120s" in script
 
 
 def test_an_undeclared_timeout_leaves_local_runs_unbounded(tmp_path):

@@ -20,6 +20,7 @@ import yaml
 
 from robovast.common.migrations import (MIGRATION_MARKER, UnmigratableConfig,
                                         find_migration_markers, migration_marker, upgrade_config)
+from robovast.common import migrations
 from robovast.common.migrations import config as ladder
 
 
@@ -43,8 +44,15 @@ def _removed_capability(monkeypatch):
             reached=ladder.SUPPORTED_CONFIG_VERSION - 1, capability="GaussianVariation")
 
     monkeypatch.setattr(ladder, "_MIGRATIONS", [step])
-    monkeypatch.setattr(ladder, "BASELINE_CONFIG_VERSION", 1)
-    monkeypatch.setattr(ladder, "SUPPORTED_CONFIG_VERSION", 2)
+    # Patched in BOTH namespaces, because they are read by different callers: the ladder
+    # walks its own module attributes, while validate_config imports the names from the
+    # package. Leaving the package's copy alone made this fixture agree with reality only
+    # for as long as the real version happened to equal the throwaway one -- and then the
+    # config was refused for its VERSION before anything could look at its markers, which
+    # is not the property under test.
+    for module in (ladder, migrations):
+        monkeypatch.setattr(module, "BASELINE_CONFIG_VERSION", 1)
+        monkeypatch.setattr(module, "SUPPORTED_CONFIG_VERSION", 2)
     return step
 
 
@@ -94,7 +102,7 @@ def test_the_collect_all_validator_lists_every_marker(tmp_path):
     somebody go looking; the positions are the useful part."""
     from robovast.common.config_validation import validate_project_file
 
-    raw = {"version": 2, "metadata": {"name": "p"},
+    raw = {"version": 3, "metadata": {"name": "p"},
            "execution": {"containers": {
                "sut": {"image": "reg/x:1",
                        "provenance": {"source": "s", "revision": "r"},
@@ -122,7 +130,7 @@ def test_markers_are_found_wherever_they_land():
 
 
 def test_a_clean_config_has_no_markers():
-    assert find_migration_markers({"version": 2, "execution": {"runs": 1}}) == []
+    assert find_migration_markers({"version": 3, "execution": {"runs": 1}}) == []
 
 
 def test_retrigger_refuses_and_names_the_workspace_command(tmp_path, removed_capability):

@@ -18,7 +18,7 @@ from robovast.execution.backends import CampaignConfigError
 from robovast.execution.controller import run_search_campaign
 
 _VAST = {
-    "version": 2,
+    "version": 3,
     "metadata": {"name": "search-filter"},
     "execution": {
         "containers": {"scenario": {"image": "scen:latest"}},

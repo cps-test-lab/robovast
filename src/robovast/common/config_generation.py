@@ -1121,10 +1121,23 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     return analysis_files
 
 
+#: Keys of ``execution:`` that composition consumes itself, and therefore does not hand to
+#: the lanes. Each re-surfaces under its own top-level key of the composed campaign data --
+#: ``scenario_file`` as ``scenario_file``, ``run_files`` as ``_run_files``, ``generate`` as
+#: ``_generated`` -- so passing them on as well would be a second, staler copy.
+#:
+#: This is the whole exception list. Anything else a campaign states under ``execution:``
+#: reaches both lanes, including a field added after this comment was written.
+COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "generate"})
+
+
 # Bump this whenever the cache storage format changes, to auto-invalidate stale entries.
 # 7: _run_files now also carries files produced by execution.generate, so a cached entry
 # from 6 describes a different input set than the same .vast composes today.
-_CACHE_FORMAT_VERSION = 7
+# 8: execution is carried as a copy rather than a hand-listed subset, so a cached entry
+# from 7 is missing the keys that list forgot -- a .vast unchanged since then composes
+# byte-identically and would otherwise replay the gap.
+_CACHE_FORMAT_VERSION = 8
 
 
 def _build_generate_cache_key(
@@ -1763,28 +1776,30 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # subprocess of it, while the service composes campaigns for several projects at once.
     from robovast.common.execution import \
         resolve_family_images_in_containers  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import DEFAULT_SHM_SIZE  # pylint: disable=import-outside-toplevel
     resolve_family_images_in_containers(execution_section.get('containers'),
                                         project=image_project, tag=image_project_tag)
     execution_params = {
-        "env": execution_section.get('env'),
-        "run_as_user": execution_section.get('run_as_user'),
-        # Every container the run starts. This is a *whitelist*, not a copy: both lanes
-        # read only what is listed here, so a key omitted below never arrives and the
-        # campaign runs as if it were unset.
-        "containers": execution_section.get('containers'),
-        "local": execution_section.get('local'),
+        # A COPY minus what composition consumes itself -- deliberately not a whitelist.
+        # Both lanes read this dict and nothing else, so a key missing here is a key the
+        # run behaves as if nobody had declared: silently, and indistinguishably from a
+        # typo. Listing what to carry made that the default failure, and four fields lived
+        # outside the list for their whole lives -- declared, documented, validated, and
+        # never delivered. Copying inverts the mistake into a harmless one: an extra key
+        # nobody reads, instead of a missing key nobody notices.
+        **{key: value for key, value in execution_section.items()
+           if key not in COMPOSITION_ONLY_EXECUTION_KEYS},
         # `runs` is what the campaign's size is reported in (validate, `config info`,
         # preview_configurations all read it here). It was missing, so every campaign was reported as
         # one run per configuration -- a 25-trial sweep looked like 5 -- right where an agent decides
         # whether it can afford to start.
         "runs": execution_section.get('runs', 1),
         "runs_per_job": execution_section.get('runs_per_job', 1),
-        "simulation": execution_section.get('simulation'),
-        "mode": execution_section.get('mode'),
-        # Environment the backend supplies (see apply_backend). Kept separate from
-        # ``env`` so precedence stays explicit where it is applied: a campaign's own
-        # execution.env wins over it.
-        "_backend_env": execution_section.get('_backend_env'),
+        # Defaulted here as well as on the model, because the two are reached by different
+        # routes: `load_config` validates against the model and then hands composition the
+        # RAW yaml, so a model default cannot arrive here on its own. Same constant, so the
+        # size a campaign is recorded with is the size its lane is given.
+        "shm_size": execution_section.get('shm_size') or DEFAULT_SHM_SIZE,
     }
 
     # Build result dictionary

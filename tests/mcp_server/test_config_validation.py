@@ -34,7 +34,7 @@ def test_compress_and_unknown_postprocessing(tmp_path):
 
 def test_malformed_yaml_returns_problem_without_exiting(tmp_path):
     bad = tmp_path / "bad.vast"
-    bad.write_text("version: 2\nexecution: {scenario_file: x.osc\n  oops: [unclosed\n")
+    bad.write_text("version: 3\nexecution: {scenario_file: x.osc\n  oops: [unclosed\n")
     # Must not raise SystemExit / kill the process.
     report = validate_project_file(str(bad))
     assert report["valid"] is False
@@ -50,7 +50,7 @@ def test_missing_file_is_a_problem_not_an_exception(tmp_path):
 def test_multiple_errors_collected_with_locations(tmp_path):
     vast = tmp_path / "multi.vast"
     vast.write_text(
-        "version: 2\n"
+        "version: 3\n"
         "execution:\n"
         "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  scenario_file: does_not_exist.osc\n"
@@ -82,7 +82,7 @@ def test_local_plugin_refs_are_interface_checked(tmp_path):
 
     vast = tmp_path / "broken.vast"
     vast.write_text(
-        "version: 2\n"
+        "version: 3\n"
         "execution:\n"
         "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  scenario_file: scenario.osc\n"
@@ -126,7 +126,7 @@ def test_valid_project_reports_counts(tmp_path):
     (tmp_path / "scenario.osc").write_text("scenario test:\n    timeout(10s)\n")
     vast = tmp_path / "valid.vast"
     vast.write_text(
-        "version: 2\n"
+        "version: 3\n"
         "configuration:\n"
         "- name: c1\n"
         "  variations:\n"
@@ -250,7 +250,7 @@ def test_results_are_not_advised(tmp_path):
 
 def _vast(tmp_path, name, containers):
     path = tmp_path / f"{name}.vast"
-    path.write_text("version: 2\nexecution:\n  containers:\n" + containers)
+    path.write_text("version: 3\nexecution:\n  containers:\n" + containers)
     return str(path)
 
 
@@ -261,8 +261,11 @@ def test_cpu_without_memory_is_advised(tmp_path):
     advisory, = _resource_advisories(path)
     assert advisory["stage"] == "resources"
     assert "execution.containers.sut" in advisory["message"]
-    assert "SIGBUS" in advisory["message"]
-    assert "shm_size" in advisory["message"]
+    assert "AVAILABLE_MEM" in advisory["message"]
+    # Not /dev/shm any more: the pool is sized by execution.shm_size, which now has a
+    # default, so it no longer follows the memory limits and this advisory no longer
+    # speaks for it.
+    assert "shm" not in advisory["message"]
 
 
 def test_cpu_and_memory_together_are_not_advised(tmp_path):
@@ -320,7 +323,7 @@ def test_a_missing_execution_timeout_is_advised(tmp_path):
     from robovast.common.config_validation import _liveness_advisories
 
     path = tmp_path / "untimed.vast"
-    path.write_text("version: 2\nexecution:\n  runs: 3\n")
+    path.write_text("version: 3\nexecution:\n  runs: 3\n")
     advisory, = _liveness_advisories(str(path))
     assert advisory["stage"] == "liveness"
     assert advisory["field"] == "execution.timeout"
@@ -331,7 +334,7 @@ def test_a_declared_timeout_is_not_advised(tmp_path):
     from robovast.common.config_validation import _liveness_advisories
 
     path = tmp_path / "timed.vast"
-    path.write_text("version: 2\nexecution:\n  timeout: 300\n")
+    path.write_text("version: 3\nexecution:\n  timeout: 300\n")
     assert _liveness_advisories(str(path)) == []
 
 
@@ -341,5 +344,5 @@ def test_a_project_with_no_execution_block_is_still_advised(tmp_path):
     from robovast.common.config_validation import _liveness_advisories
 
     path = tmp_path / "bare.vast"
-    path.write_text("version: 2\nscenario: x.osc\n")
+    path.write_text("version: 3\nscenario: x.osc\n")
     assert len(_liveness_advisories(str(path))) == 1

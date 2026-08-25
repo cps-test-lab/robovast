@@ -97,7 +97,7 @@ def test_the_validator_reports_it_as_a_problem_not_an_exception(tmp_path):
 
     vast = tmp_path / "c.vast"
     vast.write_text(yaml.safe_dump({
-        "version": 2, "metadata": {"name": "p"},
+        "version": 3, "metadata": {"name": "p"},
         "execution": {"containers": {"sut": {"image": "reg/thing:1"}},
                       "scenario_file": "s.osc", "runs": 1}}), encoding="utf-8")
     (tmp_path / "s.osc").write_text("scenario p:\n    do serial:\n        wait elapsed(1s)\n",
@@ -122,7 +122,7 @@ def test_reading_an_archived_campaign_is_never_refused(tmp_path):
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
 
-    raw = {"version": 2, "metadata": {"name": "old"},
+    raw = {"version": 3, "metadata": {"name": "old"},
            "execution": {"containers": {"sut": {"image": "harbor.internal/x@sha256:" + "d" * 64}},
                          "scenario_file": "s.osc", "runs": 1}}
     vast = tmp_path / "archived.vast"

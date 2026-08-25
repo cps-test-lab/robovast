@@ -1035,10 +1035,11 @@ def scenario_env(campaign_data):
     mode = execution.get("mode", "auto")
     if mode and mode != "auto":
         env['SCENARIO_MODE'] = str(mode)
-    # On by default: a run that did not record how its behaviour tree progressed cannot be
-    # explained after the fact, and the file costs ~100 KB beside a multi-MB rosbag. Stated
-    # either way rather than omitted when true, so the compose file / pod spec says outright
-    # what the run did instead of leaving it to the entrypoint's own default.
+    # Always on, and stated rather than left to the entrypoint's own default, so the compose
+    # file / pod spec says outright what the run did. A run that did not record how its
+    # behaviour tree progressed cannot be explained after the fact, and the file costs
+    # ~100 KB beside a multi-MB rosbag -- there was never a campaign worth turning it off
+    # for, so there is no longer a way to.
     #
     # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites that
     # whole variable with '-t', which would drop the flag on exactly the runs whose tree
@@ -1047,14 +1048,17 @@ def scenario_env(campaign_data):
     # An execution image whose scenario_execution predates --bt-log ignores the flag rather
     # than failing (both runners use parse_known_args), so the run still succeeds; it just
     # produces no behaviors.jsonl.
-    env['BT_LOG'] = 'true' if execution.get("bt_log", True) else 'false'
+    env['BT_LOG'] = 'true'
 
-    # What the entrypoint's own (wall-time) recorder captures. Stated for the same reason
-    # BT_LOG is: the compose file / pod spec then says what the run recorded rather than
-    # deferring to a default that may differ between image versions. An explicit empty
-    # list records nothing, which the entrypoint reads as "skip the daemon".
-    log_topics = execution.get("log_topics", ["/rosout", "/clock"])
-    env['LOG_TOPICS'] = ' '.join(str(t) for t in (log_topics or []))
+    # What the entrypoint's own (wall-time) recorder captures, in WALL time and for the
+    # whole container's life -- distinct from the scenario's ``bag_record``, which is
+    # sim-time and starts mid-run. Exactly what the ``run_log`` table needs and no more:
+    # ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line on the playback
+    # clock. Stated for the same reason BT_LOG is.
+    #
+    # Not configurable from ``execution:``. What a run records *beyond* this is the
+    # scenario's ``bag_record`` to say, where it sits beside the behaviour that produces it.
+    env['LOG_TOPICS'] = '/rosout /clock'
 
     # A simulator backend's environment, resolved *here* rather than by each emitter.
     # The three emitters disagreed about precedence -- compose let the later block win,
