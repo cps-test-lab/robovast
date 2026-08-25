@@ -2288,13 +2288,20 @@ class RobovastInterface(ABC):
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
-        """List campaigns known to this service (global, newest first).
+        """List campaigns known to this service (global, live first then newest first).
 
-        Ordered by each campaign's recorded start time (``started_at``), and ordered
-        *before* ``limit``/``offset`` are applied — so a page is the N newest, not an
-        arbitrary window. Callers render this order as given; a start time is never
-        derived from the campaign id, whose ``<name>-`` prefix is user-supplied. A
-        campaign with no recorded start time comes last.
+        Campaigns still being worked on lead, and within each group the order is by
+        recorded start time (``started_at``), newest first. A campaign runs for hours to
+        days, so recency alone buries the one the caller is asking about under everything
+        launched since. A campaign that becomes active again — a re-triggered
+        postprocessing, an upload-to-share, an import — leads for as long as that lasts,
+        without its ``started_at`` changing.
+
+        Ordered *before* ``limit``/``offset`` are applied, so a page is the N most
+        pertinent and never an arbitrary window; in particular a live campaign is on the
+        first page however old it is. Callers render this order as given; a start time is
+        never derived from the campaign id, whose ``<name>-`` prefix is user-supplied. A
+        campaign with no recorded start time comes last within its group.
         """
 
     @abstractmethod

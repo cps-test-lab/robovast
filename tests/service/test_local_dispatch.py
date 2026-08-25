@@ -82,3 +82,90 @@ def test_dispatch_keeps_the_campaign_description(transport):
     finally:
         release.set()
         transport._campaigns[cid].thread.join(2)
+
+
+def _campaign_with_start(transport, cid: str, created_at: float) -> None:
+    """A campaign dir whose store records *created_at* as its start time."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+
+    cdir = transport._campaigns_root() / cid
+    cdir.mkdir(parents=True)
+    with CampaignStore(cdir / STORE_FILENAME) as store:
+        store.create_campaign(cid, {}, mode="batch", config_dir="_config",
+                              created_at=created_at)
+
+
+def _listed(transport) -> list:
+    return [c.campaign_id for c in transport.list_campaigns().campaigns]
+
+
+def test_a_reactivated_campaign_leads_the_listing_then_falls_back(transport):
+    """A finished campaign put back to work is live again, and the listing says so.
+
+    ``list_campaigns`` leads with the campaigns something is driving, and a re-triggered
+    postprocessing or upload-to-share is exactly that — the campaign the user is watching
+    for the duration of the op, however old the run behind it is. Both directions are
+    asserted: nothing has to remember to move it back, because the same ``_is_done`` that
+    lifted it drops it once the worker ends.
+    """
+    old, new = "old-2026-07-01-120000", "new-2026-07-26-120000"
+    _campaign_with_start(transport, old, 1_000.0)
+    _campaign_with_start(transport, new, 2_000.0)
+    assert _listed(transport) == [new, old], "recency orders them while both are at rest"
+
+    release = threading.Event()
+    assert transport._dispatch_background(
+        old, phase=Phase.POSTPROCESSING, work=lambda state: release.wait(2)).ok
+    try:
+        assert _listed(transport) == [old, new]
+    finally:
+        release.set()
+        transport._campaigns[old].thread.join(2)
+
+    assert _listed(transport) == [new, old], \
+        "the entry outlives the op, so only _is_done can put it back"
+
+
+def test_reactivation_does_not_restamp_the_start_time(transport):
+    """It rises because it is live, not because it was made to look new.
+
+    ``_dispatch_background`` deliberately carries the recorded ``created_at`` onto the
+    entry it installs, so a re-run cannot re-order a finished campaign by pretending it
+    started now. That guard and the live-first ordering answer the same need in two
+    different ways, and this pins that the honest one is the one doing the work.
+    """
+    cid = "camp-2026-07-01-120000"
+    _campaign_with_start(transport, cid, 1_000.0)
+    before = transport.list_campaigns().campaigns[0].started_at
+
+    release = threading.Event()
+    transport._dispatch_background(cid, phase=Phase.SHARING,
+                                   work=lambda state: release.wait(2))
+    try:
+        assert transport.list_campaigns().campaigns[0].started_at == before
+    finally:
+        release.set()
+        transport._campaigns[cid].thread.join(2)
+
+    assert transport.list_campaigns().campaigns[0].started_at == before
+
+
+def test_a_crashed_reactivation_still_falls_back(transport):
+    """The failure path reaches a terminal phase too, so it cannot strand a campaign on top.
+
+    ``_dispatch_background``'s safety-net catches whatever ``work`` raises and sets
+    ``FINISHED`` itself; ``_is_done`` independently catches a thread that ran and ended. A
+    campaign wedged at the head of every listing by a crashed op would be a bug nobody
+    could clear without restarting the service.
+    """
+    old, new = "old-2026-07-01-120000", "new-2026-07-26-120000"
+    _campaign_with_start(transport, old, 1_000.0)
+    _campaign_with_start(transport, new, 2_000.0)
+
+    def boom(state):
+        raise RuntimeError("postprocessing blew up")
+
+    assert transport._dispatch_background(old, phase=Phase.POSTPROCESSING, work=boom).ok
+    transport._campaigns[old].thread.join(2)
+
+    assert _listed(transport) == [new, old]

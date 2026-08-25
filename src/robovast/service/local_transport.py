@@ -3590,19 +3590,48 @@ class LocalTransport(RobovastInterface):
                 if d.is_dir() and is_campaign_dir(d.name)} if results_dir.is_dir() else set()
         disk |= self._durable_campaign_ids()
         with self._lock:
-            mem = set(self._campaigns)
-        mem |= self._extra_live_ids()
-        # Newest first by recorded start time. Never sort on the id: it is
-        # `<name>-<timestamp>` with a user-supplied name (see `campaign_id_for`), so id
-        # order is alphabetical by name and only chronological within one name. That
-        # matters beyond display, because offset/limit slice *this* order — a
-        # name-ordered window would hide the newest campaigns from the caller entirely.
-        # A campaign whose start time is unknown (no readable store, no execution
-        # record) sorts last; the id only breaks ties, so the order is deterministic
-        # even though the input is a set.
+            entries = dict(self._campaigns)
+        elsewhere = self._extra_live_ids()
+        mem = set(entries) | elsewhere
+
+        def is_live(cid: str) -> bool:
+            """Whether *cid* is being worked on right now.
+
+            ``_is_done`` rather than a phase test of our own, because it is already the
+            class's at-rest predicate (`_rest_key`, `_ensure_deletable`) — one notion of
+            "running" here, not two that can drift. Registration is not it: an entry is
+            removed only on delete, so it outlives the campaign and would pin every
+            campaign of this service's life to the top.
+            """
+            entry = entries.get(cid)
+            return cid in elsewhere or (entry is not None and not self._is_done(entry))
+
+        # Live campaigns first, then newest first by recorded start time within each group.
+        # Ordering by activity and not by recency alone is the point: a campaign runs for
+        # hours to days, so the one the caller is asking about is the one still being driven,
+        # and strict recency buries it under everything launched since.
+        #
+        # A campaign that becomes active *again* — a re-triggered postprocessing, an
+        # upload-to-share, an import — is carried by the same term: `_dispatch_background`
+        # registers a fresh entry with its phase already set, so it reads live from the next
+        # listing and falls back on its own once the worker ends. Deliberately not done by
+        # restamping `created_at`, which that method refuses for this exact reason: the
+        # campaign rises because it is live, while its start time stays the truth.
+        #
+        # Never sort on the id: it is `<name>-<timestamp>` with a user-supplied name (see
+        # `campaign_id_for`), so id order is alphabetical by name and only chronological
+        # within one name. That matters beyond display, because offset/limit slice *this*
+        # order — a name-ordered window would hide the newest campaigns from the caller
+        # entirely. A campaign whose start time is unknown (no readable store, no execution
+        # record) sorts last; the id only breaks ties, so the order is deterministic even
+        # though the input is a set.
+        #
+        # Every term is answered from memory — `_started_at_for` is memoised and the
+        # liveness read is an in-memory snapshot — so this pass still costs no I/O, which
+        # matters because the campaign-list SSE stream repeats it once a second.
         started = {cid: self._started_at_for(cid) for cid in disk | mem}
         all_ids = sorted(started,
-                         key=lambda c: (started[c] is not None, started[c] or "", c),
+                         key=lambda c: (is_live(c), started[c] is not None, started[c] or "", c),
                          reverse=True)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]

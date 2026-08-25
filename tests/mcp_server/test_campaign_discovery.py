@@ -44,10 +44,13 @@ def test_list_campaigns_empty_when_root_absent(no_project):
 
 
 def test_list_campaigns_tool_is_newest_first(no_project):
-    """The tool's first page is the *newest* campaigns, whatever the names sort like.
+    """Among campaigns at rest, the tool's first page is the *newest*, whatever the names
+    sort like.
 
     It used to slice an ascending disk scan, so ``limit`` returned the oldest campaigns
-    and "what did I just run?" landed on the last page.
+    and "what did I just run?" landed on the last page. Recency is the second key now —
+    live campaigns lead — but neither campaign here is running, so it is the one in
+    effect.
     """
     from robovast.common.store import STORE_FILENAME, CampaignStore
     from robovast.mcp_server.plugins.results import list_campaigns

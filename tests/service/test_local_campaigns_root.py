@@ -179,6 +179,74 @@ def test_listing_is_ordered_by_start_time_not_by_name(transport):
     assert [c.campaign_id for c in page] == ["aaa-2026-07-26-120000"]
 
 
+def _mark_live(transport, cid: str, phase: str = "running") -> None:
+    """Register *cid* as a campaign this transport is driving, at *phase*.
+
+    Only the tracked entry is faked; the liveness the listing reads is derived from it by
+    ``_is_done`` exactly as it is for a real campaign.
+    """
+    from robovast.common.store import read_campaign_created_at
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    state = ControllerState()
+    state.set_phase(phase)
+    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    # The recorded start time, not now — mirroring what `_dispatch_background` does when it
+    # re-tracks a finished campaign. A tracked entry's `created_at` is what `_started_at_for`
+    # answers with, so leaving the constructor's default here would restamp the campaign to
+    # now and it would sort first for that reason instead of the one under test.
+    entry.created_at = (read_campaign_created_at(transport._campaign_dir(cid))
+                        or entry.created_at)
+    with transport._lock:
+        transport._campaigns[cid] = entry
+
+
+def test_a_running_campaign_leads_however_old_it_is(transport):
+    """Live campaigns come first, which is the order the campaign view exists to show.
+
+    A campaign runs for hours to days, so under strict recency the one still running sinks
+    below everything launched since — and because limit/offset slice this order, a long run
+    could fall off the first page entirely while it is the thing being watched.
+    """
+    _campaign_with_start(transport, "old-2026-07-01-120000", 1_000.0)    # older, running
+    _campaign_with_start(transport, "new-2026-07-26-120000", 2_000.0)    # newer, finished
+    _mark_live(transport, "old-2026-07-01-120000")
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["old-2026-07-01-120000", "new-2026-07-26-120000"]
+    # Sorted before the window is cut, so the live one is on the first page whatever its age.
+    page = transport.list_campaigns(ListCampaignsRequest(limit=1)).campaigns
+    assert [c.campaign_id for c in page] == ["old-2026-07-01-120000"]
+
+
+def test_recency_still_orders_within_the_live_group(transport):
+    """Liveness only decides the group; inside it the newest still comes first."""
+    _campaign_with_start(transport, "old-2026-07-01-120000", 1_000.0)
+    _campaign_with_start(transport, "new-2026-07-26-120000", 2_000.0)
+    _mark_live(transport, "old-2026-07-01-120000")
+    _mark_live(transport, "new-2026-07-26-120000")
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["new-2026-07-26-120000", "old-2026-07-01-120000"]
+
+
+def test_a_finished_campaign_whose_entry_lingers_does_not_lead(transport):
+    """Being *registered* is not being live — the trap this ordering must not fall into.
+
+    An entry is dropped from ``_campaigns`` only on delete, so it outlives the campaign it
+    tracked. Keying the live group on registration would put every campaign this service
+    has driven since it started at the top, permanently, and the bug would only show up
+    after a long uptime.
+    """
+    _campaign_with_start(transport, "old-2026-07-01-120000", 1_000.0)
+    _campaign_with_start(transport, "new-2026-07-26-120000", 2_000.0)
+    _mark_live(transport, "old-2026-07-01-120000", phase="finished")
+
+    listed = [c.campaign_id for c in transport.list_campaigns().campaigns]
+    assert listed == ["new-2026-07-26-120000", "old-2026-07-01-120000"]
+
+
 def test_campaign_without_start_time_sorts_last(transport):
     """An unknown start time never outranks a recorded one, and never breaks listing."""
     _campaign_with_start(transport, "bbb-2026-07-01-120000", 1_000.0)

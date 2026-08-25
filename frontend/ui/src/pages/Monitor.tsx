@@ -132,8 +132,11 @@ function StepFailure({
 }
 
 // One campaign row: fetches its own live Status and polls until the campaign reaches a terminal
-// phase. `newest` is the top card in the (newest-first) list — the campaign the user is here to
-// watch. It is the only one whose post-run failures open by themselves; see StepFailure.
+// phase. `newest` is the top card — the campaign the user is here to watch. The service leads with
+// the live campaigns and orders by recency within each group, so that is a running campaign when
+// there is one and the newest finished one otherwise. It is the only card whose post-run failures
+// open by themselves, and those render only when the campaign is at rest (see StepFailure), so a
+// live campaign at the top simply means nothing auto-expands.
 function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: boolean }) {
   const qc = useQueryClient()
   const id = summary.campaign_id
@@ -595,8 +598,8 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         </Alert>
       ) : null}
 
-      {/* The new campaign's card appears at the top of this (newest-first) list, which is not
-          the same as knowing WHICH id is yours — so the id is named here. Its own description
+      {/* The new campaign's card appears at the top of the list — it is the live one — which is
+          not the same as knowing WHICH id is yours, so the id is named here. Its own description
           also reads "retrigger of <this id>". */}
       {retrigger.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>

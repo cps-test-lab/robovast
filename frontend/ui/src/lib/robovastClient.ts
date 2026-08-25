@@ -36,26 +36,39 @@ export type CampaignOrigin = Schemas['CampaignOrigin']
 
 export type ListCampaignsResponse = Schemas['ListCampaignsResponse']
 
-// Campaign lists arrive newest-first: the service orders them by recorded start time
-// before it applies limit/offset, so the order and the page contents agree (see
-// LocalTransport.list_campaigns). There is deliberately no client-side re-sort — a
-// second key that had to agree with the backend's was itself the ordering bug, and
-// `campaign_id` is not a usable key here because its `<name>-` prefix is user-supplied.
+// Campaign lists arrive live-first, then newest-first by recorded start time within each
+// group; the service sorts before it applies limit/offset, so the order and the page
+// contents agree and a live campaign is on the first page however old it is (see
+// LocalTransport.list_campaigns). Rendering it as given is the whole contract: there is
+// deliberately no client-side re-sort — a second key that had to agree with the backend's
+// was itself the ordering bug, `campaign_id` is not a usable key here because its
+// `<name>-` prefix is user-supplied, and liveness is a fact only the service holds (a
+// campaign is live while something drives it, which its phase alone does not tell you at
+// the moment a re-triggered postprocessing starts).
 
 // The campaign lifecycle vocabulary carried by `phase` (mirrors the backend Phase enum). A string
 // union rather than an enum so it stays a plain wire value; `CampaignSummary.phase` is still typed
 // `string`, so an unexpected/future phase never fails to parse.
 export type CampaignPhase =
-  | 'initializing' | 'building' | 'starting' | 'plugin install' | 'variation' | 'running'
-  | 'finishing' | 'postprocessing' | 'sharing'
+  | 'initializing' | 'building' | 'starting' | 'plugin install' | 'variation' | 'importing'
+  | 'running' | 'finishing' | 'postprocessing' | 'sharing'
   | 'finished' | 'failed' | 'stopped' | 'crashed' | 'unknown'
 
-// Phases where the campaign is still working, so no final verdict exists yet.
+// Phases where the campaign is still working, so no final verdict exists yet. The single
+// copy of this set: it decides polling, the Stop button, the pulsing phase dot and the
+// Results tree's verdict, and three separate lists of it had already drifted apart.
+//
 // `initializing` is the first: the service has accepted the campaign and it is listed and
 // addressable, but the lane's pre-flight (project push, image resolution) has not finished.
+//
+// `importing` is the one live phase a campaign can reach without ever having run here — a
+// campaign taken in from an archive or the share enters at it, and rolls on into
+// `postprocessing` when what arrived was raw. It is work in progress like any other, which
+// is the whole point of it being in the phase enum rather than beside it; leaving it out
+// here made an import read as finished, so its card stopped polling and offered no Stop.
 const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'initializing', 'building', 'starting', 'plugin install', 'variation', 'running',
-  'finishing', 'postprocessing', 'sharing',
+  'initializing', 'building', 'starting', 'plugin install', 'variation', 'importing',
+  'running', 'finishing', 'postprocessing', 'sharing',
 ])
 
 // The campaign is over, one way or another — the complement of RUNNING_PHASES, mirroring the

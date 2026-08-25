@@ -67,7 +67,8 @@ def _quote(value: str) -> str:
 
 def _resolve_campaigns(campaign_id: str, campaign_regex: bool, extra: list | None,
                        max_campaigns: int) -> tuple[list, str]:
-    """The campaigns to search, newest first, and a note about what was left out."""
+    """The campaigns to search, in the service's order (live first, then newest first),
+    and a note about what was left out."""
     explicit = [campaign_id] + list(extra or [])
     if not campaign_regex:
         return explicit[:max_campaigns], (

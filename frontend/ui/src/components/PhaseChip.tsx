@@ -1,14 +1,12 @@
 import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 
+import { isTerminalPhase } from '../lib/robovastClient'
+
 // The controller's phase vocabulary (client.status.Phase): initializing → building → starting →
-// plugin install → variation → running → finishing → postprocessing → sharing → finished / failed /
-// stopped. Map to MUI colors; unknown phases stay neutral.
-//
-// `importing` is the one live phase a campaign can reach without ever having run here — a
-// campaign taken in from an archive or the share enters at it, and rolls on into
-// `postprocessing` when what arrived was raw. It is coloured and listed as live like any other
-// work in progress, which is the whole point of it being in the phase enum rather than beside it.
+// plugin install → variation → importing → running → finishing → postprocessing → sharing →
+// finished / failed / stopped. Map to MUI colors; unknown phases stay neutral. Which of them are
+// *live* is not restated here — see RUNNING_PHASES in robovastClient, the one copy.
 const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'> = {
   initializing: 'info',
   building: 'info',
@@ -27,11 +25,6 @@ const COLOR: Record<string, 'default' | 'success' | 'error' | 'warning' | 'info'
   // `unknown` (a campaign whose live driver was lost to a service restart) has no
   // color entry on purpose — it falls through to the neutral 'default' chip.
 }
-
-const LIVE_PHASES = [
-  'initializing', 'building', 'starting', 'plugin install', 'variation', 'importing', 'running',
-  'finishing', 'postprocessing', 'sharing',
-]
 
 // A campaign reaches `finished` as soon as its runs are done, so a failed post-run step
 // (postprocessing, upload-to-share) still leaves the phase green — the run data exists, but the
@@ -69,7 +62,10 @@ export function PhaseChip({
 // inside, sitting in front of a campaign name. The leading dot pulses while the
 // campaign is live so a running campaign is obvious at a glance.
 export function PhaseDot({ phase, issue }: { phase: string; issue?: string | null }) {
-  const live = LIVE_PHASES.includes(phase)
+  // `isTerminalPhase` answers false for an absent phase on purpose — a phase not read yet
+  // must not stop a poll — so an empty one would pulse without this. Nothing to say yet is
+  // not something to animate.
+  const live = !!phase && !isTerminalPhase(phase)
   const tone = issueColor(phase, issue)
   const color = tone !== 'default' ? `${tone}.main` : 'text.disabled'
   return (

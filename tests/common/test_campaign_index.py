@@ -103,7 +103,7 @@ def test_created_at_is_the_recorded_start_not_the_indexing_time(tmp_path):
     The store cannot be written live for local batch runs, so this indexer builds it
     after the fact. Stamping ``time.time()`` there would record the *indexing* time,
     which the service then shows as ``started_at`` and orders the campaign list by —
-    putting an old campaign at the top of a newest-first list.
+    putting an old campaign among the most recent ones.
     """
     campaign = _make_campaign(tmp_path, {"ca": [0]})
     _write_execution_record(campaign, "2026-06-17T10:10:10Z")

@@ -75,9 +75,12 @@ def _summary_to_dict(summary) -> dict:
 
 
 def _walk_all(client) -> list:
-    """Every campaign summary the service knows, newest first.
+    """Every campaign summary the service knows, in the service's order (live first,
+    then newest first).
 
-    Only for ``running_only``, which cannot be answered from one page.
+    Only for ``running_only``. The service now leads with the live campaigns, so the
+    first page usually holds them all — but "usually" is not an answer to "which are
+    running", and nothing bounds their number, so this still walks every page.
     """
     from robovast.service.interface import ListCampaignsRequest
     out: list = []
