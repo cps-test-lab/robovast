@@ -242,7 +242,7 @@ parameter the scenario file declares, ``sim:`` for the simulator's own configura
          - 2.0
          - 3.0
      - ParameterVariationList:
-         sim: plugins.floorplan.floor.friction
+         sim: components.floorplan.floor.friction
          values:
          - 0.6
          - 1.4

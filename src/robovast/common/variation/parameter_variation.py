@@ -233,7 +233,7 @@ class ParameterVariationList(Variation):
             - world/depot_nav2.yaml
             - world/warehouse_nav2.yaml
         - ParameterVariationList:
-            sim: plugins.floorplan.floor.friction
+            sim: components.floorplan.floor.friction
             values: [0.6, 1.4]
 
     Example (several destinations varied together):

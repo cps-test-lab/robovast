@@ -168,7 +168,7 @@ def test_an_unrecognised_key_becomes_an_override_path_when_a_root_exists(backend
     """Deliberate, and the limit of what this layer can check.
 
     With a dotted root, anything that is not a backend key is a path INTO the world -- which
-    is what makes ``sim: plugins.floorplan.size`` work. Whether that path exists in this
+    is what makes ``sim: components.floorplan.size`` work. Whether that path exists in this
     particular world is the world's schema to answer, and RoboVAST cannot read a world
     without the simulator; today a typo there is refused by ``apply_overrides`` in the
     container. What this layer does catch is a misspelled *backend* key, below.
