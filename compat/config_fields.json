@@ -227,6 +227,23 @@
       "forbid"
     ]
   ],
+  "EvaluationsBudget": [
+    [
+      "type",
+      true,
+      "Literal[evaluations]"
+    ],
+    [
+      "value",
+      true,
+      "int"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "ExecutionConfig": [
     [
       "bt_log",
@@ -275,6 +292,11 @@
     ],
     [
       "scenario_file",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "shm_size",
       false,
       "Union[str, NoneType]"
     ],
@@ -526,6 +548,43 @@
       "ignore"
     ]
   ],
+  "RepetitionsConfig": [
+    [
+      "max",
+      false,
+      "int"
+    ],
+    [
+      "min",
+      false,
+      "int"
+    ],
+    [
+      "neighbours",
+      false,
+      "int"
+    ],
+    [
+      "paired",
+      false,
+      "bool"
+    ],
+    [
+      "policy",
+      false,
+      "Literal[fixed, adaptive]"
+    ],
+    [
+      "seed_parameter",
+      false,
+      "Union[dict, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "ResourcesConfig": [
     [
       "cpu",
@@ -666,6 +725,23 @@
       "allow"
     ]
   ],
+  "RunsBudget": [
+    [
+      "type",
+      true,
+      "Literal[runs]"
+    ],
+    [
+      "value",
+      true,
+      "int"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "ScenarioParameterConfig": [
     [
       "<extra>",
@@ -677,7 +753,7 @@
     [
       "budget",
       false,
-      "Union[list[Annotated[Union[BatchesBudget, TimeBudget], annotation=NoneType required=True discriminator='type']], NoneType]"
+      "Union[list[Annotated[Union[BatchesBudget, TimeBudget, EvaluationsBudget, RunsBudget], annotation=NoneType required=True discriminator='type']], NoneType]"
     ],
     [
       "extract",
@@ -703,6 +779,11 @@
       "postprocessing",
       false,
       "Union[list[Union[dict[str, Any], str]], NoneType]"
+    ],
+    [
+      "repetitions",
+      false,
+      "Union[RepetitionsConfig, NoneType]"
     ],
     [
       "search_space",
