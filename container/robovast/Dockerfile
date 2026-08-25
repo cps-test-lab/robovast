@@ -10,7 +10,10 @@ ARG ROS_DISTRO=jazzy
 # pin would silently win: `--ros-distro humble` would pull the jazzy bytes into an image whose
 # name says humble. Overriding the distro therefore has to override the digest too, and the
 # guard right after the FROM makes forgetting that loud instead of silent.
-ARG ROS_BASE_DIGEST=sha256:d16957210572c5f919f3f9bd2fb0cc24a82542647489d8b8eda7c3beda31305f
+#
+# This must be the digest of a multi-arch INDEX, never of one platform's manifest. `ros` publishes
+# an index; `osrf/ros`, which this used to name, does not -- see the FROM below.
+ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f172478baecb09e4
 
 # Where scenario-execution comes from, defaulted HERE so this Dockerfile builds on its own.
 #
@@ -56,12 +59,28 @@ COPY --from=scenario-execution-clone /src /
 # the base image itself baked in, which no amount of pinning *our* apt calls can reach.
 # The tag is kept beside the digest because a bare digest tells a reader nothing about what
 # it is. Refresh both with: make refresh-build-pins
-FROM osrf/ros:${ROS_DISTRO}-desktop-full@${ROS_BASE_DIGEST}
+# `ros`, the Docker Official image, and NOT `osrf/ros:${ROS_DISTRO}-desktop-full`, which this
+# named until the arm64 build was made real.
+#
+# osrf/ros publishes each tag as a single amd64 manifest rather than an index. Docker does not
+# refuse `--platform linux/arm64` against such a tag: it hands back the amd64 bytes and labels the
+# result arm64. That built and pushed without complaint for as long as nothing executed in it --
+# on an amd64 runner nothing is emulated, so even the RUN steps below passed -- and what shipped
+# was an arm64 manifest full of amd64 userland, carrying arm64 `mc` and `fixuid` binaries fetched
+# by TARGETARCH. It died with "Invalid ELF image for this architecture" the moment a real arm64
+# host ran it. container/platforms.env had already recorded this failure for roqsim without the
+# same conclusion being drawn here.
+#
+# `ros:${ROS_DISTRO}-ros-base` is a genuine multi-arch index (amd64 + arm64), so each platform's
+# build starts from that platform's bytes. It carries less than desktop-full did; the difference is
+# installed from the pinned snapshot below, which is strictly better for reproducibility -- those
+# packages are now pinned to a dated archive rather than frozen at whenever the base was rebuilt.
+FROM ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}
 ARG ROS_DISTRO
 ARG ROS_BASE_DIGEST
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 RUN test -d "/opt/ros/${ROS_DISTRO}" || { \
-      echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not an osrf/ros:${ROS_DISTRO} image."; \
+      echo "ERROR: ROS_BASE_DIGEST ${ROS_BASE_DIGEST} is not a ros:${ROS_DISTRO} image."; \
       echo "  It carries: $(ls /opt/ros 2>/dev/null | tr '\\n' ' ')"; \
       echo "  Docker ignores the tag when a digest is given, so the digest decides. Pass a"; \
       echo "  matching --build-arg ROS_BASE_DIGEST, or refresh both with make refresh-build-pins."; \
@@ -123,6 +142,27 @@ RUN . /etc/os-release \
       apt-cache policy | grep -E "archive\.ubuntu\.com|security\.ubuntu\.com|packages\.ros\.org" >&2; \
       exit 1; \
     fi
+
+##############################################################
+####          What the base no longer brings              ####
+##############################################################
+# The desktop-full package set, which used to arrive baked into osrf/ros:*-desktop-full. That tag
+# has no arm64 build (see the FROM above), so the content is installed here instead -- from the
+# snapshot pinned just above, which means these versions are now fixed by a dated archive rather
+# than by whenever the base image was last rebuilt.
+#
+# `ros-${ROS_DISTRO}-desktop-full` is the same metapackage the old base installed, so this is the
+# same set rather than a guess at it. Both architectures resolve it from the pinned ROS snapshot;
+# the only packages that archive builds for amd64 alone are crocoddyl, mapviz and its plugins,
+# multires-image and tile-map, none of which are pulled in here.
+#
+# It is its own layer, and the first heavy one, because it changes only when a pin above it does --
+# so it stays cached across every change to the package lists further down.
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      "ros-${ROS_DISTRO}-desktop-full" && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws
 

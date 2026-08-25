@@ -110,7 +110,7 @@ def _base_created(ref: str) -> "str | None":
 def _ubuntu_stamp(base_ref: str) -> "str | None":
     """The Ubuntu snapshot timestamp to pin, which is the BASE IMAGE's date -- not the ROS date.
 
-    Deriving it from the ROS date is the obvious thing and it is wrong. ``osrf/ros`` is rebuilt
+    Deriving it from the ROS date is the obvious thing and it is wrong. ``ros`` is rebuilt
     daily, so its Ubuntu packages are current, while the newest ROS snapshot can be months old;
     an older Ubuntu archive then offers ``udev 255.4-1ubuntu8.16`` against a base already carrying
     ``libudev1 8.17``, and every install that pulls udev in fails with "held broken packages".
@@ -141,11 +141,11 @@ def main() -> int:
         print(f"newest {distro} snapshot offered by snapshots.ros.org: {ros_date}")
     else:
         unresolved.append(f"could not list snapshots for {distro}")
-    ubuntu_stamp = _ubuntu_stamp(f"osrf/ros:{distro}-desktop-full")
+    ubuntu_stamp = _ubuntu_stamp(f"ros:{distro}-ros-base")
     if ubuntu_stamp:
         print(f"base image's own apt state (the Ubuntu pin):         {ubuntu_stamp}")
     else:
-        unresolved.append(f"could not read the creation date of osrf/ros:{distro}-desktop-full")
+        unresolved.append(f"could not read the creation date of ros:{distro}-ros-base")
 
     for rel in _DOCKERFILES:
         path = _REPO / rel
@@ -167,7 +167,10 @@ def main() -> int:
 
         distro = _ros_distro(original)
         for match in _ARG_PIN.finditer(original):
-            ref = f"osrf/ros:{distro}-desktop-full"
+            # `ros`, not `osrf/ros`: only the former publishes a multi-arch index, and
+            # resolving this pin to a single-platform manifest is what silently produced an
+            # arm64 image full of amd64 userland. See the FROM in the Dockerfile.
+            ref = f"ros:{distro}-ros-base"
             new = _resolve_digest(ref)
             if new is None:
                 unresolved.append(f"{rel}: could not reach {ref}")
