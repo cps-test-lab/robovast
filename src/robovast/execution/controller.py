@@ -896,14 +896,20 @@ class CampaignController:
     def _convert_bags_in_cluster(self, rosbag_cmds: list) -> None:
         """Run a search batch's bag conversion the way the campaign-level path does.
 
-        Same Job, same image resolution (the campaign's own ``_execution/execution.yaml``,
-        so bags deserialize against the image that wrote them), same cluster context. On a
-        local backend there is no Job to submit and the in-process path is already correct,
-        so the commands fall through to it.
+        **Two steps, not one.** The Job writes its output to the object store; ``sync_outputs``
+        pulls it into the campaign root, and nothing can read a CSV before that happens. A
+        version of this that ran the Job and skipped the sync logged "rosbag conversion
+        complete" and then handed the extractor a directory with no CSVs in it -- which reads
+        as a conversion that lied about finishing.
 
-        A failure is reported and does not raise: the extractor is the thing that decides
-        whether a batch is scorable, and it refuses loudly when its inputs are missing --
-        which is a better message than one from here about a Job.
+        The sync runs **regardless of the Job's outcome**, for the reason the campaign-level
+        path gives: the conversion tees its own error into ``postprocessing.log`` and mirrors
+        it out, so skipping the sync on failure discards the only account of what went wrong.
+
+        On a local backend there is no Job to submit and the in-process path is already
+        correct, so the commands fall through to it. A failure is reported and does not
+        raise: the extractor decides whether a batch is scorable and refuses loudly when its
+        inputs are missing, which says more than an exception about a Job.
         """
         cluster_config = getattr(self.backend, "cluster_config", None)
         if cluster_config is None:
@@ -913,20 +919,21 @@ class CampaignController:
                 config_dir=self.vast_dir, output=logger.info)
             return
         try:
-            from robovast.execution.cluster_execution.postprocess_job import (
-                campaign_execution_image, run_conversion_job)
-            ok, message = run_conversion_job(
+            run_job, sync, image_for = _conversion_job_runner()
+            ok, message = run_job(
                 cluster_config, self.campaign_id,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
-                campaign_execution_image(self.campaign_root),
+                image_for(self.campaign_root),
                 unwrap_conversion_commands(rosbag_cmds),
                 kube_context=getattr(self.backend, "kube_context", None))
+            sync(cluster_config, self.campaign_id, self.campaign_root)
             logger.info("Batch bag conversion: %s", message)
             if not ok:
                 logger.warning("Batch bag conversion failed; this batch's metrics will be "
                                "missing and the extractor will say so: %s", message)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("Batch bag conversion could not run: %s", exc, exc_info=True)
+
 
 
 # -- builders ---------------------------------------------------------------
@@ -984,6 +991,19 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
     container += [c for c in commands if not _is_rosbag(c) and _needs_image(c)]
     local = [c for c in commands if not _is_rosbag(c) and not _needs_image(c)]
     return container, local
+
+
+def _conversion_job_runner():
+    """The three cluster helpers a batch conversion needs, resolved in one place.
+
+    A seam rather than three imports at the call site: it keeps the cluster package out of
+    the import path on a local run, and lets a test substitute the whole trio -- which is
+    the only way to check that the Job and the SYNC both happen, and in that order, without
+    a cluster to run them against.
+    """
+    from robovast.execution.cluster_execution.postprocess_job import (
+        campaign_execution_image, run_conversion_job, sync_outputs)
+    return run_conversion_job, sync_outputs, campaign_execution_image
 
 
 def unwrap_conversion_commands(commands) -> list:

@@ -177,3 +177,69 @@ def test_unwrapping_leaves_a_non_rosbag_container_command_alone():
     no wrapper to strip."""
     from robovast.execution.controller import unwrap_conversion_commands
     assert unwrap_conversion_commands(['some_plugin.py:Cls']) == ['some_plugin.py:Cls']
+
+
+# -- the conversion is two steps, not one -----------------------------------
+
+def test_the_conversion_helper_syncs_after_running_the_job(monkeypatch):
+    """A conversion Job writes its output to the object store; something has to pull it
+    into the campaign root before anything can read it.
+
+    The campaign-level path does both -- run, then `sync_outputs`, unconditionally, so a
+    failure's own log lands too. A search that ran the Job and skipped the sync got
+    "rosbag conversion complete" in the log and an extractor that then found no CSVs,
+    which reads as a conversion that lied.
+    """
+    from robovast.execution import controller as ctrl
+
+    calls = []
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    def _fake_job(*a, **kw):
+        calls.append('job')
+        return True, 'rosbag conversion complete'
+
+    def _fake_sync(*a, **kw):
+        calls.append('sync')
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (_fake_job, _fake_sync, lambda root: 'img'))
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+
+    assert calls == ['job', 'sync'], f'expected run then sync, got {calls}'
+
+
+def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
+    """Unconditionally, for the reason the campaign-level path gives: the conversion tees
+    its own error into postprocessing.log and mirrors it out, so skipping the sync on
+    failure loses the only account of what went wrong."""
+    from robovast.execution import controller as ctrl
+
+    calls = []
+    monkeypatch.setattr(
+        ctrl, '_conversion_job_runner',
+        lambda: (lambda *a, **kw: (calls.append('job') or (False, 'boom')),
+                 lambda *a, **kw: calls.append('sync'),
+                 lambda root: 'img'))
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
+
+    assert calls == ['job', 'sync']

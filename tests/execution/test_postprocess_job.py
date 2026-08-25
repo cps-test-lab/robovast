@@ -14,7 +14,7 @@ def _patch_failed_conversion(monkeypatch, synced):
     monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
     monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "boom"))
     monkeypatch.setattr(pj, "sync_outputs",
-                        lambda cfg, cid, cr: synced.append(cr) or 1)
+                        lambda cfg, cid, cr, force=False: synced.append(cr) or 1)
 
 
 def test_postprocess_syncs_outputs_even_on_conversion_failure(monkeypatch, tmp_path):
@@ -110,3 +110,72 @@ def test_an_unreadable_pod_list_does_not_condemn_a_running_conversion(monkeypatc
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.cluster_execution.blocked_job_reasons", _boom)
     assert pj._blocked_reason(object(), "ns", "job-x") == ""
+
+
+# -- a forced re-postprocess must force the download too ---------------------
+
+def test_a_forced_repostprocess_forces_the_download(monkeypatch, tmp_path):
+    """`force` means "bypass the per-rosbag caches and reconvert", so the Job REPLACES
+    CSVs in the object store -- mutating objects in place.
+
+    `download_prefix` skips a local file whose size already matches, which is right for
+    the immutable durable home and wrong here: a regenerated CSV that happens to keep its
+    byte count (a changed value of the same width, a re-derived column) is then skipped,
+    and the campaign root keeps the file the user asked to replace. The re-run reports
+    success and changes nothing that anyone can see, which is the worst shape a bug can
+    take. `download_prefix`'s own docstring names this case as what `force=True` is for.
+    """
+    seen = {}
+    monkeypatch.setattr(pj, "campaign_vast", lambda cr: "/x.vast")
+    monkeypatch.setattr(pj, "rosbag_commands_for",
+                        lambda vast, skip=None, skip_rosout=False: [{"plugins": []}])
+    monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
+    monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
+    monkeypatch.setattr(pj, "sync_outputs",
+                        lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
+
+    pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", force=True)
+    assert seen["force"] is True, "a forced reconversion synced without forcing the fetch"
+
+
+def test_an_ordinary_postprocess_leaves_the_skip_in_place(monkeypatch, tmp_path):
+    """The default stays skip-existing: a first postprocess, and the search loop's
+    per-batch sync, both re-list a prefix that only grows, and re-downloading every
+    earlier batch's CSVs each time would add latency to a loop already bounded by a
+    no-progress deadline."""
+    seen = {}
+    monkeypatch.setattr(pj, "campaign_vast", lambda cr: "/x.vast")
+    monkeypatch.setattr(pj, "rosbag_commands_for",
+                        lambda vast, skip=None, skip_rosout=False: [{"plugins": []}])
+    monkeypatch.setattr(pj, "campaign_execution_image", lambda cr: "img")
+    monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "stop here"))
+    monkeypatch.setattr(pj, "sync_outputs",
+                        lambda cfg, cid, cr, force=False: seen.setdefault("force", force))
+
+    pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns")
+    assert seen["force"] is False
+
+
+def test_sync_outputs_passes_force_through_to_the_download(monkeypatch, tmp_path):
+    """The parameter has to reach `download_prefix`, not just be accepted.
+
+    Patched on the real module rather than substituted in ``sys.modules``: ``from . import
+    in_pod_storage`` resolves through the parent package's attribute, so a sys.modules
+    entry only wins while nothing has imported it yet -- which made an earlier version of
+    this test pass alone and fail in the suite.
+    """
+    from robovast.execution.cluster_execution import in_pod_storage
+
+    calls = {}
+
+    class _Storage:
+        def download_prefix(self, bucket, prefix, local_dir, force=False):
+            calls['force'] = force
+            return 3
+
+    monkeypatch.setattr(in_pod_storage, 'campaign_storage_location',
+                        lambda cfg, cid: ('b', 'p/'))
+    monkeypatch.setattr(in_pod_storage, 'storage_client_for', lambda cfg: _Storage())
+
+    assert pj.sync_outputs(object(), 'camp', str(tmp_path), force=True) == 3
+    assert calls['force'] is True

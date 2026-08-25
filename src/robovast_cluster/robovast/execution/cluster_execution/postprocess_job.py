@@ -116,20 +116,33 @@ def campaign_execution_image(campaign_dir) -> str:
     return str(image)
 
 
-def sync_outputs(cluster_config, campaign_id: str, campaign_root: str) -> int:
+def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
+                 force: bool = False) -> int:
     """Pull the Job's outputs (`_postproc/`) into *campaign_root*; return the count.
 
-    Scoped to the staging prefix **on purpose**: ``download_prefix`` has no
-    skip-existing, so mirroring the whole campaign prefix would re-download every
-    rosbag. The Job mirrored its outputs at campaign-relative paths, so they land
-    directly at ``<campaign_root>/<config>/<run>/``.
+    Scoped to the staging prefix **on purpose**: mirroring the whole campaign prefix
+    would walk every rosbag to find the handful of CSVs beside them. The Job mirrored
+    its outputs at campaign-relative paths, so they land directly at
+    ``<campaign_root>/<config>/<run>/``.
+
+    *force* must be set whenever the conversion **replaced** outputs rather than adding
+    them, i.e. whenever it ran with the caches bypassed. ``download_prefix`` skips a local
+    file whose size already matches -- correct for the immutable durable home, wrong for a
+    re-postprocess that mutates objects in place, where a regenerated CSV that keeps its
+    byte count would be skipped and the campaign root would keep the file the user asked
+    to replace.
+
+    Left off, the skip is what makes the search loop's per-batch call cheap: the staging
+    prefix only grows, and each batch re-lists it to fetch the few objects its own
+    conversion added.
     """
     from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
-    n = storage.download_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}", campaign_root)
+    n = storage.download_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}", campaign_root,
+                                force=force)
     logger.info("Synced %d postprocessing output(s) into %s", n, campaign_root)
     return n
 
@@ -188,7 +201,9 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
         # conversion error) in the campaign log the web UI shows and finalize
         # uploads — without it, a failure surfaces only as a terse "kubectl logs"
         # hint the user cannot act on off-cluster.
-        sync_outputs(cluster_config, campaign_id, campaign_root)
+        # force rides along: it made the Job bypass its caches and REPLACE the CSVs, and
+        # the fetch skips same-size files unless told not to.
+        sync_outputs(cluster_config, campaign_id, campaign_root, force=force)
         if not ok:
             # Echo the conversion error to the service console too. The web UI already
             # has it via the synced postprocessing.log (POSTPROCESSING section); no
