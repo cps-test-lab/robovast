@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import type { BudgetItem, JobCounts, Status } from './robovastClient'
-import { estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
+import { batchesBudget, estimateBatchesEtaSeconds, estimateEtaSeconds, finishedRuns, isBatchesBudget, noResultRuns } from './eta'
 
 const NOW = 1_700_000_000_000
 
@@ -126,5 +126,34 @@ describe('isBatchesBudget', () => {
     // reports null forever. Without this those cards lose the ETA and the objective chart.
     expect(isBatchesBudget(row({ kind: null }))).toBe(true)
     expect(isBatchesBudget(row({ label: 'coverage', kind: null }))).toBe(false)
+  })
+})
+
+describe('batchesBudget', () => {
+  const search = (budget: Partial<BudgetItem>[]): Status =>
+    ({ mode: 'search', batches_done: 4, budget } as Status)
+
+  it('finds the criterion that bounds the rounds', () => {
+    const b = { label: 'batches', current: 3, limit: 6, done: false, kind: 'batches' }
+    expect(batchesBudget(search([{ label: 'time', kind: 'time' }, b]))?.limit).toBe(6)
+  })
+
+  it('says nothing bounds them when the search is bounded by runs', () => {
+    // The case that had no batch counter, no estimate and no objective chart at all. The
+    // card must still render the rounds — `nav_search_halton` is bounded by runs on purpose,
+    // and six of the eight shipped nav_search examples are bounded by something other than
+    // batches, so this is the common case rather than the edge one.
+    expect(batchesBudget(search([{ label: 'runs', current: 24, limit: 144, kind: 'runs' }]))).toBeNull()
+  })
+
+  it('is null for a search that declared no budget at all', () => {
+    expect(batchesBudget(search([]))).toBeNull()
+  })
+
+  it('refuses a metric the user happened to name `batches`', () => {
+    // Same reason isBatchesBudget keys on `kind`: every label except batches and time is the
+    // user's own metric or objective name, so a text match would put the objective chart on a
+    // metric row and read that metric's value as a round count.
+    expect(batchesBudget(search([{ label: 'batches', kind: 'metric' }]))).toBeNull()
   })
 })

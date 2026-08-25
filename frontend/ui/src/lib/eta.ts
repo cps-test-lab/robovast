@@ -69,6 +69,24 @@ export function isBatchesBudget(b: BudgetItem): boolean {
   return b.kind == null ? b.label === 'batches' : b.kind === 'batches'
 }
 
+/** The criterion bounding a search's ROUNDS, or null when nothing bounds them.
+ *
+ * A search always has rounds -- it asks, runs, tells, repeats -- and a `batches` criterion is
+ * one way to bound them, not what creates them. A campaign bounded by runs, time or
+ * evaluations therefore has a round counter and an objective trajectory just the same, and
+ * gets null here rather than nothing to show: the card renders its rounds either way and only
+ * omits the meter, since there is no limit to measure against and inventing a denominator
+ * would put a bound on screen that the campaign never declared.
+ *
+ * Reading this off the budget list is what the card used to do for the CHART as well, which is
+ * why a runs-bounded search had no batch counter, no ETA and no objective diagram at all --
+ * six of the eight shipped `nav_search` examples, including the Halton campaign whose runs
+ * budget is deliberate (see nav_search_random.vast: bounding by runs is what makes the two
+ * strategies comparable). */
+export function batchesBudget(status: Status): BudgetItem | null {
+  return status.budget.find(isBatchesBudget) ?? null
+}
+
 /** Seconds until the `batches` budget is exhausted, or null when that is not this row.
  *
  * The current batch's remaining time, plus a whole batch for each round after it — each

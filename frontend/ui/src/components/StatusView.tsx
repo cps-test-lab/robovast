@@ -9,6 +9,7 @@ import Typography from '@mui/material/Typography'
 import {
   robovast,
   isTerminalPhase,
+  type JobCounts,
   type JobSummary,
   type ListJobsResponse,
   readUploadProgress,
@@ -16,6 +17,7 @@ import {
   type UploadProgress,
 } from '@/lib/robovastClient'
 import {
+  batchesBudget,
   estimateBatchesEtaSeconds,
   isBatchesBudget,
   estimateEtaSeconds,
@@ -261,40 +263,24 @@ export function StatusView({
         />
       </Box>
 
-      {budget.map((b) => {
-        // Only the batch budget converts into time from what we can observe; every other
-        // criterion is measured in units nothing here can turn into a duration.
-        const batchesEta = estimateBatchesEtaSeconds(status, counts, b, etaSeconds)
-        const meta = (
-          <>
-            {b.current == null ? '—' : b.current} / {b.limit}
-            {batchesEta != null
-              ? ` · ~${formatDuration(batchesEta)} left (≈ ${formatLocalClock(batchesEta)})`
-              : ''}
-          </>
-        )
-        const bar = (
-          <MeterBar
-            height={10}
-            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
-            color="secondary.main"
-          />
-        )
-        // The batches bar, and only it, opens onto the objective's trajectory. Which row that
-        // is, and why it is not simply a label match, is `isBatchesBudget`'s question.
-        if (cid && isBatchesBudget(b)) {
-          return (
-            <ObjectiveSection
-              key={b.label}
-              campaignId={cid}
-              label={b.label + (b.done ? ' ✓' : '')}
-              meta={meta}
-              bar={bar}
-              batchesDone={status.batches_done}
-            />
-          )
-        }
-        return (
+      {/* The rounds a search has run, and the objective they moved. Rendered for every
+          search rather than off a budget row: a `batches` criterion BOUNDS the rounds, it
+          does not create them, so a search bounded by runs or time has both just the same.
+          Hanging this on the budget row is what left those campaigns with no batch counter,
+          no estimate and no objective chart at all. It sits above the criteria because
+          rounds are not one of them. */}
+      {cid && status.mode === 'search' ? (
+        <ObjectiveSection
+          campaignId={cid}
+          status={status}
+          counts={counts}
+          runsEta={etaSeconds}
+        />
+      ) : null}
+
+      {budget.filter((b) => !isBatchesBudget(b)).map((b) => (
+        // Every criterion except the batch counter, which the rounds section above owns.
+        // These are measured in units nothing here can turn into a duration, so no estimate.
         <Box key={b.label}>
           <Stack direction="row" justifyContent="space-between">
             <Typography variant="caption" color="text.secondary">
@@ -302,13 +288,16 @@ export function StatusView({
               {b.done ? ' ✓' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {meta}
+              {b.current == null ? '—' : b.current} / {b.limit}
             </Typography>
           </Stack>
-          {bar}
+          <MeterBar
+            height={10}
+            fraction={b.current == null || b.limit <= 0 ? 0 : b.current / b.limit}
+            color="secondary.main"
+          />
         </Box>
-        )
-      })}
+      ))}
 
       {status.best_objective != null ? (
         <Typography variant="caption" color="text.secondary">
@@ -351,32 +340,60 @@ export function StatusView({
 
 // -- the search's objective over its batches ---------------------------------
 
-/** The batches budget bar, made foldable: the same bar as before, over a chart of how the
- *  objective has moved.
+/** A search's rounds, foldable over a chart of how its objective has moved.
+ *
+ *  Owns the whole presentation of "rounds", because how they read depends on whether anything
+ *  bounds them and that is one decision, not two: with a `batches` criterion this is the bar it
+ *  always was — `3 / 6`, a meter, and an estimate — and without one it is the same row carrying
+ *  only the count, no meter and no estimate. Not a fallback: an unbounded search HAS no limit,
+ *  and drawing a meter would need a denominator the campaign never declared.
  *
  *  Closed by default and fetched only while open. That gating is the whole reason this can sit on
  *  a campaign card at all: the Monitor renders every campaign in the list, so anything a card does
  *  unconditionally is paid for by the whole page — see `useDetails`, which is closed by default for
  *  exactly this reason.
  *
- *  `batchesDone` is in the query key rather than a refetch interval. It is an integer already on
+ *  `batches_done` is in the query key rather than a refetch interval. It is an integer already on
  *  the polled status, and it is precisely the thing whose change makes this answer stale — so the
  *  series is re-read once per completed batch (minutes apart) instead of on a timer that would
  *  mostly re-fetch an unchanged answer.
  */
 function ObjectiveSection({
   campaignId,
-  label,
-  meta,
-  bar,
-  batchesDone,
+  status,
+  counts,
+  runsEta,
 }: {
   campaignId: string
-  label: string
-  meta: ReactNode
-  bar: ReactNode
-  batchesDone: number
+  status: Status
+  counts?: JobCounts
+  runsEta: number | null
 }) {
+  const batchesDone = status.batches_done
+  // The criterion bounding the rounds, when one was declared. Only the batches budget converts
+  // into time from what we can observe, which is why the estimate lives on this row alone.
+  const bound = batchesBudget(status)
+  const batchesEta = bound ? estimateBatchesEtaSeconds(status, counts, bound, runsEta) : null
+  const label = bound ? bound.label + (bound.done ? ' ✓' : '') : 'batches'
+  const meta = bound ? (
+    <>
+      {bound.current == null ? '—' : bound.current} / {bound.limit}
+      {batchesEta != null
+        ? ` · ~${formatDuration(batchesEta)} left (≈ ${formatLocalClock(batchesEta)})`
+        : ''}
+    </>
+  ) : (
+    // The count alone, and said as a count: `4 done` cannot be misread as progress toward a
+    // total the way a bare `4` sitting where `4 / 6` usually sits could be.
+    `${batchesDone} done`
+  )
+  const bar = bound ? (
+    <MeterBar
+      height={10}
+      fraction={bound.current == null || bound.limit <= 0 ? 0 : bound.current / bound.limit}
+      color="secondary.main"
+    />
+  ) : null
   const [open, setOpen] = useState(false)
   const history = useQuery({
     queryKey: ['search-history', campaignId, batchesDone],
