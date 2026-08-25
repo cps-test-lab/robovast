@@ -113,6 +113,35 @@ jobs:
           fi
           echo "Compat version check passed: window $PYTHON_MIN..$PYTHON_VER"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:base-${{ matrix.slug }}"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -137,15 +166,18 @@ jobs:
           # Written only on push: a PR build would publish layers for code that may never
           # merge, and a fork's GITHUB_TOKEN cannot write packages at all. Reading is what
           # makes PR builds fast; writing is not needed for that.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:base-${{ matrix.slug }}
-          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:base-{1},mode=max', github.repository, matrix.slug) || '' }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
           build-args: |
             ROS_DISTRO=jazzy
 
       - name: Record the digest for merge-base
         run: |
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${{ steps.build.outputs.digest }}"
+          # The bare hex, not the full "sha256:..." reference: upload-artifact refuses a colon in
+          # a filename (it keeps artifacts extractable on NTFS). merge-base puts the prefix back.
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -204,7 +236,7 @@ jobs:
           # shellcheck disable=SC2046
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@%s ' *)
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Report the index digest
         id: digest
@@ -313,6 +345,35 @@ jobs:
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "base image: ${image}"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push roqsim image
         uses: docker/build-push-action@v6
         with:
@@ -322,9 +383,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Registry cache, per-job tag -- see the note on the base image build above.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:roqsim
-          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:roqsim,mode=max', github.repository) || '' }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
           # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
           # this job needs no checkout of it and the context is not read at all. It used to be
           # passed to a Dockerfile that declared no such ARG and did no cloning, while that
@@ -443,6 +503,35 @@ jobs:
         # about what an image is built for.
         run: . container/platforms.env && echo "platforms=$PLATFORMS_SIDECAR" >> "$GITHUB_OUTPUT"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:sidecar"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push sidecar image
         uses: docker/build-push-action@v6
         with:
@@ -452,9 +541,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Registry cache, per-job tag -- see the note on the base image build above.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:sidecar
-          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:sidecar,mode=max', github.repository) || '' }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
 
   build-and-push-controller:
     runs-on: ubuntu-latest
@@ -502,6 +590,35 @@ jobs:
         # puzzle. `github.sha` is the full 40 characters.
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:controller"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
@@ -516,6 +633,5 @@ jobs:
             ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Registry cache, per-job tag -- see the note on the base image build above.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:controller
-          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:controller,mode=max', github.repository) || '' }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
