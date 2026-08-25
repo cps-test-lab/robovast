@@ -120,13 +120,6 @@ def set_container_runner_factory(factory):
 #: fork) — see ``_compose_isolated`` and the dispatch in that function.
 _ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
 
-#: Set in the isolated worker's env only when the *parent* had a backend
-#: ContainerRunner factory active (a cluster run). The factory is a ContextVar that
-#: cannot cross the process boundary, so an aux-container variation cannot be built
-#: in the worker; this flag lets ``_make_container_runner`` raise a clear error
-#: instead of silently falling back to a local ``docker run`` that a cluster
-#: controller pod cannot provide.
-_ISOLATED_NO_BACKEND = "ROBOVAST_ISOLATED_NO_BACKEND"
 
 
 def _make_container_runner(spec, *, image_project=None, image_project_tag=None, purpose=""):
@@ -152,17 +145,6 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
     """
     if spec is None:
         return None
-    if os.environ.get(_ISOLATED_NO_BACKEND) == "1" and _container_runner_factory.get() is None:
-        # Isolated compose subprocess of a cluster run: the backend's runner factory
-        # (a ContextVar) did not cross the process boundary, and a local docker
-        # runner is not available in a controller pod. Fail clearly rather than
-        # obscurely. Full support (a serializable runner descriptor handed to the
-        # worker) is a documented follow-up.
-        raise RuntimeError(
-            "A variation requires an auxiliary container during composition, which "
-            "is not yet supported under isolated plugin composition on a cluster "
-            "backend. Run this campaign locally, or remove the aux-container "
-            "variation from the plugin composition.")
     factory = _container_runner_factory.get()
     if factory is not None:
         return factory(spec)
@@ -1300,16 +1282,28 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
 
     env = dict(os.environ)
     env[_ISOLATED_ENV] = "1"
-    # A backend aux-container factory (a ContextVar) cannot cross into the worker;
-    # signal it to fail clearly if a variation needs one (see _make_container_runner).
-    if _container_runner_factory.get() is not None:
-        env[_ISOLATED_NO_BACKEND] = "1"
 
     with tempfile.TemporaryDirectory(prefix="robovast_compose_job_") as jobdir:
         result_path = os.path.join(jobdir, "result.json")
         job_path = os.path.join(jobdir, "job.json")
+        # A backend aux-container factory is a ContextVar and cannot cross into the
+        # worker, so the worker borrows this one over a socket rather than rebuilding
+        # it: see robovast.common.container_runner_proxy. Only when a factory is
+        # actually active -- a local CLI run has none and the worker falls back to its
+        # own ``docker``, which is the behaviour that was always there.
+        runner_server = None
+        if _container_runner_factory.get() is not None:
+            from robovast.common.container_runner_proxy import (  # pylint: disable=import-outside-toplevel
+                SOCKET_NAME, ContainerRunnerServer)
+            runner_server = ContainerRunnerServer(
+                _container_runner_factory.get(), os.path.join(jobdir, SOCKET_NAME))
+            runner_server.start()
         with open(job_path, "w", encoding="utf-8") as f:
             json.dump({
+                # Absent unless a backend runner is being served, so the worker knows
+                # to install the proxy factory rather than looking for docker.
+                "container_runner_socket": (
+                    runner_server.socket_path if runner_server else None),
                 "variation_file": os.path.abspath(variation_file),
                 "output_dir": output_dir,
                 "use_cache": bool(use_cache),
@@ -1325,18 +1319,26 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
 
         cmd = [sys.executable, "-m", "robovast.common.compose_worker", job_path]
         output_lines: list = []
-        # Merge stderr into stdout so a full pipe on either stream cannot deadlock;
-        # the plugin traceback (stderr) is interleaved and captured for the error.
-        proc = subprocess.Popen(  # nosec B603 - fixed module, config-derived job file
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=env)
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            output_lines.append(line)
-            print(line, flush=True)
-            progress_update_callback(line)
-        returncode = proc.wait()
+        try:
+            # Merge stderr into stdout so a full pipe on either stream cannot deadlock;
+            # the plugin traceback (stderr) is interleaved and captured for the error.
+            proc = subprocess.Popen(  # nosec B603 - fixed module, config-derived job file
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=env)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                output_lines.append(line)
+                print(line, flush=True)
+                progress_update_callback(line)
+            returncode = proc.wait()
+        finally:
+            # After the worker is gone, and unconditionally: a worker that raised
+            # mid-composition leaves runners open, and the parent is the only side left
+            # to close them. Stopping before the process exits would strand a variation
+            # mid-command.
+            if runner_server is not None:
+                runner_server.stop()
 
         if returncode != 0:
             tail = "\n".join(output_lines[-25:])

@@ -490,9 +490,34 @@ the quadrotor search vasts.
      already-installed ``.robovast_plugins/`` from the workspace and needs no
      credentials at composition time).
 
-   (Because variation composition runs in-process, an operator who needs hard
-   isolation from untrusted plugin code should prefer the uploaded-wheel source,
-   which needs no credential at all.)
+   **Composition moves to a subprocess when ``plugins:`` is declared.** The plugin and
+   its pinned dependencies are then imported only there, never in the long-lived
+   service process, so a plugin needing a different version of something RoboVAST also
+   uses cannot disturb it. An operator who needs hard isolation from untrusted plugin
+   code should still prefer the uploaded-wheel source, which needs no credential at all.
+
+   That subprocess is also why a variation's **auxiliary container** needs a hand. The
+   execution backend publishes its runner factory in a ``ContextVar``, which does not
+   cross a process boundary — so a campaign declaring ``plugins:`` *and* a variation
+   with ``get_required_container`` (floorplan generation, say) once could not compose at
+   all on a cluster backend, having neither the backend's factory nor a local ``docker``
+   to fall back on.
+
+   :mod:`robovast.common.container_runner_proxy` closes that: the parent serves its own
+   live factory on a Unix socket beside the job file, and the worker installs a factory
+   whose runners forward ``run`` / ``close`` / ``expose`` back across it. The runner —
+   and with it the Kubernetes client, the storage client and the credentials both
+   authenticate with — stays in the parent; only the four calls of the
+   :class:`~robovast.common.variation.container_runner.ContainerRunner` contract cross,
+   plus ``workspace``, which is a path both sides can already see. Command output is
+   streamed frame by frame, so a plugin's progress still reaches the campaign log while
+   the command runs, and a failed command still raises
+   :class:`subprocess.CalledProcessError` in the worker with its ``output`` intact.
+
+   Nothing about a backend is serialized, so this works for every backend without any
+   of them describing itself — including the local ``docker`` one and any added later.
+   When no factory is active (a plain CLI run) no socket is served and the worker uses
+   its own ``docker``, exactly as before.
 
    For a single dependency-free variation you can skip packaging entirely and use a
    ``<path>.py:<Class>`` file reference resolved relative to the ``.vast`` directory

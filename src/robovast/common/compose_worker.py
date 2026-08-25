@@ -29,9 +29,18 @@ Invoked by ``config_generation._compose_isolated`` as::
     python -m robovast.common.compose_worker <job.json>
 
 where ``job.json`` is ``{variation_file, output_dir, use_cache, tolerate_infeasible,
-image_project, image_project_tag, result_path}``. The
+image_project, image_project_tag, result_path, container_runner_socket}``. The
 parent sets ``ROBOVAST_ISOLATED_COMPOSE=1`` in this process's environment so the
 ``generate_scenario_variations`` call composes in-process (it does not re-fork).
+
+``container_runner_socket`` is present when the parent has an execution backend's
+auxiliary-container factory active. That factory is a ContextVar and cannot cross into
+this process, so instead of rebuilding it here -- which would mean serializing a
+Kubernetes client, a storage client and the credentials both authenticate with -- the
+parent serves it on that socket and this process installs a forwarding factory. Without
+it, a variation needing an auxiliary container falls back to a local ``docker`` exactly
+as it did before, which is what a CLI run wants. See
+:mod:`robovast.common.container_runner_proxy`.
 
 Progress (including ``pip install`` output for a first-time plugin install) and any
 plugin traceback go to stdout/stderr, which the parent streams live and captures for
@@ -57,7 +66,17 @@ def main(argv) -> int:
     # where the plugin gets pulled onto sys.path (inside generate_scenario_variations
     # via ensure_workspace_plugins).
     from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
-        _result_to_transport, generate_scenario_variations)
+        _result_to_transport, generate_scenario_variations,
+        set_container_runner_factory)
+
+    # Before composing, so a variation that asks for its container during the very first
+    # config already has one. Left unset when the parent serves none: the local fallback
+    # in _make_container_runner then applies, or refuses with its own message.
+    socket_path = job.get("container_runner_socket")
+    if socket_path:
+        from robovast.common.container_runner_proxy import (  # pylint: disable=import-outside-toplevel
+            proxy_container_runner_factory)
+        set_container_runner_factory(proxy_container_runner_factory(socket_path))
 
     result = generate_scenario_variations(
         variation_file=job["variation_file"],
