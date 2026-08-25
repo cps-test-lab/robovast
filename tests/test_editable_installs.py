@@ -89,7 +89,6 @@ def _declared_entry_point_groups():
     tomorrow is covered without anyone remembering to add it.
     """
     import re
-    from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
     manifests = [root / "pyproject.toml", *sorted(root.glob("src/*/pyproject.toml"))]

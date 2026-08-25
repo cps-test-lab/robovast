@@ -58,9 +58,11 @@ with the 0.05 m contact threshold as denominator the clearance margin carried 20
 against the arrival margin's 1.67, so `min()` returned whichever margin had the tightest
 denominator rather than whichever failure was nearest.
 
-    robustness = min( (min_clearance - contact)  / clearance_scale,
-                      (timeout - t_trial)        / timeout,
-                      (arrival_radius - d_goal)  / path_scale )
+```text
+robustness = min( (min_clearance - contact)  / clearance_scale,
+                  (timeout - t_trial)        / timeout,
+                  (arrival_radius - d_goal)  / path_scale )
+```
 
 The scales come from what this directory already declares, so they move when the world does:
 `clearance_scale` is half the widest doorway minus nav2's own `robot_radius` (1.6/2 − 0.18),
