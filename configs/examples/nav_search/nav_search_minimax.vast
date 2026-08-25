@@ -65,7 +65,14 @@ search:
   budget:
   - runs: 270
   stopping:
-  - metric: {name: outer_best, op: '>=', value: 0.2}
+  # IN THE OBJECTIVE'S UNITS -- `outer_best` is a robustness, so rescaling the objective
+  # rescales this. 0.2 was reachable while a passing crossing could score up to ~+0.57; with
+  # each margin divided by its scale the arrival term ceilings the positive side at
+  # +0.12 and the best observed cell over 186 of them is +0.068, so 0.2 could never fire
+  # again. A criterion that cannot fire is worse than none: it reads as a live stopping rule
+  # while the budget silently does all the work. 0.05 is reachable by the best cells
+  # observed and still means "a genuinely robust tuning was found".
+  - metric: {name: outer_best, op: '>=', value: 0.05}
   seed: 1
 
 visualization:
