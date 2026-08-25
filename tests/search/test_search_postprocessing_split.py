@@ -243,3 +243,60 @@ def test_the_sync_happens_even_when_the_job_failed(monkeypatch):
     obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}])
 
     assert calls == ['job', 'sync']
+
+
+# -- each batch's conversion is its own Job ----------------------------------
+
+def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch):
+    """The Job name was the campaign's alone, so batch 1's create returned 409, the wait
+    read batch 0's already-completed Job, and the conversion reported success having done
+    nothing -- 0 outputs synced, and an extractor that then blamed the world.
+
+    Per repetitions-group, not per batch: `_run_postprocessing` runs once per group and
+    adaptive repetitions produce several in one batch, so a per-batch name would collide
+    again the moment repetitions stopped being uniform. The batch tag already carries both.
+    """
+    from robovast.execution import controller as ctrl
+
+    seen = []
+
+    def _fake_job(*a, **kw):
+        seen.append(kw.get('discriminator'))
+        return True, 'rosbag conversion complete'
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (_fake_job, lambda *a, **kw: None, lambda root: 'img'))
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+    cmds = [{'rosbags_process': {'plugins': []}}]
+    obj._convert_bags_in_cluster(cmds, 'batch-0')
+    obj._convert_bags_in_cluster(cmds, 'batch-1')
+    obj._convert_bags_in_cluster(cmds, 'batch-1/reps-5')
+
+    assert len(set(seen)) == 3, f'conversions shared a Job identity: {seen}'
+
+
+def test_the_batch_tag_reaches_the_conversion(monkeypatch):
+    """`_run_postprocessing` is the only caller and it must pass the tag through, or the
+    discriminator is threaded everywhere except where it is produced."""
+    from robovast.execution import controller as ctrl
+
+    passed = []
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}}]
+    obj.vast_dir = '/tmp'
+    obj.campaign_root = '/tmp'
+    monkeypatch.setattr(ctrl.CampaignController, '_convert_bags_in_cluster',
+                        lambda self, cmds, tag: passed.append(tag))
+    monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
+                        lambda *a, **kw: None)
+    obj._run_postprocessing('batch-2/reps-3')
+    assert passed == ['batch-2/reps-3']

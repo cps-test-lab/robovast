@@ -179,3 +179,70 @@ def test_sync_outputs_passes_force_through_to_the_download(monkeypatch, tmp_path
 
     assert pj.sync_outputs(object(), 'camp', str(tmp_path), force=True) == 3
     assert calls['force'] is True
+
+
+# -- one campaign, many conversions ------------------------------------------
+
+def test_two_conversions_of_one_campaign_get_different_job_names():
+    """A search converts once per batch, and the Job name was the campaign's alone.
+
+    Measured: batch 0's Job ran 16s and synced 146 outputs; batch 1's was "created" and
+    "succeeded" in the SAME second and synced 0. `create_namespaced_job` returned 409, the
+    code fell through to wait on the existing Job -- which was batch 0's, already complete --
+    read `succeeded` and reported "rosbag conversion complete" having converted nothing. The
+    extractor then refused the batch for a missing clearance, naming the world.
+
+    The 409 fallthrough is right for what it was written for: a one-shot campaign
+    postprocess, retried, should wait on the in-flight Job rather than duplicate it. It is
+    wrong as soon as one campaign converts more than once, so the Job's identity has to say
+    WHICH conversion it is.
+    """
+    names = {pj.build_manifest("camp-2026-08-25-1234", "img", [{"plugins": []}],
+                               ("e", "a", "s", "b", "p/"), "ns",
+                               discriminator=d)["metadata"]["name"]
+             for d in ("batch-0", "batch-1", "batch-2")}
+    assert len(names) == 3, f"batches collided on one Job name: {names}"
+
+
+def test_the_same_conversion_keeps_a_stable_name():
+    """So a genuine retry of one conversion still waits on the in-flight Job instead of
+    launching a second copy of it -- the behaviour the 409 fallthrough exists for."""
+    def name(disc):
+        return pj.build_manifest("camp-x", "img", [{"plugins": []}],
+                                 ("e", "a", "s", "b", "p/"), "ns",
+                                 discriminator=disc)["metadata"]["name"]
+    assert name("batch-3") == name("batch-3")
+
+
+def test_no_discriminator_leaves_the_campaign_level_name_unchanged():
+    """The campaign-level path converts once and its Job name is part of what an operator
+    looks for; nothing about it should move because a search needed more names."""
+    plain = pj.build_manifest("camp-x", "img", [{"plugins": []}],
+                              ("e", "a", "s", "b", "p/"), "ns")["metadata"]["name"]
+    assert plain == "robovast-postproc-camp-x"
+
+
+def test_long_campaign_ids_stay_within_the_label_limit_and_stay_distinct():
+    """Kubernetes copies the name into the pod template's `job-name` label, capped at 63.
+    Truncation must not be what makes two batches collide again -- the hash is taken over
+    the discriminated identity for exactly that reason."""
+    long_id = "nav-search-adaptive-reps-2026-08-25-13573569-with-a-long-suffix"
+    names = set()
+    for disc in ("batch-0", "batch-1", "batch-10", "batch-1-reps-3", "batch-1-reps-5"):
+        n = pj.build_manifest(long_id, "img", [{"plugins": []}],
+                              ("e", "a", "s", "b", "p/"), "ns",
+                              discriminator=disc)["metadata"]["name"]
+        assert len(n) <= 63, f"{n} is {len(n)} chars"
+        names.add(n)
+    assert len(names) == 5, f"truncation collapsed distinct conversions: {names}"
+
+
+def test_the_scripts_configmap_is_discriminated_too(monkeypatch):
+    """Each conversion deletes its scripts ConfigMap when it finishes. Sharing one name
+    across conversions means a finishing batch can delete the ConfigMap another is
+    mounting, which surfaces as a pod stuck in ContainerCreating rather than as a name
+    clash."""
+    a = pj._scripts_cm_name("camp-x", discriminator="batch-0")
+    b = pj._scripts_cm_name("camp-x", discriminator="batch-1")
+    assert a != b
+    assert pj._scripts_cm_name("camp-x") == "robovast-postproc-scripts-camp-x"

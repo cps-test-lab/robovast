@@ -780,7 +780,9 @@ class CampaignController:
                     self.backend.run_batch(
                         campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
                         runs=reps, options=self.options)
-                self._run_postprocessing()
+                # The tag identifies this conversion: one per repetitions-group, which is
+                # what the conversion Job's name has to be discriminated by.
+                self._run_postprocessing(tag)
 
                 for ps in group:
                     config_name = name_by_id.get(ps.id)
@@ -859,8 +861,13 @@ class CampaignController:
             self._end_batch_progress()
         return evaluations
 
-    def _run_postprocessing(self) -> None:
+    def _run_postprocessing(self, tag: str = "") -> None:
         """Run search.postprocessing over the campaign root (no-op if none).
+
+        *tag* names which conversion this is (``batch-<n>``, plus ``/reps-<n>`` when a
+        batch has more than one repetitions-group). It becomes the conversion Job's
+        discriminator, without which the second conversion of a campaign silently
+        inherits the first one's completed Job.
 
         Uses the same loader/runner as ``results_processing.postprocessing`` so a
         plugin (entry-point name or local ``./file.py:Class``) — e.g. one that
@@ -887,14 +894,20 @@ class CampaignController:
         container, local = split_container_postprocessing(
             self.postprocessing, config_dir=self.vast_dir)
         if container:
-            self._convert_bags_in_cluster(container)
+            self._convert_bags_in_cluster(container, tag)
         if local:
             run_postprocessing_commands(
                 local, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
 
-    def _convert_bags_in_cluster(self, rosbag_cmds: list) -> None:
+    def _convert_bags_in_cluster(self, rosbag_cmds: list, tag: str = "") -> None:
         """Run a search batch's bag conversion the way the campaign-level path does.
+
+        **One Job per conversion.** *tag* discriminates it. The Job name used to be the
+        campaign's alone, so the second conversion's create returned 409, the wait read the
+        FIRST conversion's completed Job and reported "rosbag conversion complete" having
+        converted nothing -- 0 outputs synced, and an extractor that refused the batch
+        while naming the world as the likely cause.
 
         **Two steps, not one.** The Job writes its output to the object store; ``sync_outputs``
         pulls it into the campaign root, and nothing can read a CSV before that happens. A
@@ -925,7 +938,8 @@ class CampaignController:
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
                 image_for(self.campaign_root),
                 unwrap_conversion_commands(rosbag_cmds),
-                kube_context=getattr(self.backend, "kube_context", None))
+                kube_context=getattr(self.backend, "kube_context", None),
+                discriminator=tag)
             sync(cluster_config, self.campaign_id, self.campaign_root)
             logger.info("Batch bag conversion: %s", message)
             if not ok:

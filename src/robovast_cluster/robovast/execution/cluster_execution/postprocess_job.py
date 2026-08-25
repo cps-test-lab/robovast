@@ -336,8 +336,8 @@ def _shquote(value: str) -> str:
     return shlex.quote(value)
 
 
-def _short_job_name(prefix: str, campaign: str) -> str:
-    """Build a Kubernetes Job name ``<prefix><campaign>`` capped at 63 chars.
+def _short_job_name(prefix: str, campaign: str, discriminator: str = "") -> str:
+    """Build a Kubernetes Job name ``<prefix><campaign>[-<discriminator>]`` capped at 63.
 
     Kubernetes copies the Job's ``metadata.name`` verbatim into the pod template's
     ``job-name`` label, and label values may be at most 63 chars — so the *name*
@@ -346,11 +346,18 @@ def _short_job_name(prefix: str, campaign: str) -> str:
     Keep the readable head of the campaign and append a short hash so distinct
     campaigns that share a truncated head still map to distinct Job names.
     """
-    safe = re.sub(r"[^a-z0-9.-]", "", campaign.lower().replace("_", "-"))
+    # The discriminator says WHICH conversion of this campaign the Job is. A search
+    # converts once per repetitions-group, and while the name was the campaign's alone the
+    # second create returned 409, fell through to the FIRST conversion's completed Job, and
+    # reported success having converted nothing.
+    identity = f"{campaign}-{discriminator}" if discriminator else campaign
+    safe = re.sub(r"[^a-z0-9.-]", "", identity.lower().replace("_", "-").replace("/", "-"))
     full = f"{prefix}{safe}"
     if len(full) <= 63:
         return full
-    digest = hashlib.sha256(campaign.encode()).hexdigest()[:8]
+    # Hashed over the DISCRIMINATED identity, so truncation is not what makes two
+    # conversions collide again.
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:8]
     head = safe[: 63 - len(prefix) - 1 - len(digest)].rstrip("-.")
     return f"{prefix}{head}-{digest}"
 
@@ -359,11 +366,14 @@ def _short_job_name(prefix: str, campaign: str) -> str:
 _SCRIPTS_CM_PREFIX = "robovast-postproc-scripts-"
 
 
-def _scripts_cm_name(campaign_id: str) -> str:
-    return _short_job_name(_SCRIPTS_CM_PREFIX, campaign_id)
+def _scripts_cm_name(campaign_id: str, discriminator: str = "") -> str:
+    """Discriminated with its Job: each conversion deletes this when it finishes, so a
+    shared name lets a finishing conversion delete one another is still mounting."""
+    return _short_job_name(_SCRIPTS_CM_PREFIX, campaign_id, discriminator)
 
 
-def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
+def scripts_configmap_manifest(campaign_id: str, namespace: str,
+                               discriminator: str = "") -> dict:
     """A ConfigMap carrying the *driver's own* conversion scripts.
 
     Built from ``robovast.results_processing.data`` — the same package dir the local
@@ -393,7 +403,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
-            "name": _scripts_cm_name(campaign_id),
+            "name": _scripts_cm_name(campaign_id, discriminator),
             "namespace": namespace,
             "labels": {"jobgroup": "postprocessing",
                        "campaign-id": _label_safe_campaign(campaign_id)},
@@ -437,7 +447,7 @@ def _blocked_reason(core, namespace: str, job_name: str) -> str:
 
 def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
-                   pull_secret_name: str = "") -> dict:
+                   pull_secret_name: str = "", discriminator: str = "") -> dict:
     """Build the conversion Job manifest.
 
     Args:
@@ -474,7 +484,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "name": _short_job_name("robovast-postproc-", campaign_id),
+            "name": _short_job_name("robovast-postproc-", campaign_id, discriminator),
             "namespace": namespace,
             "labels": {
                 "jobgroup": "postprocessing",
@@ -502,7 +512,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                     "volumes": [
                         # The driver's own conversion scripts, executable (0755).
                         {"name": "scripts",
-                         "configMap": {"name": _scripts_cm_name(campaign_id),
+                         "configMap": {"name": _scripts_cm_name(campaign_id,
+                                                                    discriminator),
                                        "defaultMode": 0o755}},
                         {"name": "tools", "emptyDir": {}},
                         {"name": "bags", "emptyDir": {}},
@@ -552,10 +563,19 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
 
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: str,
                        rosbag_cmds: list, force: bool = False,
-                       timeout: int = _DEFAULT_TIMEOUT, kube_context=None) -> tuple:
+                       timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
+                       discriminator: str = "") -> tuple:
     """Create the conversion Job and wait for it. Returns ``(ok, message)``.
 
     A no-op success when the campaign configures no rosbag conversion.
+
+    *discriminator* names WHICH conversion of this campaign this is, and must be set by
+    any caller that converts the same campaign more than once -- a search, which converts
+    once per repetitions-group. Without it the second create returns 409 and the wait below
+    reads the FIRST conversion's already-completed Job, returning "rosbag conversion
+    complete" having converted nothing. Left empty the Job keeps the one-shot
+    campaign-level name, where the 409 fallthrough is right: a retry of a single conversion
+    should wait on the Job already in flight rather than launch a second copy.
     """
     if not rosbag_cmds:
         return True, "no rosbag conversion configured; nothing to run"
@@ -608,14 +628,15 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     batch = client.BatchV1Api()
     manifest = build_manifest(
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
-        pull_secret_name=resolve_pull_secret(cluster_config, core, namespace))
+        pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
+        discriminator=discriminator)
     name = manifest["metadata"]["name"]
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
     # the driver's own copy, so no controller-image version skew. Create it before the
     # Job (the pod waits in ContainerCreating until the volume source exists) and delete
     # it once the Job is done.
-    cm = scripts_configmap_manifest(campaign_id, namespace)
+    cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
     cm_name = cm["metadata"]["name"]
     try:
         core.create_namespaced_config_map(namespace=namespace, body=cm)
