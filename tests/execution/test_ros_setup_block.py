@@ -80,7 +80,6 @@ def test_a_compound_command_runs_in_full():
     ``;`` was dropped in silence and a braced group was a syntax error. A probe that answers with
     the output of the first third of what you typed is worse than one that refuses -- it looks
     like an answer, and the first report of this was read as "the command returned nothing"."""
-    import subprocess
     for command, expected in [("echo one; echo two", ["one", "two"]),
                               ("{ echo x; echo y; }", ["x", "y"]),
                               ("echo a && echo b", ["a", "b"])]:

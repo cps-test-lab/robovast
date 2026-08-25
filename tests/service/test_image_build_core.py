@@ -484,7 +484,6 @@ def test_both_lanes_skip_the_same_campaign_directory(tmp_path):
 
 def test_a_campaign_directory_does_not_change_the_build_hash(tmp_path):
     """It is not a `python_packages` entry, so it must not move the key either way."""
-    from robovast.service.image_build import build_hash
 
     (tmp_path / "plugins").mkdir()
     (tmp_path / "plugins" / "pkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")

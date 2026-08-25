@@ -79,7 +79,7 @@ components:
       goal_endpoint: false
       waypoints:
         - [1.2, -3.0]
-        - [1.2,  3.0]
+        - [1.2, 3.0]
     name: pedestrian
 
   # robot_state_publisher owns the URDF static TF; two publishers for one transform is a conflict.

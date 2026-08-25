@@ -16,6 +16,8 @@ import pytest
 
 from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import cluster_setup
+from robovast.execution.cluster_execution.cluster_setup import (
+    get_kubernetes_node_labels_from_config, setup_server)
 
 
 @pytest.fixture(autouse=True)
@@ -32,8 +34,6 @@ def _no_image_warm(monkeypatch):
     """
     from robovast.execution.cluster_execution import image_warm
     monkeypatch.setattr(image_warm, "warm_family_images", lambda *a, **k: [])
-from robovast.execution.cluster_execution.cluster_setup import (
-    get_kubernetes_node_labels_from_config, setup_server)
 
 _JOBS = {'node-pool': 'primary'}
 _CONTROL = {'node-pool': 'extra'}

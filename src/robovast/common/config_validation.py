@@ -207,7 +207,7 @@ def _liveness_advisories(config_path):
     raw, problem = _safe_load(config_path)
     if problem or not isinstance(raw, dict):
         return []
-    if ((raw.get("execution") or {}).get("timeout")):
+    if (raw.get("execution") or {}).get("timeout"):
         return []
     return [_problem(
         "liveness",
@@ -1043,19 +1043,72 @@ def _build_problems(raw, vast_dir):
     for entry in entries:
         if not isinstance(entry, str) or not entry.strip():
             continue
-        p = os.path.abspath(os.path.join(vast_dir, entry))
-        exists = os.path.isdir(p) or (entry.endswith(".whl") and os.path.isfile(p))
-        if exists:
-            continue
-        is_pip_url = ("git+" in entry or "://" in entry or " @ " in entry)
-        looks_like_path = (entry.startswith((".", "/")) or entry.endswith(".whl")
-                           or ("/" in entry and not is_pip_url))
-        if looks_like_path:
+        if _missing_workspace_path(entry, vast_dir):
             problems.append(_problem(
                 "build",
                 f"'{entry}' looks like a workspace path but no such directory/wheel "
                 "exists in the project",
                 field="build.python_packages"))
+    return problems
+
+
+def _missing_workspace_path(entry: str, vast_dir: str) -> bool:
+    """Whether *entry* reads as a workspace path that is not in the project.
+
+    Shared by ``build.python_packages`` and the top-level ``plugins:`` list: both are pip
+    requirement specs where a *path* form is resolved against the project, so one rule and
+    one message for both. Index pins and git URLs are not checked --- they are not
+    resolvable offline, and guessing would fail a spec that is simply remote.
+    """
+    if not isinstance(entry, str) or not entry.strip():
+        return False
+    entry = entry.strip()
+    p = os.path.abspath(os.path.join(vast_dir, entry))
+    if os.path.isdir(p) or (entry.endswith(".whl") and os.path.isfile(p)):
+        return False
+    is_pip_url = ("git+" in entry or "://" in entry or " @ " in entry)
+    return (entry.startswith((".", "/")) or entry.endswith(".whl")
+            or ("/" in entry and not is_pip_url))
+
+
+def _plugins_problems(raw, vast_dir):
+    """Checks on the top-level ``plugins:`` list that cost nothing to run.
+
+    Declared specs are installed during config *generation*, not by validation, so a spec
+    is deliberately never resolved or fetched here. Two things can still be said without
+    the network:
+
+    * a **workspace path** entry that is not in the project --- the same check
+      ``build.python_packages`` already gets, which top-level ``plugins:`` never had, so a
+      wheel named with a typo surfaced only when a campaign tried to install it;
+    * a plugin **already installed** in this workspace whose metadata declares a
+      dependency on robovast itself. Harmless now that the install resolves against the
+      host, but it is what used to put a second robovast in the workspace, and only the
+      plugin's author can remove it.
+    """
+    problems = []
+    specs = raw.get("plugins")
+    if not isinstance(specs, list):
+        return problems
+    for entry in specs:
+        if _missing_workspace_path(entry, vast_dir):
+            problems.append(_problem(
+                "plugins",
+                f"'{entry}' looks like a workspace path but no such directory/wheel "
+                "exists in the project",
+                field="plugins"))
+    try:
+        from robovast.common.config_plugins import (  # pylint: disable=import-outside-toplevel
+            host_dependent_plugins)
+        for name, req in host_dependent_plugins(vast_dir).items():
+            problems.append(_problem(
+                "plugins",
+                f"installed plugin '{name}' declares '{req}'. A plugin is loaded into "
+                "robovast's process, not installed beside it, so the host always provides "
+                "it; drop the dependency from the plugin's metadata",
+                field="plugins"))
+    except Exception:  # noqa: BLE001 - a metadata read must never fail validation
+        logger.debug("could not check plugin host dependencies in %s", vast_dir)
     return problems
 
 
@@ -1115,6 +1168,7 @@ def validate_project_file(config_path):
     # execution.image <-> build.tag consistency) are already covered by the config
     # model in _schema_problems.
     problems.extend(_build_problems(raw, vast_dir))
+    problems.extend(_plugins_problems(raw, vast_dir))
 
     if problems:
         return {"valid": False, "problems": problems,

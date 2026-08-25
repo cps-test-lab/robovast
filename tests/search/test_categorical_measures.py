@@ -19,7 +19,10 @@ from robovast.common.config import SearchConfig
 
 pytest.importorskip('ribs', reason="quality-diversity needs the 'qd' extra")
 
-from robovast.search.strategies.qd import MeasureSpec, measure_value  # noqa: E402
+# Below the importorskip on purpose: the guard exists so this import is never
+# attempted without the 'qd' extra, which is exactly what moving it up would do.
+from robovast.search.strategies.qd import (  # noqa: E402  pylint: disable=wrong-import-position
+    MeasureSpec, measure_value)
 
 MODES = ['collision', 'timeout', 'goal_miss', 'stuck']
 

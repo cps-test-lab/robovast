@@ -268,7 +268,9 @@ def download_cmd(campaigns, output, force):
                 resume_offset=resume_offset)
         except NotImplementedError as exc:
             raise click.UsageError(str(exc)) from exc
-        except (click.UsageError, click.ClickException):
+        # Ahead of the broad handler below, which would otherwise swallow click's own
+        # control flow and report a usage error as an unexpected failure.
+        except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
             raise
         except Exception as exc:  # noqa: BLE001
             # The .part file is left where it is: the next run resumes from it.
@@ -332,7 +334,9 @@ def upload_cmd(archives, force):
                 progress_callback=make_transfer_progress_callback(campaign_id, start))
         except NotImplementedError as exc:
             raise click.UsageError(str(exc)) from exc
-        except (click.UsageError, click.ClickException):
+        # Ahead of the broad handler below, which would otherwise swallow click's own
+        # control flow and report a usage error as an unexpected failure.
+        except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
             raise
         except Exception as exc:  # noqa: BLE001
             sys.stdout.write("\n")
@@ -444,9 +448,9 @@ def remove_cmd(campaigns, variant, yes):
 
     if not yes:
         click.echo()
-        for _obj, campaign_id, variant, size in matched:
+        for _obj, campaign_id, matched_variant, size in matched:
             size_str = f"  ({_fmt_size(size)})" if size >= 0 else ""
-            click.echo(f"  {campaign_id}  [{variant}]{size_str}")
+            click.echo(f"  {campaign_id}  [{matched_variant}]{size_str}")
         click.echo()
         click.confirm(f"Remove {len(matched)} campaign archive(s) from {share_type}?",
                       abort=True)
@@ -458,7 +462,9 @@ def remove_cmd(campaigns, variant, yes):
             provider.remove_archive(object_name)
         except NotImplementedError as exc:
             raise click.UsageError(str(exc)) from exc
-        except (click.UsageError, click.ClickException):
+        # Ahead of the broad handler below, which would otherwise swallow click's own
+        # control flow and report a usage error as an unexpected failure.
+        except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
             raise
         except Exception as exc:  # noqa: BLE001
             handle_cli_exception(exc)

@@ -606,6 +606,7 @@ def test_a_tag_bump_replaces_the_containers_instead_of_piling_them_up(monkeypatc
     after = warm_daemonset_manifest(image_refs=["r/robovast:2", "r/robovast-roqsim:2"],
                                     namespace="ns1")
 
-    names = lambda m: [c["name"] for c in m["spec"]["template"]["spec"]["containers"]]
+    def names(m):
+        return [c["name"] for c in m["spec"]["template"]["spec"]["containers"]]
     assert names(before) == names(after)
     assert len(set(names(before))) == 2

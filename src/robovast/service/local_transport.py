@@ -1247,7 +1247,6 @@ class LocalTransport(RobovastInterface):
         account either way.
         """
         try:
-            from robovast.client.status import Status  # pylint: disable=import-outside-toplevel
             from robovast.execution.status_recovery import \
                 write_execution_outcome  # pylint: disable=import-outside-toplevel
             write_execution_outcome(target, Status(phase=Phase.FAILED, error=detail))
@@ -2111,7 +2110,8 @@ class LocalTransport(RobovastInterface):
         # robovast.simulators plugin", which reads as a broken .vast rather than a
         # service that had not installed what the .vast asked for.
         ensure_workspace_plugins(str(project_dir),
-                                 getattr(campaign_config, 'plugins', None))
+                                 getattr(campaign_config, 'plugins', None),
+                                 position="append")
         # base_dir also lets a backend named as a `<file>.py:<Class>` ref next to the
         # .vast resolve here -- the documented escape hatch, which silently did not work
         # on this path because nothing passed the directory it resolves against.
@@ -4340,7 +4340,6 @@ class LocalTransport(RobovastInterface):
         Raises ``SceneUnavailable`` when the run has none -- a run recorded without a capture has no
         motion to replay either, so there is nothing for geometry to serve.
         """
-        import json
 
         from robovast.service.scene_cache import SceneUnavailable
         path = (Path(self._scene_source_dir(campaign_id)) / config_name / str(run_id)

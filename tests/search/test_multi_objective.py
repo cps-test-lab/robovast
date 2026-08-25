@@ -142,7 +142,7 @@ def test_a_single_objective_search_still_reports_a_best(tmp_path):
     """The existing path must not regress: one objective still folds a scalar best."""
     cfg = _cfg([{'name': 'clearance', 'direction': 'maximize'}], batches=1, per_batch=2)
     controller, store = _controller(cfg, tmp_path, _TwoObjective(cfg))
-    report = controller.run()
+    controller.run()
     conn = sqlite3.connect(store.db_path)
     assert conn.execute('SELECT stop_kind FROM campaign').fetchone()[0] == 'batches'
     conn.close()

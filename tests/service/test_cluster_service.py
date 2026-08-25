@@ -111,7 +111,6 @@ def test_cleanup_campaign_data_skips_live_campaigns(cs, monkeypatch):
 
 def test_read_service_config_from_cluster_parses_env(monkeypatch):
     """The cluster Deployment's env is the authoritative config source."""
-    import types
 
     from robovast.execution.cluster_execution import service_deploy
 
@@ -188,7 +187,6 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
     The predicate is the one ``list_campaigns`` answers with, so the archive route and the
     listing cannot disagree about what this service has.
     """
-    import types
 
     monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"other-2026-01-01-000000"})
     monkeypatch.setattr(
@@ -203,7 +201,6 @@ def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, m
 def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):
     """The download stream tars objects from the config's add_campaign_members,
     passing the _postproc exclusion — no scratch on the service."""
-    import types
 
     monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"camp-2026-01-01-000000"})
     seen = {}
@@ -243,7 +240,6 @@ def _project_needing_a_build(tmp_path, python_packages=None):
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
-    import types
     return (types.SimpleNamespace(config_path=str(tmp_path / "p.vast")), campaign_config)
 
 
@@ -257,7 +253,6 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
     Reachable for one reason now that RoboVAST ships its own registry: that registry is
     published on the service's Ingress, so a service with no Ingress still has nowhere a
     node could pull a built image back from."""
-    import types
 
     from robovast.common.errors import CampaignConfigError
     from robovast.execution.cluster_config.base_config import RegistryConfig
@@ -681,7 +676,6 @@ def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
 # -- jobs (live) ------------------------------------------------------------
 
 def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
-    import types
     ann = {"job-name-full": full} if full is not None else {}
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name),
@@ -694,7 +688,6 @@ def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False):
 
 def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     """Per-job status mirrors the aggregate counter; counts sum to the total."""
-    import types
     jobs = [
         _job("j-run", active=1, full="camp-2026-07-17-120000-batch-0-job-0"),
         _job("j-done", succeeded=1),
@@ -725,7 +718,6 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
 
 
 def _job_pod(job_name, phase="Running"):
-    import types
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
             name=f"{job_name}-pod",
@@ -735,7 +727,6 @@ def _job_pod(job_name, phase="Running"):
 
 class _CoreWithPods:
     def __init__(self, pods, nodes=None):
-        import types
         self._items = types.SimpleNamespace(items=pods)
         # Only an unschedulable pod makes the classifier ask for these, and without them
         # it gives the strict answer (see `_pod_signals`) -- so a test about contention
@@ -751,7 +742,6 @@ class _CoreWithPods:
 
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
     """An 'active' Job whose pod is still Pending must not show as running."""
-    import types
     jobs = [_job("j-admitted", active=1)]
 
     class _Batch:
@@ -817,7 +807,6 @@ def test_list_jobs_reports_a_contended_job_as_pending_not_blocked(cs, monkeypatc
     still rides along, because "why is that one not moving" deserves an answer even when
     the answer is "it will".
     """
-    import types
     jobs = [_job("j-busy", active=1)]
 
     class _Batch:
@@ -876,7 +865,6 @@ def _fake_kueue(monkeypatch):
 
 def _blocked_job_pod(job_name):
     """A job pod stuck on an unpullable image — ``pod_block_reason`` reads it as blocked."""
-    import types
     pod = _job_pod(job_name, phase="Pending")
     pod.status.container_statuses = [types.SimpleNamespace(
         state=types.SimpleNamespace(
@@ -894,7 +882,6 @@ class _UsageBatch:
     """
 
     def __init__(self, jobs):
-        import types
         self._items = types.SimpleNamespace(items=jobs)
         self.calls = 0
 
@@ -1139,7 +1126,6 @@ def test_base_config_reports_no_store_usage_by_default():
 
 
 def _usage_node(name, cpu, mem):
-    import types
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name=name),
         status=types.SimpleNamespace(allocatable={"cpu": cpu, "memory": mem}))
@@ -1195,7 +1181,6 @@ def _usage_pod(labels, phase, node=None, cpu=None, mem=None, namespace="other"):
     both the ``app`` label and the namespace, and a default that matched would silently give
     every test a service node it never asked for.
     """
-    import types
     requests = {}
     if cpu is not None:
         requests["cpu"] = cpu
@@ -1251,7 +1236,6 @@ class _UsageCore:
     """
 
     def __init__(self, nodes, pods, job_pods=(), summaries=None, raise_on=None):
-        import types
         self._nodes = types.SimpleNamespace(items=nodes)
         self._pods = types.SimpleNamespace(items=pods)
         self._job_pods = types.SimpleNamespace(items=list(job_pods))
@@ -1300,7 +1284,6 @@ def _pod(name="pod-1", phase="Running", sidecars=()):
     ``restartPolicy: Always`` — alongside the ordinary ``s3-init``, so a test that says
     "all three containers" is testing the real pod shape.
     """
-    import types
     init = [types.SimpleNamespace(name="s3-init", restart_policy=None)]
     init += [types.SimpleNamespace(name=n, restart_policy="Always") for n in sidecars]
     return types.SimpleNamespace(
@@ -1312,7 +1295,6 @@ def _pod(name="pod-1", phase="Running", sidecars=()):
 
 
 def test_get_job_log_streams_running_pod(cs, monkeypatch):
-    import types
     seen = {}
 
     class _Core:
@@ -1337,7 +1319,6 @@ def test_get_job_log_streams_running_pod(cs, monkeypatch):
 
 
 def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
-    import types
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
@@ -1364,7 +1345,6 @@ def test_get_job_log_reads_a_pending_pods_sidecars(cs, monkeypatch):
     there and then keeps the pod Pending forever. Short-circuiting on the phase, as this
     used to, discarded exactly the output that explains the hang.
     """
-    import types
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
@@ -1390,7 +1370,6 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
     and the three containers must interleave by kubelet's per-line timestamp rather than
     arriving in three blocks.
     """
-    import types
 
     logs = {
         "robovast": "2026-08-07T10:00:02Z executing scenario\n",
@@ -1414,7 +1393,6 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
 
 
 def test_get_job_log_missing_pod_raises(cs, monkeypatch):
-    import types
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
@@ -1428,7 +1406,6 @@ def test_get_job_log_missing_pod_raises(cs, monkeypatch):
 def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
     """A second poll fetches only a trailing window, not the whole log, yet the
     byte-offset stream continues seamlessly as the pod log grows."""
-    import types
     calls = []  # since_seconds seen per read_namespaced_pod_log call
 
     def line(sec, nano, msg):
@@ -1472,7 +1449,6 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
     campaign's Stop would do nothing; the teardown is campaign-scoped so other
     queued/running campaigns are untouched.
     """
-    import types
     flagged = {}
     state = types.SimpleNamespace(request_stop=lambda: flagged.update(stopped=True))
     cs._campaigns["camp-1"] = types.SimpleNamespace(state=state)
@@ -1505,7 +1481,6 @@ def test_shutdown_tears_down_every_running_campaign(cs, monkeypatch):
     Without this, a bare service exit would orphan the in-flight scenario Jobs, which
     would keep consuming cluster resources.
     """
-    import types
     calls = []
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.cluster_execution.cleanup_cluster_campaign",
@@ -1521,7 +1496,6 @@ def test_shutdown_tears_down_every_running_campaign(cs, monkeypatch):
 
 def test_shutdown_teardown_is_best_effort(cs, monkeypatch):
     """One campaign's teardown failure never blocks the others (or the process exit)."""
-    import types
     seen = []
 
     def boom(**kw):
@@ -1556,7 +1530,6 @@ def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):
 
 def test_driver_endpoint_off_cluster_embedded_lazily_forwards(cs, monkeypatch):
     """Off-cluster + embedded MinIO → localhost port-forward, opened once, reused."""
-    import types
 
     calls = []
     alive = types.SimpleNamespace(poll=lambda: None)  # a running port-forward
@@ -1577,7 +1550,6 @@ def test_driver_endpoint_off_cluster_embedded_lazily_forwards(cs, monkeypatch):
 
 def test_shutdown_terminates_port_forward(cs, monkeypatch):
     """Service teardown closes the shared MinIO port-forward."""
-    import types
 
     proc = types.SimpleNamespace(_alive=True)
     proc.poll = lambda: None if proc._alive else 0
@@ -2136,7 +2108,7 @@ def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
     of the reply must describe that one. Pointed at the Job's whole ``/out``, the three readers
     each picked a run for themselves and the caller could not tell which."""
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+    _core, _lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
                                     execution=execution)
     monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))

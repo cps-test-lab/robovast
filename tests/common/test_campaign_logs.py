@@ -169,7 +169,6 @@ def test_build_is_the_first_phase():
     """First because it happens first — and because appending it last would insert bytes
     *ahead of* later phases as they appear, shifting every byte offset a poller holds.
     """
-    from robovast.common.campaign_logs import INFRA_PHASES
     assert INFRA_PHASES[0][0] == "BUILD"
 
 
@@ -233,7 +232,7 @@ def test_a_later_source_is_not_consulted_when_the_first_has_every_phase():
 
     def _tracking(name):
         asked.append(name)
-        return None
+        # Falls through to None: this layer never has the bytes.
 
     scratch = _store_reader({name: b"x\n" for _, name in _ALL_PHASE_FILES})
     assemble_log(layered_get_bytes(scratch, _tracking), offset=0, eof=True)

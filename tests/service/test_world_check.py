@@ -16,7 +16,6 @@ Two rules the tests below pin down, because both are easy to lose:
   on every call is a line callers learn to skip.
 """
 
-import json
 
 import pytest
 

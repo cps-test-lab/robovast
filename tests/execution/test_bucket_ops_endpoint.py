@@ -13,7 +13,6 @@ Both directions matter. Removing the port-forward outright would break every off
 caller, which is the case it was written for.
 """
 
-import os
 
 import pytest
 

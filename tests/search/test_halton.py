@@ -88,7 +88,7 @@ def test_it_continues_the_sequence_across_batches():
     strategy = build_strategy(_cfg())
     first = {tuple(ps.values.values()) for ps in strategy.ask(8)}
     second = {tuple(ps.values.values()) for ps in strategy.ask(8)}
-    assert not (first & second)
+    assert first.isdisjoint(second)
 
 
 def test_the_same_seed_reproduces_the_sequence():

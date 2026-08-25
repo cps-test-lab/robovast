@@ -64,7 +64,7 @@ def _env(monkeypatch, tmp_path):
 
 def _members(payload: bytes) -> set:
     with tarfile.open(fileobj=BytesIO(payload), mode="r:gz") as tar:
-        return {name for name in tar.getnames()}
+        return set(tar.getnames())
 
 
 def test_a_local_service_streams_its_own_campaign(env):

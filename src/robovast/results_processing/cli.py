@@ -610,7 +610,9 @@ def download_cmd(campaigns, output, force):
                 download_campaign_archive(
                     client, campaign_id, str(dest),
                     progress_callback=make_transfer_progress_callback(campaign_id, start))
-            except (click.UsageError, click.ClickException):
+            # Ahead of the broad handler below, which would otherwise swallow click's own
+            # control flow and report a usage error as an unexpected failure.
+            except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
                 raise
             except Exception as exc:  # noqa: BLE001
                 sys.stdout.write("\n")

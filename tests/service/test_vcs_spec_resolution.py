@@ -389,7 +389,6 @@ def test_the_ref_offered_for_resolution_excludes_the_fragment(monkeypatch):
 
 
 def test_pinning_keeps_the_subdirectory():
-    from robovast.service.image_build import pin_vcs_specs
 
     [pinned] = pin_vcs_specs([_SUBDIR], {_SUBDIR: "c" * 40})
     assert pinned == ("roqsim_scenes @ git+https://host/roqsim@" + "c" * 40
@@ -412,14 +411,12 @@ def test_a_pinned_subdirectory_spec_needs_no_resolution(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _install_lines(spec, tmp_path):
-    from robovast.service.image_build import generate_dockerfile
 
     return [ln for ln in generate_dockerfile(spec, tmp_path, "base:1").splitlines()
             if " install " in ln]
 
 
 def test_a_git_group_mounts_the_token_secret(tmp_path):
-    from robovast.service.image_build import BuildSpec
 
     spec = BuildSpec(tag="sim", base_image="base:1",
                      python_packages=[["pkg @ git+https://host/repo@" + "a" * 40]])
@@ -435,7 +432,6 @@ def test_a_git_group_mounts_the_token_secret(tmp_path):
 def test_an_ordinary_group_is_left_exactly_as_it_was(tmp_path):
     """The mount rides only on groups that clone. An install layer that needs no credential
     must render byte-identically, or every cached image would rebuild for nothing."""
-    from robovast.service.image_build import BuildSpec
 
     spec = BuildSpec(tag="sim", base_image="base:1", python_packages=["shapely==2.0.1"])
     [line] = _install_lines(spec, tmp_path)
@@ -446,7 +442,6 @@ def test_an_ordinary_group_is_left_exactly_as_it_was(tmp_path):
 def test_the_token_itself_never_reaches_the_dockerfile(tmp_path, monkeypatch):
     """The Dockerfile is written to the build log and staged to S3. What it may contain is the
     PATH the secret is mounted at, never the secret."""
-    from robovast.service.image_build import BuildSpec, generate_dockerfile
 
     monkeypatch.setenv("ROBOVAST_GIT_TOKEN", "ghp_secretvalue")
     spec = BuildSpec(tag="sim", base_image="base:1",
@@ -457,7 +452,6 @@ def test_the_token_itself_never_reaches_the_dockerfile(tmp_path, monkeypatch):
 def test_a_token_does_not_change_the_image_hash(tmp_path, monkeypatch):
     """BuildKit secrets are outside the cache key by design, and the hash must agree: the same
     inputs are the same image whether or not a credential was needed to fetch them."""
-    from robovast.service.image_build import BuildSpec, build_hash
 
     spec = BuildSpec(tag="sim", base_image="base:1",
                      python_packages=[["pkg @ git+https://host/repo@" + "a" * 40]])
@@ -470,9 +464,6 @@ def test_a_token_does_not_change_the_image_hash(tmp_path, monkeypatch):
 def test_the_rendered_dockerfile_names_no_simulator(tmp_path):
     """The recipe knows no simulator, and nothing it renders may learn one: a build step naming
     one would make this module the second place a new simulator has to be taught about."""
-    from robovast.service.image_build import BuildSpec, generate_dockerfile
 
     rendered = generate_dockerfile(BuildSpec(tag="sim", base_image="b:1"), tmp_path, "b:1")
     assert "roqsim" not in rendered.lower()
-
-
