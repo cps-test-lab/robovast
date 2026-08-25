@@ -12,7 +12,9 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 // white page with "Failed to fetch dynamically imported module" in the console.
 //
 // So the two halves ship together: retry the import a couple of times on our own, and put a
-// boundary behind that with a button, so the worst case is one click instead of a reload.
+// boundary behind that, so the worst case is one click. The boundary offers both clicks it
+// can, because the two ways a chunk goes missing want different ones — a dropped request
+// wants the import retried, a service rebuilt onto new asset hashes wants the page reloaded.
 
 /** Attempts before giving up, including the first. Small: a real outage should surface. */
 const ATTEMPTS = 3
@@ -24,17 +26,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /**
  * Import with retries.
  *
- * The cache-busting query on retries is load-bearing: a browser that has negatively cached
- * the failed request would otherwise serve the same failure back instantly, and every
- * attempt after the first would be free and useless.
+ * Every attempt requests the same URL. A cache-busting query used to be passed here, but it
+ * could never arrive: the callers below are zero-argument arrows around a static `import()`
+ * specifier, which Vite rewrites to a fixed chunk URL at build time. So the retries buy a
+ * second and third chance at the network, nothing more — which is what a dropped
+ * port-forward needs. A chunk that is genuinely gone exhausts them, and the boundary's
+ * Reload is the way out of that one.
  */
-export async function retryImport<T>(
-  load: (bust?: string) => Promise<T>,
-): Promise<T> {
+export async function retryImport<T>(load: () => Promise<T>): Promise<T> {
   let last: unknown
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     try {
-      return await load(attempt === 0 ? undefined : `?retry=${attempt}`)
+      return await load()
     } catch (e) {
       last = e
       if (attempt < ATTEMPTS - 1) await sleep(RETRY_DELAY_MS * (attempt + 1))

@@ -1511,7 +1511,34 @@ def _mount_ui(app) -> None:
             "copy (an image bakes it in and sets that variable).")
         return
     from fastapi.staticfiles import StaticFiles  # pylint: disable=import-outside-toplevel
-    app.mount("/", StaticFiles(directory=str(dist), html=True), name="ui")
+
+    class _CachedUi(StaticFiles):
+        """``StaticFiles`` that says how long each response may be reused.
+
+        Plain ``StaticFiles`` sends ``ETag`` and ``Last-Modified`` but no
+        ``Cache-Control``, which leaves ``index.html`` *heuristically* cacheable: a browser
+        may reuse it for a while without asking. That is the one file where reuse is wrong.
+        Restarting onto a new build rehashes everything under ``assets/``, so a tab holding
+        the previous ``index.html`` asks for chunk names that are gone — and the reload that
+        would fix it can be served the same stale document, which makes the UI's Reload
+        button a lie.
+
+        The rule is structural rather than a list of filenames, so a new unhashed file added
+        to the build is safe by default: Vite content-hashes everything it emits into
+        ``assets/``, and only those may be kept.
+        """
+
+        IMMUTABLE = "public, max-age=31536000, immutable"
+
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            # "no-cache" is not "do not store": it means revalidate first, and the ETag
+            # above turns that into a 304 with no body.
+            response.headers["Cache-Control"] = (
+                self.IMMUTABLE if path.startswith("assets/") else "no-cache")
+            return response
+
+    app.mount("/", _CachedUi(directory=str(dist), html=True), name="ui")
     logger.info("serving web UI from %s", dist)
 
 
