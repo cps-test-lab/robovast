@@ -22,9 +22,24 @@ import type {
   MotionTrack,
 } from './motionSource'
 
-/** The format string and version this reader implements. */
+/** The format string this reader implements. */
 export const CAPTURE_FORMAT = 'robovast.run_capture'
-export const CAPTURE_VERSION = 1
+
+/**
+ * The highest format version this reader implements. What each version changed:
+ *
+ *   1  the original.
+ *   2  the `overrides` half of world identity addresses components by PATH (`robot.lidar`) rather
+ *      than by plugin name. The document's *shape* is unchanged, which is exactly why the version
+ *      had to move: a consumer keying a cache on it would otherwise take a stale hit for a document
+ *      that now resolves to a different world.
+ *
+ * v2 therefore changes nothing here -- nothing in this file reads `overrides`. The consumer that
+ * does is the service (`scene_cache.world_identity`), which keys geometry on it and so keys the
+ * version too. That is recorded rather than left unsaid, because a reader that later starts reading
+ * `overrides` has to key the version as well. The format is specified in docs/run_capture.rst.
+ */
+export const CAPTURE_VERSION = 2
 
 interface RawTrack {
   kind?: unknown
@@ -110,12 +125,17 @@ export async function openRunCapture(url: string): Promise<MotionSource> {
     )
   }
   // Refuse a newer version by name rather than misreading it: a viewer that guessed would render
-  // something plausible and wrong, which is the failure this whole design is trying to avoid.
-  const version = num(manifest.version, `${url}: version`)
+  // something plausible and wrong, which is the failure this whole design is trying to avoid. The
+  // message says what to DO, because the fix is always the same one and never the reader's: teach
+  // this file the new version. "Re-export with an older producer" was advice nobody could take.
+  // An absent `version` reads as 1 -- the spec requires the field, and the oldest format is the only
+  // thing a reader can assume about one that lacks it without guessing forward.
+  const version = manifest.version == null ? 1 : num(manifest.version, `${url}: version`)
   if (version > CAPTURE_VERSION) {
     throw new CaptureFormatError(
       `${url}: capture format version ${version} is newer than this viewer supports ` +
-        `(${CAPTURE_VERSION}). Update RoboVAST, or re-export with an older producer.`,
+        `(${CAPTURE_VERSION}). This reader has to learn v${version} — see the format versions ` +
+        `table in RoboVAST's docs/run_capture.rst.`,
     )
   }
 
