@@ -645,6 +645,10 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
         </Alert>
       ) : null}
 
+      {/* Accepting the export says nothing this page does not already show: the service only
+          acknowledges that the background upload started, and its phase is live in the chip
+          below. Only a refusal (ok=false, e.g. the busy guard) or a failed request needs
+          saying. */}
       {share.isError ? (
         <Alert severity="error" sx={{ mb: 1 }}>
           Upload-to-share failed.
@@ -653,10 +657,6 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
       ) : share.data && !share.data.ok ? (
         <Alert severity="warning" sx={{ mb: 1 }}>
           <ErrorText>{share.data.message ?? 'Upload-to-share had no effect.'}</ErrorText>
-        </Alert>
-      ) : share.data?.ok ? (
-        <Alert severity="success" sx={{ mb: 1 }}>
-          <ErrorText>{share.data.message ?? 'Upload-to-share complete.'}</ErrorText>
         </Alert>
       ) : null}
 
