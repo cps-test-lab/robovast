@@ -120,6 +120,58 @@ def test_install_failure_is_actionable(tmp_path, monkeypatch):
     assert "vast exec cluster setup" in msg  # remedy surfaced
 
 
+# The output a real failed clone produces, verbatim in shape: git's reason first, then
+# pip's epilogue. The reason is more than eight lines from the end, which is what a
+# tail-only excerpt cut -- and the diagnosis is made from the whole output for that reason.
+def _clone_failure_lines(reason):
+    return [
+        "Collecting scenario_mt @ git+https://github.com/o/r@main",
+        "  Running command git clone --filter=blob:none https://github.com/o/r",
+        *reason,
+        "error: subprocess-exited-with-error",
+        "",
+        "\u00d7 git clone --filter=blob:none https://github.com/o/r did not run successfully.",
+        "\u2502 exit code: 128",
+        "\u2570-> See above for output.",
+        "",
+        "note: This error originates from a subprocess, and is likely not a problem with pip.",
+    ]
+
+
+@pytest.mark.parametrize("reason,expect", [
+    # A token that authenticates but does not cover the repository. git reports the status
+    # as "returned error: 403", never as the phrase "403 forbidden".
+    (["remote: Write access to repository not granted.",
+      "fatal: unable to access 'https://github.com/o/r/': "
+      "The requested URL returned error: 403"],
+     "private repository"),
+    # The same class seen as a 404, which is what a private repository tells a requester
+    # that may not see it. Ambiguous with a wrong URL, so both are named.
+    (["remote: Repository not found.",
+      "fatal: repository 'https://github.com/o/r/' not found"],
+     "could not be found"),
+])
+def test_private_repo_clone_failure_is_diagnosed(tmp_path, monkeypatch, reason, expect):
+    """A credential that does not cover the repository is an auth failure, not a bad spec.
+
+    Reported as "check that each spec is reachable" before this -- advice for a typo, on a
+    spec that was spelled correctly -- because the signatures only matched the no-credential
+    case and pip's epilogue is what the excerpt showed.
+    """
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
+        returncode=1, lines=_clone_failure_lines(reason)))
+    with pytest.raises(RuntimeError) as ei:
+        ensure_workspace_plugins(str(tmp_path), ["x @ git+https://github.com/o/r@main"])
+    msg = str(ei.value)
+    assert expect in msg
+    assert "vast exec cluster setup" in msg          # the remedy, not just the symptom
+    assert "each spec is reachable" not in msg       # not the wrong-URL advice
+    # The cause survives the excerpt even though pip's epilogue follows it.
+    assert reason[0] in msg
+
+
 def test_never_touches_active_venv(tmp_path, monkeypatch):
     """The install command targets the workspace dir, not global site-packages."""
     import subprocess

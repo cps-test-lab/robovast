@@ -302,27 +302,91 @@ def _direct_url_origin(dist) -> dict:
     return origin
 
 
+#: Substrings that identify a *credential* failure in a failed install's output, in three
+#: groups because they are three different situations with one remedy.
+#:
+#: Matched against the WHOLE output rather than its tail: git prints the cause first and pip
+#: appends its own epilogue after it, so the last lines are "did not run successfully" and
+#: "See above for output" while the reason is further up. Diagnosing off the tail is how a
+#: private repository the service could not read was reported as "check that each spec is
+#: reachable" -- advice for a typo, on a spec that was spelled correctly.
+_AUTH_SIGNATURES = (
+    # (1) No credential was offered. git falls back to prompting, and a non-interactive
+    # install has prompting disabled.
+    "could not read username",
+    "could not read password",
+    "terminal prompts disabled",
+    "fatal: could not read",
+    # (2) A credential was offered and rejected.
+    "authentication failed",
+    "invalid username or password",
+    "http basic: access denied",
+    # (3) A credential was accepted but does not cover this repository -- the case a token
+    # scoped to a different organisation produces, and the easiest to misread. It is an
+    # HTTP status rather than a sentence, and git spells it "returned error: 403", so
+    # matching only "403 forbidden" missed every real occurrence.
+    "access to repository not granted",
+    "403 forbidden",
+    "returned error: 403",
+    "returned error: 401",
+)
+
+#: The same class as group (3), kept separate because it is genuinely ambiguous: GitHub
+#: answers a private repository with 404 for a requester that may not see it, so this is
+#: either a credential that does not cover the repository *or* a URL that names nothing.
+#: Both are worth saying, and saying only one of them sends the reader the wrong way.
+_NOT_FOUND_SIGNATURES = (
+    "repository not found",
+    "remote: not found",
+    "returned error: 404",
+)
+
+
 def _diagnose_pip_failure(specs, stderr: str) -> str:
     """Turn a failed ``pip install`` into an actionable, MCP-user-facing message."""
     low = (stderr or "").lower()
-    auth = ("could not read username" in low or "authentication failed" in low
-            or "fatal: could not read" in low or "403 forbidden" in low)
+    auth = any(sig in low for sig in _AUTH_SIGNATURES)
+    not_found = any(sig in low for sig in _NOT_FOUND_SIGNATURES)
     lines = [f"Failed to install variation plugin(s) {list(specs)}."]
-    if auth:
+    if auth or not_found:
+        if not_found and not auth:
+            lines.append(
+                "The source could not be found. For a private repository that is what a "
+                "requester without access is told, so this is most likely a credential "
+                "that does not cover it rather than a wrong URL -- check both.")
+        else:
+            lines.append("The source needs credentials (private repository).")
         lines.append(
-            "The source needs credentials (private repository). Provide a GitHub "
-            "token at 'vast exec cluster setup' so the service can authenticate, or "
-            "upload a pre-built wheel into the workspace and reference it by a "
-            "workspace-relative path in 'plugins:'.")
+            "Provide a GitHub token at 'vast exec cluster setup' so the service can "
+            "authenticate, or upload a pre-built wheel into the workspace and reference "
+            "it by a workspace-relative path in 'plugins:'. A token only reaches what it "
+            "is scoped to: one issued for a different organisation authenticates and then "
+            "fails on the repository, which is this same failure.")
     else:
         lines.append(
             "The source could not be installed. Check that each spec is reachable "
             "and declares its own dependencies, or upload a pre-built wheel into the "
             "workspace and reference it by a workspace-relative path in 'plugins:'.")
     if stderr:
-        tail = "\n".join(stderr.strip().splitlines()[-8:])
-        lines.append("pip said:\n" + tail)
+        lines.append("pip said:\n" + _failure_excerpt(stderr))
     return "\n".join(lines)
+
+
+def _failure_excerpt(stderr: str, tail: int = 8) -> str:
+    """The tail of *stderr*, plus any line that names a cause the tail would have cut.
+
+    pip's epilogue ("did not run successfully", "See above for output") is what the last
+    lines hold, so a plain tail can show the reader everything except the reason. Any line
+    carrying a diagnosed signature is kept in its original order, deduplicated against the
+    tail, and marked so it is clear the excerpt is not contiguous.
+    """
+    lines = stderr.strip().splitlines()
+    tail_lines = lines[-tail:]
+    sigs = _AUTH_SIGNATURES + _NOT_FOUND_SIGNATURES
+    cause = [ln for ln in lines[:-tail] if any(s in ln.lower() for s in sigs)]
+    if not cause:
+        return "\n".join(tail_lines)
+    return "\n".join([*cause[-tail:], "  ...", *tail_lines])
 
 
 def _install_target(target_dir: str, specs) -> None:
