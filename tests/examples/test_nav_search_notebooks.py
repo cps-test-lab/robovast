@@ -83,10 +83,16 @@ def _campaign_db(path, space):
                 " objective, objectives_json, measures_json, n_samples, status)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (uid, batch + 1, f"ps{uid}", f"cfg-{uid}", json.dumps(params), robustness,
-                 json.dumps({"robustness": robustness,
-                             "failure_rate": 0.0 if robustness > 0 else 1.0,
-                             "time_to_goal": round(rnd.uniform(20, 119), 1)}),
+                 # Only the OPTIMISED objective goes here. `failure_rate` and
+                 # `time_to_goal` are measures: the framework refuses an extractor that
+                 # reports one name in both places, and reporting unoptimised values
+                 # beside the objective made a single-objective search look
+                 # multi-objective and left the scalar `unit.objective` NULL. The fixture
+                 # has to model the contract the extractor actually obeys, or the notebook
+                 # is checked against data no campaign can produce.
+                 json.dumps({"robustness": robustness}),
                  json.dumps({"min_clearance": round(robustness * 0.05, 4),
+                             "failure_rate": 0.0 if robustness > 0 else 1.0,
                              "time_to_goal": round(rnd.uniform(20, 119), 1),
                              "recovery_count": rnd.randint(0, 4),
                              "failure_mode": mode}),
@@ -116,6 +122,14 @@ def test_the_notebook_executes_and_draws_something(vast, tmp_path):
                       for o in c.get("outputs", []) if o.get("output_type") == "stream")
     # The two unscorable cells must be excluded from the scored population, not counted in it.
     assert "18 scored" in printed, f"{vast.stem} miscounted the scorable cells: {printed[:200]}"
+    # The headline comparison must actually compute. It is guarded by `if 'm_failure_rate'
+    # in scored`, so a renamed column does not raise -- it prints nan, or nothing at all,
+    # and the campaign's central claim quietly goes missing from its own analysis.
+    assert "a verdict, and a cliff" in printed, (
+        f"{vast.stem} did not print the failure_rate comparison at all")
+    assert "nan%" not in printed, (
+        f"{vast.stem} printed the comparison as nan -- it is reading a column the "
+        f"extractor no longer produces under that name")
 
 
 def test_every_search_vast_has_a_notebook():
