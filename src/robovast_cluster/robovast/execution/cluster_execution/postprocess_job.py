@@ -217,10 +217,16 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     rosbag_cmds = rosbag_commands_for(campaign_vast(campaign_root), skip=skip,
                                       skip_rosout=skip_rosout)
     if rosbag_cmds:
+        # The same seam the local lane reads, for the same reason: a bag belonging to a job
+        # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
+        # must not fail the conversion for every job that finished.
+        from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+            _interrupted_job_dirs)
+        tolerate_under = _interrupted_job_dirs(campaign_root)
         image = campaign_execution_image(campaign_root)
         ok, message = run_conversion_job(
             cluster_config, campaign_id, namespace, image, rosbag_cmds, force=force,
-            kube_context=kube_context)
+            kube_context=kube_context, tolerate_under=tolerate_under)
         # Sync the Job's outputs regardless of outcome. The conversion tees its
         # stdout/stderr to postprocessing.log and mirrors /out to the object store
         # even on failure, so this lands the POSTPROCESSING section (with the
@@ -360,6 +366,14 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str
             args += ["--workers", str(int(params["workers"]))]
         if force:
             args.append("--force")
+        # A job an operator stopped by hand (or the runner invalidated) was SIGKILLed
+        # mid-write, so its rosbag is unfinalized and can never be opened. Without these
+        # the whole campaign's conversion exits non-zero on that one bag, costing the
+        # metrics of every job that DID finish -- see `_interrupted_job_dirs`, which is the
+        # shared seam for this rule and which the LOCAL lane has always consulted here.
+        # This lane built its own arg list and did not, so the rule held off-cluster only.
+        for job_dir in tolerate_under:
+            args += ["--tolerate-under", _shquote(str(job_dir))]
         args.append("/bags")
         convert.append(" ".join(args))
 
@@ -495,7 +509,8 @@ def _blocked_reason(core, namespace: str, job_name: str) -> str:
 
 def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                    namespace: str, force: bool = False,
-                   pull_secret_name: str = "", discriminator: str = "") -> dict:
+                   pull_secret_name: str = "", discriminator: str = "",
+                   tolerate_under=()) -> dict:
     """Build the conversion Job manifest.
 
     Args:
@@ -506,6 +521,10 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
         s3: ``(endpoint, access_key, secret_key, bucket, campaign_prefix)``.
         namespace: Kubernetes namespace.
         force: Bypass the per-rosbag caches.
+        tolerate_under: Campaign-relative artifact dirs of jobs that were cut short
+            (:func:`~robovast.results_processing.postprocessing_plugins._interrupted_job_dirs`).
+            Their bags are unreadable by construction, so the conversion reports them and
+            succeeds instead of failing the campaign.
         pull_secret_name: Secret for this pod's OWN image pulls -- the sidecar that mirrors
             the bags, and the campaign's execution image. Missing entirely until a
             private-registry deployment sat in ``ImagePullBackOff`` while the Job stayed
@@ -594,7 +613,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                         # The system-under-test's own image: custom ROS2 types only
                         # deserialize here. ros2_exec.sh sources /opt/ros + /ws/install.
                         "image": image,
-                        "command": ["/bin/bash", "-c", _conversion_script(rosbag_cmds, force)],
+                        "command": ["/bin/bash", "-c",
+                                    _conversion_script(rosbag_cmds, force, tolerate_under)],
                         "env": s3_env,
                         "volumeMounts": [
                             {"name": "scripts", "mountPath": "/scripts", "readOnly": True},
@@ -614,7 +634,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
 def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: str,
                        rosbag_cmds: list, force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
-                       discriminator: str = "") -> tuple:
+                       discriminator: str = "", tolerate_under=()) -> tuple:
     """Create the conversion Job and wait for it. Returns ``(ok, message)``.
 
     A no-op success when the campaign configures no rosbag conversion.
@@ -656,7 +676,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     manifest = build_manifest(
         campaign_id, image, rosbag_cmds, s3, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
-        discriminator=discriminator)
+        discriminator=discriminator, tolerate_under=tolerate_under)
     name = manifest["metadata"]["name"]
 
     # The conversion scripts arrive as a per-campaign ConfigMap mounted at /scripts —
