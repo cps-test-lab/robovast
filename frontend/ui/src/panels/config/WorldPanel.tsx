@@ -60,11 +60,11 @@ function WorldPanel({ config, source }: ConfigPanelProps) {
             <Typography variant="caption" color="text.secondary">
               {world.backend} · {world.world || '(world from the campaign)'}
             </Typography>
-            {/* The overridable keys are the vocabulary a `sim:` factor has to be spelled in, so
-                they are the useful half of the answer; the entities matter only to a scenario
-                that drives one by name. */}
+            {/* The component addresses are the vocabulary a `sim:` override has to be spelled
+                in (`components.robot.lidar.rays`), so they are the useful half of the answer;
+                the entities matter only to a scenario that drives one by name. */}
             <Box component="pre" sx={{ m: 0, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap' }}>
-              {toYaml({ plugins: world.plugins, entities: world.entities })}
+              {toYaml({ components: world.components, entities: world.entities })}
             </Box>
           </Stack>
         ) : null}
