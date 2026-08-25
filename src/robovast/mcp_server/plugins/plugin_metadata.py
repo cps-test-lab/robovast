@@ -68,6 +68,27 @@ _PLUGIN_GROUPS: dict[str, dict] = {
         ),
         "loader_module": "robovast.execution.share_providers",
     },
+    "robovast.search_strategies": {
+        "description": (
+            "Search strategies that propose the next configurations to run "
+            "(random, halton, boundary, qd, optuna …), named by ``search.strategy``."
+        ),
+        "loader_module": "robovast.search.strategy",
+    },
+    "robovast.extractors": {
+        "description": (
+            "Extractors that reduce a run's output to the objective a search optimises, "
+            "named by ``search.extract.plugin``."
+        ),
+        "loader_module": "robovast.search.evaluator",
+    },
+    "robovast.simulators": {
+        "description": (
+            "Simulator backends the execution lane can drive, named by "
+            "``execution.containers.simulation.backend``."
+        ),
+        "loader_module": "robovast.common.simulators",
+    },
     "robovast.variation_types": {
         "description": (
             "Parameter variation strategies applied during scenario generation "
@@ -177,6 +198,20 @@ def _matches(ep_name: str, query: str) -> bool:
     return needle in name
 
 
+def _provider(ep) -> dict:
+    """The distribution that registered *ep*, as ``{distribution, version}``.
+
+    Worth a column because entry points are deduplicated by distribution name: when two
+    copies of a package are on ``sys.path`` only the first answers, and the symptom is a
+    group that is short or empty rather than an error. A row whose ``version`` disagrees
+    with its siblings' names the copy actually in use.
+    """
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return {}
+    return {"distribution": dist.metadata["Name"] or "", "version": dist.version}
+
+
 def list_plugins(group: str = "", query: str = "") -> dict:
     """What is installed: the extension groups, or the plugins in/matching one.
 
@@ -188,8 +223,9 @@ def list_plugins(group: str = "", query: str = "") -> dict:
     Returns:
         With neither argument, the group catalog: ``{groups, total}``, each
         ``{group, description, loader_module, plugins}`` (a count). Otherwise
-        ``{plugins, total}``, each ``{group, name, class, doc}`` — ``doc`` being the
-        docstring's first line. Use ``get_plugin_details`` for a plugin's parameters.
+        ``{plugins, total}``, each ``{group, name, class, doc, distribution, version}``
+        — ``doc`` being the docstring's first line, and ``distribution``/``version`` the
+        package that registered it. Use ``get_plugin_details`` for a plugin's parameters.
     """
     if not group and not query:
         return {
@@ -208,7 +244,8 @@ def list_plugins(group: str = "", query: str = "") -> dict:
         for ep in entry_points(group=grp):
             if query and not _matches(ep.name, query):
                 continue
-            record = {"group": grp, "name": ep.name, "class": ep.value, "doc": _load_doc(ep)}
+            record = {"group": grp, "name": ep.name, "class": ep.value,
+                      "doc": _load_doc(ep), **_provider(ep)}
             if grp == _PANEL_TYPES_GROUP:
                 record["surface"] = _panel_surface(ep)
             records.append(record)

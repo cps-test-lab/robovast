@@ -408,9 +408,8 @@ the quadrotor search vasts.
      detected and used as-is.** ``config_plugins.ensure_workspace_plugins`` checks
      whether each declared distribution is importable; if you ran
      ``pip install`` / ``make venv`` yourself, nothing is re-fetched. Only the
-     declared specs that are *missing* are installed — into the project's
-     ``.robovast_plugins/`` directory via ``pip install --target`` (never your
-     active venv).
+     declared specs that are *missing* are installed — into a virtual environment
+     under the project's ``.robovast_plugins/`` directory (never your active venv).
    * **For a service/cluster campaign, the service installs each declared plugin
      into the workspace's ``.robovast_plugins/`` and imports it off ``sys.path``**
      when it composes (``config_plugins.ensure_workspace_plugins``). The install
@@ -418,12 +417,17 @@ the quadrotor search vasts.
      credentials only there; the driver then uses the installed plugin directly —
      there is no staging round-trip through the object store and no separate pod.
 
-   Dependencies come from each package's own metadata into that same directory, so
+   Dependencies come from each package's own metadata into that same environment, so
    the one real constraint is that your plugin must **declare its dependencies
    correctly** (e.g. ``scenario_mt``'s ``shapely`` and its ``fpm @ git+…``). There
    is no separate host-venv "injection" step and no wheel-shipping; a plugin
    installed only in your host venv but **not** declared in ``plugins:`` will not
    reach the service.
+
+   **Do not declare a dependency on robovast itself.** Your plugin is loaded into
+   robovast's process, so the host always provides it; the declaration is redundant,
+   and it makes your package unnecessarily expensive to resolve anywhere the host is
+   not already present. ``validate_project`` reports it once the plugin is installed.
 
    **Declaring a plugin in the ``.vast`` (CLI, MCP, and ``robovast-service``).**
    Declare the plugin **inside the ``.vast``** with a top-level ``plugins:`` list of
@@ -440,10 +444,22 @@ the quadrotor search vasts.
    These are **installed into the workspace**. Before variation types are resolved
    from entry points, ``config_plugins.ensure_workspace_plugins`` (called once at
    the top of ``generate_scenario_variations`` — the sole convergence for local and
-   service composition) installs the declared specs into
-   ``<workspace>/.robovast_plugins/`` with ``pip install --target`` (**with
-   dependencies**) and puts that directory on ``sys.path`` so the entry points
-   resolve. A ``.installed`` marker (a hash of the specs) makes it idempotent.
+   service composition) installs the declared specs (**with dependencies**) into a
+   venv under ``<workspace>/.robovast_plugins/`` and puts that venv's
+   ``site-packages`` on ``sys.path`` so the entry points resolve. A ``.installed``
+   marker (a hash of the specs *and* of the environment they were resolved against)
+   makes it idempotent.
+
+   **Why a venv rather than** ``pip install --target``. A plugin is resolved against
+   the host, not in isolation from it: inside a venv pip treats what the host already
+   provides as satisfied, and declines to uninstall anything living outside the
+   environment it targets. ``--target`` cannot do either — pip forces
+   ``--ignore-installed`` whenever it is given, so every dependency is re-materialized,
+   and a plugin depending on ``robovast`` got a second robovast installed beside it.
+   Since ``importlib.metadata`` deduplicates distributions by name and keeps the first
+   on ``sys.path``, that copy's entry points became the only ones the process could see.
+   The same mechanism, for the same reason, backs the experiment image build
+   (``image_build._VENV_SETUP``).
 
    The key property: ``.robovast_plugins/`` lives in the workspace the driver
    composes from, so the plugin is imported straight off ``sys.path`` with no
@@ -454,8 +470,8 @@ the quadrotor search vasts.
      git credentials;
    * on your host (``vast`` CLI), a declared plugin **already installed** in the
      active venv is *detected and used as-is* — install it yourself and it is not
-     re-fetched. Only missing specs are installed, and always into
-     ``.robovast_plugins/`` (never your site-packages), so a run is **non-invasive**.
+     re-fetched. Only missing specs are installed, and always into the workspace venv
+     (never your site-packages), so a run is **non-invasive**.
 
    **Sources.** An index pin needs no source access. A git URL works when the
    install environment can reach it — for a **private** repo in the service, provide
@@ -746,10 +762,21 @@ long-lived service process, which has no reason to carry a MuJoCo or an Isaac ru
 A backend declares strings and container specs; anything genuinely needing the simulator
 returns a ``ContainerSpec`` from ``input_files`` and runs *inside the simulator's image*.
 
-**It cannot arrive through** ``plugins:``. The image and environment hooks run during
-composition, long before ``_install_plugins`` — and that install is deliberately
-``add_to_path=False``. So a backend is an ordinary installed distribution of the service
-environment, like ``robovast_nav``, or is named by a ``.vast``-relative file ref.
+**It can arrive through** ``plugins:``, but not via the driver's plugin-install phase.
+That phase (``controller._install_plugins``) is deliberately ``add_to_path=False`` and in
+any case runs long after the image and environment hooks. What makes a packaged backend
+work is a separate, earlier install: ``local_transport._build_specs_for`` resolves the
+campaign's ``plugins:`` *before* extracting the build specs, precisely because the
+container plan depends on the backend. The ordinary answer is still an installed
+distribution of the service environment, like ``robovast_nav``, or a ``.vast``-relative
+file ref — a wheel per campaign is a real cost. See :doc:`simulators` for the three
+options in preference order.
+
+.. note::
+
+   That two install sites decide this, and only one of them is documented where a backend
+   author would look, is worth revisiting: whether a backend *should* be shippable per
+   campaign is a design question, and today the answer is an accident of call order.
 
 **Where it runs in composition.** ``apply_backend()`` is called once at the top of the
 ``execution`` extraction in ``generate_scenario_variations()``, so the container plan, the

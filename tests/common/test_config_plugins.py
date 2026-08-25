@@ -2,13 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``.vast`` ``plugins:`` install into a per-workspace dir, not the active venv.
+"""``.vast`` ``plugins:`` install into a per-workspace venv, not the active one.
 
-``ensure_workspace_plugins`` installs the declared specs into
-``<vast_dir>/.robovast_plugins/`` with ``pip install --target`` (idempotent via a
-spec-hash marker) and puts that dir on ``sys.path``. It never touches the active
-venv, and a matching marker skips the install entirely (the offline controller-pod
-path). A failed install raises an actionable error.
+``ensure_workspace_plugins`` installs the declared specs into a venv under
+``<vast_dir>/.robovast_plugins/`` (idempotent via a marker hashing the specs *and*
+the environment) and puts that venv's ``site-packages`` on ``sys.path``. It never
+touches the active venv, and a matching marker skips the install entirely. A failed
+install raises an actionable error.
+
+The venv is what makes the install resolve **against** the host rather than in
+isolation from it, so a plugin that depends on robovast cannot be given a second copy
+of it -- the shadowing that emptied ``robovast.search_strategies`` for a whole service
+process. Several tests below exist only to hold that property.
 """
 
 import os
@@ -17,7 +22,8 @@ import sys
 import pytest
 
 from robovast.common import config_plugins as cp
-from robovast.common.config_plugins import MARKER_NAME, PLUGIN_DIRNAME, ensure_workspace_plugins
+from robovast.common.config_plugins import (MARKER_NAME, PLUGIN_DIRNAME,
+                                            ensure_workspace_plugins, plugin_site_dir)
 
 
 @pytest.fixture(autouse=True)
@@ -28,9 +34,9 @@ def _restore_sys_path():
 
 
 class _FakePopen:
-    """Minimal stand-in for ``subprocess.Popen`` used by ``_install_target``.
+    """Minimal stand-in for ``subprocess.Popen`` used by ``_install_into``.
 
-    ``_install_target`` streams the child's merged stdout line by line and then
+    ``_install_into`` streams the child's merged stdout line by line and then
     calls ``wait()``. The fake exposes an iterable ``stdout`` and a ``wait`` that
     returns the configured return code, and records the ``cmd``/``env`` it was
     given via ``on_call`` for assertions.
@@ -59,48 +65,46 @@ def test_no_plugins_is_noop(tmp_path):
     assert not (tmp_path / PLUGIN_DIRNAME).exists()
 
 
-def test_installs_into_workspace_dir_and_adds_syspath(tmp_path, monkeypatch):
+def test_installs_into_workspace_venv_and_adds_syspath(tmp_path, monkeypatch):
     calls = {}
 
-    def fake_install(target_dir, specs):
-        os.makedirs(target_dir, exist_ok=True)
-        calls["target"] = target_dir
+    def fake_install(venv_dir, specs):
+        calls["venv"] = venv_dir
         calls["specs"] = list(specs)
 
-    monkeypatch.setattr(cp, "_install_target", fake_install)
+    monkeypatch.setattr(cp, "_install_into", fake_install)
     # no real dist named this -> _warn_if_already_loaded stays quiet
     result = ensure_workspace_plugins(str(tmp_path), ["totally-made-up-pkg==1.0"])
 
-    target = str(tmp_path / PLUGIN_DIRNAME)
-    assert result == target
-    assert calls["target"] == target and calls["specs"] == ["totally-made-up-pkg==1.0"]
+    site = plugin_site_dir(str(tmp_path))
+    assert result == site
+    assert calls["venv"] == str(tmp_path / PLUGIN_DIRNAME / cp.VENV_DIRNAME)
+    assert calls["specs"] == ["totally-made-up-pkg==1.0"]
     # Prepended so the plugin's pinned deps win (safe: imports run only in the
     # isolated compose subprocess, never in the long-lived service).
-    assert sys.path[0] == target
-    assert os.path.isfile(os.path.join(target, MARKER_NAME))  # marker written
+    assert sys.path[0] == site
+    assert os.path.isfile(str(tmp_path / PLUGIN_DIRNAME / MARKER_NAME))  # marker written
 
 
 def test_marker_hit_skips_install(tmp_path, monkeypatch):
     # First call installs (stubbed) and writes the marker.
-    monkeypatch.setattr(cp, "_install_target",
-                        lambda d, s: os.makedirs(d, exist_ok=True))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s: None)
     specs = ["made-up==2.0"]
     ensure_workspace_plugins(str(tmp_path), specs)
 
-    # Second call with the same specs must NOT install again (offline pod path).
+    # Second call with the same specs must NOT install again.
     def boom(*_a, **_k):
         raise AssertionError("install must be skipped on a marker hit")
 
-    monkeypatch.setattr(cp, "_install_target", boom)
-    target = ensure_workspace_plugins(str(tmp_path), specs)
-    assert target == str(tmp_path / PLUGIN_DIRNAME)
-    assert sys.path[0] == target  # still put on sys.path (prepended)
+    monkeypatch.setattr(cp, "_install_into", boom)
+    site = ensure_workspace_plugins(str(tmp_path), specs)
+    assert site == plugin_site_dir(str(tmp_path))
+    assert sys.path[0] == site  # still put on sys.path (prepended)
 
 
 def test_changed_specs_reinstall(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(cp, "_install_target",
-                        lambda d, s: (os.makedirs(d, exist_ok=True), seen.append(list(s))))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.append(list(s)))
     ensure_workspace_plugins(str(tmp_path), ["a==1"])
     ensure_workspace_plugins(str(tmp_path), ["a==2"])  # different hash -> reinstall
     assert seen == [["a==1"], ["a==2"]]
@@ -173,16 +177,23 @@ def test_private_repo_clone_failure_is_diagnosed(tmp_path, monkeypatch, reason, 
 
 
 def test_never_touches_active_venv(tmp_path, monkeypatch):
-    """The install command targets the workspace dir, not global site-packages."""
+    """The install command targets the workspace venv, not the active interpreter.
+
+    ``--python`` and not ``--target``: ``--target`` makes pip force
+    ``--ignore-installed``, which is what re-materialized the host -- including robovast
+    itself -- into the workspace.
+    """
     import subprocess
     captured = {}
 
     monkeypatch.setattr(subprocess, "Popen", _fake_popen_factory(
         on_call=lambda cmd, kw: captured.update(cmd=cmd)))
     ensure_workspace_plugins(str(tmp_path), ["some-pkg==1.0"])
-    assert "--target" in captured["cmd"]
-    ti = captured["cmd"].index("--target")
-    assert captured["cmd"][ti + 1] == str(tmp_path / PLUGIN_DIRNAME)
+    assert "--target" not in captured["cmd"]
+    ti = captured["cmd"].index("--python")
+    venv_dir = tmp_path / PLUGIN_DIRNAME / cp.VENV_DIRNAME
+    assert captured["cmd"][ti + 1] == str(venv_dir / "bin" / "python")
+    assert captured["cmd"][ti + 1] != sys.executable
 
 
 def test_detects_already_installed_and_skips(tmp_path, monkeypatch):
@@ -190,26 +201,24 @@ def test_detects_already_installed_and_skips(tmp_path, monkeypatch):
     def boom(*_a, **_k):
         raise AssertionError("must not install an already-installed plugin")
 
-    monkeypatch.setattr(cp, "_install_target", boom)
+    monkeypatch.setattr(cp, "_install_into", boom)
     # 'pytest' is installed in the test env.
     result = ensure_workspace_plugins(str(tmp_path), ["pytest"])
-    assert result is None                                   # no workspace dir created
+    assert result is None                                   # no workspace venv created
     assert not (tmp_path / PLUGIN_DIRNAME).exists()
 
 
 def test_force_materializes_even_if_installed(tmp_path, monkeypatch):
     """Staging path: force installs every spec into the dir for the bare pod."""
     seen = {}
-    monkeypatch.setattr(cp, "_install_target",
-                        lambda d, s: (os.makedirs(d, exist_ok=True), seen.update(specs=list(s))))
-    target = ensure_workspace_plugins(str(tmp_path), ["pytest"], force=True)
-    assert target == str(tmp_path / PLUGIN_DIRNAME)
+    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.update(specs=list(s)))
+    site = ensure_workspace_plugins(str(tmp_path), ["pytest"], force=True)
+    assert site == plugin_site_dir(str(tmp_path))
     assert seen["specs"] == ["pytest"]     # installed despite being importable
 
 
 def test_force_install_warns_when_already_loaded(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(cp, "_install_target",
-                        lambda d, s: os.makedirs(d, exist_ok=True))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s: None)
     with caplog.at_level("WARNING"):
         ensure_workspace_plugins(str(tmp_path), ["pytest"], force=True)
     assert any("already present" in r.message for r in caplog.records)
@@ -303,22 +312,43 @@ def test_plugin_specs_from_vast(tmp_path):
 def test_ensure_plugins_importable_installs_recorded_specs(tmp_path, monkeypatch):
     """A re-run reads plugins: from the campaign's .vast and installs-if-absent."""
     seen = {}
-    monkeypatch.setattr(cp, "_install_target",
-                        lambda d, s: (os.makedirs(d, exist_ok=True), seen.update(specs=list(s))))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.update(specs=list(s)))
     (tmp_path / "c.vast").write_text(
         "version: 1\nplugins:\n  - made-up-pp==9\nexecution:\n  image: i\n")
     cp.ensure_plugins_importable(str(tmp_path))  # vast auto-discovered
     assert seen["specs"] == ["made-up-pp==9"]
-    assert sys.path[0] == str(tmp_path / PLUGIN_DIRNAME)  # led sys.path
+    # APPENDED, not prepended: every caller of ensure_plugins_importable runs in the
+    # long-lived service, where sys.path is shared with concurrent campaigns.
+    assert sys.path[-1] == plugin_site_dir(str(tmp_path))
+    assert sys.path[0] != plugin_site_dir(str(tmp_path))
 
 
-def test_ensure_plugins_importable_prepends_existing_dir_without_specs(tmp_path):
-    """No plugins: but a staged .robovast_plugins/ (compose) is still put on sys.path."""
-    pd = tmp_path / PLUGIN_DIRNAME
-    pd.mkdir()
+def test_a_leftover_dir_registering_nothing_is_not_put_on_sys_path(tmp_path):
+    """A .vast that declares no plugins must not reorder imports for the process.
+
+    An empty (or plugin-less) leftover directory used to be prepended anyway, which is
+    how one workspace's install reached a campaign that never asked for one.
+    """
+    site = plugin_site_dir(str(tmp_path))
+    os.makedirs(site)
     (tmp_path / "c.vast").write_text("version: 2\nexecution:\n  image: i\n")
     cp.ensure_plugins_importable(str(tmp_path))
-    assert sys.path[0] == str(pd)
+    assert site not in sys.path
+
+
+def test_a_leftover_dir_registering_plugins_is_still_used(tmp_path):
+    """The converse: a real staged install is found without re-declaring it."""
+    site = plugin_site_dir(str(tmp_path))
+    di = os.path.join(site, "made_up-1.0.dist-info")
+    os.makedirs(di)
+    with open(os.path.join(di, "METADATA"), "w", encoding="utf-8") as f:
+        f.write("Metadata-Version: 2.1\nName: made_up\nVersion: 1.0\n")
+    with open(os.path.join(di, "entry_points.txt"), "w", encoding="utf-8") as f:
+        f.write("[robovast.variation_types]\nMadeUp = made_up:MadeUp\n")
+    (tmp_path / "c.vast").write_text("version: 2\nexecution:\n  image: i\n")
+    cp.ensure_plugins_importable(str(tmp_path))
+    assert sys.path[-1] == site
+    assert cp.staged_variation_type_names(str(tmp_path)) == {"MadeUp"}
 
 
 def test_ensure_plugins_importable_never_raises(tmp_path, monkeypatch):
@@ -367,3 +397,143 @@ def test_a_parent_relative_path_is_normalized():
     from robovast.common.config_plugins import _resolve_local_specs
     got = _resolve_local_specs("/srv/sources/ws-1/sub", ["../plugins/p.whl"])
     assert got == ["/srv/sources/ws-1/plugins/p.whl"]
+
+
+# ---------------------------------------------------------------------------
+# The shadowing regression: a plugin that depends on robovast must not be given
+# a second copy of it. These hold the property the venv exists for.
+# ---------------------------------------------------------------------------
+
+def test_the_workspace_venv_sees_the_host_interpreters_packages(tmp_path):
+    """The venv must resolve against the *running* interpreter, not the base one.
+
+    ``--system-site-packages`` alone adds ``sys.base_prefix``'s site directories. When
+    robovast itself runs from a venv -- every developer checkout -- that is the system
+    Python, which does not have robovast; pip would then find nothing to satisfy a
+    plugin's ``robovast>=1.0.0`` and install a second copy. The explicit ``.pth`` is
+    what makes this correct in both deployments, so assert the outcome, not the flag.
+    """
+    import subprocess
+    venv_dir = str(tmp_path / PLUGIN_DIRNAME / cp.VENV_DIRNAME)
+    site = cp._ensure_venv(venv_dir)
+    assert os.path.isfile(os.path.join(site, cp.HOST_PTH_NAME))
+
+    seen = subprocess.run(
+        [cp._venv_python(venv_dir), "-c",
+         "import importlib.metadata as m; print(m.version('robovast'))"],
+        capture_output=True, text=True, check=False)
+    assert seen.returncode == 0, seen.stderr
+    from importlib.metadata import version
+    assert seen.stdout.strip() == version("robovast")
+
+
+def test_a_plugin_depending_on_robovast_resolves_to_the_host(tmp_path):
+    """pip must treat the host's robovast as satisfying ``robovast>=1.0.0``.
+
+    Driven with ``--no-index`` so the assertion cannot be met by a download: if the
+    workspace venv could not see the host, pip would have to fetch a robovast and would
+    fail instead. Under ``pip install --target`` it did exactly that -- ``--target``
+    forces ``--ignore-installed`` -- and the fetched 1.0.0's entry points then replaced
+    the host's for the whole process, emptying ``robovast.search_strategies``.
+    """
+    import subprocess
+    venv_dir = str(tmp_path / PLUGIN_DIRNAME / cp.VENV_DIRNAME)
+    site = cp._ensure_venv(venv_dir)
+
+    done = subprocess.run(
+        [sys.executable, "-m", "pip", "--python", cp._venv_python(venv_dir), "install",
+         "--no-index", "--no-deps", "--disable-pip-version-check", "robovast>=1.0.0"],
+        capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "already satisfied" in (done.stdout + done.stderr).lower()
+
+    from importlib.metadata import distributions
+    assert [d.metadata["Name"] for d in distributions(path=[site])] == []
+
+
+def test_a_pre_venv_target_tree_is_reclaimed(tmp_path):
+    """A flat ``pip --target`` tree from an older robovast is removed, marker and all.
+
+    It is already inert -- the importable directory moved into the venv -- but a real
+    one runs to about a gigabyte, and leaving it would make ``.robovast_plugins/`` mean
+    two things at once. The marker goes too: it describes an install this layout no
+    longer has, and keeping it could skip the venv install.
+    """
+    pd = tmp_path / PLUGIN_DIRNAME
+    (pd / "robovast-1.0.0.dist-info").mkdir(parents=True)
+    (pd / "robovast-1.0.0.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: robovast\nVersion: 1.0.0\n")
+    (pd / "robovast").mkdir()
+    (pd / MARKER_NAME).write_text("stale")
+
+    cp._reclaim_pre_venv_layout(str(tmp_path))
+
+    assert not (pd / "robovast").exists()
+    assert not (pd / "robovast-1.0.0.dist-info").exists()
+    assert not (pd / MARKER_NAME).exists()
+
+
+def test_reclaiming_leaves_a_venv_alone(tmp_path):
+    """Only the flat layout is reclaimed; a current workspace must survive it."""
+    venv_dir = tmp_path / PLUGIN_DIRNAME / cp.VENV_DIRNAME
+    venv_dir.mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr\n")
+    (tmp_path / PLUGIN_DIRNAME / "leftover-1.0.dist-info").mkdir()
+
+    cp._reclaim_pre_venv_layout(str(tmp_path))
+
+    assert (venv_dir / "pyvenv.cfg").exists()
+
+
+def test_the_marker_covers_the_environment_not_only_the_specs(monkeypatch):
+    """Same specs against a different interpreter are a different install.
+
+    The install is resolved *against the host*, so the host is part of what the marker
+    describes. Hashing the specs alone let a tree built by a 3.12 service be reused
+    verbatim by a 3.13 one -- marker matching, no reinstall, and a ``site-packages``
+    that interpreter cannot import.
+    """
+    specs = ["some-pkg==1.0"]
+    here = cp._spec_hash(specs)
+    assert cp._spec_hash(specs) == here            # stable
+    assert cp._spec_hash(list(reversed(specs + ["b==2"]))) == cp._spec_hash(specs + ["b==2"])
+
+    real = cp.sysconfig.get_paths
+    monkeypatch.setattr(cp.sysconfig, "get_paths",
+                        lambda *a, **k: {**real(*a, **k), "purelib": "/somewhere/else"})
+    assert cp._spec_hash(specs) != here
+
+
+def test_a_plugin_declaring_a_dependency_on_robovast_is_reported(tmp_path):
+    """The declaration is harmless now, but only its author can remove it.
+
+    Read off installed metadata rather than pip's output, so a ``git+https`` spec that
+    pip logged under a different display name is still attributed correctly.
+    """
+    site = plugin_site_dir(str(tmp_path))
+    di = os.path.join(site, "needy-1.0.dist-info")
+    os.makedirs(di)
+    with open(os.path.join(di, "METADATA"), "w", encoding="utf-8") as f:
+        f.write("Metadata-Version: 2.1\nName: needy\nVersion: 1.0\n"
+                "Requires-Dist: shapely (>=2.0)\nRequires-Dist: robovast (>=1.0.0)\n")
+
+    assert cp.host_dependent_plugins(str(tmp_path)) == {"needy": "robovast (>=1.0.0)"}
+
+
+def test_a_plugin_registering_robovast_entry_points_is_not_mistaken_for_the_host(tmp_path):
+    """The false positive to avoid: a real plugin registers ``robovast.*`` groups.
+
+    ``scenario_mt`` declares ``robovast.variation_types`` and is exactly what
+    ``plugins:`` is for. Nothing here may treat that as a host copy.
+    """
+    site = plugin_site_dir(str(tmp_path))
+    di = os.path.join(site, "scenario_mt-1.0.dist-info")
+    os.makedirs(di)
+    with open(os.path.join(di, "METADATA"), "w", encoding="utf-8") as f:
+        f.write("Metadata-Version: 2.1\nName: scenario_mt\nVersion: 1.0\n")
+    with open(os.path.join(di, "entry_points.txt"), "w", encoding="utf-8") as f:
+        f.write("[robovast.variation_types]\nSemanticGeneration = scenario_mt:SG\n")
+
+    assert cp.host_dependent_plugins(str(tmp_path)) == {}
+    assert cp.staged_variation_type_names(str(tmp_path)) == {"SemanticGeneration"}
+    assert cp._registers_plugins(site) is True

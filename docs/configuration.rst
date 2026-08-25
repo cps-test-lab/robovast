@@ -111,13 +111,24 @@ forms:
      # 3. a wheel you uploaded into this project — a workspace-relative path
      - ./plugins/my_plugin-1.0.0-py3-none-any.whl
 
-The packages are installed into a ``.robovast_plugins/`` directory (next to your
-``.vast`` for a workspace, or inside the campaign for a re-run), together with their
-dependencies, and put on ``sys.path`` before the variations are composed — so the
-variation type names resolve — and again before postprocessing runs, so postprocessing
-plugins and their dependencies resolve (including on a re-run in a fresh process after
-a service restart). The installed directory travels with the campaign into the
-cluster; the execution pods do not install or clone anything.
+The packages are installed into a virtual environment under ``.robovast_plugins/``
+(next to your ``.vast`` for a workspace, or inside the campaign for a re-run), together
+with their dependencies, and put on ``sys.path`` before the variations are composed — so
+the variation type names resolve — and again before postprocessing runs, so postprocessing
+plugins and their dependencies resolve (including on a re-run in a fresh process after a
+service restart).
+
+The install is **resolved against robovast's own environment**, so anything the host
+already provides is satisfied rather than reinstalled, and only what is genuinely missing
+lands in the workspace. One consequence is worth stating: **your plugin should not declare
+a dependency on robovast**. A plugin is loaded *into* robovast's process, not installed
+beside it, so the host always provides it — and an installer that ignored what was already
+present would give the workspace a second copy of robovast, whose entry points would then
+be the only ones the process could see. ``validate_project`` reports the declaration if it
+finds it.
+
+The directory does not travel: it is excluded from workspace pushes and from image build
+contexts, and it is rebuilt wherever a campaign is composed.
 
 .. note::
 

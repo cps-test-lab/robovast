@@ -80,3 +80,64 @@ def test_no_entry_point_name_has_two_providers(group):
         f"unspecified. Usually stale metadata from a moved entry point: re-run "
         f"'make venv' (or 'pip install --no-deps -e .' in each of src/*)."
     )
+
+
+def _declared_entry_point_groups():
+    """Every ``robovast.*`` entry-point group the five manifests declare.
+
+    Read out of the ``pyproject.toml`` files rather than listed here, so a group added
+    tomorrow is covered without anyone remembering to add it.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    manifests = [root / "pyproject.toml", *sorted(root.glob("src/*/pyproject.toml"))]
+    groups = set()
+    for manifest in manifests:
+        groups.update(re.findall(r'\[tool\.poetry\.plugins\."(robovast\.[^"]+)"\]',
+                                 manifest.read_text(encoding="utf-8")))
+    assert groups, f"no entry-point groups found in {manifests}"
+    return sorted(groups)
+
+
+#: Declared with no entries on purpose (``pyproject.toml``), so "empty" is correct for it.
+_DELIBERATELY_EMPTY = {"robovast.metadata_processing"}
+
+
+@pytest.mark.parametrize("group", _declared_entry_point_groups())
+def test_every_declared_group_has_a_provider(group):
+    """A group robovast declares must not come back empty.
+
+    This is the invariant the shadowing diagnosis in ``plugin_ref`` relies on: because an
+    empty built-in group is impossible in a healthy install, an empty one is evidence of a
+    broken *installation* rather than a missing plugin, and may be reported as such.
+
+    It is also the assertion that would have caught the outage directly. A workspace
+    plugin directory carrying its own ``robovast`` distribution replaced the host's entry
+    points wholesale -- ``importlib.metadata`` deduplicates by distribution name and keeps
+    the first on ``sys.path`` -- so ``robovast.search_strategies`` read ``(none
+    registered)`` while every module and import in the process was fine.
+    """
+    from importlib.metadata import entry_points
+
+    if group in _DELIBERATELY_EMPTY:
+        pytest.skip(f"{group} is declared with no entries")
+    assert list(entry_points(group=group)), (
+        f"entry-point group {group!r} is empty. robovast declares it, so this is a broken "
+        f"installation: either the metadata is stale (run `make venv`) or a second "
+        f"distribution ahead of it on sys.path is shadowing it.")
+
+
+def test_only_one_distribution_is_named_robovast():
+    """Two would mean only one of them answers, silently, for every entry-point group."""
+    from importlib.metadata import distributions
+
+    from robovast.common.config_plugins import canonical_name
+
+    same = [d for d in distributions()
+            if canonical_name(d.metadata["Name"] or "") == "robovast"]
+    where = [f"{d.version} at {d.locate_file('')}" for d in same]
+    assert len(same) == 1, (
+        "more than one distribution named 'robovast' is visible; only the first on "
+        f"sys.path is ever used: {'; '.join(where)}")

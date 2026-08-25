@@ -14,13 +14,15 @@ dependent on whatever the remote branch points at today -- which is the very pro
 
 import json
 import pathlib
+from pathlib import Path
 
-from robovast.common.config_plugins import PLUGIN_DIRNAME, resolved_plugin_versions
+from robovast.common.config_plugins import plugin_site_dir, resolved_plugin_versions
 
 
 def _install(vast_dir: pathlib.Path, name: str, version: str, direct_url: dict | None = None):
     """Write the dist-info pip would leave behind for *name* in the workspace plugin dir."""
-    dist = vast_dir / PLUGIN_DIRNAME / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist = (Path(plugin_site_dir(str(vast_dir)))
+            / f"{name.replace('-', '_')}-{version}.dist-info")
     dist.mkdir(parents=True)
     (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
                                    encoding="utf-8")
@@ -76,7 +78,7 @@ def test_a_malformed_direct_url_does_not_fail_the_campaign(tmp_path):
     """This is provenance. Failing to record it must never take down the campaign that was
     about to record it -- the version is still worth having."""
     _install(tmp_path, "broken", "9.9")
-    dist = next((tmp_path / PLUGIN_DIRNAME).glob("broken-*.dist-info"))
+    dist = next(Path(plugin_site_dir(str(tmp_path))).glob("broken-*.dist-info"))
     (dist / "direct_url.json").write_text("{not json", encoding="utf-8")
     record = resolved_plugin_versions(str(tmp_path), ["broken"])
     assert record["broken"]["version"] == "9.9"

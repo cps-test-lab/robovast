@@ -1647,7 +1647,7 @@ class ConfigV1(BaseModel):
             "private repo, provide a GitHub token at 'vast exec cluster setup'); or a "
             "workspace-relative path to a wheel you uploaded "
             "('./plugins/my_plugin-1.0-py3-none-any.whl'). They are installed into the "
-            "'.robovast_plugins/' dir (with dependencies) and put on sys.path before "
+            "'.robovast_plugins/' venv (with dependencies) and put on sys.path before "
             "composing (so variation names resolve) and before postprocessing (so "
             "postprocessing plugins and their deps resolve, including on a re-run)."),
     )
@@ -1665,7 +1665,7 @@ class ConfigV1(BaseModel):
         # Each entry is a pip requirement spec (a git URL such as
         # ``pkg @ git+https://host/repo@ref`` or an index pin ``pkg==1.2.3``)
         # installed into the composing environment before variation resolution.
-        # A bare local path won't resolve inside the controller pod, so entries
+        # A bare local path only resolves where the workspace is, so entries
         # should be network-reachable; we only enforce non-empty strings here.
         if v is None:
             return v

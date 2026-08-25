@@ -18,6 +18,7 @@ loudly. These tests pin the difference between "cannot check that here" and "tha
 
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -65,7 +66,8 @@ def _stage_plugin(tmp_path, name="AStagedVariation"):
     dir. The module the entry point points at is deliberately absent: resolving the *name*
     must not require importing it.
     """
-    dist = tmp_path / ".robovast_plugins" / "myplug-0.1.0.dist-info"
+    from robovast.common.config_plugins import plugin_site_dir
+    dist = Path(plugin_site_dir(str(tmp_path))) / "myplug-0.1.0.dist-info"
     dist.mkdir(parents=True)
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: myplug\nVersion: 0.1.0\n")
     (dist / "entry_points.txt").write_text(

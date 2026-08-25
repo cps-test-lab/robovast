@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Optional
 
 from robovast.common.build_context import BUILD_CONTEXT_IGNORE
+from robovast.common.config_plugins import canonical_name
 from robovast.common.execution import GIT_TOKEN_SECRET_ID as _GIT_TOKEN_SECRET_ID
 from robovast.common.containers import plan_containers
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, DEFAULT_IMAGE_USER,
@@ -893,7 +894,7 @@ def _canonical_name(spec: str) -> str:
     # A local path entry (``./``, ``pkgs/foo.whl``) contributes no comparable name.
     if name in ("", ".", "..") or "/" in name or name.endswith(".whl"):
         return ""
-    return re.sub(r"[-_.]+", "-", name).lower()
+    return canonical_name(name)
 
 
 def _declares(spec: Optional[BuildSpec], requirement: str) -> bool:

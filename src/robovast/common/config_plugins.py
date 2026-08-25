@@ -14,47 +14,51 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve the ``.vast`` ``plugins:`` list into a per-workspace install dir.
+"""Resolve the ``.vast`` ``plugins:`` list into a per-workspace virtual environment.
 
-A ``.vast`` may declare the variation-plugin packages it needs as pip requirement
-specs — typically a **git URL** (``scenario_mt @ git+https://host/repo@ref``), an
-**index pin** (``scenario_mt==1.2.3``), or a **workspace-relative wheel** uploaded
-into the project. The variation names it uses (``SemanticGeneration`` …) resolve
-through the ``robovast.variation_types`` entry points, so the package must be
-importable wherever the variations are *composed*.
+A ``.vast`` may declare the plugin packages it needs as pip requirement specs --
+typically a **git URL** (``scenario_mt @ git+https://host/repo@ref``), an **index pin**
+(``scenario_mt==1.2.3``), or a **workspace-relative wheel** uploaded into the project.
+The names it then uses (``SemanticGeneration``, ``optuna``, ...) resolve through the
+``robovast.*`` entry-point groups, so the package must be importable wherever those
+names are resolved.
 
-Composition happens in several places — the ``robovast-service`` (for validate /
-preview / campaign creation), a local ``vast exec local run``, and, for a cluster
-run, the controller pod. Rather than install the plugin in each of those (the
-throwaway controller pod has no credentials and cannot clone a private repo), we
-install **once, into the workspace**:
+:func:`ensure_workspace_plugins` installs the declared specs into a venv under
+``<vast_dir>/.robovast_plugins/`` and puts that venv's ``site-packages`` on
+``sys.path``; a ``.installed`` marker short-circuits a matching set.
 
-* :func:`ensure_workspace_plugins` installs the declared specs into
-  ``<vast_dir>/.robovast_plugins/`` with ``pip install --target`` and records a
-  ``.installed`` marker (a hash of the specs), then **prepends** that directory to
-  ``sys.path`` so entry points resolve and the plugin's pinned dependencies win.
-* The directory is a normal part of the project tree, so it is staged to the
-  object store and downloaded into the controller pod with everything else. There
-  the marker already matches, so the install is **skipped** and the pod merely
-  imports off ``sys.path`` — no pip, no git, no credentials.
+**Why a venv, and not** ``pip install --target``. A plugin is loaded *into robovast's
+own process*, so it has to be resolved **against** the host environment rather than in
+isolation from it -- and ``--target`` cannot do that: pip forces ``--ignore-installed``
+whenever ``--target`` is given, so every dependency is re-materialized whether the host
+has it or not. A plugin that (however unnecessarily) declared a dependency on
+``robovast`` therefore got a **second robovast** installed beside it; and because
+``importlib.metadata`` deduplicates distributions by name and keeps the first on
+``sys.path``, that copy's entry points became the only ones the process could see. A
+stale one registering no ``robovast.search_strategies`` emptied the group for every
+campaign in the service, including those that declared no plugins at all.
 
-Installing to ``--target`` (not the active venv) keeps this **non-invasive**: a
-local run never mutates the user's site-packages. Prepending is what lets a plugin's
-pinned dependency win over a different version the host also ships (``--target``
-pulls the full closure, e.g. a *forked* ``rdflib`` the plugin requires) — a mismatch
-would otherwise silently break composition (a wrong ``rdflib`` mangles JSON-LD
-parsing). **Composition** is safe because it runs in the isolated subprocess
-(``config_generation._compose_isolated``): a fresh, short-lived process whose
-``sys.path`` this rearranges. Because that worker is short-lived and single-purpose,
-the ``_warn_if_already_loaded`` first-wins caveat below is effectively moot there.
+Inside a venv pip resolves against what the host already provides, so the host's own
+distributions are satisfied and never reinstalled and the venv receives only what is
+genuinely missing. It is also what keeps the install **non-invasive**: pip declines to
+uninstall what lives outside the environment it targets ("Not uninstalling X ... outside
+environment"). That is the protection ``--target`` was buying with ``--ignore-installed``
+and that ``--prefix`` would not buy at all. Same mechanism, same reason, as the
+experiment image build -- see ``robovast.service.image_build._VENV_SETUP``.
 
-**Not every consumer is composition, though**, and the caveat is live for the rest:
-postprocessing plugins, search **extractors** and search strategies are resolved
-*in-process* — in the controller, which for a cluster campaign is the service process
-itself. Those callers go through :func:`ensure_plugins_importable`, and the first-wins
-caveat genuinely applies to them: a plugin pinning a different version of something the
-service has already imported does not win. That is the price of resolving a plugin in a
-long-lived process, and it is why only the consumers that *cannot* fork do it.
+The host is made visible with an explicit ``.pth`` rather than ``--system-site-packages``
+alone; :func:`_ensure_venv` explains why that flag is not sufficient.
+
+**Where the plugin is imported.** Composition runs in an isolated subprocess
+(``config_generation._compose_isolated``) -- a fresh, short-lived process whose
+``sys.path`` this may safely *lead*, which is what lets a plugin's deliberately pinned
+dependency win over a different version the host also ships. The remaining consumers --
+postprocessing plugins, search **extractors** and search strategies -- resolve
+*in-process*, in the service itself. They go through :func:`ensure_plugins_importable`,
+which **appends** instead: in a long-lived, multi-workspace process one workspace must
+not reorder imports for the next, and a plugin pinning something the service has already
+imported could not win anyway. That is the price of resolving a plugin in a long-lived
+process, and it is why only the consumers that *cannot* fork do it.
 """
 
 import hashlib
@@ -63,19 +67,99 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess  # nosec B404 - pip on trusted, config-declared specs
 import sys
-from importlib.metadata import PackageNotFoundError, version
+import sysconfig
+import venv
+from importlib.metadata import PackageNotFoundError, distributions, version
 
 logger = logging.getLogger(__name__)
 
-#: Per-workspace directory the declared plugins are installed into (``pip
-#: --target``). Lives next to the ``.vast`` so it travels with the project.
+#: Per-workspace directory holding the venv the declared plugins are installed into.
+#: Lives next to the ``.vast``, and is rebuilt wherever a campaign is composed -- it is
+#: excluded from workspace pushes and from image build contexts, so it never travels.
 PLUGIN_DIRNAME = ".robovast_plugins"
 
 #: Marker file (inside :data:`PLUGIN_DIRNAME`) holding the hash of the specs that
-#: were installed, so a matching set is not reinstalled (offline-safe in the pod).
+#: were installed, so a matching set is not reinstalled.
 MARKER_NAME = ".installed"
+
+#: The venv, inside :data:`PLUGIN_DIRNAME`, that the declared specs are installed into.
+#: A subdirectory rather than the plugin dir itself, so a flat ``pip --target`` tree left
+#: by a robovast that predates the venv is simply not on the path any more --- see
+#: :func:`_reclaim_pre_venv_layout`.
+VENV_DIRNAME = "venv"
+
+#: Written into the venv's ``site-packages`` to hand it the *running* interpreter's site
+#: directories. See :func:`_ensure_venv` for why this is not ``--system-site-packages``.
+HOST_PTH_NAME = "_robovast_host.pth"
+
+
+def _self_import_root() -> str:
+    """The top-level import package this module belongs to (``robovast``).
+
+    Asked of ``__name__`` rather than written out, so the "is this the host?" tests below
+    stay correct under a rename or a vendored fork, and there is no name to drift.
+    """
+    return __name__.partition(".")[0]
+
+
+def plugin_dir(vast_dir: str) -> str:
+    """The workspace's plugin directory. May not exist."""
+    return os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
+
+
+def _venv_dir(vast_dir: str) -> str:
+    return os.path.join(plugin_dir(vast_dir), VENV_DIRNAME)
+
+
+def _venv_python(venv_dir: str) -> str:
+    return os.path.join(venv_dir, "bin", "python")
+
+
+def _purelib_of(venv_dir: str) -> str:
+    """The ``site-packages`` of *venv_dir*, without running its interpreter.
+
+    The ``venv`` scheme is asked rather than the path being spelled out, so the
+    interpreter version is not baked in and a distro-patched ``posix_prefix`` (Debian
+    installs to ``dist-packages``) cannot make this disagree with what ``venv`` created.
+    """
+    return sysconfig.get_paths(scheme="venv", vars={
+        "base": venv_dir, "platbase": venv_dir,
+        "installed_base": venv_dir, "installed_platbase": venv_dir})["purelib"]
+
+
+def plugin_site_dir(vast_dir: str) -> str:
+    """The single answer to "which directory is importable for this workspace".
+
+    Every caller that reads the workspace's installed plugin metadata, or puts it on
+    ``sys.path``, goes through here, so the layout is defined in exactly one place.
+    """
+    return _purelib_of(_venv_dir(vast_dir))
+
+
+def _staged_entry_points(site_dir: str):
+    """Entry points the workspace's installed plugins register, without importing them.
+
+    Entry-point names are distribution metadata, so they can be read straight out of the
+    directory: no ``sys.path`` change, no import of plugin code, no pip, no network. What
+    this cannot confirm is that the class behind a name is valid --- that needs the
+    import, and composition is where it happens.
+    """
+    if not os.path.isdir(site_dir):
+        return
+    try:
+        for dist in distributions(path=[site_dir]):
+            yield from dist.entry_points
+    except Exception as e:  # noqa: BLE001 - a metadata read must never fail validation
+        logger.debug("Could not read staged plugin entry points in %s: %s", site_dir, e)
+
+
+def _registers_plugins(site_dir: str) -> bool:
+    """Whether *site_dir* holds a distribution registering any ``robovast.*`` group."""
+    prefix = _self_import_root() + "."
+    return any(ep.group.startswith(prefix) for ep in _staged_entry_points(site_dir))
 
 # GitHub credential for installing a private-repo (``git+https``) plugin declared
 # in ``plugins:``. **Security:** the token must not be accessible to any workspace
@@ -147,8 +231,17 @@ def _git_askpass_env(token: str, workdir: str) -> dict:
 
 
 def _spec_hash(specs) -> str:
-    """Stable hash of the declared specs (order-independent)."""
-    joined = "\n".join(sorted(specs))
+    """Stable hash of the declared specs (order-independent) **and of the environment**.
+
+    The environment belongs in it because the install is resolved *against the host*: the
+    same specs against a different interpreter, or a different host environment, are a
+    different result. Without this a tree built by a 3.12 service was reused verbatim by a
+    3.13 one --- marker matching, no reinstall, and a ``site-packages`` that interpreter
+    cannot import.
+    """
+    joined = "\n".join([*sorted(specs),
+                        f"python={sys.version_info.major}.{sys.version_info.minor}",
+                        f"host={sysconfig.get_paths()['purelib']}"])
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()  # nosec B324 - not security
 
 
@@ -182,6 +275,10 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
         the installed version, read from the workspace's own install dir rather than from
         ``sys.path`` -- the process may have a different copy of the same distribution
         already imported, which is exactly what ``_warn_if_already_loaded`` reports.
+    ``host_dependency``
+        the requirement, when the plugin declares a dependency on robovast itself. Recorded
+        because that declaration is the shape that used to break the process (see the
+        module docstring), and a reader should see it without re-deriving it.
     ``commit`` / ``url``
         for a VCS install, the resolved commit and origin, from the ``direct_url.json`` pip
         writes per PEP 610. This is what turns ``@main`` into something re-installable.
@@ -190,15 +287,13 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
         already importable from elsewhere, so pip installed nothing. Recorded rather than
         omitted, because "declared but not resolved here" is a fact a re-run needs.
     """
-    from importlib.metadata import distributions  # pylint: disable=import-outside-toplevel
-
-    target_dir = os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
+    site_dir = plugin_site_dir(vast_dir)
     installed = {}
-    if os.path.isdir(target_dir):
-        for dist in distributions(path=[target_dir]):
+    if os.path.isdir(site_dir):
+        for dist in distributions(path=[site_dir]):
             name = (dist.metadata["Name"] or "").strip()
             if name:
-                installed[_canonical(name)] = dist
+                installed[canonical_name(name)] = dist
 
     record = {}
     for spec in specs or []:
@@ -206,18 +301,74 @@ def resolved_plugin_versions(vast_dir: str, specs) -> dict:
         if not name:
             continue
         entry = {"requested": spec}
-        dist = installed.get(_canonical(name))
+        dist = installed.get(canonical_name(name))
         if dist is None:
             entry["resolved"] = False
         else:
             entry["version"] = dist.version
             entry.update(_direct_url_origin(dist))
+            host_req = _host_dependency_of(dist)
+            if host_req:
+                entry["host_dependency"] = host_req
         record[name] = entry
     return record
 
 
-def _canonical(name: str) -> str:
-    """PEP 503 name normalisation, so ``robovast_nav`` and ``robovast-nav`` match."""
+def _host_dependency_of(dist) -> str:
+    """The requirement by which *dist* depends on robovast itself, or ``""``.
+
+    Read off the installed metadata rather than parsed out of pip's output, so a
+    ``git+https`` spec that pip logged under a different display name is still attributed
+    to the distribution that actually declared it.
+    """
+    root = canonical_name(_self_import_root())
+    try:
+        requires = dist.metadata.get_all("Requires-Dist") or []
+    except Exception:  # pylint: disable=broad-except - provenance must not fail a campaign
+        return ""
+    for req in requires:
+        if canonical_name(_requirement_name(req)) == root:
+            return req.strip()
+    return ""
+
+
+def host_dependent_plugins(vast_dir: str) -> dict:
+    """``{distribution: requirement}`` for installed plugins that depend on robovast.
+
+    Harmless now --- the host satisfies it, so pip installs nothing --- but it is the
+    declaration that used to produce a second robovast in the workspace, and it still
+    drags the published robovast's own closure into any environment that resolves it
+    without the host present. The plugin's author is the only one who can remove it, so
+    both the install and ``validate_project`` report it, from this one read.
+    """
+    site_dir = plugin_site_dir(vast_dir)
+    if not os.path.isdir(site_dir):
+        return {}
+    found = {}
+    for dist in distributions(path=[site_dir]):
+        req = _host_dependency_of(dist)
+        if req:
+            found[dist.metadata["Name"] or "?"] = req
+    return found
+
+
+def _warn_host_dependencies(vast_dir: str) -> None:
+    """Log :func:`host_dependent_plugins` at install time."""
+    for name, req in host_dependent_plugins(vast_dir).items():
+        logger.warning(
+            "Plugin %r declares %r. A plugin is loaded INTO robovast's process, not "
+            "installed beside it, so the host always provides %s and the dependency is "
+            "redundant; drop it from the plugin's metadata.",
+            name, req, _self_import_root())
+
+
+def canonical_name(name: str) -> str:
+    """PEP 503 name normalisation, so ``robovast_nav`` and ``robovast-nav`` match.
+
+    Public because three callers compare distribution names and must agree on what
+    "the same distribution" means: this module, the image build's declared-vs-missing
+    check, and the shadowing diagnosis in ``plugin_ref``.
+    """
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
@@ -389,17 +540,22 @@ def _failure_excerpt(stderr: str, tail: int = 8) -> str:
     return "\n".join([*cause[-tail:], "  ...", *tail_lines])
 
 
-def _install_target(target_dir: str, specs) -> None:
-    """``pip install --target`` the specs into *target_dir* (with dependencies).
+def _install_into(venv_dir: str, specs) -> None:
+    """``pip install`` the specs into the workspace venv (with dependencies).
 
-    A configured GitHub token (mounted file, or the local/dev env fallback) is
-    supplied to git for this one subprocess only, via a transient ``GIT_ASKPASS``
-    helper in an owner-only temp dir — never in the parent environment, gitconfig,
-    or a command line.
+    The outer pip targets the venv through ``--python`` rather than the venv running a
+    pip of its own --- the same form the image build uses
+    (``image_build._PIP_INSTALL``), and why :func:`_ensure_venv` can skip ``ensurepip``.
+
+    Resolution happens against the host (see the module docstring), so a requirement the
+    host already satisfies installs nothing, and a genuine conflict is pip's error to
+    report here rather than an import-order accident later.
+
+    A configured GitHub token (mounted file, or the local/dev env fallback) is supplied to
+    git for this one subprocess only, via a transient ``GIT_ASKPASS`` helper in an
+    owner-only temp dir --- never in the parent environment, gitconfig, or a command line.
     """
-    import shutil
     import tempfile
-    os.makedirs(target_dir, exist_ok=True)
 
     env = dict(os.environ)
     # Never leak a fallback token into the child via the inherited environment;
@@ -418,7 +574,7 @@ def _install_target(target_dir: str, specs) -> None:
     # dependencies), which can take a while, so echo each line as it arrives rather
     # than capturing silently and only surfacing it on failure. The lines are still
     # accumulated so a failure gets the same actionable diagnosis as before.
-    cmd = [sys.executable, "-m", "pip", "install", "--target", target_dir,
+    cmd = [sys.executable, "-m", "pip", "--python", _venv_python(venv_dir), "install",
            "--root-user-action=ignore", "--disable-pip-version-check",
            # git clones write progress with '\r'; ask for verbose line-based
            # progress so the long clone/build phase is visible while piped.
@@ -491,6 +647,10 @@ def _warn_if_already_loaded(specs) -> None:
     distribution is visible from another location (e.g. another workspace already
     served in this long-lived process). With in-process first-wins semantics the
     already-loaded copy is what runs, so surface it instead of silently diverging.
+
+    Not a hit for the host's own distributions: those are what the install *resolves
+    against*, so pip has already satisfied them and there is nothing to diverge from.
+    :func:`_warn_host_dependencies` reports that case, once, in its own terms.
     """
     for spec in specs:
         name = _requirement_name(spec)
@@ -518,102 +678,157 @@ def _is_importable(spec: str) -> bool:
         return False
 
 
-def _prepend_sys_path(target_dir: str) -> None:
-    """Put *target_dir* **first** on ``sys.path`` and refresh import caches.
+def _add_sys_path(site_dir: str, position: str = "prepend") -> None:
+    """Put *site_dir* on ``sys.path`` and refresh import caches.
 
-    Prepended so the workspace's pinned plugin dependencies win — a plugin may
-    need a *different* version of a package the environment also ships (``rdflib``,
-    ``pyld``, …), and a mismatch silently breaks it (e.g. a newer ``rdflib`` drops
-    remote JSON-LD ``@context`` triples the plugin relies on). This is only safe
-    because plugin imports happen in the **isolated compose subprocess** (see
-    ``config_generation._compose_isolated``), never in the long-lived service
-    process — so forcing the plugin's versions here cannot disturb robovast's own
-    use of those packages.
+    ``prepend`` lets the workspace's pinned plugin dependencies win --- a plugin may need
+    a *different* version of a package the environment also ships (``rdflib``, ``pyld``,
+    ...), and a mismatch silently breaks it (a newer ``rdflib`` drops remote JSON-LD
+    ``@context`` triples the plugin relies on). That is only safe in a process that exists
+    to compose one project: the **isolated compose subprocess** and the aux discovery
+    worker.
+
+    ``append`` is for the long-lived service. ``sys.path`` there is process-global and
+    shared by every concurrently-running campaign, so leading it with one workspace's
+    directory reorders imports for campaigns that never declared a plugin at all. Nothing
+    is given up by appending: a plugin cannot outrank a module the service has already
+    imported whatever the order, which is the caveat the module docstring states.
     """
-    if target_dir in sys.path:
-        sys.path.remove(target_dir)
-    sys.path.insert(0, target_dir)
+    if site_dir in sys.path:
+        sys.path.remove(site_dir)
+    if position == "prepend":
+        sys.path.insert(0, site_dir)
+    else:
+        sys.path.append(site_dir)
     importlib.invalidate_caches()
 
 
-def staged_variation_type_names(vast_dir: str) -> set:
-    """Variation-type names a **staged** ``.robovast_plugins/`` registers, without importing it.
+def _ensure_venv(venv_dir: str) -> str:
+    """Create the workspace venv if absent; return its ``site-packages``.
 
-    For the one caller that must answer "is this variation name real?" while forbidden from
-    finding out the usual way. A project pushed with ``vast workspace update``, or one that has
-    composed once, already has its declared ``plugins:`` materialized in that directory -- but
-    validation cannot lead ``sys.path`` with it and load the entry points, because
-    :func:`_prepend_sys_path` is only safe in the isolated compose subprocess, and
-    :func:`ensure_workspace_plugins` would pip-install anything not yet there.
+    Idempotent on the venv, but the host ``.pth`` is rewritten every time, so a workspace
+    carried to a different interpreter or a moved host environment is corrected instead of
+    silently resolving against the wrong one.
 
-    Entry-point names are distribution metadata, so they can be read straight out of the
-    directory: no ``sys.path`` change, no import of plugin code, no pip, no network. What this
-    cannot confirm is that the class behind a name is a valid ``Variation`` -- that needs the
-    import, and composition is where it happens.
+    ``with_pip=False`` because the outer pip installs into it through ``--python``:
+    ``ensurepip`` needs a working ``python3-venv`` (absent on some bases) and would cost a
+    bootstrap per workspace for a pip that is never used.
 
-    Returns an empty set when the directory does not exist or holds no such registration.
+    **Why the .pth and not just** ``system_site_packages``. That flag adds
+    ``sys.base_prefix``'s site directories --- the *base* interpreter's. When robovast
+    itself runs from a venv, which is every developer checkout, the base prefix is the
+    system Python and does not have robovast; pip would resolve ``robovast>=1.0.0`` against
+    nothing and install a second copy, which is precisely the shadowing this module exists
+    to prevent. Naming the **running** interpreter's directories is correct in both
+    deployments. ``site.addsitedir`` rather than a bare path line, because it also
+    processes the nested ``.pth`` files an editable install writes --- without it an
+    editable robovast is on the path but not importable.
     """
-    from importlib.metadata import distributions  # noqa: PLC0415
+    if not os.path.isfile(os.path.join(venv_dir, "pyvenv.cfg")):
+        venv.EnvBuilder(system_site_packages=True, with_pip=False).create(venv_dir)
+    purelib = _purelib_of(venv_dir)
+    os.makedirs(purelib, exist_ok=True)
+    host = sysconfig.get_paths()
+    with open(os.path.join(purelib, HOST_PTH_NAME), "w", encoding="utf-8") as f:
+        for site_dir in dict.fromkeys([host["purelib"], host["platlib"]]):
+            f.write(f"import site; site.addsitedir({site_dir!r})\n")
+    return purelib
 
-    target_dir = os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
-    if not os.path.isdir(target_dir):
-        return set()
-    names = set()
-    try:
-        for dist in distributions(path=[target_dir]):
-            for ep in dist.entry_points:
-                if ep.group == "robovast.variation_types":
-                    names.add(ep.name)
-    except Exception as e:  # noqa: BLE001 - a metadata read must never fail validation
-        logger.debug("Could not read staged plugin entry points in %s: %s", target_dir, e)
-    return names
+
+def _reclaim_pre_venv_layout(vast_dir: str) -> None:
+    """Remove a flat ``pip --target`` tree left by a robovast that predates the venv.
+
+    Such a tree is already inert --- the importable directory moved into the venv, so it
+    is no longer on ``sys.path`` --- but a stale one runs to roughly a gigabyte, and
+    leaving it would make ``.robovast_plugins/`` mean two different things at once. The
+    marker goes with it: it describes an install this layout no longer has.
+    """
+    base = plugin_dir(vast_dir)
+    if not os.path.isdir(base):
+        return
+    entries = os.listdir(base)
+    if not any(e.endswith(".dist-info") for e in entries):
+        return
+    logger.warning(
+        "Removing a pre-venv plugin tree in %s: plugins are now installed into a venv "
+        "resolved against the host, so this one is no longer imported by anything.", base)
+    for entry in entries:
+        if entry == VENV_DIRNAME:
+            continue
+        path = os.path.join(base, entry)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def staged_variation_type_names(vast_dir: str) -> set:
+    """Variation-type names the workspace's installed plugins register, without importing.
+
+    For the one caller that must answer "is this variation name real?" while forbidden
+    from finding out the usual way: validation cannot lead ``sys.path`` with the workspace
+    and load the entry points, and :func:`ensure_workspace_plugins` would pip-install
+    anything not yet there. Reads distribution metadata straight out of the directory ---
+    see :func:`_staged_entry_points`.
+
+    Returns an empty set when nothing is installed or nothing registers such a type.
+    """
+    return {ep.name for ep in _staged_entry_points(plugin_site_dir(vast_dir))
+            if ep.group == "robovast.variation_types"}
 
 
 def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
-                             add_to_path: bool = True) -> str | None:
-    """Ensure the ``.vast``'s ``plugins:`` are available for composition.
+                             add_to_path: bool = True,
+                             position: str = "prepend") -> str | None:
+    """Ensure the ``.vast``'s ``plugins:`` are installed and importable.
 
     Two modes:
 
-    * **compose** (``force=False``, the default — used at the composition
-      convergence): a plugin **already installed in the environment** is used
-      as-is. This is the ``vast`` CLI path: install the plugin yourself
-      (``pip install`` / ``make venv``) and it is *detected*, not re-fetched. Only
-      the declared specs that are *not* importable are installed into
-      ``<vast_dir>/.robovast_plugins/`` (so a service whose venv lacks them still
-      resolves them). A matching ``.installed`` marker (staged into the controller
-      pod) short-circuits to just adjusting ``sys.path`` — no pip, no network.
-    * **stage** (``force=True`` — used by ``create_campaign`` and the CLI cluster
-      launcher before shipping a project to a pod): install **all** declared specs
-      into ``.robovast_plugins/`` regardless of what the launching env happens to
-      have, so the directory carries every plugin into the (otherwise bare) pod.
+    * **compose** (``force=False``, the default --- used at the composition
+      convergence): a plugin **already installed in the environment** is used as-is.
+      This is the ``vast`` CLI path: install the plugin yourself (``pip install`` /
+      ``make venv``) and it is *detected*, not re-fetched. Only the declared specs that
+      are not importable are installed into the workspace venv. A matching ``.installed``
+      marker short-circuits to just adjusting ``sys.path`` --- no pip, no network.
+    * **stage** (``force=True``): install **all** declared specs into the workspace venv
+      regardless of what the launching environment happens to have.
 
     Args:
         vast_dir: directory of the ``.vast`` (the workspace/project root).
         specs: the ``plugins:`` list (pip requirement specs); ``None``/empty no-op.
-        force: materialize every spec into the workspace dir for pod staging.
-        add_to_path: put ``.robovast_plugins/`` on ``sys.path`` (the default). Pass
-            ``False`` to **materialize only** — used by the driver's dedicated
-            plugin-install phase, which installs the packages (and streams pip's
-            output to the campaign log) without importing them into the long-lived
-            service process; the isolated compose subprocess does the ``sys.path`` +
-            import later.
+        force: install every declared spec, not only the ones the env lacks.
+        add_to_path: put the venv's ``site-packages`` on ``sys.path`` (the default). Pass
+            ``False`` to **materialize only** --- used by the driver's dedicated
+            plugin-install phase, which installs the packages (and streams pip's output to
+            the campaign log) without importing them into the long-lived service process;
+            the isolated compose subprocess does the ``sys.path`` + import later.
+        position: ``"prepend"`` for a subprocess that exists to compose one project;
+            ``"append"`` in the long-lived service. See :func:`_add_sys_path`.
 
     Returns:
-        The plugin directory path when it exists, else ``None``.
+        The importable ``site-packages`` path when it exists, else ``None``.
 
     Raises:
-        RuntimeError: an install was attempted and ``pip`` failed (actionable
-            message — auth vs unreachable — surfaced synchronously to the caller).
+        RuntimeError: an install was attempted and ``pip`` failed (actionable message ---
+            auth vs unreachable --- surfaced synchronously to the caller).
     """
-    target_dir = os.path.join(os.path.abspath(vast_dir), PLUGIN_DIRNAME)
-    marker = os.path.join(target_dir, MARKER_NAME)
+    _reclaim_pre_venv_layout(vast_dir)
+    venv_dir = _venv_dir(vast_dir)
+    marker = os.path.join(plugin_dir(vast_dir), MARKER_NAME)
 
     if not specs:
-        if os.path.isdir(target_dir):
+        # A workspace that declares nothing must not put a leftover directory on the
+        # shared path just because one exists: that is how one project's pins reached a
+        # campaign that never asked for them. Only a directory that actually registers
+        # robovast plugins is worth adding, and that is a metadata read, not an import.
+        site_dir = _purelib_of(venv_dir)
+        if _registers_plugins(site_dir):
             if add_to_path:
-                _prepend_sys_path(target_dir)
-            return target_dir
+                _add_sys_path(site_dir, position)
+            return site_dir
         return None
 
     want = _spec_hash(specs)
@@ -625,11 +840,10 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
             marker_ok = False
 
     if force:
-        # Pod staging: everything must live in the dir; do not trust a marker that
-        # a compose-mode (partial) pass may have written.
+        # Do not trust a marker a compose-mode (partial) pass may have written.
         to_install = list(specs)
     elif marker_ok:
-        to_install = []  # staged/offline (e.g. the controller pod) — sys.path only
+        to_install = []  # already installed for this spec set and this environment
     else:
         # Detect plugins already installed (manually) and fetch only what's missing.
         to_install = [s for s in specs if not _is_importable(s)]
@@ -638,23 +852,27 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
             logger.info("Using already-installed variation plugin(s): %s",
                         ", ".join(detected))
         if not to_install:
-            return None  # all satisfied by the environment; no workspace dir needed
+            return None  # all satisfied by the environment; no workspace venv needed
 
     if to_install:
         # A freshly-installed plugin that is *also* already loaded in this
-        # (long-lived, multi-workspace) process cannot replace it — warn.
+        # (long-lived, multi-workspace) process cannot replace it --- warn.
         _warn_if_already_loaded(to_install)
-        logger.info("Installing %d variation plugin(s) into %s: %s",
-                    len(to_install), target_dir, ", ".join(to_install))
-        _install_target(target_dir, _resolve_local_specs(vast_dir, to_install))
+        logger.info("Installing %d plugin(s) into %s: %s",
+                    len(to_install), venv_dir, ", ".join(to_install))
+        _ensure_venv(venv_dir)
+        _install_into(venv_dir, _resolve_local_specs(vast_dir, to_install))
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, "w", encoding="utf-8") as f:
             f.write(want)
+        _warn_host_dependencies(vast_dir)
 
-    if not os.path.isdir(target_dir):
+    if not os.path.isdir(venv_dir):
         return None
+    site_dir = _purelib_of(venv_dir)
     if add_to_path:
-        _prepend_sys_path(target_dir)
-    return target_dir
+        _add_sys_path(site_dir, position)
+    return site_dir
 
 
 def _plugin_specs_from_vast(vast_path: str) -> list:
@@ -686,9 +904,12 @@ def ensure_plugins_importable(install_dir: str, vast_path: str | None = None) ->
     long-lived process — a batch analysis run, a search's per-batch
     ``search.postprocessing`` step, a search **extractor**, or a re-run in a fresh
     process / fetched campaign — would not otherwise see them. This installs the
-    recorded specs into ``<install_dir>/.robovast_plugins/`` when absent and leads
-    ``sys.path`` with it; "install if absent" is what lets a re-run after a service
-    restart resolve them.
+    recorded specs into the workspace venv when absent and puts it on ``sys.path``;
+    "install if absent" is what lets a re-run after a service restart resolve them.
+
+    **Appends** rather than leads that path. Every caller here runs in the long-lived
+    service, where ``sys.path`` is process-global and shared by concurrently-running
+    campaigns --- see :func:`_add_sys_path`.
 
     Both in-process consumers must call this. A search extractor did not, which made
     ``plugins:`` silently useless for one: a local ``./search/x.py:Class`` extractor
@@ -705,7 +926,7 @@ def ensure_plugins_importable(install_dir: str, vast_path: str | None = None) ->
         vast_path = vasts[0] if vasts else None
     specs = _plugin_specs_from_vast(vast_path) if vast_path else []
     try:
-        ensure_workspace_plugins(install_dir, specs)
+        ensure_workspace_plugins(install_dir, specs, position="append")
     except Exception as e:  # noqa: BLE001 - never abort the caller on plugin prep
         logger.warning("Could not prepare campaign plugins in %s: %s",
                        install_dir, e)
