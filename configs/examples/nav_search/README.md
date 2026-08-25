@@ -49,15 +49,42 @@ nothing.
 So the objective here is a **robustness margin**: the worst of one signed margin per failure
 mode (clearance, time, arrival), aggregated worst-case across repetitions rather than
 averaged. Continuous, signed, negative means failed, and it grades what a verdict cannot.
-Measured on a 16-cell grid run of this directory:
 
-| metric | over the same 16 runs |
-|---|---|
-| `failure_rate` | every cell at exactly 0.0 or 1.0 |
-| `min_clearance` | −0.072 … +0.607, continuous |
+**Each margin is divided by a SCALE, never by its own threshold.** This is the whole design,
+and getting it wrong is not a detail — the first version of this objective divided by
+thresholds and came out *worse than the `failure_rate` it replaced*. A threshold answers
+*did it fail*; a scale answers *by how much*. Divide by the threshold and you conflate them:
+with the 0.05 m contact threshold as denominator the clearance margin carried 20 per metre
+against the arrival margin's 1.67, so `min()` returned whichever margin had the tightest
+denominator rather than whichever failure was nearest.
 
-One cell passed with **a millimetre** of clearance. A verdict scores it identically to one
-that passed with 0.4 m.
+    robustness = min( (min_clearance - contact)  / clearance_scale,
+                      (timeout - t_trial)        / timeout,
+                      (arrival_radius - d_goal)  / path_scale )
+
+The scales come from what this directory already declares, so they move when the world does:
+`clearance_scale` is half the widest doorway minus nav2's own `robot_radius` (1.6/2 − 0.18),
+`path_scale` is the scenario's own traverse, (−2.5, 0) → (2.5, 0). The `timeout` margin was
+always of this form, and it is the one that never needed a floor.
+
+Measured over the 48 cells of one `nav_search_halton` run:
+
+| objective | distinct values | cells at the floor |
+|---|---|---|
+| `failure_rate` | 4 | 30/48 (62.5%) |
+| `robustness`, thresholds as denominators | 17 | **32/48 (66.7%)** |
+| `robustness`, scales as denominators | **48** | **0/48** |
+
+The sign agrees on 48 of 48 cells: re-normalising does not move the verdict, only its
+resolution. The tightest cell sits at −0.007, and one cell of the earlier 16-cell grid
+passed with **a millimetre** of clearance — a verdict scores that identically to one that
+passed with 0.4 m.
+
+There is no floor, and that is deliberate. Once each margin is a fraction of its own scale
+nothing reaches −1 unaided, so a clamp would only discard order it no longer needs to bound.
+A margin past −1 means what it says — missed by more than the whole scale — and stays ordered
+against its neighbours, which is what lets an adversarial search keep descending after it
+finds its first failure instead of going blind.
 
 ## How the world is put together
 
