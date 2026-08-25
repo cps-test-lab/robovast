@@ -497,7 +497,7 @@ Number of times to execute each run configuration. Multiple runs allow for stati
      runs: 20
 
 behaviours and logs (no longer configurable)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Two former keys are gone as of config version 3.
 
