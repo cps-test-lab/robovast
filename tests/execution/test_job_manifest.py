@@ -10,6 +10,8 @@ behind a safety net instead of blind.
 """
 
 
+from kubernetes import client
+
 from robovast.execution.backends import RunOptions  # noqa: F401  # pylint: disable=unused-import  (import parity)
 from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
@@ -36,6 +38,16 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
     only thing that decides whether an unstated ``resources.gpu`` becomes a request. Stubbed
     rather than left real because otherwise every test here dials whatever cluster the
     developer's kubeconfig happens to point at.
+
+    The pull-secret lookup is stubbed for exactly the same reason, and it was missed:
+    ``_build_job_manifest`` falls back to reading the well-known push Secret when no pull
+    secret is configured, which this fake cluster config is, so every test here issued a
+    live ``read_namespaced_secret`` against the developer's kubeconfig. It is fail-soft --
+    an unreachable API server ends up in the same ``pull_secret = ""`` as a 404 -- so the
+    tests passed either way; they just paid a connection timeout each, which is this
+    module taking sixteen minutes instead of a second. Raising ``ApiException`` is what a
+    reachable cluster without that Secret returns, so the manifests under test are
+    unchanged and the fallback path stays exercised, only without the socket.
     """
     monkeypatch.setattr(kubernetes_backend, "resolve_resources",
                         lambda res, ctx: dict(res) if isinstance(res, dict) else {})
@@ -45,6 +57,12 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
         self._gpu_runtime_class = runtime_class
 
     monkeypatch.setattr(BatchJobRunner, "_discover_gpu_support", _fake_discover)
+
+    def _no_such_secret(self, *args, **kwargs):
+        raise client.exceptions.ApiException(status=404, reason="Not Found")
+
+    monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
+                        _no_such_secret)
     monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
                         lambda cfg, camp: ("bkt", ""))
     campaign_data = {
