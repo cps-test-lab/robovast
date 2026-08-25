@@ -26,7 +26,7 @@ def _campaign(tmp_path, *, meta, vast_execution=None):
     if vast_execution is not None:
         (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
         (tmp_path / "_config" / "p.vast").write_text(
-            yaml.safe_dump({"version": 2, "execution": vast_execution}))
+            yaml.safe_dump({"version": 3, "execution": vast_execution}))
     return tmp_path
 
 

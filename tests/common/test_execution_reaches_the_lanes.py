@@ -42,8 +42,6 @@ _DECLARED = {
     "timeout": 321,
     "simulation": "some.module:Class",
     "mode": "ros2",
-    "bt_log": False,
-    "log_topics": ["/rosout"],
     "runs_per_job": 2,
     "shm_size": "256Mi",
 }
@@ -64,7 +62,7 @@ def _project(tmp_path):
     declared = yaml.safe_dump(_DECLARED, default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 2
+        version: 3
         metadata: {name: seam}
         configuration:
         - name: base

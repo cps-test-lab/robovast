@@ -32,7 +32,7 @@ CAMPAIGN = "pilot-2026-08-08-120000"
 
 
 def _vast(scenario="scenario.osc"):
-    return {"version": 2, "metadata": {"name": "pilot"},
+    return {"version": 3, "metadata": {"name": "pilot"},
             "configuration": [{"name": "config1"}],
             "execution": {"scenario_file": scenario, "runs": 3,
                           "containers": {"scenario": {"image": "base:1"}}}}

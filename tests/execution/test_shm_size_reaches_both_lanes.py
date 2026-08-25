@@ -34,7 +34,7 @@ def _composed_execution(tmp_path, declared=None):
     line = f"  shm_size: {declared}\n" if declared else ""
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 2
+        version: 3
         metadata: {name: shm}
         configuration:
         - name: base

@@ -1,4 +1,4 @@
-version: 2
+version: 3
 metadata:
   name: quadrotor_landing_random
 # Iterative random search. Run with:  vast execution local run

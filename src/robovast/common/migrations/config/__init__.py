@@ -12,6 +12,7 @@ reach ``main``.
 # place. tools/new_config_migration.py appends to both this block and _MIGRATIONS below,
 # keyed on the markers -- so the insertion point is stated rather than guessed at.
 from . import v1_to_v2  # noqa: F401
+from . import v2_to_v3  # noqa: F401
 # <new-migration-import>
 
 #: The oldest version the ladder starts from. Raising this is a deliberate, announced act
@@ -20,7 +21,7 @@ from . import v1_to_v2  # noqa: F401
 BASELINE_CONFIG_VERSION = 1
 
 #: The version a config is brought to, and the only one authoring accepts.
-SUPPORTED_CONFIG_VERSION = 2
+SUPPORTED_CONFIG_VERSION = 3
 
 #: ``_MIGRATIONS[i]`` upgrades a config from ``BASELINE_CONFIG_VERSION + i`` to
 #: ``+ i + 1``. **Append only; never edit an existing entry** -- an edit changes what an
@@ -28,6 +29,7 @@ SUPPORTED_CONFIG_VERSION = 2
 #: exactly that.
 _MIGRATIONS = [
     v1_to_v2.migrate,
+    v2_to_v3.migrate,
     # <new-migration-entry>
 ]
 

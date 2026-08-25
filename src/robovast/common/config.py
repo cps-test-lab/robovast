@@ -337,7 +337,11 @@ class ExecutionConfig(BaseModel):
     #: bind-mounted into the run exactly like a hand-written input. See
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
-    timeout: Optional[int] = None  # Maximum execution time in seconds per run
+    # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
+    # unless ``runs_per_job`` packs several. A job is the granularity both lanes can
+    # actually enforce at (a Job's activeDeadlineSeconds; a compose step), so the number is
+    # used as declared rather than reconstructed from a per-run figure.
+    timeout: Optional[int] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
     simulation: Optional[str] = None
@@ -348,24 +352,6 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
-    # Record how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in the
-    # run directory (threaded to the entrypoint as BT_LOG, becoming ``--bt-log``).
-    # scenario_execution writes it directly, so unlike the rosbag route it replaced this
-    # also works for ``mode: base`` runs. The ingest turns it into the ``behaviors``
-    # table; the Run view's scenario-tree panel reads that table.
-    #
-    # On by default -- set it false only to opt a campaign *out*. A run whose tree state was
-    # not recorded cannot be explained afterwards, and the file is small next to the rosbag.
-    bt_log: bool = True
-    # Topics the entrypoint's own recorder captures for the whole container's life, in WALL
-    # time (threaded as LOG_TOPICS; ROS images only). Separate from the scenario's
-    # ``bag_record``, which is sim-time and starts mid-run: this one sees the stack come up,
-    # and ``/clock`` here is what lets postprocessing put a wall-stamped log line on the
-    # playback clock.
-    #
-    # An escape hatch, not a switch: the default already covers what the ``run_log`` table
-    # needs, and a campaign only names this to add a topic (or ``[]`` to record nothing).
-    log_topics: list[str] = Field(default_factory=lambda: ["/rosout", "/clock"])
     # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
     # at one run-number) are packed into a single job:
     #   1 (default): each job runs exactly one run. Right for simulators where
@@ -392,11 +378,11 @@ class ExecutionConfig(BaseModel):
     # There is deliberately no way to ask for "the lane's own default": it is the thing
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
-    shm_size: Optional[str] = DEFAULT_SHM_SIZE
+    shm_size: str = DEFAULT_SHM_SIZE
 
     @field_validator('shm_size')
     @classmethod
-    def validate_shm_size(cls, v: Optional[str]) -> str:
+    def validate_shm_size(cls, v: str) -> str:
         """Reject a value that is not a memory quantity, here rather than at the lane.
 
         Both lanes pass this string through to a manifest untouched, so an unparseable one
@@ -519,37 +505,66 @@ class ExecutionConfig(BaseModel):
 DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 
 
-def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
-    """The per-run budget the ``.vast`` **actually declared**, or ``None``.
+def declared_job_seconds(execution_params: dict) -> Optional[int]:
+    """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
 
-    Distinct from :func:`per_run_deadline_seconds`, and the distinction matters
-    because the two answer different questions:
-
-    * *Enforcement* ("never let a campaign hang forever") may fall back to a
-      backstop, because killing a wedged run an hour late still beats never.
-    * *Reporting* ("is this run broken?") may **not**. Judging a two-minute pilot
-      against an hour-long backstop yields ``stalled: false`` for the first hour of a
-      run that is already dead — a health certificate for a corpse, which is worse
-      than saying nothing. With no declared budget there is no honest threshold, so
-      this returns ``None`` and the reader must decline to give a verdict.
+    A job is what either lane can actually bound -- the cluster sets
+    ``activeDeadlineSeconds`` on the Job, and the local lane wraps a whole compose step --
+    so this is the number they use unchanged. It is deliberately not scaled by
+    ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
+    figure multiplied back up.
     """
     timeout = (execution_params or {}).get("timeout")
     return int(timeout) if timeout else None
 
 
-def per_run_deadline_seconds(execution_params: dict) -> int:
-    """How long a single run may take before it is force-killed, in seconds.
+def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
+    """The per-run share of the declared job budget, or ``None``.
+
+    Reporting needs a per-run figure even though nothing can enforce one: ``stalled`` is a
+    verdict about a run. With runs packed, the honest per-run share is the job's budget
+    divided by how many runs are in it.
+
+    Distinct from :func:`job_deadline_seconds`, and the distinction matters because the two
+    answer different questions:
+
+    * *Enforcement* ("never let a campaign hang forever") may fall back to a
+      backstop, because killing a wedged run an hour late still beats never.
+    * *Reporting* ("is this run broken?") may **not**. Judging a two-minute pilot
+      against an hour-long backstop yields ``stalled: false`` for the first hour of a
+      run that is already dead -- a health certificate for a corpse, which is worse
+      than saying nothing. With no declared budget there is no honest threshold, so
+      this returns ``None`` and the reader must decline to give a verdict.
+    """
+    declared = declared_job_seconds(execution_params)
+    if declared is None:
+        return None
+    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
+    return max(1, declared // int(runs_per_job))
+
+
+def job_deadline_seconds(execution_params: dict) -> int:
+    """How long one job may take before it is force-killed, in seconds.
 
     The **enforcement** figure: the cluster backend sets it as a Job
     ``activeDeadlineSeconds`` so a scenario that never shuts itself down cannot hang
-    the campaign forever. Falls back to :data:`DEFAULT_RUN_DEADLINE_SECONDS`, which is
-    why it must not be used to *report* health — see
-    :func:`declared_per_run_seconds`.
+    the campaign forever. Falls back to a backstop, which is why it must not be used to
+    *report* health -- see :func:`declared_per_run_seconds`.
+
+    The backstop is per-run and scaled, where a declaration is not. That asymmetry is
+    deliberate: :data:`DEFAULT_RUN_DEADLINE_SECONDS` is an hour chosen in ignorance of the
+    campaign, so it has to grow with the number of runs packed behind it or a job of 100
+    runs would be killed after the first few. A declared number is a statement about the
+    job, and is taken at face value.
 
     Only the cluster lane enforces this; locally nothing does (see ``execute_local``,
     which says so in the generated ``run.sh``).
     """
-    return declared_per_run_seconds(execution_params) or DEFAULT_RUN_DEADLINE_SECONDS
+    declared = declared_job_seconds(execution_params)
+    if declared is not None:
+        return declared
+    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
+    return DEFAULT_RUN_DEADLINE_SECONDS * int(runs_per_job)
 
 
 class ResultsConfig(BaseModel):

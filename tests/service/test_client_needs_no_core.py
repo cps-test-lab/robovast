@@ -154,7 +154,7 @@ def test_launching_a_campaign_gets_as_far_as_the_service(without_core, monkeypat
     from robovast.client import cluster_cli  # pylint: disable=import-outside-toplevel
 
     vast = tmp_path / "demo.vast"
-    vast.write_text("version: 2\n")
+    vast.write_text("version: 3\n")
     launched = {}
 
     def fake_run(client, config_path, **kwargs):  # noqa: ARG001

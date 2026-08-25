@@ -304,7 +304,7 @@ def test_plugin_specs_from_vast(tmp_path):
                  "  - ''\nexecution:\n  image: i\n")
     assert cp._plugin_specs_from_vast(str(v)) == ["foo==1.2.3", "bar @ git+https://h/r@ref"]
     # No plugins key / unreadable → empty (never raises).
-    (tmp_path / "none.vast").write_text("version: 2\nexecution:\n  image: i\n")
+    (tmp_path / "none.vast").write_text("version: 3\nexecution:\n  image: i\n")
     assert cp._plugin_specs_from_vast(str(tmp_path / "none.vast")) == []
     assert cp._plugin_specs_from_vast(str(tmp_path / "missing.vast")) == []
 
@@ -331,7 +331,7 @@ def test_a_leftover_dir_registering_nothing_is_not_put_on_sys_path(tmp_path):
     """
     site = plugin_site_dir(str(tmp_path))
     os.makedirs(site)
-    (tmp_path / "c.vast").write_text("version: 2\nexecution:\n  image: i\n")
+    (tmp_path / "c.vast").write_text("version: 3\nexecution:\n  image: i\n")
     cp.ensure_plugins_importable(str(tmp_path))
     assert site not in sys.path
 
@@ -345,7 +345,7 @@ def test_a_leftover_dir_registering_plugins_is_still_used(tmp_path):
         f.write("Metadata-Version: 2.1\nName: made_up\nVersion: 1.0\n")
     with open(os.path.join(di, "entry_points.txt"), "w", encoding="utf-8") as f:
         f.write("[robovast.variation_types]\nMadeUp = made_up:MadeUp\n")
-    (tmp_path / "c.vast").write_text("version: 2\nexecution:\n  image: i\n")
+    (tmp_path / "c.vast").write_text("version: 3\nexecution:\n  image: i\n")
     cp.ensure_plugins_importable(str(tmp_path))
     assert sys.path[-1] == site
     assert cp.staged_variation_type_names(str(tmp_path)) == {"MadeUp"}

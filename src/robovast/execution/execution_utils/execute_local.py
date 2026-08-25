@@ -30,7 +30,7 @@ from robovast.common import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COM
                              scenario_env)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
-                                    declared_per_run_seconds)
+                                    declared_job_seconds)
 from robovast.common.config_generation import generate_scenario_variations
 from robovast.common.execution import (_apply_local_parameter_overrides,
                                        build_job_parameter_documents, dump_multi_document_yaml,
@@ -918,18 +918,15 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
 
     # Per-step wall-clock limit, or None for no limit.
     #
-    # ``execution.timeout`` is a *per-run* figure and a step may pack several runs, so it
-    # is scaled by ``runs_per_job`` — the same arithmetic the cluster applies to a Job's
-    # ``activeDeadlineSeconds`` (see ``kubernetes_backend``), so one key means one thing
-    # on both lanes.
+    # ``execution.timeout`` is the budget for a whole job, and a step *is* a job, so it is
+    # used as declared -- the same number the cluster puts on a Job's
+    # ``activeDeadlineSeconds`` (see ``kubernetes_backend``), so one key means one thing on
+    # both lanes.
     #
-    # ``declared_per_run_seconds``, not ``per_run_deadline_seconds``: the latter falls
-    # back to an hour, and inventing a limit where the user set none is a different
-    # decision from enforcing one they did set. An undeclared timeout stays unbounded
-    # here, exactly as before.
-    declared_timeout = declared_per_run_seconds(execution_params)
-    runs_per_job = int(execution_params.get("runs_per_job") or 1)
-    step_timeout_s = declared_timeout * runs_per_job if declared_timeout else None
+    # ``declared_job_seconds``, not ``job_deadline_seconds``: the latter falls back to a
+    # backstop, and inventing a limit where the user set none is a different decision from
+    # enforcing one they did set. An undeclared timeout stays unbounded here.
+    step_timeout_s = declared_job_seconds(execution_params)
 
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
@@ -949,8 +946,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     )
 
     if step_timeout_s:
-        script += (f'echo "Per-step limit: {step_timeout_s}s '
-                   f'(execution.timeout {declared_timeout}s x runs_per_job {runs_per_job})."\n')
+        script += (f'echo "Per-step limit: {step_timeout_s}s (execution.timeout, '
+                   f'the budget for the whole step)."\n')
         script += 'echo ""\n'
 
     # Copy out_template to results dir

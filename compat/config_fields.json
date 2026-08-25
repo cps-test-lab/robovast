@@ -246,11 +246,6 @@
   ],
   "ExecutionConfig": [
     [
-      "bt_log",
-      false,
-      "bool"
-    ],
-    [
       "containers",
       true,
       "dict[str, ContainerConfig]"
@@ -264,11 +259,6 @@
       "generate",
       false,
       "Union[list[Union[dict[str, Any], str]], NoneType]"
-    ],
-    [
-      "log_topics",
-      false,
-      "list[str]"
     ],
     [
       "mode",
@@ -298,7 +288,7 @@
     [
       "shm_size",
       false,
-      "Union[str, NoneType]"
+      "str"
     ],
     [
       "simulation",

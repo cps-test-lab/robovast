@@ -1,4 +1,4 @@
-version: 2
+version: 3
 metadata:
   name: quadrotor_landing
 # Batch-mode example (no search block). Run with:

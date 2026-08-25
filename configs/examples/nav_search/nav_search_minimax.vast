@@ -1,4 +1,4 @@
-version: 2
+version: 3
 metadata:
   name: nav_search_minimax
   title: "Which tuning survives the worst the world can do"

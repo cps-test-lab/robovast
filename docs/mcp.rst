@@ -665,13 +665,13 @@ owns, with no log reading at all:
    ``get_campaign_log`` for what the phase is doing.
 
 That backstop is not wasted — it is simply a different job. Both lanes now *enforce* a
-per-run limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds`` on the cluster,
-a ``timeout``-wrapped compose step locally), but only the cluster falls back to one hour
-when none is declared — locally an undeclared timeout stays unbounded. Killing late still
-beats never, whereas *reporting* late is worse than reporting nothing, so the two figures
-are deliberately separate (``per_run_deadline_seconds`` versus
-``declared_per_run_seconds``). A wedged local run with no declared timeout therefore stays
-alive to be inspected — end it with ``stop_campaign``.
+per-job limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds`` on the cluster,
+a ``timeout``-wrapped compose step locally), but only the cluster falls back to an hour per
+packed run when none is declared — locally an undeclared timeout stays unbounded. Killing
+late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
+figures are deliberately separate (``job_deadline_seconds``, which falls back, versus
+``declared_job_seconds``, which does not). A wedged local run with no declared timeout
+therefore stays alive to be inspected — end it with ``stop_campaign``.
 
 .. _mcp-health-findings:
 
@@ -742,8 +742,7 @@ Two properties, both deliberate:
 * **It is the expensive half, and therefore on demand.** The behaviour-tree log holds one line
   per status change, so the current tree is a fold over the whole file rather than a tail read.
   That is why it lives on ``get_job_state``, asked for when someone wants it, and never in the
-  cheap reply the service polls. ``bt_log: false`` costs this answer -- see
-  :ref:`the recording <configuration>`.
+  cheap reply the service polls. Every run records it; there is no way to turn it off.
 
 Alongside both, ``resources`` carries the newest sample the run's own monitor wrote, per
 container and per process. It answers what neither of the others can: a run stuck at 0% CPU is

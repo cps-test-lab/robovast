@@ -24,7 +24,7 @@ def campaign(tmp_path):
     cfg = cdir / "_config"
     cfg.mkdir(parents=True)
     (cfg / "demo.vast").write_text(yaml.safe_dump({
-        "version": 2,
+        "version": 3,
         "configuration": [{"name": "sweep"}],          # an "as-ran" block to preserve
         "results_processing": {"postprocessing": ["rosbags_to_csv"]},
     }))

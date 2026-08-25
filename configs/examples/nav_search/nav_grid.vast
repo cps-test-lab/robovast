@@ -1,4 +1,4 @@
-version: 2
+version: 3
 metadata:
   name: nav_grid
   title: A fixed grid over the doorway and the walker's timing (the reference)

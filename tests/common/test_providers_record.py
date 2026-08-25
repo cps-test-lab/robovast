@@ -109,7 +109,7 @@ def test_no_groups_means_no_filter_rather_than_no_providers():
 # ---------------------------------------------------------------------------
 
 _VAST = """
-version: 2
+version: 3
 configuration:
 - name: probe
 execution:
@@ -146,7 +146,7 @@ def test_no_container_record_leaves_the_answer_unknown(tmp_path):
 
 def test_an_unresolvable_backend_leaves_the_answer_unknown(tmp_path):
     """Records but no groups to filter by: the question could not be put."""
-    root = _campaign(tmp_path, records=[SIM_RECORD], vast="version: 2\nexecution: {}\n")
+    root = _campaign(tmp_path, records=[SIM_RECORD], vast="version: 3\nexecution: {}\n")
     _lines, output = _sink()
     _record_campaign_providers(root, output)
     assert read_providers_record(root) is None

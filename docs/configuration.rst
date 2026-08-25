@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 2
+   version: 3
    metadata:
      title: "Project Title"
      description: "Project description"
@@ -34,12 +34,12 @@ Version
 
 **Required:** Yes
 
-Specifies the version of the configuration file format. The current version is ``2``, and it
+Specifies the version of the configuration file format. The current version is ``3``, and it
 is the only one a file you are authoring may declare.
 
 .. code-block:: yaml
 
-   version: 2
+   version: 3
 
 An **older** version is migrated forward rather than refused:
 
@@ -496,26 +496,17 @@ Number of times to execute each run configuration. Multiple runs allow for stati
    execution:
      runs: 20
 
-bt_log
-^^^^^^
+behaviours and logs (no longer configurable)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-**Type:** Boolean
+Two former keys are gone as of config version 3.
 
-**Required:** No (default: ``true``)
-
-Record how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in each run
-directory. ``scenario_execution`` writes the file itself (via ``--bt-log``), so unlike the
-rosbag route this replaced it also works for ``mode: base`` runs, and the snapshots topic
-no longer has to be recorded into the bag.
-
-**This happens on every run unless you turn it off.** A run whose tree state was not recorded
-cannot be explained after the fact, and the file is small — tens to a few hundred KB, beside a
-rosbag measured in MB. Set it ``false`` to opt a campaign out.
-
-Opting out also costs the **live** answer, not just the recorded one: ``get_job_state`` reads
-this file to say where a running scenario has got to, so a wedged run in a campaign with
-``bt_log: false`` can be asked what its simulator is doing but not which action it is stuck in
-— which is usually the more useful half. It says so rather than showing an empty tree.
+``bt_log`` recorded how the scenario's behaviour tree progressed, as ``behaviors.jsonl`` in
+each run directory, and could be turned off. **It is now always on.** A run whose tree state
+was not recorded cannot be explained after the fact; the file is small — tens to a few
+hundred KB, beside a rosbag measured in MB — and turning it off also cost the *live* answer,
+since ``get_job_state`` reads it to say which action a wedged run is stuck in. There was no
+campaign worth paying that for.
 
 The file is ingested into the ``behaviors`` table of ``data.db`` — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
@@ -524,48 +515,27 @@ executed are still present. Each row carries ``parent_id`` and ``child_index`` (
 (where in the scenario source the behaviour came from). The Run view's scenario-tree panel
 reads this table. See the scenario-execution documentation for the file format.
 
-.. code-block:: yaml
+``log_topics`` chose what the entrypoint's own recorder captured. It is now fixed at
+``/rosout`` and ``/clock``, which is exactly what the merged :ref:`run_log <merged-run-log>`
+needs: ``/rosout`` for the lines, ``/clock`` for the sim↔wall mapping (each message's
+receive time is wall and its content is sim — see :ref:`clock-map`). What a run records
+*beyond* that is the scenario's ``bag_record`` to say, where it sits beside the behaviour
+producing it.
 
-   execution:
-     bt_log: false     # only to opt out; recording is the default
+This is the *infrastructure* recording, deliberately separate from ``bag_record``: it starts
+with the container, so it sees the stack coming up before any scenario does, and it runs on
+the wall clock. The scenario's own bag is recorded with ``use_sim_time``, so both of its
+axes are sim and it cannot carry that relation at any price. ROS images only; ignored where
+``ros2`` is not on PATH.
 
 .. note::
+
+   The output directory keeps its historical name ``logs/rosout_bag``: it is an address the
+   postprocessing map, the docs and every existing campaign already use.
 
    An execution image whose ``scenario_execution`` predates ``--bt-log`` ignores the flag
    rather than failing, so the run still succeeds — it simply produces no ``behaviors.jsonl``
    and no ``behaviors`` table.
-
-log_topics
-^^^^^^^^^^
-
-**Type:** List of strings
-
-**Required:** No (default: ``["/rosout", "/clock"]``)
-
-Topics the entrypoint's own recorder captures, for the whole container's life, in **wall**
-time. ROS images only; ignored where ``ros2`` is not on PATH.
-
-This is the *infrastructure* recording, deliberately separate from the scenario's
-``bag_record``: it starts with the container, so it sees the stack coming up before any
-scenario does, and it runs on the wall clock. That is what makes ``/clock`` here the
-sim↔wall mapping — each message's receive time is wall and its content is sim (see
-:ref:`clock-map`). The scenario's own bag is recorded with ``use_sim_time``, so both of its
-axes are sim and it cannot carry that relation at any price.
-
-**An escape hatch, not a switch.** The default already covers what the merged
-:ref:`run_log <merged-run-log>` needs; name this only to add a topic. An empty list records
-nothing — and then a run's log has no sim time at all.
-
-.. code-block:: yaml
-
-   execution:
-     log_topics: [/rosout, /clock, /diagnostics]   # only to add; the default is the first two
-
-.. note::
-
-   The output directory keeps its historical name ``logs/rosout_bag`` even though it now
-   holds more than ``/rosout``: it is an address the postprocessing map, the docs and every
-   existing campaign already use.
 
 runs_per_job
 ^^^^^^^^^^^^
@@ -666,9 +636,13 @@ timeout
 
 **Applies to:** Both execution lanes.
 
-Maximum wall-clock time (in seconds) allowed for a single run. Because ``timeout`` is
-*per run* and one unit of work may pack several runs (see ``runs_per_job``), both lanes
-enforce ``timeout * runs_per_job``.
+Maximum wall-clock time (in seconds) allowed for a single **job** — one unit of work,
+which is one run unless ``runs_per_job`` packs several into it. The number is used exactly
+as declared; it is not scaled.
+
+A job is the granularity both lanes can actually enforce at, which is why the budget is
+stated in it: Kubernetes caps a Job, and the local lane wraps a whole compose step. Neither
+can stop an individual run inside a packed job.
 
 - **Local (Docker Compose):** each compose step is wrapped in ``timeout``, which
   SIGTERMs ``docker compose`` — the same shutdown Ctrl+C triggers, so the scenario gets
@@ -678,19 +652,24 @@ enforce ``timeout * runs_per_job``.
 - **Cluster (Kubernetes):** sets ``activeDeadlineSeconds`` on the Job spec so Kubernetes
   force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
-If omitted (or ``null``), cluster runs fall back to a **default of 1 hour per run**
+If omitted (or ``null``), cluster runs fall back to a **backstop of 1 hour per run**
 (``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually
-killed rather than hanging the campaign indefinitely. Set ``timeout`` explicitly to
-override this default. **Local runs have no such fallback**: with no ``timeout`` declared
-they remain unbounded, because enforcing a limit the user set is a different decision
-from inventing one they did not.
+killed rather than hanging the campaign indefinitely. The backstop is per-run and therefore
+scales with packing, where a *declared* budget does not — deliberately: an hour is a number
+chosen in ignorance of the campaign, so a job of 100 runs must not be killed after the
+first few, while a declaration is a statement about the job and is taken at face value.
+**Local runs have no such fallback**: with no ``timeout`` declared they remain unbounded,
+because enforcing a limit the user set is a different decision from inventing one they did
+not.
+
+``stalled`` still needs a per-run figure, and derives one as ``timeout / runs_per_job``.
 
 A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadlineSeconds`` in the service log for later analysis.
 
 .. code-block:: yaml
 
    execution:
-     timeout: 3600   # 1 hour per run
+     timeout: 3600   # 1 hour for the job
 
 scenario_file
 ^^^^^^^^^^^^^
@@ -1540,7 +1519,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 2
+   version: 3
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc
@@ -1576,7 +1555,6 @@ Here's a complete example showing all major configuration options:
      pre_command: /config/files/prepare_test.sh
      post_command: /config/files/post_command.sh
      run_as_user: 1000
-     bt_log: true
      run_files:
      - "**/files/*"
      - "**/models/*.sdf"
