@@ -31,7 +31,8 @@ import types
 
 from robovast.execution.cluster_execution.cluster_execution import (
     BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS, blocked_and_contended_reasons,
-    image_pull_is_throttled, pod_fits_any_node, unschedulable_is_contention)
+    image_pull_is_throttled, list_jobs_with_phase, pod_fits_any_node,
+    unschedulable_is_contention)
 
 #: What the scheduler actually wrote when two campaigns filled the node.
 BUSY = ("0/1 nodes are available: 1 Insufficient cpu. no new claims to deallocate, "
@@ -229,3 +230,70 @@ def test_only_a_pull_reason_can_be_throttled():
                                          "secret rate limit not found"))])
     blocked, contended = blocked_and_contended_reasons(core, "ns", "sel")
     assert blocked and not contended
+
+
+# -- what the reader is shown --------------------------------------------------
+#
+# The batch loop's distinction above is about how long to wait. This one is about what a
+# human sees while it waits, and it is a separate mistake to get wrong: a `blocked` row is
+# red and its count is the one that asks somebody to intervene, so spending either on a
+# job that starts by itself teaches the reader to ignore both.
+
+
+def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name, labels={}, annotations={}),
+        spec=types.SimpleNamespace(suspend=suspend),
+        status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed))
+
+
+class _Batch:
+    def __init__(self, jobs):
+        self._jobs = jobs
+
+    def list_namespaced_job(self, namespace, label_selector):
+        return types.SimpleNamespace(items=self._jobs)
+
+
+def _listed(batch, core):
+    return {j.metadata.name: (phase, detail)
+            for j, phase, detail in list_jobs_with_phase(batch, core, "ns", "sel")}
+
+
+def test_a_contended_job_is_listed_pending_with_the_schedulers_reason():
+    """`pending` is the literal truth about it -- the pod exists and has not started --
+    and the message stays, because "why is this one not moving" is a fair question even
+    when the answer is "it will"."""
+    listed = _listed(_Batch([_job("run-7", active=1)]), _Core([_pod("run-7")]))
+    assert listed["run-7"] == ("pending", f"Unschedulable: {BUSY}")
+
+
+def test_a_throttled_pull_is_listed_pending_too():
+    core = _Core([_pod("run-7", waiting=("ErrImagePull", THROTTLED))])
+    listed = _listed(_Batch([_job("run-7", active=1)]), core)
+    assert listed["run-7"] == ("pending", f"ErrImagePull: {THROTTLED}")
+
+
+def test_a_job_that_will_not_start_is_still_listed_blocked():
+    """The counterpart that must not move: a reservation no machine can satisfy looks
+    identical to the scheduler and is the reason the red row exists."""
+    listed = _listed(_Batch([_job("run-7", active=1)]), _Core([_pod("run-7", cpu="200")]))
+    assert listed["run-7"] == ("blocked", f"Unschedulable: {BUSY}")
+
+
+def test_unreadable_nodes_still_list_as_blocked():
+    """Same strictness as the batch loop: with no node sizes an impossible request cannot
+    be ruled out, so the listing must not soften it either."""
+    core = _Core([_pod("run-7")], node_error=RuntimeError("nodes forbidden"))
+    listed = _listed(_Batch([_job("run-7", active=1)]), core)
+    assert listed["run-7"][0] == "blocked"
+
+
+def test_a_contended_job_keeps_its_reason_over_kueues():
+    """A suspended Job has no pod and so cannot be contended, which makes this state
+    unreachable against a real cluster. It is pinned because the `waiting` branch assigns
+    `detail` unconditionally and is now reachable by a job that already has one: without
+    its guard, the scheduler's message would be replaced by Kueue's."""
+    job = _job("run-7", active=1, suspend=True)
+    listed = _listed(_Batch([job]), _Core([_pod("run-7")]))
+    assert listed["run-7"] == ("pending", f"Unschedulable: {BUSY}")

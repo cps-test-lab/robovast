@@ -540,6 +540,12 @@ class JobSummary(BaseModel):
     # Why a job is in its state, when there is something to say — the Kubernetes reason
     # + message for a ``blocked`` job (e.g. ``"ImagePullBackOff: Back-off pulling image
     # ..."``), or Kueue's own wait message for a ``waiting`` one. ``None`` otherwise.
+    #
+    # A ``pending`` job carries one too, when the cluster has said why it has not been
+    # placed yet: a pod waiting for a node another campaign is holding, or for a pull
+    # the kubelet is rate-limiting, is pending (it will start on its own) but has a
+    # reason worth reading. So a detail here is not by itself a sign of trouble —
+    # ``status`` is what says whether anyone needs to act.
     detail: Optional[str] = None
 
 
@@ -561,6 +567,12 @@ class JobCounts(BaseModel):
     # Jobs that cannot start and will not recover on their own (image pull / config
     # error). Distinct from ``failed``: Kubernetes still counts them active, but they
     # make no progress — see ``JobSummary.detail`` for the reason.
+    #
+    # "will not recover" is the whole content of this number, and it is what makes a
+    # non-zero value worth acting on. A pod merely waiting its turn for a busy node is
+    # counted in ``pending``, not here: counting it here made a healthy campaign on a
+    # loaded cluster report work that needed a human, which is the one thing this
+    # field is for.
     blocked: int = 0
     total: int = 0
 

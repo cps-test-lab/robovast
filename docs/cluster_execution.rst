@@ -1084,8 +1084,24 @@ busy
    (``BLOCKED_GRACE_SECONDS``) with Kubernetes' own message.
 
 The job *listing* (``vast execution cluster monitor``, the web UI, ``list_campaign_jobs``)
-reports the last two alike, as ``blocked`` with Kubernetes' message as the detail — the
-distinction is about how long to wait, and it lives in the run loop and its log.
+reports all three, and a busy job appears there as ``pending`` carrying Kubernetes'
+message as its detail. ``pending`` is the literal truth about such a job — its pod exists
+and has not started — and the reason it has not started is worth reading without being
+worth acting on.
+
+The listing used to report busy and blocked alike, as ``blocked``. That put a red row and
+a ``Blocked:`` count in front of anyone running two campaigns at once, for a job that
+starts by itself as soon as a neighbour finishes; ``blocked`` is defined just above as the
+state that will *not* clear, so the count that exists to say "someone must do something"
+was saying it about nothing. It is the same mistake the ``waiting`` phase was introduced
+to fix, and it has the same cost: a reader who learns to ignore the alarming word stops
+reading it when it is real. What stayed in the run loop is only how long to wait —
+``blocked`` fails the batch in a minute, busy gets fifteen — and the reason is repeated in
+its log each minute meanwhile.
+
+A busy job is therefore invisible in the monitor's aggregate counts, which have no
+per-job detail: it is one of ``Pending``. The run loop's log is where a CLI reader learns
+which pending job is waiting on what.
 
 The split is made per job, and on each side it is an allowlist of what is known to clear
 by itself — so a reason nobody anticipated is blocked, and fails fast, rather than

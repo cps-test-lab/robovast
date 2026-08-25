@@ -734,12 +734,19 @@ def _job_pod(job_name, phase="Running"):
 
 
 class _CoreWithPods:
-    def __init__(self, pods):
+    def __init__(self, pods, nodes=None):
         import types
         self._items = types.SimpleNamespace(items=pods)
+        # Only an unschedulable pod makes the classifier ask for these, and without them
+        # it gives the strict answer (see `_pod_signals`) -- so a test about contention
+        # has to supply them or it silently tests the blocked path instead.
+        self._nodes = types.SimpleNamespace(items=nodes or [])
 
     def list_namespaced_pod(self, namespace, label_selector):
         return self._items
+
+    def list_node(self):
+        return self._nodes
 
 
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
@@ -800,6 +807,44 @@ def test_resource_usage_counts_kueue_suspended_jobs_as_pending(cs, monkeypatch):
 
     assert batch.calls == 1, "the tally must read Jobs — pods cannot see a suspended one"
     assert (usage.jobs_running, usage.jobs_pending) == (0, 3)
+
+
+def test_list_jobs_reports_a_contended_job_as_pending_not_blocked(cs, monkeypatch):
+    """A job waiting for a node another campaign is holding.
+
+    ``blocked`` is the count that says a human must intervene, so it must stay zero here:
+    this job starts by itself as soon as a neighbour finishes. The scheduler's message
+    still rides along, because "why is that one not moving" deserves an answer even when
+    the answer is "it will".
+    """
+    import types
+    jobs = [_job("j-busy", active=1)]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    pod = _job_pod("j-busy", phase="Pending")
+    pod.status.conditions = [types.SimpleNamespace(
+        type="PodScheduled", status="False", reason="Unschedulable",
+        message="0/4 nodes are available: 4 Insufficient cpu.")]
+    pod.spec = types.SimpleNamespace(
+        containers=[types.SimpleNamespace(
+            name="scenario",
+            resources=types.SimpleNamespace(requests={"cpu": "8"}))],
+        init_containers=None)
+    node = types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name="n1"),
+        status=types.SimpleNamespace(allocatable={"cpu": "96"}))
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods([pod], nodes=[node]))
+    resp = cs.list_jobs("camp-2026-07-17-120000")
+
+    assert (resp.counts.pending, resp.counts.blocked) == (1, 0)
+    busy = next(j for j in resp.jobs if j.job_name == "j-busy")
+    assert busy.status == "pending"
+    assert "Insufficient cpu" in busy.detail
 
 
 def test_resource_usage_counts_blocked_job_as_pending(cs, monkeypatch):

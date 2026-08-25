@@ -824,10 +824,15 @@ def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
 
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
-    """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start -- an image
-    pull / container-config error, or a pod the scheduler cannot place; see
-    :func:`_pod_signals`. Empty when nothing is blocked, so a truthy result means
-    "these jobs will never start on their own"."""
+    """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start **right
+    now** -- an image pull / container-config error, or a pod the scheduler cannot
+    place; see :func:`_pod_signals`.
+
+    A truthy result means "these jobs are not starting", NOT "these jobs will never
+    start": the mapping includes the ones merely waiting their turn for a busy node or
+    a throttled pull, which start by themselves. A caller that must tell those apart --
+    to choose a grace window, or to decide what to show a reader -- wants
+    :func:`blocked_and_contended_reasons` and its second element."""
     return _pod_signals(k8s_core, namespace, label_selector)[1]
 
 
@@ -903,8 +908,20 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     ``pending`` rather than ``running`` — and an active Job whose pod has already
     finished is reported ``completed``/``failed`` rather than falling back to
     ``pending`` while the job controller catches up (see :func:`job_phase`). A pod that
-    cannot start (image pull / config error) is reported ``blocked`` with a human
-    ``detail`` (Kubernetes' own message) instead of sitting ``pending`` forever.
+    cannot start is reported with a human ``detail`` (Kubernetes' own message) instead
+    of sitting silently ``pending`` forever.
+
+    ``blocked`` means what :data:`POD_BLOCKED_REASONS` and
+    :func:`unschedulable_is_contention` together decide it means: an impediment that
+    will *not* clear on its own. A pod merely waiting its turn -- for a node another
+    campaign is holding, or for a pull the kubelet is rate-limiting -- is reported
+    ``pending``, which is the literal truth about it (the pod exists and has not
+    started), and keeps the scheduler's or kubelet's message as its ``detail``. It was
+    reported ``blocked`` once, and a healthy campaign on a busy cluster therefore
+    showed a red row and a ``Blocked:`` count that asked a reader to intervene in
+    something that fixes itself in seconds -- the same mistake, and the same fix, as
+    the ``waiting`` phase below. How long the run loop tolerates either lives there,
+    not here (:data:`CONTENDED_GRACE_SECONDS` vs :data:`BLOCKED_GRACE_SECONDS`).
 
     A Kueue-**suspended** Job is its own phase, ``waiting``, carrying Kueue's wait
     message as ``detail``. It has no pod at all, so the pod-level probe cannot see it
@@ -921,13 +938,14 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
 
     Returns a list of ``(job, phase, detail)`` tuples in the order the API returned
     the Jobs; ``detail`` is ``None`` unless the Job is blocked (image pull / config
-    error), waiting for Kueue admission, or failed for an infrastructure reason
-    (OOMKilled / evicted / deadline), in which case it carries Kubernetes' or Kueue's
-    own explanation.
+    error), pending for a stated reason (contended: unschedulable or a throttled pull),
+    waiting for Kueue admission, or failed for an infrastructure reason (OOMKilled /
+    evicted / deadline), in which case it carries Kubernetes' or Kueue's own
+    explanation.
     """
     job_list = k8s_batch.list_namespaced_job(namespace, label_selector=label_selector)
     try:
-        phases, blocked, terminated, restarted, _contended = _pod_signals(
+        phases, blocked, terminated, restarted, contended = _pod_signals(
             k8s_core, namespace, label_selector)
     except Exception as exc:  # noqa: BLE001 - advisory listing degrades explicitly
         # A transient pod-list hiccup: report Job-level phases for this listing only
@@ -941,26 +959,36 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
         # documented "no pod truth" signal that actually falls back to Job level.
         logger.warning("Pod-level refinement unavailable (%s); reporting Job-level "
                        "phases for this listing.", exc)
-        phases, blocked, terminated, restarted = None, {}, {}, {}
+        phases, blocked, terminated, restarted, contended = None, {}, {}, {}, {}
     suspended = _suspended_job_reasons(job_list, namespace)
     out = []
     for job in job_list.items:
-        detail = blocked.get(job.metadata.name)
-        if detail:
+        name = job.metadata.name
+        detail = blocked.get(name)
+        if detail and name not in contended:
             phase = "blocked"
-        elif job.metadata.name in suspended:
-            phase, detail = "waiting", suspended[job.metadata.name]
+        # The `not detail` guard matters only because the branch above no longer
+        # swallows every job that has one. This branch assigns `detail`
+        # unconditionally, so without it a contended job that also appeared in
+        # `suspended` would have the scheduler's message replaced by Kueue's. A
+        # suspended Job has no pod and so cannot be contended, which makes that
+        # unreachable rather than a live bug -- the guard is what keeps the branch
+        # from silently starting to lie if that ever stops being true.
+        elif not detail and name in suspended:
+            phase, detail = "waiting", suspended[name]
         else:
+            # No impediment, or one that clears by itself: the pod's own phase is the
+            # truth, and a contended job keeps the scheduler's message as its reason.
             phase = job_phase(job, phases)
         # A failed job whose pod was OOM-killed / evicted / deadline-exceeded would
         # otherwise show no cause (its scenario log is truncated) — surface it.
         if phase == "failed" and not detail:
-            detail = terminated.get(job.metadata.name)
+            detail = terminated.get(name)
         # A restart is reported whatever the phase: the pod may still be Running, and
         # that is exactly the case worth surfacing -- a job on its way to a plausible
         # result its simulator can no longer justify.
         if not detail:
-            detail = (restarted.get(job.metadata.name) or {}).get("detail")
+            detail = (restarted.get(name) or {}).get("detail")
         out.append((job, phase, detail))
     return out
 

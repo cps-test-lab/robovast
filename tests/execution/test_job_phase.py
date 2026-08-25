@@ -350,7 +350,12 @@ def test_unschedulable_pod_is_blocked_with_the_schedulers_own_message():
         "gpu-job": f"Unschedulable: {msg}"}
 
 
-def test_unschedulable_shows_as_blocked_in_the_job_listing():
+def test_unschedulable_without_node_sizes_shows_as_blocked_in_the_listing():
+    """"Insufficient cpu" alone does not say whether the node is busy or the request is
+    impossible, and this `_Core` serves no node list -- so the listing cannot rule the
+    latter out and must not soften the row. The busy case, where node sizes ARE readable
+    and the job lists as `pending`, lives in test_scheduling_contention.py.
+    """
     batch = _Batch([_job("gpu-job", active=1)])
     core = _Core([_pod("gpu-job", unschedulable=("Unschedulable", "Insufficient cpu."))])
     result = {j.metadata.name: (p, d)

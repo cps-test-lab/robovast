@@ -595,8 +595,11 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         Or ``{error}``.
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
-        say) — ``detail`` carries the reason. ``waiting`` is queued for cluster capacity
-        by Kueue: healthy, not stuck.
+        say) — ``detail`` carries the reason, and a non-zero count is the one here that
+        asks you to do something. ``waiting`` is queued for cluster capacity by Kueue:
+        healthy, not stuck. ``pending`` has a pod that has not started; it too may carry
+        a ``detail`` when the cluster has said why — a node another campaign is holding,
+        or a rate-limited pull — which is a reason, not a fault: it starts on its own.
     """
     client = service_access.service_client()
     if client is None:
