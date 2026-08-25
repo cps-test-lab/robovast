@@ -175,3 +175,35 @@ class ControllerState:
     @property
     def progress_suspended(self) -> bool:
         return self._progress_suspend.is_set()
+
+
+def stage_output_callback(state, log):
+    """An ``output_callback`` that logs a step's line *and* publishes it as ``Status.stage``.
+
+    Postprocessing narrates itself through that callback already — one line per step, plus the
+    ``data.db`` builder's run counter — and that narration is the only account a reader gets of
+    a phase with **no run counter of its own**. A campaign holds ``postprocessing`` with
+    ``progress`` pinned and every run tally frozen, so on the evidence the campaign view had,
+    converting a large campaign's rosbags and a wedged step looked identical for as long as it
+    took. ``stage`` is the field for exactly that ("a live marker string"), and ``set_phase``
+    clears it on the next phase change, so a marker cannot outlive what it described.
+
+    The line is published **verbatim**. Which of them matters is the reader's question, each
+    step's summary is replaced by the next step's ``Executing`` line within seconds, and a
+    producer-side filter would be a second place obliged to know what postprocessing's steps
+    are called. Renderers are expected to truncate; the field is one line, not a log tail.
+
+    *state* may be ``None`` — the re-run entry points postprocess a campaign nothing is
+    driving, and there is no live status to publish into. Then this is just *log*, so a caller
+    never has to ask which case it is in.
+    """
+    if state is None:
+        return log
+
+    def publish(msg):
+        log(msg)
+        # Not set_phase: the phase is already ``postprocessing`` and re-setting it would
+        # reset ``phase_since``, turning the age of the phase into the age of its last step.
+        state.update(stage=str(msg))
+
+    return publish

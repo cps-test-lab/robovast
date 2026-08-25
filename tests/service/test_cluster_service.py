@@ -2215,3 +2215,104 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
         types.SimpleNamespace(job_name="scenario-abc", status="running")]))
 
     assert cs._health_targets("camp-1") == []
+
+
+# -- the campaign log's two byte sources ------------------------------------
+
+
+def _tracked(cs, campaign_id, results_dir, terminal=True):
+    """Register *campaign_id* as tracked here, rooted at *results_dir*."""
+    from robovast.client.status import Phase
+    phase = Phase.FINISHED if terminal else Phase.RUNNING
+    cs._campaigns[campaign_id] = types.SimpleNamespace(
+        results_dir=str(results_dir), thread=None,
+        state=types.SimpleNamespace(snapshot=lambda: types.SimpleNamespace(phase=phase)))
+
+
+def _fake_store(cs, monkeypatch, objects):
+    """Point the durable half of the log reader at *objects* (key -> bytes)."""
+    reads = []
+
+    class _Store:
+        def read_object(self, bucket, key):
+            reads.append(key)
+            return objects.get(key)
+
+    monkeypatch.setattr(cs, "_cluster_config", lambda: object())
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.campaign_storage_location",
+        lambda cfg, cid: ("bucket", f"{cid}/"))
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.in_pod_storage.storage_client_for",
+        lambda cfg, interactive=False: _Store())
+    return types.SimpleNamespace(reads=reads)
+
+
+def test_a_tracked_campaign_gets_the_phases_that_are_only_in_the_store(cs, monkeypatch, tmp_path):
+    """Cluster postprocessing does not write to the tracked scratch root — it works in
+    its own fetched campaign root and publishes to the object store. Reading scratch
+    alone served every tracked cluster campaign a log with no POSTPROCESSING section at
+    all, pass or fail, while the bytes sat in the store the whole time.
+    """
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"ran 8 configs\n")
+    _tracked(cs, "camp-1", tmp_path)
+    _fake_store(cs, monkeypatch,
+                {"camp-1/_execution/postprocessing.log": b"rosbags_process.py: error: boom\n"})
+
+    chunk = cs.get_campaign_logs("camp-1")
+
+    assert "ran 8 configs" in chunk.text          # from scratch
+    assert "POSTPROCESSING" in chunk.text         # from the store
+    assert "error: boom" in chunk.text
+
+
+def test_a_live_scratch_phase_file_wins_over_its_durable_copy(cs, monkeypatch, tmp_path):
+    """The durable copy of a phase still being appended to lags it. Preferring the store
+    would let one poll return fewer bytes than the last, putting the client's byte offset
+    past the end of the stream.
+    """
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"live\n")
+    _tracked(cs, "camp-1", tmp_path, terminal=False)
+    _fake_store(cs, monkeypatch, {"camp-1/_execution/controller.log": b"stale\nand\nlonger\n"})
+
+    chunk = cs.get_campaign_logs("camp-1")
+
+    assert "live" in chunk.text and "stale" not in chunk.text
+    assert chunk.eof is False
+
+
+def test_a_fully_scratch_campaign_never_touches_the_store(cs, monkeypatch, tmp_path):
+    """This read sits behind the log SSE stream, which re-polls while a user watches; a
+    store round-trip per phase per poll is the pathology the offset protocol exists to
+    avoid.
+    """
+    from robovast.common.campaign_logs import INFRA_PHASES
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    for _, filename in INFRA_PHASES:
+        (exec_dir / filename).write_bytes(b"x\n")
+    _tracked(cs, "camp-1", tmp_path)
+    spy = _fake_store(cs, monkeypatch, {})
+
+    cs.get_campaign_logs("camp-1")
+
+    assert spy.reads == []
+
+
+def test_an_unreachable_store_still_serves_what_scratch_has(cs, monkeypatch, tmp_path):
+    """A diagnostic surface must degrade, not fail: the log panel showing the phases it
+    can reach beats it showing a stack trace.
+    """
+    exec_dir = tmp_path / "camp-1" / "_execution"
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "controller.log").write_bytes(b"ran\n")
+    _tracked(cs, "camp-1", tmp_path)
+    monkeypatch.setattr(cs, "_cluster_config", lambda: (_ for _ in ()).throw(RuntimeError("no store")))
+
+    chunk = cs.get_campaign_logs("camp-1")
+
+    assert "ran" in chunk.text

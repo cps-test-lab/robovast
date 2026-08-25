@@ -94,15 +94,15 @@ class RoqsimConfig(BaseModel):
     #: ``extends`` chain -- and "world" understates what a campaign is selecting.
     config: str
     #: Parts of the world to change before it is compiled, as a nested mapping mirroring
-    #: the world YAML with plugins addressed by name -- exactly :func:`roqsim.apply_overrides`'
+    #: the world YAML with components addressed by name -- exactly :func:`roqsim.apply_overrides`'
     #: input, and exactly what ``roqsim sim --set`` builds from a dotlist.
     #:
     #: This is what makes a world *variable* without one YAML per cell: a campaign sweeping
-    #: a floorplan dimension or a prop's mass writes ``sim: plugins.floorplan.size`` and
+    #: a floorplan dimension or a prop's mass writes ``sim: components.floorplan.size`` and
     #: lands here. It travels as a file rather than as ``--set`` flags because the values are
     #: structured, and because a file is something the results keep and a human can replay.
     #:
-    #: Override semantics, not ``extends``: a child world's ``plugins`` are *appended* after
+    #: Override semantics, not ``extends``: a child world's ``components`` are *appended* after
     #: the parent's, so an inherited plugin can only be changed by disabling and re-adding
     #: it. ``apply_overrides`` resolves a plugin by name and deep-merges, which is what a
     #: campaign varying one value of one plugin actually means.
@@ -424,10 +424,10 @@ def _set_arg(key: str, value) -> str:
     """One ``--set key=value`` argument that survives ``shlex.split`` as a single word.
 
     QUOTED, and serialized without spaces, because the command is a STRING the generator
-    runs through ``shlex.split``. A vector-valued override -- ``plugins.parcel.pos: [11.8,
+    runs through ``shlex.split``. A vector-valued override -- ``components.parcel.pos: [11.8,
     4.55, 0.762]``, i.e. exactly what a campaign that sweeps a position records -- renders as
     ``[11.8, 4.55, 0.762]`` and was torn into three argv words at those spaces, so
-    ``roqsim-export-web`` got ``--set plugins.parcel.pos=[11.8,`` plus two stray arguments and
+    ``roqsim-export-web`` got ``--set components.parcel.pos=[11.8,`` plus two stray arguments and
     exited 2. The failure surfaces only when somebody opens the run view, and only for a
     world whose overrides contain a list, so it reads as "this campaign has no 3D geometry"
     rather than as a quoting bug.

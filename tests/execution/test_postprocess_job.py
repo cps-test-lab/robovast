@@ -22,7 +22,8 @@ def test_postprocess_syncs_outputs_even_on_conversion_failure(monkeypatch, tmp_p
 
     The Job mirrors that log (with the conversion error) to the object store even
     on failure; syncing it lands the POSTPROCESSING section in the campaign log the
-    web UI shows — otherwise the failure is only a terse "kubectl logs" hint.
+    web UI shows — which is the only place the error is readable, since the Job is
+    reaped by ttlSecondsAfterFinished minutes after it fails.
     """
     synced = []
     _patch_failed_conversion(monkeypatch, synced)
@@ -72,6 +73,22 @@ def test_no_credential_configured_leaves_the_pod_spec_alone():
     the pod from starting."""
     m = pj.build_manifest("c1", "img:1", _CMDS, _S3, "ns")
     assert "imagePullSecrets" not in m["spec"]["template"]["spec"]
+
+
+def test_a_failed_job_is_reported_without_a_cluster_command():
+    """This message lands on ``postprocessing_error``, which the web UI renders to
+    someone who has a log panel and no kubeconfig. It used to append
+    ``kubectl logs job/<name> -n <ns>`` -- unrunnable for that reader, aimed at whichever
+    cluster their context happened to name, and pointing at a Job that
+    ``ttlSecondsAfterFinished`` reaps 300 s after it fails. The campaign log is where the
+    conversion output actually is, and every surface already shows it.
+    """
+    msg = pj.job_failed_message("robovast-postproc-c1")
+
+    assert "robovast-postproc-c1" in msg
+    assert "POSTPROCESSING section of the campaign log" in msg
+    # No cluster command, in any form: no tool name, no shell.
+    assert "kubectl" not in msg and "`" not in msg and "$" not in msg
 
 
 def test_a_blocked_pod_is_reported_by_its_reason(monkeypatch):

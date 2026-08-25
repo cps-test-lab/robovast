@@ -1039,6 +1039,10 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             # The context this backend submitted the campaign's Jobs with; postprocessing
             # must schedule against the same cluster the runs went to.
             kube_context=getattr(backend, "kube_context", None),
+            # Publishes stage 2's step lines as the live ``stage`` marker: this phase has no
+            # run counter, so its narration is all a reader has to tell a long step from a
+            # stuck one.
+            state=state,
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
@@ -1207,6 +1211,13 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
     and ends the campaign itself, after the postprocessing it runs once this returns.
     """
     options = options or RunOptions()
+    # Read the verdict *before* any step of this tail can move the phase: the share step
+    # below advances it to `sharing`, so a check made after it found a failed campaign no
+    # longer saying so — and postprocessing then ran on the incomplete campaign root and
+    # raised "no .vast under _config" over the real failure. The verdict is a fact about
+    # the run that reached this finally; it must not depend on what the tail does next.
+    before = state.snapshot() if state is not None else None
+    failed = before is not None and before.phase == Phase.FAILED
     try:
         if state is not None and state.stop_requested:
             logger.info(
@@ -1215,13 +1226,22 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
             return
         if options.upload_to_share:
             _share_campaign(backend, campaign_root, options, state, notifier)
+            # Hand the phase back: the share step borrows `sharing`, and a failed
+            # campaign has to keep saying so. `end_campaign` reads the phase to pick the
+            # campaign's one notification, and `publish_terminal_phase` treats a
+            # non-terminal `sharing` as "not over yet" — so a failure that also uploaded
+            # was announced as finished, with a summary of the runs it never produced.
+            if failed and state is not None:
+                # With the stage it had: a phase change clears the stage, and here that
+                # stage is the failure's own reason line.
+                state.set_phase(Phase.FAILED, stage=before.stage)
         # A failed campaign (run() set Phase.FAILED before re-raising into this finally)
         # never finished projecting its results, so campaign_root is missing pieces
         # postprocessing needs — e.g. _config/*.vast. Running it anyway only raises a
         # second, misleading error ("no .vast under _config") that masks the real failure.
         # Skip only the derived-data step; _finalize still runs below so the failure
         # outcome is published (as does _record_campaign_failure).
-        if state is not None and state.snapshot().phase == Phase.FAILED:
+        if failed:
             logger.info("Campaign %s failed — skipping analysis postprocessing.",
                         campaign_id)
         else:
@@ -1257,6 +1277,11 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
     the share — and the backend names it ``raw`` because that is what it finds on
     disk. Best-effort: a share failure is logged but never loses the campaign nor
     blocks postprocessing/finalize.
+
+    The ``sharing`` phase is **borrowed**: this step publishes it for the length of the
+    upload and the caller hands the campaign's own phase back (see
+    :func:`_finish_campaign`). A failed campaign that also uploads must not stop saying
+    it failed while it does.
     """
     try:
         if state is not None:

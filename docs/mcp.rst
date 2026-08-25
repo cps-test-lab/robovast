@@ -633,8 +633,9 @@ owns, with no log reading at all:
    * - ``stalled``
      - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
        (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
-       inside it; ``null`` when the ``.vast`` declares no timeout, so no verdict is
-       possible — ``stall_verdict`` then says so.
+       inside it; ``null`` when no verdict is possible — either the ``.vast`` declares
+       no timeout, or ``status`` is not ``running`` (see below). ``stall_verdict``
+       then says which.
    * - ``stall_reason``
      - Present only when ``stalled`` is ``true``. Names the comparison *and the next
        call*, so the follow-up is not something to remember.
@@ -652,6 +653,16 @@ owns, with no log reading at all:
    tempting fix, substituting the enforcement backstop, is worse: it is one hour, so a
    two-minute pilot that wedged immediately would report ``stalled: false`` for
    fifty-nine minutes. **Declare** ``execution.timeout`` and the verdict becomes real.
+
+   The other ``null`` is the phase. The budget is per-*run*, and ``progress_age_s``
+   measures the age of the last **run** completion — so only ``status: "running"`` can be
+   judged by them. ``postprocessing``, ``sharing``, ``finishing`` and the pre-run phases
+   restart that clock when they begin and then have nothing that can advance it, so
+   passing the budget there says only that the phase outlasted a single run. Converting a
+   large campaign's rosbags always does, and asserting a stall over it reported a healthy
+   campaign as wedged — pointing the reader at a job that had already finished, and ending
+   ``vast wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
+   ``get_campaign_log`` for what the phase is doing.
 
 That backstop is not wasted — it is simply a different job. Both lanes now *enforce* a
 per-run limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds`` on the cluster,

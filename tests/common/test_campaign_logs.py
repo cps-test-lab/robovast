@@ -19,7 +19,12 @@
 import logging
 
 from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
-from robovast.common.campaign_logs import assemble_log, assemble_log_from_dir, phase_banner
+from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log, assemble_log_from_dir,
+                                           phase_banner)
+
+#: Every phase file, so a test can populate a source that is complete by construction —
+#: adding a phase must not quietly turn a "consulted nothing further" assertion green.
+_ALL_PHASE_FILES = INFRA_PHASES
 
 
 def _store_reader(store):
@@ -166,3 +171,70 @@ def test_build_is_the_first_phase():
     """
     from robovast.common.campaign_logs import INFRA_PHASES
     assert INFRA_PHASES[0][0] == "BUILD"
+
+
+# -- layering two byte sources ----------------------------------------------
+#
+# Phases are written by different processes into different places: on the cluster the
+# controller's files land in the service's scratch while postprocessing works in its own
+# fetched campaign root and publishes to the object store. Reading one alone drops whole
+# phases, and does it silently — a missing phase file is also how "not run yet" looks.
+
+def test_a_phase_missing_from_the_first_source_comes_from_the_second():
+    """The bug this exists for: a tracked cluster campaign served a log with no
+    POSTPROCESSING section at all — pass or fail — while the durable copy sat in the
+    object store the whole time.
+    """
+    from robovast.common.campaign_logs import layered_get_bytes
+    scratch = _store_reader({"controller.log": b"ran\n"})
+    store = _store_reader({"controller.log": b"stale\n",
+                           "postprocessing.log": b"converted 8 bags\n"})
+    text, _, _ = assemble_log(layered_get_bytes(scratch, store), offset=0, eof=True)
+    assert "converted 8 bags" in text
+    assert "ran" in text and "stale" not in text  # first source wins where it has the file
+
+
+def test_a_live_phase_file_is_never_displaced_by_the_durable_copy():
+    """Fallback is on absence, not on length. The durable copy of a phase still being
+    written lags it, so preferring the longer one would let a poll return FEWER bytes
+    than the last — leaving the client's offset past the end of the stream.
+    """
+    from robovast.common.campaign_logs import layered_get_bytes
+    store = _store_reader({"controller.log": b"a\nb\nc\nd\n"})  # longer, but frozen
+
+    growing = {"controller.log": b"a\n"}
+    get_bytes = layered_get_bytes(_store_reader(growing), store)
+    first, next_offset, _ = assemble_log(get_bytes, offset=0)
+    growing["controller.log"] = b"a\nb\n"
+    second, _, _ = assemble_log(get_bytes, offset=next_offset)
+
+    assert first.endswith("a\n") and second == "b\n"  # append-only across the two polls
+
+
+def test_an_empty_phase_file_counts_as_present():
+    """Present-but-empty is a phase that started and has written nothing yet. Falling
+    through to a durable copy there would make the stream jump backwards once the live
+    file does get its first line.
+    """
+    from robovast.common.campaign_logs import layered_get_bytes
+    get_bytes = layered_get_bytes(_store_reader({"controller.log": b""}),
+                                  _store_reader({"controller.log": b"from the store\n"}))
+    text, _, _ = assemble_log(get_bytes, offset=0, eof=True)
+    assert "from the store" not in text
+
+
+def test_a_later_source_is_not_consulted_when_the_first_has_every_phase():
+    """This layering sits behind the log SSE stream, which re-polls while a user watches.
+    A campaign whose phase files are all on scratch must not pay a store round-trip per
+    poll just to be told the store also has them.
+    """
+    from robovast.common.campaign_logs import layered_get_bytes
+    asked = []
+
+    def _tracking(name):
+        asked.append(name)
+        return None
+
+    scratch = _store_reader({name: b"x\n" for _, name in _ALL_PHASE_FILES})
+    assemble_log(layered_get_bytes(scratch, _tracking), offset=0, eof=True)
+    assert asked == []

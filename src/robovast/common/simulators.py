@@ -114,7 +114,7 @@ class SimulatorBackend:
     #: Which of this backend's keys a bare dotted ``sim:`` path lands under, or ``None``.
     #:
     #: A campaign varying a simulator almost always varies something *inside* the world
-    #: rather than swapping the world itself, so ``sim: plugins.floorplan.size`` should not
+    #: rather than swapping the world itself, so ``sim: components.floorplan.size`` should not
     #: have to carry a fixed ``overrides.`` prefix that says nothing. A backend names the
     #: key that prefix would have been. A **bare backend key always wins** -- ``sim: config``
     #: is the world, and a world key that happens to share a backend key's name is reached

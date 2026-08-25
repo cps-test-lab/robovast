@@ -353,7 +353,7 @@ def _per_config_tree(campaign_dir, overrides, config_name: str, per_config_world
     The world and the files it names need not belong to the same tier. A campaign may ship
     ONE world and give each configuration its environment through the ``sim`` channel --
     which is what that channel is for -- and then the world is a campaign-level run file
-    while ``plugins.floorplan.mesh`` points at ``/config/<config-name>/...``, a file a
+    while ``components.floorplan.mesh`` points at ``/config/<config-name>/...``, a file a
     variation generated for this cell alone. Deciding the mount from the world's own tier
     (:func:`_campaign_world`) stages only ``<campaign>/_config``, and the export fails on
     the first path the world resolves -- not with a bad path but with no 3D scene at all,

@@ -26,7 +26,7 @@ container round trip — three reasons this is its own pair, not a mode of the e
   actor/struct a ``.osc`` file can reference in the image (``python3 -m
   scenario_execution.introspection list-actions``, run inside it).
 * ``list_roqsim_plugins``/``get_roqsim_plugin_details`` -- every ``roqsim.plugins`` entry
-  a world YAML's ``plugins:`` list can add in the image (``python3 -m roqsim.introspection
+  a world YAML's ``components:`` list can add in the image (``python3 -m roqsim.introspection
   list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in

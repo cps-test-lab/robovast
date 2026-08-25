@@ -148,3 +148,62 @@ def test_a_new_phase_may_bring_its_own_stage():
     state.set_phase("finished", stage="postprocessing failed: no results")
 
     assert state.snapshot().stage == "postprocessing failed: no results"
+
+
+# -- the postprocessing step marker -----------------------------------------
+#
+# ``postprocessing`` has no run counter: every tally in ``runs`` is frozen and ``progress`` is
+# pinned at 1.0, so on the evidence a reader had, a campaign spending half an hour converting a
+# large run's rosbags and one stuck on a wedged step were the same campaign. The steps already
+# narrate themselves through ``run_postprocessing(output_callback=...)``, so the marker is that
+# narration published where a reader is already looking.
+
+
+def test_each_step_line_becomes_the_live_stage():
+    from robovast.execution.control_server import stage_output_callback
+    state = ControllerState()
+    state.set_phase(Phase.POSTPROCESSING)
+    logged = []
+    emit = stage_output_callback(state, logged.append)
+
+    emit("[1/2] Executing: run_log")
+    assert state.snapshot().stage == "[1/2] Executing: run_log"
+    emit("  1000/1870 runs (53%)")
+    assert state.snapshot().stage == "  1000/1870 runs (53%)"
+    # Still logged: the marker is one line for a reader watching, the log is the full account.
+    assert logged == ["[1/2] Executing: run_log", "  1000/1870 runs (53%)"]
+
+
+def test_publishing_a_step_does_not_restart_the_phase_clock():
+    """The marker must not be written with ``set_phase``: re-setting the phase would move
+    ``phase_since``, turning "how long has this phase run" into "how long since its last
+    step" — on a phase whose whole problem was that nobody could tell how far along it was."""
+    from robovast.execution.control_server import stage_output_callback
+    state = ControllerState()
+    state.set_phase(Phase.POSTPROCESSING)
+    started = state.snapshot().phase_since
+
+    stage_output_callback(state, lambda _msg: None)("[2/2] Executing: resource_usage")
+
+    assert state.snapshot().phase_since == started
+
+
+def test_a_step_line_does_not_count_as_run_progress():
+    """``progress_since`` tracks completed *runs*; postprocessing completes none. Moving it
+    here would let a busy step stand in for a run finishing."""
+    from robovast.execution.control_server import stage_output_callback
+    state = ControllerState()
+    state.set_phase(Phase.POSTPROCESSING)
+    started = state.snapshot().progress_since
+
+    stage_output_callback(state, lambda _msg: None)("Building data.db from 1870 run(s)")
+
+    assert state.snapshot().progress_since == started
+
+
+def test_without_a_state_it_is_just_the_logger():
+    """The re-run entry points postprocess a campaign nothing is driving, so a caller never
+    has to ask which case it is in."""
+    from robovast.execution.control_server import stage_output_callback
+    log = [].append          # bound in a name: each attribute access makes a *new* method object
+    assert stage_output_callback(None, log) is log

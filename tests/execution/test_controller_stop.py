@@ -11,6 +11,7 @@ stop was requested, leaving the already-uploaded per-run results as-is.
 import types
 
 from robovast.execution import controller
+from robovast.execution.backends import RunOptions
 from robovast.execution.control_server import Phase
 
 
@@ -22,7 +23,7 @@ def _state(stop_requested, phase=Phase.RUNNING):
     silently failed to publish one.
     """
     st = types.SimpleNamespace(stop_requested=stop_requested, phase=phase)
-    st.snapshot = lambda: types.SimpleNamespace(phase=st.phase)
+    st.snapshot = lambda: types.SimpleNamespace(phase=st.phase, stage=None)
     st.set_phase = lambda p, **kw: setattr(st, "phase", p)
     return st
 
@@ -88,3 +89,32 @@ def test_finish_campaign_runs_when_no_state(monkeypatch):
     controller._finish_campaign(object(), "/root", "camp-1", None, None)
 
     assert calls == ["postprocess", "finalize"]
+
+
+def test_a_failed_campaign_that_also_uploads_still_skips_postprocessing(monkeypatch):
+    """The verdict must not be read *after* a step that moves the phase.
+
+    The share step publishes ``sharing`` for the length of the upload, so a failed
+    campaign launched with ``--upload-to-share`` stopped saying it had failed — and the
+    skip above no longer recognised it. Postprocessing then ran on a campaign root with
+    no ``_config/`` and buried the real reason (every job in the batch dropped) under
+    "no .vast", and the campaign ended announcing itself finished.
+    """
+    calls = []
+    monkeypatch.setattr(controller, "_chain_postprocessing",
+                        lambda *a, **k: calls.append("postprocess"))
+    monkeypatch.setattr(controller, "_finalize",
+                        lambda *a, **k: calls.append("finalize"))
+
+    def _share(_backend, _root, _options, state, _notifier=None):
+        calls.append("share")
+        state.set_phase(Phase.SHARING)  # what the real share step publishes
+
+    monkeypatch.setattr(controller, "_share_campaign", _share)
+
+    state = _state(False, phase=Phase.FAILED)
+    controller._finish_campaign(object(), "/root", "camp-1", state,
+                                RunOptions(upload_to_share=True))
+
+    assert calls == ["share", "finalize"]  # the upload happened; postprocessing did not
+    assert state.phase == Phase.FAILED     # and the campaign still says it failed

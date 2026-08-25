@@ -373,6 +373,44 @@ def _is_pullable(image: str) -> bool:
 _OUTCOME_FILENAME = "outcome.json"
 
 
+#: SQLite keeps a WAL database's committed-but-uncheckpointed pages in ``<db>-wal`` and its
+#: shared index in ``<db>-shm``, and removes both when the last connection closes; a
+#: rollback-journal database uses ``<db>-journal`` the same way. Their presence therefore
+#: means a writer still holds the database open — which is exactly the difference between
+#: "the results are built" and "the build has started".
+_DATA_DB_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def campaign_has_derived_data(campaign_dir) -> bool:
+    """Does this campaign hold a **finished** ``_execution/data.db``?
+
+    The single evidence test behind ``Status.postprocessed``, shared by the disk-recovery
+    path and the live-snapshot one so that the same bytes cannot be given two answers.
+
+    Existence alone is not that evidence, and reading it as such is a false positive that
+    reads as a clean bill of health. ``build_data_db`` unlinks any previous database and then
+    connects, so the file appears at 0%: a 9 GB build across 1870 runs reported
+    ``postprocessed: true`` for the twenty minutes it was being written, and a *re*-postprocess
+    reports it right through the window where the previous results have already been deleted
+    and the new ones do not exist yet. The sidecars are what tell those apart, and they are
+    deliberate rather than incidental — ``build_data_db`` sets ``journal_mode=WAL`` explicitly
+    and closes the connection from a ``finally``.
+
+    Errs towards ``False``: a build killed outright leaves its sidecars behind, so a truncated
+    database reads as "no data" rather than as results. That is the recoverable direction —
+    ``run_postprocessing`` rebuilds it from the run directories, which are kept — where the
+    other one hands a reader half a database and calls it the campaign's results.
+    """
+    data_db = Path(campaign_dir) / "_execution" / "data.db"
+    try:
+        if not data_db.is_file():
+            return False
+        return not any(data_db.with_name(data_db.name + suffix).exists()
+                       for suffix in _DATA_DB_SIDECARS)
+    except OSError:
+        return False      # an unreadable record dir is not evidence of results
+
+
 def write_execution_outcome(campaign_root: Path, status) -> None:
     """Persist the campaign's terminal outcome to ``_execution/outcome.json``.
 

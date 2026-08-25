@@ -71,7 +71,16 @@ def campaign_vast(campaign_dir) -> Path:
     config_dir = Path(campaign_dir) / "_config"
     vasts = sorted(config_dir.glob("*.vast"))
     if not vasts:
-        raise ValueError(f"no .vast in {config_dir}")
+        # Say what the absence *means*, because the bare "no .vast in <dir>" was read as
+        # a broken config and is nothing of the kind: the frozen config is projected with
+        # a campaign's results, so a directory without one is a campaign whose results
+        # were never projected here -- one that failed before that step, or one this
+        # process does not drive.
+        raise ValueError(
+            f"no .vast in {config_dir}: this campaign has no frozen config here, so its "
+            "results were never projected into this directory (it failed before that "
+            "step, or it belongs to another driver). There is nothing to read its "
+            "configuration from.")
     return vasts[0]
 
 

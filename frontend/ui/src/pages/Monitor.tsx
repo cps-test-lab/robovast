@@ -305,17 +305,34 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
   // it. `stalled` is asserted against the declared per-run budget alone; a project that
   // declares none gets no verdict here and is told so once, by `validate_project`,
   // where the missing budget is still fixable.
+  //
+  // Only in `running`, matching `stall_report` in the status contract — the budget is
+  // per-*run*, and `progress_since` can only advance while runs complete. Every other live
+  // phase restarts that clock when it begins and then has nothing to move it, so measuring
+  // one against the per-run budget says only that it outlasted a single run: postprocessing
+  // a large campaign's rosbags always does, and this painted a red "stalled" on it for the
+  // half-hour it spent working correctly. Excluding just the pre-run phases was the same
+  // rule half-applied.
   const progressSince = status.data?.progress_since
   const progressDeadline = status.data?.progress_deadline_s
   const progressAgeS =
-    progressSince && running && !PRE_RUN_PHASES.has(phase)
+    progressSince && phase === 'running'
       ? Math.max(0, Date.now() / 1000 - progressSince)
       : null
   // Tri-state, matching the status contract: true / false / null ("no declared
-  // execution.timeout, so no verdict"). Only `true` renders — rendering null as "not
-  // stalled" would put a reassuring label on a run that may already be dead.
+  // execution.timeout, or no runs in this phase, so no verdict"). Only `true` renders —
+  // rendering null as "not stalled" would put a reassuring label on a run that may already
+  // be dead.
   const stalled =
     progressAgeS === null || !progressDeadline ? null : progressAgeS > progressDeadline
+  // The live step marker, for the phases that have no progress bar of their own. Postprocessing
+  // is the one that needed it: the run counters are frozen and `progress` is pinned, so a
+  // campaign converting a large run's rosbags for half an hour looked exactly like a stuck one.
+  // The backend publishes each step's own line here (`stage_output_callback`), and `set_phase`
+  // clears it on every phase change, so a marker can never describe a phase already left.
+  // Rendered for whatever phase set one rather than for postprocessing specifically — the field
+  // is the general "what is this phase doing right now".
+  const stage = running ? (status.data?.stage ?? '').trim() : ''
   // A finished campaign can still carry a post-run step failure (postprocessing / share);
   // prefer the live status, fall back to the list summary. Re-triggerable via the menu.
   const postprocError = status.data?.postprocessing_error ?? summary.postprocessing_error
@@ -400,6 +417,21 @@ function CampaignCard({ summary, newest }: { summary: CampaignSummary; newest: b
           </Typography>
         ) : null}
         <Box flexGrow={1} />
+        {stage ? (
+          // After the spacer on purpose: the marker changes every few seconds, and ahead of it
+          // every re-render would shift the campaign id and the start time sideways. Capped and
+          // `noWrap` so a long step line truncates here instead of pushing the buttons off —
+          // the full text is on hover, and the log panel below has the rest.
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            title={stage}
+            sx={{ minWidth: 0, maxWidth: '40%', fontFamily: 'monospace' }}
+          >
+            {stage}
+          </Typography>
+        ) : null}
         {status.isFetching ? <CircularProgress size={14} /> : null}
         {hasConfig ? (
           <Tooltip title="Open this campaign's configuration (read-only)">

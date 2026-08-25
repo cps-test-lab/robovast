@@ -59,7 +59,8 @@ readers and the results store); nothing here reaches back up into ``service`` or
 from pathlib import Path
 from typing import Optional
 
-from robovast.common.campaign_data import (get_vast_configuration_info, read_execution_outcome,
+from robovast.common.campaign_data import (campaign_has_derived_data,
+                                           get_vast_configuration_info, read_execution_outcome,
                                            write_execution_outcome)
 from robovast.common.store import read_campaign_mode, read_run_counts
 from robovast.execution.control_server import Phase, Status, is_terminal
@@ -123,11 +124,14 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
         return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
 
     # ``postprocessed`` is a fact about the campaign, not about who last drove it:
-    # the built ``data.db`` is the ground truth (postprocessing can chain *after*
+    # a *finished* ``data.db`` is the ground truth (postprocessing can chain *after*
     # ``outcome.json`` is written, so the durable record can say False while the
     # derived data is present). Recover it here so every disk-recovered Status
     # reports it consistently — the single recovery path stays authoritative.
-    postprocessed = (campaign_dir / "_execution" / "data.db").is_file()
+    # ``campaign_has_derived_data`` owns what counts as finished, shared with the live
+    # path in ``LocalTransport._derive_postprocessed``: the two answering the same bytes
+    # differently is the defect that function exists to prevent.
+    postprocessed = campaign_has_derived_data(campaign_dir)
 
     # Who counted the runs: the store's ``run`` table, in one indexed read. ``None``
     # when there is no store to ask (absent, or a schema-v1 one with no such table),
@@ -143,7 +147,13 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
     # supersedes it where there is one (see the module docstring).
     outcome = read_execution_outcome(campaign_dir)
     if outcome is not None:
-        outcome.postprocessed = outcome.postprocessed or postprocessed
+        # Never promoted over a recorded failure: a campaign that reported
+        # ``postprocessing_error`` set the flag False deliberately, and ``build_data_db``
+        # closes from a ``finally`` — so a build that raised part-way leaves a sidecar-free
+        # database that would otherwise flip the flag back to True and hide the error behind
+        # "results are ready". A successful re-run clears the error, and the flag follows.
+        outcome.postprocessed = outcome.postprocessed or (
+            postprocessed and not outcome.postprocessing_error)
         if counts is not None:
             outcome.runs = _runs_from_verdicts(counts, outcome.runs.total)
         # A record that is not terminal was written mid-flight — the finish tail

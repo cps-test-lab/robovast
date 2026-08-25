@@ -268,21 +268,21 @@ A ``.vast`` reaches those keys through the ``sim:`` channel -- the sibling of ``
    - name: rooms
      variations:
      - ParameterVariationList:
-         sim: config                            # swap the world outright
+         sim: config                               # swap the world outright
          values: [world/depot.yaml, world/warehouse.yaml]
      - ParameterVariationDistributionUniform:
-         sim: plugins.floorplan.floor.friction  # or vary a value inside it
+         sim: components.floorplan.floor.friction  # or vary a value inside it
          min: 0.6
          max: 1.4
      - ParameterVariationList:
-         scenario: goal_pose                    # the other channel, unchanged
+         scenario: goal_pose                       # the other channel, unchanged
          values: [...]
 
 **A bare backend key is that key; anything else is a path into the world.** ``sim: config``
 selects the world file because ``config`` is one of roqsim's keys, while
-``sim: plugins.floorplan.floor.friction`` lands under the backend's declared ``DOTTED_ROOT``
+``sim: components.floorplan.floor.friction`` lands under the backend's declared ``DOTTED_ROOT``
 (``overrides`` for roqsim) -- so the prefix that would say nothing is not written. The
-explicit spelling ``sim: overrides.plugins....`` stays valid, and is how a world key that
+explicit spelling ``sim: overrides.components....`` stays valid, and is how a world key that
 collided with a backend key would be reached.
 
 **Where a factor lands is decided by when the simulator can still act on it.** MuJoCo does
@@ -323,20 +323,20 @@ What is checked before anything runs
 A ``sim:`` destination is checked against the **backend's** schema at composition -- an unknown
 key, or a dotted path whose first segment is also a backend key, is refused there.
 
-What a backend cannot answer is whether ``plugins.floorplan.size`` addresses a plugin *this
-world* has: that needs the world's ``extends`` chain resolved, which needs the simulator. A
+What a backend cannot answer is whether ``components.floorplan.size`` addresses a component
+*this world* has: that needs the world's ``extends`` chain resolved, which needs the simulator. A
 backend may therefore offer a ``describe_query`` -- a command RoboVAST runs **in the simulator's
-own image**, whose one line of JSON names the plugins the world defines. Every override in the
+own image**, whose one line of JSON names the components the world defines. Every override in the
 campaign is checked against it, once per distinct block:
 
 .. code-block:: text
 
-   sim override targets no plugin in this world: floorplna.
+   sim override targets no component in this world: floorplna.
    The world has: ceiling, floorplan, lidar, spawn_robot
 
-Only the *plugin key* is verified. A key inside a plugin's config that the world leaves at its
-default is legitimately absent from what the simulator reports, so refusing it would reject a
-correct campaign; a plugin key matching nothing is unambiguous and is what ``apply_overrides``
+Only the *component key* is verified. A key inside a component's config that the world leaves at
+its default is legitimately absent from what the simulator reports, so refusing it would reject a
+correct campaign; a component key matching nothing is unambiguous and is what ``apply_overrides``
 refuses at load time -- previously after the image pull and the pod schedule.
 
 Two things keep the cost proportionate. A campaign that overrides nothing is not checked, and a
@@ -409,7 +409,7 @@ always did.
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
 carries ``tf_namespace``), and whether it serves the ``simulation_interfaces`` control
-plane a scenario's ``osc.sim`` actions are clients of, are plugins declared in the world
+plane a scenario's ``osc.sim`` actions are clients of, are components declared in the world
 YAML. A campaign runner configuring a simulator's middleware would be reaching a layer
 down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
 

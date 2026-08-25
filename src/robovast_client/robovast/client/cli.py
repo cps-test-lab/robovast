@@ -40,6 +40,7 @@ from robovast.client.logging_config import (get_logger, setup_logging,
                                             setup_logging_from_project_config)
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
+from robovast.client.tail import tail_chunks
 
 logger = get_logger(__name__)
 
@@ -188,6 +189,38 @@ def _login_remedy(exc):
     if "401" in text or "Unauthorized" in text:
         return "The service answered, but rejected the token. Ask the operator for the current one."
     return "Check the URL and the token the operator gave you."
+
+
+@cli.command('service-log')
+@click.option('--follow', '-f', is_flag=True,
+              help='Keep printing new output until interrupted.')
+@target_options
+def service_log(follow, namespace, context):
+    """Print what the robovast-service itself has been doing.
+
+    Not a campaign's log -- this is the service process: what it decided, what it refused,
+    and the reason behind a failure whose visible half was one terse line. Several failures
+    say so in as many words ("the real reason is only in the service log"), and until now
+    there was no way to read it short of ``kubectl logs``.
+
+    The service keeps the last few hundred kilobytes in memory, so this covers what it has
+    been doing recently, not its whole life, and a restart clears it. A container that has
+    already died is only in ``kubectl logs -p deploy/robovast-service``: a buffer inside a
+    process cannot outlive the process.
+    """
+    try:
+        # require_service, because there is no such thing as the log of a service that is
+        # not running: with no URL this layer yields an in-process transport, which has no
+        # serving process whose stderr this would be.
+        with service_client(namespace, context, require_service=True) as (client, target):
+            _echo_target(target)
+            tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
+                        lambda text: click.echo(text, nl=False), follow=follow)
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
 
 
 @cli.command()
@@ -474,7 +507,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
     """Describe the world this campaign's simulator will load.
 
     The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
-    world *offers* — which plugins an override can address, and with ``--targets`` which model
+    world *offers* — which components an override can address, and with ``--targets`` which model
     values a run may change at all. Both are otherwise only refused inside the container, after
     the image pull.
 
@@ -1041,16 +1074,8 @@ def image_log(build_id, namespace, context):
     """Print an image build's raw builder log."""
     with service_client(namespace, context) as (client, target):
         _echo_target(target)
-        offset = 0
-        while True:
-            chunk = client.get_image_build_log(build_id, offset)
-            if chunk.text:
-                click.echo(chunk.text, nl=False)
-            offset = chunk.next_offset
-            if chunk.eof:
-                break
-            import time as _time
-            _time.sleep(1.0)
+        tail_chunks(lambda o: client.get_image_build_log(build_id, o),
+                    lambda text: click.echo(text, nl=False))
 
 
 #: Entry-point group for work that must happen once, before any command runs, and that

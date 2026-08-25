@@ -134,6 +134,47 @@ def test_a_terminal_campaign_is_never_stalled():
         assert stall_report(st) == {}, phase
 
 
+def test_a_live_phase_that_runs_no_runs_gets_no_verdict():
+    """The budget is per-*run*, so only ``running`` may be judged against it.
+
+    Every other live phase restarts ``progress_since`` when it begins and then has nothing
+    that can advance it, so passing the budget says only that the phase outlasted one run --
+    which postprocessing a large campaign's rosbags always does. Judged, that reported a
+    healthy campaign as wedged and sent `vast wait` away at exit 4 pointing at a job that had
+    already succeeded.
+    """
+    import time
+
+    from robovast.client.status import Status, stall_report
+    for phase in ("postprocessing", "sharing", "finishing", "importing",
+                  "initializing", "building", "starting", "plugin install", "variation"):
+        report = stall_report(Status(phase=phase, progress_since=time.time() - 99999,
+                                     progress_deadline_s=600))
+        assert report["stalled"] is None, phase
+        # The age stays a fact -- it is what a reader judges for themselves -- but the
+        # per-run budget must not ride along beside a phase it cannot judge, which is
+        # exactly the pairing that invited the comparison.
+        assert report["progress_age_s"] > 0, phase
+        assert "progress_deadline_s" not in report and "stall_reason" not in report, phase
+        # Named, because the useful next read differs per phase.
+        assert phase in report["stall_verdict"], phase
+
+
+def test_the_off_run_verdict_outranks_the_missing_budget_one():
+    """A campaign postprocessing without a declared timeout has the more specific problem.
+
+    Told about the missing budget instead, a reader would go and declare an
+    ``execution.timeout`` that still could not judge the phase they were asking about.
+    """
+    import time
+
+    from robovast.client.status import NO_STALL_VERDICT, Status, stall_report
+    report = stall_report(Status(phase="postprocessing", progress_since=time.time() - 99999))
+    assert report["stalled"] is None
+    assert report["stall_verdict"] != NO_STALL_VERDICT
+    assert "postprocessing" in report["stall_verdict"]
+
+
 def test_the_durable_outcome_round_trips_the_stall_fields(tmp_path):
     """`outcome.json` is the campaign's terminal record; a field the controller sets
     must survive it or the status changes shape after a service restart."""

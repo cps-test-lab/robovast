@@ -363,6 +363,21 @@ NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so t
                     "execution.timeout to get a verdict here")
 
 
+#: Told to a caller whose campaign is live but is not executing runs. The budget on the status
+#: is the *per-run* one and the signal it is measured against is run counters (see
+#: ``ControllerState._progress_signal``) — neither of which a phase that runs no runs can move.
+#: So the clock could only ever run out: converting a large campaign's rosbags legitimately
+#: outlasts any single run, and judging that against the per-run budget reported every such
+#: campaign as stalled while it was healthily postprocessing — and ended ``vast wait`` at exit 4
+#: with the advice to go inspect a job that had already succeeded. ``{phase}`` is named because
+#: the useful next read differs per phase, and the age is re-described because ``set_phase``
+#: restarts ``progress_since`` on every phase change: outside ``running`` it *is* the phase's age.
+NO_STALL_VERDICT_OFF_RUN = (
+    "cannot judge: the campaign is in '{phase}', where no run executes, and the only budget "
+    "declared is the per-run one — there is nothing here for it to measure. progress_age_s is "
+    "the age of this phase; read what the phase is doing with get_campaign_log")
+
+
 def stall_report(status: "Status") -> dict:
     """Has this campaign's progress stopped advancing, and may we say so?
 
@@ -380,8 +395,9 @@ def stall_report(status: "Status") -> dict:
       - ``True``  — past the declared budget; not merely slow. ``stall_reason`` says
         what to do next.
       - ``False`` — inside the declared budget.
-      - ``None``  — no ``execution.timeout`` declared, so no verdict is possible.
-        ``stall_verdict`` explains that and how to get one. Never a substituted
+      - ``None``  — no verdict is possible: either no ``execution.timeout`` was
+        declared, or the campaign is live in a phase that executes no runs (below).
+        ``stall_verdict`` says which, and how to get one. Never a substituted
         backstop: the cluster's force-kill default exists so a run cannot hang
         forever, which is a fine reason to kill at one hour and a terrible reason to
         call a two-minute pilot healthy for the first fifty-nine.
@@ -389,14 +405,29 @@ def stall_report(status: "Status") -> dict:
     A terminal campaign gets none of it: its progress stopped advancing because it is
     over, which is not a stall.
 
+    **A live campaign outside** ``running`` **gets no verdict either**, for the same reason
+    one with no declared budget does not: the budget is per-*run*, and so is the signal it is
+    measured against. In ``postprocessing``, ``sharing``, ``finishing`` or any pre-run phase
+    nothing can advance that signal, so the clock runs from the moment the phase began and
+    passing the budget says only that the phase outlasted one run. That is arithmetic, not a
+    stall — and asserting it sent readers to diagnose a run that had already finished.
+
     Returns:
         ``{}`` for a terminal campaign; otherwise ``{progress_age_s, stalled}`` plus
-        ``progress_deadline_s`` and possibly ``stall_reason`` when a budget was
-        declared, or ``stall_verdict`` when one was not.
+        ``progress_deadline_s`` and possibly ``stall_reason`` when the campaign is running
+        against a declared budget, or ``stall_verdict`` when no verdict is possible.
     """
     if is_terminal(status.phase) or not status.progress_since:
         return {}
     age = round(max(0.0, time.time() - status.progress_since), 1)
+    if status.phase != Phase.RUNNING:
+        # Before the budget check, not after: this is the more specific reason no verdict is
+        # possible, and a campaign postprocessing without a declared timeout should be told
+        # about the phase it is in rather than sent to add a timeout that would not help.
+        # ``progress_deadline_s`` is deliberately withheld — reporting a per-run budget beside
+        # a phase it cannot judge is what invited the comparison in the first place.
+        return {"progress_age_s": age, "stalled": None,
+                "stall_verdict": NO_STALL_VERDICT_OFF_RUN.format(phase=status.phase)}
     deadline = status.progress_deadline_s
     if not deadline:
         return {"progress_age_s": age, "stalled": None,

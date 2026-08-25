@@ -193,7 +193,7 @@ the second configuration against the first one's compiled model.
 Asking the simulator a question
 -------------------------------
 
-Some facts only the simulator has. Which plugins a world defines, what it is built from, and
+Some facts only the simulator has. Which components a world defines, what it is built from, and
 which model values a run may change are all settled by resolving the world -- which needs the
 simulator installed, and RoboVAST deliberately does not have it (the backend package is strings
 and container specs, so the long-lived service carries no MuJoCo). A backend therefore answers

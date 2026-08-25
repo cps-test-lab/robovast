@@ -147,7 +147,7 @@ def campaign_vast(campaign_root) -> str:
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
                          namespace: str, force: bool = False,
                          skip=None, skip_rosout: bool = False,
-                         kube_context=None) -> tuple:
+                         kube_context=None, state=None) -> tuple:
     """Analysis postprocessing for one campaign, in-cluster. Returns ``(ok, message)``.
 
     The single implementation behind both entry points — the per-campaign controller
@@ -166,6 +166,14 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     *kube_context* must be the same context the campaign's Jobs were submitted with;
     ``None`` means the active kubeconfig context, which is only correct when the caller
     has none of its own.
+
+    *state*, when the caller has one, is where stage 2's step lines are published as the live
+    ``stage`` marker (see
+    :func:`~robovast.execution.control_server.stage_output_callback`). Stage 1 is deliberately
+    **not** covered: it runs in a pod, so its progress reaches this process only when the Job
+    ends and its log is synced — the marker therefore stays empty for the conversion and
+    starts moving at ``[1/n]``. Reporting stage 1 means tailing the Job's log from
+    :func:`run_conversion_job`'s existing poll, which is a separate change.
     """
     rosbag_cmds = rosbag_commands_for(campaign_vast(campaign_root), skip=skip,
                                       skip_rosout=skip_rosout)
@@ -215,27 +223,32 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,
     try:
         return run_host_postprocessing(
             os.path.dirname(str(campaign_root).rstrip(os.sep)),
-            campaign_id, force=force, skip=skip)
+            campaign_id, force=force, skip=skip, state=state)
     finally:
         remove_campaign_log_handler(handler)
 
 
 def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = False,
-                            skip=None) -> tuple:
+                            skip=None, state=None) -> tuple:
     """Stage 2 — everything after the ROS conversion (``data.db``, metadata).
 
     Pure Python, so it runs wherever robovast is installed (the controller pod, the
     service pod). Reuses the *normal* pipeline with the rosbag steps skipped — the
     conversion Job already did those — so there is no second implementation of the
     postprocessing sequence. Returns ``(ok, message)``.
+
+    *state*, when given, also receives each step's line as the live ``stage`` marker — the
+    same wiring the local lane uses, so the campaign view narrates this phase identically on
+    both. ``None`` leaves it logging only.
     """
+    from robovast.execution.control_server import stage_output_callback  # noqa: PLC0415
     from robovast.results_processing.postprocessing import ROSBAG_JOB_NAMES  # noqa: PLC0415
     from robovast.results_processing.postprocessing import run_postprocessing
 
     return run_postprocessing(
         results_dir=results_dir, campaign=campaign_id, force=force,
         skip=sorted(set(skip or ()) | set(ROSBAG_JOB_NAMES)),
-        output_callback=logger.info)
+        output_callback=stage_output_callback(state, logger.info))
 
 
 #: This Job pod runs in a separate context from the controller, so its stdout is
@@ -372,6 +385,22 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str) -> dict:
         },
         "data": payload,
     }
+
+
+def job_failed_message(job_name: str) -> str:
+    """What a failed conversion Job reports to the user.
+
+    Named so the string has one definition and a test can hold it to its contract: it
+    carries **no cluster command**. It lands on ``postprocessing_error``, which the web UI
+    renders to someone who has a log panel and no kubeconfig; it used to append
+    ``kubectl logs job/<name> -n <ns>``, which was unrunnable for that reader, aimed at
+    whichever cluster their context happened to name, and pointed at a Job that
+    ``ttlSecondsAfterFinished`` reaps 300 s after it fails -- so by the time most people
+    read it, it named nothing that still existed. The conversion output is in the campaign
+    log, which every surface already shows.
+    """
+    return (f"postprocessing job {job_name} failed — see the POSTPROCESSING section of "
+            f"the campaign log for the conversion error")
 
 
 def _blocked_reason(core, namespace: str, job_name: str) -> str:
@@ -603,9 +632,7 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
                     logger.info("Postprocessing job %s succeeded", name)
                     return True, "rosbag conversion complete"
                 if status.failed:
-                    return False, (f"postprocessing job {name} failed — see the "
-                                   f"POSTPROCESSING section of the campaign log for the "
-                                   f"conversion error (kubectl logs job/{name} -n {namespace})")
+                    return False, job_failed_message(name)
             # A pod that CANNOT start leaves the Job `active` forever, so the polling above
             # never sees a verdict and this returns "timed out" -- naming a duration where the
             # cause was an unpullable image or an unschedulable pod. Same reasoning as the

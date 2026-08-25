@@ -30,7 +30,6 @@ contract built for scripts; ``monitor`` is job-level, every campaign, and a live
 
 import os
 import sys
-import time
 
 import click
 
@@ -39,6 +38,7 @@ from robovast.client.lazy_group import LazyPluginGroup
 from robovast.client.project_config import get_project_config
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
+from robovast.client.tail import tail_chunks
 
 #: Entry-point group for subcommands that attach to ``vast exec cluster``.
 CLUSTER_PLUGIN_GROUP = "robovast.cluster_plugins"
@@ -343,15 +343,8 @@ def log(campaign, follow, namespace, context):
                 if campaign_id is None:
                     click.echo("No running campaign found; pass --campaign.")
                     return
-                offset = 0
-                while True:
-                    chunk = client.get_campaign_logs(campaign_id, offset)
-                    if chunk.text:
-                        click.echo(chunk.text, nl=False)
-                        offset = chunk.next_offset
-                    if chunk.eof or not follow:
-                        break
-                    time.sleep(1.5)
+                tail_chunks(lambda o: client.get_campaign_logs(campaign_id, o),
+                            lambda text: click.echo(text, nl=False), follow=follow)
                 return
 
             # No service reachable: read the campaign directory directly. That reader is
