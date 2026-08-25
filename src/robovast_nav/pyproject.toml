@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-nav"
-version = "2.0.0"
+version = "2.1.0"
 description = "Navigation-specific variation types for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"

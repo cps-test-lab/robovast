@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast"
-version = "2.0.0"
+version = "2.1.0"
 description = "RoboVast project"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"

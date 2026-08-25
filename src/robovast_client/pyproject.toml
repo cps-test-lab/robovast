@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-client"
-version = "2.0.0"
+version = "2.1.0"
 description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
