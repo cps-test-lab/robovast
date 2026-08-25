@@ -25,12 +25,26 @@ A run can fail three ways here and no single quantity covers them: ``min_clearan
 *large* for a run that timed out on the far side of the room without ever approaching the
 barrier. So the objective is the STL-style minimum over one margin per failure mode ::
 
-    robustness = min( clearance_margin,   # min_clearance - contact threshold
-                      time_margin,        # 1 - t_trial / timeout
-                      goal_margin )       # 1 - final_distance / arrival_radius
+    robustness = min( (min_clearance - contact)  / clearance_scale,
+                      (timeout - t_trial)        / timeout,
+                      (arrival_radius - d_goal)  / path_scale )
 
 Continuous, signed, negative means failed, and it degrades gracefully: a run that merely
 *nearly* collided scores just above zero rather than jumping to "passed".
+
+**Each margin is divided by a SCALE, never by its own threshold**, and that distinction is
+the whole design. A threshold answers *did it fail*; a scale answers *by how much*.
+Dividing by the threshold conflates them, and it plateaus: with the 0.05 m contact
+threshold as denominator the clearance margin carried 12x the sensitivity of the goal
+margin, so ``min()`` returned whichever margin had the tightest denominator rather than
+whichever failure was nearest. Measured on a 48-cell Halton search, the clearance term
+decided 31 of 48 cells and 32 of 48 sat on the floor -- a worse cliff than the
+``failure_rate`` this objective was built to replace (30 of 48). The ``time`` margin was
+the only one already divided by its scale, and the only one that never needed a floor.
+
+So there is no floor. A margin below -1 means what it says -- missed by more than the whole
+scale -- and stays ordered against its neighbours, which is what lets an adversarial search
+keep descending after it has found its first failure instead of going blind.
 
 **Aggregated worst-case across repetitions**, never averaged -- four clean crossings and
 one that clipped the doorway average to "clean", and on a QD archive averaging collapses
@@ -77,6 +91,10 @@ class NavExtract(Extractor):
         ``arrival_radius``     [m]; ground-truth distance within which a track counts as
                                arrived. NOT nav2's ``xy_goal_tolerance`` -- see below
         ``timeout``            [s]; matches the scenario's own ``timeout()``
+        ``clearance_scale``    [m]; the clearance available in the most permissive
+                               configuration -- the SCALE the clearance margin is a
+                               fraction of, not a threshold
+        ``path_scale``         [m]; the nominal traverse, likewise a scale
         ``aggregate``          ``worst`` (default) / ``quantile`` / ``mean``
     """
 
@@ -108,6 +126,32 @@ class NavExtract(Extractor):
         timeout = float(self.params.get('timeout', 120.0))
         how = self.params.get('aggregate', 'worst')
 
+        # -- the SCALES each margin is divided by, which is not the same thing as its
+        # threshold, and confusing the two is what made two earlier versions of this
+        # objective plateau.
+        #
+        # A threshold answers *did it fail*; a scale answers *by how much*, and dividing by
+        # the threshold conflates them. With contact = 0.05 m as the denominator the
+        # clearance margin carries 20 per metre while the goal margin carries 1.67 -- 12x --
+        # so `min()` returned whichever margin had the tightest denominator rather than
+        # whichever failure was closest. Measured on a 48-cell Halton search: the clearance
+        # term decided the score in 31 of 48 cells, and 32 of 48 landed on the floor.
+        #
+        # The corroboration is the margin that never misbehaved. `time` was already divided
+        # by its scale (the timeout) rather than by a threshold, and across those 48 cells it
+        # spanned +0.233 .. +0.863 -- it never once needed a floor. The two margins divided
+        # by thresholds are exactly the two that produced plateaus.
+        #
+        # Both scales below are derived from values this example already declares, so they
+        # move when the world does rather than being tuned until the numbers look good:
+        #   clearance_scale  the clearance available in the most permissive configuration --
+        #                    half the widest doorway minus the robot's radius, 1.6/2 - 0.18
+        #                    (nav2_params.yaml's own `robot_radius`) = 0.62 m
+        #   path_scale       the nominal traverse, |goal - start| from the scenario's two
+        #                    poses: (-2.5, 0) -> (2.5, 0) = 5.0 m
+        clearance_scale = float(self.params.get('clearance_scale', 0.62))
+        path_scale = float(self.params.get('path_scale', 5.0))
+
         robustness, clearances, durations, modes, recoveries = [], [], [], [], []
         for run_dir in runs:
             row = _row(run_dir, metrics_file)
@@ -118,27 +162,33 @@ class NavExtract(Extractor):
             to_goal = _f(row, 'final_distance_to_goal')
             collided = bool(_f(row, 'collided', 0.0))
 
-            # One margin per way this can go wrong; the run's score is the worst of them.
+            # A recorded collision is a fact about the MEASUREMENT, not an override of
+            # the score: contact latched, so the true minimum clearance was <= 0 even
+            # where the sampled series missed the instant it happened. Correcting the
+            # input keeps the margin arithmetic continuous. Forcing the score to -1
+            # instead put a verdict inside a margin -- the very thing this objective
+            # exists to avoid -- and flattened 26 colliding cells onto one value whose
+            # underlying clearances still ranged over 16%.
+            if collided and clearance is not None:
+                clearance = min(clearance, 0.0)
+
+            # One margin per way this can go wrong, each a fraction of a comparable
+            # physical scale, so the worst of them is genuinely the closest to failing.
+            # Sign still means pass/fail: the thresholds stay in the numerator.
             margins = []
             if clearance is not None:
-                margins.append((clearance - contact) / max(contact, 1e-6))
-            margins.append(1.0 - duration / timeout)
+                margins.append((clearance - contact) / clearance_scale)
+            margins.append((timeout - duration) / timeout)
             if to_goal is not None:
-                margins.append(1.0 - to_goal / goal_tol)
-            # Each margin is clamped below at -1, i.e. "spent its whole allowance and
-            # then some". How MUCH further past is a scale artefact rather than physics:
-            # 1 - to_goal/goal_tol with a 0.25 m tolerance makes a robot stopping 3 m out
-            # score -11, which would swamp the spread that a QD archive and the boundary
-            # strategy normalise against and compress every near-miss into one bin. How
-            # badly a cell failed is carried by `failure_mode` and `failure_rate`, which
-            # is what they are for; this objective's job is the region near zero.
-            score = max(min(margins), -1.0) if margins else 0.0
-            # A recorded collision is a failure whatever the geometry says: a contact
-            # force happened, and a clearance computed from sampled poses can miss the
-            # instant it did.
-            if collided:
-                score = -1.0
-            robustness.append(score)
+                margins.append((goal_tol - to_goal) / path_scale)
+            # No floor. Once each margin is divided by its scale nothing reaches -1 on its
+            # own, so a clamp would only discard order it no longer needs to bound: on the
+            # 48 cells that motivated this, re-normalising alone gave 48 distinct values
+            # with none at or below -1. A margin below -1 now means what it says -- the run
+            # missed by more than the whole scale -- and stays ordered against its
+            # neighbours, which is what an adversarial search needs in order to keep
+            # descending after it has found the first failure.
+            robustness.append(min(margins) if margins else 0.0)
 
             if clearance is not None:
                 clearances.append(clearance)
