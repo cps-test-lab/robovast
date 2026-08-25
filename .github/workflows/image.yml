@@ -11,6 +11,16 @@ on:
       - main
   workflow_dispatch:
 
+# Two pushes to main minutes apart otherwise both run to completion, each publishing the same
+# moving tags -- and the earlier one's cache export lands AFTER the later one's import, so they
+# cannot even help each other. Superseding the older run is both faster and less racy.
+#
+# cancel-in-progress only for pull requests: a push to main publishes `latest` and the version
+# tags, and cancelling that part-way could leave a tag pointing at a half-pushed manifest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -74,9 +84,6 @@ jobs:
           fi
           echo "Compat version check passed: window $PYTHON_MIN..$PYTHON_VER"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Read the architecture policy
         id: plat
         # container/platforms.env is the single source of truth, shared with
@@ -93,8 +100,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry cache rather than type=gha. The Actions cache is capped at 10 GB per
+          # repository AND scoped per git ref, so each of these four jobs wrote its own
+          # multi-GB mode=max copy under main and a second one under every PR ref. The repo
+          # sat at the cap (306 entries, 10.8 GB) and the hit rate was zero: each run evicted
+          # the entries the next one needed, so an image whose content does not depend on the
+          # commit was rebuilt from scratch on every push. A registry ref is uncapped and
+          # ref-agnostic -- one copy, which a PR reads instead of duplicating.
+          #
+          # A distinct tag per job, so the four cannot evict each other the way they did here.
+          #
+          # Written only on push: a PR build would publish layers for code that may never
+          # merge, and a fork's GITHUB_TOKEN cannot write packages at all. Reading is what
+          # makes PR builds fast; writing is not needed for that.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:base
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:base,mode=max', github.repository) || '' }}
           build-args: |
             ROS_DISTRO=jazzy
 
@@ -146,10 +166,15 @@ jobs:
         run: . container/platforms.env && echo "platforms=$PLATFORMS_ROQSIM" >> "$GITHUB_OUTPUT"
 
       # The clone happens in a build layer whose cache key is its ARGs, not the state of the
-      # remote -- so with a branch name here, `cache-from: type=gha` below would serve the tree
-      # from the first ever run of this job, forever, while reporting a fresh build. Resolving to
-      # a commit makes the key change exactly when the branch moves. Same reason and same
-      # mechanism as container/robovast/build.sh; the two must not disagree.
+      # remote -- so with a branch name here, the `cache-from` below would serve the tree from the
+      # first ever run of this job, forever, while reporting a fresh build. Resolving to a commit
+      # makes the key change exactly when the branch moves. Same reason and same mechanism as
+      # container/robovast/build.sh; the two must not disagree.
+      #
+      # This matters MORE since the cache moved to a registry ref: the Actions cache this
+      # replaced was evicted every few runs by its own 10 GB cap, which masked the hazard by
+      # forgetting. A registry cache does not forget, so the pin is now the only thing stopping a
+      # stale tree from being served indefinitely.
       - name: Resolve the roqsim commit
         id: roqsim
         run: |
@@ -189,8 +214,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry cache, per-job tag -- see the note on the base image build above.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:roqsim
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:roqsim,mode=max', github.repository) || '' }}
           # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
           # this job needs no checkout of it and the context is not read at all. It used to be
           # passed to a Dockerfile that declared no such ARG and did no cloning, while that
@@ -301,9 +327,6 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -323,8 +346,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry cache, per-job tag -- see the note on the base image build above.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:sidecar
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:sidecar,mode=max', github.repository) || '' }}
 
   build-and-push-controller:
     runs-on: ubuntu-latest
@@ -354,9 +378,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -389,5 +410,6 @@ jobs:
             ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry cache, per-job tag -- see the note on the base image build above.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}-buildcache:controller
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref=ghcr.io/{0}-buildcache:controller,mode=max', github.repository) || '' }}
