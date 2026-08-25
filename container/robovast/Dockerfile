@@ -343,7 +343,7 @@ RUN USER=ubuntu && \
     mkdir -p /etc/fixuid && \
     printf 'user: %s\ngroup: %s\npaths:\n  - /\n  - /out\n' "$USER" "$GROUP" > /etc/fixuid/config.yml
 
-# Execute what TARGETARCH just fetched, and check the userland agrees with it.
+# Check that what TARGETARCH fetched matches the userland it landed in.
 #
 # This is the only check that catches an image built for the wrong architecture, because such an
 # image builds, pushes and inspects perfectly and fails when something finally runs it. Every
@@ -353,23 +353,32 @@ RUN USER=ubuntu && \
 # Cheap, and it belongs here rather than in CI: on a native runner every RUN above has already
 # exec'd this architecture's binaries, so the base userland is covered by the build itself. What
 # is NOT covered is a binary fetched by TARGETARCH and never run -- mc and fixuid, which were the
-# two that really were arm64 while everything around them was amd64. So run them, and assert the
-# arch they were chosen for is the arch the userland actually is. Also protects a local build,
+# two that really were arm64 while everything around them was amd64. Also protects a local build,
 # which no CI check reaches.
-RUN mc --version > /dev/null && \
-    fixuid -v > /dev/null && \
-    case "$(uname -m)" in \
-      x86_64)  actual=amd64 ;; \
-      aarch64) actual=arm64 ;; \
-      *)       actual="$(uname -m)" ;; \
-    esac && \
-    if [ "$actual" != "${TARGETARCH}" ]; then \
-      echo "ERROR: built for TARGETARCH=${TARGETARCH} but the userland is $(uname -m)." >&2; \
-      echo "  The base resolved to a different architecture than the one requested, so this" >&2; \
-      echo "  image would carry foreign content under a correct-looking label. A base whose" >&2; \
-      echo "  tag is a single manifest rather than an index does exactly this." >&2; \
-      exit 1; \
-    fi && \
-    echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m)"
+#
+# Compared against /bin/bash rather than against a table of architecture names: the question is
+# whether these binaries match the userland they have to run in, and bash IS that userland. That
+# needs no mapping to keep current, and it stays right for an architecture nobody has added yet.
+# ELF e_machine is two little-endian bytes at offset 18 (x86-64 3e00, aarch64 b700); od is in
+# coreutils, so this pulls in nothing.
+#
+# fixuid is inspected rather than run: it is setuid and its job is to change uid/gid and exec, so
+# there is no harmless invocation (it takes only -q, and `-v` fails the flag parse). mc has a real
+# one, so it gets exec'd as well as inspected.
+RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
+    want=$(e_machine /bin/bash) && \
+    for bin in /usr/local/bin/mc /usr/local/bin/fixuid; do \
+      got=$(e_machine "$bin"); \
+      if [ "$got" != "$want" ]; then \
+        echo "ERROR: $bin is ELF e_machine $got, but this image's userland is $want." >&2; \
+        echo "  A binary was fetched for TARGETARCH=${TARGETARCH} into a rootfs of another" >&2; \
+        echo "  architecture, so the image would carry foreign content under a correct-looking" >&2; \
+        echo "  label and die with 'Invalid ELF image' when run. A base whose tag is a single" >&2; \
+        echo "  manifest rather than a multi-arch index does exactly this." >&2; \
+        exit 1; \
+      fi; \
+    done && \
+    mc --version > /dev/null && \
+    echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m), e_machine=${want}"
 
 USER ubuntu:ubuntu
