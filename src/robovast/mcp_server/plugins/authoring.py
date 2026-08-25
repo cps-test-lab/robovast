@@ -147,50 +147,76 @@ def _address_lane(address: str):
     return owner, rel_path
 
 
-def validate_project(address: str) -> dict:
+def _unchecked_world_advisory(config_path: str) -> list:
+    """Advisory for the local-file lane, which has no service to run a simulator in.
+
+    Only when the project actually declares a simulator backend: a campaign without one has
+    no world, and an advisory on every reply is a line callers learn to skip.
+    """
+    from robovast.common.common import load_config
+    from robovast.common.simulators import backend_name
+    try:
+        parameters = load_config(config_path) or {}
+        if not backend_name(parameters.get("execution", {}) or {}):
+            return []
+    except Exception:  # noqa: BLE001 - a file the checks above already reported on
+        return []
+    return [{"stage": "world", "config": None,
+             "field": "execution.containers.simulation.config",
+             "message": "whether this campaign's world loads and compiles was NOT checked: "
+                        "that runs the simulator, and this address was read as a plain file "
+                        "with no service to run one. Validate through a workspace address "
+                        "(/sources/<workspace_id>/<path>) to have it checked."}]
+
+
+def validate_project(address: str, check_world: bool = True) -> dict:
     """Check a ``.vast`` before running it. Reports **every** problem in one pass.
 
-    Covers YAML, schema, the scenario file and its parameter references, and every
-    plugin reference (variation types and their parameters, postprocessing commands, the
-    search strategy) — installed entry-point names and local ``./path.py:Class`` refs
-    alike — each problem tagged with its config block and field, so the file is fixed in
-    as few iterations as possible.
+    Covers YAML, schema, the scenario file and its parameter references, and every plugin
+    reference (variation types and their parameters, postprocessing commands, the search
+    strategy) — installed entry points and local ``./path.py:Class`` refs alike — each tagged
+    with its config block and field, so the file is fixed in as few iterations as it can be.
 
-    ``valid: true`` means the file is well-formed and every reference resolves. It does
-    **not** mean a derived image will build — those failures pass validation and then cost
-    a full apt+pip cycle, so if any container adds packages, read
+    ``valid: true`` means the file is well-formed, every reference resolves, and the world
+    loads and compiles. It does **not** mean a derived image will build — that failure passes
+    validation and then costs a full apt+pip cycle, so if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
-    **Three tiers check a ``.vast``, differing in what they install and wire — not in how
-    hard they look.** This call: schema and references, resolving installed entry points plus a
-    ``plugins:`` package already staged in the project. ``preview_configurations``: composes, so
-    it *installs* declared specs. ``start_campaign``: the only one composing inside an execution
-    backend's container context (cluster: the aux pod; local: host ``docker``).
+    **The world check is the only one here that runs a container**, and the only one catching a
+    world that would fail *every trial* after the image pull. Failures are ``world`` problems
+    carrying the simulator's own message. The container is held: a repeat check is ~1.5–2.5 s, a
+    cold one ~2–3 s local / 7–15 s cluster. ``check_world=False`` skips it.
 
-    You do not have to map that onto your case — **each problem names what it could not settle
-    and what would.** An uninstalled ``plugins:`` spec names ``preview_configurations(limit=1)``
-    (``limit=1`` because the default ``0`` returns EVERY resolved cell, while the counts come
-    back either way). A variation needing an auxiliary container names ``start_campaign``, which
-    costs a real trial — worth it only when you need that variation's *output*, not the sweep's
-    shape.
+    **Each problem names what it could not settle and what would**: an uninstalled ``plugins:``
+    spec names ``preview_configurations(limit=1)`` (which composes, and so *installs* them); a
+    variation needing an aux container names ``start_campaign``, the only caller composing inside
+    a backend's container context; a world only an unbuilt image could describe names
+    ``build_experiment_image``, and says it was **not** checked rather than passing.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
 
     Returns:
-        ``{valid, configs, runs_per_config, total_trials, problems, lane}``, each
-        problem ``{stage, config, field, message}``.
+        ``{valid, configs, runs_per_config, total_trials, problems, lane}``, each problem
+        ``{stage, config, field, message}``. A clean campaign returns no world entry.
     """
     from robovast.common.config_validation import validate_project_file
     from robovast.service.project_push import _resolve_workspace_id
     try:
         target = _address_lane(address)
         if target is None:
-            return {**validate_project_file(address), "lane": "local file"}
+            # No service, so no lane that can run a simulator: say the world went
+            # unchecked rather than letting a clean reply read as a checked one.
+            report = validate_project_file(address)
+            if check_world:
+                report = {**report,
+                          "problems": list(report.get("problems") or [])
+                          + _unchecked_world_advisory(address)}
+            return {**report, "lane": "local file"}
         client = service_access.client_or_local()
         workspace_id, rel_path = target
         report = client.validate_project(
-            _resolve_workspace_id(client, workspace_id), rel_path)
+            _resolve_workspace_id(client, workspace_id), rel_path, check_world)
         return {**report.model_dump(), "lane": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "configs": 0, "runs_per_config": 0,
@@ -276,7 +302,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
                    backend: str = "") -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
-    Which plugins a ``sim`` override can address, and with ``targets`` which model values a run
+    Which components a ``sim`` override can address, and with ``targets`` which model values a run
     may change (friction, contact masks, force limits, mass) and the objects that can be named.
     Guess either and the run is refused in the container, after the image pull. Asked in the
     image the campaign runs — a world ref resolves to what is installed there — and the reply
@@ -290,7 +316,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
             says why.
 
     Returns:
-        ``{backend, image, duration_s, world, packaged, inputs, plugins, entities, overridable,
+        ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
         dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``; or
         ``{error}`` — including when only an unbuilt image could answer. A non-empty ``errors``
         means a partial answer: read it before taking a null ``entities`` for a world that
@@ -333,14 +359,27 @@ def _resolved_request(address: str):
     return client, ExecRequest(workspace_id=resolved_id, config_path=rel_path)
 
 
-def _exec_json(client, request, command: str) -> dict:
+def _exec_json(client, request, command: str, container: str = "") -> dict:
     """*request* run with *command*, via ``exec_in_container``'s own lane-agnostic
     plumbing -- not ``describe_world``'s ``_make_container_runner`` path, which only
     gets a cluster-capable runner inside a live campaign's composition and is refused
     standalone on the cluster lane. Returns the command's parsed stdout, or raises
     ``ValueError`` naming why (a non-zero exit, unparseable output).
+
+    Always ``query=True``: these are read-only questions put to an image, so they run in
+    the service's query pool. Two reasons, and both were real failures. A one-shot exec
+    discards the held container by design, so every call here used to destroy the
+    container its caller was debugging in. And the pool *holds* the container, so a second
+    question about the same project costs an exec rather than a container start -- measured
+    at ~0.5 s against 6-15 s on the cluster lane.
+
+    *container* names which one answers, because they are different images: ``roqsim``
+    lives in the simulator's and ``scenario_execution`` in the scenario's.
     """
-    result = client.exec_in_container(request.model_copy(update={"command": command}))
+    update = {"command": command, "query": True}
+    if container:
+        update["container"] = container
+    result = client.exec_in_container(request.model_copy(update=update))
     if result.exit_code != 0:
         detail = (result.stderr or result.stdout or "").strip()[:400]
         raise ValueError(f"{command!r} failed: {detail or '(no output)'}")
@@ -363,8 +402,10 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
             # ``python3``: a declared base image has no ``python`` (see image_catalog's
             # ``_COMMANDS``), so this failed for every project that does not build its
             # scenario image -- which is most of them.
-            f"python3 -m scenario_execution.introspection describe {container_path}")
-        image = client.resolve_image(request).image
+            f"python3 -m scenario_execution.introspection describe {container_path}",
+            container="scenario")
+        image = client.resolve_image(
+            request.model_copy(update={"container": "scenario"})).image
         return {**payload, "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"error": str(e)}
@@ -384,8 +425,14 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
             # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
             # command over it (its answer is JSON either way), so this tool could never once have
             # succeeded against a real image. The stub in its test made the mistake invisible.
-            f"roqsim scenes describe {container_path} --body-tree {pattern}")
-        image = client.resolve_image(request).image
+            f"roqsim scenes describe {container_path} --body-tree {pattern}",
+            # The SIMULATOR's image, which is the only one with roqsim in it. Unqualified,
+            # this resolved to the scenario container -- so on any project whose simulator
+            # comes from the image family it answered "roqsim: command not found", and the
+            # tool had never worked there.
+            container="simulation")
+        image = client.resolve_image(
+            request.model_copy(update={"container": "simulation"})).image
         return {"bodies": payload.get("body_tree") or [], "image": image}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"error": str(e)}

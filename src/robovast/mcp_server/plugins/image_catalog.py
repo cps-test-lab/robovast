@@ -64,6 +64,14 @@ _CATALOG_COMMANDS = {
     "roqsim_plugins": "python3 -m roqsim.introspection list",
 }
 
+#: Which container answers each group. ``roqsim`` lives in the *simulator's* image, not the
+#: scenario's, and asking the default container for it got "roqsim: command not found" on
+#: any project whose simulator image comes from the family.
+_CATALOG_CONTAINERS = {
+    "scenario_actions": "scenario",
+    "roqsim_plugins": "simulation",
+}
+
 _cache_lock = threading.Lock()
 #: (image, group) -> flattened items. Process-lifetime only -- see module docstring.
 _cache: dict[tuple, list] = {}
@@ -123,7 +131,8 @@ def _fetch(group: str, address: str) -> dict:
         return {"error": NO_SERVICE}
 
     try:
-        resolved = client.resolve_image(ExecRequest(**request_kwargs))
+        resolved = client.resolve_image(
+            ExecRequest(**request_kwargs, container=_CATALOG_CONTAINERS[group]))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
     image = resolved.image
@@ -136,8 +145,15 @@ def _fetch(group: str, address: str) -> dict:
 
     started = time.monotonic()
     try:
-        result = client.exec_in_container(
-            ExecRequest(**request_kwargs, command=_CATALOG_COMMANDS[group]))
+        result = client.exec_in_container(ExecRequest(
+            **request_kwargs, command=_CATALOG_COMMANDS[group],
+            container=_CATALOG_CONTAINERS[group],
+            # A read-only introspection of the image: it belongs in the service's query
+            # pool, never in the caller's container. Without this every catalog call
+            # stopped whatever they were holding -- a one-shot exec discards the held
+            # container by design -- so listing scenario actions destroyed their debugging
+            # session and anything they had written in it.
+            query=True))
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
     elapsed = time.monotonic() - started

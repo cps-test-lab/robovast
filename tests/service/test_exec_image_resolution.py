@@ -211,3 +211,59 @@ def test_the_role_image_lookup_reads_the_seams_directory(tmp_path, monkeypatch):
             seen.setdefault("read", str(campaign_dir)) and "sha256:aa") or "sha256:aa")
     t._resolve_exec_image(_vast(tmp_path), "sut", campaign_id="campaign-1")
     assert seen["read"] == "/materialised/campaign-1"
+
+
+# -- the simulator's container is a container of its own ----------------------
+
+
+def _roqsim_vast(tmp_path):
+    """A ros2 roqsim campaign: the simulator runs in its own container, and the backend —
+    not the ``.vast`` — is what says so and which image it is."""
+    import json
+    vast = tmp_path / "sim.vast"
+    vast.write_text(json.dumps({
+        "version": 2,
+        "execution": {
+            "runs": 1, "mode": "ros2",
+            "containers": {
+                "scenario": {"image": "base:1"},
+                "simulation": {"backend": "roqsim", "config": "world.yaml"}}}}))
+    return str(vast)
+
+
+def test_the_simulation_container_resolves_to_the_simulators_own_image(tmp_path):
+    """The bug this guards: ``plan_containers`` was called on the raw ``execution`` mapping,
+    without ``apply_backend`` — unlike every other caller. The ``simulation`` block then held
+    only the backend's own keys (no image, no command), so the plan read the simulator as
+    *not* separate, the ``simulation`` role fell through to the scenario container, and an
+    exec asking for it landed in the base image with no simulator in it.
+
+    ``get_world_body_tree`` runs ``roqsim scenes describe`` there, so it could never once have
+    worked on a project whose roqsim comes from the image family — and the world check would
+    have inherited exactly the same silence.
+    """
+    transport = LocalTransport.__new__(LocalTransport)
+    scenario = transport._resolve_exec_image(_roqsim_vast(tmp_path), "scenario")
+    simulation = transport._resolve_exec_image(_roqsim_vast(tmp_path), "simulation")
+    assert scenario.identity == "base:1"
+    assert simulation.identity != scenario.identity, (
+        "the simulator must not resolve to the scenario container's image")
+    assert "roqsim" in simulation.identity
+
+
+def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_path):
+    """The other half, and the one a blunt fix would break: with no ROS shape the simulator
+    is stepped in-process, so it genuinely *is* the scenario container. The backend says so,
+    which is why applying it is right rather than special-casing the role."""
+    import json
+    vast = tmp_path / "stepped.vast"
+    vast.write_text(json.dumps({
+        "version": 2,
+        "execution": {"runs": 1, "mode": "base",
+                      "containers": {
+                          "scenario": {},
+                          "simulation": {"backend": "roqsim", "config": "world.yaml"}}}}))
+    transport = LocalTransport.__new__(LocalTransport)
+    scenario = transport._resolve_exec_image(str(vast), "scenario")
+    simulation = transport._resolve_exec_image(str(vast), "simulation")
+    assert simulation.identity == scenario.identity

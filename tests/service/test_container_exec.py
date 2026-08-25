@@ -28,35 +28,53 @@ VAST = "configs/examples/ros2_basic/ros2_service.vast"
 
 
 class FakeLane:
-    """Records what a lane was asked to do, and can pretend to be busy."""
+    """Records what a lane was asked to do, and can pretend to be busy.
+
+    Slot-aware, because the lane is: ``alive`` and ``busy`` stay scalars meaning *the user
+    slot*, which is what almost every test is about, while ``live`` carries every slot so a
+    test can assert that one slot's teardown left another alone.
+    """
 
     def __init__(self):
-        self.alive = False
         self.busy = False
         self.starts = []
         self.execs = []
         self.once = []
         self.stops = 0
+        self.live = {}
+
+    # ``alive`` is the user slot's, so the tests that predate slots read unchanged.
+    @property
+    def alive(self):
+        return self.live.get(ce.SLOT_USER, False)
+
+    @alive.setter
+    def alive(self, value):
+        self.live[ce.SLOT_USER] = bool(value)
 
     def run_once(self, spec, limit_s):
         self.once.append((spec.command, limit_s))
         return (0, "once-out", "", False)
 
-    def start_held(self, spec, deadline_s):
-        self.alive = True
-        self.starts.append((spec.config_name, deadline_s))
+    def start_held(self, spec, deadline_s, slot=ce.SLOT_USER):
+        self.live[slot] = True
+        self.starts.append((spec.config_name, deadline_s, slot))
 
-    def exec_in_held(self, spec, limit_s, detach):
-        self.execs.append((spec.command, limit_s, detach))
+    def exec_in_held(self, spec, limit_s, detach, slot=ce.SLOT_USER):
+        self.execs.append((spec.command, limit_s, detach, slot))
         return (0, "held-out", "", False)
 
-    def stop_held(self):
+    def stop_held(self, slot=ce.SLOT_USER):
         self.stops += 1
-        was, self.alive = self.alive, False
-        return was
+        return bool(self.live.pop(slot, False))
 
-    def held_workload_running(self):
+    def held_workload_running(self, slot=ce.SLOT_USER):
         return self.busy
+
+    def sweep_held(self):
+        gone = sorted(self.live)
+        self.live.clear()
+        return gone
 
 
 def _spec(command="ls", config_name="", image="img:1"):
@@ -394,7 +412,7 @@ def test_the_hard_deadline_fires_even_with_a_running_workload():
     lane.busy = True
     mgr = ce.ContainerExecManager(lane, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
-    mgr._held["deadline"] = time.monotonic() + 0.1
+    mgr._held[ce.SLOT_USER]["deadline"] = time.monotonic() + 0.1
     deadline = time.monotonic() + 5
     while mgr.state() is not None and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -403,7 +421,7 @@ def test_the_hard_deadline_fires_even_with_a_running_workload():
 
 def test_an_unanswerable_probe_counts_as_busy_rather_than_reaping_a_live_run():
     class Unreachable(FakeLane):
-        def held_workload_running(self):
+        def held_workload_running(self, slot=ce.SLOT_USER):
             raise RuntimeError("docker unreachable")
 
     lane = Unreachable()
@@ -524,3 +542,122 @@ def test_a_project_directory_with_several_vast_files_must_name_one(tmp_path):
 def test_a_project_directory_with_no_vast_file_is_an_error(tmp_path):
     with pytest.raises(ValueError, match="no .vast file"):
         ce.vast_in_dir(str(tmp_path))
+
+
+# -- slots: the caller's container is not collateral of a read-only query ------
+
+
+def test_a_one_shot_does_not_touch_a_held_query_container():
+    """The regression the single slot caused, from the user slot's side.
+
+    ``run()`` with ``keep_alive=False`` stops what is held — that is deliberate, so a
+    one-shot never inherits state. Before slots it stopped the *only* container, so a
+    plain exec threw away a query container that had cost 7-15 s to start.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
+    slot = ce.query_slot(("q",))
+    assert lane.live[slot] is True
+
+    mgr.run(_spec(), 300, keep_alive=False, identity=("user",))
+    assert lane.live.get(slot) is True, "a one-shot must not reap the query pool"
+
+
+def test_a_query_does_not_destroy_the_callers_held_container():
+    """And from the query's side — the failure this whole split exists to stop.
+
+    Measured against the live service before the fix: hold a container, write a file in
+    it, make one read-only introspection call, and both the file and the container are
+    gone. Six MCP tools did exactly that on every call.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
+    assert mgr.state() is not None
+
+    mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
+    assert mgr.state() is not None, "the caller's container must survive a query"
+    assert lane.live[ce.SLOT_USER] is True
+
+
+def test_two_images_of_one_campaign_get_two_query_containers():
+    """A pool, not a second single slot.
+
+    The introspection tools span several images *within one campaign* — the world check
+    asks the simulator's, describe_scenario the scenario's. One query slot would evict on
+    every alternation and leave both tools slower than they were before the pool existed.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("sim",), query=True)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("scen",), query=True)
+
+    assert lane.live[ce.query_slot(("sim",))] is True
+    assert lane.live[ce.query_slot(("scen",))] is True
+    assert len(lane.starts) == 2
+
+    # ...and asking the first again reuses rather than restarts it.
+    mgr.run(_spec(), 300, keep_alive=True, identity=("sim",), query=True)
+    assert len(lane.starts) == 2, "a repeat query must not start a container"
+
+
+def test_the_query_pool_evicts_rather_than_growing():
+    """Bounded: an agent walking many workspaces must not accumulate a container each."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    for i in range(ce.QUERY_POOL_MAX + 2):
+        mgr.run(_spec(), 300, keep_alive=True, identity=(f"w{i}",), query=True)
+    held = [s for s in lane.live if s != ce.SLOT_USER]
+    assert len(held) <= ce.QUERY_POOL_MAX
+    # The oldest went, the newest stayed.
+    assert ce.query_slot(("w0",)) not in lane.live
+    assert lane.live[ce.query_slot((f"w{ce.QUERY_POOL_MAX + 1}",))] is True
+
+
+def test_a_query_container_outlives_the_user_slots_idle_window():
+    """Their lifetimes are deliberately different, and the difference is the point.
+
+    The user slot holds state somebody created, so it is reaped quickly. A query container
+    holds a warm image and nothing else, so reaping it costs only the next caller's
+    latency — which is why it gets its own, far longer, window.
+    """
+    assert ce.QUERY_IDLE_REAP_S > ce.IDLE_REAP_S
+    assert ce.QUERY_IDLE_WAIT_CAP_S > ce.IDLE_WAIT_CAP_S
+
+
+def test_stop_container_leaves_the_query_pool_alone():
+    """``stop_container`` means the caller's. Reaping their query containers with it would
+    make the next introspection call pay a cold start they never asked for."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
+
+    mgr.stop()
+    assert ce.SLOT_USER not in lane.live
+    assert lane.live[ce.query_slot(("q",))] is True
+
+    # Shutdown, by contrast, takes everything.
+    mgr.stop_all()
+    assert not lane.live
+
+
+def test_every_slot_is_reported_so_the_lane_is_not_read_as_emptier_than_it_is():
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
+    states = mgr.states()
+    assert set(states) == {ce.SLOT_USER, ce.query_slot(("q",))}
+
+
+def test_a_query_slot_key_is_a_usable_container_name():
+    """It is hashed rather than spelled: the identity carries a workspace id and a path,
+    and a container name has a length limit and a character set a path does not respect."""
+    slot = ce.query_slot(("ws-1", "", "deep/nested/path.vast", "", "img:1", False))
+    name = ce.container_name(slot)
+    assert name.startswith(ce.CONTAINER_NAME + "-")
+    assert "/" not in name and len(name) < 64
+    # The user slot keeps the bare name, so an older service's stray is still found.
+    assert ce.container_name(ce.SLOT_USER) == ce.CONTAINER_NAME

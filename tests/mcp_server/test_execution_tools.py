@@ -65,7 +65,7 @@ class _FakeAuthoringClient:
         return ListWorkspacesResponse(
             workspaces=[WorkspaceInfo(workspace_id="ws-ab12", name="demo")])
 
-    def validate_project(self, workspace_id, path=""):
+    def validate_project(self, workspace_id, path="", check_world=True):
         from robovast.service.interface import ValidationReport
         self.calls.append(("validate_project", workspace_id, path))
         return ValidationReport(valid=True, configs=3, runs_per_config=2,

@@ -127,11 +127,17 @@ class ImageNotBuilt(ActionableError):
 class AuxContainerUnavailable(ActionableError):
     """A variation needs an auxiliary container and nothing can provide one here.
 
-    A container runner exists only *inside* a campaign's composition: the cluster lane
-    installs a per-campaign aux-pod factory, and the local lane falls back to ``docker`` on
-    the service host. Anything composing **outside** a campaign -- ``validate_project``,
-    ``preview_configurations``, a scene or screenshot query -- has neither, and the same
-    boundary is already refused in as many words by ``ClusterService.describe_world``.
+    A container runner for a *variation's* helper image exists only inside a campaign's
+    composition: the cluster lane installs a per-campaign aux-pod factory, and the local
+    lane falls back to ``docker`` on the service host. Anything composing **outside** a
+    campaign -- ``validate_project``, ``preview_configurations``, a scene or screenshot
+    query -- has neither.
+
+    Deliberately still true after the world check moved onto the exec lane's query pool
+    (``service/world_query.py``): that pool runs a *read-only question* in a container the
+    service already knows how to start, while a variation's aux container is a helper image
+    the variation writes into. The second is what has no runner here, and merging the two
+    would hand a variation a container it cannot use as one.
 
     What was missing is that the *composition* path never refused. It fell through to the
     local ``docker run`` fallback and died in ``Popen`` with a bare ``FileNotFoundError:

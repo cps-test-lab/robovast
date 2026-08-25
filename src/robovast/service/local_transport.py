@@ -1418,7 +1418,9 @@ class LocalTransport(RobovastInterface):
         # Attached outside the cache: a held exec container comes and goes far faster
         # than the sampling window, and a stale "still holding 6 GB" would be worse than
         # not reporting it at all.
-        return usage.model_copy(update={"exec_container": self._exec_container_state()})
+        return usage.model_copy(update={
+            "exec_container": self._exec_container_state(),
+            "query_containers": self._query_container_states()})
 
     def _exec_container_state(self):
         """The held exec container, or ``None`` — without creating a manager.
@@ -1433,6 +1435,23 @@ class LocalTransport(RobovastInterface):
         except Exception as e:  # noqa: BLE001 - capacity must still be answerable
             logger.debug("could not read exec container state: %s", e)
             return None
+
+    def _query_container_states(self) -> dict:
+        """The held query containers by slot, ``{}`` when there are none.
+
+        Separate from the one above because they are separate occupancy: a lane holding
+        three query containers while reporting only the caller's would look like it had
+        capacity it does not have. Same no-side-effects rule.
+        """
+        from robovast.service.container_exec import SLOT_USER
+        if self._exec_mgr is None:
+            return {}
+        try:
+            return {slot: state for slot, state in self._exec_mgr.states().items()
+                    if slot != SLOT_USER}
+        except Exception as e:  # noqa: BLE001 - capacity must still be answerable
+            logger.debug("could not read query container states: %s", e)
+            return {}
 
     def _compute_resource_usage(self) -> ResourceUsage:
         """Local host capacity + live utilization via ``psutil``.
@@ -2239,21 +2258,20 @@ class LocalTransport(RobovastInterface):
         return DockerExecLane()
 
     def _reap_stray_exec_container(self) -> None:
-        """Remove a container left behind by a previous service process.
+        """Remove every exec container left behind by a previous service process.
 
-        A fixed container name makes this a one-liner; without it an orphaned
-        diagnostic container would hold memory with nothing able to name it.
+        Through the lane's own sweep rather than removing one fixed name: the user slot
+        has a fixed name, but a query container's carries a hash of the identity it was
+        started for, and nothing persists those across a restart. Removing only the fixed
+        one left those holding memory with nothing able to name them.
         """
-        from robovast.service.container_exec import CONTAINER_NAME
         try:
-            done = subprocess.run(  # noqa: S603,S607
-                ["docker", "rm", "-f", CONTAINER_NAME],
-                check=False, capture_output=True, text=True)
-            if done.returncode == 0 and done.stdout.strip():
-                logger.info("removed stray exec container %s from a previous run",
-                            CONTAINER_NAME)
-        except OSError as e:
-            logger.debug("could not check for a stray %s: %s", CONTAINER_NAME, e)
+            removed = self._exec_lane().sweep_held()
+            if removed:
+                logger.info("removed %d stray exec container(s) from a previous run: %s",
+                            len(removed), ", ".join(removed))
+        except Exception as e:  # noqa: BLE001 - a broken docker must not break startup
+            logger.debug("could not check for stray exec containers: %s", e)
 
     def _exec_vast_file(self, request) -> str:
         """The ``.vast`` this request runs, from whichever source it named.
@@ -2272,7 +2290,8 @@ class LocalTransport(RobovastInterface):
 
     def exec_in_container(self, request) -> "ExecResult":  # noqa: F821
         from robovast.common.execution import is_build_image_ref
-        from robovast.service.container_exec import result_from, stage, validate
+        from robovast.service.container_exec import (SLOT_USER, query_slot, result_from,
+                                                     stage, validate)
         validate(request)
         # Before staging: a refused request should not have created a temp tree.
         self._admit_show_gui(request)
@@ -2310,13 +2329,17 @@ class LocalTransport(RobovastInterface):
                     request.config_path, request.config_name, spec.image,
                     bool(request.show_gui))
         started = time.monotonic()
+        query = bool(getattr(request, "query", False))
         out = self._exec_manager.run(spec, limit_s,
                                     keep_alive=request.keep_alive,
-                                    identity=identity)
+                                    identity=identity, query=query)
+        # Report the slot this call actually used. Reporting the user's for a query would
+        # tell a caller their container had been replaced when it had not been touched.
+        slot = query_slot(identity) if query else SLOT_USER
         return result_from(out, spec=spec, limit_s=limit_s,
                            limit_source=limit_source,
                            duration_s=time.monotonic() - started,
-                           container=self._exec_manager.state())
+                           container=self._exec_manager.state(slot))
 
     def _exec_image(self, vast_file: str, container: "str | None" = None,
                     campaign_id: str = "") -> str:
@@ -2356,13 +2379,25 @@ class LocalTransport(RobovastInterface):
         from robovast.common.config import validate_config
         from robovast.common.containers import plan_containers
         from robovast.common.execution import resolve_robovast_image
+        from robovast.common.simulators import apply_backend
         from robovast.service.image_store import ImageRef
 
         # Validate rather than reading the raw mapping: the build specs come off the
         # *model*, so handing this path a plain dict yields "no build section" for every
         # project that has one.
         campaign_config = validate_config(load_config(vast_file))
-        plan = plan_containers(campaign_config.execution.model_dump())
+        # Apply the simulator backend BEFORE planning, exactly as image_build,
+        # campaign_data and config_generation do. Without it the `simulation` block holds
+        # only the backend's own keys -- no image, no command -- so plan_containers reads
+        # the simulator as *not* separate, the `simulation` role resolves to the scenario
+        # container, and an exec asking for it silently landed in the base image with no
+        # simulator in it. `get_world_body_tree` runs `roqsim scenes describe` there and
+        # could therefore never have worked on a project whose roqsim comes from the image
+        # family. The stepped shape is unaffected: there the simulator genuinely *is* the
+        # scenario container, and the backend says so.
+        execution = apply_backend(campaign_config.execution.model_dump(),
+                                  os.path.dirname(os.path.abspath(vast_file)))
+        plan = plan_containers(execution)
         target = plan.by_name(container) if container else plan.main
 
         if not target.builds:
@@ -3519,6 +3554,15 @@ class LocalTransport(RobovastInterface):
         (same path as :meth:`stop`) and briefly join the workers so their
         container-teardown traps complete before the process exits.
         """
+        # Held containers first, and unconditionally: they are the ones nothing else
+        # reaps, and a service with no running campaign used to return below while still
+        # holding a multi-gigabyte image. Every slot, not just the caller's -- a query
+        # container outliving the process is exactly the leak the pool cap exists to bound.
+        if self._exec_mgr is not None:
+            try:
+                self._exec_mgr.stop_all()
+            except Exception as e:  # noqa: BLE001 - shutdown must not fail on cleanup
+                logger.warning("could not stop held exec containers: %s", e)
         with self._lock:
             running = [e for e in self._campaigns.values() if not self._is_done(e)]
         if not running:
@@ -3854,7 +3898,8 @@ class LocalTransport(RobovastInterface):
 
     # -- validation / preview / authoring help (config editor) --------------
 
-    def validate_project(self, workspace_id: str, path: str = "") -> ValidationReport:
+    def validate_project(self, workspace_id: str, path: str = "",
+                         check_world: bool = True) -> ValidationReport:
         from robovast.common.config_validation import validate_project_file
         try:
             project = self._resolve_project(workspace_id, path)
@@ -3862,7 +3907,48 @@ class LocalTransport(RobovastInterface):
         except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
             return ValidationReport(valid=False, problems=[
                 ValidationProblem(stage="error", message=str(e))])
+        # Only once the cheap checks pass. Compiling a world for a file with a schema
+        # error spends a container to report something already in the reply, and the world
+        # a broken file names is not necessarily the one it will name when it is fixed.
+        if check_world and result.get("valid"):
+            result = self._with_world_check(workspace_id, path, project, result)
         return ValidationReport.model_validate(result)
+
+    def _with_world_check(self, workspace_id: str, path: str, project,
+                          result: dict) -> dict:
+        """*result* plus any problem with the world(s) this campaign would load.
+
+        The one check here that runs a container. It is worth it because the failure it
+        catches is otherwise per-trial: a world that does not compile fails every run of
+        the sweep, after the image pull and the schedule, and nothing before this said so.
+        The container is *held* (see ``ExecRequest.query``), so a second validation of the
+        same project costs an exec rather than a container start.
+
+        A failure of the check itself is never a failure of the campaign: an advisory says
+        the world was not checked and why, and ``valid`` is left as the cheap checks found
+        it.
+        """
+        from robovast.common.common import load_config
+        from robovast.service.world_query import world_problems
+        try:
+            parameters = load_config(project.config_path) or {}
+            problems = world_problems(
+                self.exec_in_container,
+                workspace_id=self.store.registry.require(workspace_id)["workspace_id"],
+                # The workspace-relative path as the caller gave it; empty is fine and
+                # means the sole .vast, which is what exec_in_container resolves too.
+                config_path=path,
+                vast_dir=str(Path(project.config_path).parent),
+                parameters=parameters)
+        except Exception as e:  # noqa: BLE001 - an unavailable check is not a bad campaign
+            logger.debug("the world check did not run: %s", e)
+            return result
+        if not problems:
+            return result
+        fatal = [p for p in problems if "was NOT checked" not in p["message"]]
+        return {**result,
+                "valid": result.get("valid", False) and not fatal,
+                "problems": list(result.get("problems") or []) + problems}
 
     def preview_configurations(
         self, workspace_id: str, max_configs: int = 0, path: str = ""
@@ -3933,19 +4019,35 @@ class LocalTransport(RobovastInterface):
         # several; the answer names the world it described, so a caller can see which.
         block = campaign_sim_block(execution)
         started = time.monotonic()
+        # Through the exec lane's held query container, on BOTH lanes. Not the local
+        # `docker run` fallback: in a controller pod that would run on whatever host the
+        # service happens to sit on -- a different image cache, or no docker at all -- with
+        # nothing in the reply to say the answer did not come from the cluster. This is
+        # also what lets the cluster lane answer at all; it used to refuse outright for
+        # want of a runner outside a campaign's composition.
+        from robovast.common.config_generation import set_container_runner_factory
+        from robovast.service.world_query import ExecSlotContainerRunner, _reset_factory
+        runner = ExecSlotContainerRunner(
+            self.exec_in_container,
+            workspace_id=self.store.registry.require(workspace_id)["workspace_id"],
+            config_path=path)
+        token = set_container_runner_factory(lambda _spec, _r=runner: _r)
         try:
             payload, image = describe_world_payload(
                 execution, block, str(Path(project.config_path).parent),
                 entities=entities, targets=targets)
         except WorldQueryUnavailable as exc:
             raise ValueError(str(exc)) from None
+        finally:
+            _reset_factory(token)
+            runner.close()
         return WorldDescription(
             backend=backend_name(execution) or "",
             image=image,
             world=str(payload.get("world") or ""),
             packaged=bool(payload.get("packaged")),
             inputs=[str(p) for p in (payload.get("inputs") or [])],
-            plugins=list(payload.get("plugins") or []),
+            components=list(payload.get("components") or []),
             entities=payload.get("entities"),
             overridable=dict(payload.get("overridable") or {}),
             # Both carry how the answer was arrived at, so dropping them here would hand a caller

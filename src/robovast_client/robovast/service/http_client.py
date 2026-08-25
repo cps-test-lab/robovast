@@ -385,9 +385,16 @@ class HTTPTransport(RobovastInterface):
         return RetriggerReport.model_validate(
             self._get(Routes.campaign_retrigger_check(campaign_id)))
 
-    def validate_project(self, workspace_id: str, path: str = "") -> ValidationReport:
+    def validate_project(self, workspace_id: str, path: str = "",
+                         check_world: bool = True) -> ValidationReport:
+        from robovast.service.interface import COMMAND_LIMIT_S
         return ValidationReport.model_validate(
-            self._post(Routes.workspace_validate(workspace_id), json={"path": path}))
+            self._post(Routes.workspace_validate(workspace_id),
+                       json={"path": path, "check_world": check_world},
+                       # The world check runs a container: cold, that is seconds on the
+                       # local lane and can be well over ten on a busy cluster, which the
+                       # default read timeout would cut short mid-check.
+                       timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
         self, workspace_id: str, max_configs: int = 0, path: str = ""

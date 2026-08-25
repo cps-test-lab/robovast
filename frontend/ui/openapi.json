@@ -243,6 +243,11 @@
       },
       "Body_validate_project_workspaces__workspace_id__validate_post": {
         "properties": {
+          "check_world": {
+            "default": true,
+            "title": "Check World",
+            "type": "boolean"
+          },
           "path": {
             "default": "",
             "title": "Path",
@@ -250,6 +255,7 @@
           }
         },
         "required": [
+          "check_world",
           "path"
         ],
         "title": "Body_validate_project_workspaces__workspace_id__validate_post",
@@ -1093,6 +1099,11 @@
           "keep_alive": {
             "default": false,
             "title": "Keep Alive",
+            "type": "boolean"
+          },
+          "query": {
+            "default": false,
+            "title": "Query",
             "type": "boolean"
           },
           "show_gui": {
@@ -2038,6 +2049,13 @@
             "title": "Parallel Runs",
             "type": "boolean"
           },
+          "query_containers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExecContainerState"
+            },
+            "title": "Query Containers",
+            "type": "object"
+          },
           "store": {
             "anyOf": [
               {
@@ -2073,6 +2091,7 @@
           "memory_capacity_bytes",
           "memory_used_bytes",
           "parallel_runs",
+          "query_containers",
           "store",
           "store_node"
         ],
@@ -3519,6 +3538,14 @@
             "title": "Backend",
             "type": "string"
           },
+          "components": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Components",
+            "type": "array"
+          },
           "dropped_transport": {
             "items": {
               "type": "string"
@@ -3572,14 +3599,6 @@
             "title": "Packaged",
             "type": "boolean"
           },
-          "plugins": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Plugins",
-            "type": "array"
-          },
           "world": {
             "default": "",
             "title": "World",
@@ -3588,6 +3607,7 @@
         },
         "required": [
           "backend",
+          "components",
           "dropped_transport",
           "duration_s",
           "entities",
@@ -3596,7 +3616,6 @@
           "inputs",
           "overridable",
           "packaged",
-          "plugins",
           "world"
         ],
         "title": "WorldDescription",

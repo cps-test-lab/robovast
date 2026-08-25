@@ -37,7 +37,7 @@ correct, and each was invisible on the local lane:
 
 import logging
 
-from robovast.service.container_exec import CONTAINER_NAME, POD_LABEL, ExecSpec
+from robovast.service.container_exec import SLOT_USER, POD_LABEL, ExecSpec, container_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +52,24 @@ EXEC_PREFIX = "container-exec"
 SOURCES_ROOT = "/sources"
 
 
-def _pod_name() -> str:
-    # Same name as the local container, so the "at most one" rule reads identically on
-    # both lanes and a stray is found the same way.
-    return CONTAINER_NAME
+def _pod_name(slot: str = SLOT_USER) -> str:
+    # Same name as the local container, so a slot's container reads identically on both
+    # lanes and a stray is found the same way. Every slot keeps POD_LABEL, so the stray
+    # sweep finds a query pod too — its slot key is derived from an identity no restarted
+    # service still remembers.
+    return container_name(slot)
 
 
-def exec_prefix(namespace: str) -> str:
-    """Where this namespace's exec tree is staged.
+def exec_prefix(namespace: str, slot: str = SLOT_USER) -> str:
+    """Where this namespace's exec tree for *slot* is staged.
 
-    Namespaced because the pod name is fixed and therefore unique *per namespace*, while
-    a shared-bucket deployment gives several namespaces one bucket. One definition,
-    because staging, the init container's mirror and the cleanup must address the same
-    keys.
+    Namespaced because a pod name is unique only *per namespace*, while a shared-bucket
+    deployment gives several namespaces one bucket. Per slot for the same reason one step
+    down: several pods are held at once now, and a shared prefix would have each one's
+    ``start_held`` overwrite the tree the others already mirrored. One definition, because
+    staging, the init container's mirror and the cleanup must address the same keys.
     """
-    return f"{EXEC_PREFIX}/{namespace}"
+    return f"{EXEC_PREFIX}/{namespace}/{slot}"
 
 
 class KubeExecLane:
@@ -146,31 +149,34 @@ class KubeExecLane:
         finally:
             self.stop_held()
 
-    def start_held(self, spec: ExecSpec, deadline_s: int) -> None:
+    # -- ExecLane, continued ----------------------------------------------
+
+    def start_held(self, spec: ExecSpec, deadline_s: int,
+                   slot: str = SLOT_USER) -> None:
         from kubernetes.client.rest import ApiException
 
         from .kube_client import wait_pod_ready
         core = self._client()
-        self.stop_held()
-        prefix = self._stage(spec)
+        self.stop_held(slot)
+        prefix = self._stage(spec, slot)
         try:
             core.create_namespaced_pod(
                 self._namespace,
                 _pod_manifest(spec, deadline_s, self._namespace, self._owner_ref,
                               self._s3, self._bucket, prefix,
-                              pull_secret=self._pull_secret))
+                              pull_secret=self._pull_secret, slot=slot))
         except ApiException as e:
-            self._discard_staged()
+            self._discard_staged(slot)
             raise RuntimeError(f"could not start exec pod: {e.reason}") from e
         try:
-            wait_pod_ready(core, self._namespace, _pod_name())
+            wait_pod_ready(core, self._namespace, _pod_name(slot))
         except BaseException:
             # A pod that never came up still holds a staged tree and a pod object; the
             # caller sees an exception and will not call stop_held itself.
-            self.stop_held()
+            self.stop_held(slot)
             raise
 
-    def _stage(self, spec: ExecSpec) -> str:
+    def _stage(self, spec: ExecSpec, slot: str = SLOT_USER) -> str:
         """Upload ``/config`` (and the workspace, if any) and return the key prefix.
 
         ``upload_dir`` tags executables with ``x-amz-meta-executable``, which the init
@@ -178,13 +184,13 @@ class KubeExecLane:
         replaced could not carry modes at all.
         """
         storage = self._require_store()
-        prefix = exec_prefix(self._namespace)
+        prefix = exec_prefix(self._namespace, slot)
         storage.upload_dir(spec.config_dir, self._bucket, f"{prefix}/config")
         if spec.workspace_dir and spec.workspace_id:
             storage.upload_dir(spec.workspace_dir, self._bucket, f"{prefix}/workspace")
         return prefix
 
-    def _discard_staged(self) -> int:
+    def _discard_staged(self, slot: str = SLOT_USER) -> int:
         """Delete this namespace's staged tree. Best-effort, but noisy when it fails.
 
         Cleanup must not turn a successful stop into an error — but a leaked prefix is
@@ -194,7 +200,7 @@ class KubeExecLane:
             return 0
         try:
             return self._require_store().delete_prefix(self._bucket,
-                                                       exec_prefix(self._namespace))
+                                                       exec_prefix(self._namespace, slot))
         except Exception as e:  # noqa: BLE001 - cleanup never fails a stop
             logger.warning("could not discard the staged exec tree: %s", e)
             return 0
@@ -212,8 +218,8 @@ class KubeExecLane:
         return exec_stream(self._client(), pod, self._namespace, container,
                            list(argv), limit_s=limit_s)
 
-    def exec_in_held(self, spec: ExecSpec, limit_s: int,
-                     detach: bool) -> tuple[int, str, str, bool]:
+    def exec_in_held(self, spec: ExecSpec, limit_s: int, detach: bool,
+                     slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
         # Both forms come from the spec, so the liveness check a detached start needs
         # cannot be present on one lane and missing on the other — which is exactly how
         # it was, until a scenario silently failed to start.
@@ -221,9 +227,9 @@ class KubeExecLane:
             argv = ["/bin/bash", "-c", spec.detached_start_script()]
         else:
             argv = spec.foreground_argv()
-        return self.exec_in((_pod_name(), _CONTAINER), argv, limit_s)
+        return self.exec_in((_pod_name(slot), _CONTAINER), argv, limit_s)
 
-    def stop_held(self) -> bool:
+    def stop_held(self, slot: str = SLOT_USER) -> bool:
         """Delete the pod, **wait until it is gone**, and drop the staged tree.
 
         The wait is the whole point: a Kubernetes delete returns while the pod is still
@@ -236,21 +242,21 @@ class KubeExecLane:
 
         from .kube_client import wait_pod_gone
         core = self._client()
+        pod = _pod_name(slot)
         existed = False
         try:
             # A diagnostic pod has nothing to flush, so it does not need the default
             # grace period.
-            core.delete_namespaced_pod(_pod_name(), self._namespace,
-                                       grace_period_seconds=0)
+            core.delete_namespaced_pod(pod, self._namespace, grace_period_seconds=0)
             existed = True
         except ApiException as e:
             if e.status != 404:
-                logger.warning("deleting %s failed: %s", _pod_name(), e.reason)
+                logger.warning("deleting %s failed: %s", pod, e.reason)
         if existed:
-            wait_pod_gone(core, self._namespace, _pod_name())
+            wait_pod_gone(core, self._namespace, pod)
         # Unconditional: a previous process may have left a tree with no pod beside it,
         # and this is the only thing that reaps it.
-        self._discard_staged()
+        self._discard_staged(slot)
         return existed
 
     #: Counts processes that are neither the idle PID 1 nor the probe itself, using only
@@ -265,7 +271,24 @@ class KubeExecLane:
         '[ "$pid" = "$PPID" ] && continue; '
         'n=$((n+1)); done; echo $n')
 
-    def held_workload_running(self) -> bool:
+    def sweep_held(self) -> list:
+        """Delete every exec pod this lane owns, and the trees they staged.
+
+        See :func:`_sweep_held_pods`: after a restart the query slots' keys are gone, so
+        the label is the only handle left on the pods they made.
+        """
+        deleted = _sweep_held_pods(self)
+        # The staged trees are keyed by slot too, and the same restart lost those keys.
+        # One prefix delete covers every slot of this namespace.
+        if self._has_store:
+            try:
+                self._require_store().delete_prefix(self._bucket,
+                                                    exec_prefix(self._namespace, "").rstrip("/"))
+            except Exception as e:  # noqa: BLE001 - cleanup never fails startup
+                logger.warning("could not discard staged exec trees: %s", e)
+        return deleted
+
+    def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides the idle PID 1 runs in the pod.
 
         Same rule as the local lane, asked through ``pods/exec`` since there is no
@@ -275,9 +298,10 @@ class KubeExecLane:
         from kubernetes.client.rest import ApiException
 
         from .kube_client import exec_stream
+        pod = _pod_name(slot)
         try:
             _code, out, _err, _timed_out = exec_stream(
-                self._client(), _pod_name(), self._namespace, _CONTAINER,
+                self._client(), pod, self._namespace, _CONTAINER,
                 ["/bin/sh", "-c", self._PROCESS_COUNT_SH],
                 limit_s=_PROBE_TIMEOUT_S)
         except ApiException as e:
@@ -288,8 +312,40 @@ class KubeExecLane:
             count = int((out or "0").strip().splitlines()[-1])
         except (ValueError, IndexError) as exc:
             raise RuntimeError(
-                f"could not read process count from {_pod_name()}") from exc
+                f"could not read process count from {pod}") from exc
         return count > 0
+
+
+def _sweep_held_pods(lane) -> list:
+    """Delete every exec pod in the namespace, by label. Returns the names deleted.
+
+    By label and not by name because a query pod's name carries a hash of the identity it
+    was started for, and nothing persists those across a service restart — so after one,
+    the label is the only thing that can still find it.
+    """
+    from kubernetes.client.rest import ApiException
+
+    from .kube_client import wait_pod_gone
+    core = lane._client()  # noqa: SLF001 - the lane's own helper, called from its module
+    try:
+        found = core.list_namespaced_pod(lane._namespace,  # noqa: SLF001
+                                         label_selector=POD_LABEL)
+    except ApiException as e:
+        logger.warning("could not list stray exec pods: %s", e.reason)
+        return []
+    deleted = []
+    for pod in found.items:
+        name = pod.metadata.name
+        try:
+            core.delete_namespaced_pod(name, lane._namespace,  # noqa: SLF001
+                                       grace_period_seconds=0)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("deleting %s failed: %s", name, e.reason)
+            continue
+        wait_pod_gone(core, lane._namespace, name)  # noqa: SLF001
+        deleted.append(name)
+    return deleted
 
 
 def _labels() -> dict:
@@ -324,7 +380,8 @@ def _mirror_command(spec: ExecSpec) -> str:
 
 def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
                   owner_ref: dict | None, s3: tuple, bucket: str,
-                  prefix: str, pull_secret: str = "") -> dict:
+                  prefix: str, pull_secret: str = "",
+                  slot: str = SLOT_USER) -> dict:
     """A single kept-alive container with ``/config`` mirrored down by an init container.
 
     ``activeDeadlineSeconds`` is the manager's own deadline, so the pod cannot outlive
@@ -338,7 +395,8 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
 
     from .cluster_image_build import s3_init_env
 
-    metadata = {"name": _pod_name(), "namespace": namespace, "labels": dict(_labels())}
+    metadata = {"name": _pod_name(slot), "namespace": namespace,
+                "labels": dict(_labels())}
     if owner_ref:
         metadata["ownerReferences"] = [owner_ref]
     endpoint, access_key, secret_key = s3

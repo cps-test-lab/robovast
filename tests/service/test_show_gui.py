@@ -181,11 +181,11 @@ def test_changing_show_gui_is_a_different_container(local, monkeypatch):
     calls = []
 
     class _Mgr:
-        def run(self, spec, limit_s, *, keep_alive, identity):
+        def run(self, spec, limit_s, *, keep_alive, identity, query=False):
             calls.append(identity)
             return (0, "", "", False)
 
-        def state(self):
+        def state(self, slot=None):
             return None
 
     monkeypatch.setenv("DISPLAY", ":0")

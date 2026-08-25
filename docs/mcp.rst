@@ -155,21 +155,25 @@ things**, and neither is "how carefully it looks".
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 18 22 30
+   :widths: 26 14 18 18 24
 
    * - Tool
      - Schema + refs
+     - World loads/compiles
      - Installs ``plugins:``
      - Backend container context
    * - ``validate_project``
+     - yes
      - yes
      - no
      - no
    * - ``preview_configurations``
      - yes
+     - no
      - yes
      - no
    * - ``start_campaign``
+     - yes
      - yes
      - yes
      - yes
@@ -179,10 +183,20 @@ Note what the table does *not* say. ``validate_project`` composes too (it has to
 backend's*: on the cluster lane that is the campaign's aux pod, on the local lane ``docker``
 on the service host — which is why ``start_campaign`` is the boundary rather than "the cluster".
 
+The world column is the one place ``validate_project`` runs a container, and it is a
+**different** container from the backend context in the last column: a held, read-only query
+container from the exec lane's pool (``ExecRequest.query``, ``service/world_query.py``), not a
+variation's auxiliary one. That is why it can be the cheap tier and still settle the world —
+the container is reused across calls, so a repeat validation costs an exec rather than a
+start. ``check_world=False`` opts out and the world is then simply not checked.
+
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
 remember and map onto their situation:
 
+* A world that only the campaign's own **built** image could describe cannot be checked
+  before that image exists. ``validate_project`` then reports that it was **not** checked and
+  names ``build_experiment_image``, rather than letting a silent reply read as a clean world.
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point
@@ -190,9 +204,11 @@ remember and map onto their situation:
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
   this process is long-lived.
 * A variation declaring an auxiliary container is exercised by neither ``validate_project`` nor
-  ``preview_configurations``, since a container runner exists only inside a campaign's
-  composition — the same boundary ``ClusterService.describe_world`` refuses in as many words.
-  Both refuse naming the variation and the container, via
+  ``preview_configurations``, since a runner for a variation's *helper image* exists only
+  inside a campaign's composition. (The world check is not an exception: it runs a read-only
+  question in a container the service already knows how to start, which is not the same thing
+  as a helper image a variation writes into.) Both refuse naming the variation and the
+  container, via
   :class:`~robovast.common.errors.AuxContainerUnavailable`, rather than falling through to a
   ``docker run`` that dies with a bare ``FileNotFoundError``. The refusal is conditional on the
   runner being genuinely unavailable, so a local host that has ``docker`` is unaffected.
@@ -980,14 +996,23 @@ only there is it refused, because resolving a world's ``extends`` chain needs th
 
    vast workspace world tiago_pick --targets 'gripper_right*'
 
-Two halves, at the two costs they actually have. ``plugins`` names each plugin under the key an
-override addresses it by, with the dotted paths that already exist — cheap, no model built.
+Two halves, at the two costs they actually have. ``components`` names each component under the
+address an override names it by, with the dotted paths that already exist — cheap, no model
+built. (It was ``plugins`` until the world document's own key was renamed to ``components``;
+the payload lagged that, and a ``.vast``'s unrelated top-level ``plugins:`` made the old name a
+collision as well as a mismatch.)
 ``overridable`` says which **model values a run may change while it is running** (the
 ``model_override`` plugin: friction, contact masks, actuator force limits, mass); its ``fields``
 half is a property of the simulator rather than of the world and so is always there, while
 ``targets`` needs a model built and waits for a glob. A path the world leaves at its default is
-legitimately absent, so an unlisted one is unverifiable rather than wrong; a *plugin* key
-matching nothing is unambiguous, and is what the campaign pre-check refuses before any compute.
+legitimately absent, so an unlisted one is unverifiable rather than wrong; a *component*
+address matching nothing is unambiguous, and is what the campaign pre-check refuses before any
+compute.
+
+``describe_world`` answers on **both** lanes. It used to be refused outright in-cluster, for want
+of a container runner outside a campaign's composition; it now runs on the exec lane's held query
+pool, the same one ``validate_project``'s world check uses — so the two share a warm container
+rather than each paying a start.
 
 **It is asked in the image the campaign runs, and the reply says which.** Not a detail: which
 world a ref resolves to depends on what is *installed*, so an experiment shipping its own world

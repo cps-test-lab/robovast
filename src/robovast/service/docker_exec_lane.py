@@ -11,7 +11,7 @@ import os
 import subprocess
 
 from robovast.common.host_display import grant_local_access
-from robovast.service.container_exec import CONTAINER_NAME, ExecSpec
+from robovast.service.container_exec import CONTAINER_NAME, SLOT_USER, ExecSpec, container_name
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +25,14 @@ class DockerExecLane:
 
     def run_once(self, spec: ExecSpec, limit_s: int) -> tuple[int, str, str, bool]:
         """Run in a throwaway container: nothing survives it, by construction."""
-        cmd = ["docker", "run", "--rm", "--name", CONTAINER_NAME]
+        cmd = ["docker", "run", "--rm", "--name", container_name()]
         cmd += self._common_run_args(spec)
         cmd += ["--entrypoint", "/bin/bash", spec.image]
         cmd += spec.entrypoint_argv()
         return _capture(cmd, limit_s)
 
-    def start_held(self, spec: ExecSpec, deadline_s: int) -> None:
+    def start_held(self, spec: ExecSpec, deadline_s: int,
+                   slot: str = SLOT_USER) -> None:
         """Start the container idle so later calls can exec into it.
 
         PID 1 is a plain sleep rather than the entrypoint: the entrypoint's job is to
@@ -39,7 +40,7 @@ class DockerExecLane:
         long-lived PID 1 also gives backgrounded processes something to reparent to, so
         a scenario started in one call survives into the next.
         """
-        cmd = ["docker", "run", "-d", "--name", CONTAINER_NAME]
+        cmd = ["docker", "run", "-d", "--name", container_name(slot)]
         cmd += self._common_run_args(spec)
         # A container-level backstop in case the service dies before its reaper runs:
         # sleep exits, the container stops, and nothing is left holding memory.
@@ -61,8 +62,8 @@ class DockerExecLane:
         cmd += list(argv)
         return _capture(cmd, limit_s)
 
-    def exec_in_held(self, spec: ExecSpec, limit_s: int,
-                     detach: bool) -> tuple[int, str, str, bool]:
+    def exec_in_held(self, spec: ExecSpec, limit_s: int, detach: bool,
+                     slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
         """Run the command inside the held container.
 
         *detach* is for a scenario: it must keep running after this call returns so the
@@ -70,34 +71,36 @@ class DockerExecLane:
         it would be torn down with the exec that started it.
         """
         if detach:
-            return self.exec_in(CONTAINER_NAME,
+            return self.exec_in(container_name(slot),
                                 ["/bin/bash", "-c", spec.detached_start_script()],
                                 _PROBE_TIMEOUT_S, env=spec.env)
-        return self.exec_in(CONTAINER_NAME, spec.foreground_argv(), limit_s, env=spec.env)
+        return self.exec_in(container_name(slot), spec.foreground_argv(), limit_s,
+                            env=spec.env)
 
-    def stop_held(self) -> bool:
+    def stop_held(self, slot: str = SLOT_USER) -> bool:
         """Remove the container. True when one was actually there.
 
         A failure that is *not* "no such container" is logged rather than swallowed: a
         stop that silently did nothing would leave a container holding memory while the
         service reported it gone.
         """
+        name = container_name(slot)
         try:
             done = subprocess.run(  # noqa: S603
-                ["docker", "rm", "-f", CONTAINER_NAME],
+                ["docker", "rm", "-f", name],
                 capture_output=True, text=True,
                 timeout=_PROBE_TIMEOUT_S, check=False)
         except (OSError, subprocess.SubprocessError) as e:
-            logger.warning("could not remove %s: %s", CONTAINER_NAME, e)
+            logger.warning("could not remove %s: %s", name, e)
             return False
         if done.returncode == 0:
             return bool(done.stdout.strip())
         stderr = (done.stderr or "").strip()
         if "No such container" not in stderr:
-            logger.warning("removing %s failed: %s", CONTAINER_NAME, stderr)
+            logger.warning("removing %s failed: %s", name, stderr)
         return False
 
-    def held_workload_running(self) -> bool:
+    def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides the container's idle PID 1 is running.
 
         Counts processes rather than matching names: ``docker top`` reports *host* PIDs,
@@ -110,17 +113,48 @@ class DockerExecLane:
         about. Probe failures other than a missing container propagate — the manager
         treats an unanswerable probe as "still busy" rather than reaping a live run.
         """
+        name = container_name(slot)
         done = subprocess.run(  # noqa: S603
-            ["docker", "top", CONTAINER_NAME, "-eo", "pid"],
+            ["docker", "top", name, "-eo", "pid"],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False)
         if done.returncode != 0:
             if "No such container" in (done.stderr or "") or "is not running" in (done.stderr or ""):
                 # Gone already: saying so lets the manager drop a stale record.
                 return False
-            raise RuntimeError(f"could not inspect {CONTAINER_NAME}: {done.stderr.strip()}")
+            raise RuntimeError(f"could not inspect {name}: {done.stderr.strip()}")
         # First line is the ps header.
         pids = [ln for ln in done.stdout.splitlines()[1:] if ln.strip().isdigit()]
         return len(pids) > 1
+
+    def sweep_held(self) -> list:
+        """Remove every ``robovast-exec*`` container. Returns the names removed.
+
+        Prefix-matched rather than name-by-name because a query container's name carries a
+        hash of the identity it was started for, and nothing persists those across a
+        service restart. ``--filter name=`` is a regex, so the anchor is what keeps this
+        from matching a user's container that merely starts with something similar.
+        """
+        try:
+            listed = subprocess.run(  # noqa: S603
+                ["docker", "ps", "-a", "--filter", f"name=^{CONTAINER_NAME}",
+                 "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("could not list stray exec containers: %s", e)
+            return []
+        names = [n.strip() for n in (listed.stdout or "").splitlines() if n.strip()]
+        removed = []
+        for name in names:
+            try:
+                done = subprocess.run(  # noqa: S603
+                    ["docker", "rm", "-f", name], capture_output=True, text=True,
+                    timeout=_PROBE_TIMEOUT_S, check=False)
+            except (OSError, subprocess.SubprocessError) as e:
+                logger.warning("could not remove %s: %s", name, e)
+                continue
+            if done.returncode == 0 and done.stdout.strip():
+                removed.append(name)
+        return removed
 
     # -- shared argv ------------------------------------------------------
 

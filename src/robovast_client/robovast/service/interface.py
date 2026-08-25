@@ -269,6 +269,12 @@ class ExecRequest(BaseModel):
     #: ``sut``, or an ad-hoc container's name. The names are the same ones a scenario's
     #: ``remote("ipc:///ipc/<name>")`` uses, so there is one vocabulary to learn.
     container: str = ""
+    #: Run this as a read-only introspection query, in the service's held query pool
+    #: instead of the caller's own container -- so it is cheap to repeat and never disturbs
+    #: what they are holding. Only for commands that keep nothing: the pool is LRU-evicted
+    #: and idle-reaped, and ``keep_alive`` does not apply. See ``container_exec``'s module
+    #: docstring for why the two are separate at all.
+    query: bool = False
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.
@@ -911,6 +917,12 @@ class ResourceUsage(BaseModel):
     #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
     #: has no way to discover that its own container is the reason.
     exec_container: Optional[ExecContainerState] = None
+    #: The service's *query* containers, held for read-only introspection (see
+    #: ``ExecRequest.query``), keyed by slot. Reported for the same reason as the one
+    #: above and never folded into it: they are not the caller's, they are reaped on their
+    #: own schedule, and a lane holding three of them while reporting one would read as
+    #: having capacity it does not have.
+    query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -1319,8 +1331,12 @@ class WorldDescription(BaseModel):
     packaged: bool = False
     #: Everything the world is built from (a path world's YAML chain and its MJCF/meshes).
     inputs: list[str] = Field(default_factory=list)
-    #: Each plugin under the key an override addresses it by, with the paths that exist.
-    plugins: list[dict] = Field(default_factory=list)
+    #: Each component under the address an override names it by, with the paths that
+    #: exist. Named ``components`` because that is what the world document calls them and
+    #: what an override path is spelled with (``components.robot.lidar.rays``); the payload
+    #: key lagged that rename, and a ``.vast``'s own unrelated top-level ``plugins:``
+    #: (variation packages) made the old name a collision as well as a mismatch.
+    components: list[dict] = Field(default_factory=list)
     #: The entities the world compiles — ``None`` unless asked for, since it costs a build.
     entities: Optional[list[str]] = None
     #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
@@ -2538,13 +2554,21 @@ class RobovastInterface(ABC):
     # -- validation / preview / authoring help (config editor) --------------
 
     @abstractmethod
-    def validate_project(self, workspace_id: str, path: str = "") -> ValidationReport:
+    def validate_project(self, workspace_id: str, path: str = "",
+                         check_world: bool = True) -> ValidationReport:
         """Collect-all validation of a workspace ``.vast`` project.
 
         Wraps ``config_validation.validate_project_file``. ``path`` selects which
         ``.vast`` (workspace-relative); empty picks the sole ``.vast`` (error if
         there are several — pass ``path``). Empty ``workspace_id`` → the CWD project.
         Returns every problem at once (schema, scenario file, plugin refs) + counts.
+
+        ``check_world`` also asks the simulator whether the world(s) this campaign would
+        load actually load and compile — the one check here that runs a container, and the
+        only thing that catches a world which would fail every trial of the sweep. It runs
+        only once the cheap checks pass, and the container is held, so a repeat validation
+        of the same project pays an exec rather than a container start. Pass ``False``
+        while iterating on YAML to keep the call sub-second.
         """
 
     @abstractmethod

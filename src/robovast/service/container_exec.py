@@ -13,10 +13,16 @@ starting a container and exec'ing in it, via :class:`ExecLane`.
 
 Two invariants worth stating, because both were deliberate choices:
 
-- **At most one exec container exists at a time**, named :data:`CONTAINER_NAME`. That
-  removes session ids, a listing operation, and the whole leak class — a stray one is
-  found and reaped by name. It also must *not* be the campaign container's name, which
-  is single-flight and force-removed by ``LocalTransport`` to unblock a stop.
+- **At most one exec container exists per slot**, named :func:`container_name` of it.
+  There is one :data:`SLOT_USER` container — the caller's, which is what
+  ``exec_in_container`` addresses and the "at most one" rule a caller sees — plus a
+  bounded pool of *query* containers for read-only introspection, which the caller never
+  holds state in. Slots exist because a one-shot exec stops whatever is held: while there
+  was a single container, every read-only ``describe_scenario`` destroyed the one its
+  caller was debugging in. Neither name may be the campaign container's, which is
+  single-flight and force-removed by ``LocalTransport`` to unblock a stop; strays are
+  swept by name prefix (docker) or by :data:`POD_LABEL` (cluster), since a query slot's
+  key does not survive a restart.
 - **The command runs through the run's own ``entrypoint.sh``**, never a hand-rolled
   prelude. The environment a scenario sees (the ROS overlay, ``/ws/install``, the
   init block, ``execution.env``, ``PRE_COMMAND``) is defined there and will grow; a
@@ -24,6 +30,7 @@ Two invariants worth stating, because both were deliberate choices:
   the run.
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -42,8 +49,11 @@ logger = logging.getLogger(__name__)
 #: and ``LocalTransport`` runs ``docker rm -f robovast`` to unblock a stop — which would
 #: kill a held diagnostic container, or be blocked by it.
 CONTAINER_NAME = "robovast-exec"
-#: Cluster equivalent, for finding and reaping strays.
+#: Cluster equivalent, for finding and reaping strays. Deliberately shared by every slot:
+#: a stray sweep has to find *all* of them, including a query container whose slot key
+#: nothing remembers after a restart.
 POD_LABEL = "app=robovast-exec"
+
 
 #: Everything the entrypoint writes goes here: inside the container, so it dies with it.
 #: ``entrypoint.sh`` needs *somewhere* writable — it runs ``mkdir -p``/``tee`` under
@@ -65,9 +75,53 @@ IDLE_REAP_S = 60
 #: Ceiling on idle waiting, so a held container cannot be kept alive indefinitely by a
 #: caller that pokes it every 59 seconds.
 IDLE_WAIT_CAP_S = 300
+
+#: The caller's own container: ``exec_in_container``'s, holding whatever they started or
+#: wrote. There is exactly one.
+SLOT_USER = "user"
+#: Prefix of a *query* slot's key. Query slots hold nothing but a warm image — a
+#: read-only introspection command is run in them and nothing is left behind — which is
+#: why they get their own, far longer, lifetimes below: reaping one costs only latency,
+#: while reaping the user's costs them their session. Keeping the two policies apart is
+#: the whole reason slots are named rather than counted.
+SLOT_QUERY_PREFIX = "q"
+
+#: Query slots: long enough to cover an authoring loop (a `.vast` edited, validated,
+#: edited again), because the alternative is paying a 7–15 s cold container each time.
+QUERY_IDLE_REAP_S = 600
+#: And a ceiling that does NOT force a cold restart mid-session. :data:`IDLE_WAIT_CAP_S`
+#: exists to stop a caller keeping *their* container alive forever by poking it; a query
+#: container has no such state to keep alive, so the ceiling is only a backstop.
+QUERY_IDLE_WAIT_CAP_S = 3600
+#: How many query containers may be held at once, LRU-evicted beyond it. A cap and not an
+#: unbounded map: the introspection tools span several images *within one campaign* (the
+#: simulator's, the scenario's), so one slot would thrash — but an agent iterating over
+#: workspaces would otherwise accumulate a container per project, which is a leak wearing
+#: a reaper.
+QUERY_POOL_MAX = 3
 #: Added to a workload's own limit before the hard stop, so the workload hits its
 #: timeout first and reports it, rather than vanishing with the container.
 DEADLINE_GRACE_S = 30
+
+def container_name(slot: str = SLOT_USER) -> str:
+    """The container/pod name backing *slot*.
+
+    The user slot keeps the bare :data:`CONTAINER_NAME` unchanged, so a stray left by an
+    older service — which knew only that one name — is still found and reaped by this one.
+    """
+    return CONTAINER_NAME if slot == SLOT_USER else f"{CONTAINER_NAME}-{slot}"
+
+
+def query_slot(identity: tuple) -> str:
+    """A stable, name-safe slot key for *identity*.
+
+    Hashed rather than spelled out because the identity carries a workspace id and a
+    config path, and a container name has a length limit and a character set that a path
+    does not respect.
+    """
+    digest = hashlib.sha1(repr(identity).encode("utf-8")).hexdigest()[:10]
+    return f"{SLOT_QUERY_PREFIX}{digest}"
+
 
 LIMIT_SOURCE_COMMAND = "command"
 LIMIT_SOURCE_CONFIG = "execution.timeout"
@@ -75,16 +129,24 @@ LIMIT_SOURCE_DEFAULT = "default"
 
 
 class ExecLane(Protocol):
-    """The lane-specific half: one container, started and exec'd into.
+    """The lane-specific half: a *named* held container, started and exec'd into.
 
     Implemented by ``LocalTransport`` (docker) and ``ClusterService`` (an aux pod).
+
+    Every held operation takes a *slot*, and the container it addresses is
+    :func:`container_name` of it. The slot was a constant until the read-only
+    introspection tools needed a container of their own: they ran one-shot, and a one-shot
+    stops whatever is held, so every ``describe_scenario`` destroyed the container its
+    caller was debugging in. Lifting the constant into a parameter is what lets those tools
+    hold their own without touching the user's.
     """
 
     def run_once(self, spec: "ExecSpec", limit_s: int) -> tuple[int, str, str, bool]:
         """Run the command in a throwaway container. Returns exit/stdout/stderr/timed_out."""
 
-    def start_held(self, spec: "ExecSpec", deadline_s: int) -> None:
-        """Start the held container, idle, so commands can be exec'd into it."""
+    def start_held(self, spec: "ExecSpec", deadline_s: int,
+                   slot: str = SLOT_USER) -> None:
+        """Start *slot*'s container, idle, so commands can be exec'd into it."""
 
     def exec_in(self, target, argv: list, limit_s: int,
                 env: dict | None = None) -> tuple[int, str, str, bool]:
@@ -104,15 +166,25 @@ class ExecLane(Protocol):
         pod bakes its environment at creation and ignores it here.
         """
 
-    def exec_in_held(self, spec: "ExecSpec", limit_s: int,
-                     detach: bool) -> tuple[int, str, str, bool]:
-        """Run the command inside the held container -- :meth:`exec_in` at its own target."""
+    def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,
+                     slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
+        """Run the command inside *slot*'s container -- :meth:`exec_in` at its own target."""
 
-    def stop_held(self) -> bool:
-        """Stop the held container. True if one was there."""
+    def stop_held(self, slot: str = SLOT_USER) -> bool:
+        """Stop *slot*'s container. True if one was there."""
 
-    def held_workload_running(self) -> bool:
-        """True if anything besides the container's idle PID 1 is still running."""
+    def held_workload_running(self, slot: str = SLOT_USER) -> bool:
+        """True if anything besides *slot*'s idle PID 1 is still running."""
+
+    def sweep_held(self) -> list:
+        """Remove **every** exec container this lane owns; return what went.
+
+        Not ``stop_held`` per slot: after a restart the query slots' keys are gone (they
+        are derived from an identity nothing persists), so a sweep has to find containers
+        by something the name or the labels carry rather than by asking the manager which
+        ones it remembers. Without it a query container would outlive the service that
+        made it, holding memory with nothing able to name it.
+        """
 
 
 class ExecSpec:
@@ -430,30 +502,45 @@ def vast_in_dir(project_dir: str, config_path: str = "") -> str:
 
 
 class ContainerExecManager:
-    """Owns the single container's lifetime; delegates container work to an :class:`ExecLane`.
+    """Owns each slot's container lifetime; delegates container work to an :class:`ExecLane`.
 
-    Threading: one lock guards the held-container record. The reaper runs on its own
-    thread and takes the same lock, so a reap cannot race a call that is about to reuse
-    the container.
+    Two kinds of slot, with deliberately different lifetimes:
+
+    * :data:`SLOT_USER` — the caller's own container, at most one, holding whatever they
+      started or wrote. Short windows (:data:`IDLE_REAP_S`, :data:`IDLE_WAIT_CAP_S`),
+      because holding somebody's state for a long time is a liability.
+    * query slots — a bounded pool (:data:`QUERY_POOL_MAX`), keyed by the same identity
+      tuple the user slot compares, for the read-only introspection commands. They hold
+      nothing but a warm image, so reaping one costs only latency and the windows are far
+      longer (:data:`QUERY_IDLE_REAP_S`, :data:`QUERY_IDLE_WAIT_CAP_S`).
+
+    The split exists because a one-shot exec stops whatever is held. While there was one
+    slot, every read-only ``describe_scenario`` destroyed the container its caller was
+    debugging in — and the files they had written in it.
+
+    Threading: one lock guards the whole slot map. The reaper runs on its own thread and
+    takes the same lock, so a reap cannot race a call that is about to reuse a container.
     """
 
     def __init__(self, lane: ExecLane, *, poll_s: float = 5.0):
         self._lane = lane
         self._poll_s = poll_s
         self._lock = threading.RLock()
-        self._held: Optional[dict] = None
+        #: slot -> record. Insertion order is the LRU order for query eviction, kept by
+        #: re-inserting a record on every touch.
+        self._held: dict[str, dict] = {}
         self._reaper: Optional[threading.Thread] = None
         self._stop_reaper = threading.Event()
 
     # -- state reported to callers ---------------------------------------
 
-    def state(self) -> Optional[ExecContainerState]:
-        """The held container as a caller sees it, or ``None`` when nothing is held."""
+    def state(self, slot: str = SLOT_USER) -> Optional[ExecContainerState]:
+        """*slot*'s container as a caller sees it, or ``None`` when nothing is held."""
         with self._lock:
-            if not self._held:
+            held = self._held.get(slot)
+            if not held:
                 return None
-            held = self._held
-            running = self._workload_running_locked()
+            running = self._workload_running_locked(slot)
             idle_in = None
             if not running:
                 idle_in = max(0, int(held["idle_deadline"] - time.monotonic()))
@@ -462,67 +549,136 @@ class ContainerExecManager:
                 config=held["config"], idle_expires_in_s=idle_in,
                 deadline_in_s=max(0, int(held["deadline"] - time.monotonic())))
 
+    def states(self) -> dict:
+        """Every held container, by slot — what a lane's occupancy actually is.
+
+        ``get_resource_usage`` reports this so a caller that finds the lane full can
+        attribute the shortfall. Reporting only the user slot would show a lane holding
+        containers as holding none.
+        """
+        with self._lock:
+            slots = list(self._held)
+        found = {}
+        for slot in slots:
+            state = self.state(slot)
+            if state is not None:
+                found[slot] = state
+        return found
+
     # -- the two operations ----------------------------------------------
 
     def run(self, spec: ExecSpec, limit_s: int, *, keep_alive: bool,
-            identity: tuple) -> tuple[int, str, str, bool]:
+            identity: tuple, query: bool = False) -> tuple[int, str, str, bool]:
         """Run *spec*, holding the container afterwards when asked.
 
         Takes ownership of *spec*'s staging directory: a held container bind-mounts it
         as ``/config``, so it must outlive the call that created it and be removed when
         the container is — not when the call returns.
+
+        *query* routes the call to the query pool instead of the user's slot: the command
+        is a read-only introspection of the image, it is always held (a one-shot would
+        throw away the only thing worth keeping), and it never touches
+        :data:`SLOT_USER`'s container.
         """
+        if query:
+            slot = query_slot(identity)
+            self._evict_query_over_cap(keep=slot)
+            reused = self._ensure_held(spec, limit_s, identity, slot)
+            with self._lock:
+                if slot in self._held:
+                    self._held[slot]["reused"] = reused
+            result = self._lane.exec_in_held(spec, limit_s, detach=False, slot=slot)
+            self._touch(slot)
+            return result
+
         if not keep_alive:
             # One-shot means a clean container, so a previously held one goes first —
             # otherwise "one-shot" would quietly inherit whatever state was left there.
+            # Scoped to this slot: it must not reach into the query pool, whose whole
+            # purpose is to survive calls like this one.
             self.stop()
             try:
                 return self._lane.run_once(spec, limit_s)
             finally:
                 spec.close()
 
-        reused = self._ensure_held(spec, limit_s, identity)
+        reused = self._ensure_held(spec, limit_s, identity, SLOT_USER)
         with self._lock:
-            if self._held:
-                self._held["reused"] = reused
+            if SLOT_USER in self._held:
+                self._held[SLOT_USER]["reused"] = reused
         # A scenario is detached so this call can return and the next one inspect it;
         # a command runs in the foreground and its output is the answer.
-        result = self._lane.exec_in_held(spec, limit_s, detach=spec.runs_scenario)
-        self._touch()
+        result = self._lane.exec_in_held(spec, limit_s, detach=spec.runs_scenario,
+                                         slot=SLOT_USER)
+        self._touch(SLOT_USER)
         return result
 
-    def stop(self) -> ExecStopResult:
-        """Stop the held container. Nothing held is an empty result, not a failure.
+    def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
+        """Stop *slot*'s container. Nothing held is an empty result, not a failure.
 
         The lane's answer counts even when this manager has no record: a container can
         outlive the record (a service restart), and reaping that stray is the point of
         giving it a fixed name.
         """
         with self._lock:
-            had_record = self._held is not None
-        self._stop_reaper.set()
+            had_record = slot in self._held
         # Container first, then its /config: unmounting by removing the host directory
         # under a live container would be the wrong order.
-        stopped = bool(self._lane.stop_held()) or had_record
-        self._release_held_spec()
+        stopped = bool(self._lane.stop_held(slot)) or had_record
+        self._release_held_spec(slot)
         with self._lock:
-            self._held = None
+            self._held.pop(slot, None)
+            if not self._held:
+                self._stop_reaper.set()
+        return ExecStopResult(stopped=stopped,
+                              target=container_name(slot) if stopped else None)
+
+    def stop_all(self) -> ExecStopResult:
+        """Stop every slot — service shutdown, and the stray sweep at startup.
+
+        Separate from :meth:`stop` because ``stop_container`` means *the caller's*
+        container: reaping their query containers alongside it would silently make their
+        next introspection call pay a cold start for no reason they asked for.
+        """
+        with self._lock:
+            slots = list(self._held) or [SLOT_USER]
+        stopped = False
+        for slot in slots:
+            stopped = bool(self.stop(slot).stopped) or stopped
         return ExecStopResult(stopped=stopped,
                               target=CONTAINER_NAME if stopped else None)
 
-    def _release_held_spec(self) -> None:
-        """Drop the staging tree the held container had mounted."""
+    def _release_held_spec(self, slot: str) -> None:
+        """Drop the staging tree *slot*'s container had mounted."""
         with self._lock:
-            spec = (self._held or {}).get("spec")
+            spec = (self._held.get(slot) or {}).get("spec")
         if spec is not None:
             spec.close()
 
+    def _evict_query_over_cap(self, *, keep: str) -> None:
+        """Make room for one more query container, LRU first.
+
+        Bounded because the introspection tools span several images inside one campaign
+        and an agent may walk several workspaces: without a cap this map grows a container
+        per project and the reaper only ever trails it.
+        """
+        while True:
+            with self._lock:
+                queries = [s for s in self._held if s not in (SLOT_USER, keep)]
+                if len(queries) + (0 if keep in self._held else 1) <= QUERY_POOL_MAX:
+                    return
+                victim = queries[0]  # insertion order == least recently touched
+            logger.info("evicting query container %s (pool cap %d)",
+                        container_name(victim), QUERY_POOL_MAX)
+            self.stop(victim)
+
     # -- internals -------------------------------------------------------
 
-    def _ensure_held(self, spec: ExecSpec, limit_s: int, identity: tuple) -> bool:
-        """Start, reuse, or replace the held container. True if reused."""
+    def _ensure_held(self, spec: ExecSpec, limit_s: int, identity: tuple,
+                     slot: str) -> bool:
+        """Start, reuse, or replace *slot*'s container. True if reused."""
         with self._lock:
-            held = self._held
+            held = self._held.get(slot)
             if held and held["identity"] == identity:
                 # The live container already has the right /config mounted; this call's
                 # freshly staged copy is redundant.
@@ -531,23 +687,26 @@ class ContainerExecManager:
             if held:
                 # Replacing would silently kill whatever is running in there — a
                 # destructive act inferred from a changed argument rather than asked
-                # for. Refuse and name the way through.
-                if self._workload_running_locked():
+                # for. Refuse and name the way through. Unreachable for a query slot,
+                # whose key IS the identity, and deliberately kept for the user's.
+                if self._workload_running_locked(slot):
                     raise ValueError(
                         "a container is held for a different source and something is "
                         "still running in it; call stop_container first if you mean to "
                         "discard it")
         # Replace an idle container: nothing to lose.
-        self._release_held_spec()
-        self._lane.stop_held()
+        self._release_held_spec(slot)
+        self._lane.stop_held(slot)
         deadline = deadline_for(limit_s)
-        self._lane.start_held(spec, deadline)
+        self._lane.start_held(spec, deadline, slot)
         with self._lock:
             now = time.monotonic()
-            self._held = {
+            self._held.pop(slot, None)      # re-insert, so order stays LRU
+            self._held[slot] = {
                 "identity": identity, "image": spec.image_identity,
-                "config": spec.config_name,
-                "reused": False, "started": now, "idle_deadline": now + IDLE_REAP_S,
+                "config": spec.config_name, "slot": slot,
+                "reused": False, "started": now,
+                "idle_deadline": now + self._idle_reap_s(slot),
                 "deadline": now + deadline,
                 # Kept so the mounted /config outlives this call and is removed with
                 # the container.
@@ -556,18 +715,29 @@ class ContainerExecManager:
         self._start_reaper()
         return False
 
-    def _touch(self) -> None:
-        with self._lock:
-            if self._held:
-                self._held["idle_deadline"] = min(
-                    time.monotonic() + IDLE_REAP_S,
-                    self._held["started"] + IDLE_WAIT_CAP_S)
+    @staticmethod
+    def _idle_reap_s(slot: str) -> int:
+        return IDLE_REAP_S if slot == SLOT_USER else QUERY_IDLE_REAP_S
 
-    def _workload_running_locked(self) -> bool:
+    @staticmethod
+    def _idle_cap_s(slot: str) -> int:
+        return IDLE_WAIT_CAP_S if slot == SLOT_USER else QUERY_IDLE_WAIT_CAP_S
+
+    def _touch(self, slot: str) -> None:
+        with self._lock:
+            held = self._held.pop(slot, None)
+            if held is None:
+                return
+            held["idle_deadline"] = min(
+                time.monotonic() + self._idle_reap_s(slot),
+                held["started"] + self._idle_cap_s(slot))
+            self._held[slot] = held     # back to the most-recently-used end
+
+    def _workload_running_locked(self, slot: str = SLOT_USER) -> bool:
         try:
-            return self._lane.held_workload_running()
+            return self._lane.held_workload_running(slot)
         except Exception as exc:            # a probe failure must not reap a live run
-            logger.debug("could not probe %s workload: %s", CONTAINER_NAME, exc)
+            logger.debug("could not probe %s workload: %s", container_name(slot), exc)
             return True
 
     def _start_reaper(self) -> None:
@@ -581,19 +751,25 @@ class ContainerExecManager:
     def _reap_loop(self) -> None:
         while not self._stop_reaper.wait(self._poll_s):
             with self._lock:
-                held = self._held
-                if not held:
+                if not self._held:
                     return
                 now = time.monotonic()
-                if now >= held["deadline"]:
-                    reason = "hard deadline reached"
-                elif not self._workload_running_locked() and now >= held["idle_deadline"]:
-                    reason = "idle"
-                else:
-                    continue
-            logger.info("reaping exec container %s (%s)", CONTAINER_NAME, reason)
-            self.stop()
-            return
+                due = []
+                for slot, held in self._held.items():
+                    if now >= held["deadline"]:
+                        due.append((slot, "hard deadline reached"))
+                    elif (not self._workload_running_locked(slot)
+                            and now >= held["idle_deadline"]):
+                        due.append((slot, "idle"))
+            # Outside the lock: stop() takes it, and a lane teardown is slow enough that
+            # holding it across one would stall every call for the duration.
+            for slot, reason in due:
+                logger.info("reaping exec container %s (%s)",
+                            container_name(slot), reason)
+                self.stop(slot)
+            with self._lock:
+                if not self._held:
+                    return
 
 
 def result_from(exec_out: tuple[int, str, str, bool], *, spec: ExecSpec,
@@ -611,6 +787,8 @@ def result_from(exec_out: tuple[int, str, str, bool], *, spec: ExecSpec,
 __all__ = [
     "CONTAINER_NAME", "POD_LABEL", "OUTPUT_DIR", "COMMAND_LIMIT_S",
     "DEFAULT_SCENARIO_LIMIT_S", "IDLE_REAP_S", "IDLE_WAIT_CAP_S",
+    "SLOT_USER", "SLOT_QUERY_PREFIX", "QUERY_IDLE_REAP_S", "QUERY_IDLE_WAIT_CAP_S",
+    "QUERY_POOL_MAX", "container_name", "query_slot",
     "LIMIT_SOURCE_COMMAND", "LIMIT_SOURCE_CONFIG", "LIMIT_SOURCE_DEFAULT",
     "ExecLane", "ExecSpec", "ContainerExecManager",
     "validate", "derive_limit", "deadline_for", "build_env", "stage", "result_from",

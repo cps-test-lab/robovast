@@ -39,6 +39,11 @@ def _transport() -> LocalTransport:
     lt = LocalTransport.__new__(LocalTransport)
     lt._campaigns = {}
     lt._lock = threading.Lock()
+    # __init__ is bypassed, so every attribute shutdown() touches has to be seeded here.
+    # Shutdown reaps held exec containers before it looks at campaigns: they are what
+    # nothing else reaps, and a service holding one with no campaign running used to
+    # return with it still up.
+    lt._exec_mgr = None
     return lt
 
 

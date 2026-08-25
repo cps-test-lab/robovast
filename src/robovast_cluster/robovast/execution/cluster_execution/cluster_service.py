@@ -692,28 +692,6 @@ class ClusterService(LocalTransport):
                 set_container_runner_factory(session.runner_factory())
             yield
 
-    def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False, backend: str = ""):
-        """Refused on this lane, with the reason — the query needs a container.
-
-        Only the simulator can describe a world, so this runs one; and in-cluster a container
-        runner exists only *inside* a campaign's composition, where a per-campaign aux pod
-        installs one (see :meth:`_composition_container_runner`). Outside that there is none, and
-        the inherited local implementation would quietly ``docker run`` on whatever host this
-        service process sits on — a different image cache, or no Docker at all in a controller
-        pod, with nothing in the reply to say the answer did not come from the cluster.
-
-        Ask the local lane, which is where an authoring question belongs anyway. Answering it
-        in-cluster needs a standalone aux pod for a one-shot query, which is the same follow-up
-        the isolated-composition path is waiting on.
-        """
-        del workspace_id, path, targets, entities, backend
-        raise ValueError(
-            "the cluster lane cannot describe a world: the query runs a container, and "
-            "in-cluster a container runner exists only inside a campaign's composition. Ask "
-            "the local lane (vast workspace world --backend local), or inspect the image with "
-            "exec_in_container.")
-
     def _aux_store_kwargs(self) -> dict:
         """Storage wiring for an aux pod's workspace mirror.
 
@@ -909,6 +887,46 @@ class ClusterService(LocalTransport):
         with self._index_lock:
             self._index_cache = None
 
+    def _store_phase_bytes(self, campaign_id: str):
+        """A ``get_bytes`` over the campaign's durable ``_execution/`` phase files.
+
+        Resolved **lazily, on the first miss**: this sits behind the log SSE stream,
+        which re-polls while the user watches, so a campaign whose phase files are all
+        on pod scratch must not pay a store round-trip per poll. A store that cannot be
+        resolved reads as "no durable copy" (``None`` for every file) rather than an
+        error — the log panel showing what it can beats it showing a stack trace.
+        """
+        from robovast.common.campaign_logs import EXECUTION_DIR
+        from robovast.execution.cluster_execution import in_pod_storage
+
+        #: Empty until first use, then holds ``(storage, bucket, prefix)`` or ``None``.
+        resolved: list = []
+
+        def _read(filename: str):
+            if not resolved:
+                try:
+                    cfg = self._cluster_config()
+                    bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
+                    resolved.append((
+                        in_pod_storage.storage_client_for(cfg, interactive=True),
+                        bucket, prefix))
+                except Exception as e:  # noqa: BLE001 - best-effort; empty if unavailable
+                    logger.debug("could not resolve object store for %s: %s", campaign_id, e)
+                    resolved.append(None)
+            if resolved[0] is None:
+                return None
+            storage, bucket, prefix = resolved[0]
+            try:
+                raw = storage.read_object(bucket, f"{prefix}{EXECUTION_DIR}/{filename}")
+            except Exception as e:  # noqa: BLE001 - a missing phase file is normal
+                logger.debug("could not read %s for %s: %s", filename, campaign_id, e)
+                return None
+            if not raw:
+                return None
+            return raw if isinstance(raw, bytes) else raw.encode("utf-8", "replace")
+
+        return _read
+
     def get_campaign_logs(self, campaign_id: str, offset: int = 0):
         """Serve the unified infrastructure log — live pod scratch, then object store.
 
@@ -919,38 +937,31 @@ class ClusterService(LocalTransport):
         scratch (the same one the thread-isolated handlers write), read straight
         from *offset*. Once the campaign is no longer tracked here, the durable copy
         of each phase file in the object store is read.
+
+        The two are **layered, not either/or**, because not every phase writes to the
+        tracked scratch root. Cluster postprocessing runs against its own fetched
+        campaign root and publishes ``postprocessing.log`` to the object store, so a
+        scratch-only read served every tracked cluster campaign a log with no
+        POSTPROCESSING section at all — pass or fail — while the bytes sat in the store
+        the whole time. That is not detectable as a bug from the reader's side: a
+        missing phase file is also how "this phase has not run" looks.
         """
-        from robovast.common.campaign_logs import EXECUTION_DIR, assemble_log, assemble_log_from_dir
+        from robovast.common.campaign_logs import (assemble_log, disk_get_bytes,
+                                                   layered_get_bytes)
         with self._lock:
             entry = self._campaigns.get(campaign_id)
+        store = self._store_phase_bytes(campaign_id)
         if entry is not None:
+            # Scratch first: a phase file this process is still appending to is the live
+            # copy, and the durable one lags it. See ``layered_get_bytes`` on why the
+            # fallback triggers on absence only.
             campaign_dir = Path(entry.results_dir) / campaign_id
-            text, next_offset, eof = assemble_log_from_dir(
-                campaign_dir, offset, eof=self._is_done(entry))
-            return LogChunk(text=text, next_offset=next_offset, eof=eof)
-        # Past / reaped campaign: each phase file's durable copy is in the object store.
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            # Interactive: this tail sits behind the log SSE stream, which re-polls while
-            # the user watches. Returning an empty chunk beats blocking the stream.
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-        except Exception as e:  # noqa: BLE001 - best-effort; empty if unavailable
-            logger.debug("could not resolve object store for %s: %s", campaign_id, e)
-            return LogChunk(text="", next_offset=offset, eof=True)
-
-        def _object_bytes(filename: str):
-            try:
-                raw = storage.read_object(bucket, f"{prefix}{EXECUTION_DIR}/{filename}")
-            except Exception as e:  # noqa: BLE001 - a missing phase file is normal
-                logger.debug("could not read %s for %s: %s", filename, campaign_id, e)
-                return None
-            if not raw:
-                return None
-            return raw if isinstance(raw, bytes) else raw.encode("utf-8", "replace")
-
-        text, next_offset, eof = assemble_log(_object_bytes, offset, eof=True)
+            get_bytes = layered_get_bytes(disk_get_bytes(campaign_dir), store)
+            eof = self._is_done(entry)
+        else:  # past / reaped campaign: the store holds every phase file's durable copy
+            get_bytes = store
+            eof = True
+        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof)
         return LogChunk(text=text, next_offset=next_offset, eof=eof)
 
     # -- jobs (live) --------------------------------------------------------
@@ -2160,11 +2171,19 @@ class ClusterService(LocalTransport):
                             s3_access_key=access_key, s3_secret_key=secret_key)
 
     def _reap_stray_exec_container(self) -> None:
-        """Delete an exec pod and its staged tree, left by a previous service process."""
+        """Delete every exec pod and staged tree left by a previous service process.
+
+        A sweep rather than ``stop_held()`` on the one fixed name: a query pod's name
+        carries a hash of the identity it was started for, and nothing persists those
+        across a restart, so the label is the only handle left on it.
+        """
         try:
-            self._exec_lane().stop_held()
+            deleted = self._exec_lane().sweep_held()
+            if deleted:
+                logger.info("removed %d stray exec pod(s) from a previous run: %s",
+                            len(deleted), ", ".join(deleted))
         except Exception as e:  # noqa: BLE001 - a missing cluster must not break startup
-            logger.debug("could not check for a stray exec pod: %s", e)
+            logger.debug("could not check for stray exec pods: %s", e)
 
     # -- shutdown -----------------------------------------------------------
 

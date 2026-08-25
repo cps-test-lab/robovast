@@ -1496,6 +1496,11 @@ export interface components {
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
             /**
+             * Check World
+             * @default true
+             */
+            check_world: boolean;
+            /**
              * Path
              * @default
              */
@@ -2084,6 +2089,11 @@ export interface components {
              * @default false
              */
             keep_alive: boolean;
+            /**
+             * Query
+             * @default false
+             */
+            query: boolean;
             /**
              * Show Gui
              * @default false
@@ -2775,6 +2785,10 @@ export interface components {
             memory_used_bytes: number;
             /** Parallel Runs */
             parallel_runs: boolean;
+            /** Query Containers */
+            query_containers: {
+                [key: string]: components["schemas"]["ExecContainerState"];
+            };
             store: components["schemas"]["DiskSpace"] | null;
             /** Store Node */
             store_node: string | null;
@@ -3588,6 +3602,10 @@ export interface components {
              * @default
              */
             backend: string;
+            /** Components */
+            components: {
+                [key: string]: unknown;
+            }[];
             /** Dropped Transport */
             dropped_transport: string[];
             /**
@@ -3617,10 +3635,6 @@ export interface components {
              * @default false
              */
             packaged: boolean;
-            /** Plugins */
-            plugins: {
-                [key: string]: unknown;
-            }[];
             /**
              * World
              * @default

@@ -499,7 +499,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
                    f"{' (packaged)' if described.packaged else ''}")
         click.echo(f"asked:   {described.backend} in {described.image} "
                    f"({described.duration_s:.1f}s)")
-        for plugin in described.plugins:
+        for plugin in described.components:
             click.echo(f"  plugin {plugin.get('key')}  ({len(plugin.get('paths') or [])} paths)")
         if described.entities is not None:
             click.echo(f"  entities: {', '.join(described.entities) or '(none)'}")

@@ -648,9 +648,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.post(Routes.workspace_validate("{workspace_id}"), response_model=ValidationReport,
               tags=["workspaces"])
     def validate_project(
-        workspace_id: str, path: str = Body("", embed=True)
+        workspace_id: str, path: str = Body("", embed=True),
+        check_world: bool = Body(True, embed=True),
     ) -> ValidationReport:
-        return _guard(lambda: impl.validate_project(workspace_id, path))
+        return _guard(lambda: impl.validate_project(workspace_id, path, check_world))
 
     @app.post(Routes.workspace_preview("{workspace_id}"), response_model=PreviewResponse,
               tags=["workspaces"])
