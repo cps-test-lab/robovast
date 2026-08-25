@@ -1395,6 +1395,11 @@ class PreviewResponse(BaseModel):
     total_trials: int = 0
     configurations: list[PreviewConfiguration] = Field(default_factory=list)
     truncated: bool = False
+    #: Auxiliary containers this expansion actually ran — a variation's helper image, by
+    #: container name. Composing a sweep is not always free: a variation may have to run a
+    #: generator to produce what it varies, and then the answer cost a container. Empty is
+    #: the common case, and means nothing but this process expanded the file.
+    aux_containers: list[str] = Field(default_factory=list)
     #: The Config tab's third column, from ``visualization.config.panels`` of the same file —
     #: flattened, with a Module-Federation ``remote`` attached to a package-provided panel.
     config_panels: list[dict] = Field(default_factory=list)

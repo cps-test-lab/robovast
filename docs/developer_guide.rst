@@ -845,7 +845,8 @@ artifact.
             """Optional: an aux image, when the tool is not installed alongside RoboVAST.
 
             Same contract as a variation's — ephemeral ``docker run`` locally, a
-            container in the campaign's aux pod in-cluster. Reached via
+            container in an aux pod in-cluster (the campaign's during a run; one held by
+            the container-exec manager when a preview composes). Reached via
             ``self.container_runner``,
             whose ``workspace`` is visible at the same path on both sides (use
             ``stage_for_container`` / ``collect_from_container``).
@@ -2327,7 +2328,7 @@ types are inferred per column and a JSONL file whose records have differing keys
 column for each (the column list is the union over rows, not the first row's keys).
 
 The one such producer today is ``behaviors.jsonl``, written by ``scenario_execution``'s
-``--bt-log``, on for every run. It replaced a rosbag route — recording
+``--bt-log`` (``execution.bt_log`` in the ``.vast``). It replaced a rosbag route — recording
 ``/scenario_execution/snapshots`` and converting it with a ``bt_to_csv`` handler — which could
 only work for ROS runs, and so left ``mode: base`` campaigns with no behaviour-tree data at all.
 Since the runner writes the file itself, both kinds of run now produce the ``behaviors`` table by

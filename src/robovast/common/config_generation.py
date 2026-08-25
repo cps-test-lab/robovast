@@ -158,15 +158,16 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
         who = purpose or "a variation"
         raise AuxContainerUnavailable(
             f"{who} requires the auxiliary container '{spec.container_name()}' "
-            f"(image {spec.image}) while it composes. No execution-backend "
-            "container runner is active here, and there is no local 'docker' to fall back "
-            "on. A runner exists only inside a campaign's composition -- so composing "
-            "outside one (validating, or previewing configurations) cannot run this "
-            "variation's helper image.",
-            next_step=("start_campaign(config_filter=<this config>, runs=1) is the only path "
-                       "that wires a backend runner -- it costs one real trial and occupies "
-                       "the lane. Skip it if you only needed the sweep's shape (config count, "
-                       "cell names, parameters): composition already reported that above."))
+            f"(image {spec.image}) while it composes. Nothing here can provide one: no "
+            "execution-backend container runner was installed for this composition, and "
+            "there is no local 'docker' to fall back on. That is a property of where this "
+            "ran, not of the .vast -- the same file composes wherever a runner is arranged, "
+            "which a campaign and a preview through the service both do.",
+            next_step=("compose it where a runner exists: preview_configurations or "
+                       "start_campaign against a service, rather than in a process that has "
+                       "neither a backend nor docker. If this IS such a service, it reached "
+                       "this point without arranging one -- a bug in the caller, not a defect "
+                       "in the file."))
     from dataclasses import replace  # pylint: disable=import-outside-toplevel
 
     from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
@@ -1602,6 +1603,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     campaign_input_files = []
     campaign_transient_files = []
     config_transient_files = []
+    #: Auxiliary containers a variation needed while composing, by container name.
+    aux_containers = set()
 
     if output_dir is None:
         temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
@@ -1661,6 +1664,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             container_spec = variation_class.get_required_container(variation_parameters)
             container_runner = _make_container_runner(
                 container_spec, purpose=f"variation {variation_class.__name__}")
+            if container_spec is not None:
+                # Recorded where a runner was actually built, so what is reported is what
+                # ran rather than what a caller predicted it would need. A composition that
+                # cost a helper image should be able to say so.
+                aux_containers.add(container_spec.container_name())
             try:
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
@@ -1814,6 +1822,10 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         "_generated": generated_records,
         "_input_files": campaign_input_files,
         "_transient_files": campaign_transient_files,
+        # Not underscore-prefixed, so it crosses the isolated-compose boundary and the
+        # on-disk cache untouched -- and a cache hit reports it just as truly, since which
+        # helper images a sweep needs is a property of the .vast and not of this run.
+        "aux_containers": sorted(aux_containers),
         "_output_dir": os.path.abspath(output_dir),
         "execution": execution_params,
         "created_at": datetime.now().isoformat()

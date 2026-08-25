@@ -1923,6 +1923,13 @@
       "PreviewResponse": {
         "description": "Result of :meth:`RobovastInterface.preview_configurations`.",
         "properties": {
+          "aux_containers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aux Containers",
+            "type": "array"
+          },
           "config_panels": {
             "items": {
               "additionalProperties": true,
@@ -1960,6 +1967,7 @@
           }
         },
         "required": [
+          "aux_containers",
           "config_panels",
           "configs",
           "configurations",

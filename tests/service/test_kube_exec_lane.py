@@ -358,3 +358,91 @@ def test_the_cluster_service_gives_its_exec_lane_the_pull_secret():
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     source = inspect.getsource(ClusterService._exec_lane)
     assert "pull_secret=self._registry_pull_secret()" in source
+
+
+# -- holding a variation's auxiliary container --------------------------------
+
+
+def _aux_held_spec(tmp_path, image="ghcr.io/example/builder"):
+    from robovast.common.variation.container_runner import ContainerSpec
+    return ce.ExecSpec(image=image, command="", config_dir=str(tmp_path),
+                       env={}, config_name="preview-abc",
+                       aux_spec=ContainerSpec(image=image, command_prefix=["build"]))
+
+
+def test_a_held_aux_pod_is_the_one_an_aux_runner_knows_how_to_use(tmp_path):
+    """Built by the campaign path's builder, not this lane's.
+
+    The runner that will compose against it stages inputs into ``AUX_MOUNTABLE_PATHS`` and
+    mirrors its workspace with ``mc``. A pod from ``_pod_manifest`` has neither, so it would
+    come up fine and then fail at the first ``expose()`` — which is why the two manifests
+    are one builder and not two.
+    """
+    from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
+    lane = _lane()
+    manifest = lane._held_manifest(_aux_held_spec(tmp_path), 300, "", "qabc")
+
+    spec = manifest["spec"]
+    mounted = {m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert set(AUX_MOUNTABLE_PATHS) <= mounted
+    assert any(c["name"] == "mc-tools" for c in spec["initContainers"])
+    # Idling on the aux spec's keep-alive, not running an entrypoint: the commands come
+    # later, from the plugin.
+    assert spec["containers"][0]["command"] == ["sleep", "infinity"]
+
+
+def test_a_held_aux_pod_is_addressed_and_swept_like_every_other_held_one(tmp_path):
+    """Its name, its container's name and its label are this lane's, whatever is inside it.
+
+    Otherwise the probes, the execs and the post-restart stray sweep would each need to know
+    which kind of pod they were looking at.
+    """
+    from robovast.execution.cluster_execution.kube_exec_lane import HELD_CONTAINER, _pod_name
+    lane = _lane()
+    manifest = lane._held_manifest(_aux_held_spec(tmp_path), 300, "", "qabc")
+
+    assert manifest["metadata"]["name"] == _pod_name("qabc")
+    assert [c["name"] for c in manifest["spec"]["containers"]] == [HELD_CONTAINER]
+    key, _, value = ce.POD_LABEL.partition("=")
+    assert manifest["metadata"]["labels"][key] == value
+
+
+def test_holding_an_aux_container_stages_nothing(tmp_path, monkeypatch):
+    """Its runner mirrors its own workspace around each command, so there is no /config
+    tree to put there — and staging one would upload a directory nothing reads."""
+    store = _FakeStore()
+    lane = _lane(store)
+    monkeypatch.setattr(lane, "stop_held", lambda slot=ce.SLOT_USER: False)
+    monkeypatch.setattr(lane, "_client", lambda: _CreateRecorder())
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.wait_pod_ready",
+        lambda *a, **k: None)
+
+    lane.start_held(_aux_held_spec(tmp_path), 300, "qabc")
+    assert store.uploads == []
+
+
+class _CreateRecorder:
+    def __init__(self):
+        self.created = []
+
+    def create_namespaced_pod(self, namespace, manifest):
+        self.created.append((namespace, manifest))
+
+
+def test_a_held_exec_addresses_the_slots_pod_and_its_container(tmp_path, monkeypatch):
+    """Pins the ``(pod, container)`` pair every held exec goes to.
+
+    Nothing covered this, and a stale name in it survived a full green suite: the pair is
+    built once per call and only a *live* exec would have raised. It is the address every
+    other operation on a held container agrees on, so it is worth one cheap assertion.
+    """
+    from robovast.execution.cluster_execution.kube_exec_lane import HELD_CONTAINER, _pod_name
+    lane = _lane()
+    seen = {}
+    monkeypatch.setattr(lane, "exec_in",
+                        lambda target, argv, limit_s: seen.update(target=target) or
+                        (0, "", "", False))
+
+    lane.exec_in_held(_spec(tmp_path), 30, detach=False, slot="qabc")
+    assert seen["target"] == (_pod_name("qabc"), HELD_CONTAINER)

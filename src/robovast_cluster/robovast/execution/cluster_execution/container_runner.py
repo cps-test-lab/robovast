@@ -87,6 +87,13 @@ DEFAULT_AUX_DEADLINE_SECONDS = 12 * 60 * 60
 #: composition with no log line is indistinguishable from one that is merely slow.
 AUX_EXEC_LIMIT_S = 2 * 60 * 60
 
+#: The limit a *held* aux container is started with, which becomes its pod's hard deadline.
+#: :data:`AUX_EXEC_LIMIT_S`, because the thing that has to fit inside it is one command from
+#: a variation and that is already what caps one — a shorter deadline here would kill a
+#: composition the runner was still willing to wait for. Idleness, not this, is what
+#: normally ends a held pod; this is the backstop for a service that dies holding one.
+AUX_HOLD_LIMIT_S = AUX_EXEC_LIMIT_S
+
 #: Label selector identifying every aux pod (one per campaign that needs one).
 AUX_LABEL = "app=robovast-aux"
 
@@ -322,12 +329,25 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
 
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
-                           pull_secret: str = "", s3: tuple | None = None) -> dict:
-    """Manifest for a campaign's aux Pod: one kept-alive container per spec.
+                           pull_secret: str = "", s3: tuple | None = None,
+                           pod_name: str = "", container_names=None,
+                           extra_labels: dict | None = None) -> dict:
+    """Manifest for an aux Pod: one kept-alive container per spec.
 
     Each container runs the aux image with its one-shot entrypoint overridden by
-    the spec's ``keep_alive_command``, so it stays up for the whole campaign and
+    the spec's ``keep_alive_command``, so it stays up for the whole span and
     every ``run()`` pays only the exec setup (no per-call create or image re-pull).
+
+    Two spans build one manifest here, which is the point: a *campaign*'s pod (named after
+    the campaign, deleted when it ends) and a *held* one owned by the service's exec
+    manager (named after its slot, reaped on idleness). *pod_name*, *container_names* and
+    *extra_labels* are what the second needs — its name and container have to be the ones
+    the exec lane already addresses and sweeps by, and everything else about an aux pod is
+    identical. Forking a second builder for that would have put the ``mc`` init container,
+    the mountable emptyDirs and the pull secret in two places.
+
+    *container_names* maps a spec's ``container_name()`` to the name to use instead;
+    unnamed specs keep their own.
 
     *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
     pod when the service is replaced — the same "dies with its parent" guarantee
@@ -362,7 +382,8 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     containers = []
     for spec in specs:
         container = {
-            "name": spec.container_name(),
+            "name": (container_names or {}).get(spec.container_name(),
+                                                spec.container_name()),
             "image": spec.image,
             "imagePullPolicy": "IfNotPresent",
             "command": list(spec.keep_alive_command),
@@ -381,11 +402,16 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                 pass
         containers.append(container)
 
+    # *extra_labels* last, and it may legitimately replace ``app``: a held pod is the exec
+    # manager's, so the exec lane's stray sweep must be the one that finds it. Exactly one
+    # sweep should own a pod — a held one answering to `cleanup_aux_pods` as well would let
+    # a campaign's cleanup delete a container somebody's preview is composing against.
     metadata = {
-        "name": aux_pod_name(campaign_id),
+        "name": pod_name or aux_pod_name(campaign_id),
         "namespace": namespace,
         "labels": {"app": "robovast-aux",
-                   "campaign-id": _label_safe_campaign(campaign_id)},
+                   "campaign-id": _label_safe_campaign(campaign_id),
+                   **(extra_labels or {})},
     }
     if owner_ref:
         metadata["ownerReferences"] = [owner_ref]
@@ -587,7 +613,7 @@ class ClusterContainerRunner:
     def __init__(self, spec, pod_name, namespace, core_v1=None,
                  exec_limit_s: float = AUX_EXEC_LIMIT_S, storage=None,
                  bucket: str = "", owner_id: str = "",
-                 kube_context: str | None = None):
+                 kube_context: str | None = None, container: str = ""):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
@@ -595,7 +621,11 @@ class ClusterContainerRunner:
         # See AuxPodSession: only used when no client was handed in, and it must be the
         # service's context rather than whatever the host kubeconfig points at.
         self._kube_context = kube_context
-        self._container = spec.container_name()
+        # A campaign's aux pod names each container after its spec, so the spec is the
+        # default. A pod held by the exec manager names its single container the way that
+        # lane names every held container, and passes it — the pod name and the container
+        # name have to come from the same place or one of them addresses nothing.
+        self._container = container or spec.container_name()
         self._exec_limit_s = exec_limit_s
         self._storage = storage
         self._bucket = bucket

@@ -449,9 +449,15 @@ def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
     assert runner._kube_context == "local"
 
 
-@pytest.mark.parametrize("method", ["_campaign_context", "_scene_runner_context"])
+@pytest.mark.parametrize("method", ["_aux_runner_context", "_scene_runner_context",
+                                    "_held_aux_runners"])
 def test_the_cluster_service_passes_its_own_context(method):
-    """Both AuxPodSession call sites, because only one of them having it is the bug."""
+    """Every place a runner or its pod is made, because only one of them missing it is the bug.
+
+    Two open an ``AuxPodSession``; the third builds a ``ClusterContainerRunner`` over a pod the
+    exec manager holds, which is the same mistake one layer down — the runner would then make
+    its own client from whatever context the kubeconfig points at.
+    """
     import inspect
 
     from robovast.execution.cluster_execution.cluster_service import ClusterService

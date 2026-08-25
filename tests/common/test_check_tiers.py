@@ -16,9 +16,12 @@ The invariant behind both: a name or a runner that is genuinely missing must sti
 loudly. These tests pin the difference between "cannot check that here" and "that is wrong".
 """
 
+import contextlib
+import re
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -158,9 +161,13 @@ def test_no_runner_and_no_docker_refuses_naming_what_wanted_it(monkeypatch):
     message = str(excinfo.value)
     assert "FloorplanGeneration" in message       # what needed it
     assert "aux-builder" in message               # which container
-    assert "start_campaign" in excinfo.value.next_step
-    # The cost, so a caller who only needed the sweep's shape can decline.
-    assert "trial" in excinfo.value.next_step
+    # Blames the place, not the file. The old wording said a runner exists only inside a
+    # campaign's composition and sent every caller to start_campaign — a whole real trial to
+    # answer "does this expand?", and untrue besides: a preview through the service arranges
+    # one too. Reading a property of *where this ran* as a property of the `.vast` is the
+    # mistake this asserts against.
+    assert "preview_configurations" in excinfo.value.next_step
+    assert "not a defect in the file" in excinfo.value.next_step
 
 
 def test_local_docker_still_serves_the_fallback(monkeypatch):
@@ -228,3 +235,95 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
     result = authoring.preview_configurations("some.vast", limit=1)
     assert result["error"] == "needs a container"
     assert result["next_step"] == "start_campaign(...)"
+
+
+# -- the container tier: preview is a place a runner is arranged ----------------------
+
+def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
+    """The bug this closes: preview never entered the hook that provides the runner.
+
+    The hook existed and the cluster lane overrode it, but only ``start_campaign`` entered
+    it -- so in a service pod, where there is no ``docker`` to fall back on, a sweep whose
+    variation needs a helper image was refused and the refusal blamed the ``.vast``.
+    """
+    from robovast.service.local_transport import LocalTransport
+
+    entered = []
+
+    @contextlib.contextmanager
+    def _record(self, tag, project, *, hold=False):
+        entered.append((tag, hold))
+        yield
+
+    monkeypatch.setattr(LocalTransport, "_aux_runner_context", _record)
+    monkeypatch.setattr(LocalTransport, "_resolve_project",
+                        lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
+    monkeypatch.setattr("robovast.common.common.load_config", lambda p: {})
+    monkeypatch.setattr(
+        "robovast.common.config_generation.generate_scenario_variations",
+        lambda **_kw: {"configs": [], "execution": {"runs": 1},
+                       "aux_containers": ["aux-builder"]})
+
+    response = LocalTransport.preview_configurations(
+        LocalTransport.__new__(LocalTransport), "ws-1", 1, "x.vast")
+
+    (tag, hold) = entered[0]
+    # Held, not span-scoped: this is the authoring loop, previewed over and over.
+    assert hold is True
+    # And keyed on the project, so the second preview of the same file reuses the first's.
+    from robovast.service.local_transport import _preview_tag
+    assert tag == _preview_tag("ws-1", "x.vast")
+    # What it ran is reported, so a caller can see the answer was not free.
+    assert response.aux_containers == ["aux-builder"]
+
+
+def test_the_preview_tag_is_stable_per_project_and_name_safe():
+    """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
+    from robovast.service.local_transport import _preview_tag
+
+    assert _preview_tag("ws-1", "a/b.vast") == _preview_tag("ws-1", "a/b.vast")
+    assert _preview_tag("ws-1", "a/b.vast") != _preview_tag("ws-2", "a/b.vast")
+    assert _preview_tag("ws-1", "a/b.vast") != _preview_tag("ws-1", "a/c.vast")
+    tag = _preview_tag("ws-1", "deep/nested/path with spaces.vast")
+    assert re.fullmatch(r"[a-z0-9-]+", tag), tag
+
+
+def test_the_base_lane_leaves_the_docker_fallback_alone():
+    """A no-op locally is the whole local design: ``docker run --rm`` is already right."""
+    from robovast.service.local_transport import LocalTransport
+
+    with LocalTransport._aux_runner_context(
+            LocalTransport.__new__(LocalTransport), "t", None, hold=True) as arranged:
+        assert arranged is None
+
+
+def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
+    """``_campaign_context`` delegating is the refactor; losing the runner is the risk."""
+    from robovast.service.local_transport import LocalTransport
+
+    seen = []
+    monkeypatch.setattr(
+        LocalTransport, "_aux_runner_context",
+        lambda self, tag, project, *, hold=False: (
+            seen.append((tag, hold)) or contextlib.nullcontext()))
+    with LocalTransport._campaign_context(
+            LocalTransport.__new__(LocalTransport), "camp-7", None):
+        pass
+    # The campaign's own id, and *not* held: its span owns the container, which is what
+    # lets per-campaign cleanup find it.
+    assert seen == [("camp-7", False)]
+
+
+def test_composition_reports_the_aux_container_it_used():
+    """``aux_containers`` must cross the isolated-compose boundary and the cache untouched.
+
+    It is a plain top-level key for exactly that reason: the underscore-prefixed fields are
+    the ones ``_result_to_transport`` strips as ephemeral.
+    """
+    from robovast.common.config_generation import _result_from_transport, _result_to_transport
+
+    result = {"configs": [], "aux_containers": ["aux-builder"], "_output_dir": "/tmp/x",
+              "_transient_files": []}
+    transport = _result_to_transport(result)
+    assert transport["aux_containers"] == ["aux-builder"]
+    assert _result_from_transport(transport, None)["aux_containers"] == ["aux-builder"]

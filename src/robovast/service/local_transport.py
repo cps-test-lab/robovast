@@ -30,6 +30,7 @@ Split out of the former single ``client`` module; ``client`` now re-exports
 """
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -155,6 +156,18 @@ def _plugin_remotes(group: str, asset_attr: str, url_builder,
                 "module": module,
             }
     return remotes
+
+
+def _preview_tag(workspace_id: str, path: str) -> str:
+    """A stable, name-safe tag for the project a preview is composing.
+
+    Stable so repeated previews of the same file address the same held aux container
+    instead of starting a fresh one each time; hashed because a workspace id and a config
+    path together respect neither the length limit nor the character set a container or pod
+    name does.
+    """
+    digest = hashlib.sha1(f"{workspace_id}:{path}".encode("utf-8")).hexdigest()[:12]
+    return f"preview-{digest}"
 
 
 def _variation_remotes() -> dict:
@@ -1659,10 +1672,36 @@ class LocalTransport(RobovastInterface):
     def _campaign_context(self, campaign_id: str, project):
         """Per-campaign setup entered *inside* the worker thread.
 
-        A context manager, so anything thread-scoped (the cluster's aux-pod
-        container-runner factory) is established where the composition that reads
-        it runs, and torn down when the campaign ends. No-op locally.
+        A context manager, so anything thread-scoped is established where the composition
+        that reads it runs, and torn down when the campaign ends. Today that is only the
+        aux-container runner, which is why this delegates: a campaign is one *span* over
+        which a lane provides one, not the only span. Anything genuinely per-campaign
+        belongs here rather than in :meth:`_aux_runner_context`, which preview also enters.
         """
+        return self._aux_runner_context(campaign_id, project)
+
+    def _aux_runner_context(self, tag: str, project, *, hold: bool = False):
+        """How this lane provides a variation's auxiliary container, for one span.
+
+        A context manager: entered in the thread that composes, because the factory it
+        installs is a ContextVar and must be scoped to exactly that composition. *tag*
+        names the span (a campaign id, or a digest identifying a previewed project) so a
+        lane that creates something per span can name it.
+
+        *hold* is who owns the container's death. False — a campaign — means the span does:
+        it is torn down when the run ends, which is also what makes per-campaign cleanup
+        able to find it. True — an interactive caller such as ``preview_configurations`` —
+        means the container outlives the span and is reaped on idleness instead, because an
+        authoring loop composes the same file repeatedly and would otherwise pay a cold
+        start every time. An unbounded span is the one that needs a reaper.
+
+        No-op locally, and deliberately: with no factory installed
+        ``_make_container_runner`` falls back to an ephemeral ``docker run`` on the service
+        host, which is what a local service — and the CLI, which has no transport at all —
+        already wants, and where holding would buy about a second. The cluster lane
+        overrides this, having no ``docker`` in the pod and a pull to amortize.
+        """
+        del tag, project, hold
         return contextlib.nullcontext()
 
     def _postprocess_in_process(self) -> bool:
@@ -4028,26 +4067,32 @@ class LocalTransport(RobovastInterface):
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
         project = self._resolve_project(workspace_id, path)
-        # A search .vast has no `configuration:` to expand -- its variations live under
-        # `search.variations` and are only realized per sampled ParamSet. Composing a
-        # sample the way a real batch does is the only preview that means anything;
-        # the plain call would report zero configs, indistinguishable from an empty file.
-        if (load_config(project.config_path) or {}).get("search"):
-            from robovast.search.compose import preview_search_sample
-            try:
-                sample = preview_search_sample(project.config_path)
-            except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
-                raise ValueError(str(e)) from e
-            configs = sample["configs"]
-            runs = sample["runs_per_config"]
-        else:
-            try:
-                campaign_data = generate_scenario_variations(
-                    variation_file=project.config_path, output_dir=None)
-            except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
-                raise ValueError(str(e)) from e
-            configs = campaign_data["configs"]
-            runs = campaign_data.get("execution", {}).get("runs", 1)
+        aux_containers: list = []
+        # Both branches compose, so both need whatever this lane uses to reach a variation's
+        # helper image -- and a search .vast reaches it through the same variation loop.
+        # Held rather than span-scoped: this is the authoring loop, previewed repeatedly.
+        with self._aux_runner_context(_preview_tag(workspace_id, path), project, hold=True):
+            # A search .vast has no `configuration:` to expand -- its variations live under
+            # `search.variations` and are only realized per sampled ParamSet. Composing a
+            # sample the way a real batch does is the only preview that means anything;
+            # the plain call would report zero configs, indistinguishable from an empty file.
+            if (load_config(project.config_path) or {}).get("search"):
+                from robovast.search.compose import preview_search_sample
+                try:
+                    sample = preview_search_sample(project.config_path)
+                except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
+                    raise ValueError(str(e)) from e
+                configs = sample["configs"]
+                runs = sample["runs_per_config"]
+            else:
+                try:
+                    campaign_data = generate_scenario_variations(
+                        variation_file=project.config_path, output_dir=None)
+                except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
+                    raise ValueError(str(e)) from e
+                configs = campaign_data["configs"]
+                runs = campaign_data.get("execution", {}).get("runs", 1)
+                aux_containers = list(campaign_data.get("aux_containers") or [])
         from robovast.common.common import convert_dataclasses_to_dict
         remotes = _variation_remotes()
         vast_dir = str(Path(project.config_path).parent)
@@ -4069,6 +4114,7 @@ class LocalTransport(RobovastInterface):
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
                                configurations=items, truncated=truncated,
+                               aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and
                                # is wanted at exactly the same moment, so it rides along rather
                                # than costing a second round trip.

@@ -661,3 +661,77 @@ def test_a_query_slot_key_is_a_usable_container_name():
     assert "/" not in name and len(name) < 64
     # The user slot keeps the bare name, so an older service's stray is still found.
     assert ce.container_name(ce.SLOT_USER) == ce.CONTAINER_NAME
+
+
+# -- holding a variation's auxiliary container -------------------------------
+
+
+def _aux_spec():
+    from robovast.common.variation.container_runner import ContainerSpec
+    return ContainerSpec(image="ghcr.io/example/builder", command_prefix=["build"])
+
+
+def _held_aux():
+    """The spec a caller hands ``hold``: an image to be, and no command to run."""
+    return ce.ExecSpec(image="ghcr.io/example/builder", command="", config_dir="",
+                       env={}, aux_spec=_aux_spec())
+
+
+def test_holding_starts_a_container_and_runs_nothing_in_it():
+    """The other shape of held container: the caller wants the container, not an answer.
+
+    A variation's commands arrive later and repeatedly, from the plugin composing against
+    it, so ``hold`` must not exec anything — ``run`` always does.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
+    assert lane.live[slot] is True
+    assert lane.execs == []
+
+
+def test_holding_the_same_project_twice_reuses_one_container():
+    """The whole point of holding: an authoring loop previews the same file repeatedly."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    identity = ("aux", "preview-abc", "aux-builder")
+    first = mgr.hold(_held_aux(), identity, 300)
+    mgr.release_hold(first)
+    second = mgr.hold(_held_aux(), identity, 300)
+    assert second == first
+    assert len(lane.starts) == 1, "a second preview must not pay a cold start"
+
+
+def test_releasing_a_hold_does_not_stop_the_container():
+    """Two things ride on this: the next preview stays warm, and two previews running at
+    once cannot destroy each other's container — which a per-call session did."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    identity = ("aux", "preview-abc", "aux-builder")
+    outer = mgr.hold(_held_aux(), identity, 300)
+    inner = mgr.hold(_held_aux(), identity, 300)
+    mgr.release_hold(inner)
+    assert lane.live[outer] is True, "the other holder is still composing against it"
+    mgr.release_hold(outer)
+    assert lane.live[outer] is True, "idleness reaps it, not a release"
+
+
+def test_an_aux_hold_shares_the_query_pools_cap():
+    """Deliberately one pool: a warm helper image and a warm query image are the same kind
+    of thing competing for one lane, and one cap is what keeps the total bounded."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    for i in range(ce.QUERY_POOL_MAX + 2):
+        mgr.hold(_held_aux(), ("aux", f"preview-{i}", "aux-builder"), 300)
+    held = [s for s in lane.live if s != ce.SLOT_USER]
+    assert len(held) <= ce.QUERY_POOL_MAX
+
+
+def test_a_held_aux_container_is_reaped_on_idleness_like_a_query_one():
+    """It holds a warm image and nothing else: a runner mirrors its workspace around every
+    command, so there is no state in there that reaping could lose."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
+    assert mgr._idle_reap_s(slot) == ce.QUERY_IDLE_REAP_S
+    assert mgr._idle_cap_s(slot) == ce.QUERY_IDLE_WAIT_CAP_S

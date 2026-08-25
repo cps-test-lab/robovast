@@ -2779,6 +2779,8 @@ export interface components {
          * @description Result of :meth:`RobovastInterface.preview_configurations`.
          */
         PreviewResponse: {
+            /** Aux Containers */
+            aux_containers: string[];
             /** Config Panels */
             config_panels: {
                 [key: string]: unknown;
