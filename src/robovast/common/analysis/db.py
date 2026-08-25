@@ -111,6 +111,32 @@ def run_scope(data_dir: Union[str, Path]) -> Tuple[str, Optional[str], Optional[
             f"or run directory: expected a numeric run directory, got {parts[1]!r}.") from None
 
 
+def open_campaign_store(data_dir: Union[str, Path]) -> sqlite3.Connection:
+    """Open ``campaign.db`` alone, read-only. The caller must ``close()`` the connection.
+
+    The campaign's own record -- what was proposed, in which batch, and what it scored -- as
+    opposed to :func:`open_campaign_db`, which is the postprocessed *measurements* and needs
+    ``data.db`` to exist for them. A search notebook wants this one: it is written as the
+    search runs, so a batch or archive view works while the campaign is still going and on one
+    that was never postprocessed, which is exactly when watching a search is worth anything.
+
+    Tables are unqualified here (``batch``, ``unit``, ``run``, ``campaign``, ``job``), not
+    under a ``campaign.`` prefix as they are when attached by :func:`open_campaign_db`.
+
+    Exists so that reading the search store is not a raw ``sqlite3.connect`` on a hand-built
+    path in every notebook that wants it -- which is what it was, in each of them separately,
+    each with its own guess at where the file lives.
+    """
+    root = campaign_root(data_dir)
+    store = root / "campaign.db"
+    if not store.exists():
+        raise CampaignDataError(
+            f"Campaign {root.name} has no campaign.db, so there is no record of what it "
+            f"proposed or scored. A results tree copied without it, or one produced outside "
+            f"a controller, has none.")
+    return sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+
+
 def open_campaign_db(data_dir: Union[str, Path]) -> sqlite3.Connection:
     """Open the campaign's databases read-only. The caller must ``close()`` the connection.
 

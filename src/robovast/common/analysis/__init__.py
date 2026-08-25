@@ -12,8 +12,8 @@ Split by where a frame comes from, plus one module for what you compute from one
 """
 
 from .db import (DATA_DB_SCHEMA_VERSION, CampaignDataError, attach_params, campaign_root,
-                 config_file, list_tables, open_campaign_db, read_runs, read_sql, read_table,
-                 run_scope, table_info)
+                 config_file, list_tables, open_campaign_db, open_campaign_store, read_runs,
+                 read_sql, read_table, run_scope, table_info)
 from .files import (for_each_run, get_run_status, get_scenario_parameter, read_output_csv,
                     read_output_files, read_output_yaml_list, read_run_statuses)
 from .metrics import calculate_speeds_from_poses, get_behavior_info, run_key_columns
@@ -31,6 +31,7 @@ __all__ = [
     'run_scope',
     'campaign_root',
     'open_campaign_db',
+    'open_campaign_store',
     'CampaignDataError',
     'DATA_DB_SCHEMA_VERSION',
     # files

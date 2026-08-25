@@ -159,6 +159,38 @@ from a rosbag, so a ``mode: base`` campaign has none of them. Ask ``list_tables`
    # returning a frame that is quietly missing it.
    read_table(DATA_DIR, "behaviors", require=["status_name", "tip_id"])
 
+Reading a search's own record
+-----------------------------
+
+``read_table`` and friends read *measurements*, which postprocessing builds. A search
+campaign also keeps a record of what it **proposed**: one row per evaluated configuration
+with its objectives, its quality-diversity measures and the parameters it was drawn with,
+grouped into the batches that proposed them. That record is written as the search runs, so
+:func:`~robovast.common.analysis.db.open_campaign_store` reads it without ``data.db`` — a
+batch or archive view therefore works on a campaign still in progress, and on one that was
+never postprocessed.
+
+.. code-block:: python
+
+   from robovast.common.analysis import open_campaign_store
+
+   store = open_campaign_store(DATA_DIR)          # campaign.db alone, read-only
+   store.row_factory = sqlite3.Row
+   store.execute("SELECT idx FROM batch ORDER BY idx")
+   store.execute("SELECT config_name, objective, measures_json FROM unit WHERE batch_id = ?", ...)
+
+Tables are unqualified here (``batch``, ``unit``, ``run``, ``campaign``, ``job``); the same
+tables appear under a ``campaign.`` prefix when :func:`open_campaign_db` attaches them beside
+the metrics. ``objectives_json`` and ``measures_json`` exist **only** on ``unit`` —
+``runs.objective`` lifts just the single scalar — so a multi-objective or quality-diversity
+campaign can only be read this way.
+
+Two unit statuses are not results and must not be averaged over: ``composition_failed`` is a
+draw that could not be built into a configuration at all and never ran, and ``no_sample`` is
+one that ran and lost every run to infrastructure. Both are search coverage that was not
+obtained; count them rather than dropping them, or the campaign reads as having explored more
+than it did.
+
 Reading requires postprocessing to have run — ``data.db`` does not exist before it, and a
 campaign whose postprocessing failed still reports ``finished``. That case raises with the
 remedy in the message rather than falling back to the per-run files, which would answer a
