@@ -67,6 +67,23 @@ def _service(tmp_path, monkeypatch):
     transport = LocalTransport()
     monkeypatch.setattr(type(transport), "_campaigns_root",
                         lambda self: tmp_path / "results")
+
+    # Never run the real postprocessing chain from these tests.
+    #
+    # A raw archive chains postprocessing, whose auto-appended rosbags step shells out to
+    # docker_exec.sh -- so importing the historic fixture, which pins an image in its v1
+    # `execution.image`, makes a unit test pull a container image. Where that pull is slow
+    # or the daemon is unreachable the step does not fail, it blocks: the plugin reads the
+    # subprocess line by line with no deadline, so the import worker parks in
+    # `for line in process.stdout` and the campaign never leaves `postprocessing`.
+    #
+    # That is what made these tests pass on a developer machine, where the image is already
+    # local, and hang on CI, where it is not. Stubbing it here rather than in the two tests
+    # that hit it because nothing in this file is ABOUT what postprocessing computes -- the
+    # three tests that care about the chain being run at all install their own stub over
+    # this one and assert on that.
+    monkeypatch.setattr(type(transport), "_postprocess_campaign",
+                        lambda self, campaign_id, campaign_dir, **kw: (True, "stubbed"))
     return transport
 
 
