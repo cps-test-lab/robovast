@@ -73,20 +73,25 @@ if scored.empty:
 '''
 
 
-def markdown(text):
-    return {"cell_type": "markdown", "metadata": {},
+# Cell ids are required from nbformat 4.5 (`nbformat_minor: 5`) and their absence is
+# already a deprecation warning on the way to a hard error. Named for the cell's ROLE
+# rather than numbered, so regenerating a notebook whose cells shift produces no
+# spurious diff and a traceback names the cell a reader can find.
+def markdown(text, cell_id):
+    return {"cell_type": "markdown", "id": cell_id, "metadata": {},
             "source": [line + "\n" for line in text.rstrip().split("\n")]}
 
 
-def code(text):
-    return {"cell_type": "code", "execution_count": None, "metadata": {},
+def code(text, cell_id):
+    return {"cell_type": "code", "id": cell_id, "execution_count": None, "metadata": {},
             "outputs": [], "source": [line + "\n" for line in text.rstrip().split("\n")]}
 
 
 def notebook(why, figure, headline):
-    """The fixed four-cell shape, so all nine read the same way."""
+    """The fixed four-cell shape, so all eight read the same way."""
     return {
-        "cells": [markdown(why), code(LOAD + "\n" + NOTE), code(figure), code(headline)],
+        "cells": [markdown(why, "why"), code(LOAD + "\n" + NOTE, "load"),
+                  code(figure, "figure"), code(headline, "headline")],
         "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python",
                                     "name": "python3"},
                      "language_info": {"name": "python"}},
