@@ -54,7 +54,7 @@ import time
 import zlib
 from abc import ABC, abstractmethod
 from multiprocessing import Pool, cpu_count
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 import rosbag2_py
@@ -1089,7 +1089,36 @@ def _write_cache(run_dir: str, fingerprint: str) -> None:
 # Per-bag worker
 # ---------------------------------------------------------------------------
 
-def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[str]]]]:
+
+class BagResult(NamedTuple):
+    """One bag's outcome, as it travels back through the Pool.
+
+    Named rather than a bare tuple because the worker returns from five places and the
+    parent reads it in four, with nothing tying the two ends together: widening a
+    positional tuple means editing all nine and getting a ``ValueError`` at unpack time
+    for the one that was missed. That error would surface only inside the ROS execution
+    container -- past the ``rosbag2_py`` import, where nothing in the test suite reaches
+    -- so the failure mode is "works everywhere it can be tested". With defaults, a
+    return site that does not mention a field gets the field's neutral value instead.
+
+    A ``NamedTuple`` specifically: this crosses a ``multiprocessing`` boundary, so it has
+    to pickle, and it must cost nothing beyond the standard library (this script runs with
+    stdlib + ROS libs and one sibling import, nothing else).
+    """
+
+    #: The bag this describes.
+    bag_path: str
+    #: Records written, or a sentinel: ``-1`` cache hit, ``-2`` the bag could not be
+    #: processed, ``0`` opened but produced nothing.
+    total: int
+    #: ``(record_count, output_files)`` per handler.
+    handler_results: Sequence[Tuple[int, List[str]]] = ()
+    #: What the worker printed, kept only for a bag that failed — see the capture below.
+    #: Defaults empty: a result that says nothing about failing did not fail.
+    output: str = ""
+
+
+def process_rosbag_worker(args: tuple) -> BagResult:
     """Process a single rosbag with all configured handlers.
 
     Args:
@@ -1099,9 +1128,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
               beside the bag, the local default).
 
     Returns:
-        (bag_path, total_records, handler_results) where handler_results is a list of
-        (record_count, output_files) per handler. total_records == -2 if the
-        bag itself failed to open.
+        A :class:`BagResult`.
     """
     bag_path, plugin_configs, debug, force, plugin_configs_hash, out_dir = args
     run_dir = os.path.dirname(bag_path)
@@ -1110,7 +1137,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
     if not force:
         fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         if _read_cache(run_dir) == fingerprint:
-            return bag_path, -1, [], ""  # cache hit — already processed
+            return BagResult(bag_path, -1)  # cache hit — already processed
 
     # The worker's own output is captured rather than interleaved: 32 workers printing
     # through the progress bar would shred it. Captured, NOT discarded -- this used to be a
@@ -1138,7 +1165,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
         if not handlers:
-            return bag_path, -2, [], captured.getvalue()
+            return BagResult(bag_path, -2, output=captured.getvalue())
 
         # Detect storage format from metadata.yaml, fall back to mcap
         storage_id = "mcap"
@@ -1169,7 +1196,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             }
         except Exception as e:
             print(f"✗ {bag_path}: failed to open — {e}")
-            return bag_path, -2, [], captured.getvalue()
+            return BagResult(bag_path, -2, output=captured.getvalue())
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -1184,7 +1211,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             # No records, and the reason is the on_begin failures just printed -- so this
             # carries them home too. Counted as "no-data" rather than an error, which is
             # why surfacing the output matters: the tally alone reads like an empty bag.
-            return bag_path, 0, [], captured.getvalue()
+            return BagResult(bag_path, 0, output=captured.getvalue())
 
         # Build topic→handlers dispatch map (intersect with topics in this bag)
         topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
@@ -1239,7 +1266,8 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
     # Only a failing bag ships its output home. A clean run's chatter is exactly what the
     # capture exists to suppress, and pickling every bag's stdout back through the pool
     # would pay the whole conversion's output cost to say nothing.
-    return bag_path, total, handler_results, ("" if clean else captured.getvalue())
+    return BagResult(bag_path, total, handler_results,
+                     "" if clean else captured.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -1372,11 +1400,11 @@ def main() -> int:
     expected_error_bags = 0
     failed_bags = 0
     completed = 0
-    all_results: List[Tuple[str, int, List[Tuple[int, List[str]]], str]] = []
+    all_results: List[BagResult] = []
 
     try:
         with Pool(processes=args.workers) as pool:
-            for bag_path, bag_total, handler_results, diagnostics in pool.imap_unordered(
+            for result in pool.imap_unordered(
                 process_rosbag_worker, process_args, chunksize=1
             ):
                 completed += 1
@@ -1393,17 +1421,18 @@ def main() -> int:
                     f"  {completed}/{n_bags} bag  {rate:.1f} bag/s  ETA {eta_str}",
                     flush=True,
                 )
-                all_results.append((bag_path, bag_total, handler_results, diagnostics))
+                all_results.append(result)
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
 
     # Aggregate and write provenance
-    for bag_path, bag_total, handler_results, _diagnostics in all_results:
-        if bag_total == -1:
+    for result in all_results:
+        bag_path, handler_results = result.bag_path, result.handler_results
+        if result.total == -1:
             cached_bags += 1
             continue
-        if bag_total == -2:
+        if result.total == -2:
             if _is_tolerated(bag_path):
                 expected_error_bags += 1
             else:
@@ -1452,7 +1481,7 @@ def main() -> int:
     # NOTE below -- repeating a stopped job's "failed to open" per bag would bury the real
     # errors this block exists to surface.
     failure_output = failing_bag_output(
-        [(bag, out) for bag, _t, _h, out in all_results], input_root, _tolerated_roots)
+        [(r.bag_path, r.output) for r in all_results], input_root, _tolerated_roots)
     if failure_output:
         print(f"\n-- output from {len(failure_output)} bag(s) that reported errors --")
         for bag_rel, out in failure_output:
