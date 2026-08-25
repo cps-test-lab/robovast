@@ -666,7 +666,7 @@ creates (the build Job and campaign Jobs) as ``hostAliases``:
 
 .. code-block:: bash
 
-   ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.181.120.39
+   ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.0.0.9
    # several: comma-separated, names sharing an IP are grouped automatically
    ROBOVAST_EXTRA_HOST_ALIASES=harbor.example.org=10.0.0.9,minio.example.org=10.0.0.10
 

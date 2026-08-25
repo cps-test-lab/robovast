@@ -26,7 +26,7 @@ from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 BUILD = "imgbuild-sut-abc123"
-SIDECAR_ERROR = ('Failed to pull image "harbor.example.de/robovast/robovast-sidecar:latest"'
+SIDECAR_ERROR = ('Failed to pull image "harbor.example.org/robovast/robovast-sidecar:latest"'
                  ": pull access denied, repository does not exist or may require "
                  "authorization: authorization failed: no basic auth credentials")
 

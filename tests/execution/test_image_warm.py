@@ -34,7 +34,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from robovast.service.image_build import BuildSpec
 
 BUILD = "imgbuild-sut-abc123"
-REF = "harbor.example.de/robovast/sut:abc123"
+REF = "harbor.example.org/robovast/sut:abc123"
 
 
 class _Apps:
@@ -171,9 +171,9 @@ def test_no_pull_secret_means_no_empty_reference():
 def test_the_name_is_deterministic_dns_safe_and_ref_specific():
     """Idempotency rests entirely on this: same ref -> same name -> a 409 on the repeat."""
     assert warm_id_for(REF) == warm_id_for(REF)
-    assert warm_id_for(REF) != warm_id_for("harbor.example.de/robovast/sut:def456")
+    assert warm_id_for(REF) != warm_id_for("harbor.example.org/robovast/sut:def456")
     # A digest ref and an underscored tag are both legal inputs and neither may escape.
-    for ref in (REF, "harbor.example.de/robovast/my_sut@sha256:" + "a" * 64,
+    for ref in (REF, "harbor.example.org/robovast/my_sut@sha256:" + "a" * 64,
                 "ghcr.io/cps-test-lab/robovast-roqsim:latest"):
         name = warm_id_for(ref)
         assert len(name) < 64, name
@@ -342,14 +342,14 @@ def test_the_family_set_warmed_is_the_three_a_campaign_runs(monkeypatch):
     from robovast.common.execution import FAMILY_MEMBERS
     from robovast.execution.cluster_execution.image_warm import (WARM_FAMILY_MEMBERS,
                                                                  family_refs_to_warm)
-    monkeypatch.setenv("ROBOVAST_PROJECT", "harbor.example.de/robovast")
+    monkeypatch.setenv("ROBOVAST_PROJECT", "harbor.example.org/robovast")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2026-08-20")
 
     assert set(WARM_FAMILY_MEMBERS) == set(FAMILY_MEMBERS) - {"robovast-controller"}
     assert family_refs_to_warm() == [
-        "harbor.example.de/robovast/robovast:2026-08-20",
-        "harbor.example.de/robovast/robovast-roqsim:2026-08-20",
-        "harbor.example.de/robovast/robovast-sidecar:2026-08-20",
+        "harbor.example.org/robovast/robovast:2026-08-20",
+        "harbor.example.org/robovast/robovast-roqsim:2026-08-20",
+        "harbor.example.org/robovast/robovast-sidecar:2026-08-20",
     ]
 
 
@@ -368,7 +368,7 @@ def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch)
     """This runs *after* setup/upgrade has converged. It must not be able to undo that."""
     from robovast.execution.cluster_execution import image_warm
     monkeypatch.setattr(image_warm, "family_refs_to_warm",
-                        lambda: ["harbor.example.de/robovast/robovast:latest"])
+                        lambda: ["harbor.example.org/robovast/robovast:latest"])
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
                         "load_kube_config",
                         lambda ctx=None: (_ for _ in ()).throw(RuntimeError("no cluster")))
@@ -377,7 +377,7 @@ def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch)
 
 
 def _submit_stubs(cs, monkeypatch, batch, base_image="",
-                  deployment_base="harbor.example.de/robovast/robovast:t"):
+                  deployment_base="harbor.example.org/robovast/robovast:t"):
     """Stub a submit far enough that it reaches Job creation, so the base fire point runs."""
     from robovast.execution.cluster_execution import cluster_image_build, in_pod_storage
     from robovast.service.image_store import ImageRef
@@ -410,7 +410,7 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
                                 get_s3_endpoint=lambda: "http://robovast:9000",
                                 get_host_aliases=lambda: None)
     spec = BuildSpec(tag="sut", base_image=base_image)
-    registry = types.SimpleNamespace(registry_prefix="harbor.example.de/robovast",
+    registry = types.SimpleNamespace(registry_prefix="harbor.example.org/robovast",
                                      push_secret_name="push", pull_secret_name="reg-push",
                                      insecure=False, ca_configmap_name="",
                                      base_experiment_image=deployment_base)
@@ -428,7 +428,7 @@ def test_a_submit_warms_the_resolved_base_alongside_the_build(cs, monkeypatch):
     assert ref.cached is False
     # The deployment default, since this spec declares no base of its own -- the common
     # case, and the one a test asserting `spec.base_image` would silently miss.
-    base = "harbor.example.de/robovast/robovast:t"
+    base = "harbor.example.org/robovast/robovast:t"
     # The build Job, then the prewarm: the prewarm must not replace or precede it.
     assert batch.names == [BUILD, warm_id_for(base)]
     assert batch.images[1] == base
@@ -444,7 +444,7 @@ def test_a_submit_whose_base_prewarm_fails_still_submits_the_build(cs, monkeypat
 
     batch = _OnlyBuildWorks()
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, batch,
-                                        base_image="harbor.example.de/robovast/robovast:t")
+                                        base_image="harbor.example.org/robovast/robovast:t")
 
     assert cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt").cached is False
     assert batch.names == [BUILD]
@@ -508,9 +508,9 @@ def test_the_warm_pods_tolerate_what_campaign_pods_tolerate(monkeypatch):
 
 def test_warming_the_family_declares_one_daemonset_with_the_pull_secret(monkeypatch):
     from robovast.execution.cluster_execution import image_warm
-    refs = ["harbor.example.de/robovast/robovast:t",
-            "harbor.example.de/robovast/robovast-roqsim:t",
-            "harbor.example.de/robovast/robovast-sidecar:t"]
+    refs = ["harbor.example.org/robovast/robovast:t",
+            "harbor.example.org/robovast/robovast-roqsim:t",
+            "harbor.example.org/robovast/robovast-sidecar:t"]
     apps = _Apps()
     monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: refs)
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."

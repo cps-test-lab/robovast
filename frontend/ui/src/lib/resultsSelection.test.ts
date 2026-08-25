@@ -34,13 +34,13 @@ const FALLBACK: Nav = {
   configCampaignId: '',
 }
 
-const CID = 'tb4-robolab-nav-local-2026-08-21-10395724'
+const CID = 'tb4-office-nav-local-2026-08-21-10395724'
 
 /** One real campaign's `run_view` rows, as `CAMPAIGN_RUNS_SQL` returns them. Kept verbatim from a
  *  campaign on disk so the batch-mode case is the shape the service actually produces — including
  *  `batch: 0`, which must *not* reach an ungrouped campaign's node ids. */
 const BATCH_MODE = [
-  { config_name: 'robolab-nav-local', run_id: 0, status: 'passed', passed: 1, objective: null, batch: 0 },
+  { config_name: 'office-nav-local', run_id: 0, status: 'passed', passed: 1, objective: null, batch: 0 },
 ]
 
 /** A search campaign: two rounds, a config with repetitions, and a draw that never composed. No

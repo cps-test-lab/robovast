@@ -8,7 +8,7 @@
 // swings the eye through is radius x angle, its pan speed is |eye - target| * tan(fov/2) per pixel, and
 // this directory's wheel (cursorDolly.ts) steps a fixed fraction of the same number. So one distance
 // decides how all three feel, and a viewport that never re-measures it inherits whatever the world was
-// authored with: 46 m for the robolab building, 3.2 m for a tabletop. At the opening frame that number
+// authored with: 46 m for a building-scale world, 3.2 m for a tabletop. At the opening frame that number
 // is right by construction. Ten metres of travel later it is describing somewhere the camera no longer
 // is, and a drag meant to look around a corridor swings the eye through the wall instead.
 

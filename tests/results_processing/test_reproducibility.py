@@ -63,7 +63,7 @@ def test_a_private_input_with_a_commit_does_not_block(tmp_path):
         tmp_path, _CLEAN,
         plugins={"p": {"version": "1.0"}},
         providers={"roqsim_assets": {"version": "0.1.0", "commit": "d" * 40,
-                                     "url": "file:///srv/private/roqsim-assets"}}))
+                                     "url": "file:///opt/private-assets"}}))
     entry = _by_input(manifest)["provider[roqsim_assets]"]
     assert entry["class"] == PRIVATE
     assert manifest["publishable"] is True, "private must not block; only unidentifiable does"
