@@ -16,7 +16,7 @@ from robovast.results_processing.postprocessing_plugins import _build_runs_table
 
 
 def _write_run(run_dir, *, start_ts, duration, errors=0, failures=0,
-               available_mem="134603354112", node_name="worker-a"):
+               available_mem="134603354112", node_label="node-abc123def456"):
     """A run dir with the artifacts the runner actually writes.
 
     ``available_mem`` is spelled exactly as ``collect_sysinfo.py`` writes it — that key,
@@ -37,7 +37,7 @@ def _write_run(run_dir, *, start_ts, duration, errors=0, failures=0,
         "platform:\n  system: Linux\n"
         "cpu_name: Intel Xeon\n"
         "instance_type: n1-standard-4\n"
-        f"node_name: {node_name}\n"
+        f"node_label: {node_label}\n"
         "available_cpus: 4\n"
         f"available_mem: {available_mem}\n",
         encoding="utf-8",
@@ -66,22 +66,23 @@ def test_runs_table_has_timing_and_sysinfo(campaign_with_runs):
     _build_runs_table(conn, campaign_path, config_dirs)
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
-    for expected in ("start_time", "end_time", "instance_type", "node_name", "cpu_name",
+    for expected in ("start_time", "end_time", "instance_type", "node_label", "cpu_name",
                      "available_cpus", "available_mem_bytes"):
         assert expected in cols, f"missing column {expected}"
 
     row = conn.execute(
-        "SELECT start_time, end_time, instance_type, node_name, cpu_name, available_cpus, "
+        "SELECT start_time, end_time, instance_type, node_label, cpu_name, available_cpus, "
         "available_mem_bytes FROM runs WHERE config_name='cfg-a' AND run_id=0"
     ).fetchone()
-    start_time, end_time, instance_type, node_name, cpu_name, cpus, mem = row
+    start_time, end_time, instance_type, node_label, cpu_name, cpus, mem = row
 
     assert start_time is not None and end_time is not None
     assert start_time < end_time  # end = start + duration
     assert instance_type == "n1-standard-4"
     # The machine, not its kind: on a bare-metal cluster instance_type is `uname -m` and
     # is identical on every node, so only this separates a slow machine from a fast one.
-    assert node_name == "worker-a"
+    # A hash of the node's name -- the name itself never reaches the record.
+    assert node_label == "node-abc123def456"
     assert cpu_name == "Intel Xeon"
     assert cpus == 4
     assert mem == 134603354112, "the recorded byte count, not NULL and not rescaled"
@@ -89,7 +90,7 @@ def test_runs_table_has_timing_and_sysinfo(campaign_with_runs):
 
 def test_a_run_that_recorded_no_node_reports_null_rather_than_an_empty_name(tmp_path):
     """``NODE_NAME`` is empty on the local lane and on any cluster run recorded before the
-    pod carried it. NULL keeps those out of a GROUP BY node_name; "" would collect them
+    pod hashed one. NULL keeps those out of a GROUP BY node_label; "" would collect them
     all under one machine that does not exist."""
     conn0 = sqlite3.connect(tmp_path / "campaign.db")
     conn0.execute("CREATE TABLE unit (config_name TEXT, params_json TEXT, objective REAL)")
@@ -98,11 +99,11 @@ def test_a_run_that_recorded_no_node_reports_null_rather_than_an_empty_name(tmp_
     conn0.close()
 
     cfg = tmp_path / "cfg-a"
-    _write_run(cfg / "0", start_ts=1_700_000_000.0, duration=1.0, node_name="")
+    _write_run(cfg / "0", start_ts=1_700_000_000.0, duration=1.0, node_label="")
 
     conn = sqlite3.connect(":memory:")
     _build_runs_table(conn, tmp_path, [cfg])
-    assert conn.execute("SELECT node_name FROM runs").fetchone()[0] is None
+    assert conn.execute("SELECT node_label FROM runs").fetchone()[0] is None
 
 
 def test_runs_table_normalizes_a_suffixed_memory_quantity(tmp_path):
@@ -183,7 +184,7 @@ def test_runs_table_tolerates_missing_sysinfo(tmp_path):
 
     conn = sqlite3.connect(":memory:")
     _build_runs_table(conn, tmp_path, [cfg])
-    row = conn.execute("SELECT instance_type, node_name, cpu_name FROM runs").fetchone()
+    row = conn.execute("SELECT instance_type, node_label, cpu_name FROM runs").fetchone()
     assert row == (None, None, None)
 
 

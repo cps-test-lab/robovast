@@ -84,9 +84,14 @@ def test_kind_is_the_authority_not_whether_from_campaign_is_set(store_path):
 def test_a_store_from_before_the_columns_migrates_forward(tmp_path):
     """An older store gains the columns on open, and reads as no-origin until then."""
     path = tmp_path / STORE_FILENAME
+    # A REAL store at v6: the ladder replayed to that point, not a hand-picked table.
+    # A store that genuinely reached v6 has every table the earlier steps created, and a
+    # thinner stub would let a later migration that touches one of them pass here and fail
+    # on a real database.
+    from robovast.common.store import _MIGRATIONS
     conn = sqlite3.connect(path)
-    conn.executescript(
-        "CREATE TABLE campaign (id INTEGER PRIMARY KEY, name TEXT, description TEXT);")
+    for migration in _MIGRATIONS[:6]:
+        conn.executescript(migration)
     conn.execute("PRAGMA user_version = 6")
     conn.commit()
     conn.close()

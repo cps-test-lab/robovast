@@ -139,6 +139,12 @@ class CampaignController:
         self.backend = backend
         self.options = options
         self.store = store
+        # The store learns which MACHINE a run used from the run's own sysinfo, but what
+        # that machine IS lives in the cluster API. This is the one place holding both, so
+        # it is where they are introduced; a backend that cannot answer says so and the
+        # machines are recorded without their hardware.
+        if store is not None and backend is not None:
+            store.set_node_facts_resolver(backend.node_facts)
         self.campaign_config_dump = campaign_config_dump
         self.vast_dir = vast_dir
         # Free text describing this launch; recorded on the campaign row so it stays

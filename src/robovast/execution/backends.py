@@ -238,6 +238,23 @@ class ExecutionBackend(ABC):
     #: store counts keys ending in it, the filesystem counts files named it.
     RUN_SENTINEL = "test.xml"
 
+    def node_facts(self, label: str) -> dict | None:
+        """What the machine behind *label* is, or ``None`` if this backend cannot say.
+
+        Answers the hardware half of a run's provenance -- capacity, allocatable, and the
+        kernel/OS record -- for a machine identified only by its hashed label. Keyed by the
+        label rather than the node's name because the label is all the store ever holds: the
+        name was hashed in the pod that wrote it and cannot be recovered here. A backend
+        therefore hashes its OWN view of the cluster to answer, which is what keeps the two
+        sides honest -- if they ever disagreed this returns ``None`` rather than facts about
+        the wrong machine.
+
+        ``None`` -- the default -- is a normal answer rather than a failure: the local lane
+        has no nodes, and a re-index or an import runs with no cluster in reach. The caller
+        records the machine anyway, leaving the facts NULL.
+        """
+        return None
+
     def count_run_artifacts(self, campaign_id: str,
                             campaign_root: str) -> int | None:
         """Completed per-run artifacts published so far (controller progress poll).

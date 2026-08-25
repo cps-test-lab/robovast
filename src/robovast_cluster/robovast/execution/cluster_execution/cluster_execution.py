@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from kubernetes import client
 
 from robovast.common.config import SCENARIO_CONTAINER
+from robovast.common.execution import node_label
 from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kube_client import pod_workload_containers
@@ -353,7 +354,11 @@ def pod_container_failures(pod) -> "list[dict]":
         is_workload = cname in workload_names or not workload_names
         records.append({
             "pod_name": getattr(metadata, "name", None),
-            "node_name": getattr(getattr(pod, "spec", None), "node_name", None),
+            # The machine, hashed: this record is campaign data and ships with it, and
+            # a hostname here would reintroduce by another route exactly what the run's
+            # own sysinfo stopped recording.
+            "node_label": node_label(
+                getattr(getattr(pod, "spec", None), "node_name", None)),
             "pod_phase": getattr(status, "phase", None),
             "container": cname,
             "role": _container_role(cname, workload_names),

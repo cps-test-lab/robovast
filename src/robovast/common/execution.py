@@ -29,6 +29,14 @@ from pprint import pformat
 
 import yaml
 
+# The node label is computed IN THE CONTAINER by ``execution/data/collect_sysinfo.py``,
+# which is mounted into the image as a standalone script and can import nothing from this
+# package. Re-exported through here so every host-side caller hashes identically: two
+# definitions would let the label a pod wrote and the label a query looks for drift apart,
+# and the join would go quietly empty rather than fail.
+# pylint: disable=unused-import  # the re-export below is the documented import site
+from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
+
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config import SIMULATION_CONTAINER
 from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
@@ -895,9 +903,14 @@ def _get_cluster_info(context=None):
 
         for node in items:
             name = node.metadata.name
-            labels = node.metadata.labels or {}
+            # Keyed by the hashed label, and with the hostname label dropped, because this
+            # block is lifted verbatim into campaign.execution_json and travels with every
+            # published campaign. ``kubernetes.io/hostname`` merely restates the key, so
+            # keeping it would re-add by value exactly what hashing the key removed.
+            labels = {k: v for k, v in (node.metadata.labels or {}).items()
+                      if k != "kubernetes.io/hostname"}
             if name:
-                node_labels[name] = labels
+                node_labels[node_label(name)] = labels
                 policy = _check_static_cpu_manager(v1, name)
                 if policy is None:
                     # Query failed: unknown, not "none". Surface it — a node whose
@@ -907,7 +920,7 @@ def _get_cluster_info(context=None):
                         "Could not determine CPU manager policy for node %s; "
                         "deterministic scenario timing is not guaranteed.", name)
                 else:
-                    cpu_manager_policies[name] = policy
+                    cpu_manager_policies[node_label(name)] = policy
 
         # Warn about nodes without static CPU pinning (recorded provenance keeps
         # only the policies we could actually read).
