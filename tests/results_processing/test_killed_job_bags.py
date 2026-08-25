@@ -160,6 +160,63 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
     assert "--tolerate-under" not in seen["cmd"]
 
 
+# -- the CLUSTER lane, which is where this rule was silently absent ------------------------------
+#
+# The two lanes build the conversion command in two places: the local one through
+# `RosbagsProcess` (above), the cluster one by assembling the container's argv in
+# `postprocess_job._conversion_script`. Only the first consulted the ledger, so on Kubernetes a
+# hand-stopped job failed the whole campaign's postprocessing -- the exact outcome the flag exists
+# to prevent, on the lane that actually runs the long campaigns. The tests below are deliberately
+# the mirror image of the two above, so the pair cannot drift apart again unnoticed.
+
+
+def _cluster_script(tolerate_under=()):
+    from robovast.execution.cluster_execution.postprocess_job import _conversion_script
+    return _conversion_script([{"plugins": [{"type": "rosout_to_csv"}]}], False,
+                              tolerate_under)
+
+
+def test_the_cluster_job_passes_a_tolerate_flag_per_killed_job():
+    script = _cluster_script(["_jobs/batch-0/job-2", "_jobs/batch-0/job-5"])
+    assert "--tolerate-under _jobs/batch-0/job-2" in script
+    assert "--tolerate-under _jobs/batch-0/job-5" in script
+
+
+def test_the_cluster_job_passes_no_flag_for_an_untouched_campaign():
+    """The default path stays exactly the command it was before this existed."""
+    assert "--tolerate-under" not in _cluster_script()
+
+
+def test_the_cluster_flag_precedes_the_input_root():
+    """`/bags` is positional, so a flag emitted after it would be parsed as a second input."""
+    script = _cluster_script(["_jobs/batch-0/job-2"])
+    assert script.index("--tolerate-under") < script.index("/bags")
+
+
+def test_the_cluster_lane_reads_the_same_ledger_the_local_one_does(tmp_path):
+    """One seam, not two answers: both lanes resolve killed jobs through the same function."""
+    _ledger(tmp_path, [
+        {"job_dir": "_jobs/batch-0/job-125", "job_name": "j125", "source": "webui",
+         "reason": "takes too long", "runs": []},
+    ])
+    dirs = _interrupted_job_dirs(str(tmp_path))
+    script = _cluster_script(dirs)
+    assert "--tolerate-under _jobs/batch-0/job-125" in script
+
+
+def test_the_cluster_flag_reaches_the_containers_command():
+    """End of the wire, as far as a unit test can follow it: flag lands in the Job manifest."""
+    from robovast.execution.cluster_execution.postprocess_job import build_manifest
+
+    manifest = build_manifest(
+        "camp", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
+        ("ep", "ak", "sk", "bucket", "camp/"), "default",
+        tolerate_under=["_jobs/batch-0/job-125"])
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    command = " ".join(c["command"][-1] for c in containers if c.get("command"))
+    assert "--tolerate-under _jobs/batch-0/job-125" in command
+
+
 def test_an_invalidated_jobs_bag_is_tolerated_too(tmp_path):
     """A job the runner invalidated is deleted at grace_period_seconds=0, exactly as a
     stopped one is -- so its recorder was SIGKILLed mid-write and its bag is unopenable for
