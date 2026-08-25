@@ -997,7 +997,11 @@ class LocalTransport(RobovastInterface):
         Nothing is cached and nothing is cross-referenced against what this service has:
         an archive whose campaign was cleaned up here is not an anomaly to be filtered out,
         it is the main reason import exists. Clients decide what to do with the overlap.
+
+        Newest campaign first -- see the sort below for why that is read off the id.
         """
+        from robovast.common.execution import \
+            get_campaign_timestamp  # pylint: disable=import-outside-toplevel
         from robovast.execution.share_providers import \
             share_type_configured  # pylint: disable=import-outside-toplevel
         from robovast.execution.share_providers.naming import \
@@ -1017,7 +1021,20 @@ class LocalTransport(RobovastInterface):
             archives.append(ShareArchive(
                 campaign_id=campaign_id, variant=variant, object_name=object_name,
                 size=size, url=provider.archive_url(object_name)))
-        archives.sort(key=lambda a: a.campaign_id)
+        # Newest first, keyed on the timestamp inside the campaign id rather than on any
+        # modification time: no provider reports one -- every
+        # `list_campaign_archives_with_size` yields `(name, size)` -- and what a reader of
+        # this listing wants is when the campaign ran, not when somebody last touched its
+        # object. `parse_archive_name` has already accepted each id as a campaign id, so
+        # the parser's fall-back to the whole name is unreachable here.
+        #
+        # Three keys because a campaign's two variants share the first two: without
+        # `object_name` their order is whatever the provider happened to list, and two
+        # calls could disagree about which of `raw`/`postprocessed` comes first.
+        archives.sort(
+            key=lambda a: (get_campaign_timestamp(a.campaign_id), a.campaign_id,
+                           a.object_name),
+            reverse=True)
         return ShareListing(configured=True, share_type=provider.SHARE_TYPE,
                             archives=archives)
 

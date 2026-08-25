@@ -1247,6 +1247,10 @@ class ShareListing(BaseModel):
 
     configured: bool = False
     share_type: str = ""
+    #: **Newest campaign first**, ordered by the timestamp inside each campaign id (no
+    #: provider reports a modification time). A campaign's ``raw`` and ``postprocessed``
+    #: archives are two entries sharing an id, ordered by object name between themselves so
+    #: that two calls cannot disagree.
     archives: list[ShareArchive] = Field(default_factory=list)
 
 
@@ -2501,6 +2505,8 @@ class RobovastInterface(ABC):
 
         Reports ``configured=False`` rather than an empty list when there is no share, since
         "nothing there" and "nowhere to look" are different answers.
+
+        Ordered **newest campaign first**; see :class:`ShareListing`.
         """
 
     # -- taking a campaign in (the opposite direction to the archive download) --

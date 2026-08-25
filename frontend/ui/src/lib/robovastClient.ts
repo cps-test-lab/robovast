@@ -585,9 +585,15 @@ export const robovast = {
   // The same import, sourced from the share instead of an upload. The *service* downloads
   // it, which is the whole point: a campaign moving between two servers never comes through
   // this browser, and nobody here needs share credentials.
-  importFromShare: (campaignId: string, opts?: { force?: boolean }) =>
+  //
+  // *archive* is an archive NAME (`<id>.postprocessed.tar.gz`), not a campaign id. The
+  // service resolves either, but a campaign the share holds twice — raw from the campaign-end
+  // upload, postprocessed from a later export — resolves by id to whichever its listing hits
+  // first. Naming the archive is what lets a caller say which of the two it meant; see
+  // `lib/shareArchives`, which is where a row picks one.
+  importFromShare: (archive: string, opts?: { force?: boolean }) =>
     request<CampaignRef>('POST', '/campaigns/import', {
-      share_archive: campaignId,
+      share_archive: archive,
       force: opts?.force ?? false,
       rebuild_store: false,
     }),

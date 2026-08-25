@@ -108,6 +108,22 @@ poetry_reinstall:
 	poetry install
 	@echo "✅ Done!"
 
+# The Python suite. A target rather than a line in a CI workflow, because the workflow is
+# not somewhere a developer looks -- and a component whose tests are only described there
+# drifts from the command that actually gates it. CI calls this, so the two cannot.
+#
+# One `tests/` tree in one process, unlike roqsim's parallel run: nothing here imports a
+# simulator, so there is no memory peak to bound and a JOBS knob would be a guess.
+.PHONY: test
+test: venv/.robovast_installed ## Run the Python unit tests (what CI runs)
+	. venv/bin/activate && pytest tests/ -q
+
+# One subtree, e.g. `make test-service`. How to re-run just what you are editing without
+# paying for the rest. (The frontend's vitest is its own: `cd frontend/ui && npm run test`.)
+.PHONY: test-%
+test-%: venv/.robovast_installed
+	. venv/bin/activate && pytest tests/$* -q
+
 # Two package trees have to agree on one Module-Federation runtime version, and neither
 # tree can check that alone -- so it lives here rather than in `frontend/ui`'s vitest.
 .PHONY: check-mf-runtime
