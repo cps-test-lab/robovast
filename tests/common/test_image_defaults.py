@@ -51,10 +51,10 @@ def test_the_default_tag_is_one_ci_publishes_on_every_merge(monkeypatch):
 
 
 def test_a_pinned_tag_wins_over_the_default(monkeypatch):
-    monkeypatch.setenv("ROBOVAST_PROJECT", "freeedlabs")
+    monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/example-org")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "dev")
     assert resolve_family_image(f"family:{MEMBER_ROQSIM}") == \
-        f"freeedlabs/{MEMBER_ROQSIM}:dev"
+        f"ghcr.io/example-org/{MEMBER_ROQSIM}:dev"
 
 
 @pytest.mark.parametrize("mode", ["base", "ros2"])

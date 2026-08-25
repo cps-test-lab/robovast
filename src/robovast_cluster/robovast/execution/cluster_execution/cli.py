@@ -918,7 +918,7 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     arriving through the command that looks safe. For a one-off, a real environment
     variable already beats both files::
 
-        ROBOVAST_PROJECT=freeedlabs vast exec cluster upgrade
+        ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade
 
     ``make image-digests PROJECT=...`` checks that a project holds a complete family
     before you point a cluster at it.

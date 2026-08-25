@@ -21,7 +21,7 @@ python = ">=3.10,<3.14"
 # from inside robovast itself.
 pydantic = "^2.0"
 
-# The entry point is named for the *product*, not for the `rst_*` Python packages it
+# The entry point is named for the *product*, not for the `roqsim` Python packages it
 # wraps, so a .vast reads `backend: roqsim`.
 [tool.poetry.plugins."robovast.simulators"]
 roqsim = "robovast_sim_roqsim.backend:RoqsimBackend"

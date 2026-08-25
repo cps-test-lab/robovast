@@ -16,7 +16,7 @@
 # the thing in hand. Here the tag itself is the question. Opposite sources, opposite reasons.
 #
 # Usage:
-#   container/image_digests.sh --project docker.io/freeedlabs [--tag latest]
+#   container/image_digests.sh --project ghcr.io/cps-test-lab [--tag latest]
 
 PROJECT=""
 TAG="latest"
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$PROJECT" ]]; then
-  echo "ERROR: --project is required (e.g. --project docker.io/freeedlabs)" >&2
+  echo "ERROR: --project is required (e.g. --project ghcr.io/cps-test-lab)" >&2
   exit 2
 fi
 # Match release_images.sh's normalization, so the same --project value works for both.

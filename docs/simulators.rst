@@ -234,7 +234,7 @@ family member, which is the only one carrying roqsim *and* the RoboVAST contract
 
 - ``mode: ros2`` — a ``simulation`` container of its own, running
   ``roqsim sim <config> --ros --headless``. Nothing a campaign owns contains roqsim, so the
-  GL packages, the ``mujoco`` pin and the ``rst_*`` package list leave the ``.vast``
+  GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the ``.vast``
   entirely.
 - ``mode: base`` — the same image as the ``scenario`` container, because a stepped
   simulator shares the scenario's process.

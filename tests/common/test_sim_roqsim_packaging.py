@@ -39,7 +39,7 @@ def test_the_entry_point_resolves_to_a_backend_serving_both_shapes():
     assert set(backend.SUPPORTED_SHAPES) == {SHAPE_ROS, SHAPE_STEPPED}
 
 
-def test_the_backend_asks_rst_to_stamp_its_log_lines():
+def test_the_backend_asks_roqsim_to_stamp_its_log_lines():
     """roqsim's CLI prints `INFO roqsim.engine: msg` by default, on purpose: standalone it is a
     command a person watches, and roqsim is published on its own. In a campaign the reader
     is the merged run log, where a line with no timestamp cannot be ordered against anything.
@@ -61,7 +61,7 @@ def test_the_backend_asks_rst_to_stamp_its_log_lines():
     assert sidecar_backend_env(applied, "simulation")["ROQSIM_LOG_FORMAT"] == "stamped"
 
 
-def test_a_campaign_can_still_ask_for_plain_rst_logs():
+def test_a_campaign_can_still_ask_for_plain_roqsim_logs():
     """The backend supplies a default, not a decision -- the same precedence every other key
     here follows, so a project that wants roqsim's terminal format keeps saying so."""
     from robovast.common.execution import sidecar_backend_env

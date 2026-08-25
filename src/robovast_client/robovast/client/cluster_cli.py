@@ -132,7 +132,7 @@ def _confirm_overwrite(name, workspace_id):
                    'directory name). Reused when it already exists.')
 @click.option('--image-project', 'image_project', default=None, metavar='PROJECT',
               help='Registry/namespace to take the RoboVAST images from for this run '
-                   '(e.g. freeedlabs), overriding ROBOVAST_PROJECT. Affects only images '
+                   '(e.g. ghcr.io/cps-test-lab), overriding ROBOVAST_PROJECT. Affects only images '
                    'RoboVAST publishes — a container image your .vast names is run as '
                    'written. Per campaign: no cluster redeploy.')
 @click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',

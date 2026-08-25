@@ -133,7 +133,7 @@ def test_get_world_body_tree_needs_a_workspace_address():
     assert "workspace address" in out["error"]
 
 
-def test_get_world_body_tree_runs_rst_scenes_describe_with_the_flag(service):
+def test_get_world_body_tree_runs_roqsim_scenes_describe_with_the_flag(service):
     service.payload = {"body_tree": []}
     authoring.get_world_body_tree(
         address="/sources/ws-1/a.vast", world_path="worlds/depot.yaml", pattern="gripper*")

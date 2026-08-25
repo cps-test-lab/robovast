@@ -34,7 +34,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 #
-# `main` is the branch now. It previously held a sim_suite_* layout without the rst_* packages
+# `main` is the branch now. It previously held a sim_suite_* layout without the roqsim packages
 # installed below, which is why this used to name `robovast` -- but that branch is gone from the
 # public repo and main carries the roqsim layout: all eleven packages this file installs, plus
 # both colcon packages, are present at the sha below.

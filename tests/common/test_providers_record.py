@@ -29,11 +29,11 @@ GROUPS = ("roqsim.models", "roqsim.worlds", "roqsim.plugins")
 
 # What a container writes: every distribution it holds, whether or not it is a provider.
 SIM_RECORD = {
-    "roqsim_assets_props": {
+    "private_props": {
         "version": "0.1.0", "groups": ["roqsim.models"],
         "direct_url": {"url": "https://host/private-assets",
                        "vcs_info": {"commit_id": "c" * 40, "vcs": "git"},
-                       "subdirectory": "roqsim_assets_props"}},
+                       "subdirectory": "private_props"}},
     "roqsim_scenes": {
         "version": "0.1.0", "groups": ["roqsim.worlds"],
         "direct_url": {"url": "file:///opt/roqsim/roqsim_scenes", "dir_info": {}}},
@@ -74,7 +74,7 @@ def test_providers_are_unioned_across_containers():
     and in the ROS shape they are not even the same image. The question the record answers is
     campaign-level, so a provider any container held belongs in it."""
     out = providers_from_records([SUT_RECORD, SIM_RECORD], GROUPS)
-    assert sorted(out) == ["roqsim_assets_props", "roqsim_scenes"]
+    assert sorted(out) == ["private_props", "roqsim_scenes"]
 
 
 def test_a_non_provider_is_not_a_provider():
@@ -86,7 +86,7 @@ def test_a_non_provider_is_not_a_provider():
 def test_a_vcs_install_is_recorded_as_obtainable():
     """The difference the publication gate turns on: a private provider WITH a commit is
     reproducible by anyone who has access, where a version alone is not."""
-    entry = providers_from_records([SIM_RECORD], GROUPS)["roqsim_assets_props"]
+    entry = providers_from_records([SIM_RECORD], GROUPS)["private_props"]
     assert entry["commit"] == "c" * 40
     assert entry["url"] == "https://host/private-assets"
 
@@ -132,7 +132,7 @@ def test_the_record_is_found_in_either_lane_s_job_layout(tmp_path, batch):
     lines, output = _sink()
     _record_campaign_providers(root, output)
     record = read_providers_record(root)
-    assert record and "roqsim_assets_props" in record, lines
+    assert record and "private_props" in record, lines
 
 
 def test_no_container_record_leaves_the_answer_unknown(tmp_path):
@@ -156,7 +156,7 @@ def test_a_campaign_with_providers_records_them_on_disk(tmp_path):
     root = _campaign(tmp_path, records=[SUT_RECORD, SIM_RECORD], vast=_VAST)
     _record_campaign_providers(root, lambda _m: None)
     on_disk = yaml.safe_load((root / "_execution" / "providers.yaml").read_text())
-    assert on_disk["roqsim_assets_props"]["commit"] == "c" * 40
+    assert on_disk["private_props"]["commit"] == "c" * 40
 
 
 def test_recording_never_fails_postprocessing(tmp_path):

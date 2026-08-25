@@ -14,7 +14,7 @@ It is in the default service/controller image because it is cheap enough to be: 
 and container specs, whose only dependency (``pydantic``) RoboVAST already has.
 
 What it removes from a campaign: the GL/apt block, the ``mujoco`` pin, the hand-ordered
-``rst_*`` wheel list, ``MUJOCO_GL`` selection, ``ENABLE_X11``, the record/capture
+``roqsim`` wheel list, ``MUJOCO_GL`` selection, ``ENABLE_X11``, the record/capture
 variables, and the choice of how to start the simulator at all. A ``.vast`` says which
 simulator and which config, and nothing else::
 

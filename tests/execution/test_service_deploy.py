@@ -370,11 +370,11 @@ def test_family_env_is_carried_even_when_unset(monkeypatch):
 
 
 def test_family_env_carries_what_the_environment_says(monkeypatch):
-    monkeypatch.setenv("ROBOVAST_PROJECT", "freeedlabs")
+    monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/example-org")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2026-08-20")
     env = {e["name"]: e["value"] for e in
            _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
-    assert env["ROBOVAST_PROJECT"] == "freeedlabs"
+    assert env["ROBOVAST_PROJECT"] == "ghcr.io/example-org"
     assert env["ROBOVAST_PROJECT_TAG"] == "2026-08-20"
 
 

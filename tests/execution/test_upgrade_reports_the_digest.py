@@ -19,7 +19,7 @@ from robovast.execution.cluster_execution import service_deploy
 
 
 def _pod(name, digest, *, phase="Running", created=1, container="robovast-service"):
-    image_id = f"docker.io/freeedlabs/robovast-controller@{digest}" if digest else ""
+    image_id = f"ghcr.io/example-org/robovast-controller@{digest}" if digest else ""
     return SimpleNamespace(
         metadata=SimpleNamespace(name=name, creation_timestamp=created),
         status=SimpleNamespace(

@@ -44,11 +44,11 @@ def test_serve_logs_the_image_project(monkeypatch, caplog):
 
     from robovast.service import app as app_module
 
-    monkeypatch.setenv("ROBOVAST_PROJECT", "freeedlabs")
+    monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/example-org")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "dev")
     monkeypatch.setattr(uvicorn, "Server", _FakeServer)
     monkeypatch.setattr(app_module, "build_app",
                         lambda impl, mount_mcp=True, auth_token=None: _StubApp())
     with caplog.at_level(logging.INFO, logger="robovast.service.app"):
         app_module.serve(impl=object())
-    assert "RoboVAST image default: freeedlabs/*:dev (ROBOVAST_PROJECT)" in caplog.text
+    assert "RoboVAST image default: ghcr.io/example-org/*:dev (ROBOVAST_PROJECT)" in caplog.text

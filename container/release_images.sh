@@ -20,7 +20,7 @@
 #                                  [-- <extra docker build args>]
 #
 # Example:
-#   ./container/release_images.sh --project docker.io/freeedlabs --push
+#   ./container/release_images.sh --project ghcr.io/cps-test-lab --push
 #
 # --ask-push asks, on the terminal and before the first build, whether the family should be
 # published -- what the Makefile passes when PUSH is not set, so publishing is a decision made
@@ -91,8 +91,8 @@ EXTRA_ARGS="$@"
 
 usage() {
   echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--ros-distro <distro>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
-  echo "Example: $0 --project docker.io/freeedlabs --push" >&2
-  echo "Pinned:  $0 --project docker.io/freeedlabs --tag 2026-08-17 --push" >&2
+  echo "Example: $0 --project ghcr.io/cps-test-lab --push" >&2
+  echo "Pinned:  $0 --project ghcr.io/cps-test-lab --tag 2026-08-17 --push" >&2
 }
 
 if [[ -z "$PROJECT" ]]; then

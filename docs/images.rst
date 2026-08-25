@@ -7,7 +7,7 @@ left to configure is **where** the images come from — one variable.
 
 .. code-block:: bash
 
-   ROBOVAST_PROJECT=freeedlabs        # the registry/namespace serving the family
+   ROBOVAST_PROJECT=ghcr.io/cps-test-lab        # the registry/namespace serving the family
    ROBOVAST_PROJECT_TAG=2026-08-17    # optional; defaults to `latest`
 
 That is the whole configuration, for a laptop and for a cluster.
@@ -67,7 +67,7 @@ So the way to run a campaign against a different project is **not** to edit the 
 
 .. code-block:: bash
 
-   vast exec cluster run --image-project freeedlabs campaign.vast
+   vast exec cluster run --image-project ghcr.io/cps-test-lab campaign.vast
 
 and the way to stop that working is to write a fixed ``image:``. If a ``.vast`` of yours
 names a family image, delete the line.
@@ -221,7 +221,7 @@ Moving a cluster's images
 
 .. code-block:: bash
 
-   ROBOVAST_PROJECT=freeedlabs vast exec cluster upgrade
+   ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade
 
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
 configuration and ingress host *from the cluster*, then touches only the Deployment's

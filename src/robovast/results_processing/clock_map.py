@@ -55,7 +55,7 @@ from .data.rosbags_common import ClockDecimator as Decimator  # noqa: F401
 #: log lines are wall-time only, and every surface that shows them has to say so.
 SOURCE_NONE = "none"
 SOURCE_ROS_CLOCK_BAG = "ros_clock_bag"
-SOURCE_RST_RUN_NPZ = "roqsim_run_npz"
+SOURCE_ROQSIM_RUN_NPZ = "roqsim_run_npz"
 
 
 class ClockMapInfo(NamedTuple):
@@ -153,7 +153,7 @@ def find_run_clock_map(run_dir: str) -> ClockMap:
         return NO_CLOCK_MAP
     for name in names:
         if name.endswith(ROQSIM_SUFFIX):
-            found = load_clock_map(os.path.join(run_dir, name), SOURCE_RST_RUN_NPZ)
+            found = load_clock_map(os.path.join(run_dir, name), SOURCE_ROQSIM_RUN_NPZ)
             if found:
                 return found
     return NO_CLOCK_MAP

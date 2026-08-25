@@ -213,7 +213,7 @@ It reads the environment like every ``vast`` command — ``./.env`` from the cur
 directory, then ``~/.config/robovast/env`` — and that is also how the image is chosen:
 ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG`` (:doc:`images`). There is no ``--image``
 flag, because a one-shot override is just
-``ROBOVAST_PROJECT=freeedlabs vast exec cluster upgrade`` (a real environment variable
+``ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade`` (a real environment variable
 beats both files), and a setting that should last belongs in a file.
 
 **This is the command that moves a cluster's images**, not ``setup --force``. Both values

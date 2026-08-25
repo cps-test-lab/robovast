@@ -76,7 +76,6 @@ filesystem
 findable
 floorplan
 framebuffer
-freeedlabs
 gcs
 geoms
 getter
