@@ -602,33 +602,30 @@ shm_size
 
 **Type:** String (e.g. ``1Gi``, ``512Mi``)
 
-**Required:** No (default: unset — each lane's own default)
+**Required:** No (default: ``512Mi``)
 
 Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into **every** container of
 the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport across
-the ``scenario`` / ``sut`` / ``simulation`` boundary.
+the ``scenario`` / ``sut`` / ``simulation`` boundary. (Unix sockets do not use it — those
+are a separate, disk-backed volume — so this sizes DDS traffic and any other POSIX shared
+memory the run maps.)
 
-Unset, the two lanes disagree and both defaults are traps. On the cluster, ``/dev/shm`` is a
-memory-backed ``emptyDir`` with no size limit, so it is sized from the pod's memory limits —
-or, when no container declares ``resources.memory``, from the whole node. Locally, the
-sidecars share the main container's IPC namespace and inherit Docker's 64 MB. A container
-that overruns shared memory dies of **SIGBUS** (``exit 135``), not a clean ``OOMKilled``,
-so the death arrives with no reason attached to it.
+**Most campaigns should not declare it.** RoboVAST gives every run ``512Mi`` unless the
+``.vast`` says otherwise, which is what makes one file mean the same thing on both lanes.
+Left to the lanes the two disagree, and both defaults are traps: on the cluster ``/dev/shm``
+is a memory-backed ``emptyDir`` with no size limit, so it is sized from the pod's memory
+limits — or, when no container declares ``resources.memory``, from the whole node; locally
+the sidecars share the main container's IPC namespace and inherit Docker's 64 MB. A
+container that overruns shared memory dies of **SIGBUS** (``exit 135``), not a clean
+``OOMKilled``, so the death arrives with no reason attached to it.
 
-.. warning::
-
-   Declare it **together with** ``resources.memory``, never instead of it. Adding memory
-   limits alone *shrinks* an unbounded ``/dev/shm`` down to them, so sizing one without the
-   other can make the failure more likely rather than less. ``validate_project`` advises
-   when a container declares ``resources.cpu`` and no ``resources.memory``.
+There is deliberately no way to ask for a lane's own default — it is the thing this default
+exists to avoid. Declare a size only to raise or lower the reservation:
 
 .. code-block:: yaml
 
    execution:
-     shm_size: 1Gi
-     containers:
-       sut:
-         resources: {cpu: 3.25, memory: 6Gi}
+     shm_size: 2Gi        # only because this campaign measured a peak above the default
 
 **Picking the number.** Do not guess it twice: every run records what the pool actually held,
 so a campaign that has run once says what its successor should declare.
@@ -640,21 +637,24 @@ so a campaign that has run once says what its successor should declare.
 ``shm_peak_bytes`` is the high-water mark over every tick of the run, bring-up included — a
 participant allocates its segments as it starts, and a SIGBUS there loses the run just as
 completely as one mid-trial. ``shm_limit_bytes`` is the size that was in force, which is how a
-declaration is *checked* rather than assumed: it shows what an undeclared campaign was really
-given, and whether a declared value reached the mount. ``NULL`` in either means unmeasured — a
+declaration is *checked* rather than assumed: it shows whether the size in force reached the
+mount. ``NULL`` in either means unmeasured — a
 campaign recorded before the monitor sampled the pool, or a runtime without ``/dev/shm`` — and
 is not the same answer as "used none of it".
 
-``get_campaign_summary`` turns the same two numbers into advice (``shm_not_declared``,
-``shm_under_reserved``, ``shm_over_reserved``), sized on the peak plus 25% headroom.
+``get_campaign_summary`` turns the same two numbers into advice (``shm_under_reserved`` when
+the peak outgrew the size in force, ``shm_over_reserved`` when the reservation is paying for
+room nothing used), sized on the peak plus 25% headroom. A campaign that ran before
+``shm_size`` had a default reports ``shm_not_declared`` instead, because it really was handed
+whichever default its lane applied.
 
 .. note::
 
-   **Shared memory is not always used, and then there is nothing to declare.** A
+   **Shared memory is not always used, and then there is nothing to tune.** A
    single-container run, a middleware that is not DDS, and nodes co-located in one process all
    touch almost none of it — and Fast DDS falls back to UDP where shared memory is unavailable.
-   A peak that fits inside the 64 MiB the local lane hands out for free needs no ``shm_size``,
-   so no advice is offered for it. The measurement is still recorded: a peak of nearly nothing
+   A peak that fits inside the 64 MiB the local lane hands out for free is left alone, so no
+   advice is offered for it. The measurement is still recorded: a peak of nearly nothing
    is a real answer about the experiment.
 
 timeout

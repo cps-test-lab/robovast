@@ -182,12 +182,8 @@ def _resource_advisories(config_path):
         "resources",
         f"{named} declare resources.cpu but no resources.memory. Without a memory limit "
         "the run's AVAILABLE_MEM (downward API limits.memory) reports the NODE's memory "
-        "as its budget, and the pod's shared /dev/shm — a memory-backed emptyDir mounted "
-        "into every container — is sized from the node too. Overrunning shared memory "
-        "kills a container with SIGBUS (exit 135) rather than a clean OOM, so it arrives "
-        "unexplained. Declare resources.memory for every container that declares "
-        "resources.cpu, and set execution.shm_size alongside it: adding memory limits "
-        "alone shrinks an unbounded /dev/shm down to them. "
+        "as its budget, so a process sizing itself from it will size itself to the node. "
+        "Declare resources.memory for every container that declares resources.cpu. "
         "get_campaign_summary on a comparable finished campaign reports what it used.")]
 
 

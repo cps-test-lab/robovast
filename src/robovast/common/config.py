@@ -22,7 +22,7 @@ from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from robovast.common.quantity import to_cores
+from robovast.common.quantity import to_bytes, to_cores
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +302,17 @@ class ContainerConfig(BaseModel):
         return bool(self.system_packages or self.python_packages)
 
 
+#: Size of the shared ``/dev/shm`` a run gets when its ``.vast`` does not say.
+#:
+#: Not a guess: it is eight times the 64 MiB the local lane hands out for free, which is
+#: what every campaign has in fact been running inside, and it stays under the threshold at
+#: which ``get_campaign_summary`` would advise lowering it -- a default that immediately
+#: advised against itself would train the reader to ignore the advice. The pool is a tmpfs
+#: charged to the pod, so this is paid on every job of every sweep; a campaign that measures
+#: a higher peak declares its own.
+DEFAULT_SHM_SIZE = "512Mi"
+
+
 class ExecutionConfig(BaseModel):
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
     #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
@@ -366,20 +377,41 @@ class ExecutionConfig(BaseModel):
     # Results stay keyed by configuration name / run number regardless, so packing
     # is invisible to downstream processing.
     runs_per_job: int = 1
-    # Size of the pod's shared ``/dev/shm`` (e.g. ``1Gi``). One tmpfs is mounted into every
-    # container of the run, which is what lets ROS 2's default Fast DDS use its
-    # shared-memory transport across the scenario / sut / simulation boundary.
+    # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
+    # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
+    # across the scenario / sut / simulation boundary.
     #
-    # ``None`` keeps each lane's own default, which is what every existing campaign gets.
-    # Those defaults DISAGREE, and both are traps: the cluster lane's memory-backed
-    # ``emptyDir`` has no size limit, so it is sized from the pod's memory limits -- or,
-    # with none declared, from the whole node -- while the local lane inherits Docker's
-    # 64 MB. A container that overruns it dies of SIGBUS (exit 135), not a clean OOM.
+    # Defaulted rather than left to the lanes, because the two lane defaults DISAGREE and
+    # both are traps: the cluster lane's memory-backed ``emptyDir`` has no size limit, so
+    # it is sized from the pod's memory limits -- or, with none declared, from the whole
+    # node -- while the local lane inherits Docker's 64 MB. A container that overruns the
+    # pool dies of SIGBUS (exit 135), not a clean OOM, so the death arrives with nothing
+    # explaining it. One default here is what makes a `.vast` mean the same thing on both
+    # lanes without every campaign having to say so.
     #
-    # Declare it together with ``resources.memory``, never instead of it: adding memory
-    # limits alone SHRINKS an unbounded ``/dev/shm`` down to them, so sizing one without
-    # the other can make the failure more likely rather than less.
-    shm_size: Optional[str] = None
+    # There is deliberately no way to ask for "the lane's own default": it is the thing
+    # this default exists to avoid. A campaign that needs more says a bigger number, and
+    # ``get_campaign_summary`` reports the measured peak to size it from.
+    shm_size: Optional[str] = DEFAULT_SHM_SIZE
+
+    @field_validator('shm_size')
+    @classmethod
+    def validate_shm_size(cls, v: Optional[str]) -> str:
+        """Reject a value that is not a memory quantity, here rather than at the lane.
+
+        Both lanes pass this string through to a manifest untouched, so an unparseable one
+        used to surface as a Kubernetes rejection or a ``docker compose`` error, minutes
+        into a campaign and nowhere near the line that caused it.
+
+        An explicit ``null`` is rejected along with the rest. It reads as "no opinion", but
+        the thing it would ask for -- whatever each lane defaults to on its own -- is what
+        this field exists to stop a campaign from getting by accident.
+        """
+        if to_bytes(v) is None:
+            raise ValueError(
+                f"shm_size {v!r} is not a memory quantity -- use a size like '512Mi' or "
+                f"'2Gi', or omit it for the default of {DEFAULT_SHM_SIZE}")
+        return v
 
     @field_validator('env')
     @classmethod

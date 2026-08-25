@@ -488,10 +488,14 @@ def _dshm(manifest):
     return next(v for v in spec["volumes"] if v["name"] == "dshm")
 
 
-def test_dev_shm_is_unbounded_unless_the_campaign_says_otherwise(monkeypatch):
-    """The default is preserved deliberately: bounding it for every existing campaign would
-    change what they run, and a tmpfs that is suddenly too small kills a container with
-    SIGBUS rather than failing loudly."""
+def test_dev_shm_is_unbounded_when_the_execution_block_names_no_size(monkeypatch):
+    """The lane stays honest about an absent key rather than inventing a size of its own.
+
+    A *composed* campaign no longer reaches this state -- composition settles `shm_size`
+    for every campaign, declared or not (see
+    tests/execution/test_shm_size_reaches_both_lanes.py). This pins the lane's own
+    behaviour, which is what keeps the default in one place instead of two.
+    """
     r = _runner(monkeypatch)
     volume = _dshm(r.create_job_manifest(r._build_jobs()[0], total_jobs=1))
     assert volume["emptyDir"] == {"medium": "Memory"}

@@ -1776,6 +1776,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # subprocess of it, while the service composes campaigns for several projects at once.
     from robovast.common.execution import \
         resolve_family_images_in_containers  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import DEFAULT_SHM_SIZE  # pylint: disable=import-outside-toplevel
     resolve_family_images_in_containers(execution_section.get('containers'),
                                         project=image_project, tag=image_project_tag)
     execution_params = {
@@ -1794,6 +1795,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # whether it can afford to start.
         "runs": execution_section.get('runs', 1),
         "runs_per_job": execution_section.get('runs_per_job', 1),
+        # Defaulted here as well as on the model, because the two are reached by different
+        # routes: `load_config` validates against the model and then hands composition the
+        # RAW yaml, so a model default cannot arrive here on its own. Same constant, so the
+        # size a campaign is recorded with is the size its lane is given.
+        "shm_size": execution_section.get('shm_size') or DEFAULT_SHM_SIZE,
     }
 
     # Build result dictionary

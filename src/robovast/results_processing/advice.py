@@ -41,6 +41,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from robovast.common.config import DEFAULT_SHM_SIZE
 from robovast.common.quantity import to_bytes, to_cores
 
 #: Headroom over sustained CPU use. Absorbs the p95->peak gap.
@@ -90,6 +91,12 @@ SHM_HEADROOM = 1.25
 #: and reducing a declaration below it would buy nothing. One condition, and it covers every
 #: shape above without naming any of them.
 SHM_ADVICE_FLOOR_BYTES = 64 * 1024 * 1024
+
+#: What a campaign composed today reserves when its ``.vast`` says nothing, in bytes.
+#:
+#: Derived from the config model rather than restated, so this cannot quote a size that is
+#: no longer the one campaigns actually get.
+DEFAULT_SHM_SIZE_BYTES = to_bytes(DEFAULT_SHM_SIZE)
 
 #: Per-container CPU and memory, pooled over every tick of every run.
 #:
@@ -419,19 +426,26 @@ def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
         evidence["declared"] = format_memory(declared)
 
     if not declared:
+        # Only a campaign recorded before robovast defaulted the pool can reach this: the
+        # default is written into the campaign's config, so a composed campaign always has
+        # a size to report. Kept rather than deleted because the advice is still true of
+        # those runs -- they really were handed whichever lane default applied -- and
+        # dropping it would silently stop explaining their SIGBUS deaths.
         return [{
             "kind": "shm_not_declared",
             "severity": "warning",
-            "title": (f"Uses up to {format_memory(peak)} of shared memory and declares no "
-                      f"execution.shm_size; set it to {format_memory(suggested)}"),
+            "title": (f"Uses up to {format_memory(peak)} of shared memory and ran before "
+                      f"execution.shm_size had a default; a rerun reserves "
+                      f"{format_memory(DEFAULT_SHM_SIZE_BYTES)} unless it says otherwise"),
             "detail": (
-                "The lanes disagree about what an undeclared /dev/shm gets: on the cluster it "
-                "is sized from the pod's memory limits, or from the whole node when none are "
-                f"declared, while locally it is Docker's "
-                f"{format_memory(SHM_ADVICE_FLOOR_BYTES)}. This campaign's peak is above that, "
-                "so the same .vast that survives on the cluster dies locally -- of SIGBUS "
-                "(exit 135), which is not reported as an out-of-memory kill. "
-                + _SHM_BASIS),
+                "This campaign was given whichever default its lane happened to apply -- on "
+                "the cluster the pod's memory limits, or the whole node when none were "
+                f"declared; locally Docker's {format_memory(SHM_ADVICE_FLOOR_BYTES)}. Those "
+                "disagree, which is why the same .vast could survive on one lane and die of "
+                "SIGBUS (exit 135) on the other, unreported as an out-of-memory kill. A "
+                "campaign composed today gets one size on both lanes; declare "
+                f"execution.shm_size: {format_memory(suggested)} if this peak is "
+                "representative. " + _SHM_BASIS),
             "evidence": evidence,
         }]
 

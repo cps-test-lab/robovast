@@ -80,10 +80,6 @@ execution:
     scenario:
       resources: {cpu: 1.25, memory: 2Gi}
   mode: ros2
-  # Declared with the memory limits, not instead of them: adding limits alone shrinks an
-  # otherwise-unbounded /dev/shm down to them, and a run that overruns shared memory dies of
-  # SIGBUS (exit 135) rather than a clean OOM -- which arrives with nothing explaining it.
-  shm_size: 1Gi
   runs: 3
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
   # verdict about a wedged run is possible, and `vast wait` cannot exit on one. The trial
