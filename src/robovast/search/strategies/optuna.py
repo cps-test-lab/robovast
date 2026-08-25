@@ -37,6 +37,38 @@ from ..types import Evaluation, ParamSet, SearchReport
 logger = logging.getLogger(__name__)
 
 
+#: Samplers optuna offers whose implementation lives in a SEPARATE distribution. optuna
+#: constructs these fine without it and imports lazily on first use, so an absent package
+#: surfaces from inside ``sample_relative`` -- on the first ask, after a campaign has taken a
+#: lane and staged its configs. Checked up front instead, by name.
+_SAMPLER_PACKAGES = {"cmaes": "cmaes"}
+
+
+def _sampler_package_available(package: str) -> bool:
+    """Whether *package* can be imported, without importing it."""
+    import importlib.util  # noqa: PLC0415
+
+    return importlib.util.find_spec(package) is not None
+
+
+def _require_sampler_package(sampler: str) -> None:
+    """Refuse a sampler whose backing distribution is missing, before anything runs.
+
+    optuna's own error is ``No module named 'cmaes'`` raised from inside its sampler, which
+    names neither the campaign's choice nor what to install -- and arrives too late to act
+    on. A campaign died that way having produced nothing.
+    """
+    package = _SAMPLER_PACKAGES.get(sampler)
+    if package is None or _sampler_package_available(package):
+        return
+    raise ValueError(
+        f"optuna sampler '{sampler}' needs the '{package}' distribution, which is not "
+        f"installed. optuna imports it lazily, so without this check the campaign would "
+        f"start, take a lane and fail on its first batch. Install robovast's 'optuna' extra "
+        f"(which provides it), or choose a sampler that needs no extra package "
+        f"(tpe, random).")
+
+
 class OptunaParams(BaseModel):
     """``strategy_parameters`` schema for the Optuna strategy."""
     model_config = ConfigDict(extra='forbid')
@@ -85,6 +117,7 @@ class OptunaStrategy(SearchStrategy):
             raise ValueError(
                 "optuna sampler 'nsga2' searches a Pareto front, which needs more than one "
                 "objective; declare a second or choose tpe/cmaes/random")
+        _require_sampler_package(params.sampler)
         if params.sampler == 'nsga2':
             from optuna.samplers import NSGAIISampler
             sampler = NSGAIISampler(seed=cfg.seed)

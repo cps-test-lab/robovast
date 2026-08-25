@@ -69,6 +69,10 @@ ribs = {version = "^0.7", optional = true}
 # shapely backs ribs.visualize.cvt_archive_heatmap (used by the QD analysis notebook)
 shapely = {version = "^2.0", optional = true}
 optuna = {version = "^4.0", optional = true}
+# optuna offers a CMA-ES sampler but keeps the implementation out of tree and
+# imports it lazily, so without this a `sampler: cmaes` campaign starts, takes a
+# lane and dies on its first batch with "No module named 'cmaes'".
+cmaes = {version = "^0.11", optional = true}
 # Optional test dependencies (the tests/ suite)
 pytest = {version = "^8.0", optional = true}
 # Navigation-specific variation types (FloorplanVariation, PathVariation*,
@@ -111,7 +115,7 @@ fair = ["rdflib", "pyld"]
 sftp = ["paramiko"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
-optuna = ["optuna"]
+optuna = ["optuna", "cmaes"]
 # The suite imports the modules these belong to, so they are test requirements even
 # though the runtime treats them as optional: tests/results_processing imports
 # fair_metadata (rdflib, pyld at module scope) and notebook_render (nbformat,
@@ -121,7 +125,7 @@ optuna = ["optuna"]
 # matplotlib, scipy and rdflib as hard dependencies -- so only a clean CI run ever
 # hit the collection error. Deliberately NOT paramiko: test_cli_startup_weight lists
 # it as forbidden at CLI startup.
-test = ["pytest", "ribs", "shapely", "optuna", "rdflib", "pyld", "nbformat",
+test = ["pytest", "ribs", "shapely", "optuna", "cmaes", "rdflib", "pyld", "nbformat",
         "nbconvert", "nbclient", "ipykernel", "lxml-html-clean"]
 
 # No [tool.poetry.scripts] here: the `vast` entry point belongs to robovast-client, which
