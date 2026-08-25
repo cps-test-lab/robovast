@@ -71,7 +71,7 @@ from robovast.common import (COMPAT_VERSION, MIN_IMAGE_COMPAT, get_execution_env
 from robovast.common.campaign_data import (KIND_INVALID, record_container_failures,
                                            record_intervention)
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import per_run_deadline_seconds
+from robovast.common.config import job_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents, create_job_links,
                                        dump_multi_document_yaml, job_artifact_rel, node_label,
                                        read_job_links, resolve_sidecar_image,
@@ -399,13 +399,14 @@ class BatchJobRunner:
         )
         # Always cap a Job's wall-clock time so a scenario that never shuts itself
         # down is force-killed by Kubernetes (``DeadlineExceeded``) instead of hanging
-        # the campaign forever. ``execution.timeout`` is a *per-run* limit; scale by
-        # the number of runs packed into a Job (default 1) so a packed Job isn't killed
-        # prematurely. The per-run figure comes from ``common.config`` because the
-        # campaign status uses the same one to decide a run is stalled — were the two
-        # to diverge, a Job could be killed while the status still called it healthy.
-        self._deadline_seconds = (per_run_deadline_seconds(execution_params)
-                                  * self._runs_per_job())
+        # the campaign forever. ``execution.timeout`` is the budget for a whole Job, so
+        # it is used as declared -- this is the granularity Kubernetes can enforce at, and
+        # the multiplication that used to happen here was reconstructing a per-run figure
+        # nothing could act on. The figure comes from ``common.config`` because the
+        # campaign status derives its stall threshold from the same declaration -- were
+        # the two to diverge, a Job could be killed while the status still called it
+        # healthy.
+        self._deadline_seconds = job_deadline_seconds(execution_params)
         self.manifest["spec"]["activeDeadlineSeconds"] = self._deadline_seconds
         # Pod-level, so it has to be decided across every container of the plan rather
         # than inside get_job_manifest -- which sees only the main container and would

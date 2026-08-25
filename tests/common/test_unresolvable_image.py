@@ -71,7 +71,7 @@ def test_the_collect_all_validator_reports_it(tmp_path):
 
     vast = tmp_path / "c.vast"
     vast.write_text(yaml.safe_dump({
-        "version": 2, "metadata": {"name": "p"},
+        "version": 3, "metadata": {"name": "p"},
         "execution": {"mode": "ros2",
                       "containers": {"scenario": {}, "sut": {"resources": {"cpu": 1}}},
                       "scenario_file": "s.osc", "runs": 1}}), encoding="utf-8")

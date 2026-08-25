@@ -1243,7 +1243,7 @@ fetches the one object behind the address first, then serves it the same way.
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colors each node by its status (running / success / failure) at the current time.
 It reads the ``behaviors`` table, written by ``scenario_execution`` on every run (no ROS
-required) unless ``execution.bt_log`` turns it off. Where the data supports it, each node
+required). Where the data supports it, each node
 also shows its kind (sequence / selector / parallel / decorator), its feedback message at
 the current time, and — on hover — its class and the ``.osc`` file and line it came from;
 when a tree ends in failure the panel names the action responsible, via ``tip_id``.

@@ -20,7 +20,7 @@ def launch(monkeypatch, tmp_path):
     project = tmp_path / "myproj"
     project.mkdir()
     vast = project / "demo.vast"
-    vast.write_text("version: 2\n")
+    vast.write_text("version: 3\n")
 
     captured = {}
 

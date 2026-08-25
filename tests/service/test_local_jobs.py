@@ -427,7 +427,7 @@ def test_build_planning_installs_the_campaigns_plugins_first(transport, tmp_path
 
     vast = tmp_path / "proj" / "c.vast"
     vast.parent.mkdir(parents=True)
-    vast.write_text("version: 2\n")
+    vast.write_text("version: 3\n")
     project = types.SimpleNamespace(config_path=str(vast))
     config = types.SimpleNamespace(plugins=["./plugins/backend-1.0-py3-none-any.whl"])
 
@@ -705,7 +705,7 @@ def test_a_killed_run_is_not_reported_as_failed_after_the_campaign_ends(transpor
 #: -- stubbing ``_campaign_execution`` was what hid a returned pydantic model AND a health command
 #: sent to the wrong container, for as long as both existed.
 _ROS_SHAPE_VAST = """\
-version: 2
+version: 3
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -721,7 +721,7 @@ execution:
 #: the simulator IS the scenario container and the role must resolve to it rather than to a name
 #: nothing started. (An *absent* simulation block is a third case -- a campaign with no simulator.)
 _STEPPED_VAST = """\
-version: 2
+version: 3
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -748,7 +748,7 @@ _RESOURCE_CSVS = ("@@ resource_usage_main.csv\n"
 #: A campaign with no simulator at all: nothing to ask about itself, which is a normal answer and
 #: must never render as a healthy run.
 _NO_SIM_VAST = """\
-version: 2
+version: 3
 metadata: {name: t}
 configuration:
 - name: cfga
@@ -1214,10 +1214,10 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(transpo
     assert any("does not report its own state" in line for line in state.unavailable)
 
 
-def test_a_run_without_bt_log_says_so_rather_than_showing_an_empty_tree(transport, monkeypatch):
-    """The reader's own phrasing is carried through: it already names the reason (a run with
-    bt_log off, or one that has not ticked), which is more use than "unavailable" and is already
-    written for a reader."""
+def test_a_run_without_a_tree_yet_says_so_rather_than_showing_an_empty_one(transport, monkeypatch):
+    """The reader's own phrasing is carried through: it already names the reason (a run that
+    has not ticked yet, or an image predating --bt-log), which is more use than "unavailable"
+    and is already written for a reader."""
     cid = "campaign-2026-08-20-127000"
     cdir = transport._campaigns_root() / cid
     _run(cdir, "cfgA", "1", log="running\n", job_index=0)
@@ -1241,7 +1241,7 @@ def test_a_run_without_bt_log_says_so_rather_than_showing_an_empty_tree(transpor
 #: config is only that reading it *works*, so a fixture shaped for some other question would couple
 #: these tests to that question.
 _PULL_VAST = """\
-version: 2
+version: 3
 metadata: {name: t}
 configuration:
 - name: cfga

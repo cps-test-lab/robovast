@@ -38,7 +38,7 @@ def _no_image_warm(monkeypatch):
 _JOBS = {'node-pool': 'primary'}
 _CONTROL = {'node-pool': 'extra'}
 
-_VAST = """version: 2
+_VAST = """version: 3
 execution:
   containers: {scenario: {image: i}}
   runs: 1

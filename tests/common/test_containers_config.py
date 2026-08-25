@@ -11,7 +11,7 @@ from robovast.service.image_build import extract_build_specs
 
 
 def _cfg(**containers):
-    return {"version": 2, "execution": {"containers": containers, "runs": 1}}
+    return {"version": 3, "execution": {"containers": containers, "runs": 1}}
 
 
 # -- the schema --------------------------------------------------------------------
@@ -323,6 +323,8 @@ def test_loading_a_whole_version_1_config_still_refuses(tmp_path):
 
     from robovast.common.common import load_config
 
+    from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
+
     old = tmp_path / "old.vast"
     old.write_text("version: 1\nexecution: {image: ghcr.io/x/y:1, runs: 1}\n")
     with pytest.raises(ValueError, match="not the current version"):
@@ -333,7 +335,7 @@ def test_loading_a_whole_version_1_config_still_refuses(tmp_path):
     # archived campaign stops being readable by the tool that produced it.
     before = old.read_text()
     upgraded = load_config(str(old), upgrade=True)
-    assert upgraded["version"] == 2
+    assert upgraded["version"] == SUPPORTED_CONFIG_VERSION
     assert upgraded["execution"]["containers"]["scenario"]["image"] == "ghcr.io/x/y:1"
     assert old.read_text() == before
 
@@ -351,7 +353,7 @@ def test_a_campaigns_own_config_wins_over_a_neighbours(tmp_path):
 
     mine = tmp_path / "aaa-experiment-2026-08-07-000001"
     other = tmp_path / "zzz-experiment-2026-08-04-000001"
-    for d, body in ((mine, "version: 2\n"), (other, "version: 1\n")):
+    for d, body in ((mine, "version: 3\n"), (other, "version: 1\n")):
         (d / "_config").mkdir(parents=True)
         (d / "_config" / "campaign.vast").write_text(body)
 

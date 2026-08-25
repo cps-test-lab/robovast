@@ -246,11 +246,11 @@ def _check_table(conn: sqlite3.Connection, table: str, sql_name: str) -> "dict[s
             "ESCAPE '\\' ORDER BY name")) or "(none)"
     hint = ""
     if table == "behaviors":
-        # The two ways to get a passing run with no scenario tree. Both are silent by
-        # construction, so the error is the only place they can be named.
-        hint = (" A campaign has no behaviours table when execution.bt_log is false, or when "
-                "its execution image ships a scenario_execution predating --bt-log: the flag "
-                "is dropped rather than refused, so the run passes and writes nothing.")
+        # How a passing run ends up with no scenario tree. Silent by construction, so the
+        # error is the only place it can be named.
+        hint = (" A campaign has no behaviours table when its execution image ships a "
+                "scenario_execution predating --bt-log: the flag is dropped rather than "
+                "refused, so the run passes and writes nothing.")
     raise CampaignDataError(
         f"No table {table!r} in this campaign's data.db. Tables it has: {available}."
         + hint + _outdated_hint(conn))

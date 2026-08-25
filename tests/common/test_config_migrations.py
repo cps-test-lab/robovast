@@ -16,6 +16,7 @@ from robovast.common.migrations import (BASELINE_CONFIG_VERSION, SUPPORTED_CONFI
                                         ConfigTooNew, ConfigTooOld, ConfigVersionError,
                                         needs_upgrade, upgrade_config, upgrade_config_file)
 from robovast.common.migrations import config as ladder
+from robovast.common.migrations.config import v2_to_v3
 
 _MIGRATIONS_DIR = pathlib.Path(ladder.__file__).parent
 _FIXTURES = _MIGRATIONS_DIR.parent / "fixtures"
@@ -210,6 +211,59 @@ def test_a_sibling_entry_with_more_than_one_config_key_still_finds_the_name():
     nav = upgraded["execution"]["containers"]["nav"]
     assert nav["command"] == ["ros2", "launch"]
     assert nav["resources"] == {"cpu": 2}
+
+
+def _v2(**execution):
+    """A minimal v2 config carrying *execution* keys, for the v2 -> v3 step."""
+    return {"version": 2, "metadata": {"name": "x"},
+            "execution": {"runs": 1, "scenario_file": "s.osc", **execution}}
+
+
+def test_v3_drops_the_removed_execution_keys():
+    """``bt_log`` and ``log_topics`` left the schema; a file carrying them must still load.
+
+    Dropped rather than translated because neither has a v3 spelling: behaviour-tree
+    logging is unconditional now, and what a run records beyond /rosout + /clock is the
+    scenario's ``bag_record`` to say.
+    """
+    out = v2_to_v3.migrate(_v2(bt_log=False, log_topics=["/tf"]))
+
+    assert "bt_log" not in out["execution"]
+    assert "log_topics" not in out["execution"]
+    assert out["version"] == 3
+
+
+def test_v3_rescales_a_packed_timeout_into_a_job_budget():
+    """v2's ``timeout`` was per run and both lanes multiplied it up; v3's IS the job budget.
+
+    So the campaign that asked for 100 runs at 600s a run was asking for a 60000s Job, and
+    has to keep asking for it -- the number changes precisely so that what runs does not.
+    """
+    out = v2_to_v3.migrate(_v2(timeout=600, runs_per_job=100))
+
+    assert out["execution"]["timeout"] == 60000
+
+
+def test_v3_leaves_an_unpacked_timeout_exactly_as_written():
+    """At ``runs_per_job`` 1 -- the default, and every timeout-declaring campaign there is
+    -- per-run and per-job coincide, so the author's number is not touched."""
+    assert v2_to_v3.migrate(_v2(timeout=300))["execution"]["timeout"] == 300
+    assert v2_to_v3.migrate(_v2(timeout=300, runs_per_job=1))["execution"]["timeout"] == 300
+
+
+@pytest.mark.parametrize("execution", [
+    {"timeout": "600", "runs_per_job": 100},   # a string the schema will reject
+    {"timeout": True, "runs_per_job": 100},    # bools are ints in Python; not a duration
+    {"timeout": 600, "runs_per_job": "many"},
+])
+def test_v3_does_not_rewrite_a_malformed_timeout(execution):
+    """A malformed value is the schema's to reject, where the message names the field.
+
+    Coercing it here would launder a typo into a plausible number and lose the only
+    evidence of where it came from.
+    """
+    out = v2_to_v3.migrate(_v2(**execution))
+    assert out["execution"]["timeout"] == execution["timeout"]
 
 
 def test_upgrade_config_file_preserves_comments(tmp_path):
