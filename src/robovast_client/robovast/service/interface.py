@@ -816,6 +816,49 @@ class VersionInfo(BaseModel):
     web_base: str = ""
 
 
+class UpgradeInfo(BaseModel):
+    """Whether this deployment can roll itself onto newer bytes, and whether it should.
+
+    Three questions a single boolean kept collapsing:
+
+    * *what is running* -- :attr:`running_digest`, the imageID the kubelet resolved. With a
+      floating tag it is the only thing that tells two builds apart;
+    * *what is published* -- :attr:`registry_digest`, one HEAD against the tag
+      :attr:`image_ref` resolves to;
+    * *may I* -- :attr:`supported` with :attr:`unsupported_reason`, so a caller can say why
+      there is no button rather than hiding one silently.
+
+    **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
+    and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
+    Secrets and the build daemon are untouched, so a version needing a permission the last
+    one did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the
+    command that reconciles all of it, and the one a consumer must name. The Secrets in
+    particular can *never* be done from in here: they are rebuilt from the operator's
+    environment, which the pod does not have.
+    """
+
+    supported: bool = False
+    #: Why not, in the reader's terms and naming the way in. Non-null exactly when
+    #: :attr:`supported` is False.
+    unsupported_reason: Optional[str] = None
+    #: The image ref the Deployment asks for -- what the registry is asked about, as
+    #: opposed to :attr:`running_digest`, which is what arrived.
+    image_ref: str = ""
+    #: What the kubelet resolved that ref to for the newest Running pod.
+    running_digest: str = ""
+    #: What the tag points at in the registry right now. ``""`` means the registry did not
+    #: say, which is **not** "nothing newer".
+    registry_digest: str = ""
+    #: True/False when both digests are known. **``None`` means unknown** and must not be
+    #: rendered as "up to date" -- a consumer still offers the roll, it just cannot promise
+    #: the roll will change anything.
+    upgrade_available: Optional[bool] = None
+    #: Campaigns this service is still driving. A roll replaces the pod their controller
+    #: runs in, which is why this is a warning and not a note -- the same reasoning
+    #: ``vast exec cluster upgrade --no-restart`` exists for.
+    active_campaigns: list[CampaignSummary] = Field(default_factory=list)
+
+
 class DiskSpace(BaseModel):
     """Capacity and current use of one filesystem, in bytes.
 
@@ -923,6 +966,52 @@ class ResourceUsage(BaseModel):
     #: own schedule, and a lane holding three of them while reporting one would read as
     #: having capacity it does not have.
     query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
+
+
+class UsageSample(BaseModel):
+    """One :class:`ResourceUsage` reading, at a point in time.
+
+    Capacity is carried **per sample**, and that is the whole reason this is not four
+    arrays and two scalars: a node joining or being drained changes the denominator, and a
+    fraction computed against today's capacity would redraw last night's history as if the
+    cluster had always been this size.
+
+    A deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the
+    job counts are point-in-time facts a trend line has no use for; carrying them would make
+    a 24 h reply many times the size for nothing anyone plots.
+    """
+
+    #: Epoch seconds, as :attr:`Status.phase_since` and its neighbours use.
+    at: float
+    cpu_used: float
+    cpu_capacity: float
+    memory_used_bytes: int
+    memory_capacity_bytes: int
+
+
+class UsageHistory(BaseModel):
+    """What the service can say about recent CPU/memory use.
+
+    **In memory only, and it says so.** The recording lives in the serving process, so
+    :attr:`service_started_at` is a hard floor on what this can ever cover: a restart is not
+    a gap in the data, it is the beginning of the data. A consumer that drew an empty first
+    hour as "nothing was running" would be inventing a fact, which is why the floor is
+    reported rather than left to be inferred from the first sample.
+
+    Persisting it was considered and refused. A durable metrics store is a real dependency
+    -- retention, a disk budget, a rotation policy -- and this answers "how busy has the
+    lane been lately", which a volatile 24 h window answers.
+    """
+
+    samples: list[UsageSample] = Field(default_factory=list)
+    #: How often the recorder samples, so a consumer can tell a quiet period from a gap.
+    sample_interval_s: float = 0.0
+    #: Epoch seconds when this process began recording. The window cannot reach past it.
+    service_started_at: float = 0.0
+    #: Seconds between the samples actually returned: :attr:`sample_interval_s` for a short
+    #: window, a multiple of it for a long one, because a reply strides rather than sending
+    #: thousands of points into a chart a few hundred pixels wide.
+    step_s: float = 0.0
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -1310,7 +1399,7 @@ class PreviewResponse(BaseModel):
 class WorldDescription(BaseModel):
     """What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
 
-    The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
+    The vocabulary inside ``components`` and ``overridable`` is the **simulator's**, not
     RoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a
     different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
     plain mappings rather than modeled fields — typing them here would make this the second
@@ -1666,6 +1755,16 @@ class Routes:
     #: a literal at the route.
     LOGIN = "/login"
     USAGE = "/usage"
+    #: Recent usage, sampled in the serving process. Under ``/usage`` because it IS usage --
+    #: the same reading over time rather than the same reading now -- which also keeps it
+    #: inside a dev-proxy prefix that already exists.
+    USAGE_HISTORY = "/usage/history"
+    #: The operator surface: what version is running and whether something newer is
+    #: published (GET), the roll onto it (POST), and this service's own log. One prefix so
+    #: the dev proxy needs one entry and the generated route table reads as one section.
+    ADMIN_UPGRADE = "/admin/upgrade"
+    ADMIN_LOG = "/admin/log"
+    ADMIN_LOG_STREAM = "/admin/log/stream"
     CAMPAIGNS = "/campaigns"
     #: SSE stream of the campaign list — a server-side loop over the same
     #: ``list_campaigns`` pull (``CAMPAIGNS`` above stays the authoritative read for
@@ -1976,6 +2075,32 @@ class RobovastInterface(ABC):
 
         ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
         single-backend services offer one lane and ignore it.
+        """
+
+    # -- rolling this service onto newer bytes ------------------------------
+
+    @abstractmethod
+    def upgrade_info(self) -> UpgradeInfo:
+        """Can this deployment roll itself, and is there anything newer to roll onto?
+
+        Read-only, and safe to call on any lane: a deployment that cannot roll itself says
+        so in ``unsupported_reason`` rather than raising, because "there is no button here"
+        is an answer a caller renders, not a failure it reports.
+        """
+
+    @abstractmethod
+    def upgrade_service(self, force: bool = False) -> ActionResult:
+        """Roll this service onto the newest image at its resolved tag.
+
+        Returns once the roll has been *asked for* -- **not** once the new pod is serving.
+        With one replica and the default RollingUpdate strategy Kubernetes starts the new
+        pod before stopping the old, so the pod answering this call is still up when it
+        answers; a caller learns the handover happened by watching
+        ``upgrade_info().running_digest`` change, never from this return value.
+
+        Refuses while campaigns are live, because the controller driving them runs in the
+        pod being replaced. ``force`` overrides that refusal and nothing else -- in
+        particular it does not make an unsupported lane supported.
         """
 
     # -- workspaces (editable project inputs) -------------------------------
@@ -2588,7 +2713,7 @@ class RobovastInterface(ABC):
         """Describe the world this campaign's simulator will load.
 
         The other half of authoring the ``sim`` channel. ``preview_configurations`` says what
-        the campaign expands to; this says what the *world* offers it — which plugins an
+        the campaign expands to; this says what the *world* offers it — which components an
         override can address, and with *targets* which model values a run may change at all,
         with the objects that can be named and their current values. Written against a guess,
         both are refused inside the container after an image pull; the whole point of asking

@@ -60,7 +60,7 @@ from robovast.execution.control_server import Phase, is_running
 from robovast.service.client import LocalTransport
 from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobSummary,
                                         ListJobsResponse, LogChunk, ResourceUsage,
-                                        DiskSpace, VersionInfo)
+                                        DiskSpace, UpgradeInfo, VersionInfo)
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,82 @@ class ClusterService(LocalTransport):
             # operator to fix a registry over a config-loading problem.
             pass
         return v
+
+    # -- rolling this service onto newer bytes ------------------------------
+
+    def upgrade_info(self) -> UpgradeInfo:
+        """What is running here, what is published, and whether this pod can roll itself.
+
+        Builds on the local answer -- which supplies the live campaign list and a refusal --
+        and replaces the refusal only once every precondition actually holds. Written that
+        way round so a lane that cannot roll always carries a *reason*, and never an empty
+        ``supported=False`` a reader has to interpret.
+        """
+        info = super().upgrade_info()
+        if not os.environ.get("KUBERNETES_SERVICE_HOST"):
+            # A service driving the cluster from outside it: there is a Deployment, but it
+            # is not this process, and rolling it would not update the thing the caller is
+            # talking to.
+            info.unsupported_reason = (
+                "this service drives the cluster from outside it, so it has no Deployment "
+                "of its own to roll. Restart it where it runs.")
+            return info
+        from .service_deploy import deployment_image_ref, running_image_digest
+        ref, denied = deployment_image_ref(self.namespace, self.kube_context)
+        if denied:
+            # A 403 on the plain read is a missed migration, not a broken cluster: the
+            # apps/deployments grant arrived with this feature, and a deployment set up
+            # before it has a Role without it. Named with the fix, and the fix deliberately
+            # does not need a roll -- which is what makes it available mid-campaign.
+            info.unsupported_reason = (
+                "this deployment's service account may not read its own Deployment. Run "
+                "'vast exec cluster upgrade --no-restart' once, from somewhere with "
+                "cluster access, to grant it -- that reconciles RBAC without rolling the "
+                "pod, so it is safe while a campaign is in flight.")
+            return info
+        info.image_ref = ref
+        info.running_digest = running_image_digest(self.namespace, self.kube_context)
+        try:
+            info.registry_digest = self._images.published_digest(ref) if ref else ""
+        except Exception as e:  # noqa: BLE001 - a registry that will not answer is a fact
+            logger.debug("could not read the published digest for %s: %s", ref, e)
+            info.registry_digest = ""
+        if info.running_digest and info.registry_digest:
+            # The two sides spell a digest differently: the registry answers
+            # ``repo@sha256:...`` while the kubelet's imageID is already reduced to the
+            # bare ``sha256:...`` (see running_image_digest). Compare the part they share.
+            # When either is missing this stays None -- "I could not tell" -- because
+            # rendering that as "up to date" is the one wrong answer here.
+            info.upgrade_available = (
+                info.registry_digest.rpartition("@")[2] != info.running_digest)
+        info.supported = True
+        info.unsupported_reason = None
+        return info
+
+    def upgrade_service(self, force: bool = False) -> ActionResult:
+        """Roll this service's own Deployment. See :meth:`upgrade_info` for what it is not.
+
+        The live-campaign refusal is a ``RuntimeError`` (409, a conflict the caller can
+        resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
+        "not now", the other is "not here".
+        """
+        info = self.upgrade_info()
+        if not info.supported:
+            raise ValueError(info.unsupported_reason)
+        if info.active_campaigns and not force:
+            live = ", ".join(f"{c.campaign_id} ({c.phase})" for c in info.active_campaigns)
+            raise RuntimeError(
+                f"refusing to roll while {len(info.active_campaigns)} campaign(s) are "
+                f"live: {live}. The controller driving them runs in the pod this replaces. "
+                f"Stop them, wait for them, or force the roll.")
+        from .service_deploy import patch_restart_annotation
+        stamped = patch_restart_annotation(self.namespace, self.kube_context)
+        return ActionResult(ok=True, message=(
+            f"rolling robovast-service (restartedAt {stamped}). Kubernetes starts the new "
+            f"pod before stopping this one, so the API stays up; watch the running digest "
+            f"for the handover. RBAC, the Kueue queues, the registry route, the env "
+            f"Secrets and the build daemon are NOT reconciled -- "
+            f"'vast exec cluster upgrade' is what does that."))
 
     def _api_server_url(self) -> "str | None":
         """The API server this lane targets, read from config only — never dialled.
@@ -3018,7 +3094,7 @@ class ClusterService(LocalTransport):
             ok, message = postprocess_campaign(
                 cfg, request.campaign_id, str(campaign_root), self.namespace,
                 force=request.force, skip=list(request.skip or []),
-                kube_context=self.kube_context)
+                kube_context=self.kube_context, state=state)
             status = record_step_outcome(campaign_root, postprocessing=(ok, message))
             # Publish _execution (outcome + the conversion's postprocessing.log, even on
             # failure) so the result survives a restart and the Monitor can read it.

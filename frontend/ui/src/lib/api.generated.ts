@@ -4,6 +4,81 @@
  */
 
 export interface paths {
+    "/admin/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Service Log
+         * @description This service's own recent log, from byte *offset* -- what it has been doing.
+         *
+         *     Not a ``RobovastInterface`` operation, for the reason ``/healthz`` is not one: it
+         *     describes the process that is serving, not the campaigns it drives, and there is
+         *     nothing a transport would implement differently. In the pod, these are the records
+         *     ``kubectl logs`` would show.
+         */
+        get: operations["get_service_log_admin_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/log/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Service Log
+         * @description SSE: this service's own log, tailed live (``Last-Event-ID`` resumes).
+         *
+         *     Never sends ``eof`` -- a running service's log has no end.
+         */
+        get: operations["stream_service_log_admin_log_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Upgrade Info
+         * @description What version is running, whether something newer is published, and may we roll.
+         */
+        get: operations["upgrade_info_admin_upgrade_get"];
+        put?: never;
+        /**
+         * Upgrade Service
+         * @description Roll this service onto the newest image at its resolved tag.
+         *
+         *     409 while campaigns are live unless *force*: the pod being replaced is where their
+         *     controller runs. Returns as soon as the roll is asked for -- the new pod starts
+         *     before this one stops, so watch ``upgrade_info().running_digest`` for the handover.
+         */
+        post: operations["upgrade_service_admin_upgrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns": {
         parameters: {
             query?: never;
@@ -1150,6 +1225,31 @@ export interface paths {
         };
         /** Resource Usage */
         get: operations["resource_usage_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/usage/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage History
+         * @description Recent CPU/memory use, sampled in this process since it started.
+         *
+         *     Strided rather than truncated: a long window keeps its whole span at a coarser
+         *     step, because dropping the old half of a 24 h view would answer a different
+         *     question from the one asked. ``service_started_at`` is reported so a short history
+         *     cannot be misread as a quiet one -- see :class:`UsageHistory`.
+         */
+        get: operations["usage_history_usage_history_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3273,6 +3373,55 @@ export interface components {
             content: string;
         };
         /**
+         * UpgradeInfo
+         * @description Whether this deployment can roll itself onto newer bytes, and whether it should.
+         *
+         *     Three questions a single boolean kept collapsing:
+         *
+         *     * *what is running* -- :attr:`running_digest`, the imageID the kubelet resolved. With a
+         *       floating tag it is the only thing that tells two builds apart;
+         *     * *what is published* -- :attr:`registry_digest`, one HEAD against the tag
+         *       :attr:`image_ref` resolves to;
+         *     * *may I* -- :attr:`supported` with :attr:`unsupported_reason`, so a caller can say why
+         *       there is no button rather than hiding one silently.
+         *
+         *     **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
+         *     and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
+         *     Secrets and the build daemon are untouched, so a version needing a permission the last
+         *     one did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the
+         *     command that reconciles all of it, and the one a consumer must name. The Secrets in
+         *     particular can *never* be done from in here: they are rebuilt from the operator's
+         *     environment, which the pod does not have.
+         */
+        UpgradeInfo: {
+            /** Active Campaigns */
+            active_campaigns: components["schemas"]["CampaignSummary"][];
+            /**
+             * Image Ref
+             * @default
+             */
+            image_ref: string;
+            /**
+             * Registry Digest
+             * @default
+             */
+            registry_digest: string;
+            /**
+             * Running Digest
+             * @default
+             */
+            running_digest: string;
+            /**
+             * Supported
+             * @default false
+             */
+            supported: boolean;
+            /** Unsupported Reason */
+            unsupported_reason: string | null;
+            /** Upgrade Available */
+            upgrade_available: boolean | null;
+        };
+        /**
          * UploadGrant
          * @description A one-time, TTL-scoped upload grant; PUT the bytes to ``url``.
          */
@@ -3285,6 +3434,64 @@ export interface components {
             token: string;
             /** Url */
             url: string | null;
+        };
+        /**
+         * UsageHistory
+         * @description What the service can say about recent CPU/memory use.
+         *
+         *     **In memory only, and it says so.** The recording lives in the serving process, so
+         *     :attr:`service_started_at` is a hard floor on what this can ever cover: a restart is not
+         *     a gap in the data, it is the beginning of the data. A consumer that drew an empty first
+         *     hour as "nothing was running" would be inventing a fact, which is why the floor is
+         *     reported rather than left to be inferred from the first sample.
+         *
+         *     Persisting it was considered and refused. A durable metrics store is a real dependency
+         *     -- retention, a disk budget, a rotation policy -- and this answers "how busy has the
+         *     lane been lately", which a volatile 24 h window answers.
+         */
+        UsageHistory: {
+            /**
+             * Sample Interval S
+             * @default 0
+             */
+            sample_interval_s: number;
+            /** Samples */
+            samples: components["schemas"]["UsageSample"][];
+            /**
+             * Service Started At
+             * @default 0
+             */
+            service_started_at: number;
+            /**
+             * Step S
+             * @default 0
+             */
+            step_s: number;
+        };
+        /**
+         * UsageSample
+         * @description One :class:`ResourceUsage` reading, at a point in time.
+         *
+         *     Capacity is carried **per sample**, and that is the whole reason this is not four
+         *     arrays and two scalars: a node joining or being drained changes the denominator, and a
+         *     fraction computed against today's capacity would redraw last night's history as if the
+         *     cluster had always been this size.
+         *
+         *     A deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the
+         *     job counts are point-in-time facts a trend line has no use for; carrying them would make
+         *     a 24 h reply many times the size for nothing anyone plots.
+         */
+        UsageSample: {
+            /** At */
+            at: number;
+            /** Cpu Capacity */
+            cpu_capacity: number;
+            /** Cpu Used */
+            cpu_used: number;
+            /** Memory Capacity Bytes */
+            memory_capacity_bytes: number;
+            /** Memory Used Bytes */
+            memory_used_bytes: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -3586,7 +3793,7 @@ export interface components {
          * WorldDescription
          * @description What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
          *
-         *     The vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not
+         *     The vocabulary inside ``components`` and ``overridable`` is the **simulator's**, not
          *     RoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a
          *     different simulator would report its own objects) and RoboVAST only fixes the shape. Hence
          *     plain mappings rather than modeled fields — typing them here would make this the second
@@ -3650,6 +3857,108 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_service_log_admin_log_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogChunk"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_service_log_admin_log_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    upgrade_info_admin_upgrade_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpgradeInfo"];
+                };
+            };
+        };
+    };
+    upgrade_service_admin_upgrade_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_campaigns_campaigns_get: {
         parameters: {
             query?: {
@@ -5715,6 +6024,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResourceUsage"];
+                };
+            };
+        };
+    };
+    usage_history_usage_history_get: {
+        parameters: {
+            query?: {
+                window?: "1h" | "24h";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

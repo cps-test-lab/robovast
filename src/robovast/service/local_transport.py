@@ -55,6 +55,7 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
                                                is_terminal)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+                                        UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DiskSpace, EditFileRequest, FileEntry,
@@ -1254,7 +1255,7 @@ class LocalTransport(RobovastInterface):
                            target.name, exc_info=True)
 
     def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
-                              force: bool = False, skip=()) -> tuple:
+                              force: bool = False, skip=(), state=None) -> tuple:
         """Run the campaign's own postprocessing pipeline; return ``(ok, message)``.
 
         One call for both callers -- the ``run_postprocessing`` retrigger and the chain an
@@ -1267,12 +1268,21 @@ class LocalTransport(RobovastInterface):
         handler the caller opened. Without it those lines default to ``print`` and land on
         the service's stdout, so the phase file held only what modules logged themselves --
         the campaign log looked empty for the run you had just asked for.
+
+        With *state*, those same lines also become the live ``stage`` marker -- see
+        :func:`~robovast.execution.control_server.stage_output_callback`. Both callers have
+        one, and both are watched from the campaign view, so a re-run narrates itself there
+        exactly as an auto-chained run does; without it a retrigger was the case where the
+        view showed ``postprocessing`` and nothing else for the whole run.
         """
+        from robovast.execution.control_server import \
+            stage_output_callback  # pylint: disable=import-outside-toplevel
         from robovast.results_processing.postprocessing import \
             run_postprocessing  # pylint: disable=import-outside-toplevel
         return run_postprocessing(
             results_dir=str(campaign_dir.parent), campaign=campaign_id,
-            force=force, skip=list(skip), output_callback=logger.info)
+            force=force, skip=list(skip),
+            output_callback=stage_output_callback(state, logger.info))
 
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
         """Chain postprocessing when the imported campaign has none of its own.
@@ -1290,7 +1300,7 @@ class LocalTransport(RobovastInterface):
         else:
             logger.info("%s arrived raw; running postprocessing", campaign_id)
             state.set_phase(Phase.POSTPROCESSING)
-            ok, message = self._postprocess_campaign(campaign_id, target)
+            ok, message = self._postprocess_campaign(campaign_id, target, state=state)
             record_step_outcome(target, postprocessing=(ok, message))
         # Read what the campaign says about itself BEFORE publishing, because publishing is
         # where the tree stops being readable: on a lane whose durable home is elsewhere,
@@ -1421,6 +1431,32 @@ class LocalTransport(RobovastInterface):
         return usage.model_copy(update={
             "exec_container": self._exec_container_state(),
             "query_containers": self._query_container_states()})
+
+    def upgrade_info(self) -> UpgradeInfo:
+        """The live campaigns, and a refusal: there is no Deployment here to roll.
+
+        Split from the cluster answer the way :meth:`version` is -- the campaign list is
+        lane-neutral and belongs here, and the lane below fills in what only it knows. The
+        refusal names how this deployment *is* updated rather than reporting a capability
+        it does not have: a local service is however it was installed and started.
+        """
+        listed = self.list_campaigns(ListCampaignsRequest(limit=100, offset=0)).campaigns
+        return UpgradeInfo(
+            supported=False,
+            unsupported_reason=(
+                "this service is not a Kubernetes Deployment, so it has nothing to roll. "
+                "Update it the way it was installed and restart it."),
+            active_campaigns=[c for c in listed if not is_terminal(c.phase)])
+
+    def upgrade_service(self, force: bool = False) -> ActionResult:
+        """Refuse: see :meth:`upgrade_info`.
+
+        ``ValueError`` -> 400. Not the 409 the live-campaign refusal uses: that one is a
+        conflict the caller can resolve and retry, this one is a request that does not
+        apply to this deployment at all.
+        """
+        del force  # a refusal about the lane; forcing does not make a lane something else
+        raise ValueError(self.upgrade_info().unsupported_reason)
 
     def _exec_container_state(self):
         """The held exec container, or ``None`` — without creating a manager.
@@ -2524,9 +2560,13 @@ class LocalTransport(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
+            # Each step's line also becomes the live ``stage`` marker: this phase has no run
+            # counter, so its own narration is the only thing that separates a long step from
+            # a stuck one for a reader watching the campaign view.
+            from robovast.execution.control_server import stage_output_callback
             ok, message = run_postprocessing(
                 results_dir=results_dir, campaign=campaign_id,
-                output_callback=logger.info)
+                output_callback=stage_output_callback(state, logger.info))
             if ok:
                 from robovast.results_processing.postprocessing import \
                     campaign_defines_postprocessing
@@ -2641,15 +2681,28 @@ class LocalTransport(RobovastInterface):
         instead. Same campaign, same bytes, two answers depending on service uptime.
 
         Only ever promotes ``False`` → ``True``, and only on the evidence the recovery path
-        uses, so the two cannot disagree; what ``_postprocess`` records is untouched, and so
-        is the archive decision that reads it. Best-effort on the cluster lane in exactly the
+        uses — :func:`~robovast.common.campaign_data.campaign_has_derived_data`, which both
+        call so they cannot disagree; what ``_postprocess`` records is untouched, and so is
+        the archive decision that reads it. Best-effort on the cluster lane in exactly the
         way the recovery path already is: ``data.db`` is not among ``_RECORD_OBJECTS``, so a
         campaign whose derived data was never fetched here answers the same as before.
+
+        Two states are deliberately *not* promoted, both of which the plain existence of
+        ``data.db`` used to promote — this is the live path, so it sees them where the
+        recovery path (which runs only once nothing is driving the campaign) mostly cannot:
+
+        * a build **in progress**. The file appears at 0%, so a campaign spent the whole of a
+          twenty-minute ``data.db`` build reporting that its results were ready. The web UI
+          gates its Results views on exactly this flag, so it offered them over a database
+          being appended to.
+        * a build that **failed**. ``postprocessing_error`` sets the flag False on purpose;
+          promoting it back would hide the error behind "results are ready".
         """
-        if snap.postprocessed:
+        if snap.postprocessed or snap.postprocessing_error:
             return snap
+        from robovast.common.campaign_data import campaign_has_derived_data
         try:
-            if (Path(self._record_dir(campaign_id)) / "_execution" / "data.db").is_file():
+            if campaign_has_derived_data(self._record_dir(campaign_id)):
                 snap.postprocessed = True
         except OSError:
             pass          # a status read must not fail over an unreachable record dir
@@ -3835,7 +3888,7 @@ class LocalTransport(RobovastInterface):
             try:
                 ok, message = self._postprocess_campaign(
                     request.campaign_id, campaign_dir,
-                    force=request.force, skip=list(request.skip or []))
+                    force=request.force, skip=list(request.skip or []), state=state)
             finally:
                 remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, postprocessing=(ok, message))

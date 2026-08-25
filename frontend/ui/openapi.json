@@ -2895,6 +2895,71 @@
         "title": "UpdatePostprocessingSourceRequest",
         "type": "object"
       },
+      "UpgradeInfo": {
+        "description": "Whether this deployment can roll itself onto newer bytes, and whether it should.\n\nThree questions a single boolean kept collapsing:\n\n* *what is running* -- :attr:`running_digest`, the imageID the kubelet resolved. With a\n  floating tag it is the only thing that tells two builds apart;\n* *what is published* -- :attr:`registry_digest`, one HEAD against the tag\n  :attr:`image_ref` resolves to;\n* *may I* -- :attr:`supported` with :attr:`unsupported_reason`, so a caller can say why\n  there is no button rather than hiding one silently.\n\n**This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation\nand nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential\nSecrets and the build daemon are untouched, so a version needing a permission the last\none did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the\ncommand that reconciles all of it, and the one a consumer must name. The Secrets in\nparticular can *never* be done from in here: they are rebuilt from the operator's\nenvironment, which the pod does not have.",
+        "properties": {
+          "active_campaigns": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignSummary"
+            },
+            "title": "Active Campaigns",
+            "type": "array"
+          },
+          "image_ref": {
+            "default": "",
+            "title": "Image Ref",
+            "type": "string"
+          },
+          "registry_digest": {
+            "default": "",
+            "title": "Registry Digest",
+            "type": "string"
+          },
+          "running_digest": {
+            "default": "",
+            "title": "Running Digest",
+            "type": "string"
+          },
+          "supported": {
+            "default": false,
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "unsupported_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unsupported Reason"
+          },
+          "upgrade_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upgrade Available"
+          }
+        },
+        "required": [
+          "active_campaigns",
+          "image_ref",
+          "registry_digest",
+          "running_digest",
+          "supported",
+          "unsupported_reason",
+          "upgrade_available"
+        ],
+        "title": "UpgradeInfo",
+        "type": "object"
+      },
       "UploadGrant": {
         "description": "A one-time, TTL-scoped upload grant; PUT the bytes to ``url``.",
         "properties": {
@@ -2929,6 +2994,75 @@
           "url"
         ],
         "title": "UploadGrant",
+        "type": "object"
+      },
+      "UsageHistory": {
+        "description": "What the service can say about recent CPU/memory use.\n\n**In memory only, and it says so.** The recording lives in the serving process, so\n:attr:`service_started_at` is a hard floor on what this can ever cover: a restart is not\na gap in the data, it is the beginning of the data. A consumer that drew an empty first\nhour as \"nothing was running\" would be inventing a fact, which is why the floor is\nreported rather than left to be inferred from the first sample.\n\nPersisting it was considered and refused. A durable metrics store is a real dependency\n-- retention, a disk budget, a rotation policy -- and this answers \"how busy has the\nlane been lately\", which a volatile 24 h window answers.",
+        "properties": {
+          "sample_interval_s": {
+            "default": 0.0,
+            "title": "Sample Interval S",
+            "type": "number"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/UsageSample"
+            },
+            "title": "Samples",
+            "type": "array"
+          },
+          "service_started_at": {
+            "default": 0.0,
+            "title": "Service Started At",
+            "type": "number"
+          },
+          "step_s": {
+            "default": 0.0,
+            "title": "Step S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "sample_interval_s",
+          "samples",
+          "service_started_at",
+          "step_s"
+        ],
+        "title": "UsageHistory",
+        "type": "object"
+      },
+      "UsageSample": {
+        "description": "One :class:`ResourceUsage` reading, at a point in time.\n\nCapacity is carried **per sample**, and that is the whole reason this is not four\narrays and two scalars: a node joining or being drained changes the denominator, and a\nfraction computed against today's capacity would redraw last night's history as if the\ncluster had always been this size.\n\nA deliberate subset of :class:`ResourceUsage`. Disk, store, the exec containers and the\njob counts are point-in-time facts a trend line has no use for; carrying them would make\na 24 h reply many times the size for nothing anyone plots.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "cpu_capacity": {
+            "title": "Cpu Capacity",
+            "type": "number"
+          },
+          "cpu_used": {
+            "title": "Cpu Used",
+            "type": "number"
+          },
+          "memory_capacity_bytes": {
+            "title": "Memory Capacity Bytes",
+            "type": "integer"
+          },
+          "memory_used_bytes": {
+            "title": "Memory Used Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "cpu_capacity",
+          "cpu_used",
+          "memory_capacity_bytes",
+          "memory_used_bytes"
+        ],
+        "title": "UsageSample",
         "type": "object"
       },
       "ValidationError": {
@@ -3531,7 +3665,7 @@
         "type": "object"
       },
       "WorldDescription": {
-        "description": "What a campaign's world offers \u2014 :meth:`RobovastInterface.describe_world`.\n\nThe vocabulary inside ``plugins`` and ``overridable`` is the **simulator's**, not\nRoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a\ndifferent simulator would report its own objects) and RoboVAST only fixes the shape. Hence\nplain mappings rather than modeled fields \u2014 typing them here would make this the second\nplace a simulator's schema is written down, and the two would disagree.\n\n``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,\nso this answer is only true for that image \u2014 a caller comparing two answers has to know\nwhether it is comparing worlds or images.",
+        "description": "What a campaign's world offers \u2014 :meth:`RobovastInterface.describe_world`.\n\nThe vocabulary inside ``components`` and ``overridable`` is the **simulator's**, not\nRoboVAST's: a backend answers in its own terms (roqsim reports geoms and actuators; a\ndifferent simulator would report its own objects) and RoboVAST only fixes the shape. Hence\nplain mappings rather than modeled fields \u2014 typing them here would make this the second\nplace a simulator's schema is written down, and the two would disagree.\n\n``image`` is not decoration. Which world a ref resolves to depends on what is *installed*,\nso this answer is only true for that image \u2014 a caller comparing two answers has to know\nwhether it is comparing worlds or images.",
         "properties": {
           "backend": {
             "default": "",
@@ -3629,6 +3763,134 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/log": {
+      "get": {
+        "description": "This service's own recent log, from byte *offset* -- what it has been doing.\n\nNot a ``RobovastInterface`` operation, for the reason ``/healthz`` is not one: it\ndescribes the process that is serving, not the campaigns it drives, and there is\nnothing a transport would implement differently. In the pod, these are the records\n``kubectl logs`` would show.",
+        "operationId": "get_service_log_admin_log_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogChunk"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Service Log",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/log/stream": {
+      "get": {
+        "description": "SSE: this service's own log, tailed live (``Last-Event-ID`` resumes).\n\nNever sends ``eof`` -- a running service's log has no end.",
+        "operationId": "stream_service_log_admin_log_stream_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stream Service Log",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/upgrade": {
+      "get": {
+        "description": "What version is running, whether something newer is published, and may we roll.",
+        "operationId": "upgrade_info_admin_upgrade_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpgradeInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upgrade Info",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Roll this service onto the newest image at its resolved tag.\n\n409 while campaigns are live unless *force*: the pod being replaced is where their\ncontroller runs. Returns as soon as the roll is asked for -- the new pod starts\nbefore this one stops, so watch ``upgrade_info().running_digest`` for the handover.",
+        "operationId": "upgrade_service_admin_upgrade_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upgrade Service",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/campaigns": {
       "get": {
         "operationId": "list_campaigns_campaigns_get",
@@ -6910,6 +7172,54 @@
           }
         },
         "summary": "Resource Usage",
+        "tags": [
+          "meta"
+        ]
+      }
+    },
+    "/usage/history": {
+      "get": {
+        "description": "Recent CPU/memory use, sampled in this process since it started.\n\nStrided rather than truncated: a long window keeps its whole span at a coarser\nstep, because dropping the old half of a 24 h view would answer a different\nquestion from the one asked. ``service_started_at`` is reported so a short history\ncannot be misread as a quiet one -- see :class:`UsageHistory`.",
+        "operationId": "usage_history_usage_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "24h",
+              "enum": [
+                "1h",
+                "24h"
+              ],
+              "title": "Window",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage History",
         "tags": [
           "meta"
         ]

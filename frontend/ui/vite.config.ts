@@ -26,6 +26,8 @@ const API_PREFIXES = [
   '/campaigns', '/workspaces', '/uploads', '/image-builds', '/exec', '/share',
   // metadata + authoring help
   '/version', '/healthz', '/login', '/usage', '/config', '/variation_types', '/panel_types',
+  // the operator surface (Admin page): version + roll, and the service's own log
+  '/admin',
   // the two content namespaces (files by address)
   '/results', '/sources',
   // FastAPI's own pages

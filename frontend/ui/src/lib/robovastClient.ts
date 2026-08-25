@@ -27,6 +27,9 @@ export type VersionInfo = Schemas['VersionInfo']
 // go one-at-a-time (local Docker) or in parallel (cluster); CPU in cores, memory
 // in bytes. `used` is host utilization locally / summed pod requests on the cluster.
 export type ResourceUsage = Schemas['ResourceUsage']
+export type UsageHistory = Schemas['UsageHistory']
+export type UsageSample = Schemas['UsageSample']
+export type UpgradeInfo = Schemas['UpgradeInfo']
 
 export type CampaignSummary = Schemas['CampaignSummary']
 
@@ -375,6 +378,20 @@ export const robovast = {
 
   resourceUsage: () => request<ResourceUsage>('GET', '/usage'),
 
+  // The same reading over time, recorded in the service process. In memory only, so the
+  // response carries `service_started_at` — the window can never reach past it, and an
+  // empty first hour is the start of the record rather than an idle cluster.
+  usageHistory: (window: '1h' | '24h') =>
+    request<UsageHistory>('GET', `/usage/history?window=${window}`),
+
+  upgradeInfo: () => request<UpgradeInfo>('GET', '/admin/upgrade'),
+
+  // Returns as soon as the roll is asked for, NOT when the new pod is serving: with one
+  // replica Kubernetes starts the new pod before stopping the old, so the pod answering
+  // this is still up. Watch upgradeInfo().running_digest for the handover.
+  upgradeService: (force: boolean) =>
+    request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
+
   // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
   // it: a cluster service streams it from the object store, a local one tars its own
   // results directory. (A local service used to reply 409 here, which is why the button
@@ -447,6 +464,10 @@ export const robovast = {
   // connect and on every change (a server-side loop over listCampaigns). The
   // Monitor page consumes this instead of polling; EventSource reconnects natively.
   campaignsStreamUrl: () => `${BASE}/campaigns/events`,
+
+  // This service's own log — the same SSE tail as the campaign logs above, over the ring
+  // the serving process keeps. No id: there is one service, and it is the one answering.
+  serviceLogStreamUrl: () => `${BASE}/admin/log/stream`,
 
   jobLogStreamUrl: (campaignId: string, jobName: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-log/stream?job_name=${encodeURIComponent(

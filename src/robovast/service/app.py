@@ -31,13 +31,15 @@ CLI, the MCP server, and a future web UI. ``fastapi``/``uvicorn`` are imported
 lazily so importing this module stays cheap.
 """
 
+import collections
 import hmac
 import logging
+import time
 from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.service import auth
+from robovast.service import auth, service_log
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
                                         CampaignVisualizationsResponse, CleanupDataRequest,
@@ -48,6 +50,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         ImportCampaignRequest, ShareListing,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk, PanelsSource,
+                                        UpgradeInfo, UsageHistory, UsageSample,
                                         PostprocessingSource, PreviewResponse, ResourceUsage,
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
@@ -141,7 +144,7 @@ def _html_escape(value: str) -> str:
 #: ungrouped. Kept here rather than in the docs extension because it is a property of the
 #: API, and :mod:`tests.service.test_route_docs` checks the two stay in step.
 ROUTE_TAG_ORDER = ("meta", "authoring", "workspaces", "uploads", "files", "campaigns",
-                   "image-builds", "exec", "results", "plugin-endpoints")
+                   "image-builds", "exec", "results", "admin", "plugin-endpoints")
 
 
 def api_routes(app):
@@ -205,6 +208,26 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     mcp_app = _build_mcp_app(impl) if mount_mcp else None
 
+    # -- the usage recording ------------------------------------------------
+    # ``/usage`` is one instant, and "is the cluster busy?" is a question about a period.
+    # Nothing anywhere kept a series, so this process keeps one: 24 h at a 30 s sample.
+    #
+    # It lives here, in the serving layer, rather than on a transport. ``build_app(impl)``
+    # is the single path both lanes take, so one recorder covers local and cluster; a
+    # sampler inside ``LocalTransport`` would instead start a thread in every in-process
+    # client and every test that constructs one. The precedent is ``_sse_campaign_list``
+    # below: also a server-side derivative of an interface op, also with no method of its
+    # own on ``RobovastInterface``.
+    #
+    # Per-app, not module-level, so two apps built in one process (which tests do) record
+    # separately instead of interleaving into one deque.
+    _usage_sample_s = 30.0
+    _usage_ring = collections.deque(maxlen=int(24 * 3600 / _usage_sample_s))
+    _usage_started_at = time.time()
+    #: Most points a reply will carry. A 24 h window is 2880 samples -- eight per pixel of
+    #: the chart that draws it, and a few hundred kB on the wire every refresh.
+    _usage_max_points = 360
+
     @asynccontextmanager
     async def _lifespan(_app):
         """Run ``impl.shutdown()`` on service teardown (Ctrl+C on ``vast serve``).
@@ -222,6 +245,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         async with AsyncExitStack() as stack:
             if mcp_app is not None:
                 await stack.enter_async_context(mcp_app.lifespan(_app))
+            # The usage recorder runs for as long as the app serves. The cancel is
+            # registered as a stack callback rather than called after the yield: the
+            # ``impl.shutdown()`` below sits lexically inside the task group's cancel
+            # scope, so cancelling before it would cancel the shutdown too. Registered
+            # after the group is entered, it unwinds first (LIFO) -- the sampler stops,
+            # then the group closes without waiting forever on a loop that never ends.
+            task_group = await stack.enter_async_context(anyio.create_task_group())
+            task_group.start_soon(_sample_usage)
+            stack.callback(task_group.cancel_scope.cancel)
             yield
             try:
                 await anyio.to_thread.run_sync(impl.shutdown)
@@ -229,6 +261,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 logger.exception("error during service shutdown")
 
     app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
+
+    # Start recording this process's log. Here and not in ``setup_logging`` because that
+    # runs in every ``vast`` invocation, and a ring is only worth filling where something
+    # serves it.
+    service_log.install()
 
     auth_token, _ephemeral = auth.resolve_token(auth_token)
     app.state.auth_token = auth_token
@@ -362,6 +399,66 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             task_group.start_soon(_watch)
             task_group.start_soon(_run)
         return outcome
+
+    async def _sample_usage():
+        """Record one ``resource_usage()`` reading every ``_usage_sample_s``.
+
+        Goes through ``impl.resource_usage`` rather than reaching past it to a lane's
+        internals, which means it runs *through* ``LocalTransport``'s 10 s usage cache: at
+        a 30 s cadence that never hits, so every entry here is a fresh reading, while a UI
+        poll landing between two samples is still served from the cache. One pull per
+        window either way -- on the cluster that pull is a ``list_node`` plus a filtered
+        ``list_pod``, and a second, independent sampler would have doubled it.
+
+        ``_pull_or_exit`` for the same reason the streams use it: the pull is network I/O
+        on the cluster lane, and a Ctrl+C must not wait on it.
+
+        One honest wrinkle, recorded here because it is invisible at the call site:
+        ``psutil.cpu_percent(interval=None)`` averages *since the previous call*, so on the
+        local lane the averaging window is now sometimes this 30 s and sometimes the
+        sidebar's 15 s poll, whichever asked last. Both are truthful "average since the
+        last reading"; the window simply is not fixed. Taking a private psutil sample to
+        fix that would put a second source of truth behind one number.
+        """
+        # One reading taken and discarded, then a full interval before the first recorded
+        # one. A lane whose "used" is an average *since the previous call* has no previous
+        # call at process start and answers 0.0 (documented on
+        # LocalTransport._compute_resource_usage). That is harmless for a meter which
+        # corrects itself seconds later, and not harmless here: a recorder makes the
+        # transient permanent, as a dip to 0% sitting at the head of the chart for a day.
+        #
+        # Both halves are needed, and the second is why this loop sleeps before it reads
+        # rather than after. Priming alone did not work: resource_usage memoises for
+        # _USAGE_CACHE_TTL, so a record taken immediately after the prime is served the
+        # primed 0.0 straight back out of the cache. Waiting a whole sample interval clears
+        # the cache and gives the average a real span to cover, without this code having to
+        # know what the TTL is -- only that a sample interval is longer than one.
+        #
+        # The cost is no data for the first interval, which is honest: an empty series
+        # says "nothing recorded yet", where a zero would have said "nothing running".
+        await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
+        while not app.state.should_exit():
+            await anyio.sleep(_usage_sample_s)
+            # A lambda, not ``impl.resource_usage``: passing the bound method resolves the
+            # attribute *here*, outside the guarded call, so an impl without one (a partial
+            # test double, an older transport) raised straight out of this task and took
+            # the app's task group down with it. Recording usage must never be able to
+            # break serving.
+            reading = await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
+            if reading is None:  # shutting down
+                return
+            if isinstance(reading, Exception):
+                # A lane that cannot be read is not a reason to stop recording -- a cluster
+                # is unreachable for a minute and then is not. Skipping the sample leaves a
+                # gap, which is the truth; ``sample_interval_s`` is what lets a reader see
+                # it as one.
+                logger.debug("usage sample skipped: %s", reading)
+            else:
+                _usage_ring.append(UsageSample(
+                    at=time.time(),
+                    cpu_used=reading.cpu_used, cpu_capacity=reading.cpu_capacity,
+                    memory_used_bytes=reading.memory_used_bytes,
+                    memory_capacity_bytes=reading.memory_capacity_bytes))
 
     async def _sse_log_stream(request: Request, fetch, start_offset: int):
         """SSE generator tailing a ``fetch(offset) -> LogChunk`` pull.
@@ -505,6 +602,62 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
     def resource_usage() -> ResourceUsage:
         return _guard(impl.resource_usage)
+
+    @app.get(Routes.USAGE_HISTORY, response_model=UsageHistory, tags=["meta"])
+    def usage_history(window: Literal["1h", "24h"] = "24h") -> UsageHistory:
+        """Recent CPU/memory use, sampled in this process since it started.
+
+        Strided rather than truncated: a long window keeps its whole span at a coarser
+        step, because dropping the old half of a 24 h view would answer a different
+        question from the one asked. ``service_started_at`` is reported so a short history
+        cannot be misread as a quiet one -- see :class:`UsageHistory`.
+        """
+        span = 3600.0 if window == "1h" else 24 * 3600.0
+        cutoff = time.time() - span
+        rows = [row for row in _usage_ring if row.at >= cutoff]
+        stride = max(1, -(-len(rows) // _usage_max_points))  # ceil, so the cap holds
+        return UsageHistory(samples=rows[::stride],
+                            sample_interval_s=_usage_sample_s,
+                            service_started_at=_usage_started_at,
+                            step_s=_usage_sample_s * stride)
+
+    # -- admin: this service's own version, roll, and log --------------------
+
+    @app.get(Routes.ADMIN_UPGRADE, response_model=UpgradeInfo, tags=["admin"])
+    def upgrade_info() -> UpgradeInfo:
+        """What version is running, whether something newer is published, and may we roll."""
+        return _guard(impl.upgrade_info)
+
+    @app.post(Routes.ADMIN_UPGRADE, response_model=ActionResult, tags=["admin"])
+    def upgrade_service(force: bool = False) -> ActionResult:
+        """Roll this service onto the newest image at its resolved tag.
+
+        409 while campaigns are live unless *force*: the pod being replaced is where their
+        controller runs. Returns as soon as the roll is asked for -- the new pod starts
+        before this one stops, so watch ``upgrade_info().running_digest`` for the handover.
+        """
+        return _guard(lambda: impl.upgrade_service(force))
+
+    @app.get(Routes.ADMIN_LOG, response_model=LogChunk, tags=["admin"])
+    def get_service_log(offset: int = 0) -> LogChunk:
+        """This service's own recent log, from byte *offset* -- what it has been doing.
+
+        Not a ``RobovastInterface`` operation, for the reason ``/healthz`` is not one: it
+        describes the process that is serving, not the campaigns it drives, and there is
+        nothing a transport would implement differently. In the pod, these are the records
+        ``kubectl logs`` would show.
+        """
+        return service_log.read(offset)
+
+    @app.get(Routes.ADMIN_LOG_STREAM, tags=["admin"])
+    async def stream_service_log(request: Request):
+        """SSE: this service's own log, tailed live (``Last-Event-ID`` resumes).
+
+        Never sends ``eof`` -- a running service's log has no end.
+        """
+        return StreamingResponse(
+            _sse_log_stream(request, service_log.read, _last_event_offset(request)),
+            media_type="text/event-stream", headers=_sse_headers)
 
     # -- authoring help (static; config editor) -----------------------------
 

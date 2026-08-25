@@ -44,6 +44,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
                                         ServiceError, UploadGrant,
+                                        UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
@@ -144,6 +145,22 @@ class HTTPTransport(RobovastInterface):
 
     def resource_usage(self) -> ResourceUsage:
         return ResourceUsage.model_validate(self._get(Routes.USAGE))
+
+    def upgrade_info(self) -> UpgradeInfo:
+        return UpgradeInfo.model_validate(self._get(Routes.ADMIN_UPGRADE))
+
+    def upgrade_service(self, force: bool = False) -> ActionResult:
+        return ActionResult.model_validate(self._post(Routes.ADMIN_UPGRADE, force=force))
+
+    def get_service_log(self, offset: int = 0) -> LogChunk:
+        """This service's own recent log (see ``Routes.ADMIN_LOG``).
+
+        Not on :class:`RobovastInterface`, so it is not an abstract method the other
+        transports must answer: the log describes the *serving process*, and an in-process
+        ``LocalTransport`` caller is already inside the process whose stderr it is. This is
+        the wire client for a route that only a remote caller needs.
+        """
+        return LogChunk.model_validate(self._get(Routes.ADMIN_LOG, offset=offset))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).

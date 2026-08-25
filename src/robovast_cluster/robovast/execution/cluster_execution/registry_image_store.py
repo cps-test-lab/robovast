@@ -34,7 +34,7 @@ from robovast.service.image_build import build_hash
 from robovast.service.image_store import ImageBuildStore, ImageRef, build_identity
 
 from .cluster_image_build import build_id_for, concrete_image_ref
-from .registry_client import PRESENT, UNKNOWN, manifest_state
+from .registry_client import PRESENT, UNKNOWN, manifest_digest, manifest_state
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,27 @@ class RegistryImageStore(ImageBuildStore):
                 f"registry and its credentials (vast exec cluster setup) rather than "
                 f"rebuilding.")
         return state == PRESENT
+
+    def published_digest(self, image_ref: str) -> str:
+        """What *image_ref*'s tag points at in the registry now, or ``""`` when unknown.
+
+        Here rather than at the caller because this is where the credential triple already
+        lives -- the push Secret, the insecure flag and the private CA -- and a second
+        place resolving them would be a second place to get them wrong.
+
+        ``""`` on every uncertainty, per :func:`manifest_digest`, and the caller must keep
+        that distinct from "nothing newer": one is a registry that did not answer, the
+        other is a service that is current. Unlike :meth:`present`, an unknown here is not
+        raised: this answers "is there an upgrade?", and not knowing is a fine answer to
+        show a reader, whereas not knowing whether an image is built would send them to
+        rebuild one that exists.
+        """
+        registry = self.registry(require=False)
+        return manifest_digest(
+            image_ref,
+            dockerconfigjson=self.push_dockerconfig(registry.push_secret_name),
+            insecure=registry.insecure,
+            ca_path=self.ca_path(registry.ca_configmap_name))
 
     # -- credentials -------------------------------------------------------
 

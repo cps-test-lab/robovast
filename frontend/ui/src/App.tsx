@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Box from '@mui/material/Box'
 import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
+import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { Sidebar, type NavTopic } from '@/components/Sidebar'
 import {
   ConfigIcon,
@@ -24,6 +25,8 @@ const Monitor = lazyView('Campaigns', () => import('@/pages/Monitor')
   .then((m) => ({ default: m.Monitor })))
 const ResultsPage = lazyView('Results', () => import('@/pages/results/ResultsPage')
   .then((m) => ({ default: m.ResultsPage })))
+const AdminPage = lazyView('Admin', () => import('@/pages/admin/AdminPage')
+  .then((m) => ({ default: m.AdminPage })))
 
 // The whole navigation lives in the left sidebar: each topic is a top-level entry; a topic with
 // several views expands to show them nested. The active topic/view is mirrored in the URL hash so
@@ -54,6 +57,15 @@ const TOPICS: NavTopic[] = [
       { id: 'run', label: 'Run view', icon: <RunViewIcon sx={{ fontSize: SUBVIEW_ICON_SIZE }} /> },
       { id: 'data', label: 'Data Browser', icon: <DataBrowserIcon sx={{ fontSize: SUBVIEW_ICON_SIZE }} /> },
     ],
+  },
+  {
+    // Not about a campaign: the service itself — which version it runs, how loaded it has
+    // been, and what it has been doing. Pinned to the foot of the rail beside the meters
+    // reporting that same service (see NavTopic.footer).
+    id: 'admin',
+    label: 'Admin',
+    icon: <SettingsRoundedIcon />,
+    footer: true,
   },
 ]
 
@@ -138,6 +150,9 @@ export function App() {
             tab={nav.tab}
             onResultsChange={setResults}
           />
+        </KeepAlive>
+        <KeepAlive active={nav.topicId === 'admin'}>
+          <AdminPage />
         </KeepAlive>
       </Box>
     </Box>

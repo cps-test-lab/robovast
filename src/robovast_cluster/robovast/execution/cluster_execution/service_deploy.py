@@ -198,6 +198,24 @@ def _service_rbac_manifests(namespace):
                 # forever (kubernetes_kueue.verify_kueue_admission_ready).
                 {"apiGroups": ["kueue.x-k8s.io"], "resources": ["localqueues"],
                  "verbs": ["get", "list"]},
+                # The service rolls ITSELF, from the web UI's Admin page and from
+                # 'vast exec cluster restart': it stamps its own Deployment's restart
+                # annotation, which with imagePullPolicy: Always lands the new pod on the
+                # newest bytes at the resolved tag. Scoped by resourceNames to this one
+                # object -- resourceNames restricts exactly the named-object verbs, which
+                # is all that is asked for, so the grant cannot reach another Deployment.
+                #
+                # `get` is not decoration: it is how the page reads the image ref to ask
+                # the registry whether anything newer exists, and a 403 on it is how a
+                # deployment predating this grant tells the page to run
+                # 'vast exec cluster upgrade --no-restart' -- which reconciles RBAC
+                # without rolling, and is therefore available mid-campaign.
+                #
+                # Deliberately NOT create/delete, and deliberately not the `apps` group at
+                # large: this permits one thing, restarting itself. Anything wider would
+                # let a web-reachable service rewrite its own spec.
+                {"apiGroups": ["apps"], "resources": ["deployments"],
+                 "verbs": ["get", "patch"], "resourceNames": [SERVICE_NAME]},
             ],
         },
         {
@@ -743,6 +761,59 @@ def running_image_digest(namespace="default", kube_context=None,
         return ""
     except Exception:  # pylint: disable=broad-except
         return ""
+
+
+def deployment_image_ref(namespace="default", kube_context=None,
+                         container=SERVICE_NAME) -> "tuple[str, bool]":
+    """``(image_ref, permission_denied)`` for our Deployment's service container.
+
+    The ref the Deployment *asks for* -- which is what a registry can be asked about --
+    as opposed to :func:`running_image_digest`, which is what arrived.
+
+    The 403 comes back as a flag rather than being swallowed into ``""`` because "I may
+    not look" and "there is nothing newer" are opposite answers with opposite advice: the
+    first is a missed RBAC migration with a one-command fix, the second is a service that
+    is up to date. A deployment set up before the ``apps/deployments`` grant above hits
+    exactly the first, so it is the case a caller most needs told apart.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    try:
+        _load_kube_config(kube_context)
+        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
+    except Exception as e:  # pylint: disable=broad-except
+        return "", getattr(e, "status", None) == 403
+    for c in (dep.spec.template.spec.containers or []):
+        if c.name == container:
+            return c.image or "", False
+    return "", False
+
+
+def patch_restart_annotation(namespace="default", kube_context=None) -> str:
+    """Stamp :data:`RESTART_ANNOTATION` with now, and return what was stamped.
+
+    This is the whole of the in-cluster roll. Kubernetes rolls a Deployment when its pod
+    template changes, and with ``imagePullPolicy: Always`` the new pod pulls the tag
+    afresh -- so one changed annotation is what moves a floating tag onto new bytes.
+
+    Deliberately **not** :func:`deploy_service`, even though that is what
+    ``vast exec cluster upgrade`` calls. That re-renders the entire manifest set from the
+    caller's environment, and the caller here is the pod itself -- whose environment is
+    whatever was baked in at the last setup. Re-rendering from it would look like an
+    upgrade and would quietly revert anything an operator changed out of band since, and
+    it could not rebuild the credential Secrets at all (those come from the operator's
+    ``.env``, which is not in here). So this rolls, and says that it only rolls; the CLI
+    command remains the one that reconciles.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    _load_kube_config(kube_context)
+    stamped = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    client.AppsV1Api().patch_namespaced_deployment(
+        SERVICE_NAME, namespace,
+        {"spec": {"template": {"metadata": {
+            "annotations": {RESTART_ANNOTATION: stamped}}}}})
+    return stamped
 
 
 class IngressRefused(RuntimeError):

@@ -37,6 +37,11 @@ export interface NavTopic {
   icon: ReactNode
   /** When present with 2+ entries, the topic is an expandable parent of these views. */
   views?: NavView[]
+  /** Render at the foot of the rail, above the connection meters, rather than in the main
+   *  list. For the entry that is about the *service* rather than about the work: it belongs
+   *  beside the meters reporting that same service's health, and listing it with Campaigns
+   *  and Results would rank it as a peer of theirs, which it is not. */
+  footer?: boolean
 }
 
 export const SIDEBAR_WIDTH = 172
@@ -97,23 +102,11 @@ export function Sidebar({
       </Stack>
 
       <List sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', p: 0 }}>
-        {topics.map((topic) => {
+        {topics.filter((t) => !t.footer).map((topic) => {
           const hasViews = !!topic.views && topic.views.length > 1
           const isActiveTopic = activeTopic === topic.id
           if (!hasViews) {
-            return (
-              <ListItemButton
-                key={topic.id}
-                selected={isActiveTopic}
-                onClick={() => onSelect(topic.id)}
-                sx={{ ...selectedSx, mb: 0.5 }}
-              >
-                <ListItemIcon sx={{ minWidth: 32, color: isActiveTopic ? 'primary.main' : 'text.secondary' }}>
-                  {topic.icon}
-                </ListItemIcon>
-                <ListItemText primaryTypographyProps={{ fontWeight: 600 }}>{topic.label}</ListItemText>
-              </ListItemButton>
-            )
+            return renderLeaf(topic)
           }
           return (
             <Box key={topic.id} sx={{ mb: 0.5 }}>
@@ -155,9 +148,31 @@ export function Sidebar({
         })}
       </List>
 
+      {/* The same renderer as a leaf topic in the list above, deliberately: it is one of
+          the same things, only placed with the service-health block rather than with the
+          work. */}
+      <List disablePadding>{topics.filter((t) => t.footer).map(renderLeaf)}</List>
+
       <ConnectionStatus />
     </Drawer>
   )
+
+  function renderLeaf(topic: NavTopic) {
+    const isActiveTopic = activeTopic === topic.id
+    return (
+      <ListItemButton
+        key={topic.id}
+        selected={isActiveTopic}
+        onClick={() => onSelect(topic.id)}
+        sx={{ ...selectedSx, mb: 0.5 }}
+      >
+        <ListItemIcon sx={{ minWidth: 32, color: isActiveTopic ? 'primary.main' : 'text.secondary' }}>
+          {topic.icon}
+        </ListItemIcon>
+        <ListItemText primaryTypographyProps={{ fontWeight: 600 }}>{topic.label}</ListItemText>
+      </ListItemButton>
+    )
+  }
 }
 
 // Passive service-connection + usage indicator, pinned to the sidebar footer (moved here from the
