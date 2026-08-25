@@ -49,10 +49,22 @@ search:
   budget:
   - batches: 6
   stopping:
-  # A robustness of 0 is the boundary and below it the crossing failed. Stopping there is
-  # the difference between this campaign and the quadrotor one that reached its maximum at
-  # batch 7 and then ran eight more.
-  - target_objective: -0.5
+  # A robustness of 0 is the boundary and below it the crossing failed. Stopping once a bad
+  # enough crossing is in hand is the difference between this campaign and the quadrotor one
+  # that reached its maximum at batch 7 and then ran eight more.
+  #
+  # IN THE OBJECTIVE'S UNITS, so it must be re-derived whenever the objective is rescaled.
+  # It was -0.5 while the margins were divided by their thresholds and the scale ran to -1;
+  # dividing by scales instead put the whole range at -0.59 .. +0.07, and -0.5 became
+  # reachable by the FIRST batch -- which measures nothing about TPE, because its first
+  # batch is random startup sampling. The campaign stopped after 8 evaluations and its
+  # "how few evaluations found it" claim would have been unearned.
+  #
+  # Derived from measured runs rather than chosen: 48 random draws reached -0.491 and 48
+  # Halton draws -0.592, so -0.55 is below what a single 8-cell random batch typically
+  # finds and above the floor. Reaching it is then evidence of search. If no batch reaches
+  # it, `batches: 6` governs and the dataset stays comparable with cmaes at equal budget.
+  - target_objective: -0.55
   seed: 1
 
 visualization:
