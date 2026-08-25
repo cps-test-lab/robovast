@@ -44,7 +44,7 @@
 # ships no RECORD, so pip cannot uninstall it and the build dies. The floor is `>=1.11` from
 # 8b40bb1 on, and scipy's own metadata carries the numpy bound it was standing in for.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=1c91fc91b88367d2a24fc219cafdd2c5f53d8ea7
+ARG ROQSIM_REF=ad636e7ad7b4a928cef69f6eaff365e89c8c60d0
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
