@@ -571,6 +571,19 @@ def main():
         # (where) and ROBOVAST_PROJECT_TAG (which) -- see robovast.common.execution. So the
         # override moves the whole family at once instead of pinning one container, and the
         # run still exercises family resolution rather than bypassing it.
+        # A digest reference parses without complaint and produces nonsense: rpartition(':')
+        # on "reg/org/robovast@sha256:<hex>" yields project "reg/org/robovast@sha256" and tag
+        # "<hex>", which recompose into "reg/org/robovast:<hex>" -- an image that does not
+        # exist, reported eight minutes later as "manifest unknown" by the pull. Say it here.
+        #
+        # It cannot be supported rather than rejected: this override names a FAMILY, and the
+        # members (robovast, robovast-roqsim, robovast-sidecar) are separate images with
+        # separate digests. A tag is the only thing they can share.
+        if '@' in args.image:
+            raise SystemExit(
+                f"--image takes a tag, not a digest, got '{args.image}'.\n"
+                "  It sets ROBOVAST_PROJECT + ROBOVAST_PROJECT_TAG for the whole image family,\n"
+                "  whose members are distinct images -- no one digest names the set.")
         project, _, tag = args.image.rpartition(':')
         if not project or not tag:
             raise SystemExit(

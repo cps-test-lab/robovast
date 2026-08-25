@@ -21,6 +21,11 @@ jobs:
         package:
           - ${{ github.event.repository.name }}
           - ${{ github.event.repository.name }}-sidecar
+          # The buildx layer cache (image.yml). Each push overwrites the per-job tag, which
+          # leaves the superseded cache blobs untagged and unreferenced -- so without this the
+          # package grows without bound. The grace window applies here too and is generous for
+          # a cache, but harmless: an entry older than it is one no build has wanted in 90 days.
+          - ${{ github.event.repository.name }}-buildcache
     steps:
       - name: Delete untagged images not referenced by tagged manifests for ${{ matrix.package }}
         env:

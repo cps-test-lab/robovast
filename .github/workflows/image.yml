@@ -11,14 +11,79 @@ on:
       - main
   workflow_dispatch:
 
+# Two pushes to main minutes apart otherwise both run to completion, each publishing the same
+# moving tags -- and the earlier one's cache export lands AFTER the later one's import, so they
+# cannot even help each other. Superseding the older run is both faster and less racy.
+#
+# cancel-in-progress only for pull requests: a push to main publishes `latest` and the version
+# tags, and cancelling that part-way could leave a tag pointing at a half-pushed manifest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-and-push:
+  # Which architectures to build, read from container/platforms.env so it stays the single source
+  # of truth (container/release_images.sh reads the same file). The platform -> runner mapping
+  # lives here rather than there: it is a fact about CI, not about the image.
+  # Which architectures each image is built for, read from container/platforms.env so it stays
+  # the single source of truth (container/release_images.sh reads the same file). The platform ->
+  # runner mapping lives here rather than there: it is a fact about CI, not about the image.
+  #
+  # One job for every image that needs a matrix, so the mapping is written once. An unmapped
+  # architecture is an error rather than a silent omission -- dropping it from the matrix would
+  # read as "built everywhere" while building one thing less.
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      robovast: ${{ steps.plan.outputs.robovast }}
+      roqsim: ${{ steps.plan.outputs.roqsim }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          set -euo pipefail
+          . container/platforms.env
+          expand() {
+            local entries=""
+            for plat in ${1//,/ }; do
+              case "$plat" in
+                linux/amd64) runner=ubuntu-latest ;;
+                linux/arm64) runner=ubuntu-24.04-arm ;;
+                *) echo "::error::no runner mapped for platform '$plat'"; exit 1 ;;
+              esac
+              entries="${entries}{\"platform\":\"$plat\",\"runner\":\"$runner\",\"slug\":\"${plat//\//-}\"},"
+            done
+            echo "{\"include\":[${entries%,}]}"
+          }
+          robovast=$(expand "$PLATFORMS_ROBOVAST")
+          roqsim=$(expand "$PLATFORMS_ROQSIM")
+          echo "robovast=$robovast" >> "$GITHUB_OUTPUT"
+          echo "roqsim=$roqsim" >> "$GITHUB_OUTPUT"
+          echo "robovast: $robovast"
+          echo "roqsim:   $roqsim"
+
+  # One job per architecture, each on a runner of that architecture, pushed by digest and
+  # assembled into an index by merge-base below.
+  #
+  # Not one job building both with QEMU, which is the arrangement this replaced. That one never
+  # actually emulated anything: the base it used (osrf/ros:*-desktop-full) publishes no arm64
+  # manifest, so docker handed back amd64 bytes labelled arm64, and on an amd64 runner they ran
+  # natively and passed. The published arm64 image was amd64 userland and died with "Invalid ELF
+  # image" on a real arm64 host. Emulating the real arm64 base instead would be correct but slow
+  # -- this apt set plus colcon under QEMU is tens of minutes -- so each architecture gets native
+  # hardware. They also now run in parallel, so the wall clock is the slower of the two rather
+  # than their sum.
+  build-base:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.robovast) }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -37,19 +102,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # Cheap greps over the checkout, so running it in each architecture's job costs nothing
+      # measurable and keeps it a gate: as its own job it would either serialise ahead of the
+      # builds or, run beside them, let a mismatched image publish anyway.
       - name: Validate compat version consistency
         run: |
           # Three places now state the protocol version, and a reader may consult any of
@@ -74,29 +129,158 @@ jobs:
           fi
           echo "Compat version check passed: window $PYTHON_MIN..$PYTHON_VER"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:base-${{ matrix.slug }}"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Read the architecture policy
-        id: plat
-        # container/platforms.env is the single source of truth, shared with
-        # container/release_images.sh, so a CI build and a local build cannot disagree
-        # about what an image is built for.
-        run: . container/platforms.env && echo "platforms=$PLATFORMS_ROBOVAST" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push Docker image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
-          platforms: ${{ steps.plat.outputs.platforms }}
+          platforms: ${{ matrix.platform }}
           context: .
           file: ./container/robovast/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No tags here: a tag can name only one image, and two jobs pushing the same tag would
+          # race. Each pushes an untagged manifest and merge-base names the index they form.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Registry cache rather than type=gha. The Actions cache is capped at 10 GB per
+          # repository AND scoped per git ref, so each of these jobs wrote its own multi-GB
+          # mode=max copy under main and a second one under every PR ref. The repo sat at the
+          # cap (306 entries, 10.8 GB) and the hit rate was zero: each run evicted the entries
+          # the next one needed, so an image whose content does not depend on the commit was
+          # rebuilt from scratch on every push. A registry ref is uncapped and ref-agnostic --
+          # one copy, which a PR reads instead of duplicating.
+          #
+          # A distinct tag per job, so they cannot evict each other the way they did here. The
+          # two architectures share nothing, so they get a cache ref each.
+          #
+          # Written only on push: a PR build would publish layers for code that may never
+          # merge, and a fork's GITHUB_TOKEN cannot write packages at all. Reading is what
+          # makes PR builds fast; writing is not needed for that.
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
           build-args: |
             ROS_DISTRO=jazzy
+
+      - name: Record the digest for merge-base
+        run: |
+          mkdir -p /tmp/digests
+          # The bare hex, not the full "sha256:..." reference: upload-artifact refuses a colon in
+          # a filename (it keeps artifacts extractable on NTFS). merge-base puts the prefix back.
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.slug }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  # The per-architecture manifests pushed above carry no tags. This is where they become one
+  # index and acquire them, so `:latest` and `:main` never exist in a half-pushed state.
+  merge-base:
+    needs: build-base
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Everything downstream builds FROM or tests THIS digest rather than a tag. A tag is a
+      # moving target: two runs overlapping on main -- which has happened -- would otherwise let
+      # roqsim build on the other run's base while looking like a matched pair.
+      digest: ${{ steps.digest.outputs.digest }}
+      # The tag metadata-action chose for this event, for the one consumer that cannot use a
+      # digest -- see integration-test. Taken from the step that published it rather than
+      # recomputed from the event, which is how the two drift.
+      tag: ${{ steps.meta.outputs.version }}
+    steps:
+      # For container/platforms.env, which the architecture assertion below reads.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create the index and tag it
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Report the index digest
+        id: digest
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "index digest: $digest"
+
+      # The whole point of the restructure, so a regression is caught here rather than by whoever
+      # next runs the image on an arm64 host. imagetools reads the index without pulling it.
+      - name: Assert every architecture is present
+        run: |
+          . container/platforms.env
+          raw=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.digest.outputs.digest }}" --raw)
+          for plat in ${PLATFORMS_ROBOVAST//,/ }; do
+            os=${plat%%/*}; arch=${plat##*/}
+            echo "$raw" | jq -e --arg os "$os" --arg arch "$arch" \
+              '.manifests | map(select(.platform.os == $os and .platform.architecture == $arch)) | length == 1' \
+              > /dev/null || { echo "::error::index has no single $plat manifest"; exit 1; }
+            echo "  $plat present"
+          done
 
   # The stepped-simulator image: the base plus roqsim. Depends on the base build so it
   # can be built FROM the tag that job just pushed -- built against a floating :latest the
@@ -105,9 +289,15 @@ jobs:
   # No compat-version check of its own: it inherits /etc/robovast_compat_version from the
   # base, so a second check could only ever disagree with the first. The integration test
   # asserts the inheritance instead.
-  build-and-push-roqsim:
-    needs: build-and-push
-    runs-on: ubuntu-latest
+  # The stepped-simulator image: the base plus roqsim. Same per-architecture shape as the base
+  # above and for the same reason -- see build-base. It could not be built for arm64 while its
+  # base could not be, which is what container/platforms.env recorded; that reason is gone.
+  build-roqsim:
+    needs: [plan, merge-base]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.roqsim) }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -118,6 +308,150 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The clone happens in a build layer whose cache key is its ARGs, not the state of the
+      # remote -- so with a branch name here, the `cache-from` below would serve the tree from the
+      # first ever run of this job, forever, while reporting a fresh build. Resolving to a commit
+      # makes the key change exactly when the branch moves. Same reason and same mechanism as
+      # container/robovast/build.sh; the two must not disagree.
+      #
+      # This matters MORE since the cache moved to a registry ref: the Actions cache this
+      # replaced was evicted every few runs by its own 10 GB cap, which masked the hazard by
+      # forgetting. A registry cache does not forget, so the pin is now the only thing stopping a
+      # stale tree from being served indefinitely.
+      - name: Resolve the roqsim commit
+        id: roqsim
+        run: |
+          ref="${{ vars.ROQSIM_REF || 'main' }}"
+          sha=$(git ls-remote https://github.com/cps-test-lab/roqsim.git "$ref" | awk 'NR==1{print $1}')
+          if [ -z "$sha" ]; then
+            echo "cannot resolve '$ref' in cps-test-lab/roqsim (private repo needs a token)" >&2
+            exit 1
+          fi
+          echo "roqsim: $ref -> $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # By DIGEST, from merge-base's output -- not by tag. This used to reconstruct a tag from
+      # the event, which was fragile in two ways. `github.ref_name` is the *merge* ref on a
+      # pull_request ("128/merge"), and a Docker tag cannot contain a slash, so `FROM
+      # ${BASE_IMAGE}` failed with "invalid reference format" and this image was never published
+      # from a PR. And a tag moves: two runs overlapping on main -- which has happened -- each
+      # push `latest`, so this could build on the other run's base while the pair looked matched.
+      # A digest is neither ambiguous nor movable.
+      #
+      # The digest names the multi-arch INDEX, so each architecture's build resolves the matching
+      # base for itself -- which is the whole reason this image can now be built for arm64.
+      - name: Resolve the base image to build on
+        id: base
+        run: |
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge-base.outputs.digest }}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "base image: ${image}"
+
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim-${{ matrix.slug }}"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ matrix.platform }}
+          context: .
+          file: ./container/robovast/Dockerfile.roqsim
+          # No tags: merge-roqsim names the index these form. See build-base.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim,push-by-digest=true,name-canonical=true,push=true
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
+          # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
+          # this job needs no checkout of it and the context is not read at all. It used to be
+          # passed to a Dockerfile that declared no such ARG and did no cloning, while that
+          # Dockerfile's `COPY roqsim` needed a directory `context: .` does not contain: the
+          # job could not have succeeded, which is why nothing ever published this image.
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
+            ROQSIM_REF=${{ steps.roqsim.outputs.sha }}
+
+      # roqsim's own reason for existing is that something execs in it, and MuJoCo and OpenCV are
+      # native extension modules -- the part of an image most likely to be the wrong architecture
+      # and least likely to be noticed until a campaign fails. The runner is native to
+      # matrix.platform, so this runs the real thing.
+      - name: Smoke-test the image on native hardware
+        run: |
+          set -euo pipefail
+          img="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim@${{ steps.build.outputs.digest }}"
+          host=$(uname -m)
+          got=$(docker run --rm --entrypoint uname "$img" -m)
+          echo "runner: $host   image: $got"
+          if [ "$got" != "$host" ]; then
+            echo "::error::$img reports $got on a $host runner -- foreign content labelled ${{ matrix.platform }}" >&2
+            exit 1
+          fi
+          docker run --rm --entrypoint python3 "$img" -c \
+            'import platform, mujoco, roqsim; print("mujoco", mujoco.__version__, "on", platform.machine())'
+
+      - name: Record the digest for merge-roqsim
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-roqsim-${{ matrix.slug }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge-roqsim:
+    needs: build-roqsim
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # For container/platforms.env, which the architecture assertion below reads.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-roqsim-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -138,70 +472,29 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Read the architecture policy
-        id: plat
-        # container/platforms.env is the single source of truth, shared with
-        # container/release_images.sh, so a CI build and a local build cannot disagree
-        # about what an image is built for.
-        run: . container/platforms.env && echo "platforms=$PLATFORMS_ROQSIM" >> "$GITHUB_OUTPUT"
-
-      # The clone happens in a build layer whose cache key is its ARGs, not the state of the
-      # remote -- so with a branch name here, `cache-from: type=gha` below would serve the tree
-      # from the first ever run of this job, forever, while reporting a fresh build. Resolving to
-      # a commit makes the key change exactly when the branch moves. Same reason and same
-      # mechanism as container/robovast/build.sh; the two must not disagree.
-      - name: Resolve the roqsim commit
-        id: roqsim
+      - name: Create the index and tag it
+        working-directory: /tmp/digests
         run: |
-          ref="${{ vars.ROQSIM_REF || 'main' }}"
-          sha=$(git ls-remote https://github.com/cps-test-lab/roqsim.git "$ref" | awk 'NR==1{print $1}')
-          if [ -z "$sha" ]; then
-            echo "cannot resolve '$ref' in cps-test-lab/roqsim (private repo needs a token)" >&2
-            exit 1
-          fi
-          echo "roqsim: $ref -> $sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim@sha256:%s ' *)
 
-      # `github.ref_name` is the *merge* ref on a pull_request -- "128/merge" -- and a Docker
-      # tag cannot contain a slash, so passing it straight through failed the build on
-      # `FROM ${BASE_IMAGE}` with "invalid reference format" and this image was never
-      # published from a PR. The base job tags a PR build `pr-<number>` (metadata-action's
-      # type=ref,event=pr), which is what integration-test below already resolves for itself.
-      - name: Resolve the base image to build on
-        id: base
+      - name: Assert every architecture is present
         run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            tag="pr-${{ github.event.number }}"
-          elif [ "${{ github.ref_name }}" == "${{ github.event.repository.default_branch }}" ]; then
-            tag="latest"
-          else
-            tag="${{ github.ref_name }}"
-          fi
-          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}" >> "$GITHUB_OUTPUT"
-          echo "base image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}"
-
-      - name: Build and push roqsim image
-        uses: docker/build-push-action@v6
-        with:
-          platforms: ${{ steps.plat.outputs.platforms }}
-          context: .
-          file: ./container/robovast/Dockerfile.roqsim
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
-          # this job needs no checkout of it and the context is not read at all. It used to be
-          # passed to a Dockerfile that declared no such ARG and did no cloning, while that
-          # Dockerfile's `COPY roqsim` needed a directory `context: .` does not contain: the
-          # job could not have succeeded, which is why nothing ever published this image.
-          build-args: |
-            BASE_IMAGE=${{ steps.base.outputs.image }}
-            ROQSIM_REF=${{ steps.roqsim.outputs.sha }}
+          . container/platforms.env
+          raw=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim:${{ steps.meta.outputs.version }}" --raw)
+          for plat in ${PLATFORMS_ROQSIM//,/ }; do
+            os=${plat%%/*}; arch=${plat##*/}
+            echo "$raw" | jq -e --arg os "$os" --arg arch "$arch" \
+              '.manifests | map(select(.platform.os == $os and .platform.architecture == $arch)) | length == 1' \
+              > /dev/null || { echo "::error::index has no single $plat manifest"; exit 1; }
+            echo "  $plat present"
+          done
 
   integration-test:
-    needs: build-and-push
+    needs: merge-base
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -240,14 +533,21 @@ jobs:
           poetry install --no-root
           poetry install
 
+      # A TAG, deliberately, where roqsim above takes a digest.
+      #
+      # `--image` is not an image reference: test_vast.py splits it into ROBOVAST_PROJECT and
+      # ROBOVAST_PROJECT_TAG, and the framework recomposes `<project>/<member>:<tag>` for each
+      # member of the family -- robovast, robovast-roqsim, robovast-sidecar. One override moves
+      # all of them, so it names a tag they share; three images have three digests and no single
+      # digest can name the set. Passing one here parsed as project="...robovast@sha256" and
+      # tag="<hex>", producing a reference to an image that does not exist.
+      #
+      # From merge-base's metadata-action output, so this is the tag that run actually published
+      # rather than the event logic reimplemented a second time.
       - name: Compute image tag
         id: image
         run: |
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            echo "tag=ghcr.io/${{ github.repository }}:pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=ghcr.io/${{ github.repository }}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=ghcr.io/${{ github.repository }}:${{ needs.merge-base.outputs.tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Run Example tests
         run: |
@@ -301,9 +601,6 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -314,6 +611,35 @@ jobs:
         # about what an image is built for.
         run: . container/platforms.env && echo "platforms=$PLATFORMS_SIDECAR" >> "$GITHUB_OUTPUT"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:sidecar"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push sidecar image
         uses: docker/build-push-action@v6
         with:
@@ -323,8 +649,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
 
   build-and-push-controller:
     runs-on: ubuntu-latest
@@ -355,9 +681,6 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -375,6 +698,35 @@ jobs:
         # puzzle. `github.sha` is the full 40 characters.
         run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Read main's cache always; on a pull request read its own on top and write only there.
+      #
+      # Writing straight to main's ref from a PR would let unmerged code decide what every later
+      # build starts from. Not writing at all -- which is what gating on `push` alone did -- means
+      # a PR never benefits from its own previous run, and the second push to a branch pays full
+      # price. Reading both and writing to a PR-scoped ref gives the iteration speed without the
+      # poisoning; the scoped ref is garbage-collected with the rest of the package.
+      #
+      # A fork's GITHUB_TOKEN cannot write packages at all, so it reads and writes nothing.
+      - name: Work out the cache refs
+        id: cache
+        run: |
+          pkg="ghcr.io/${{ github.repository }}-buildcache:controller"
+          {
+            echo "from<<EOF"
+            echo "type=registry,ref=${pkg}-main"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push controller image
         uses: docker/build-push-action@v6
         with:
@@ -389,5 +741,5 @@ jobs:
             ROBOVAST_GIT_REVISION=${{ steps.rev.outputs.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
