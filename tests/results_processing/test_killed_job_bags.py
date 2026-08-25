@@ -13,6 +13,7 @@ between bags leaves readable ones behind, and their data is worth having.
 """
 
 import json
+import os
 
 from robovast.results_processing.data.rosbags_common import (is_under_tolerated_root,
                                                              resolve_tolerated_roots)
@@ -181,3 +182,49 @@ def test_a_probe_does_not_make_a_bag_unreadable(tmp_path):
     _ledger(tmp_path, [{"kind": "probed", "job_dir": "_jobs/batch-0/job-4",
                         "job_name": "j4", "source": "mcp", "runs": []}])
     assert _interrupted_job_dirs(str(tmp_path)) == []
+
+
+# -- what a failing bag tells the reader ---------------------------------------------------
+#
+# Workers run under ``redirect_stdout`` so 32 of them cannot shred the progress bar. That
+# buffer used to be a throwaway: every ``✗`` a handler printed died in the worker while its
+# *count* came home in the ``-2`` sentinel, so the summary reported "N handler error(s) — see
+# the messages above" with nothing above it. On the cluster lane, which never passes
+# ``--debug``, that happened on every campaign. Same shape as the reporting bug it sat next
+# to: a pointer to evidence nobody kept.
+
+
+def test_a_failing_bag_reports_what_it_printed(tmp_path):
+    from robovast.results_processing.data.rosbags_common import failing_bag_output
+    bag = str(tmp_path / "goal-1" / "0" / "rosbag2")
+    out = failing_bag_output(
+        [(bag, "  ✗ Handler Nav2BtTree on_end error: no such column\n")], str(tmp_path), [])
+    assert out == [(os.path.join("goal-1", "0", "rosbag2"),
+                    "  ✗ Handler Nav2BtTree on_end error: no such column")]
+
+
+def test_a_bag_that_said_nothing_is_not_reported(tmp_path):
+    """Absence of output is not an error to print — the count still stands on its own."""
+    from robovast.results_processing.data.rosbags_common import failing_bag_output
+    bag = str(tmp_path / "goal-1" / "0" / "rosbag2")
+    assert failing_bag_output([(bag, "   \n")], str(tmp_path), []) == []
+
+
+def test_a_tolerated_bag_does_not_bury_the_real_errors(tmp_path):
+    """A campaign with twenty stopped jobs prints the same "failed to open" twenty times.
+    They are expected, counted apart, and explained by the summary's NOTE."""
+    from robovast.results_processing.data.rosbags_common import failing_bag_output
+    roots = resolve_tolerated_roots(str(tmp_path), ["_jobs/batch-0/job-2"])
+    killed = str(tmp_path / "_jobs" / "batch-0" / "job-2" / "logs" / "rosout_bag")
+    real = str(tmp_path / "goal-1" / "0" / "rosbag2")
+    out = failing_bag_output([(killed, "✗ failed to open — unfinalized\n"),
+                              (real, "  ✗ Handler X on_end error: boom\n")],
+                             str(tmp_path), roots)
+    assert [rel for rel, _ in out] == [os.path.join("goal-1", "0", "rosbag2")]
+
+
+def test_the_error_pointer_never_points_at_nothing():
+    """"We looked and the workers said nothing" and "we never looked" are different facts."""
+    from robovast.results_processing.data.rosbags_common import handler_error_pointer
+    assert handler_error_pointer(True) == "see the error output above"
+    assert "printed nothing" in handler_error_pointer(False)

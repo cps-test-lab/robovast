@@ -347,3 +347,36 @@ def is_under_tolerated_root(bag_path: str, tolerated_roots: Sequence[str]) -> bo
     """
     path = os.path.abspath(bag_path)
     return any(path == root or path.startswith(root + os.sep) for root in tolerated_roots)
+
+
+def failing_bag_output(results: Sequence[Tuple[str, str]], input_root: str,
+                       tolerated_roots: Sequence[str]) -> List[Tuple[str, str]]:
+    """``(bag path relative to input_root, its captured output)`` per bag worth reporting.
+
+    Workers run under ``redirect_stdout`` so 32 of them cannot shred the progress bar, and
+    what they printed comes home with their result instead of dying in the pool. This picks
+    the part a reader needs: bags that actually said something, minus the tolerated ones.
+
+    Tolerated bags are excluded because they are *expected* — a job stopped by hand leaves
+    an unfinalized bag, every one of them prints the same "failed to open", and a campaign
+    with twenty such jobs would bury the real errors under twenty copies of a non-problem
+    the summary's NOTE already explains. They are counted apart for the same reason.
+    """
+    out = []
+    for bag_path, text in results:
+        if not text.strip() or is_under_tolerated_root(bag_path, tolerated_roots):
+            continue
+        out.append((os.path.relpath(bag_path, input_root), text.rstrip()))
+    return out
+
+
+def handler_error_pointer(has_output: bool) -> str:
+    """Where the error summary sends a reader — and never at evidence that is not there.
+
+    "We looked and the workers said nothing" and "we never looked" are different facts, and
+    collapsing them is how this line spent its life pointing at output that had already been
+    discarded: the count travelled home in a sentinel while the message that explained it
+    was thrown away with the worker's buffer.
+    """
+    return ("see the error output above" if has_output
+            else "the workers printed nothing about them")

@@ -62,7 +62,8 @@ import yaml
 from rclpy.serialization import deserialize_message
 from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, DEFAULT_CLOCK_TOLERANCE_S,
                             ClockDecimator, find_rosbags, gen_msg_values, is_under_tolerated_root,
-                            register_video, resolve_tolerated_roots, write_provenance_entry)
+                            failing_bag_output, handler_error_pointer, register_video,
+                            resolve_tolerated_roots, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 from tf2_ros import Buffer
@@ -1109,9 +1110,18 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
     if not force:
         fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         if _read_cache(run_dir) == fingerprint:
-            return bag_path, -1, []  # cache hit — already processed
+            return bag_path, -1, [], ""  # cache hit — already processed
 
-    with contextlib.redirect_stdout(sys.stdout if debug else io.StringIO()):
+    # The worker's own output is captured rather than interleaved: 32 workers printing
+    # through the progress bar would shred it. Captured, NOT discarded -- this used to be a
+    # throwaway ``io.StringIO()``, so every ``✗`` a handler printed died inside the worker
+    # while its *count* travelled home in the ``-2`` sentinel. The parent then reported
+    # "N handler error(s) -- see the messages above" with nothing above it: the one line
+    # saying what went wrong was the one line thrown away, and on the cluster lane (which
+    # never passes --debug) that happened on every campaign. Returned below for a bag that
+    # failed, and printed by the parent once the bar is done.
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(sys.stdout if debug else captured):
         # Instantiate handlers from config inside the worker (avoids pickling issues)
         handlers: List[RosbagHandler] = []
         for cfg in plugin_configs:
@@ -1128,7 +1138,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
         if not handlers:
-            return bag_path, -2, []
+            return bag_path, -2, [], captured.getvalue()
 
         # Detect storage format from metadata.yaml, fall back to mcap
         storage_id = "mcap"
@@ -1159,7 +1169,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             }
         except Exception as e:
             print(f"✗ {bag_path}: failed to open — {e}")
-            return bag_path, -2, []
+            return bag_path, -2, [], captured.getvalue()
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -1171,7 +1181,10 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
 
         if not active_handlers:
-            return bag_path, 0, []
+            # No records, and the reason is the on_begin failures just printed -- so this
+            # carries them home too. Counted as "no-data" rather than an error, which is
+            # why surfacing the output matters: the tally alone reads like an empty bag.
+            return bag_path, 0, [], captured.getvalue()
 
         # Build topic→handlers dispatch map (intersect with topics in this bag)
         topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
@@ -1218,11 +1231,15 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 handler_results.append((-2, []))
 
     total = sum(r for r, _ in handler_results if r > 0)
-    if all(r != -2 for r, _ in handler_results):
+    clean = all(r != -2 for r, _ in handler_results)
+    if clean:
         if fingerprint is None:
             fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         _write_cache(run_dir, fingerprint)
-    return bag_path, total, handler_results
+    # Only a failing bag ships its output home. A clean run's chatter is exactly what the
+    # capture exists to suppress, and pickling every bag's stdout back through the pool
+    # would pay the whole conversion's output cost to say nothing.
+    return bag_path, total, handler_results, ("" if clean else captured.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -1355,11 +1372,11 @@ def main() -> int:
     expected_error_bags = 0
     failed_bags = 0
     completed = 0
-    all_results: List[Tuple[str, int, List[Tuple[int, List[str]]]]] = []
+    all_results: List[Tuple[str, int, List[Tuple[int, List[str]]], str]] = []
 
     try:
         with Pool(processes=args.workers) as pool:
-            for bag_path, bag_total, handler_results in pool.imap_unordered(
+            for bag_path, bag_total, handler_results, diagnostics in pool.imap_unordered(
                 process_rosbag_worker, process_args, chunksize=1
             ):
                 completed += 1
@@ -1376,13 +1393,13 @@ def main() -> int:
                     f"  {completed}/{n_bags} bag  {rate:.1f} bag/s  ETA {eta_str}",
                     flush=True,
                 )
-                all_results.append((bag_path, bag_total, handler_results))
+                all_results.append((bag_path, bag_total, handler_results, diagnostics))
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
 
     # Aggregate and write provenance
-    for bag_path, bag_total, handler_results in all_results:
+    for bag_path, bag_total, handler_results, _diagnostics in all_results:
         if bag_total == -1:
             cached_bags += 1
             continue
@@ -1430,6 +1447,20 @@ def main() -> int:
         else:
             failed_bags += 1
 
+    # The failing bags' own output, held back until the bar finished rather than dropped.
+    # Tolerated bags are excluded: they are expected, counted apart, and explained by the
+    # NOTE below -- repeating a stopped job's "failed to open" per bag would bury the real
+    # errors this block exists to surface.
+    failure_output = failing_bag_output(
+        [(bag, out) for bag, _t, _h, out in all_results], input_root, _tolerated_roots)
+    if failure_output:
+        print(f"\n-- output from {len(failure_output)} bag(s) that reported errors --")
+        for bag_rel, out in failure_output:
+            print(f"  {bag_rel}:")
+            for line in out.splitlines():
+                print(f"    {line}")
+        print("-- end of error output --\n")
+
     elapsed = time.time() - start
     cached_str = f", {cached_bags} cached" if cached_bags else ""
     killed_str = f", {expected_error_bags} from stopped job(s)" if expected_error_bags else ""
@@ -1449,7 +1480,11 @@ def main() -> int:
     # deliberate kill is the one exception, and it is excluded above rather than here — so the
     # campaign that ran a per-job stop still gets its metrics for every job that did finish.
     if error_bags:
-        print(f"ERROR: {error_bags} handler error(s) — see the messages above")
+        # Never point at evidence that is not there. "We looked and the workers said
+        # nothing" and "we never looked" are different facts, and collapsing them is how
+        # this line spent its whole life referring to output it had already discarded.
+        print(f"ERROR: {error_bags} handler error(s) — "
+              f"{handler_error_pointer(bool(failure_output))}")
         return 1
     return 0
 
