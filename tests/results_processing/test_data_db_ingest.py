@@ -242,6 +242,42 @@ def test_runs_table_param_columns_are_typed_from_the_param_values(tmp_path):
         "SELECT param_speed FROM runs ORDER BY param_speed")] == [0.5, 10.0]
 
 
+def test_runs_records_the_machine_and_the_rate_the_run_achieved(tmp_path):
+    """The two facts a heterogeneous cluster is read with: which machine a run landed on,
+    and how much simulated time a wall second bought there. Neither was in ``runs``, so a
+    slower node was indistinguishable from run-to-run variance."""
+    root = tmp_path / "campaign-3"
+    _write_csv(root / "cfg-a" / "0" / "poses.csv", "timestamp", ["1.0"])
+    # As roqsim streams it beside the run's recording: sim advancing 1.5x wall.
+    _write_csv(root / "cfg-a" / "0" / "run.clock_map.csv", "wall_ts,sim_ts",
+               ["1785092240.0,0.0", "1785092250.0,15.0"])
+
+    conn = sqlite3.connect(root / "campaign.db")
+    conn.execute("CREATE TABLE unit (id INTEGER PRIMARY KEY, config_name TEXT, "
+                 "params_json TEXT, objective REAL)")
+    conn.execute("CREATE TABLE job (id INTEGER PRIMARY KEY, sysinfo_json TEXT)")
+    conn.execute("CREATE TABLE run (unit_id INTEGER, run_id INTEGER, status TEXT, "
+                 "passed INTEGER, errors INTEGER, failures INTEGER, duration_s REAL, "
+                 "start_time TEXT, job_id INTEGER)")
+    conn.execute("INSERT INTO unit VALUES (1, 'cfg-a', '{}', NULL)")
+    conn.execute("INSERT INTO job VALUES (1, ?)", (json.dumps(
+        {"node_name": "worker-a", "instance_type": "x86_64", "cpu_name": "Test CPU",
+         "available_cpus": 4, "available_mem": "8Gi"}),))
+    conn.execute("INSERT INTO run VALUES (1, 0, 'passed', 1, 0, 0, 10.0, NULL, 1)")
+    conn.commit()
+    conn.close()
+
+    _build(root)
+    db = _connect(root)
+    assert _types(db, "runs")["clock_map_sim_span_s"] == "REAL"
+    row = db.execute("SELECT * FROM runs WHERE config_name='cfg-a'").fetchone()
+    assert row["node_name"] == "worker-a"
+    assert row["clock_map_wall_span_s"] == pytest.approx(10.0)
+    assert row["clock_map_sim_span_s"] == pytest.approx(15.0)
+    assert (row["clock_map_sim_span_s"] / row["clock_map_wall_span_s"]
+            == pytest.approx(1.5))
+
+
 # ---------------------------------------------------------------------------
 # JSONL ingest (scenario_execution --bt-log)
 # ---------------------------------------------------------------------------

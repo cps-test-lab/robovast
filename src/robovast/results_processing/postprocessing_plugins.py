@@ -1083,17 +1083,20 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         if si is None:
             raw = outcome.get("sysinfo_json")
             if not raw:
-                return None, None, None, None
+                return None, None, None, None, None
             try:
                 si = json.loads(raw) or {}
             except (TypeError, ValueError):
-                return None, None, None, None
+                return None, None, None, None, None
         # ``available_mem`` is the key sysinfo actually writes, and its value is a
         # Kubernetes-style quantity — a plain byte count from /proc/meminfo or the
         # downward API, or a suffixed string like "16Gi" when the .vast set a limit. It is
         # normalized to bytes here so the column can be compared and averaged; reading it
         # raw would make the column numeric in some runs and text in others.
-        return (si.get("instance_type"), si.get("cpu_name"),
+        # ``node_name`` is empty for a local run and for any cluster run recorded before
+        # the pod carried it; both become NULL rather than a placeholder, so "we do not
+        # know which machine" is never mistaken for a machine called "".
+        return (si.get("instance_type"), si.get("node_name") or None, si.get("cpu_name"),
                 si.get("available_cpus"), to_bytes(si.get("available_mem")))
 
     # Resolved params + objective per config, and per-run outcomes, from
@@ -1161,12 +1164,20 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
                  "start_time", "end_time",
-                 "instance_type", "cpu_name", "available_cpus", "available_mem_bytes",
+                 # ``node_name`` is the machine, ``instance_type`` its kind. Both, because
+                 # neither answers the other: on a cloud cluster the kind is what runs
+                 # compare across, and on bare metal it is the same string for every node,
+                 # so only the name separates a slow machine from a fast one.
+                 "instance_type", "node_name", "cpu_name",
+                 "available_cpus", "available_mem_bytes",
                  # What this run's log timestamps are worth. A reader that finds sim_time
                  # NULL in run_log needs to know whether the run was not aligned or simply
                  # logged nothing before the clock started, and "which source said so" is
                  # the difference. See results_processing.clock_map.
+                 # The two spans are the same window on each clock, so their ratio is how
+                 # much simulated time this run bought per wall second.
                  "clock_map_source", "clock_map_samples", "clock_map_wall_span_s",
+                 "clock_map_sim_span_s",
                  # Whether a human read into this run while it was still going. A SEPARATE
                  # column and never folded into ``status``: a probed run can still pass, and
                  # putting an intervention into the measured outcome is the same mistake
@@ -1188,7 +1199,7 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     types = {c: (INTEGER if c in ("run_id", "passed", "errors", "failures",
                                   "available_mem_bytes", "clock_map_samples", "probed")
                  else REAL if c in ("duration_s", "objective", "clock_map_wall_span_s",
-                                    "available_cpus")
+                                    "clock_map_sim_span_s", "available_cpus")
                  else TEXT)
              for c in base_cols}
     for key, col in zip(param_keys, param_cols):
@@ -1229,13 +1240,15 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             duration = o["duration_s"]
             start_time = o["start_time"]
             end_time = _end_time(start_time, duration)
-            instance_type, cpu_name, avail_cpus, avail_mem = _sysinfo_fields(o)
+            (instance_type, node_name, cpu_name,
+             avail_cpus, avail_mem) = _sysinfo_fields(o)
             clock_info = _clock_map_info(campaign_path, config_name, run_id)
             base_vals = [config_name, run_id, status, passed, duration,
                          errors, failures, objective,
                          start_time, end_time,
-                         instance_type, cpu_name, avail_cpus, avail_mem,
+                         instance_type, node_name, cpu_name, avail_cpus, avail_mem,
                          clock_info.source, clock_info.samples, clock_info.wall_span_s,
+                         clock_info.sim_span_s,
                          1 if f"{config_name}/{run_id}" in probed else 0]
             param_vals = [params.get(k) for k in param_keys]
             conn.execute(insert_sql, [sql_value(v, types[c])
@@ -1248,8 +1261,8 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         base_vals = [identity, None, "composition_failed", 0, None,
                      None, None, None,
                      None, None,
-                     None, None, None, None,
-                     None, None, None, 0]
+                     None, None, None, None, None,
+                     None, None, None, None, 0]
         param_vals = [params.get(k) for k in param_keys]
         conn.execute(insert_sql, [sql_value(v, types[c])
                                   for c, v in zip(all_cols, base_vals + param_vals)])

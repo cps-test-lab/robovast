@@ -132,6 +132,19 @@ def test_create_job_manifest_shape(monkeypatch):
     assert main_env["BT_LOG"] == "true"
 
 
+def test_the_pod_is_told_which_node_it_landed_on(monkeypatch):
+    """Only the downward API can answer it: a pod cannot see its own node, and
+    ``instance_type`` is the same string on every node of a bare-metal cluster. Without
+    this a heterogeneous cluster's slow machine reads as run-to-run variance."""
+    r = _runner(monkeypatch)
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["NODE_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "spec.nodeName"
+    # It must carry no literal value: a hardcoded node name would be recorded as the host
+    # of every run in the campaign, on whatever machine they actually ran.
+    assert "value" not in env["NODE_NAME"]
+
+
 def test_bt_log_can_be_turned_off(monkeypatch):
     """Stated as false rather than omitted: the pod spec says what the run did."""
     r = _runner(monkeypatch, execution={"bt_log": False})

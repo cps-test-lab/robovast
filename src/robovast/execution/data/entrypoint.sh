@@ -101,7 +101,9 @@ if [ "${COLLECT_SYSINFO}" != "false" ]; then
   # carries no simulator, so a record built there said "no asset providers" for a campaign whose
   # image had three private ones. Named per container, like resource_usage_main.csv, because in
   # the ROS shape the simulator is a container of its own and so are its providers.
-  python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --distributions "${OUTPUT_DIR}/distributions_main.json" --external "instance_type=${INSTANCE_TYPE}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
+  # node_name comes from the downward API on the cluster lane and is empty on the local
+  # one, which has no node to name -- the same shape as INSTANCE_TYPE above.
+  python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --distributions "${OUTPUT_DIR}/distributions_main.json" --external "instance_type=${INSTANCE_TYPE}" --external "node_name=${NODE_NAME}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
 else
   log "System information collection disabled (COLLECT_SYSINFO=false)"
 fi

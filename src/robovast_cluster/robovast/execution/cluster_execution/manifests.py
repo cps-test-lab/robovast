@@ -64,6 +64,16 @@ spec:
           imagePullPolicy: {pull_policy}
           command: ["/usr/bin/tini", "--", "/bin/bash", "/config/entrypoint.sh"]
           env:
+          # Which machine ran this trial. The downward API is the only source: a pod
+          # cannot see its own node otherwise, and ``instance_type`` does not answer it
+          # on bare metal, where the provider command is ``uname -m`` and every node
+          # reports the same architecture. Without it, runs from a heterogeneous cluster
+          # cannot be grouped by the hardware they ran on, so a slower node reads as
+          # run-to-run variance.
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
           - name: AVAILABLE_CPUS
             valueFrom:
               resourceFieldRef:

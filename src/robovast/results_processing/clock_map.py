@@ -68,10 +68,24 @@ class ClockMapInfo(NamedTuple):
     when linear interpolation reproduces it within the writer's tolerance), so a long wall
     gap between two kept samples means "the rate was steady here", not "data is missing" —
     a gap metric would report the healthiest stretch of a run as its worst.
+
+    ``sim_span_s`` is the same window measured on the other axis, and it is here so that
+    ``sim_span_s / wall_span_s`` — how much simulated time a second of wall time bought —
+    is a fact about the run rather than something each reader recomputes from the samples.
+    It is deliberately defined on THIS series and not asked of the simulator: the series
+    is the one contract every simulator already feeds (``/clock`` for a ROS one, its own
+    record for a stepped one), so one definition applies to all of them and runs on
+    different simulators, and on different machines, stay comparable. A simulator's own
+    reported factor is a different measurement — smoothed, instantaneous, and defined per
+    simulator — and would belong beside this one, never in place of it.
+
+    Both spans are ``0.0`` for a map with fewer than two samples, which is the same
+    condition :meth:`ClockMap.__bool__` reports: no rate is defined, rather than zero.
     """
     source: str
     samples: int
     wall_span_s: float
+    sim_span_s: float
 
 
 class ClockMap:
@@ -92,8 +106,12 @@ class ClockMap:
 
     @property
     def info(self) -> ClockMapInfo:
-        span = (self._wall[-1] - self._wall[0]) if len(self._wall) >= 2 else 0.0
-        return ClockMapInfo(self._source, len(self._wall), span)
+        enough = len(self._wall) >= 2
+        span = (self._wall[-1] - self._wall[0]) if enough else 0.0
+        # Endpoints, not a sum of steps: the samples are decimated, so the interval
+        # between the first and last is the only span the series actually claims.
+        sim_span = (self._sim[-1] - self._sim[0]) if enough else 0.0
+        return ClockMapInfo(self._source, len(self._wall), span, sim_span)
 
     def to_sim(self, wall: Optional[float]) -> Optional[float]:
         """Sim seconds at *wall*, or ``None`` when that is outside the sampled range."""

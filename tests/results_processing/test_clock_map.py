@@ -89,6 +89,32 @@ def test_info_reports_what_the_map_covers():
     assert info.source == "ros_clock_bag"
 
 
+def test_the_two_spans_give_the_rate_the_run_actually_achieved():
+    """The measured 1.369x, recovered from the spans alone — which is what a reader with
+    only the ``runs`` row has, and what lets runs on different machines be compared."""
+    info = _at_rate(1.369).info
+    assert info.sim_span_s == pytest.approx(13.69)
+    assert info.sim_span_s / info.wall_span_s == pytest.approx(1.369)
+
+
+def test_a_pause_lowers_the_rate_rather_than_being_averaged_away():
+    """The span is measured between the endpoints, so wall time the simulator spent
+    stopped counts against the rate — which is the honest answer for "what did this run
+    cost"."""
+    info = ClockMap([(100.0, 0.0), (110.0, 10.0), (115.0, 10.0), (125.0, 20.0)]).info
+    assert info.wall_span_s == pytest.approx(25.0)
+    assert info.sim_span_s == pytest.approx(20.0)
+
+
+def test_a_map_that_defines_no_rate_reports_zero_spans_rather_than_a_rate():
+    """One sample fixes an instant but no rate. Both spans are 0, so a reader dividing
+    them gets a ZeroDivisionError to guard rather than a plausible-looking number."""
+    info = ClockMap([(100.0, 1.0)]).info
+    assert info.wall_span_s == 0.0
+    assert info.sim_span_s == 0.0
+    assert NO_CLOCK_MAP.info.sim_span_s == 0.0
+
+
 def test_an_empty_map_reports_source_none_rather_than_claiming_a_source():
     assert ClockMap([], "ros_clock_bag").info.source == SOURCE_NONE
 
