@@ -214,18 +214,20 @@ class NavExtract(Extractor):
         failures = sum(1 for r in runs if not read_test_result(r)['success'])
         return ExtractResult(
             objectives={
-                # The optimized quantity. An adversarial search minimizes it; a boundary
-                # search traces its zero.
+                # The optimized quantity, and the only one: `objectives` means the objectives
+                # the .vast declared. Reporting the unoptimized values here too used to look
+                # free -- they were persisted to objectives_json either way -- but it made a
+                # single-objective search look multi-objective to everything downstream, and
+                # the scalar `unit.objective` that run_view, runs and the campaign card's
+                # trajectory all read was silently left NULL for the whole campaign. They are
+                # measurements; they belong below. An adversarial search minimizes this; a
+                # boundary search traces its zero.
                 'robustness': aggregate(robustness, how=how, higher_is_safer=True),
-                # Kept alongside, unoptimized: every extra objective is persisted to
-                # objectives_json, so the campaign can be read the old way too without a
-                # second run.
-                'failure_rate': failures / len(runs),
-                'time_to_goal': aggregate(durations, how=how, higher_is_safer=False),
             },
             measures={
                 'min_clearance': aggregate(clearances, how=how) if clearances else 0.0,
                 'time_to_goal': aggregate(durations, how=how, higher_is_safer=False),
+                'failure_rate': failures / len(runs),
                 'recovery_count': aggregate(recoveries, how=how, higher_is_safer=False),
                 # Categorical: the archive declares the names, so the worst mode seen
                 # across this cell's repetitions is handed back by name.

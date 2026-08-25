@@ -801,3 +801,54 @@ def test_an_unmeasured_target_objective_publishes_no_number(tmp_path):
     assert by_kind["target_objective"].current is None
     assert by_kind["batches"].current == 0.0
     store.close()
+
+
+class _ReportsExtras:
+    """An extractor that returns diagnostics beside the objective, as a real one does."""
+
+    def extract(self, config_dir):
+        from robovast.search.extractor import ExtractResult, completed_run_dirs
+        if not completed_run_dirs(config_dir):
+            from robovast.search.extractor import NoSampleError
+            raise NoSampleError(f"nothing to score in {config_dir}")
+        return ExtractResult(objectives={"failure_rate": 0.5, "time_to_goal": 24.5},
+                             measures={})
+
+
+def test_an_extractor_s_diagnostics_do_not_cost_the_campaign_its_objective(tmp_path):
+    """End-to-end pin for the bug that emptied a search's objective everywhere at once.
+
+    A nav search declares one objective and its extractor also reports two diagnostics.
+    Those extras used to travel into the store as objectives, so ``record_unit`` saw a
+    multi-objective dict, declined to lift the scalar, and wrote NULL into every
+    ``unit.objective`` -- which is the column ``run_view``/``runs`` expose and the one the
+    campaign card's chart trends. The campaign looked perfect and had no objective anywhere.
+
+    Chain under test: Evaluator narrows -> controller records -> store lifts the scalar ->
+    read_batch_objectives finds a trajectory.
+    """
+    from robovast.common.store import read_batch_objectives
+
+    cfg = _cfg(batches=2, per_batch=3)
+    evaluator = Evaluator(cfg, str(tmp_path))
+    evaluator.extractor = _ReportsExtras()
+    controller, store, _ = _search_controller(cfg, tmp_path, evaluator=evaluator)
+    controller.campaign_config_dump = {
+        "version": 1,
+        "search": {"objectives": [{"name": "failure_rate", "direction": "maximize"}]}}
+    controller.run()
+
+    conn = sqlite3.connect(store.db_path)
+    objectives = conn.execute("SELECT objective FROM unit").fetchall()
+    assert objectives and all(o[0] == 0.5 for o in objectives), \
+        "the declared objective must reach the scalar column the readers use"
+    row = conn.execute("SELECT objectives_json, measures_json FROM unit LIMIT 1").fetchone()
+    assert json.loads(row[0]) == {"failure_rate": 0.5}, "only the declared objective"
+    assert json.loads(row[1]) == {"time_to_goal": 24.5}, "the diagnostic is kept, as a measure"
+    conn.close()
+    store.close()
+
+    history = read_batch_objectives(tmp_path / "camp")
+    assert [b["n_scored"] for b in history["batches"]] == [3, 3], \
+        "every evaluated cell is scored -- 0 here is the bug, read as 'measured nothing'"
+    assert history["batches"][-1]["best_so_far"] == 0.5

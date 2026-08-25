@@ -120,6 +120,11 @@ class ExtractResult:
 
     Attributes:
         objectives: Named optimized values (>=1). Single-objective is one entry.
+            Must contain every objective the ``.vast`` declares; reporting more than
+            that is allowed and costs nothing, as
+            :class:`~robovast.search.evaluator.Evaluator` narrows this to the declared
+            names and files the rest under ``measures``. Prefer putting a value that
+            is not optimized there in the first place -- it says what it is.
         measures: Named quality-diversity behavior values; ``{}`` when unused.
     """
     objectives: dict[str, float]

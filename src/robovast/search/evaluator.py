@@ -60,9 +60,32 @@ class Evaluator:
             raise ValueError(
                 f"Extractor did not return configured objective(s) {missing} for "
                 f"{config_dir}; it returned {sorted(result.objectives)}")
+        # An extractor may report more than it was asked for -- a nav extractor returns a
+        # failure rate and a time to goal beside the robustness the .vast optimizes. Those
+        # are measurements, not objectives, and passing them through made `objectives` mean
+        # "whatever came back" instead of "the objectives the campaign declared". That is
+        # not cosmetic: `CampaignStore.record_unit` lifts the queryable scalar
+        # `unit.objective` only out of a single-objective dict, so a single-objective search
+        # whose extractor also reported two diagnostics stored NULL in every row -- taking
+        # `run_view.objective`, `runs.objective` and the whole objective trajectory with it,
+        # while the campaign looked fully recorded. Narrowed HERE, in declared order,
+        # because this is the one place that knows what the campaign declared; every reader
+        # downstream then gets a dict that means what its name says.
+        objectives = {n: result.objectives[n] for n in self.objective_names}
+        extras = {n: v for n, v in result.objectives.items() if n not in objectives}
+        clashing = sorted(set(extras) & set(result.measures))
+        if clashing:
+            # The same class of defect as a missing objective, and no safer to guess at:
+            # one of the two values would have to win silently.
+            raise ValueError(
+                f"Extractor reported {clashing} both as a measure and beside the objectives "
+                f"for {config_dir}; a name must mean one thing.")
+        # Kept rather than dropped: the extractor measured them, and `measures` is where a
+        # named measurement that is not optimized already lives.
+        measures = {**result.measures, **extras}
         n_samples = len(completed_run_dirs(config_dir))
         logger.debug("Evaluated %s -> objectives=%s measures=%s n=%d",
-                     params.id, result.objectives, result.measures, n_samples)
-        return Evaluation(params=params, objectives=result.objectives,
-                          measures=result.measures, n_samples=n_samples,
+                     params.id, objectives, measures, n_samples)
+        return Evaluation(params=params, objectives=objectives,
+                          measures=measures, n_samples=n_samples,
                           raw={"config_dir": str(config_dir)})

@@ -153,8 +153,8 @@ if not scored.empty and 'm_failure_mode' in scored:
 FRONT = '''\
 # Clearance against time. The highlighted points are the trade-offs actually available:
 # nothing else beats them on both at once.
-if not scored.empty and 'time_to_goal' in scored:
-    x, y = scored['m_min_clearance'], scored['time_to_goal']
+if not scored.empty and 'm_time_to_goal' in scored:
+    x, y = scored['m_min_clearance'], scored['m_time_to_goal']
     on_front = [not ((x > xi) & (y < yi)).any() for xi, yi in zip(x, y)]
     fig, ax = plt.subplots(figsize=(6, 4.5))
     ax.scatter(x, y, s=60, alpha=0.4, label='evaluated')
@@ -183,8 +183,8 @@ HEADLINE = '''\
 # finding its own campaign does not support.
 if not scored.empty:
     failed = (scored['robustness'] < 0).sum()
-    at_ends = ((scored['failure_rate'] == 0) | (scored['failure_rate'] == 1)).mean() \\
-        if 'failure_rate' in scored else float('nan')
+    at_ends = ((scored['m_failure_rate'] == 0) | (scored['m_failure_rate'] == 1)).mean() \\
+        if 'm_failure_rate' in scored else float('nan')
     print(f"cells scored          : {len(scored)}")
     print(f"runs spent            : {int(scored['n_samples'].sum())}")
     print(f"cells that failed     : {failed}  ({failed / len(scored):.0%})")
