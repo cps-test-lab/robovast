@@ -95,8 +95,15 @@ def _platform_policy():
     return policy
 
 
+#: The two ways a `platforms:` may be filled, both of which end at
+#: container/platforms.env. The first is a job reading the file directly; the second is the
+#: base image's per-architecture matrix, which plan-base derives from the same file because
+#: the architectures have to become separate jobs on separate runners before they are built.
+_PLATFORM_SOURCES = ("steps.plat.outputs.platforms", "matrix.platform")
+
+
 def test_every_build_job_reads_the_shared_platform_policy():
-    """No job may hard-code `platforms:`; both builders read one file.
+    """No job may hard-code `platforms:`; every builder reaches one file.
 
     The architecture rule has to hold in CI *and* in container/release_images.sh.
     Written out twice it drifts, which is how the roqsim job ended up with no
@@ -108,17 +115,26 @@ def test_every_build_job_reads_the_shared_platform_policy():
     for line in workflow.splitlines():
         stripped = line.strip()
         if stripped.startswith("platforms:"):
-            assert "steps.plat.outputs.platforms" in stripped, (
+            assert any(src in stripped for src in _PLATFORM_SOURCES), (
                 f"hard-coded platforms in image.yml: {stripped!r} — "
                 f"read it from container/platforms.env instead")
 
-    read = {line.split("$PLATFORMS_")[1].split("\"")[0]
-            for line in workflow.splitlines() if "$PLATFORMS_" in line}
+    # Both `$PLATFORMS_X` and `${PLATFORMS_X//,/ }` count. Matching only the bare form
+    # silently stopped covering the base image the moment plan-base started splitting the
+    # list to build its matrix -- a guard that passes because it no longer looks is worse
+    # than no guard.
+    read = set(re.findall(r"\$\{?PLATFORMS_([A-Z0-9_]+)", workflow))
     assert read, "no job reads container/platforms.env"
     for name in read:
         assert f"PLATFORMS_{name}" in policy, (
             f"image.yml reads PLATFORMS_{name}, which container/platforms.env "
             f"does not define (it has: {sorted(policy)})")
+
+    # The base image is the one whose platforms arrive by matrix, so it is the one a
+    # refactor can quietly detach from the policy file. Name it explicitly.
+    assert "ROBOVAST" in read, (
+        "image.yml no longer reads PLATFORMS_ROBOVAST; the base image's architectures "
+        "must still come from container/platforms.env, not from the matrix literal")
 
 
 def test_cluster_only_images_are_single_arch():

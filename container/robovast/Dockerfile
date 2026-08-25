@@ -343,4 +343,33 @@ RUN USER=ubuntu && \
     mkdir -p /etc/fixuid && \
     printf 'user: %s\ngroup: %s\npaths:\n  - /\n  - /out\n' "$USER" "$GROUP" > /etc/fixuid/config.yml
 
+# Execute what TARGETARCH just fetched, and check the userland agrees with it.
+#
+# This is the only check that catches an image built for the wrong architecture, because such an
+# image builds, pushes and inspects perfectly and fails when something finally runs it. Every
+# other signal stays green. It is exactly how this image shipped an arm64 manifest full of amd64
+# content for as long as it did.
+#
+# Cheap, and it belongs here rather than in CI: on a native runner every RUN above has already
+# exec'd this architecture's binaries, so the base userland is covered by the build itself. What
+# is NOT covered is a binary fetched by TARGETARCH and never run -- mc and fixuid, which were the
+# two that really were arm64 while everything around them was amd64. So run them, and assert the
+# arch they were chosen for is the arch the userland actually is. Also protects a local build,
+# which no CI check reaches.
+RUN mc --version > /dev/null && \
+    fixuid -v > /dev/null && \
+    case "$(uname -m)" in \
+      x86_64)  actual=amd64 ;; \
+      aarch64) actual=arm64 ;; \
+      *)       actual="$(uname -m)" ;; \
+    esac && \
+    if [ "$actual" != "${TARGETARCH}" ]; then \
+      echo "ERROR: built for TARGETARCH=${TARGETARCH} but the userland is $(uname -m)." >&2; \
+      echo "  The base resolved to a different architecture than the one requested, so this" >&2; \
+      echo "  image would carry foreign content under a correct-looking label. A base whose" >&2; \
+      echo "  tag is a single manifest rather than an index does exactly this." >&2; \
+      exit 1; \
+    fi && \
+    echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m)"
+
 USER ubuntu:ubuntu

@@ -30,26 +30,42 @@ jobs:
   # Which architectures to build, read from container/platforms.env so it stays the single source
   # of truth (container/release_images.sh reads the same file). The platform -> runner mapping
   # lives here rather than there: it is a fact about CI, not about the image.
-  plan-base:
+  # Which architectures each image is built for, read from container/platforms.env so it stays
+  # the single source of truth (container/release_images.sh reads the same file). The platform ->
+  # runner mapping lives here rather than there: it is a fact about CI, not about the image.
+  #
+  # One job for every image that needs a matrix, so the mapping is written once. An unmapped
+  # architecture is an error rather than a silent omission -- dropping it from the matrix would
+  # read as "built everywhere" while building one thing less.
+  plan:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      robovast: ${{ steps.plan.outputs.robovast }}
+      roqsim: ${{ steps.plan.outputs.roqsim }}
     steps:
       - uses: actions/checkout@v4
       - id: plan
         run: |
+          set -euo pipefail
           . container/platforms.env
-          entries=""
-          for plat in ${PLATFORMS_ROBOVAST//,/ }; do
-            case "$plat" in
-              linux/amd64) runner=ubuntu-latest ;;
-              linux/arm64) runner=ubuntu-24.04-arm ;;
-              *) echo "::error::no runner mapped for platform '$plat'"; exit 1 ;;
-            esac
-            entries="${entries}{\"platform\":\"$plat\",\"runner\":\"$runner\",\"slug\":\"${plat//\//-}\"},"
-          done
-          echo "matrix={\"include\":[${entries%,}]}" >> "$GITHUB_OUTPUT"
-          echo "matrix={\"include\":[${entries%,}]}"
+          expand() {
+            local entries=""
+            for plat in ${1//,/ }; do
+              case "$plat" in
+                linux/amd64) runner=ubuntu-latest ;;
+                linux/arm64) runner=ubuntu-24.04-arm ;;
+                *) echo "::error::no runner mapped for platform '$plat'"; exit 1 ;;
+              esac
+              entries="${entries}{\"platform\":\"$plat\",\"runner\":\"$runner\",\"slug\":\"${plat//\//-}\"},"
+            done
+            echo "{\"include\":[${entries%,}]}"
+          }
+          robovast=$(expand "$PLATFORMS_ROBOVAST")
+          roqsim=$(expand "$PLATFORMS_ROQSIM")
+          echo "robovast=$robovast" >> "$GITHUB_OUTPUT"
+          echo "roqsim=$roqsim" >> "$GITHUB_OUTPUT"
+          echo "robovast: $robovast"
+          echo "roqsim:   $roqsim"
 
   # One job per architecture, each on a runner of that architecture, pushed by digest and
   # assembled into an index by merge-base below.
@@ -63,10 +79,10 @@ jobs:
   # hardware. They also now run in parallel, so the wall clock is the slower of the two rather
   # than their sum.
   build-base:
-    needs: plan-base
+    needs: plan
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan-base.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.robovast) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -273,9 +289,15 @@ jobs:
   # No compat-version check of its own: it inherits /etc/robovast_compat_version from the
   # base, so a second check could only ever disagree with the first. The integration test
   # asserts the inheritance instead.
-  build-and-push-roqsim:
-    needs: merge-base
-    runs-on: ubuntu-latest
+  # The stepped-simulator image: the base plus roqsim. Same per-architecture shape as the base
+  # above and for the same reason -- see build-base. It could not be built for arm64 while its
+  # base could not be, which is what container/platforms.env recorded; that reason is gone.
+  build-roqsim:
+    needs: [plan, merge-base]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.roqsim) }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -293,25 +315,6 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Read the architecture policy
-        id: plat
-        # container/platforms.env is the single source of truth, shared with
-        # container/release_images.sh, so a CI build and a local build cannot disagree
-        # about what an image is built for.
-        run: . container/platforms.env && echo "platforms=$PLATFORMS_ROQSIM" >> "$GITHUB_OUTPUT"
 
       # The clone happens in a build layer whose cache key is its ARGs, not the state of the
       # remote -- so with a branch name here, the `cache-from` below would serve the tree from the
@@ -342,6 +345,9 @@ jobs:
       # from a PR. And a tag moves: two runs overlapping on main -- which has happened -- each
       # push `latest`, so this could build on the other run's base while the pair looked matched.
       # A digest is neither ambiguous nor movable.
+      #
+      # The digest names the multi-arch INDEX, so each architecture's build resolves the matching
+      # base for itself -- which is the whole reason this image can now be built for arm64.
       - name: Resolve the base image to build on
         id: base
         run: |
@@ -361,7 +367,7 @@ jobs:
       - name: Work out the cache refs
         id: cache
         run: |
-          pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim"
+          pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim-${{ matrix.slug }}"
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
@@ -378,15 +384,15 @@ jobs:
             echo "to=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push roqsim image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
-          platforms: ${{ steps.plat.outputs.platforms }}
+          platforms: ${{ matrix.platform }}
           context: .
           file: ./container/robovast/Dockerfile.roqsim
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # No tags: merge-roqsim names the index these form. See build-base.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim,push-by-digest=true,name-canonical=true,push=true
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
           # ROQSIM_REF is a declared ARG of the Dockerfile, which clones roqsim itself -- so
@@ -397,6 +403,95 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}
             ROQSIM_REF=${{ steps.roqsim.outputs.sha }}
+
+      # roqsim's own reason for existing is that something execs in it, and MuJoCo and OpenCV are
+      # native extension modules -- the part of an image most likely to be the wrong architecture
+      # and least likely to be noticed until a campaign fails. The runner is native to
+      # matrix.platform, so this runs the real thing.
+      - name: Smoke-test the image on native hardware
+        run: |
+          set -euo pipefail
+          img="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim@${{ steps.build.outputs.digest }}"
+          host=$(uname -m)
+          got=$(docker run --rm --entrypoint uname "$img" -m)
+          echo "runner: $host   image: $got"
+          if [ "$got" != "$host" ]; then
+            echo "::error::$img reports $got on a $host runner -- foreign content labelled ${{ matrix.platform }}" >&2
+            exit 1
+          fi
+          docker run --rm --entrypoint python3 "$img" -c \
+            'import platform, mujoco, roqsim; print("mujoco", mujoco.__version__, "on", platform.machine())'
+
+      - name: Record the digest for merge-roqsim
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-roqsim-${{ matrix.slug }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge-roqsim:
+    needs: build-roqsim
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # For container/platforms.env, which the architecture assertion below reads.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-roqsim-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create the index and tag it
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim@sha256:%s ' *)
+
+      - name: Assert every architecture is present
+        run: |
+          . container/platforms.env
+          raw=$(docker buildx imagetools inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-roqsim:${{ steps.meta.outputs.version }}" --raw)
+          for plat in ${PLATFORMS_ROQSIM//,/ }; do
+            os=${plat%%/*}; arch=${plat##*/}
+            echo "$raw" | jq -e --arg os "$os" --arg arch "$arch" \
+              '.manifests | map(select(.platform.os == $os and .platform.architecture == $arch)) | length == 1' \
+              > /dev/null || { echo "::error::index has no single $plat manifest"; exit 1; }
+            echo "  $plat present"
+          done
 
   integration-test:
     needs: merge-base
