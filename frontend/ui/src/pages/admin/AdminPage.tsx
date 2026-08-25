@@ -5,6 +5,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { CollapsibleBox } from '@/components/CollapsibleBox'
 import { useDialogs } from '@/components/DialogProvider'
@@ -131,7 +132,7 @@ export function AdminPage() {
 
   const info = upgrade.data
   return (
-    <Stack spacing={2} sx={{ maxWidth: 900 }}>
+    <Stack spacing={2}>
       <Typography variant="h6">Admin</Typography>
 
       <Paper variant="outlined" sx={{ p: 2 }}>
@@ -200,10 +201,19 @@ export function AdminPage() {
       <CollapsibleBox
         open={logOpen}
         onToggle={() => setLogOpen((v) => !v)}
-        title="Service log"
-        note={
-          'the last few hundred kB this process logged, kept in memory. A container that'
-          + ' has already died is only in `kubectl logs -p`.'
+        // On hover rather than standing under the header: it is a caveat about the log's
+        // reach, worth having within reach and not worth a line of its own above every
+        // reading of it.
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'The last few hundred kB this process logged, kept in memory. A container '
+              + 'that has already died is only in `kubectl logs -p`.'
+            }
+          >
+            <span>Service log</span>
+          </Tooltip>
         }
       >
         <Box sx={{ height: 360 }}>
