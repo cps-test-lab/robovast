@@ -129,16 +129,28 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
             :func:`campaign_world_rel`.
 
     Returns:
-        ``{producer, world, overrides, image, overrides_known}``.
+        ``{producer, world, overrides, image, overrides_known, capture_version}``.
 
     Raises:
-        SceneUnavailable: when the run does not say what world it used, or the campaign does not record
-            an image identity precise enough to trust a cache entry against.
+        SceneUnavailable: when the capture is a format version this code does not implement, when the
+            run does not say what world it used, or when the campaign does not record an image
+            identity precise enough to trust a cache entry against.
     """
     from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
         RoleImageUnavailable, campaign_role_image)
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.run_capture import (  # pylint: disable=import-outside-toplevel
+        CaptureFormatError, check_supported)
+
+    # Before anything is read out of the manifest, including `world`. Everything below interprets
+    # fields whose meaning the format version defines -- `overrides` most of all -- so a version this
+    # code has not seen has to stop here rather than be keyed and compiled on the assumption that the
+    # fields still mean what they used to.
+    try:
+        capture_version = check_supported(capture_manifest)
+    except CaptureFormatError as err:
+        raise SceneUnavailable(str(err)) from err
 
     world = (capture_manifest or {}).get("world")
     if not world:
@@ -183,6 +195,9 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
         "world": str(world),
         "overrides": (capture_manifest or {}).get("overrides") or {},
         "overrides_known": overrides_known,
+        # What `overrides` MEANS -- v2 addresses components by path where v1 addressed them by
+        # plugin name, on a document of identical shape. See :func:`cache_key`.
+        "capture_version": capture_version,
         "image": image,
         # Which simulator this campaign ran, so the command that rebuilds its geometry can be
         # asked of that backend rather than assumed here.
@@ -216,6 +231,8 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
     """
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
+    from robovast.common.run_capture import \
+        FORMAT_VERSION  # pylint: disable=import-outside-toplevel
 
     execution = (raw_config or {}).get("execution") or {}
     containers = execution.get("containers") or {}
@@ -250,6 +267,10 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
                  f"{_RUN_FILE_MOUNT}{world_ref.lstrip('/')}",
         "overrides": {k: v for k, v in (sim_block or {}).items() if k != "world"},
         "overrides_known": True,
+        # A `.vast`'s `sim:` block is written against TODAY's override grammar, there being no
+        # capture to read a version from. That is also what keeps a workspace and a current campaign
+        # sharing one entry -- the warm-share this function's docstring promises.
+        "capture_version": FORMAT_VERSION,
         "image": image,
         "execution": execution,
         "backend": backend_name(execution),
@@ -462,6 +483,13 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
     # a key and be served each other's geometry.
     key.add("extra_sha", identity.get("extra_sha") or "")
     key.add("scene_cache_version", CACHE_FORMAT_VERSION)
+    # The CAPTURE's version, which is not the line above: that one is this module's, bumped when the
+    # cache changes what it asks for. This one is the format's, and it is here because v2 changed what
+    # `overrides` MEANS without changing its shape -- so two documents that hash alike can name
+    # different worlds. The image digest happens to separate the two conventions today (which
+    # convention a document uses is a property of the roqsim inside the image), but that is a
+    # coincidence of how geometry is built, not something the key should rest on.
+    key.add("capture_version", identity.get("capture_version") or 1)
     key.add("image", identity["image"])
     key.add("world", identity["world"])
     key.add("overrides", identity["overrides"])

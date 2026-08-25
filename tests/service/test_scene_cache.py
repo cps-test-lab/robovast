@@ -16,6 +16,7 @@ import shlex
 import pytest
 import yaml
 
+from robovast.common import run_capture
 from robovast.service import scene_cache
 
 
@@ -60,7 +61,8 @@ def _backend_named(name, backend):
 
 
 def _manifest(**over):
-    base = {"producer": "roqsim", "world": "pkg:depot", "overrides": {}}
+    base = {"producer": "roqsim", "world": "pkg:depot", "overrides": {},
+            "version": run_capture.FORMAT_VERSION}
     base.update(over)
     return base
 
@@ -118,6 +120,57 @@ def test_the_key_separates_worlds_and_overrides(tmp_path, field, value):
     base = scene_cache.world_identity(_campaign(tmp_path / "a"), _manifest())
     other = scene_cache.world_identity(_campaign(tmp_path / "b"), _manifest(**{field: value}))
     assert scene_cache.cache_key(base) != scene_cache.cache_key(other)
+
+
+def test_the_key_separates_capture_format_versions(tmp_path):
+    """The same override document, two versions -> two entries. Nothing else can tell them apart.
+
+    v2 changed what ``overrides`` MEANS without changing its shape: ``components.robot.lidar``
+    addressed the config of the component named ``robot`` under v1 and the child component
+    ``robot.lidar`` under v2. Both hash identically as data, so a key that ignored the version would
+    serve one run geometry compiled for the other's world -- and it would look perfectly fine.
+    """
+    overrides = {"components": {"robot": {"lidar": {"rays": 4}}}}
+    v1 = scene_cache.world_identity(_campaign(tmp_path / "a"),
+                                    _manifest(version=1, overrides=overrides))
+    v2 = scene_cache.world_identity(_campaign(tmp_path / "b"),
+                                    _manifest(version=2, overrides=overrides))
+    assert scene_cache.cache_key(v1) != scene_cache.cache_key(v2)
+
+
+def test_a_capture_newer_than_this_code_is_refused(tmp_path):
+    """The refusal that matters most is HERE, not in the viewer.
+
+    A viewer that cannot read a capture simply fails to animate. This side reads the manifest's
+    ``overrides`` to decide which geometry the run gets, so a version whose fields mean something
+    this code has not seen would be keyed and compiled anyway, and the picture would look right.
+    """
+    newer = run_capture.FORMAT_VERSION + 1
+    with pytest.raises(scene_cache.SceneUnavailable, match=f"format version {newer}"):
+        scene_cache.world_identity(_campaign(tmp_path), _manifest(version=newer))
+
+
+def test_a_manifest_without_a_version_reads_as_the_oldest_format(tmp_path):
+    """Absent is v1, not a refusal: the oldest format is the only safe assumption about a manifest
+    that does not declare one, and refusing would strand a capture this code can in fact read."""
+    manifest = _manifest()
+    del manifest["version"]
+    ident = scene_cache.world_identity(_campaign(tmp_path), manifest)
+    assert ident["capture_version"] == 1
+
+
+def test_a_workspace_and_a_campaign_naming_one_world_still_share_an_entry(tmp_path):
+    """The warm-share the docstring promises: open the Config tab, then a run view, and the second
+    is already built. A `.vast`'s `sim:` block has no capture to read a version from and is written
+    against TODAY's override grammar, so it is keyed at the current version -- which is what keeps
+    this true rather than splitting the two apart the moment a version entered the key.
+    """
+    image = "harbor/x@sha256:" + "a" * 64
+    raw = {"execution": {"containers": {"simulation": {"image": image, "config": "pkg:depot"}}}}
+    workspace = scene_cache.workspace_world_identity(str(tmp_path / "ws"), raw)
+    campaign = scene_cache.world_identity(_campaign(tmp_path, image=image), _manifest())
+    assert workspace["capture_version"] == run_capture.FORMAT_VERSION
+    assert scene_cache.cache_key(workspace) == scene_cache.cache_key(campaign)
 
 
 def test_the_key_separates_exporter_options(tmp_path):
