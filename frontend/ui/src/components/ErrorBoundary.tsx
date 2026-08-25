@@ -16,8 +16,10 @@ import { RobovastError } from '@/lib/robovastClient'
 // operator the two things they actually need: what went wrong, and a way back.
 //
 // It is also what makes code-splitting safe. A dynamic import that fails over a flaky
-// port-forward throws exactly here, and `Try again` re-attempts it — a dropped chunk becomes
-// a button rather than a white page.
+// port-forward throws exactly here — a dropped chunk becomes a button rather than a white
+// page. Two buttons, because a chunk goes missing in two ways that want opposite remedies:
+// `Try again` re-attempts the import, and `Reload` re-fetches the document, which is the
+// only way back when the service was restarted onto a build with different asset hashes.
 
 interface Props {
   /** Named in the message, so a nested boundary says which part failed. */
@@ -32,8 +34,11 @@ interface State {
   showDetail: boolean
 }
 
-/** True for the "a chunk did not arrive" family, which retrying usually fixes. */
-function isLoadFailure(error: Error): boolean {
+/** True for the "a chunk did not arrive" family — a dropped request, or a build the service
+ *  no longer has. Exported for its test: it is what decides whether the panel offers Reload,
+ *  and each engine words the same failure differently, so a tightened pattern would silently
+ *  drop the button from the case it exists for. */
+export function isLoadFailure(error: Error): boolean {
   return /dynamically imported module|Importing a module script failed|Loading chunk/i
     .test(error.message)
 }
@@ -71,15 +76,33 @@ export class ErrorBoundary extends Component<Props, State> {
       <Box sx={{ p: 2, maxWidth: 720 }}>
         <Alert
           severity={transient ? 'warning' : 'error'}
-          action={<Button color="inherit" size="small" onClick={this.retry}>Try again</Button>}
+          action={
+            <>
+              {/* Reload only on the transient branch, and first because it is the one action
+                  that covers both causes. A vanished chunk is permanent — the service was
+                  rebuilt and the hashed file this tab asks for no longer exists -- so "Try
+                  again" re-imports a dead URL forever, while a reload fetches a fresh
+                  index.html with the new hashes. It is cheap here because navigation is in the
+                  URL hash: the reload comes back to this same view. On the other branch a
+                  render bug would simply return, so reloading is only lost state. */}
+              {transient && (
+                <Button color="inherit" size="small"
+                        onClick={() => window.location.reload()}>Reload</Button>
+              )}
+              <Button color="inherit" size="small" onClick={this.retry}>Try again</Button>
+            </>
+          }
         >
           <AlertTitle>
             {transient
               ? `Could not load ${this.props.label}`
               : `${this.props.label} stopped working`}
           </AlertTitle>
+          {/* Both causes, named, rather than a guess at which one it is. Telling them apart
+              would take a probe of the served index.html, and they share a first remedy. */}
           {transient
-            ? 'A part of the app did not download — usually a dropped connection to the service.'
+            ? 'A part of the app did not download. Either the connection to the service '
+              + 'dropped, or RoboVAST was updated and this tab is running the previous build.'
             : detail}
           {!transient && (
             <Box sx={{ mt: 1 }}>

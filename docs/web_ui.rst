@@ -194,6 +194,22 @@ must be re-read: without it a card would show the phase from before you switched
 long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
 therefore fetch once on return.
 
+**The app itself** can go stale too, and it is the one thing here that no amount of
+polling helps with. Each view is a separate chunk fetched on first visit, named by a
+hash of its contents; restarting the service onto a new build rehashes all of them. A tab
+opened before the restart is still holding the previous ``index.html``, so the next view it
+opens asks for a file that is no longer there. Nothing is wrong with the service and nothing
+is wrong with the tab — they are simply one build apart.
+
+So the failure is caught where it happens, at the view's own boundary, and it offers both
+clicks: **Try again**, which re-attempts the download and is what a dropped tunnel needs,
+and **Reload**, which fetches the new document and is what a restart needs. The message
+names both causes rather than guessing between them. A reload is cheap here because the
+navigation lives in the URL hash — it comes back to the view you were on. The service serves
+``index.html`` as ``no-cache`` so that reload is guaranteed to see the new build, and
+everything under ``assets/`` as immutable, since a content hash in the name is a promise the
+bytes never change.
+
 What deliberately does *not* move is a result you are reading. The Results views take a
 snapshot of the campaign list and adopt a new one only when you ask (see
 `Results viewer`_) — a finished campaign is immutable, so reshuffling its tree under
