@@ -63,6 +63,13 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
 
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
+    # And the registry, which `for_batch` dials through `_pin_image_refs`: it resolves
+    # every image ref to the digest it names right now, one HEAD each. The same
+    # fail-soft shape as the Secret read -- an unreachable registry leaves the ref as it
+    # was -- so it too cost time rather than correctness. It stayed hidden while the
+    # Secret read above was costing thirty-five seconds a test, which is a good reason
+    # to state both here rather than leave the next reader to find the second one.
+    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
     monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
                         lambda cfg, camp: ("bkt", ""))
     campaign_data = {
