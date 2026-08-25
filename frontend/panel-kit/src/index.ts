@@ -22,6 +22,12 @@ export { declaredMarkers } from './declaredMarkers'
 export type { BindingSource } from './bindings'
 export { resolveBinding, resolveStringBinding } from './bindings'
 
+export type { YamlScalar } from './flatYaml'
+export { numberSequence, parseFlatYaml } from './flatYaml'
+
+export type { MapYaml } from './mapYaml'
+export { parseMapYaml } from './mapYaml'
+
 export { useCanvasClock } from './useCanvasClock'
 
 export { lastAtOrBefore, nearestIndex } from './timeIndex'

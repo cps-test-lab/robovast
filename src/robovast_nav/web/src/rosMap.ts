@@ -3,59 +3,13 @@
 //
 // Not the same thing as the costmap panel's grids: those arrive from a service endpoint already
 // decoded into an OccupancyGrid, while this is the *authored* map a campaign points `map_file` at.
-// So the fetching and decoding are here; everything downstream (the planar transforms, the
+// So the fetching and the PGM decoding are here; everything downstream (the planar transforms, the
 // grayscale ramp) is occupancyGrid.ts's, because a map is a map once it is cells and an origin.
 
+// The map.yaml reader lives in the kit, not here: it is pure text -> object, and there it sits under
+// a test runner. What stays here is what needs a browser.
+import { parseMapYaml } from '@robovast/panel-kit'
 import type { OccupancyGrid } from './occupancyGrid'
-
-/** What a nav `map.yaml` declares, of the keys that decide geometry. */
-interface MapYaml {
-  image: string
-  resolution: number
-  origin: number[]
-  negate?: number
-  occupied_thresh?: number
-  free_thresh?: number
-}
-
-/** A deliberately small YAML reader: a map.yaml is a flat mapping of scalars and one inline list.
- *
- *  A remote panel bundles what it imports, and pulling a full YAML parser into it to read six keys
- *  would cost more than the panel. Anything this cannot read is reported rather than guessed —
- *  a map drawn at the wrong origin is worse than no map. */
-export function parseMapYaml(text: string): MapYaml {
-  const out: Record<string, unknown> = {}
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.split('#')[0].trim()
-    if (!line || !line.includes(':')) continue
-    const [key, ...rest] = line.split(':')
-    const value = rest.join(':').trim()
-    if (!value) continue
-    if (value.startsWith('[')) {
-      out[key.trim()] = value
-        .replace(/[[\]]/g, '')
-        .split(',')
-        .map((v) => Number(v.trim()))
-    } else {
-      const n = Number(value)
-      out[key.trim()] = Number.isNaN(n) ? value.replace(/^["']|["']$/g, '') : n
-    }
-  }
-  const image = out.image
-  const resolution = out.resolution
-  if (typeof image !== 'string' || typeof resolution !== 'number') {
-    throw new Error('map.yaml declares no usable `image` and `resolution`')
-  }
-  const origin = Array.isArray(out.origin) ? (out.origin as number[]) : [0, 0, 0]
-  return {
-    image,
-    resolution,
-    origin,
-    negate: typeof out.negate === 'number' ? out.negate : 0,
-    occupied_thresh: typeof out.occupied_thresh === 'number' ? out.occupied_thresh : 0.65,
-    free_thresh: typeof out.free_thresh === 'number' ? out.free_thresh : 0.196,
-  }
-}
 
 /** Decode a binary PGM (P5). Browsers decode PNG and JPEG natively but not this, and a nav map is
  *  almost always a .pgm — so the alternative to ~30 lines here is the map not rendering at all. */
