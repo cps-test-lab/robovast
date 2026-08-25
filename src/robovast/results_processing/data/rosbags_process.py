@@ -24,19 +24,21 @@ rosbags_*.py scripts, each of which reads all rosbags from scratch.
 Handler types (specified via --config JSON):
   to_csv          Extract arbitrary ROS topics to CSV
   tf_to_csv       Extract TF transforms to CSV
-  bt_to_csv       Extract behavior tree snapshots to CSV
+  nav2_bt_to_csv  Extract nav2 /behavior_tree_log status transitions to CSV
   action_to_csv   Extract ROS2 action feedback/status to CSV
   rosout_to_csv   Extract /rosout log messages to CSV
+  clock_to_csv    Extract the wall<->sim mapping from /clock (wall-time bags only)
 
 Usage::
 
     rosbags_process.py INPUT_DIR \\
-        --config '{"plugins": [{"type": "rosout_to_csv"}, {"type": "bt_to_csv"}]}' \\
+        --config '{"plugins": [{"type": "rosout_to_csv"}, {"type": "tf_to_csv"}]}' \\
         --workers 4 \\
         --provenance-file /provenance/process_provenance.json
 """
 
 import argparse
+import base64
 import contextlib
 import csv
 import hashlib
@@ -47,21 +49,25 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
-import yaml
+import zlib
 from abc import ABC, abstractmethod
 from multiprocessing import Pool, cpu_count
 from typing import Any, Dict, List, Optional, Tuple
 
-import rosbag2_py
-from tf2_ros import Buffer
-from rclpy.serialization import deserialize_message
-from tf2_py import ConnectivityException, ExtrapolationException, LookupException
 import numpy as np
-
-from rosbags_common import find_rosbags, gen_msg_values, write_provenance_entry
+import rosbag2_py
+import yaml
+from rclpy.serialization import deserialize_message
+from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
+                            DEFAULT_CLOCK_TOLERANCE_S, BagResult, ClockDecimator,
+                            failing_bag_output, find_rosbags, gen_msg_values,
+                            handler_error_pointer, is_under_tolerated_root, register_video,
+                            resolve_tolerated_roots, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
-
+from tf2_py import ConnectivityException, ExtrapolationException, LookupException
+from tf2_ros import Buffer
 
 # ---------------------------------------------------------------------------
 # Base handler class
@@ -74,6 +80,20 @@ class RosbagHandler(ABC):
     topics. Handlers are instantiated fresh for each rosbag inside the worker
     subprocess (to avoid pickling issues with TF buffers, open file handles, etc.).
     """
+
+    #: Where this bag's outputs go. ``None`` (the default) means "beside the bag" —
+    #: what a local/bind-mounted run wants, since the container writes straight into
+    #: the real campaign dir. The worker sets it when ``--output-root`` is given, so
+    #: outputs land in a separate tree (a pod cannot write into the caller's
+    #: filesystem, so the cluster Job keeps inputs and outputs in different dirs).
+    output_dir: Optional[str] = None
+
+    def _out_dir(self, bag_path: str) -> str:
+        """Absolute output directory for *bag_path* (created if needed)."""
+        out = self.output_dir or os.path.dirname(bag_path)
+        out = os.path.abspath(out)
+        os.makedirs(out, exist_ok=True)
+        return out
 
     @abstractmethod
     def topics(self) -> List[str]:
@@ -139,7 +159,7 @@ class ToCsvHandler(RosbagHandler):
         return self._topics
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
-        self._parent_folder = os.path.abspath(os.path.dirname(bag_path))
+        self._parent_folder = self._out_dir(bag_path)
         self._bag_name = os.path.basename(bag_path)
         self._records_by_topic = {t: [] for t in self._topics}
         missing = [t for t in self._topics if t not in topic_type_map]
@@ -200,17 +220,96 @@ def quat_to_rpy(x: float, y: float, z: float, w: float) -> Tuple[float, float, f
     return roll, pitch, yaw
 
 
+#: RoboVAST's pose-table contract (see ``docs/results_processing.rst``). ``tf_to_csv`` is one
+#: producer of it; ``sim_poses``, written by the simulator itself, is another; a stack on some other
+#: middleware becomes one by emitting these columns into the run directory.
+#:
+#: **Two clocks, on purpose.** ``timestamp`` is the bag receive time, like every other table here,
+#: and is the join key the whole run view scrubs on -- never re-key it. But a receive time is only
+#: as fine as the ``/clock`` grid the recorder's own clock advances on, and is jittered by delivery
+#: on top, so DIFFERENCING it does not measure the robot: it measures the transport. ``stamp`` is
+#: the publisher's own header stamp -- when the pose was true. Derive speeds from ``stamp``, join on
+#: ``timestamp``. The same shape ``rosout_to_csv`` and ``nav2_bt_to_csv`` already use.
+#:
+#: **Quaternion, never Euler.** roll/pitch/yaw is lossy the moment a body leaves the plane -- a
+#: drone, a tilting arm, a robot on a ramp -- and this was the one place the quaternion the bag
+#: already carries got thrown away. ``orientation.yaw`` still exists downstream for the 2D
+#: consumers: it is derived at ingest and labeled as the projection it is.
+#:
+#: Twist columns are declared and left empty here, because TF carries no velocity. A column present
+#: for one producer and absent for another would make every query producer-specific.
+POSE_FIELDNAMES = [
+    "frame", "timestamp", "stamp",
+    "position.x", "position.y", "position.z",
+    "orientation.x", "orientation.y", "orientation.z", "orientation.w",
+    "twist.linear.x", "twist.linear.y", "twist.linear.z",
+    "twist.angular.x", "twist.angular.y", "twist.angular.z",
+]
+
+
+def _pose_row(frame: str, timestamp: int, transform, *, static: bool) -> dict:
+    """One contract row from a resolved ``map -> frame`` transform.
+
+    Free of every ROS import so it is unit-testable on a host with no ROS: it reads attributes off
+    whatever it is handed. That matters because this is where the two clocks and the quaternion
+    ordering are decided, and the enclosing handler cannot be imported without ``rosbag2_py`` and
+    ``tf2_ros``.
+
+    ``stamp`` is NULL for a transform that came from ``/tf_static``: a latched transform's header
+    stamp is the single moment it was published, usually bag start and sometimes zero, so carrying
+    it as a measurement time would be worse than admitting there is none.
+    """
+    t = transform.transform.translation
+    r = transform.transform.rotation
+    header = transform.header.stamp
+    row = dict.fromkeys(POSE_FIELDNAMES, "")
+    row.update({
+        "frame": frame,
+        "timestamp": timestamp / 1_000_000_000.0,
+        "stamp": "" if static else header.sec + header.nanosec / 1_000_000_000.0,
+        "position.x": t.x, "position.y": t.y, "position.z": t.z,
+        "orientation.x": r.x, "orientation.y": r.y, "orientation.z": r.z, "orientation.w": r.w,
+    })
+    return row
+
+
 class TfToCsvHandler(RosbagHandler):
-    """Extract TF transforms to CSV (one file per bag)."""
+    """Extract TF transforms to CSV (one file per bag).
 
-    _FIELDNAMES = [
-        "frame", "timestamp",
-        "position.x", "position.y", "position.z",
-        "orientation.roll", "orientation.pitch", "orientation.yaw",
-    ]
+    ``frames`` names the child frames to resolve against ``map``, or ``all`` for every child frame the
+    bag carries. ``all`` exists for the viewer: a 3D scene animates a body per TF frame, and a world
+    with people and movable props has one frame per skeleton bone and per prop -- listing them is
+    per-world busywork that a new prop silently invalidates.
 
-    def __init__(self, frames: Optional[List[str]] = None, csv_filename: str = "poses.csv") -> None:
-        self._frames = frames or ["base_link"]
+    ``require`` is what keeps ``all`` from costing anything. A named frame that yields nothing is a
+    hard error (see :meth:`on_end`), and that assertion is load-bearing -- it is how a ground-truth
+    frame missing from one simulator's bags was caught rather than silently analyzed as absent. ``all``
+    has no such expectation to check, so it takes the frames to assert on from ``require``; an explicit
+    ``frames`` list implies ``require: <the same list>``, exactly as before.
+
+    What neither mode captures: a frame published **once** on ``/tf_static`` before the dynamic chain
+    to ``map`` exists. A transform is resolved when it arrives, and a robot description's static links
+    are latched at bag start, while ``map -> odom`` only appears once localization begins -- so the
+    lookup fails and is never retried. This is why ``all`` over a nav2 bag yields the moving frames
+    rather than every link in the URDF. It costs a viewer nothing (a body welded in the scene is
+    already baked at that pose), but asking for such a frame by name is a hard error, correctly.
+    """
+
+    _FIELDNAMES = POSE_FIELDNAMES
+
+    #: ``frames`` value selecting every child frame in the bag instead of a fixed list.
+    ALL = "all"
+
+    def __init__(
+        self,
+        frames: Optional[List[str] | str] = None,
+        csv_filename: str = "poses.csv",
+        require: Optional[List[str]] = None,
+    ) -> None:
+        self._all_frames = isinstance(frames, str) and frames.lower() == self.ALL
+        self._frames = [] if self._all_frames else (frames or ["base_link"])
+        # Without `require`, an explicit list asserts on itself -- the pre-existing contract.
+        self._require = list(require) if require else list(self._frames)
         self._csv_filename = csv_filename
         self._tf_buffer = None
         self._csvfile = None
@@ -228,7 +327,7 @@ class TfToCsvHandler(RosbagHandler):
         self._record_counts = {f: 0 for f in self._frames}
         self._found_tfs = set()
         self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+            self._out_dir(bag_path), self._csv_filename
         )
         self._csvfile = None
         self._writer = None
@@ -238,37 +337,42 @@ class TfToCsvHandler(RosbagHandler):
             return
         if not hasattr(msg, "transforms"):
             return
+        # Feed /tf_static as static so it is valid for all time (tf2's own contract): otherwise a
+        # latched transform like a static map->odom is stored at its single publish stamp, and any
+        # later lookup_transform through it (e.g. map->base_link at a dynamic odom->base_link stamp)
+        # raises ExtrapolationException and silently drops every sample. Setups whose whole chain is
+        # dynamic (e.g. AMCL publishing map->odom on /tf) were unaffected; a static map->odom is.
+        is_static = topic == "/tf_static"
         for transform in msg.transforms:
-            self._tf_buffer.set_transform(transform, "default_authority")
+            if is_static:
+                self._tf_buffer.set_transform_static(transform, "default_authority")
+            else:
+                self._tf_buffer.set_transform(transform, "default_authority")
             self._found_tfs.add(
                 f"{transform.header.frame_id} -> {transform.child_frame_id}"
             )
-            for frame in self._frames:
+            # In `all` mode the frame set is whatever the bag turns out to carry, discovered here as
+            # transforms arrive rather than declared up front.
+            if self._all_frames:
+                self._record_counts.setdefault(transform.child_frame_id, 0)
+                candidates = [transform.child_frame_id]
+            else:
+                candidates = self._frames
+            for frame in candidates:
                 if transform.child_frame_id != frame:
                     continue
                 try:
                     map_to_frame = self._tf_buffer.lookup_transform(
                         "map", frame, transform.header.stamp
                     )
-                    t = map_to_frame.transform.translation
-                    r = map_to_frame.transform.rotation
-                    roll, pitch, yaw = quat_to_rpy(r.x, r.y, r.z, r.w)
                     if self._csvfile is None:
                         self._csvfile = open(self._output_file, "w", newline="")
                         self._writer = csv.DictWriter(
                             self._csvfile, fieldnames=self._FIELDNAMES
                         )
                         self._writer.writeheader()
-                    self._writer.writerow({
-                        "frame": frame,
-                        "timestamp": timestamp / 1_000_000_000.0,
-                        "position.x": t.x,
-                        "position.y": t.y,
-                        "position.z": t.z,
-                        "orientation.roll": roll,
-                        "orientation.pitch": pitch,
-                        "orientation.yaw": yaw,
-                    })
+                    self._writer.writerow(
+                        _pose_row(frame, timestamp, map_to_frame, static=is_static))
                     self._record_counts[frame] += 1
                 except (LookupException, ConnectivityException, ExtrapolationException):
                     pass
@@ -277,84 +381,117 @@ class TfToCsvHandler(RosbagHandler):
         if self._csvfile is not None:
             self._csvfile.close()
         total = sum(self._record_counts.values())
-        if total > 0:
-            summary = ", ".join(
-                f"{f}: {c}" for f, c in self._record_counts.items() if c > 0
-            )
-            print(f"  ✓ {self._output_file}: {total} records ({summary})")
-            return total, [self._output_file]
-        print(f"  ✗ {self._output_file}: no records found")
-        if len(self._frames) == 1:
-            print(f"    Found TF frames:\n" + "\n".join(f"    - {t}" for t in self._found_tfs))
-        return 0, []
+        # A *required* frame yielding nothing is a defect in the run, not an empty result: the frame
+        # was never published, or it is not connected to `map` in the TF tree. Reporting success would
+        # hand the analysis a CSV that is silently missing a whole trajectory -- e.g. the ground-truth
+        # frame a sim-vs-sim comparison is measured against. An explicit `frames` list requires itself,
+        # so this is the pre-existing check; `all` mode requires only what `require` names, because
+        # "every frame in the bag" states no expectation that could be violated.
+        missing = [f for f in self._require if not self._record_counts.get(f)]
+        if missing:
+            found = "\n".join(f"    - {t}" for t in sorted(self._found_tfs)) or "    (none)"
+            got = ", ".join(
+                f"{f}: {c}" for f, c in self._record_counts.items() if c
+            ) or "nothing"
+            raise RuntimeError(
+                f"no map-relative poses for required TF frame(s) {', '.join(missing)} "
+                f"(extracted {got}). Either the frame is not published, or it does not connect to "
+                f"'map'. Transforms present in the bag:\n{found}")
+        # In `all` mode the counts include frames that were seen but never resolved against `map`
+        # (a frame in another tree, or `map`'s own ancestors); those wrote nothing, so listing them
+        # would bury the frames that did.
+        counts = self._record_counts.items()
+        summary = ", ".join(f"{f}: {c}" for f, c in counts if c or not self._all_frames)
+        print(f"  ✓ {self._output_file}: {total} records ({summary})")
+        return total, [self._output_file]
 
     @classmethod
     def from_config(cls, config: dict) -> "TfToCsvHandler":
         return cls(
             frames=config.get("frames"),
             csv_filename=config.get("csv_filename", "poses.csv"),
+            require=config.get("require"),
         )
 
 
 # ---------------------------------------------------------------------------
-# BtToCsvHandler
+# Nav2BtLogToCsvHandler
 # ---------------------------------------------------------------------------
 
-class BtToCsvHandler(RosbagHandler):
-    """Extract behavior tree status changes to CSV (one file per bag)."""
+class Nav2BtLogToCsvHandler(RosbagHandler):
+    """Extract nav2's behavior-tree status transitions to CSV (one file per bag).
 
-    _SNAPSHOTS_TOPIC = "/scenario_execution/snapshots"
-    _FIELDNAMES = ["timestamp", "behavior_name", "behavior_id", "status", "status_name", "class_name"]
-    _STATUS_NAMES = {1: "INVALID", 2: "RUNNING", 3: "SUCCESS", 4: "FAILURE"}
+    nav2's ``bt_navigator`` publishes ``/behavior_tree_log``
+    (``nav2_msgs/msg/BehaviorTreeLog``): each message carries a ``timestamp`` and a
+    repeated ``event_log[]`` of status changes ``{timestamp, node_name, uid,
+    previous_status, current_status}``. We explode that array to one CSV row per
+    transition — the generic ``to_csv`` handler can't: it writes one row per published
+    message and smears the variable-length ``event_log`` across indexed columns, which
+    is the wrong grain for a per-node, per-time status timeline.
 
-    def __init__(self, csv_filename: str = "behaviors.csv") -> None:
+    The log is topology-free (transitions keyed by ``node_name`` only); tree structure is
+    reconstructed downstream from the BT XML (see robovast_nav's ``Nav2BtTree``), which
+    joins against this table's ``node_name`` column.
+
+    ``uid`` is nav2's per-node id, and the only thing separating two nodes that share a
+    ``node_name`` — an unnamed ``RecoveryNode`` or ``RateController`` appears once per
+    instance in a default nav2 tree, so the name-keyed join above silently merges them.
+    It is not a key into the BT XML (uids are assigned at tree construction and appear
+    nowhere in the definition), which is why the join stays on the name; it tells a reader
+    of this table which rows belong to one node. Absent from pre-Jazzy
+    ``BehaviorTreeStatusChange``, where the column is empty.
+
+    ``timestamp`` is the **bag receive time**, like every other table here, and not the event's own
+    stamp. nav2 fills that stamp from a wall clock even under ``use_sim_time``, so it lands ~1.8e9 s
+    away from the simulator's clock: a run whose bag spans 4-92 s of sim time produced BT events
+    stamped 1785100900. Keying the table on that made it unjoinable with the poses, the costmaps and
+    the scenario tree, and put every node transition outside the run view's timeline -- the behaviour
+    tree panel simply had nothing to show at any playback time. The event's own stamp is still
+    recorded, as ``event_timestamp``, since it is the only view of nav2's wall-clock pacing.
+    """
+
+    _BT_LOG_TOPIC = "/behavior_tree_log"
+    _FIELDNAMES = [
+        "timestamp", "node_name", "uid", "previous_status", "current_status", "event_timestamp",
+    ]
+
+    def __init__(self, csv_filename: str = "nav2_behavior_tree.csv") -> None:
         self._csv_filename = csv_filename
-        self._uuid_to_int: Dict[str, int] = {}
-        self._next_id: int = 1
-        self._last_status: Dict[tuple, int] = {}
         self._csvfile = None
         self._writer = None
         self._record_count: int = 0
         self._output_file: str = ""
 
     def topics(self) -> List[str]:
-        return [self._SNAPSHOTS_TOPIC]
+        return [self._BT_LOG_TOPIC]
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
-        self._uuid_to_int = {}
-        self._next_id = 1
-        self._last_status = {}
-        self._record_count = 0
         self._csvfile = None
         self._writer = None
-        self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
-        )
+        self._record_count = 0
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
 
     def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
-        if topic != self._SNAPSHOTS_TOPIC:
+        if topic != self._BT_LOG_TOPIC:
             return
-        for behavior in msg.behaviours:
-            uuid_str = str(behavior.own_id)
-            if uuid_str not in self._uuid_to_int:
-                self._uuid_to_int[uuid_str] = self._next_id
-                self._next_id += 1
-            behavior_id = self._uuid_to_int[uuid_str]
-            key = (behavior.name, behavior_id)
-            if self._last_status.get(key) == behavior.status:
-                continue
-            self._last_status[key] = behavior.status
+        for event in msg.event_log:
+            # The bag receive time is the run's one clock (see the class docstring): every other table
+            # here is on it, so this one is too. The event's own stamp rides along in its own column.
+            event_stamp = getattr(event, "timestamp", None)
+            event_ts = ""
+            if event_stamp is not None and (event_stamp.sec or event_stamp.nanosec):
+                event_ts = event_stamp.sec + event_stamp.nanosec / 1_000_000_000.0
             if self._csvfile is None:
                 self._csvfile = open(self._output_file, "w", newline="")
                 self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
                 self._writer.writeheader()
             self._writer.writerow({
                 "timestamp": timestamp / 1_000_000_000.0,
-                "behavior_name": behavior.name,
-                "behavior_id": behavior_id,
-                "status": behavior.status,
-                "status_name": self._STATUS_NAMES.get(behavior.status, "UNKNOWN"),
-                "class_name": behavior.class_name,
+                "node_name": event.node_name,
+                "uid": getattr(event, "uid", ""),
+                "previous_status": str(event.previous_status).upper(),
+                "current_status": str(event.current_status).upper(),
+                "event_timestamp": event_ts,
             })
             self._record_count += 1
 
@@ -362,14 +499,14 @@ class BtToCsvHandler(RosbagHandler):
         if self._csvfile is not None:
             self._csvfile.close()
         if self._record_count > 0:
-            print(f"  ✓ {self._output_file}: {self._record_count} status records")
+            print(f"  ✓ {self._output_file}: {self._record_count} BT status transitions")
             return self._record_count, [self._output_file]
-        print(f"  ✗ {self._output_file}: no behavior records found")
+        print(f"  ✗ {self._output_file}: no /behavior_tree_log records found")
         return 0, []
 
     @classmethod
-    def from_config(cls, config: dict) -> "BtToCsvHandler":
-        return cls(csv_filename=config.get("csv_filename", "behaviors.csv"))
+    def from_config(cls, config: dict) -> "Nav2BtLogToCsvHandler":
+        return cls(csv_filename=config.get("csv_filename", "nav2_behavior_tree.csv"))
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +574,7 @@ class ActionToCsvHandler(RosbagHandler):
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         self._feedback_rows = []
         self._status_rows = []
-        self._parent_dir = os.path.dirname(bag_path)
+        self._parent_dir = self._out_dir(bag_path)
         available = set(topic_type_map)
         if self._feedback_topic not in available and self._status_topic not in available:
             action_topics = sorted(t for t in available if "_action" in t)
@@ -520,7 +657,7 @@ class RosoutToCsvHandler(RosbagHandler):
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         self._record_count = 0
         self._output_file = os.path.join(
-            os.path.abspath(os.path.dirname(bag_path)), self._csv_filename
+            self._out_dir(bag_path), self._csv_filename
         )
         if _ROSOUT_TOPIC not in topic_type_map:
             print(f"  ✗ {bag_path}: topic {_ROSOUT_TOPIC} not found in bag")
@@ -567,6 +704,92 @@ class RosoutToCsvHandler(RosbagHandler):
 
 
 # ---------------------------------------------------------------------------
+# ClockToCsvHandler
+# ---------------------------------------------------------------------------
+
+_CLOCK_TOPIC = "/clock"
+
+
+class ClockToCsvHandler(RosbagHandler):
+    """Extract the wall↔sim mapping from ``/clock`` (one ``clock_map.csv`` per bag).
+
+    Only meaningful for a bag recorded **without** ``use_sim_time`` — the entrypoint's own
+    infrastructure recording. There each message's receive time is wall and its content is
+    sim, so the pair is an exact sample of the mapping, taken at clock rate for the whole
+    container's life. (In the scenario's sim-time bag both would be sim, which is why that
+    bag cannot carry this.)
+
+    Thin I/O over :class:`~rosbags_common.ClockDecimator`: the accuracy
+    promise and the reading side share one definition in ``rosbags_common`` (which travels
+    with this script into the container) and ``clock_map`` (the host-side reader).
+    """
+
+    def __init__(self, tolerance_s: float = DEFAULT_CLOCK_TOLERANCE_S,
+                 csv_filename: str = CLOCK_MAP_FILENAME) -> None:
+        self._tolerance = tolerance_s
+        self._csv_filename = csv_filename
+        self._csvfile = None
+        self._writer = None
+        self._output_file: str = ""
+        self._kept: int = 0
+        self._decimator = ClockDecimator(tolerance_s)
+
+    def topics(self) -> List[str]:
+        return [_CLOCK_TOPIC]
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._kept = 0
+        self._decimator = ClockDecimator(self._tolerance)
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
+        if _CLOCK_TOPIC not in topic_type_map:
+            # Not an error: a campaign may record only /rosout, and a non-ROS run has no
+            # /clock at all. The absence is reported by the missing file, and every
+            # consumer of the map treats "no map" as "no sim time", never as zero offset.
+            print(f"  ✗ {bag_path}: topic {_CLOCK_TOPIC} not found in bag")
+            self._csvfile = None
+            self._writer = None
+            return
+        self._csvfile = open(self._output_file, "w", newline="")
+        self._writer = csv.DictWriter(self._csvfile, fieldnames=CLOCK_MAP_FIELDNAMES)
+        self._writer.writeheader()
+
+    def _write(self, sample: Tuple[float, float]) -> None:
+        self._writer.writerow({"wall_ts": sample[0], "sim_ts": sample[1]})
+        self._kept += 1
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if self._writer is None or topic != _CLOCK_TOPIC:
+            return
+        clock = getattr(msg, "clock", None)
+        if clock is None:
+            return
+        keep = self._decimator.offer(timestamp / 1_000_000_000.0,
+                                     clock.sec + clock.nanosec / 1_000_000_000.0)
+        if keep is not None:
+            self._write(keep)
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._writer is not None:
+            final = self._decimator.close()
+            if final is not None:
+                self._write(final)
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._kept > 0:
+            print(f"  ✓ {self._output_file}: {self._kept} clock samples "
+                  f"(from {self._decimator.seen}, tolerance {self._tolerance}s)")
+        else:
+            print(f"  ✗ {self._output_file}: no clock samples")
+        return self._kept, [self._output_file] if self._csvfile is not None else []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ClockToCsvHandler":
+        return cls(
+            tolerance_s=float(config.get("tolerance_s", DEFAULT_CLOCK_TOLERANCE_S)),
+            csv_filename=config.get("csv_filename", CLOCK_MAP_FILENAME))
+
+
+# ---------------------------------------------------------------------------
 # ToWebmHandler
 # ---------------------------------------------------------------------------
 
@@ -576,44 +799,97 @@ def _sanitize_topic(topic: str) -> str:
 
 
 class ToWebmHandler(RosbagHandler):
-    """Convert a CompressedImage topic to a WebM video file via FFmpeg."""
+    """Convert a CompressedImage topic to a WebM video file via FFmpeg, and register it.
+
+    Two things here exist because a camera may run at 25 fps, not only at the 1 Hz a monitor
+    camera does:
+
+    * **Frames are spooled to disk, not held in a list.** The fps cannot be chosen until the
+      last stamp is known, so the frames have to outlive the read loop; keeping them in memory
+      cost ~45,000 JPEGs (gigabytes) for half an hour at 25 fps, in the postprocessing
+      container. Only ``(offset, length, stamp)`` stays resident.
+    * **The keyframe interval is pinned.** Without ``-g`` the encoder's default decides how far
+      a seek has to decode from, which is invisible at 1800 frames and painful at 45,000 -- and
+      seeking is the whole point of the run-view panel that plays this.
+
+    The encode stays CONSTANT-rate. ``fps = (n-1)/duration`` puts the first and last frames at
+    exactly their recorded moments, so only mid-run jitter drifts; making it variable would
+    change the shape of an artifact the analysis notebooks and the published videos zip already
+    read, to fix a sub-second error at the rate this actually runs at.
+    """
 
     _DEFAULT_TOPIC = "/camera/image_raw/compressed"
     _DEFAULT_FPS = 30.0
+    #: Seconds of video between keyframes; ``-g`` is this many frames at the chosen rate.
+    _KEYFRAME_SECONDS = 2.0
 
     def __init__(self, topic: str = _DEFAULT_TOPIC, default_fps: float = _DEFAULT_FPS) -> None:
         self._topic = topic
         self._default_fps = default_fps
-        self._frames: List[bytes] = []
+        self._spool = None            # open temp file holding the JPEG bytes back to back
+        self._sizes: List[int] = []   # byte length of each frame, in arrival order
         self._timestamps: List[int] = []
         self._output_file: str = ""
+        self._out_folder: str = ""
+        self._run_dir: str = ""
 
     def topics(self) -> List[str]:
         return [self._topic]
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
-        self._frames = []
+        self._close_spool()
+        self._sizes = []
         self._timestamps = []
         topic_suffix = _sanitize_topic(self._topic)
         bag_name = os.path.basename(bag_path)
-        parent_folder = os.path.abspath(os.path.dirname(bag_path))
-        self._output_file = os.path.join(parent_folder, f"{bag_name}_{topic_suffix}.webm")
+        # The bag sits IN the run directory, so its parent is what a ``file`` in the manifest
+        # is relative to -- that is the directory the run view addresses files under. Normally
+        # identical to the output folder; a ``--output-dir`` elsewhere makes the path escape
+        # with ``../``, which is the honest answer since nothing could serve it either way.
+        self._run_dir = os.path.dirname(os.path.abspath(bag_path))
+        self._out_folder = self._out_dir(bag_path)
+        self._output_file = os.path.join(self._out_folder, f"{bag_name}_{topic_suffix}.webm")
+        # Beside the output rather than in /tmp: the spool is as large as the frames, and a
+        # container's /tmp is routinely the smallest filesystem it has.
+        self._spool = tempfile.NamedTemporaryFile(  # pylint: disable=consider-using-with
+            prefix=".webm-frames-", dir=self._out_folder, delete=False)
         if self._topic not in topic_type_map:
             print(f"  ✗ {bag_path}: topic '{self._topic}' not in bag")
 
+    def _close_spool(self) -> None:
+        """Close and delete the frame spool, if one is open."""
+        if self._spool is None:
+            return
+        name = self._spool.name
+        try:
+            self._spool.close()
+        finally:
+            self._spool = None
+            with contextlib.suppress(OSError):
+                os.unlink(name)
+
     def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
-        if topic == self._topic:
-            self._frames.append(bytes(msg.data))
+        if topic == self._topic and self._spool is not None:
+            data = bytes(msg.data)
+            self._spool.write(data)
+            self._sizes.append(len(data))
             self._timestamps.append(timestamp)
 
     def on_end(self) -> Tuple[int, List[str]]:
-        if not self._frames:
+        try:
+            return self._encode()
+        finally:
+            self._close_spool()
+
+    def _encode(self) -> Tuple[int, List[str]]:
+        if not self._sizes or self._spool is None:
             print(f"  ✗ {self._output_file}: no frames")
             return 0, []
 
-        if len(self._frames) > 1:
+        n = len(self._sizes)
+        if n > 1:
             duration_s = (self._timestamps[-1] - self._timestamps[0]) / 1e9
-            fps = (len(self._frames) - 1) / duration_s if duration_s > 0 else self._default_fps
+            fps = (n - 1) / duration_s if duration_s > 0 else self._default_fps
         else:
             fps = self._default_fps
 
@@ -623,6 +899,7 @@ class ToWebmHandler(RosbagHandler):
             "-r", f"{fps:.6f}",
             "-i", "pipe:0",
             "-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0",
+            "-g", str(max(1, round(fps * self._KEYFRAME_SECONDS))),
             "-deadline", "realtime", "-cpu-used", "8",
             self._output_file,
         ]
@@ -631,8 +908,10 @@ class ToWebmHandler(RosbagHandler):
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
         try:
-            for jpeg_bytes in self._frames:
-                proc.stdin.write(jpeg_bytes)
+            self._spool.flush()
+            self._spool.seek(0)
+            for size in self._sizes:
+                proc.stdin.write(self._spool.read(size))
         except BrokenPipeError:
             pass
         finally:
@@ -648,9 +927,18 @@ class ToWebmHandler(RosbagHandler):
             print(f"  ✗ {self._output_file}: FFmpeg failed: {stderr.decode(errors='replace')}")
             return -2, []
 
-        n = len(self._frames)
+        # Stamps in SECONDS, like every other table's, so a moment found in one is directly
+        # comparable here and with the run view's playback clock.
+        manifest = register_video(self._out_folder, {
+            "topic": self._topic,
+            "file": os.path.relpath(self._output_file, self._run_dir),
+            "t_start": self._timestamps[0] / 1_000_000_000.0,
+            "t_end": self._timestamps[-1] / 1_000_000_000.0,
+            "fps": round(fps, 6),
+            "frames": n,
+        })
         print(f"  ✓ {self._output_file}: {n} frames @ {fps:.2f} fps")
-        return n, [self._output_file]
+        return n, [self._output_file, manifest]
 
     @classmethod
     def from_config(cls, config: dict) -> "ToWebmHandler":
@@ -664,13 +952,97 @@ class ToWebmHandler(RosbagHandler):
 # Handler registry
 # ---------------------------------------------------------------------------
 
+class CostmapToCsvHandler(RosbagHandler):
+    """Compactly store nav_msgs/OccupancyGrid frames (costmaps / maps) for the web run-view.
+
+    Each grid's int8 cells (-1..100, row-major) are stored losslessly as zlib-compressed raw
+    bytes, base64-encoded, alongside its pose metadata -- one row per message in ``costmaps.csv``
+    (a ``topic`` column keeps several layers, e.g. global/local/map, in one file). The web costmap
+    panel fetches the frame nearest the playback time and inflates it in the browser. Occupancy
+    grids are highly uniform, so this is far smaller than the per-cell flatten ``to_csv`` would
+    produce (which also blows past SQLite's column limit for any real map) while keeping full
+    precision. Not a batchable-by-default step: enable it with ``rosbags_costmap_to_csv`` naming
+    the costmap topics recorded by the scenario's ``bag_record(...)``.
+    """
+
+    _FIELDNAMES = ["topic", "timestamp", "frame_id", "resolution", "width", "height",
+                   "origin_x", "origin_y", "origin_yaw", "data"]
+
+    def __init__(self, topics_list: List[str], csv_filename: str = "costmaps.csv") -> None:
+        self._topics = list(dict.fromkeys(topics_list))  # dedup, preserve order
+        self._csv_filename = csv_filename
+        self._output_file = ""
+        self._csvfile = None
+        self._writer = None
+        self._record_count = 0
+
+    def topics(self) -> List[str]:
+        return self._topics
+
+    def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
+        self._output_file = os.path.join(self._out_dir(bag_path), self._csv_filename)
+        self._csvfile = None
+        self._writer = None
+        self._record_count = 0
+        missing = [t for t in self._topics if t not in topic_type_map]
+        if missing:
+            print(f"  ℹ {bag_path}: costmap topics not in bag: {missing}")
+
+    def on_message(self, topic: str, msg: Any, timestamp: int) -> None:
+        if topic not in self._topics:
+            return
+        info = msg.info
+        o = info.origin
+        _, _, yaw = quat_to_rpy(o.orientation.x, o.orientation.y,
+                                o.orientation.z, o.orientation.w)
+        # int8 cells -> raw bytes -> zlib -> base64. The browser inflates and reads an Int8Array,
+        # recovering -1..100 exactly (the high bit maps back to the negative "unknown" value).
+        cells = np.asarray(msg.data, dtype=np.int8).tobytes()
+        payload = base64.b64encode(zlib.compress(cells, 9)).decode("ascii")
+        if self._csvfile is None:
+            self._csvfile = open(self._output_file, "w", newline="")
+            self._writer = csv.DictWriter(self._csvfile, fieldnames=self._FIELDNAMES)
+            self._writer.writeheader()
+        self._writer.writerow({
+            "topic": topic,
+            "timestamp": timestamp / 1_000_000_000.0,
+            "frame_id": msg.header.frame_id,
+            "resolution": info.resolution,
+            "width": info.width,
+            "height": info.height,
+            "origin_x": o.position.x,
+            "origin_y": o.position.y,
+            "origin_yaw": yaw,
+            "data": payload,
+        })
+        self._record_count += 1
+
+    def on_end(self) -> Tuple[int, List[str]]:
+        if self._csvfile is not None:
+            self._csvfile.close()
+        if self._record_count > 0:
+            print(f"  ✓ {self._output_file}: {self._record_count} costmap frames")
+            return self._record_count, [self._output_file]
+        print(f"  ✗ {self._output_file}: no costmap frames found")
+        return 0, []
+
+    @classmethod
+    def from_config(cls, config: dict) -> "CostmapToCsvHandler":
+        topics = config.get("topics") or []
+        if not topics:
+            raise ValueError("costmap_to_csv handler requires 'topics' list")
+        return cls(topics, csv_filename=config.get("csv_filename", "costmaps.csv"))
+
+
 HANDLER_REGISTRY: Dict[str, type] = {
-    "to_csv":        ToCsvHandler,
-    "tf_to_csv":     TfToCsvHandler,
-    "bt_to_csv":     BtToCsvHandler,
-    "action_to_csv": ActionToCsvHandler,
-    "rosout_to_csv": RosoutToCsvHandler,
-    "to_webm":       ToWebmHandler,
+    "to_csv":         ToCsvHandler,
+    "tf_to_csv":      TfToCsvHandler,
+    "nav2_bt_to_csv": Nav2BtLogToCsvHandler,
+    "action_to_csv":  ActionToCsvHandler,
+    "rosout_to_csv":  RosoutToCsvHandler,
+    "clock_to_csv":   ClockToCsvHandler,
+    "costmap_to_csv": CostmapToCsvHandler,
+    "to_webm":        ToWebmHandler,
 }
 
 
@@ -718,28 +1090,38 @@ def _write_cache(run_dir: str, fingerprint: str) -> None:
 # Per-bag worker
 # ---------------------------------------------------------------------------
 
-def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[str]]]]:
+
+def process_rosbag_worker(args: tuple) -> BagResult:
     """Process a single rosbag with all configured handlers.
 
     Args:
-        args: (bag_path, plugin_configs, debug) where plugin_configs is a list of
-              handler config dicts and debug controls per-bag output.
+        args: (bag_path, plugin_configs, debug, force, plugin_configs_hash, out_dir)
+              where plugin_configs is a list of handler config dicts, debug controls
+              per-bag output, and out_dir is where this bag's outputs go (``None`` =
+              beside the bag, the local default).
 
     Returns:
-        (bag_path, total_records, handler_results) where handler_results is a list of
-        (record_count, output_files) per handler. total_records == -2 if the
-        bag itself failed to open.
+        A :class:`BagResult`.
     """
-    bag_path, plugin_configs, debug, force, plugin_configs_hash = args
+    bag_path, plugin_configs, debug, force, plugin_configs_hash, out_dir = args
     run_dir = os.path.dirname(bag_path)
     fingerprint: Optional[str] = None
 
     if not force:
         fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         if _read_cache(run_dir) == fingerprint:
-            return bag_path, -1, []  # cache hit — already processed
+            return BagResult(bag_path, CACHED)  # already converted
 
-    with contextlib.redirect_stdout(sys.stdout if debug else io.StringIO()):
+    # The worker's own output is captured rather than interleaved: 32 workers printing
+    # through the progress bar would shred it. Captured, NOT discarded -- this used to be a
+    # throwaway ``io.StringIO()``, so every ``✗`` a handler printed died inside the worker
+    # while its *count* travelled home in the ``-2`` sentinel. The parent then reported
+    # "N handler error(s) -- see the messages above" with nothing above it: the one line
+    # saying what went wrong was the one line thrown away, and on the cluster lane (which
+    # never passes --debug) that happened on every campaign. Returned below for a bag that
+    # failed, and printed by the parent once the bar is done.
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(sys.stdout if debug else captured):
         # Instantiate handlers from config inside the worker (avoids pickling issues)
         handlers: List[RosbagHandler] = []
         for cfg in plugin_configs:
@@ -749,12 +1131,14 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Unknown handler type '{handler_type}' — skipping")
                 continue
             try:
-                handlers.append(handler_cls.from_config(cfg))
+                handler = handler_cls.from_config(cfg)
+                handler.output_dir = out_dir  # None = beside the bag (local default)
+                handlers.append(handler)
             except Exception as e:
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
         if not handlers:
-            return bag_path, -2, []
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Detect storage format from metadata.yaml, fall back to mcap
         storage_id = "mcap"
@@ -785,7 +1169,7 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
             }
         except Exception as e:
             print(f"✗ {bag_path}: failed to open — {e}")
-            return bag_path, -2, []
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -797,7 +1181,13 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
 
         if not active_handlers:
-            return bag_path, 0, []
+            # FAILED, not 0. Every handler refused to start, so nothing was going to be
+            # written -- but 0 means "opened fine, produced nothing", which the aggregate
+            # tallies as no-data and never counts in ``error_bags``. The step then exited
+            # 0 and reported success for a bag whose handlers had all thrown, which is the
+            # exact thing the exit-code contract below says must not happen. The on_begin
+            # failures just printed travel home with it.
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Build topic→handlers dispatch map (intersect with topics in this bag)
         topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
@@ -844,11 +1234,16 @@ def process_rosbag_worker(args: tuple) -> Tuple[str, int, List[Tuple[int, List[s
                 handler_results.append((-2, []))
 
     total = sum(r for r, _ in handler_results if r > 0)
-    if all(r != -2 for r, _ in handler_results):
+    clean = all(r != -2 for r, _ in handler_results)
+    if clean:
         if fingerprint is None:
             fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         _write_cache(run_dir, fingerprint)
-    return bag_path, total, handler_results
+    # Only a failing bag ships its output home. A clean run's chatter is exactly what the
+    # capture exists to suppress, and pickling every bag's stdout back through the pool
+    # would pay the whole conversion's output cost to say nothing.
+    return BagResult(bag_path, total, handler_results,
+                     "" if clean else captured.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -892,6 +1287,27 @@ def main() -> int:
         action="store_true",
         help="Reprocess all bags even if already cached",
     )
+    parser.add_argument(
+        "--tolerate-under",
+        action="append",
+        default=[],
+        metavar="REL_DIR",
+        help="A directory, relative to the input root, whose unreadable bags are "
+             "EXPECTED rather than a failure. Given for each job an operator stopped by "
+             "hand: killing a pod mid-write leaves its rosbag unfinalized, so it cannot "
+             "be opened and never will be. Such a bag is still attempted (a kill that "
+             "landed between bags leaves readable ones, and their data is worth having); "
+             "it just does not fail the step. Repeatable.",
+    )
+    parser.add_argument(
+        "--output-root",
+        default=None,
+        help="Write outputs under this root, mirroring each bag's path relative to "
+             "the input dir (e.g. <output-root>/<config>/<run>/). Default: write "
+             "beside each bag, i.e. into the input tree itself. Use this when the "
+             "input is read-only or lives in a different volume than the outputs "
+             "(the in-cluster postprocessing Job mounts bags and outputs separately).",
+    )
     args = parser.parse_args()
 
     try:
@@ -925,25 +1341,46 @@ def main() -> int:
     plugin_configs_hash = hashlib.md5(
         json.dumps(plugin_configs, sort_keys=True).encode()
     ).hexdigest()
-    process_args = [
-        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash)
-        for bag_path in rosbag_paths
-    ]
     n_bags = len(rosbag_paths)
     input_root = os.path.abspath(args.input)
+
+    # Bags whose failure to open is expected: their job was killed by hand mid-write (see
+    # --tolerate-under). The predicate lives in rosbags_common so it is testable on the
+    # host — this script cannot be imported there, it pulls in rosbag2_py at module level.
+    _tolerated_roots = resolve_tolerated_roots(input_root, args.tolerate_under)
+
+    def _is_tolerated(bag_path: str) -> bool:
+        return is_under_tolerated_root(bag_path, _tolerated_roots)
+
+    def _out_dir_for(bag_path: str) -> Optional[str]:
+        """Mirror the bag's location under --output-root, or None (beside the bag)."""
+        if not args.output_root:
+            return None
+        rel = os.path.relpath(os.path.dirname(os.path.abspath(bag_path)), input_root)
+        return os.path.join(os.path.abspath(args.output_root), rel)
+
+    process_args = [
+        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash,
+         _out_dir_for(bag_path))
+        for bag_path in rosbag_paths
+    ]
 
     start = time.time()
     total_records = 0
     processed_bags = 0
     cached_bags = 0
     error_bags = 0
+    # Errors under a --tolerate-under dir: reported, never fatal. Counted apart from
+    # ``error_bags`` rather than ignored, so "we skipped 1 unreadable bag" stays visible
+    # instead of a campaign quietly having less data than it looks like it has.
+    expected_error_bags = 0
     failed_bags = 0
     completed = 0
-    all_results: List[Tuple[str, int, List[Tuple[int, List[str]]]]] = []
+    all_results: List[BagResult] = []
 
     try:
         with Pool(processes=args.workers) as pool:
-            for bag_path, bag_total, handler_results in pool.imap_unordered(
+            for result in pool.imap_unordered(
                 process_rosbag_worker, process_args, chunksize=1
             ):
                 completed += 1
@@ -960,18 +1397,22 @@ def main() -> int:
                     f"  {completed}/{n_bags} bag  {rate:.1f} bag/s  ETA {eta_str}",
                     flush=True,
                 )
-                all_results.append((bag_path, bag_total, handler_results))
+                all_results.append(result)
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
         return 1
 
     # Aggregate and write provenance
-    for bag_path, bag_total, handler_results in all_results:
-        if bag_total == -1:
+    for result in all_results:
+        bag_path, handler_results = result.bag_path, result.handler_results
+        if result.cached:
             cached_bags += 1
             continue
-        if bag_total == -2:
-            error_bags += 1
+        if result.failed:
+            if _is_tolerated(bag_path):
+                expected_error_bags += 1
+            else:
+                error_bags += 1
             continue
 
         source_rel = os.path.relpath(bag_path, input_root)
@@ -979,7 +1420,10 @@ def main() -> int:
 
         for j, (record_count, output_files) in enumerate(handler_results):
             if record_count == -2:
-                error_bags += 1
+                if _is_tolerated(bag_path):
+                    expected_error_bags += 1
+                else:
+                    error_bags += 1
                 continue
             if record_count > 0:
                 total_records += record_count
@@ -987,7 +1431,14 @@ def main() -> int:
             if output_files and args.provenance_file:
                 cfg = plugin_configs[j]
                 for output_file in output_files:
-                    output_rel = os.path.relpath(output_file, input_root)
+                    # Relative to wherever the outputs actually went. With
+                    # ``--output-root`` (the cluster Job writes to /out while reading
+                    # /bags) measuring against the input root yields "../out/..." --
+                    # a path that resolves to nothing in the campaign the entry
+                    # describes.
+                    out_base = (os.path.abspath(args.output_root)
+                                if args.output_root else input_root)
+                    output_rel = os.path.relpath(output_file, out_base)
                     write_provenance_entry(
                         args.provenance_file,
                         output_rel,
@@ -1001,13 +1452,45 @@ def main() -> int:
         else:
             failed_bags += 1
 
+    # The failing bags' own output, held back until the bar finished rather than dropped.
+    # Tolerated bags are excluded: they are expected, counted apart, and explained by the
+    # NOTE below -- repeating a stopped job's "failed to open" per bag would bury the real
+    # errors this block exists to surface.
+    failure_output = failing_bag_output(
+        [(r.bag_path, r.output) for r in all_results], input_root, _tolerated_roots)
+    if failure_output:
+        print(f"\n-- output from {len(failure_output)} bag(s) that reported errors --")
+        for bag_rel, out in failure_output:
+            print(f"  {bag_rel}:")
+            for line in out.splitlines():
+                print(f"    {line}")
+        print("-- end of error output --\n")
+
     elapsed = time.time() - start
     cached_str = f", {cached_bags} cached" if cached_bags else ""
+    killed_str = f", {expected_error_bags} from stopped job(s)" if expected_error_bags else ""
     print(
         f"Summary: {len(rosbag_paths)} rosbags "
-        f"({processed_bags} success{cached_str}, {error_bags} errors, {failed_bags} no-data), "
-        f"{total_records} total records, {elapsed:.2f}s"
+        f"({processed_bags} success{cached_str}, {error_bags} errors{killed_str}, "
+        f"{failed_bags} no-data), {total_records} total records, {elapsed:.2f}s"
     )
+    if expected_error_bags:
+        # Stated, not silent: the campaign really does have less data than its run count
+        # suggests, and the reason is a decision somebody made rather than a defect.
+        print(f"NOTE: {expected_error_bags} unreadable bag(s) belong to job(s) stopped by "
+              f"hand — expected, not counted as failures")
+    # A handler that failed outright must not be reported as a successful postprocessing step: this
+    # exit code is what the campaign's results phase reads, and returning 0 regardless meant a run
+    # could be graded on data a handler had already refused to produce. A bag left unfinalized by a
+    # deliberate kill is the one exception, and it is excluded above rather than here — so the
+    # campaign that ran a per-job stop still gets its metrics for every job that did finish.
+    if error_bags:
+        # Never point at evidence that is not there. "We looked and the workers said
+        # nothing" and "we never looked" are different facts, and collapsing them is how
+        # this line spent its whole life referring to output it had already discarded.
+        print(f"ERROR: {error_bags} handler error(s) — "
+              f"{handler_error_pointer(bool(failure_output))}")
+        return 1
     return 0
 
 

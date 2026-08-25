@@ -17,22 +17,18 @@
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import ConfigDict, field_validator
+from rdflib import FOAF, PROV, Namespace
 
-from rdflib import Namespace, PROV, FOAF
-
-from robovast.common.variation.base_variation import ProvContribution
-
+from robovast.common.variation.base_variation import DestinationConfig, ProvContribution
 from robovast.common.variation.container_runner import ContainerSpec
 
-from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT,
-                                    SCENERY_BUILDER_IMAGE,
-                                    _create_config_for_floorplan,
-                                    generate_floorplan_artifacts,
-                                    generate_floorplan_variations,
-                                    get_scenery_builder_version)
+from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT, SCENERY_BUILDER_IMAGE,
+                                    _create_config_for_floorplan, generate_floorplan_artifacts,
+                                    generate_floorplan_variations, get_scenery_builder_version)
 from .nav_base_variation import NavVariation
 
 
@@ -57,7 +53,8 @@ ORCID = Namespace("https://orcid.org/")
 
 
 # Custom YAML loader that keeps timestamps as strings
-class _NoDatetimeLoader(yaml.SafeLoader):
+# PyYAML's hierarchy
+class _NoDatetimeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
     pass
 
 
@@ -92,18 +89,41 @@ def _collect_floorplan_transient_files(output_dir, floorplan_name):
     return transient_files
 
 
-class FloorplanVariationConfig(BaseModel):
+_SUPPORTED_MESH_FORMATS = ('stl', 'obj')
+
+
+class FloorplanVariationConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
-    name: list[str]
+
+    #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
+    #: **opposite sides of the compile boundary** whenever the simulator is roqsim: nav2
+    #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
+    #: model. So this is the plugin that needs both channels at once:
+    #:
+    #: .. code-block:: yaml
+    #:
+    #:     scenario: {map: map_file}
+    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:
+    #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
+    #: parameter. What is no longer possible is the retired positional ``name:
+    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    SLOTS = ("map", "mesh")
+
     variation_files: list[str]
     num_variations: int
     seed: int
+    mesh_format: str = 'stl'
+    #: Height (m) the occupancy grid is sliced at -- a property of the robot that localizes in
+    #: it, not of the floorplan. Unset leaves scenery_builder's 0.7 m; a TurtleBot 4's scanner
+    #: is at 0.2 m, and the difference is a materially different map (see ``_occ_grid_command``).
+    laser_height: Optional[float] = None
 
-    @field_validator('name')
+    @field_validator('mesh_format')
     @classmethod
-    def validate_name_list(cls, v):
-        if not v or len(v) != 2:
-            raise ValueError('name must contain exactly two elements, 1. for map file, 2. for mesh file')
+    def validate_mesh_format(cls, v):
+        if v not in _SUPPORTED_MESH_FORMATS:
+            raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
         return v
 
     @field_validator('variation_files')
@@ -121,24 +141,45 @@ class FloorplanVariationConfig(BaseModel):
         return v
 
 
-class FloorplanGenerationConfig(BaseModel):
+class FloorplanGenerationConfig(DestinationConfig):
     """Configuration for FloorplanGeneration.
 
     Attributes:
-        name: List with exactly two elements: [map_file_param, mesh_file_param].
-              These names will be used as parameter keys in the generated configs.
         floorplans: List of paths to .fpm floorplan files to generate artifacts for.
                     Paths are relative to the base configuration directory.
+        mesh_format: 3D mesh format to produce, ``stl`` (default) or ``obj``.
+        laser_height: Height (m) the occupancy grid is sliced at, or unset for
+                      scenery_builder's 0.7 m.
     """
     model_config = ConfigDict(extra='forbid')
-    name: list[str]
-    floorplans: list[str]
 
-    @field_validator('name')
+    #: The two artifacts a floorplan build produces, bound by the campaign. They sit on
+    #: **opposite sides of the compile boundary** whenever the simulator is roqsim: nav2
+    #: reads the occupancy map at run time, while MuJoCo has to compile the 3D mesh into the
+    #: model. So this is the plugin that needs both channels at once:
+    #:
+    #: .. code-block:: yaml
+    #:
+    #:     scenario: {map: map_file}
+    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:
+    #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
+    #: parameter. What is no longer possible is the retired positional ``name:
+    #: [map_param, mesh_param]``, whose meaning depended on remembering the order.
+    SLOTS = ("map", "mesh")
+
+    floorplans: list[str]
+    mesh_format: str = 'stl'
+    #: Height (m) the occupancy grid is sliced at -- a property of the robot that localizes in
+    #: it, not of the floorplan. Unset leaves scenery_builder's 0.7 m; a TurtleBot 4's scanner
+    #: is at 0.2 m, and the difference is a materially different map (see ``_occ_grid_command``).
+    laser_height: Optional[float] = None
+
+    @field_validator('mesh_format')
     @classmethod
-    def validate_name_list(cls, v):
-        if not v or len(v) != 2:
-            raise ValueError('name must contain exactly two elements, 1. for map file, 2. for mesh file')
+    def validate_mesh_format(cls, v):
+        if v not in _SUPPORTED_MESH_FORMATS:
+            raise ValueError(f"mesh_format must be one of {_SUPPORTED_MESH_FORMATS}, got '{v}'")
         return v
 
     @field_validator('floorplans')
@@ -158,7 +199,9 @@ class FloorplanGeneration(NavVariation):
 
     Expected parameters:
 
-    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
+      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      positional ``name: [map_param, mesh_param]`` is refused.
     - ``floorplans``: List of paths to ``.fpm`` floorplan files to generate artifacts
       for (must contain at least one file).
 
@@ -166,7 +209,7 @@ class FloorplanGeneration(NavVariation):
 
     - Map YAML file (``maps/*.yaml``)
     - Map PGM file (``maps/*.pgm``)
-    - 3D mesh STL file (``3d-mesh/*.stl``)
+    - 3D mesh file (``3d-mesh/*.stl`` or ``3d-mesh/*.obj``)
 
     Example:
 
@@ -390,8 +433,8 @@ class FloorplanGeneration(NavVariation):
             if value.endswith(".yaml"):
                 # Map file — the .yaml itself is the metadata
                 yaml_path = campaign_dir / candidate
-            elif value.endswith(".stl"):
-                # Mesh file — load the .stl.yaml sidecar
+            elif value.endswith((".stl", ".obj")):
+                # Mesh file — load the .stl.yaml / .obj.yaml sidecar
                 yaml_path = campaign_dir / (candidate + ".yaml")
             else:
                 continue
@@ -444,6 +487,8 @@ class FloorplanGeneration(NavVariation):
             self.progress_update,
             self.container_runner,
             scenery_builder_version=scenery_builder_image,
+            mesh_format=self.parameters.mesh_format,
+            laser_height=self.parameters.laser_height,
         )
 
         if not floorplan_names:
@@ -453,9 +498,6 @@ class FloorplanGeneration(NavVariation):
                 f"Floorplan generation returned unexpected number ({len(floorplan_names)}) of configs. "
                 f"Expected {len(self.parameters.floorplans)}"
             )
-
-        map_file_parameter_name = self.parameters.name[0]
-        mesh_file_parameter_name = self.parameters.name[1]
 
         results = []
         for floorplan_idx, floorplan_name in enumerate(floorplan_names):
@@ -468,9 +510,8 @@ class FloorplanGeneration(NavVariation):
                     floorplan_name,
                     self.output_dir,
                     config,
-                    map_file_parameter_name,
-                    mesh_file_parameter_name,
-                    self.update_config
+                    self.update_slots,
+                    mesh_format=self.parameters.mesh_format,
                 )
                 if not transient:
                     raise FileNotFoundError(
@@ -497,21 +538,26 @@ class FloorplanVariation(NavVariation):
 
     Expected parameters:
 
-    - ``name``: List of two parameter names — first for map file, second for mesh file.
+    - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
+      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      positional ``name: [map_param, mesh_param]`` is refused.
     - ``variation_files``: List of variation files to use for floorplan generation
       (must contain at least one file).
     - ``num_variations``: Number of floorplan variations to generate (minimum 1).
     - ``seed``: Seed for random number generation to ensure reproducibility.
+    - ``mesh_format`` (optional): 3D mesh format to produce, ``stl`` (default) or ``obj``.
+    - ``laser_height`` (optional): height (m) the occupancy grid is sliced at. Unset leaves
+      scenery_builder's 0.7 m; a TurtleBot 4's scanner sits at 0.2 m, and the two produce
+      materially different maps.
 
     Generated outputs:
 
     - Map YAML file (``maps/*.yaml``)
     - Map PGM file (``maps/*.pgm``)
-    - 3D mesh STL file (``3d-mesh/*.stl``)
+    - 3D mesh file (``3d-mesh/*.stl`` or ``3d-mesh/*.obj``)
     """
 
     CONFIG_CLASS = FloorplanVariationConfig
-    # GUI_CLASS = FloorplanVariationGui
 
     @classmethod
     def get_required_container(cls, parameters):
@@ -591,8 +637,8 @@ class FloorplanVariation(NavVariation):
             if value.endswith(".yaml"):
                 # Map file — the .yaml itself is the metadata
                 yaml_path = campaign_dir / candidate
-            elif value.endswith(".stl"):
-                # Mesh file — load the .stl.yaml sidecar
+            elif value.endswith((".stl", ".obj")):
+                # Mesh file — load the .stl.yaml / .obj.yaml sidecar
                 yaml_path = campaign_dir / (candidate + ".yaml")
             else:
                 continue
@@ -630,16 +676,15 @@ class FloorplanVariation(NavVariation):
                                                         self.output_dir,
                                                         self.progress_update,
                                                         self.container_runner,
-                                                        scenery_builder_version=scenery_builder_image)
+                                                        scenery_builder_version=scenery_builder_image,
+                                                        mesh_format=self.parameters.mesh_format,
+                                                        laser_height=self.parameters.laser_height)
 
         if not floorplan_names:
             raise ValueError("Floorplan variation failed, no result returned")
         if len(floorplan_names) != self.parameters.num_variations * len(self.parameters.variation_files):
             raise ValueError(f"Floorplan variation returned unexpected number ({len(floorplan_names)}) of configs. Expected {
                              self.parameters.num_variations * len(self.parameters.variation_files)}")
-
-        map_file_parameter_name = self.parameters.name[0]
-        mesh_file_parameter_name = self.parameters.name[1]
 
         results = []
         floorplan_idx = 0
@@ -654,9 +699,8 @@ class FloorplanVariation(NavVariation):
                         floorplan_name,
                         self.output_dir,
                         config,
-                        map_file_parameter_name,
-                        mesh_file_parameter_name,
-                        self.update_config
+                        self.update_slots,
+                        mesh_format=self.parameters.mesh_format,
                     )
                     if transient:
                         new_config.setdefault('_config_transient_files', []).extend(transient)

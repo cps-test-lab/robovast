@@ -50,8 +50,13 @@ A ``search:`` section is self-contained: its configurations are synthesized from
      objectives:                # what to optimize (>=1 entries)
      - {name: failure_rate, direction: maximize}
      per_batch: 16              # parameter sets proposed per batch
+     repetitions:               # OPTIONAL: how many runs each cell gets
+       policy: adaptive         #   (see "Repetitions and noisy systems")
+       min: 1
+       max: 8
      budget:                    # resource caps (see "When does a search stop?")
      - batches: 20
+     - runs: 800                #   what actually bounds wall-clock
      seed: 0
      # ---- strategy-specific (one block; the strategy validates it) ----
      strategy_parameters:
@@ -86,9 +91,44 @@ aggregates over a config's runs; the framework records how many samples backed
 each result. Metric *computation* lives in a postprocessing plugin; the extractor
 just reads, aggregates and names.
 
+*How* it aggregates is a real choice, and the obvious answer is usually the wrong
+one. Averaging hides the run you care about — four comfortable landings and one that
+nearly tipped over average to "comfortable" — and on a quality-diversity archive it
+collapses the very spread the archive exists to map: measured on a quadrotor QD
+campaign, behaviour measures averaged over five runs filled 3 of 512 cells, because
+averaging pulled every cell toward the middle of the behaviour space before the
+archive saw it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
+(the default), ``quantile`` (a pessimistic tail that one freak run cannot define) and
+``mean`` (which must be asked for by name)::
+
+   from robovast.search.aggregate import aggregate
+
+   clearance = aggregate(per_run_clearances, how='worst')            # least room seen
+   duration  = aggregate(per_run_times, how='quantile', quantile=0.1,
+                         higher_is_safer=False)                      # slow tail
+
+``higher_is_safer`` says which end is the bad end, and is deliberately *not* the
+objective's ``maximize``/``minimize``: an adversarial search minimizes a safety margin
+on purpose, and that margin is still a quantity where higher means safer. Conflating
+the two aggregates from the wrong tail.
+
 **objectives** — named optimized values with a ``direction`` (``maximize`` /
-``minimize``). One entry today (multi-objective is forward-compatible since
-objectives are already a named list).
+``minimize``). One entry gives a scalar search with a ``best``; **two or more give a
+Pareto search**, whose deliverable is ``SearchReport.front`` — the set of evaluations no
+other beats on every objective at once.
+
+There is no ``best`` in that case, deliberately: nothing ranks "close but fast" against
+"slow but safe" without a weighting the campaign never supplied, so nominating a winner
+would invent one. ``target_objective`` and ``no_improvement`` are refused with more than
+one objective for the same reason (they compare a scalar); bound such a search with
+``batches`` / ``time`` / ``runs`` / ``evaluations``, or with a ``metric`` the strategy
+reports.
+
+The front is computed by the framework from whatever a strategy reports, so a strategy
+does not have to know the concept — one whose optimiser tracks a front natively fills
+``front`` itself and is left alone. For Optuna, multi-objective means
+``strategy_parameters: {sampler: nsga2}``; the scalar samplers are refused by name with
+several objectives rather than quietly optimising the first.
 
 **strategy_parameters** — algorithm-specific tuning, owned and validated by the
 chosen strategy plugin (so a new algorithm adds nothing to the core schema). See
@@ -167,12 +207,24 @@ Marker rules:
    entry; ``FloorplanVariation`` ``num_variations: 1``. The framework raises a
    clear error naming the offending parameter set if a variation expands.
 
+   **Zero configs is the other direction, and it is tolerated.** A draw can be
+   unrealizable rather than misconfigured — a path too short to hold the obstacles the
+   same draw asks for, say — and then the variation pipeline composes nothing for it.
+   That set is recorded as ``composition_failed`` (visible in the store's ``unit``
+   table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
+   may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
+   cope: ingest what arrived, or — if its optimiser cannot take a short generation —
+   skip that generation. Never fill the hole with a stand-in objective: the measures
+   would have to be invented too, and an invented measure vector lands the fabrication
+   in a real archive cell where the search then chases it.
+
 Strategies
 ----------
 
 All strategies share the universal core and differ only in how they propose the
-next batch and what ``report()`` returns. The three built-ins are complementary —
-coverage (``random``), diversity (``qd``) and exploitation (``optuna``).
+next batch and what ``report()`` returns. The built-ins are complementary —
+coverage (``random``, ``halton``), diversity (``qd``), exploitation (``optuna``)
+and boundary tracing (``boundary``).
 
 random
 ^^^^^^
@@ -189,6 +241,76 @@ Ships in the base install.
    search:
      strategy: random
      # no strategy_parameters
+
+halton — low-discrepancy coverage
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The same job as ``random``, done better. Uniform draws clump and leave holes, so a
+failure region can sit between samples and an estimate carries more variance than its
+sample size suggests. A Halton sequence fills the space evenly *by construction*: the
+same budget answers the same question with a tighter interval. When two campaigns exist
+only to be compared — "does this strategy beat blind sampling?" — the blind one should at
+least be good at being blind.
+
+Scrambled by default and seeded from ``search.seed``: the textbook sequence is
+deterministic, so two campaigns with different seeds would otherwise draw identical
+points and their comparison would measure nothing. The sequence **continues across
+batches**; restarting it per batch would re-draw the same points and cover less than
+random. Ships in the base install.
+
+.. code-block:: yaml
+
+   search:
+     strategy: halton
+     strategy_parameters:
+       scramble: true        # default; false gives the textbook (identical) sequence
+
+Halton rather than Sobol for one reason: Sobol needs direction-number tables and in
+practice a scipy dependency, and a *baseline* that only runs when an extra is installed
+is not a baseline. Halton's known weakness is high dimensions, where the larger prime
+bases correlate — it is refused above 20 dimensions rather than quietly degrading, and a
+search space of the size these campaigns declare is nowhere near that.
+
+boundary — trace a level set
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+"Maximize failures" has a trivial answer — crank the worst factor to its limit — and a
+search that finds it reports something you could have guessed. The engineering question
+is narrower: *where does it start failing?* No budget spent deep inside the failure
+region answers that, and a maximizing search spends all of it there.
+
+``boundary`` samples the contour where the objective crosses a stated ``level`` instead:
+zero for a signed margin (the failure boundary), 0.5 for a rate (the coin-flip contour,
+where the outcome is genuinely uncertain). ``level`` is required — which contour matters
+is a property of the experiment, and a default would silently trace the wrong one.
+
+.. code-block:: yaml
+
+   search:
+     strategy: boundary
+     objectives:
+     - {name: clearance_margin, direction: minimize}
+     strategy_parameters:
+       level: 0.0            # required: the contour to trace
+       neighbours: 5         # k for the surrogate
+       candidates: 512       # scored per proposal -- arithmetic, not runs
+       exploration: 0.35     # keeps a batch spread along the contour
+
+**The level is a strategy parameter, not an objective direction.** ``direction`` means
+"which way is better", and a target answers a different question: there is no better, only
+nearer. Putting it on the objective would also collide by name with
+``stopping: target_objective``, which is a stopping criterion rather than an optimisation
+target — two different ``target``\ s in one file format is a confusion nobody needs.
+
+The surrogate is inverse-distance-weighted k-nearest-neighbour, needing nothing beyond
+numpy. A Gaussian process would model the landscape better and would also make the
+strategy unavailable without an optional extra, on campaigns whose budgets are tens of
+evaluations rather than thousands — the regime where a GP's advantage is smallest. With
+fewer than two evaluations there is no level to seek, so a cold start draws from the same
+low-discrepancy sequence ``halton`` uses; nothing is wasted, since those points are what
+the model is built from. ``report()`` gives ``level`` and ``closest_to_level``: a boundary
+search that never approached its contour found no boundary, and that must be visible
+rather than inferred from a best-objective number that means nothing here.
 
 qd — quality-diversity (pyribs MAP-Elites)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -226,6 +348,24 @@ Needs the extra: ``pip install 'robovast[qd]'``.
            drift_dist: {low: 0.0, high: 3.5}
        sigma: 0.15
        emitters: 1
+
+
+**A measure may be categorical.** The most useful behaviour axis is often not a number --
+"it collided" / "it timed out" / "it never reached the goal" is the answer an engineer
+wants -- so an axis states either ``low``/``high`` or ``values``, never both::
+
+   archive:
+     type: grid
+     measures:
+       failure_mode:  {values: [collision, timeout, goal_miss, stuck]}
+       min_clearance: {low: 0.0, high: 1.5}
+
+The categories fix the axis: *k* of them give *k* bins, one per category, so the bounds
+and bin count are derived rather than restated (two sources of truth for one fact could
+disagree). An extractor returns the category **by name**; a name the archive does not
+declare is refused, because clamping or dropping it would put a behaviour the archive
+cannot represent into a cell that means something else, and a diversity map whose cells
+mean the wrong thing is worse than one missing a cell.
 
 optuna — TPE / Bayesian optimization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -276,6 +416,8 @@ uniform progress snapshot, so the **same criteria work for every strategy**
      budget:                 # resource caps — "how much will I spend?"
      - batches: 50
      - time: 3600
+     - evaluations: 200      # parameter sets scored
+     - runs: 800             # individual executions
      stopping:               # convergence / quality — "stop early on results"
      - target_objective: 0.9
      - no_improvement: {patience: 5, min_delta: 0.01}
@@ -290,6 +432,19 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
 * ``batches`` — stop after this many ask/tell batches (with fixed ``per_batch``
   and ``execution.runs`` this already bounds total evaluations and executions).
 * ``time`` — stop after this many seconds of wall-clock time since the search started.
+* ``evaluations`` — stop after this many parameter sets have been **scored**. A draw
+  that composed to nothing, or whose every run was lost, never reaches ``tell()`` and
+  is not counted.
+* ``runs`` — stop after this many individual **executions**. Counted from what each
+  batch asks for, so it bounds wall-clock rather than results.
+
+``evaluations`` and ``runs`` are two counts and not one because neither predicts the
+other: one evaluation costs as many runs as it was given repetitions. While every cell
+gets the same ``execution.runs`` the product ``batches × per_batch × runs`` predicts
+the total, and ``batches`` alone is enough; a strategy that varies repetitions per
+parameter set (``ParamSet.n_reps``) breaks that product, which is when a run cap starts
+earning its place. It is also what makes two strategies comparable — a fair contest
+gives both the same number of executions, not the same number of batches.
 
 **stopping** — result-dependent early-exits:
 
@@ -318,12 +473,105 @@ of ``campaign.db`` (``stop_kind``, ``stop_reason``, ``batches``,
 Repetitions and noisy systems
 -----------------------------
 
-Robotic systems are non-deterministic, so an objective is a point estimate over
-``execution.runs`` repetitions (the extractor aggregates them). Every
-``Evaluation`` carries ``n_samples`` so a noise-aware strategy can weigh
-confidence, and a strategy may set ``ParamSet.n_reps`` to request more
-repetitions for a borderline set (the loop groups a batch by effective
-repetition count and launches each group accordingly).
+Robotic systems are non-deterministic, so an objective is never a measurement —
+it is a **point estimate** over ``execution.runs`` repetitions, which the extractor
+aggregates. Every ``Evaluation`` carries ``n_samples`` so a strategy can weigh how
+much to trust it.
+
+Why a fixed repetition count wastes most of its runs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``execution.runs`` spends the same number of runs on every cell, which is
+simultaneously too many and too few. A cell whose runs all agree was decided by its
+first one; a cell on a failure boundary is exactly where more samples buy something.
+
+Measured on a quadrotor search campaign: **3 of 32 configurations produced a mixed
+outcome across 5 repetitions**. The other 29 spent 5 runs each to establish a single
+bit — 145 of 160 runs. At three milliseconds a run that is invisible; at ninety
+seconds a run it is the campaign's whole budget.
+
+The ``repetitions`` block
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+   execution:
+     runs: 3                  # still the default for every cell
+   search:
+     repetitions:
+       policy: adaptive       # fixed | adaptive        (default: fixed)
+       min: 1                 # floor: the cheapest a cell can be evaluated
+       max: 8                 # ceiling: the cost guard
+       neighbours: 5          # how many evaluated neighbours judge "contested"
+       paired: false          # reuse one seed list across cells (see below)
+
+Omitting the block entirely is not a policy of uniformity — it is the *absence* of a
+policy, and every cell runs ``execution.runs`` times exactly as it always did.
+
+* ``fixed`` — every cell gets the same count. Today's behaviour, stated explicitly.
+* ``adaptive`` — a cell whose nearest already-evaluated neighbours **agree** gets
+  ``min``; one sitting where they **disagree** gets up to ``max``.
+
+Why disagreement, and not a confidence interval
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A confidence rule has to know what the objective *means*: a proportion is uncertain
+near 0.5, a safety margin is uncertain near zero, a duration is never "uncertain" in
+that sense at all. Such a rule must be told the objective's type and threshold, and is
+wrong whenever it is told wrong.
+
+Spread among nearby evaluations needs none of that. It reads how much the
+*measurements* disagree, which is the thing extra samples actually resolve, and it
+works unchanged for a rate, a margin or a time. Distances are measured in the
+normalized unit cube, so a dimension in metres and one in percent contribute
+comparably to "nearby" rather than whichever happens to have the larger raw range.
+
+Two consequences worth knowing:
+
+* With **no history** (the first batch) nothing is known about the landscape, so every
+  cell gets ``min``. Guessing high would rebuild the uniform waste with a different
+  constant.
+* When **every observation so far agrees**, no neighbourhood can be contested and
+  everything gets ``min``. That is the 29-of-32 case, and spending the floor on it is
+  the correct answer, not a degenerate one.
+
+A strategy still outranks the policy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ParamSet.n_reps`` is the strategy's own channel and is **never overridden**: the
+policy only supplies a default for sets that did not ask for anything. A strategy that
+reasons about noise itself therefore keeps full control, and the policy exists so that
+strategies which do *not* — ``random``, ``qd``, ``optuna``, anything you write — still
+benefit. This is why it is a policy layer rather than a noise-aware strategy: it
+composes with every strategy instead of being one of them.
+
+The loop groups each batch by effective repetition count and launches each group
+accordingly, so a batch may become several execution groups.
+
+Budgeting a search whose repetitions vary
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once repetitions are adaptive, ``batches × per_batch × execution.runs`` no longer
+predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
+executions directly. This is also what makes two strategies comparable: a fair contest
+gives both the same number of runs, not the same number of batches.
+
+Pairing, and what it does not buy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``paired: true`` reuses one seed list across every cell, so two cells are compared
+run-for-run instead of only in distribution — a variance reduction that lets a real
+difference show up in far fewer runs.
+
+Be clear about its limits. Pairing covers the **simulator's** seeded noise. A system
+under test running asynchronously in its own container — message timing, callback
+order, CPU contention — is not replayable, so a single run is never reproducible even
+paired, and every claim a search makes remains distributional: *"this configuration
+fails about 40% of the time"*, never *"this run fails"*.
+
+``seed_parameter`` names the variation channel the per-repetition seed is delivered on
+(e.g. ``{sim: seed}``). Without it, repetitions still differ — they are simply
+unseeded, so neither pairing nor replay is available.
 
 Postprocessing: one mechanism, two lists
 -----------------------------------------
@@ -333,7 +581,7 @@ wherever they appear — by entry-point name **or** a local ``./path.py:Class`` 
 reference — via one shared resolver/runner. They are configured in two places:
 
 * ``results_processing.postprocessing`` — runs at analysis time
-  (``vast eval gui`` / ``vast results postprocess``).
+  (``vast results postprocess``, then the web UI's Results views).
 * ``search.postprocessing`` — runs over each batch's results during a search,
   before ``extract``.
 

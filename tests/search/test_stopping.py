@@ -6,19 +6,20 @@
 
 import pytest
 
-from robovast.common.config import (BatchesBudget, MetricStop, NoImprovementStop,
-                                    SearchConfig, TargetObjectiveStop, TimeBudget)
-from robovast.search.stopping import (StopConditions, StopSnapshot,
-                                      build_stop_conditions)
+from robovast.common.config import (BatchesBudget, EvaluationsBudget, MetricStop,
+                                    NoImprovementStop, RunsBudget, SearchConfig,
+                                    TargetObjectiveStop, TimeBudget)
+from robovast.search.stopping import StopConditions, StopSnapshot, build_stop_conditions
 
 
 def _sc(budget=(), stopping=(), name='failure_rate', direction='maximize'):
     return StopConditions(list(budget), list(stopping), name, direction)
 
 
-def _snap(batch=1, elapsed=1.0, best=None, metrics=None):
+def _snap(batch=1, elapsed=1.0, best=None, metrics=None, evaluations=0, runs=0):
     return StopSnapshot(batch=batch, elapsed=elapsed,
-                        best_objective=best, metrics=metrics or {})
+                        best_objective=best, metrics=metrics or {},
+                        evaluations=evaluations, runs=runs)
 
 
 # -- budget criteria ---------------------------------------------------------
@@ -34,6 +35,34 @@ def test_time_budget():
     sc = _sc(budget=[TimeBudget(type='time', seconds=10)])
     assert sc.should_stop(_snap(elapsed=5)) is None
     assert sc.should_stop(_snap(elapsed=10)).kind == 'time'
+
+
+def test_evaluations_budget_counts_parameter_sets():
+    sc = _sc(budget=[EvaluationsBudget(type='evaluations', value=20)])
+    assert sc.should_stop(_snap(evaluations=19)) is None
+    r = sc.should_stop(_snap(evaluations=20))
+    assert r.kind == 'evaluations' and 'evaluations budget' in r.reason
+
+
+def test_runs_budget_counts_executions():
+    """`runs` bounds wall-clock; it is NOT batches x per_batch once reps go adaptive."""
+    sc = _sc(budget=[RunsBudget(type='runs', value=150)])
+    assert sc.should_stop(_snap(runs=149)) is None
+    assert sc.should_stop(_snap(runs=150)).kind == 'runs'
+
+
+def test_evaluations_and_runs_are_independent():
+    """A cell evaluated once may cost many runs; the two caps must not be conflated."""
+    sc = _sc(budget=[EvaluationsBudget(type='evaluations', value=100),
+                     RunsBudget(type='runs', value=10)])
+    # few evaluations, but their repetitions already blew the run cap
+    assert sc.should_stop(_snap(evaluations=4, runs=10)).kind == 'runs'
+
+
+def test_run_budget_progress_reports_current_vs_limit():
+    sc = _sc(budget=[RunsBudget(type='runs', value=150)])
+    (cp,) = sc.progress(_snap(runs=30))
+    assert (cp.kind, cp.label, cp.current, cp.limit, cp.done) == ('runs', 'runs', 30, 150, False)
 
 
 # -- stopping criteria -------------------------------------------------------
@@ -133,3 +162,24 @@ def test_multi_objective_target_rejected():
             extract={'plugin': 'failure_rate'},
             objectives=[{'name': 'a'}, {'name': 'b'}], per_batch=4,
             stopping=[{'target_objective': 1.0}])
+
+
+def test_evaluations_and_runs_scalar_shorthand():
+    """`- runs: 150` is shorthand for the full mapping, like batches/time."""
+    cfg = SearchConfig(strategy='random',
+                       search_space={'a': {'type': 'float', 'low': 0.0, 'high': 1.0}},
+                       extract={'plugin': 'failure_rate'},
+                       objectives=[{'name': 'failure_rate'}], per_batch=4,
+                       budget=[{'evaluations': 20}, {'runs': 150}])
+    kinds = {(c.type, c.value) for c in cfg.budget}
+    assert kinds == {('evaluations', 20), ('runs', 150)}
+
+
+@pytest.mark.parametrize('kind', ['evaluations', 'runs'])
+def test_run_and_evaluation_budgets_reject_non_positive(kind):
+    with pytest.raises(ValueError):
+        SearchConfig(strategy='random',
+                     search_space={'a': {'type': 'float', 'low': 0.0, 'high': 1.0}},
+                     extract={'plugin': 'failure_rate'},
+                     objectives=[{'name': 'failure_rate'}], per_batch=4,
+                     budget=[{kind: 0}])

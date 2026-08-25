@@ -25,44 +25,17 @@ from importlib.metadata import entry_points
 import click
 import yaml
 
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import get_project_config
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
-                             generate_scenario_variations,
-                             get_scenario_parameters, prepare_campaign_configs)
-from robovast.common.cli import get_project_config, handle_cli_exception
+                             generate_scenario_variations, get_scenario_parameters,
+                             prepare_campaign_configs)
 
 
 @click.group()
 def configuration():
     """Manage run configuration.
     """
-
-
-@configuration.command()
-@click.option('--debug', is_flag=True, help='Show internal config values starting with _')
-def gui(debug):
-    """Launch the graphical configuration editor.
-
-    Opens a GUI for editing and validating RoboVAST configuration files.
-    """
-    from PySide6.QtWidgets import \
-        QApplication  # pylint: disable=import-outside-toplevel
-
-    from robovast.configuration.gui.config_editor import \
-        ConfigEditor  # pylint: disable=import-outside-toplevel
-    project_config = get_project_config()
-
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-
-    try:
-        window = ConfigEditor(project_config, debug=debug)
-        window.show()
-        exit_code = app.exec_()
-        window.deleteLater()
-        sys.exit(exit_code)
-
-    except Exception as e:
-        handle_cli_exception(e)
 
 
 @configuration.command(name='list')
@@ -80,7 +53,7 @@ def list_cmd(debug):
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None
@@ -119,7 +92,7 @@ def info():
     config = project_config.config_path
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None
@@ -139,6 +112,165 @@ def info():
             click.echo(f"Metadata: {campaign_data['metadata']}")
     except Exception as e:
         handle_cli_exception(e)
+
+
+@configuration.command(name='validate')
+@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
+              help='.vast file to validate. Defaults to the project config file.')
+def validate(input_file):
+    """Validate a .vast file, reporting ALL problems at once.
+
+    Runs the same collect-all linter as the ``validate_project`` MCP tool: YAML,
+    schema, the scenario file and its parameter references, and every plugin
+    reference — variation types, postprocessing commands, and the search
+    strategy/extractor — whether installed or local ``./path.py:Class`` refs.
+    Exits non-zero if any problem is found.
+    """
+    from robovast.common.config_validation import \
+        validate_project_file  # pylint: disable=import-outside-toplevel
+
+    config = input_file or get_project_config().config_path
+    report = validate_project_file(config)
+
+    problems = report.get("problems", [])
+    if report.get("valid"):
+        click.echo(click.style("✓ Valid", fg="green"))
+        click.echo(f"Configurations: {report.get('configs', 0)}")
+        click.echo(f"Runs per configuration: {report.get('runs_per_config', 0)}")
+        click.echo(f"Total runs: {report.get('total_trials', 0)}")
+        return
+
+    click.echo(click.style(f"✗ {len(problems)} problem(s) found:", fg="red"))
+    for p in problems:
+        location = " ".join(filter(None, [
+            f"[{p['stage']}]" if p.get("stage") else None,
+            f"config={p['config']}" if p.get("config") else None,
+            f"field={p['field']}" if p.get("field") else None,
+        ]))
+        click.echo(f"  - {location}: {p.get('message', '')}" if location
+                   else f"  - {p.get('message', '')}")
+    sys.exit(1)
+
+
+@configuration.command(name='upgrade')
+@click.option('--input', 'input_file', default=None, type=click.Path(exists=True),
+              help='.vast file to upgrade. Defaults to the project config file.')
+@click.option('--dry-run', is_flag=True,
+              help='Report what would change without writing the file.')
+def upgrade(input_file, dry_run):
+    """Bring a .vast file to the current config version, in place.
+
+    Only for a file you are AUTHORING. An archived campaign under ``<campaign>/_config/``
+    is migrated automatically when read and is deliberately never rewritten -- it is the
+    record of what its author wrote.
+
+    Comments are preserved. Exits non-zero when the file cannot be brought forward, which
+    happens when it uses something the current version cannot express; the message names
+    what.
+    """
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        SUPPORTED_CONFIG_VERSION, ConfigVersionError, config_version, upgrade_config_file)
+
+    config = input_file or get_project_config().config_path
+    try:
+        with open(config, 'r', encoding='utf-8') as handle:
+            before = (list(yaml.safe_load_all(handle)) or [{}])[0] or {}
+        was = config_version(before)
+        _, applied = upgrade_config_file(config, write=not dry_run)
+    except ConfigVersionError as e:
+        click.echo(click.style(f"✗ {e}", fg="red"))
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - reported, not raised, like every verb here
+        handle_cli_exception(e)
+        return
+
+    if not applied:
+        click.echo(f"Already at version {SUPPORTED_CONFIG_VERSION}: {config}")
+        return
+    verb = "would apply" if dry_run else "applied"
+    click.echo(click.style(
+        f"✓ {verb} {', '.join(applied)} ({was} -> {SUPPORTED_CONFIG_VERSION}): {config}",
+        fg="green"))
+    if dry_run:
+        click.echo("Nothing written (--dry-run).")
+
+
+@configuration.command(name='plugins')
+@click.option('--group', default='robovast.variation_types', show_default=True,
+              help='Entry-point group to list.')
+def plugins_cmd(group):
+    """List installed plugins for an extension group.
+
+    Defaults to the variation types usable in a ``.vast`` ``variations`` block.
+    Pass a name to ``vast configuration plugin-info`` for its parameter schema.
+    """
+    eps = sorted(entry_points(group=group), key=lambda e: e.name)
+    if not eps:
+        click.echo(click.style(f"No plugins found in group '{group}'.", fg="yellow"))
+        return
+    width = max(len(ep.name) for ep in eps)
+    for ep in eps:
+        summary = _plugin_doc_summary(ep) or ""
+        click.echo(f"  {ep.name.ljust(width)}  {summary}")
+
+
+@configuration.command(name='plugin-info')
+@click.argument('name', metavar='NAME')
+@click.option('--group', default='robovast.variation_types', show_default=True,
+              help='Entry-point group the plugin belongs to.')
+def plugin_info(name, group):
+    """Show a plugin's docstring and its accepted parameter schema.
+
+    The CLI counterpart to the ``get_plugin_details`` MCP tool: for a plugin that
+    declares a parameter model (variation types via ``CONFIG_CLASS``, search
+    strategies via ``PARAMS_MODEL``) it prints each parameter's name, type,
+    whether it is required, and its default — the field schema that the top-level
+    ``.vast`` JSON Schema cannot express. Exits non-zero for an unknown plugin.
+    """
+    from robovast.common.plugin_schema import \
+        plugin_parameter_schema  # pylint: disable=import-outside-toplevel
+
+    matches = [ep for ep in entry_points(group=group) if ep.name == name]
+    if not matches:
+        click.echo(click.style(
+            f"✗ No plugin '{name}' found in group '{group}'.", fg="red"))
+        sys.exit(1)
+
+    ep = matches[0]
+    click.echo(click.style(ep.name, fg="green", bold=True) + f"  ({ep.value})")
+    doc = _plugin_doc_summary(ep, max_lines=0)
+    if doc:
+        click.echo(doc)
+
+    params = plugin_parameter_schema(group, name)
+    if not params:
+        click.echo("\nParameters: (none declared)")
+        return
+
+    click.echo("\nParameters:")
+    headers = ("name", "type", "required", "default")
+    rows = [(p["name"], p["type"], "yes" if p["required"] else "no",
+             "" if "default" not in p else repr(p["default"])) for p in params]
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    click.echo("  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
+    click.echo("  " + "  ".join("-" * widths[i] for i in range(len(headers))))
+    for row in rows:
+        click.echo("  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+
+def _plugin_doc_summary(ep, max_lines: int = 1):
+    """Return up to *max_lines* non-blank docstring lines for entry point *ep*."""
+    import textwrap  # pylint: disable=import-outside-toplevel
+    try:
+        obj = ep.load()
+    except Exception:  # noqa: BLE001 - a broken plugin must not break the listing
+        return None
+    raw = getattr(obj, "__doc__", None) or ""
+    lines = [l for l in textwrap.dedent(raw).strip().splitlines() if l.strip()]
+    if not lines:
+        return None
+    selected = lines if max_lines == 0 else lines[:max_lines]
+    return "\n".join(selected)
 
 
 @configuration.command(name='export-configs')
@@ -312,7 +444,7 @@ def import_configs(source):
                           sort_keys=False, allow_unicode=True)
                 tmp_path = tmp.name
 
-            campaign_data, _ = generate_scenario_variations(
+            campaign_data = generate_scenario_variations(
                 variation_file=tmp_path,
                 progress_update_callback=None,
                 output_dir=None,
@@ -381,7 +513,7 @@ def generate(output_dir, keep_transient, no_cache):
     try:
         os.makedirs(output_dir, exist_ok=True)
 
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=output_dir,
@@ -495,7 +627,7 @@ def variation_points():
     click.echo("")
 
     try:
-        campaign_data, _ = generate_scenario_variations(
+        campaign_data = generate_scenario_variations(
             variation_file=config,
             progress_update_callback=None,
             output_dir=None,

@@ -31,8 +31,7 @@ import scipy.ndimage  # Add this import for distance transform
 
 from .data_model import Pose, Position, StaticObject
 from .map_loader import Map, load_map
-from .object_shapes import (ObjectShapeRenderer,
-                            get_object_type_from_model_path,
+from .object_shapes import (get_object_type_from_model_path,
                             get_obstacle_dimensions)
 
 
@@ -51,7 +50,6 @@ class PathGenerator:
         self.map: Optional[Map] = None
         self.robot_diameter = robot_diameter
         self.robot_radius = robot_diameter / 2.0
-        self.shape_renderer = ObjectShapeRenderer()
 
         self._load_map()
 
@@ -365,9 +363,7 @@ class PathGenerator:
 
             # Get obstacle type and dimensions
             obstacle_type = get_object_type_from_model_path(obstacle.model)
-            dimensions = get_obstacle_dimensions(
-                obstacle.xacro_arguments, self.shape_renderer
-            )
+            dimensions = get_obstacle_dimensions(obstacle.xacro_arguments)
 
             if obstacle_type == "cylinder":
                 # Use circular shape for cylinders

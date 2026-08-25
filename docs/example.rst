@@ -22,7 +22,7 @@ To run the example, execute the following commands in the base folder of the Rob
    vast exec cluster setup minikube
     
    # execute the tests in the cluster (fire-and-forget: returns immediately)
-   vast exec cluster run
+   vast exec cluster run --description "growth_sim: first pass"
    vast exec cluster monitor       # shows progress per run
    vast exec cluster run-cleanup   # run this after jobs complete
 
@@ -34,8 +34,8 @@ To run the example, execute the following commands in the base folder of the Rob
    # cleanup pods in cluster
    vast exec cluster cleanup
 
-   # evaluate the results
-   vast eval gui
+   # read the results in the browser
+   vast ui
 
 Introduction
 ------------
@@ -53,6 +53,13 @@ Before running any tests, you must initialize the RoboVAST project configuration
    vast init <config>
 
 This command sets up the required configuration files and prepares your project for further steps.
+
+For a one-off run there is nothing to initialize: name the ``.vast`` directly and the
+command needs no project.
+
+.. code-block:: bash
+
+   vast -V <config> exec cluster run --description "what this run is for"
 
 Run Description
 ---------------
@@ -147,9 +154,9 @@ To execute all tests in the cluster, run:
 
    vast exec cluster run
 
-This command is *fire-and-forget*: it launches an in-cluster controller pod that
-drives the whole campaign and returns immediately, printing the campaign id and
-controller pod name.
+This command is *fire-and-forget*: it starts the campaign on the
+``robovast-service`` (which drives it in-process) and returns immediately, printing
+the campaign id.
 
 **Monitoring a run**
 
@@ -159,7 +166,7 @@ The campaign runs entirely in the cluster. Track its progress with:
 
    vast exec cluster monitor
 
-To clean up a run's scenario jobs/pods (and its controller pod):
+To clean up a run's scenario jobs/pods (and any auxiliary-container pod):
 
 .. code-block:: bash
 
@@ -170,12 +177,24 @@ This removes the scenario execution jobs and their associated pods from the clus
 Download Results
 """"""""""""""""
 
-When the campaign finishes, the results are uploaded to the configured share
-service (Nextcloud, GCS, …) automatically. Retrieve them with:
+Ask the service for the campaign's archive:
 
 .. code-block:: bash
 
-   vast results download
+   vast results download <campaign-id>
+
+That writes ``<campaign-id>.tar.gz`` into the current directory and stops there — the
+archive is yours to unpack, keep, or hand to a colleague.
+
+If the campaign was launched with ``--upload-to-share`` it also has a raw,
+pre-postprocessing copy on the configured share (Nextcloud, GCS, …), which is a
+separate system with its own commands:
+
+.. code-block:: bash
+
+   vast share list                     # what is on the share
+   vast share download <campaign-id>   # the raw archive, to this machine
+   vast share import <campaign-id>     # have a service take it in, and postprocess it
 
 See :ref:`cluster-sharing` for configuration details and :ref:`results-processing`
 for a complete description of the result files.
@@ -198,14 +217,15 @@ Postprocessing is cached based on the results directory hash. If the results dir
 
    vast results postprocess --force
 
-After postprocessing, the actual evaluation can be performed.
-To simplify this process, RoboVAST provides a GUI tool, which enables users to execute Jupyter notebooks directly from a graphical interface.
+After postprocessing, the actual evaluation can be performed. Open the web UI and use the
+Results **Explorer**: it executes the campaign's analysis notebooks server-side, one per
+selected node of the campaign/config/run tree, and renders them as HTML.
 
 .. code-block:: bash
 
-   vast eval gui
+   vast ui
 
-The visualization can be customized by adapting the ``evaluation.visualization`` section of the ``.vast`` configuration file.
+The visualization can be customized by adapting the ``visualization.results.explorer.notebooks`` section of the ``.vast`` configuration file.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml

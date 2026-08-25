@@ -17,27 +17,36 @@
 import fnmatch
 import logging
 import os
+import shlex
 import sys
 import tempfile
 
-from robovast.common import (COMPAT_VERSION, generate_execution_yaml_script,
-                             get_execution_env_variables, load_config,
-                             normalize_secondary_containers,
-                             prepare_campaign_configs)
-from robovast.common.cli import get_project_config
+import yaml
+
+from robovast.client.project_config import get_project_config
+from robovast.common import (COMPAT_VERSION, COMPAT_VERSION_LABEL, MIN_IMAGE_COMPAT,
+                             generate_execution_yaml_script, get_execution_env_variables,
+                             load_config, plan_containers, prepare_campaign_configs,
+                             scenario_env)
 from robovast.common.common import get_scenario_parameters
+from robovast.common.config import (SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+                                    declared_per_run_seconds)
 from robovast.common.config_generation import generate_scenario_variations
-from robovast.common.execution import (build_job_parameter_documents,
-                                       dump_multi_document_yaml,
-                                       resolve_robovast_image,
+from robovast.common.execution import (_apply_local_parameter_overrides,
+                                       build_job_parameter_documents, dump_multi_document_yaml,
+                                       job_artifact_rel, local_parameter_overrides, read_job_links,
+                                       resolve_robovast_image, sidecar_backend_env,
                                        write_job_links_manifest)
+from robovast.common.quantity import to_cores
+from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
 from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
 
 
 def initialize_local_execution(config, output_dir, runs, feedback_callback=logging.debug,
-                               skip_resource_allocation=True, log_tree=False, debug=False):
+                               skip_resource_allocation=True, log_tree=False, debug=False,
+                               gui=False):
     """Initialize common setup for local execution commands.
 
     Performs all common setup steps including:
@@ -65,7 +74,8 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     config_path = project_config.config_path
     logger.debug(f"Loading config from: {config_path}")
     execution_parameters = load_config(config_path, "execution")
-    docker_image = resolve_robovast_image(config_image=execution_parameters.get("image"))
+    docker_image = resolve_robovast_image(
+        config_image=_declared_scenario_image(execution_parameters))
     pre_command = execution_parameters.get("pre_command")
     post_command = execution_parameters.get("post_command")
     results_dir = project_config.results_dir
@@ -84,7 +94,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     # Generate and filter configs
     logger.debug("Generating scenario variations")
     temp_dir = tempfile.TemporaryDirectory(prefix="robovast_execution_")
-    campaign_data, _ = generate_scenario_variations(
+    campaign_data = generate_scenario_variations(
         variation_file=config_path,
         progress_update_callback=None,
         output_dir=temp_dir.name
@@ -128,7 +138,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
 
     try:
         config_path_result = os.path.join(config_dir, "out_template")
-        prepare_campaign_configs(config_path_result, campaign_data)
+        prepare_campaign_configs(config_path_result, campaign_data, gui=gui)
         logger.debug(f"Config path: {config_path_result}")
     except Exception as e:  # pylint: disable=broad-except
         feedback_callback(f"Error preparing run configs: {e}", file=sys.stderr)
@@ -148,7 +158,7 @@ def initialize_local_execution(config, output_dir, runs, feedback_callback=loggi
     generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, os.path.join(config_dir, "run.sh"),
                                 skip_resource_allocation=skip_resource_allocation,
-                                log_tree=log_tree, debug=debug)
+                                log_tree=log_tree, debug=debug, gui=gui)
     return os.path.join(config_dir, "run.sh")
 
 
@@ -298,22 +308,33 @@ while [ $# -gt 0 ]; do
             RESULTS_DIR="$2"
             shift 2
             ;;
+        -*)
+            # An unknown *option* is an error, not something to walk past. This case
+            # used to `break`, which silently discarded it — and everything after it,
+            # since parsing stopped there. That is how `--network-host` survived as a
+            # documented, forwarded, entirely dead flag: nothing ever said it was
+            # unknown. Non-option arguments still end parsing (the case below).
+            echo "Error: unknown option '$1'" >&2
+            echo "" >&2
+            show_help >&2
+            exit 2
+            ;;
         *)
             break
             ;;
     esac
 done
 
-# GUI setup
-GUI_DEVICES=""
-GUI_ENV=""
-HAS_DRI=false
+# GUI setup. The X socket, /dev/dri and DISPLAY are wired into the compose file itself;
+# what is left for the script is letting containers on this host talk to the X server, and
+# picking the GL path. A failed grant is reported rather than swallowed -- silencing it
+# turned "the X server refused the container" into a run that started fine and drew
+# nothing.
 if [ "$USE_GUI" = true ]; then
-    xhost +local: > /dev/null 2>&1
-    GUI_ENV="DISPLAY=${DISPLAY}"
-    GUI_DEVICES="/tmp/.X11-unix:/tmp/.X11-unix:rw"
+    if ! xhost +local: > /dev/null 2>&1; then
+        echo "WARNING: xhost +local: failed; the X server may refuse the container" >&2
+    fi
     if [ -e /dev/dri ]; then
-        HAS_DRI=true
         export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
     else
         export LIBGL_ALWAYS_SOFTWARE=1
@@ -322,30 +343,83 @@ fi
 
 mkdir -p "${RESULTS_DIR}"
 
-# Pull image if not available locally
+# Mirror all run.sh + docker compose output into the campaign's controller.log
+# so the web UI "Show log" (which streams that file) shows the container/compose
+# output alongside the controller narrative. tee still forwards to the original
+# stdout, preserving console / _control/logs output. Skipped for --start-only,
+# which is an interactive TTY shell (a pipe would break its terminal handling).
+if [ "$START_ONLY" != true ]; then
+    mkdir -p "${RESULTS_DIR}/_execution"
+    exec > >(tee -a "${RESULTS_DIR}/_execution/controller.log") 2>&1
+fi
+
+# Pull image if not available locally.
+#
+# A failed pull is FATAL and says so here. It used to fall through to the protocol check, which
+# could then only report the secondary symptom -- "the image reports no version" -- while the
+# actual fact was that the image does not exist or is not reachable. For a re-run of an archived
+# campaign that distinction is the whole answer: an image that cannot be obtained needs its
+# recorded build refs, not a protocol conversation.
 if ! docker image inspect "$DOCKER_IMAGE" > /dev/null 2>&1; then
     echo "Docker image '$DOCKER_IMAGE' not found locally. Downloading..."
-    docker pull "$DOCKER_IMAGE"
+    if ! docker pull "$DOCKER_IMAGE"; then
+        echo ""
+        echo "ERROR: could not obtain the image '$DOCKER_IMAGE'."
+        echo "  It is neither present locally nor pullable from its registry."
+        echo ""
+        echo "  If this is a re-run of an archived campaign, the image it recorded is gone:"
+        echo "  see _execution/execution.yaml for what it was built from, and rebuild from"
+        echo "  that revision. Pulling a newer tag would run different code."
+        exit 1
+    fi
     echo ""
 fi
 
-# Compatibility version check (reads /etc/robovast_compat_version inside the container)
-IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
-if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" != "@@COMPAT_VERSION@@" ]; then
-    echo "ERROR: Compatibility version mismatch!"
-    echo "  Host robovast expects compat version: @@COMPAT_VERSION@@"
-    echo "  Container image provides: ${IMAGE_COMPAT:-<missing>}"
-    echo "  Image: $DOCKER_IMAGE"
+# Container protocol check. The label first: `docker inspect` reads it without starting
+# anything, where the legacy file costs a whole container to read one integer. The file is
+# still consulted, because an image built before the label carries only that -- and those are
+# exactly the campaigns worth re-running.
+IMAGE_COMPAT=$(docker inspect --format '{{index .Config.Labels "@@COMPAT_LABEL@@"}}' "$DOCKER_IMAGE" 2>/dev/null || echo "")
+COMPAT_SOURCE="label"
+if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
+    IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
+    COMPAT_SOURCE="file"
+fi
+# A RANGE, not equality. Equality meant the first bump orphaned every published image, so a
+# campaign pinning one by digest could never be re-run -- refusing the case this exists for.
+if [ -z "$IMAGE_COMPAT" ]; then
+    echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."
+    echo "  This host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@."
+    echo "  The image reports neither the @@COMPAT_LABEL@@ label nor /etc/robovast_compat_version,"
+    echo "  so it is either not a robovast image or predates both markers."
+    exit 1
+elif [ "$IMAGE_COMPAT" -gt "@@COMPAT_VERSION@@" ]; then
+    echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"
+    echo "  but this host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@."
+    echo "  The image is NEWER than this robovast -- upgrade robovast, do not rebuild the image."
+    exit 1
+elif [ "$IMAGE_COMPAT" -lt "@@MIN_IMAGE_COMPAT@@" ]; then
+    echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"
+    echo "  but this host speaks @@MIN_IMAGE_COMPAT@@..@@COMPAT_VERSION@@ and no longer supports it."
     echo ""
-    echo "  Fix: Pull the latest image with 'docker pull $DOCKER_IMAGE'"
-    echo "       or rebuild with the matching robovast version."
+    echo "  Either check out the robovast revision the campaign recorded"
+    echo "  (_execution/execution.yaml: robovast_revision) and run it there, or rebuild the"
+    echo "  image from that revision. Do NOT pull a newer image: a re-run needs the bytes the"
+    echo "  campaign recorded, not today's."
     exit 1
 fi
 """
 
 
 def _compose_resources_block(cpu, memory, indent="    "):
-    """Return deploy.resources.limits YAML lines for a service, or empty string if none specified."""
+    """Return deploy.resources.limits YAML lines for a service, or empty string if none specified.
+
+    ``cpu`` is normalized to a plain number of cores because Compose's ``cpus`` is a decimal
+    count, **not** a Kubernetes quantity: ``cpus: '500m'`` is a Compose validation error, so
+    passing the millicore spelling through verbatim would make a ``.vast`` that validates and
+    runs on the cluster fail on the local lane. ``memory`` needs no such treatment — Compose
+    takes the same suffixed form (``2Gi``) that Kubernetes does.
+    """
     if not cpu and not memory:
         return ""
     lines = [
@@ -354,10 +428,23 @@ def _compose_resources_block(cpu, memory, indent="    "):
         f"{indent}    limits:",
     ]
     if cpu:
-        lines.append(f"{indent}      cpus: '{cpu}'")
+        lines.append(f"{indent}      cpus: '{_compose_cpus(cpu)}'")
     if memory:
         lines.append(f"{indent}      memory: {memory}")
     return "\n".join(lines)
+
+
+def _compose_cpus(cpu) -> str:
+    """A cpu declaration as Compose's decimal core count (``"500m"`` -> ``"0.5"``).
+
+    An unparseable value is passed through unchanged rather than dropped: the config layer
+    already rejects those, and if one ever reaches here, Compose's own error naming the bad
+    value beats this silently removing the limit.
+    """
+    cores = to_cores(cpu)
+    if cores is None:
+        return str(cpu)
+    return str(int(cores)) if float(cores).is_integer() else str(cores)
 
 
 def _build_packed_compose_yaml(
@@ -375,13 +462,16 @@ def _build_packed_compose_yaml(
     main_cpu,
     main_memory,
     main_gpu,
-    secondary_containers,
+    plan,
     use_gui_block,
     skip_resource_allocation=True,
     scenario_execution_params='',
-    scenario_file_name='scenario.osc',
+    scenario_env_vars=None,
+    execution=None,
     job_prefix='',
-    simulation='',
+    sim_command=None,
+    sim_overrides_rel=None,
+    sim_env=None,
 ):
     """Build docker-compose YAML for one job.
 
@@ -391,22 +481,38 @@ def _build_packed_compose_yaml(
     mounted under ``/config/<config-name>/`` to avoid collisions. Used for both
     single-config (one config per job) and packed (several configs per job) runs.
 
-    Secondary containers (e.g. a ``scenario_execution_server`` simulation server)
-    are started once and span the whole job: the main ``scenario_execution``
-    drives a per-config ``reset(params)`` over the ``/ipc`` socket between the
-    job's configs. They receive the same packed param file and namespaced
-    per-config file mounts as the main container so file-valued reset parameters
-    resolve identically.
+    *plan* is the campaign's :class:`~robovast.common.containers.ContainerPlan`: its
+    main container runs the scenario, and every other one becomes a sidecar sharing the
+    main container's network and IPC namespaces.
+
+    A sidecar with no ``command`` runs ``secondary_entrypoint.sh``, i.e. a
+    ``scenario_execution_server`` the scenario drives over the ``/ipc/<name>`` socket
+    with ``remote()``. One that declares a command runs that instead -- how a simulator
+    or a stack that RoboVAST does not drive is started. Either way it receives the same
+    packed param file and namespaced per-config file mounts as the main container, so
+    file-valued parameters resolve identically on both sides.
     """
 
     def quote(s):
         return s.replace('"', '\\"')
 
-    has_secondaries = bool(secondary_containers)
+    # SCENARIO_FILE both names the mount and reaches the entrypoint, so it is read
+    # from the one derived env rather than passed a second time alongside it.
+    scenario_env_vars = dict(scenario_env_vars or {})
+    scenario_file_name = scenario_env_vars.get('SCENARIO_FILE', 'scenario.osc')
+
+    sidecars = plan.sidecars
+    has_secondaries = bool(sidecars)
 
     def _packed_config_mounts():
         """Volume mount lines shared by the main and secondary containers."""
         yield f'      - "{quote(results_dir_var)}/{param_file_rel}:/config/scenario.params.yaml:ro"'
+        # The simulation channel's per-job document, beside the scenario channel's. In
+        # every container for the same reason that one is: which container reads it is the
+        # backend's business, and the stepped shape has only one.
+        if sim_overrides_rel:
+            yield (f'      - "{quote(results_dir_var)}/{sim_overrides_rel}'
+                   f':{SIM_OVERRIDES_MOUNT}:ro"')
         yield f'      - "{quote(results_dir_var)}/_config/{scenario_file_name}:/config/{scenario_file_name}:ro"'
         for run_file in run_files:
             yield f'      - "{quote(results_dir_var)}/_config/{run_file}:/config/{run_file}:ro"'
@@ -428,14 +534,20 @@ def _build_packed_compose_yaml(
     # artifacts (sysinfo, resource monitor, logs) go to a per-job subdir so they
     # don't collide across jobs. ``job_prefix`` (e.g. "batch-3") namespaces those
     # job dirs so multiple batches sharing one campaign root don't collide.
-    job_artifact_dir = f"/out/_jobs/{job_prefix}/job-{job.index}" if job_prefix \
-        else f"/out/_jobs/job-{job.index}"
+    job_artifact_dir = f"/out/_jobs/{job_artifact_rel(job.index, job_prefix)}"
     packed_env_lines = [
         "      - SCENARIO_PARAMETER_FILE=/config/scenario.params.yaml",
         "      - OUTPUT_RESULT_PER_SCENARIO=true",
         f"      - OUTPUT_DIR={job_artifact_dir}",
         "      - SCENARIO_OUTPUT_DIR=/out",
     ]
+    # Where *this run's* results land, when the job is exactly one run. Neither variable above names
+    # it: /out is the campaign root and OUTPUT_DIR is per-job. A process the scenario only launched
+    # (a simulator started by a ROS launch file) otherwise has nowhere correct to write a per-run
+    # artifact. Omitted for a packed job, where one variable cannot serve several work items.
+    if len(getattr(job, "items", None) or []) == 1:
+        item = job.items[0]
+        packed_env_lines.append(f"      - RUN_OUTPUT_DIR=/out/{item.config_name}/{item.run_number}")
 
     lines = []
     lines.append("services:")
@@ -447,6 +559,13 @@ def _build_packed_compose_yaml(
         lines.append("    runtime: nvidia")
     if has_secondaries:
         lines.append("    ipc: shareable")
+    shm_size = (execution or {}).get('shm_size')
+    # The sidecars join this container's IPC namespace below, so they share its /dev/shm --
+    # Docker's default 64 MB unless this says otherwise. Set on the main container only,
+    # because that is the one whose namespace the others inherit. Same `execution.shm_size`
+    # as the cluster lane, so one .vast means the same thing on both.
+    if shm_size:
+        lines.append(f"    shm_size: {shm_size}")
 
     lines.append("    volumes:")
     lines.append(f'      - "{quote(out_path)}:/out"')
@@ -459,7 +578,12 @@ def _build_packed_compose_yaml(
         lines.append("      - /dev/dri:/dev/dri")
 
     lines.append("    environment:")
-    for key, value in env_vars.items():
+    # With no simulation sidecar the simulator runs in this container (the stepped shape),
+    # so the job's resolved simulator environment belongs here instead.
+    main_env = dict(env_vars)
+    if sim_env and not any(sc.name == SIMULATION_CONTAINER for sc in sidecars):
+        main_env.update(sim_env)
+    for key, value in main_env.items():
         lines.append(f"      - {key}={value}")
     if pre_command:
         lines.append(f'      - PRE_COMMAND={pre_command}')
@@ -467,9 +591,8 @@ def _build_packed_compose_yaml(
         lines.append(f'      - POST_COMMAND={post_command}')
     lines.append("      - AVAILABLE_CPUS=${AVAILABLE_CPUS}")
     lines.append("      - AVAILABLE_MEM=${AVAILABLE_MEM}")
-    lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
-    if simulation:
-        lines.append(f"      - SIMULATION={simulation}")
+    for key, value in scenario_env_vars.items():
+        lines.append(f"      - {key}={value}")
     lines.extend(packed_env_lines)
     if scenario_execution_params:
         lines.append(f"      - SCENARIO_EXECUTION_PARAMETERS={scenario_execution_params}")
@@ -492,14 +615,14 @@ def _build_packed_compose_yaml(
     lines.append("    tty: ${ROBOVAST_TTY}")
     lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
 
-    for sc in secondary_containers:
-        sc_name = sc['name']
-        sc_cpu = sc['resources'].get('cpu')
-        sc_memory = sc['resources'].get('memory')
-        sc_gpu = sc['resources'].get('gpu')
+    for sc in sidecars:
+        sc_name = sc.name
+        sc_cpu = sc.resources.get('cpu')
+        sc_memory = sc.resources.get('memory')
+        sc_gpu = sc.resources.get('gpu')
 
         lines.append(f"  {sc_name}:")
-        lines.append(f"    image: ${{DOCKER_IMAGE}}")
+        lines.append(f"    image: {sc.image}")
         lines.append(f"    container_name: {sc_name}")
         if sc_gpu:
             lines.append("    runtime: nvidia")
@@ -519,6 +642,30 @@ def _build_packed_compose_yaml(
         lines.append("    environment:")
         lines.append(f"      - CONTAINER_NAME={sc_name}")
         lines.append(f"      - SCENARIO_FILE={scenario_file_name}")
+        # The backend's own env, for the container the backend describes. scenario_env
+        # puts it on the main container, which is only right when the simulator IS the
+        # main container (the stepped shape); in the ROS shape it is this sidecar.
+        # The job's own resolved values win over the campaign default: a world belongs to
+        # a configuration, and this sidecar is running one.
+        sc_backend_env = dict(sidecar_backend_env(execution or {}, sc_name))
+        if sc_name == SIMULATION_CONTAINER:
+            sc_backend_env.update(sim_env or {})
+        for key, value in sc_backend_env.items():
+            lines.append(f"      - {key}={value}")
+        # The container's own command, for secondary_entrypoint.sh to exec once it has
+        # set the environment up. Deliberately NOT named SECONDARY_COMMAND: that name is
+        # already a host-shell variable compose substitutes into `command:` above, and
+        # one name meaning two things across the substitution boundary is a trap.
+        # The simulator's command is the one thing in the plan that is per-configuration:
+        # it names the world, and a world belongs to a configuration. Every job in this
+        # campaign runs the same container from the same image with the same resources --
+        # only this one argv differs, and only because the packer guarantees a job's items
+        # agree on it.
+        sc_cmd = (sim_command if (sc_name == SIMULATION_CONTAINER and sim_command)
+                  else sc.command)
+        if sc_cmd:
+            lines.append("      - ROBOVAST_CONTAINER_COMMAND="
+                         + shlex.join(list(sc_cmd)))
         lines.extend(packed_env_lines)
         for key, value in env_vars.items():
             lines.append(f"      - {key}={value}")
@@ -538,6 +685,13 @@ def _build_packed_compose_yaml(
         lines.append(f"    user: \"{uid}:{gid}\"")
         lines.append("    stop_signal: SIGINT")
         lines.append("    stop_grace_period: 5s")
+        # Always the entrypoint, never the bare command: it sources the ROS overlay,
+        # tees stdout into the job's log dir and starts the resource monitor. A
+        # container whose command was exec'd directly got none of those -- and a
+        # colcon-built plugin is only importable once /opt/ros and /ws/install are
+        # sourced, so a simulator started that way failed on an unregistered plugin
+        # with no log to say so. The command travels by env instead, which is what
+        # lets one entrypoint serve both kinds of sidecar.
         lines.append("    command: ${SECONDARY_COMMAND}")
         lines.append("    tty: ${ROBOVAST_TTY}")
         lines.append("    stdin_open: ${ROBOVAST_STDIN_OPEN}")
@@ -556,8 +710,23 @@ def _build_packed_compose_yaml(
     return "\n".join(lines)
 
 
+def _timeout_prefix(step_timeout_s):
+    """``timeout`` prefix enforcing a step's wall-clock limit, or ``""`` for none.
+
+    SIGTERM first, so ``docker compose`` stops its containers the same way Ctrl+C makes
+    it — a scenario gets its shutdown, and ``test.xml`` still lands for a run that was
+    cut off. ``--kill-after`` is the backstop for a compose that ignores the term.
+
+    A timed-out step exits 124, which the step's existing failure handling already treats
+    as a failed run: a truncated batch must report failed, not pass as a shorter success.
+    """
+    if not step_timeout_s:
+        return ""
+    return f'timeout --signal=TERM --kill-after=30s {int(step_timeout_s)} '
+
+
 def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_secondaries, noun,
-                       post_down=""):
+                       post_down="", step_timeout_s=None):
     """Return the shell text that writes, runs, waits on and tears down one compose stack.
 
     Shared by the single-config and packed (multi-config) code paths. ``idx`` is
@@ -585,7 +754,7 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
     # Explicit signals (SIGTERM/SIGKILL) are sent by handle_sigint as needed.
     compose_bg = (
         f'( trap \'\' SIGINT; export COMPOSE_MENU=false;'
-        f' docker compose -f "{compose_file}" up'
+        f' {_timeout_prefix(step_timeout_s)}docker compose -f "{compose_file}" up'
         f' --abort-on-container-exit'
         f' --exit-code-from robovast'
         f' 2> >(grep -v "Aborting on container exit" >&2)'
@@ -629,7 +798,11 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
         f'    docker compose -f "{compose_file}" logs --follow 2>/dev/null &\n'
         '    LOG_PID=$!\n'
         '    WAIT_OUT="$(mktemp)"\n'
-        '    ( trap \'\' SIGINT; docker wait robovast > "$WAIT_OUT" 2>/dev/null ) &\n'
+        # The limit lands on the wait, not the detached ``up``: with secondaries the
+        # step's duration is however long the main container runs. Timing out leaves the
+        # containers up, and this step's ``down`` below removes them.
+        f'    ( trap \'\' SIGINT; {_timeout_prefix(step_timeout_s)}'
+        'docker wait robovast > "$WAIT_OUT" 2>/dev/null ) &\n'
         '    COMPOSE_PID=$!\n'
         '    wait "$COMPOSE_PID" 2>/dev/null\n'
         '    WAIT_CODE=$?\n'
@@ -693,10 +866,16 @@ def _emit_compose_step(compose_file, compose_yaml, idx, total, label, has_second
     return s
 
 
+def _declared_scenario_image(execution_params: dict):
+    """The image declared for the container the scenario runs in, if any."""
+    containers = execution_params.get("containers") or {}
+    return (containers.get(SCENARIO_CONTAINER) or {}).get("image")
+
+
 def generate_compose_run_script(runs, campaign_data, config_path_result, pre_command, post_command,
                                 docker_image, results_dir, output_script_path,
                                 skip_resource_allocation=False, log_tree=False, debug=False,
-                                job_prefix=''):
+                                job_prefix='', gui=False, built_images=None):
     """Generate a shell script to run Docker Compose stacks sequentially.
 
     Args:
@@ -705,9 +884,15 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         config_path_result: Path to the config results directory
         pre_command: Command to run before execution (optional)
         post_command: Command to run after execution (optional)
-        docker_image: Docker image to use
+        docker_image: Image for the container the scenario runs in (an explicit
+            ``--image`` / the resolved default). Sidecars come from the plan.
+        built_images: Concrete refs for containers whose image was built, by container
+            name. A container absent from here runs its declared image verbatim.
         results_dir: Directory where results are stored
         output_script_path: Path where the script should be written
+        gui: Whether this run has the host display wired in. Selects the
+            ``execution.local.gui`` parameter overrides; defaults to off so a caller that
+            does not thread it through stages the headless defaults.
     """
     run_files = campaign_data.get("_run_files", [])
 
@@ -721,18 +906,30 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
     uid = run_as_user
     gid = run_as_user
 
-    # Resources for main container
-    resources = execution_params.get("resources") or {}
+    # Every container this campaign runs, with its image already resolved. One map,
+    # shared with the cluster lane and exec_in_container -- a second lookup here would be
+    # free to disagree with what the pod actually starts.
+    plan = plan_containers(execution_params, images=built_images,
+                           explicit_main=docker_image)
+    resources = plan.main.resources or {}
     main_cpu = resources.get("cpu")
     main_memory = resources.get("memory")
     main_gpu = resources.get("gpu")
 
-    # Execution timeout (seconds) – None means no limit
-    timeout = execution_params.get("timeout")
-
-    # Secondary containers
-    secondary_containers = execution_params.get("secondary_containers") or []
-    normalized_secondary = normalize_secondary_containers(secondary_containers)
+    # Per-step wall-clock limit, or None for no limit.
+    #
+    # ``execution.timeout`` is a *per-run* figure and a step may pack several runs, so it
+    # is scaled by ``runs_per_job`` — the same arithmetic the cluster applies to a Job's
+    # ``activeDeadlineSeconds`` (see ``kubernetes_backend``), so one key means one thing
+    # on both lanes.
+    #
+    # ``declared_per_run_seconds``, not ``per_run_deadline_seconds``: the latter falls
+    # back to an hour, and inventing a limit where the user set none is a different
+    # decision from enforcing one they did set. An undeclared timeout stays unbounded
+    # here, exactly as before.
+    declared_timeout = declared_per_run_seconds(execution_params)
+    runs_per_job = int(execution_params.get("runs_per_job") or 1)
+    step_timeout_s = declared_timeout * runs_per_job if declared_timeout else None
 
     script = RUN_SCRIPT_HEADER.replace(
         'DOCKER_IMAGE="ghcr.io/cps-test-lab/robovast:latest"',
@@ -745,22 +942,32 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         f'RESULTS_DIR="{results_dir}/${{CAMPAIGN_ID}}"', 1
     ).replace(
         '@@COMPAT_VERSION@@', str(COMPAT_VERSION),
+    ).replace(
+        '@@MIN_IMAGE_COMPAT@@', str(MIN_IMAGE_COMPAT),
+    ).replace(
+        '@@COMPAT_LABEL@@', COMPAT_VERSION_LABEL,
     )
 
-    # Warn if timeout is configured (not respected in local runs)
-    if timeout:
-        script += f'echo "Warning: execution.timeout is set to {timeout}s but is not enforced during local runs."\n'
-        script += f'echo ""\n'
+    if step_timeout_s:
+        script += (f'echo "Per-step limit: {step_timeout_s}s '
+                   f'(execution.timeout {declared_timeout}s x runs_per_job {runs_per_job})."\n')
+        script += 'echo ""\n'
 
     # Copy out_template to results dir
     script += f'echo "Copying out_template contents to ${{RESULTS_DIR}}..."\n'
     script += f'cp -r "${{SCRIPT_DIR}}/out_template/"* "${{RESULTS_DIR}}/"\n'
     script += f'echo ""\n\n'
 
-    script += generate_execution_yaml_script(runs, execution_params=campaign_data.get("execution", {}))
+    # The plan, not the declared `containers` mapping: it already resolved each image and
+    # already folded the roles a stepped simulator collapses, so what is recorded is what
+    # this script actually starts.
+    script += generate_execution_yaml_script(
+        runs, execution_params=campaign_data.get("execution", {}),
+        role_images={role: plan.by_name(role).image
+                     for role in plan.roles
+                     if plan.by_name(role).image})
 
-    scenario_file_name = os.path.basename(campaign_data.get("scenario_file", "scenario.osc"))
-    simulation = campaign_data.get("execution", {}).get("simulation", "")
+    scenario_env_vars = scenario_env(campaign_data)
     _static_params = " ".join(p for p, enabled in [("-t", log_tree), ("-d", debug)] if enabled)
     scenario_execution_params = _static_params if _static_params else "${SCENARIO_EXECUTION_PARAMS}"
 
@@ -774,8 +981,11 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         for d in mkdir_dirs:
             s += f'mkdir -p "{d}/logs"\n'
             s += f'chmod -R 777 "{d}"\n'
-        # Set AVAILABLE_CPUS/MEM from configured resources
-        s += f'AVAILABLE_CPUS="{main_cpu}"\n'
+        # Set AVAILABLE_CPUS/MEM from configured resources. CPU is normalized to cores for the
+        # same reason the compose block is, plus one of its own: this lands in sysinfo.yaml and
+        # then in the ``runs.available_cpus`` REAL column, where "500m" would be stored as text
+        # in a numeric column and every comparison against it would quietly stop working.
+        s += f'AVAILABLE_CPUS="{_compose_cpus(main_cpu) if main_cpu else ""}"\n'
         if main_memory:
             s += f'AVAILABLE_MEM="{main_memory}"\n'
         else:
@@ -795,28 +1005,67 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         s += 'fi\n\n'
         return s
 
-    has_secondaries = bool(normalized_secondary)
+    has_secondaries = bool(plan.sidecars)
 
     # Every run goes through the job mechanism: runs_per_job=1 yields one job
     # per (config, run), >1 packs several configs per job. Both produce the same
     # layout — results in <config>/<run>/ and job artifacts in _jobs/job-N/ with
     # a <config>/<run>/job symlink.
-    scenario_path = os.path.join(
-        os.path.dirname(campaign_data["vast"]), campaign_data["scenario_file"])
-    scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
+    # campaign_data["scenario_file"] is already resolved relative to the vast's
+    # location during config generation (dirname(vast) + execution.scenario_file),
+    # so it is the path relative to cwd -- do not re-prepend dirname(vast).
+    scenario_path = campaign_data["scenario_file"]
+    scenario_params_by_name = get_scenario_parameters(scenario_path)
+    scenario_name = next(iter(scenario_params_by_name.keys()))
+
+    # Local-only scenario-parameter overrides (execution.local.parameter_overrides, plus the
+    # execution.local.gui block when this run has a display): applied to every packed job document
+    # below so they reach the container -- the packed params.yaml is what the local run mounts.
+    # ``scenario.config`` also carries them, but the local run uses the job documents.
+    local_param_overrides = local_parameter_overrides(campaign_data, gui=gui)
+    valid_param_names = [
+        p.get("name") for p in scenario_params_by_name.get(scenario_name, [])
+        if isinstance(p, dict) and "name" in p
+    ]
 
     jobs = build_jobs(campaign_data["configs"], runs, execution_params)
     os.makedirs(os.path.join(config_path_result, "_transient"), exist_ok=True)
     # Canonical record of the per-job artifact links (also used by the cluster
     # share archiver). Local runs create the links inline per job below so a
     # Ctrl+C only loses the job active at cancel time.
-    write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs)
+    #
+    # Accumulated, not replaced: a search campaign calls this once per batch, and the
+    # manifest is campaign-level -- writing only this batch's links leaves every earlier
+    # batch's runs with no locatable job artifacts, hence no run_log and no resource_usage.
+    write_job_links_manifest(os.path.join(config_path_result, "_transient"), jobs,
+                             job_prefix, base=read_job_links(config_path_result))
     total = len(jobs)
     for idx, job in enumerate(jobs, 1):
         documents = build_job_parameter_documents(job, scenario_name)
+        if local_param_overrides:
+            for doc in documents:
+                _apply_local_parameter_overrides(
+                    doc[scenario_name], local_param_overrides, valid_param_names,
+                    scenario_name, scenario_path)
         param_rel = f"_transient/job-{job.index}.params.yaml"
         with open(os.path.join(config_path_result, param_rel), 'w') as f:
             f.write(dump_multi_document_yaml(documents))
+
+        # The simulation channel's per-job file, written beside the scenario channel's.
+        # Single-document, not multi: the packer groups by `sim_key`, so a job's items
+        # agree on their simulator settings by construction and `job.items[0]` speaks for
+        # all of them. (The scenario file is multi-document because its items do NOT
+        # agree -- that is the whole point of packing them.)
+        sim_overlay = sim_job_overlay(
+            campaign_data.get("execution") or {},
+            job.items[0].config.get("sim") or {},
+            os.path.dirname(campaign_data.get("vast") or ""))
+        sim_rel = None
+        if sim_overlay["document"]:
+            sim_rel = f"_transient/job-{job.index}.sim.yaml"
+            with open(os.path.join(config_path_result, sim_rel), 'w') as f:
+                yaml.dump(sim_overlay["document"], f, default_flow_style=False,
+                          sort_keys=False)
 
         compose_file = f"/tmp/robovast_compose_job-{job.index}.yml"
         mkdir_dirs = [
@@ -834,18 +1083,21 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             job=job, param_file_rel=param_rel, run_files=run_files, env_vars=env_vars,
             pre_command=pre_command, post_command=post_command, uid=uid, gid=gid,
             main_cpu=main_cpu, main_memory=main_memory, main_gpu=main_gpu,
-            secondary_containers=normalized_secondary, use_gui_block=True,
+            plan=plan, use_gui_block=True,
             skip_resource_allocation=skip_resource_allocation,
             scenario_execution_params=scenario_execution_params,
-            scenario_file_name=scenario_file_name,
+            scenario_env_vars=scenario_env_vars,
+            execution=campaign_data.get('execution', {}),
             job_prefix=job_prefix,
-            simulation=simulation,
+            sim_command=sim_overlay["command"],
+            sim_overrides_rel=sim_rel,
+            sim_env=sim_overlay["env"],
         )
         # Create this job's artifact links right after it finishes (injected
         # after the compose `down`, before the step's summary/exit), so a
         # Ctrl+C only loses the links for the job active at cancel time.
         # Each <config>/<run>/job points at this job's _jobs[/<prefix>]/job-N dir.
-        job_rel = f"_jobs/{job_prefix}/job-{job.index}" if job_prefix else f"_jobs/job-{job.index}"
+        job_rel = f"_jobs/{job_artifact_rel(job.index, job_prefix)}"
         link_cmds = "".join(
             f'ln -sfn "{os.path.relpath("/" + job_rel, "/" + os.path.join(it.config_name, str(it.run_number)))}" '
             f'"{os.path.join("${RESULTS_DIR}", it.config_name, str(it.run_number))}/job"\n'
@@ -853,7 +1105,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
         )
         script += _emit_compose_step(
             compose_file, compose_yaml, idx, total,
-            f"Job {idx}/{total}", has_secondaries, "job(s)", post_down=link_cmds)
+            f"Job {idx}/{total}", has_secondaries, "job(s)", post_down=link_cmds,
+            step_timeout_s=step_timeout_s)
 
     try:
         with open(output_script_path, 'w') as f:

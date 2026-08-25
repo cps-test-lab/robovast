@@ -70,7 +70,19 @@ class SearchStrategy(ABC):
 
     @abstractmethod
     def tell(self, evaluations: list[Evaluation]) -> None:
-        """Ingest the evaluations of a previously proposed generation."""
+        """Ingest the evaluations of a previously proposed generation.
+
+        **The list may be shorter than what :meth:`ask` proposed, and an implementation
+        must cope.** A draw the variation pipeline cannot realize composes into no
+        config, so it never runs and has no evaluation; so does a cell whose every run
+        was lost to infrastructure. The batch loop records both and carries on with the
+        rest, because discarding a batch — or the campaign — over one unusable draw
+        throws away every batch already finished.
+
+        Cope means ingest what arrived. It does not mean invent the rest: a strategy that
+        cannot take a short generation must skip the generation, not fill it with a
+        fabricated objective or measure (see :meth:`QDStrategy._tell_incomplete`).
+        """
 
     @abstractmethod
     def report(self) -> SearchReport:
@@ -83,7 +95,19 @@ def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
     The plugin may be an entry-point name or a local file relative to the
     ``.vast``. ``cfg.strategy_parameters`` is validated against the plugin's
     ``PARAMS_MODEL`` when present.
+
+    Leads ``sys.path`` with the ``.vast``'s ``plugins:`` first, for the same reason
+    :class:`~robovast.search.evaluator.Evaluator` does: ``load_ref`` exec's a local
+    ``./file.py:Class`` strategy's module in *this* process, so its third-party imports
+    resolve off this path and nothing else prepares it -- compose only does so in its
+    subprocess, and the controller's plugin-install phase is materialize-only. A strategy
+    is the same kind of in-process plugin consumer as an extractor and needs the same
+    treatment; without it ``plugins:`` was silently useless for one.
     """
+    if vast_dir:
+        from robovast.common.config_plugins import \
+            ensure_plugins_importable  # pylint: disable=import-outside-toplevel
+        ensure_plugins_importable(vast_dir)
     strategy_cls = load_ref(cfg.strategy, STRATEGY_GROUP, vast_dir)
     if strategy_cls.PARAMS_MODEL is not None:
         params = strategy_cls.PARAMS_MODEL(**(cfg.strategy_parameters or {}))

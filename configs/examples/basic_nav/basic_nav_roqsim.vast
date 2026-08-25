@@ -1,0 +1,218 @@
+version: 2
+metadata:
+  name: basic_nav_rst
+  title: Basic nav2 navigation on the roqsim/roqsim (MuJoCo) TurtleBot 4 (Depot)
+  description: |
+    A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
+    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same nav2 params, same map and the same
+    measurement half as basic_nav_gazebo.vast -- only the simulator differs. The bridge publishes
+    the same ROS graph Gazebo does (incl. a ground-truth turtlebot4_base_link_gt frame), so
+    roqsim is a drop-in replacement.
+
+    Three containers, which is what this file is really about. `simulation` is roqsim, started by
+    the backend from its own image -- nothing here installs a simulator. `sut` is a nav2 image kept
+    vanilla: RoboVAST layers scenario_execution_server onto it and the scenario drives its launch
+    over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
+    no image of its own.
+  keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
+configuration:
+- name: goal
+  variations:
+  # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_gazebo.vast.
+  - ParameterVariationList:
+      scenario: goal_pose
+      values:
+      - position: {x: 21.0, y: 6.0}
+      - position: {x: 21.0, y: 4.0}
+      - position: {x: 21.0, y: -2.0}
+      - position: {x: 21.0, y: -4.0}
+      - position: {x: 21.0, y: -6.0}
+visualization:
+  # The Config tab's third column: what each generated configuration contains, beside the editor.
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    - world: {title: World configuration, height: "15%"}
+    # The grid this campaign navigates, with this configuration's endpoints drawn on it. `map2d` and
+    # not `scene3d`: the 3D panel keys its geometry on the simulator image, and an experiment .vast
+    # names none -- the deployment's project resolves it, per campaign, after apply_backend. The
+    # config view has no campaign, so it asks the file and is refused for want of an image; there
+    # would be nothing to look at. The 2D map needs nothing but the two files below, and it is the
+    # view nav2 plans in anyway.
+    - map2d:
+        title: Map
+        # The very map the scenario hands nav2 (scenario_roqsim.osc: key_value('map',
+        # '/config/files/depot.yaml')), so this is the grid the run plans on and not a look-alike.
+        # Declared because nothing contributes it: `goal_pose` is a plain ParameterVariationList,
+        # which varies a number and knows nothing about placement.
+        map: files/depot.yaml
+        markers:
+        # MAP-frame, unlike the 3D scene's world-frame markers -- this panel *is* the map -- so
+        # goal_pose needs no offset here. The robot starts at the map origin: it spawns at world
+        # (-8, 0) and map = world + (8, 0), which is also where AMCL is seeded (files/nav2_params.yaml).
+        - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
+  results:
+    # Web Run view: replay one run over its rosbag timeline. No `scene3d` entry -- the roqsim backend
+    # contributes it, because a campaign it runs always records the capture that panel replays.
+    run_view:
+      panels:
+      # Two trees, because they answer different questions: `scenario_tree` is what this trial did,
+      # `nav2_behavior_tree` is nav2's internal tree (why the navigator recovered). Corner-anchored to
+      # half the column each; both claiming `left` would stack them on top of each other.
+      - nav2_behavior_tree:
+          position: {anchor: top-left, width: 320, height: "calc(50% - 44px)"}
+          minimizable: true
+      - scenario_tree:
+          title: Scenario
+          position: {anchor: bottom-left, width: 320, height: "calc(50% - 44px)"}
+          minimizable: true
+          source: {table: behaviors}
+      - costmap:
+          title: Nav2 costmaps
+          position: {anchor: top-right, width: 320, height: 550}
+          minimizable: true
+          layers:
+            map: {topic: /map}
+            global: {topic: /global_costmap/costmap}
+            local: {topic: /local_costmap/costmap}
+            poses: {table: poses}
+      # Every container's output merged with /rosout on the playback clock. The declared width is what
+      # makes `bottom-center` float above the playback bar instead of docking into it.
+      - log:
+          title: Run log
+          position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
+          minimizable: true
+          minimized: true
+      # A `vega` panel and not `timeseries` because speed is derived: the run records poses, not
+      # velocities, so it is a finite difference computed in the spec. `datum['position.x']` rather than
+      # a `field`, because the CSV column names contain dots.
+      #
+      # `decimate_hz` because TF outruns the query's 5000-row cap in a couple of minutes, and that cap
+      # cuts at the HEAD: without it the chart would stop mid-run while looking finished. It also widens
+      # the interval the speed below is differenced over, which costs nothing here -- the raw difference
+      # of consecutive TF samples is the noise the rolling mean exists to hide.
+      - vega:
+          title: base_link
+          position: {anchor: bottom-right, width: 320, height: 380}
+          minimizable: true
+          source: {table: poses, filter: {frame: base_link}, decimate_hz: 5}
+          vega_lite:
+            resolve: {scale: {x: shared}}
+            spacing: 8
+            transform:
+            - {calculate: "datum['position.x']", as: px}
+            - {calculate: "datum['position.y']", as: py}
+            - {calculate: "datum['orientation.yaw']", as: yaw}
+            - window:
+              - {op: lag, field: px, as: px0}
+              - {op: lag, field: py, as: py0}
+              - {op: lag, field: timestamp, as: t0}
+              sort: [{field: timestamp}]
+            - filter: "isValid(datum.t0)"
+            # Drop zero-length intervals rather than clamping them: two TF samples can share a receive
+            # time, and max(dt, 1e-6) would turn such a pair into a 4000 m/s spike.
+            - filter: "datum.timestamp - datum.t0 > 0"
+            - calculate: >
+                sqrt(pow(datum.px - datum.px0, 2) + pow(datum.py - datum.py0, 2))
+                / (datum.timestamp - datum.t0)
+              as: speed
+            - window: [{op: mean, field: speed, as: speed_avg}]
+              frame: [-9, 0]
+              sort: [{field: timestamp}]
+            vconcat:
+            - height: 150
+              encoding:
+                x: {field: timestamp, type: quantitative, axis: null}
+                y: {field: speed_avg, type: quantitative, title: "speed [m/s]"}
+              layer:
+              # The faint raw line keeps visible what the rolling mean smoothed away.
+              - mark: {type: line, opacity: 0.25, strokeWidth: 1}
+                encoding: {y: {field: speed, type: quantitative}}
+              - mark: {type: line, strokeWidth: 1.5}
+            - height: 120
+              transform: [{fold: [px, py, yaw], as: [series, value]}]
+              mark: {type: line, strokeWidth: 1.5}
+              encoding:
+                x: {field: timestamp, type: quantitative, title: "t [s]"}
+                y: {field: value, type: quantitative, title: pose}
+                color: {field: series, type: nominal, legend: {title: null, orient: top}}
+    # Results-explorer notebook views, one per tree level. The same three the Gazebo half declares, so
+    # both backends are read through identical views.
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb
+execution:
+  containers:
+  # roqsim in a container of its own. `roqsim` is an entry point in the `robovast.simulators`
+  # group shipped by RoboVAST's `roqsim` extra, so it resolves wherever the campaign is composed
+  # -- including the in-cluster service. Nothing about the simulator travels with the campaign.
+    simulation:
+      backend: roqsim
+  # A path, because roqsim_nav2_example registers no `roqsim.worlds` provider. The backend declares it as
+  # a run file, so it is mounted at /config/<path> and archived with the campaign; the world
+  # `extends: roqsim_scenes:depot`, which is packaged and travels with the image, so only this YAML
+  # moves -- and the backend can see that from the one `extends:` key without opening anything
+  # else. A world extending a CAMPAIGN file instead has a chain only the simulator can resolve, so
+  # the backend asks `roqsim scenes inputs` in roqsim's own image and stages what it names.
+  #
+  # This is the campaign-wide DEFAULT. A configuration may resolve its own world through the `sim:`
+  # channel; see the `sim` key on a configuration entry, and docs/simulators.rst.
+      config: world/depot_nav2.yaml
+  # No `image:` here, and that is the point: the roqsim backend supplies the family member it
+  # needs, and which registry it comes from is the deployment's business (ROBOVAST_PROJECT), not
+  # this file's. Naming a ref here pinned the example to one site's private registry and made it
+  # unrunnable for anyone who cloned the repo.
+  #
+  # To run a whole campaign against another project: `--image-project`, or ROBOVAST_PROJECT.
+      resources:
+        cpu: 1
+  # The system under test, kept vanilla: a nav2 image plus the TB4 description and nothing of ours.
+  # That is the claim this shape makes -- point it at any nav2 image and it works.
+  #
+  # It has to name an image: a `sut` is the campaign's own container, and RoboVAST has no default
+  # for one -- inventing an image for the thing under test would run something nobody chose. This
+  # names the framework image *by family member*, so it still follows ROBOVAST_PROJECT; a concrete
+  # ref here would be used verbatim, which is what you want for a real third-party nav2 image.
+    sut:
+      image: family:robovast
+      system_packages:
+  # The description nav2_bringup's tb4_simulation_launch.py uses, so both halves publish an
+  # identical TF tree. files/nav2_sut.launch.py feeds it to robot_state_publisher.
+      - ros-jazzy-nav2-minimal-tb4-description
+      resources:
+        cpu: 4
+    scenario:
+      resources:
+        cpu: 1.25
+  mode: ros2
+  runs: 5
+  scenario_file: scenario_roqsim.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also swept
+  # files/__pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbed it. These reach the SUT too, which is how a vanilla image can be handed
+  # nav2_sut.launch.py to run.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.sdf"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+results_processing:
+  postprocessing:
+  # `all` extracts every TF child frame that resolves against map, so a world that later gains a
+  # walker shows it without editing this file. `require` names what the analysis is measured from
+  # -- base_link, odom (places the local costmap in the map frame) and turtlebot4_base_link_gt
+  # (ground truth, shifted +8 m in x in analysis) -- and a run missing any of them fails loudly.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - rosbags_costmap_to_csv:
+      topics: [/map, /global_costmap/costmap, /local_costmap/costmap]

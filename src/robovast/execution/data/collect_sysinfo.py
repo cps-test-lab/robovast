@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import platform
 from typing import Any, Dict, Optional
@@ -95,9 +96,70 @@ def get_platform_info() -> Dict[str, Any]:
     }
 
 
+def _nvidia_driver_version() -> Optional[str]:
+    """The driver version out of ``/proc/driver/nvidia/version``, or ``None``.
+
+    That file reads ``NVRM version: NVIDIA UNIX x86_64 Kernel Module  535.183.01  <date>``
+    -- the fields are separated by runs of spaces, and the version is the second one. It is
+    worth picking out rather than storing the whole line, because the driver version is what
+    a rendering difference between two clusters usually comes down to.
+    """
+    text = _read_first_existing(["/proc/driver/nvidia/version"])
+    if not text:
+        return None
+    fields = [f.strip() for f in text.splitlines()[0].split("  ") if f.strip()]
+    return fields[1] if len(fields) > 1 else None
+
+
+def get_gpu_info() -> Dict[str, Any]:
+    """What GPU this run could see, read straight from the filesystem.
+
+    Records the three facts that decide whether a trial rendered in hardware, so the
+    question can be answered from a campaign's data afterwards instead of inferred from
+    wall-clock:
+
+    * ``render_node`` -- a DRI render node is what the EGL backend needs. Its absence is
+      the difference between a CPU-only machine and a broken GL install.
+    * ``nvidia_model`` -- the card the driver has, from ``/proc``.
+    A GPU present with no render node is the signature of a container given the device
+    without the ``graphics`` driver capability, and this is where that shows up in the
+    data. Deliberately no imports beyond the standard library and no subprocess: this
+    script runs inside the execution image, where PyYAML is already avoided for the same
+    reason.
+
+    Deliberately does **not** report ``MUJOCO_GL`` or the bound backend. This runs as its
+    own process, so it sees its own environment rather than the simulator's -- the field was
+    recorded as ``null`` on every run, which is worse than absent because it reads as "no
+    backend" instead of "not observable from here". Which backend was actually bound is a
+    property of the process that rendered; ask it there
+    (``roqsim.rendering.bound_gl_backend`` / ``bound_gl_device``).
+    """
+    import glob
+
+    render_nodes = sorted(os.path.basename(p) for p in glob.glob("/dev/dri/renderD*"))
+    model = None
+    for path in sorted(glob.glob("/proc/driver/nvidia/gpus/*/information")):
+        text = _read_first_existing([path])
+        if not text:
+            continue
+        for line in text.splitlines():
+            if line.startswith("Model:"):
+                model = line.split(":", 1)[1].strip()
+                break
+        if model:
+            break
+    return {
+        "render_node": render_nodes[0] if render_nodes else None,
+        "nvidia_present": os.path.exists("/dev/nvidiactl"),
+        "nvidia_model": model,
+        "nvidia_driver": _nvidia_driver_version(),
+    }
+
+
 def build_sysinfo(custom: Dict[str, Any]) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "platform": get_platform_info(),
+        "gpu": get_gpu_info(),
     }
     data.update(get_cpu_info())
     # Merge custom values. Keys without "/" become top-level.
@@ -119,6 +181,67 @@ def build_sysinfo(custom: Dict[str, Any]) -> Dict[str, Any]:
         else:
             data[key] = value
     return data
+
+
+def get_distributions() -> Dict[str, Any]:
+    """Every installed distribution, with what it registers and where it came from.
+
+    Runs HERE, in the container, because that is the only place the answer exists: the
+    packages are installed in this image and in no other. A service that walked its own
+    interpreter instead reported "no asset providers" for a campaign whose image had three
+    private ones -- the record was written by whichever process prepared the campaign, and on a
+    cluster lane that process carries no simulator at all.
+
+    Per distribution: ``version``, the entry-point ``groups`` it contributes to, and its
+    ``direct_url`` -- which for a VCS install carries the commit, and is what turns "a private
+    provider" into "this private provider, at this commit". A published dataset is judged on
+    exactly that difference.
+
+    Every group of every distribution, with no notion of which ones matter: which groups make a
+    provider is the simulator backend's to say (``ASSET_ENTRY_POINT_GROUPS``), so this records
+    the facts and the reader filters them -- and a second simulator needs no change here.
+    """
+    try:
+        from importlib.metadata import distributions
+    except ImportError:                                   # pragma: no cover - Python < 3.8
+        return {}
+
+    out: Dict[str, Any] = {}
+    for dist in distributions():
+        try:
+            name = ((dist.metadata or {}).get("Name") or "").strip()
+        except Exception:                                 # noqa: BLE001 - broken metadata
+            continue
+        if not name:
+            continue
+        # A duplicate name means two copies on the path: keep the first, which is the one an
+        # import wins with, and merge the groups so neither copy's contribution is lost.
+        entry = out.setdefault(name, {"version": dist.version or "", "groups": []})
+        try:
+            groups = {ep.group for ep in dist.entry_points}
+        except Exception:                                 # noqa: BLE001 - broken metadata
+            groups = set()
+        entry["groups"] = sorted(set(entry["groups"]) | groups)
+        try:
+            origin = dist.read_text("direct_url.json")
+        except Exception:                                 # noqa: BLE001 - unreadable
+            origin = None
+        if origin and "direct_url" not in entry:
+            try:
+                entry["direct_url"] = json.loads(origin)
+            except ValueError:
+                pass
+    return out
+
+
+def write_distributions(path: str) -> None:
+    """Write :func:`get_distributions` as JSON. Never raises: this records a fact about a run
+    and must not become the reason one fails."""
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(get_distributions(), handle, indent=2, sort_keys=True)
+    except Exception as exc:                              # noqa: BLE001 - best effort
+        print(f"could not record installed distributions: {exc}")
 
 
 def main() -> None:
@@ -145,6 +268,23 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--distributions",
+        metavar="PATH",
+        help=(
+            "Also write the installed distributions (version, entry-point groups, direct URL) "
+            "as JSON here. A secondary container passes ONLY this: the pod's host facts are "
+            "already recorded by the main container, while the packages differ per container -- "
+            "which is the whole point, since in the ROS shape the simulator (and so every asset "
+            "provider) lives in a container of its own."
+        ),
+    )
+    parser.add_argument(
+        "--no-sysinfo",
+        action="store_true",
+        help="Skip the sysinfo output. For a container that only reports its distributions.",
+    )
+
     args = parser.parse_args()
 
     try:
@@ -152,8 +292,11 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
-    sysinfo = build_sysinfo(external)
-    write_yaml(sysinfo, args.output)
+    if not args.no_sysinfo:
+        sysinfo = build_sysinfo(external)
+        write_yaml(sysinfo, args.output)
+    if args.distributions:
+        write_distributions(args.distributions)
 
 
 if __name__ == "__main__":

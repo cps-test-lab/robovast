@@ -14,139 +14,139 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-controller HTTP/JSON control channel (state + RPC).
+"""Live campaign state holder (``ControllerState``).
 
-Every cluster campaign is driven by a fire-and-forget **controller pod** (see
-:mod:`robovast.execution.cluster_execution.controller_launcher`). The controller
-loop deletes each batch's Kubernetes Jobs once their results are downloaded, so a
-client that reconstructs progress purely from live Jobs cannot tell the gap
-*between* search generations from the real end of the campaign, nor see the
-loop-level state (current batch, search budget, run-level progress).
+Every campaign is driven by a :class:`~robovast.execution.controller.CampaignController`
+that runs **in the driving process** — the ``vast`` CLI locally, or the
+``robovast-service`` for cluster runs. The controller advances a shared
+:class:`ControllerState`; the service reads its :meth:`~ControllerState.snapshot`
+directly to answer ``GET /campaigns/{id}/status`` (no separate control server, no
+pod-IP hop — those existed only when the controller lived in its own pod).
 
-This module gives the controller a tiny **FastAPI + uvicorn** server, run on a
-daemon thread beside the synchronous controller loop:
-
-* ``GET  /status``  — the controller's live :class:`Status` (loop phase, current
-  batch, budget progress, per-batch run progress, history). The CLI ``monitor``
-  polls this; the ``phase`` field is the authoritative "done" signal.
-* ``POST /command`` — an extensible RPC: dispatch ``{name, args}`` through the
-  :data:`HANDLERS` registry. Ships one handler (``stop``); register more later.
-* ``GET  /healthz`` — liveness.
-
-FastAPI auto-emits an OpenAPI schema (``/docs``), so the same contract serves the
-CLI now and a web UI later (reached via ``kubectl port-forward`` now, a Service /
-Ingress later — no code change).
-
-``fastapi`` / ``uvicorn`` are imported lazily (only :func:`build_app` /
-:func:`serve_in_thread` need them) so the models and :class:`ControllerState`
-import cleanly anywhere; ``pydantic`` is a core dependency.
+The status *contract* it carries (``Phase``, ``Status`` and the phase-group
+predicates) now lives in :mod:`robovast.client.status`, so foundational ``common``
+modules can depend on it downward instead of ``common`` reaching up into
+``execution``. It is **re-exported here verbatim**, so ``from
+robovast.execution.control_server import Status`` (and ``Phase`` etc.) keeps
+working everywhere. ``fastapi``/``uvicorn`` are not needed here.
 """
 
 import logging
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+# The status contract lives in robovast.client -- it is what a client reads a campaign's
+# state through, and it must survive an install with no simulator. Re-exported here so
+# existing ``control_server`` importers are unaffected (see module docstring).
+from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-import; Re-exported on purpose: see this module's docstring. flake8 needs the noqa,; pylint needs the disable, and neither implies the other.
+    RUNNING_PHASES, TERMINAL_PHASES, BudgetItem, Phase, RunProgress, Status, failure_detail,
+    is_running, is_terminal)
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PORT = 8099
-
-
-# -- wire models ------------------------------------------------------------
-
-class RunProgress(BaseModel):
-    """Completed vs expected per-run artifacts for the current batch."""
-    completed: int = 0
-    total: int = 0
-
-
-class BudgetItem(BaseModel):
-    """One budget/stopping criterion's current value vs its limit."""
-    label: str
-    current: Optional[float] = None      # None when not-yet-defined (e.g. NaN)
-    limit: float
-    done: bool = False
-
-
-class Status(BaseModel):
-    """The controller's live state, served by ``GET /status``.
-
-    ``phase`` is an **open** string the controller advances through a documented
-    vocabulary (``starting`` → ``running`` → ``finishing`` → ``finished`` /
-    ``failed``); ``stage`` and ``extra`` exist so future markers (e.g.
-    ``"upload-to-share-done"``) slot in without a schema change. ``share_provider``
-    names the share type of the current upload attempt; it can change across
-    retriggers (a failed upload may be retried to a different provider).
-    """
-    # validate_assignment so the controller can assign plain dicts to the typed
-    # sub-fields (``runs``, ``budget``) and they coerce to the models.
-    model_config = ConfigDict(validate_assignment=True)
-
-    phase: str = "starting"
-    stage: Optional[str] = None
-    mode: Optional[str] = None
-    campaign_id: Optional[str] = None
-    batch: int = 0                       # current batch index (0-based)
-    batches_done: int = 0
-    budget: list[BudgetItem] = Field(default_factory=list)
-    runs: RunProgress = Field(default_factory=RunProgress)
-    best_objective: Optional[float] = None
-    batch_history: list[dict] = Field(default_factory=list)
-    stop: Optional[dict] = None          # {kind, reason} once the loop ends
-    # Share type of the current upload attempt; may change across retriggers
-    # (the upload can be retried to a different provider).
-    share_provider: Optional[str] = None
-    extra: dict = Field(default_factory=dict)
-    updated_at: float = Field(default_factory=time.time)
-
-
-class Command(BaseModel):
-    """An RPC request: a registered handler name plus its keyword args."""
-    name: str
-    args: dict = Field(default_factory=dict)
-
-
-class CommandResult(BaseModel):
-    ok: bool
-    result: Any = None
-    error: Optional[str] = None
 
 
 # -- shared state -----------------------------------------------------------
 
 class ControllerState:
-    """Thread-safe holder the controller writes and the server reads.
+    """Thread-safe holder the controller writes and the service reads.
 
     The controller calls :meth:`update` / :meth:`set_phase` at each batch
     boundary (and :meth:`update` for run-level progress within a batch); the
-    server thread reads a consistent :meth:`snapshot`. :meth:`request_stop` /
-    :attr:`stop_requested` back the cooperative ``stop`` command.
+    reader takes a consistent :meth:`snapshot`. :meth:`request_stop` /
+    :attr:`stop_requested` back the cooperative ``stop`` (now an in-process call
+    from ``client.stop`` rather than an HTTP command).
     """
 
     def __init__(self, **initial):
         self._lock = threading.Lock()
         self._status = Status(**initial)
         self._stop_event = threading.Event()
-        # Retrigger plumbing for the post-campaign upload-to-share step: the
-        # control server signals, the controller's main thread performs the
-        # upload. A `stop` request abandons the wait and terminates.
-        self._retrigger_event = threading.Event()
-        self._retrigger_overrides: dict = {}
+        self._progress_suspend = threading.Event()
+        self._progress_mark = self._progress_signal()
 
     def snapshot(self) -> Status:
         with self._lock:
             return self._status.model_copy(deep=True)
 
+    def _progress_signal(self) -> tuple:
+        """The values whose change means the campaign *advanced*.
+
+        Exactly the inputs a reader derives ``progress`` from, so "progress moved"
+        and "the progress number changed" cannot disagree: completed runs for a batch
+        campaign, and batch count plus budget positions for a search (whose overall
+        progress is its stopping criteria, not its per-batch run ratio).
+
+        Deliberately **not** ``updated_at``: the progress poller rewrites the same
+        counters every few seconds, so any write-based clock ticks forever on a wedged
+        run and reports it as healthy.
+        """
+        st = self._status
+        return (st.runs.completed if st.runs else 0, st.batches_done,
+                tuple(b.current for b in st.budget))
+
+    def _stamp_progress(self) -> None:
+        """Move ``progress_since`` iff the progress signal actually advanced.
+
+        Caller must hold the lock. Mirrors :meth:`set_phase`'s rule — a value
+        re-written unchanged must not reset the clock a reader uses to tell "slow"
+        from "wedged".
+        """
+        signal = self._progress_signal()
+        if signal != self._progress_mark:
+            self._progress_mark = signal
+            self._status.progress_since = time.time()
+
     def update(self, **fields) -> None:
         with self._lock:
             for key, value in fields.items():
                 setattr(self._status, key, value)
+            self._stamp_progress()
+            self._status.updated_at = time.time()
+
+    def update_runs(self, **fields) -> None:
+        """Merge *fields* into the ``runs`` sub-model, atomically.
+
+        :meth:`update` assigns whole attributes, so ``update(runs={...})`` would drop
+        every counter the dict omits. The counters are written from different places
+        (the progress poller, the batch-completion tally, the outcome tally) and must
+        not clobber each other, and merging under the lock keeps that safe without
+        each caller having to read-modify-write.
+        """
+        with self._lock:
+            self._status.runs = self._status.runs.model_copy(update=fields)
+            self._stamp_progress()
             self._status.updated_at = time.time()
 
     def set_phase(self, phase: str, stage: Optional[str] = None) -> None:
+        """Advance to *phase*, stamping when it started.
+
+        ``phase_since`` moves only on an actual change, so re-setting the current
+        phase (some paths do, defensively) does not keep resetting the clock a
+        reader uses to tell "slow" from "wedged".
+
+        Reaching a new phase is itself forward movement, so it also restarts
+        ``progress_since``. Without that, a campaign that spent ten minutes in
+        ``variation`` would enter ``running`` already carrying a ten-minute-old
+        progress clock, and be reported as stalled before its first run had a chance
+        to finish.
+
+        **A stage belongs to the phase that set it**, so a phase change clears it unless the new
+        call names one. Without that, ``stage`` outlived its phase for the rest of the campaign's
+        life: a campaign that had waited for an image reported "waiting for image(s) simulation,
+        sut" while it ran, while it postprocessed, and after it finished -- a sentence that was
+        true once and then read as a live statement about a campaign that was already over. The
+        one call site that cleared it by hand (``stage=""`` on entering ``starting``) is the
+        workaround this replaces.
+
+        Re-setting the *same* phase keeps the stage: some paths do that defensively, and clearing
+        there would wipe a stage the same phase had just set.
+        """
         with self._lock:
+            if phase != self._status.phase:
+                self._status.phase_since = time.time()
+                self._status.progress_since = self._status.phase_since
+                self._status.stage = None
             self._status.phase = phase
             if stage is not None:
                 self._status.stage = stage
@@ -154,138 +154,56 @@ class ControllerState:
 
     def request_stop(self) -> None:
         self._stop_event.set()
-        # Wake a thread blocked in wait_for_retrigger so `stop` also abandons a
-        # stuck post-campaign upload.
-        self._retrigger_event.set()
 
     @property
     def stop_requested(self) -> bool:
         return self._stop_event.is_set()
 
-    # -- upload-to-share retrigger -----------------------------------------
+    def suspend_progress(self) -> None:
+        """Pause the run-progress poller (see CampaignController._poll).
 
-    def request_upload(self, overrides: Optional[dict] = None) -> None:
-        """Ask the controller's main thread to (re)run upload-to-share.
-
-        *overrides* are optional ``{ENV_VAR: value}`` credential corrections
-        applied before the next attempt (the manual retrigger usually needs no
-        args — the launch-time credentials are still in the pod).
+        The poller lists the whole campaign prefix every few seconds. During a batch's
+        result download over the same (off-cluster) storage tunnel, those extra list
+        calls compound tunnel contention; suspending the poller for the download keeps
+        the single transfer uncontended.
         """
-        with self._lock:
-            self._retrigger_overrides = dict(overrides or {})
-        self._retrigger_event.set()
+        self._progress_suspend.set()
 
-    def wait_for_retrigger(self) -> tuple[str, dict]:
-        """Block until an upload retrigger or a stop is requested.
+    def resume_progress(self) -> None:
+        self._progress_suspend.clear()
 
-        Returns ``("retrigger", overrides)`` to retry the upload, or
-        ``("abandon", {})`` when a ``stop`` was requested (give up, terminate).
-        """
-        self._retrigger_event.wait()
-        self._retrigger_event.clear()
-        if self._stop_event.is_set():
-            return "abandon", {}
-        with self._lock:
-            overrides = dict(self._retrigger_overrides)
-            self._retrigger_overrides = {}
-        return "retrigger", overrides
+    @property
+    def progress_suspended(self) -> bool:
+        return self._progress_suspend.is_set()
 
 
-# -- command registry -------------------------------------------------------
+def stage_output_callback(state, log):
+    """An ``output_callback`` that logs a step's line *and* publishes it as ``Status.stage``.
 
-# name -> handler(state, **args) -> result. Extend by decorating new handlers.
-HANDLERS: dict[str, Callable[..., Any]] = {}
+    Postprocessing narrates itself through that callback already — one line per step, plus the
+    ``data.db`` builder's run counter — and that narration is the only account a reader gets of
+    a phase with **no run counter of its own**. A campaign holds ``postprocessing`` with
+    ``progress`` pinned and every run tally frozen, so on the evidence the campaign view had,
+    converting a large campaign's rosbags and a wedged step looked identical for as long as it
+    took. ``stage`` is the field for exactly that ("a live marker string"), and ``set_phase``
+    clears it on the next phase change, so a marker cannot outlive what it described.
 
+    The line is published **verbatim**. Which of them matters is the reader's question, each
+    step's summary is replaced by the next step's ``Executing`` line within seconds, and a
+    producer-side filter would be a second place obliged to know what postprocessing's steps
+    are called. Renderers are expected to truncate; the field is one line, not a log tail.
 
-def register(name: str) -> Callable[[Callable], Callable]:
-    def deco(fn: Callable) -> Callable:
-        HANDLERS[name] = fn
-        return fn
-    return deco
-
-
-@register("stop")
-def _stop(state: ControllerState, **_args) -> dict:
-    """Request a cooperative graceful stop.
-
-    During the campaign loop this ends the search after the current batch; while
-    the controller is waiting to retry a failed upload-to-share, it abandons the
-    wait and terminates the controller.
+    *state* may be ``None`` — the re-run entry points postprocess a campaign nothing is
+    driving, and there is no live status to publish into. Then this is just *log*, so a caller
+    never has to ask which case it is in.
     """
-    state.request_stop()
-    return {"stop_requested": True}
+    if state is None:
+        return log
 
+    def publish(msg):
+        log(msg)
+        # Not set_phase: the phase is already ``postprocessing`` and re-setting it would
+        # reset ``phase_since``, turning the age of the phase into the age of its last step.
+        state.update(stage=str(msg))
 
-@register("upload-to-share")
-def _upload_to_share(state: ControllerState, **args) -> dict:
-    """(Re)run the post-campaign upload-to-share.
-
-    Signals the controller's main thread to perform the upload; the actual work
-    runs there (not on this request thread). Optional *args* are credential
-    overrides (e.g. a corrected password) applied before the retry. Poll
-    ``GET /status`` for the ``stage`` transition to ``uploaded`` /
-    ``upload-failed``.
-    """
-    state.request_upload(args)
-    return {"upload_requested": True}
-
-
-def dispatch(state: ControllerState, command: Command) -> CommandResult:
-    handler = HANDLERS.get(command.name)
-    if handler is None:
-        return CommandResult(ok=False, error=f"unknown command '{command.name}'")
-    try:
-        return CommandResult(ok=True, result=handler(state, **command.args))
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("command '%s' failed: %s", command.name, exc, exc_info=True)
-        return CommandResult(ok=False, error=str(exc))
-
-
-# -- server -----------------------------------------------------------------
-
-def build_app(state: ControllerState):
-    """Build the FastAPI app bound to *state* (lazy import; needs ``fastapi``)."""
-    from fastapi import FastAPI, HTTPException  # pylint: disable=import-outside-toplevel
-
-    app = FastAPI(title="robovast controller", docs_url="/docs")
-
-    @app.get("/status", response_model=Status)
-    def get_status() -> Status:
-        return state.snapshot()
-
-    @app.post("/command", response_model=CommandResult)
-    def post_command(command: Command) -> CommandResult:
-        result = dispatch(state, command)
-        if not result.ok and (result.error or "").startswith("unknown command"):
-            raise HTTPException(status_code=400, detail=result.error)
-        return result
-
-    @app.get("/healthz")
-    def healthz() -> dict:
-        return {"ok": True}
-
-    return app
-
-
-def serve_in_thread(state: ControllerState, port: int = DEFAULT_PORT,
-                    host: str = "0.0.0.0") -> threading.Thread:  # nosec B104 - in-cluster pod
-    """Start the control server on a daemon thread; return the thread.
-
-    Best-effort: a failure to start (e.g. ``uvicorn`` missing) is logged and the
-    campaign proceeds without the channel — the monitor then falls back to its
-    Kubernetes-only view.
-    """
-    def _run() -> None:
-        try:
-            import uvicorn  # pylint: disable=import-outside-toplevel
-            app = build_app(state)
-            uvicorn.Server(uvicorn.Config(
-                app, host=host, port=port, log_level="warning")).run()
-        except Exception:  # pylint: disable=broad-except
-            logger.warning("Control server failed to start; monitor will fall back "
-                           "to the Kubernetes-only view.", exc_info=True)
-
-    thread = threading.Thread(target=_run, name="robovast-control-server", daemon=True)
-    thread.start()
-    logger.info("Control server listening on %s:%d (GET /status, POST /command).", host, port)
-    return thread
+    return publish

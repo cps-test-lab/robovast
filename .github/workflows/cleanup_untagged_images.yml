@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # How long an untagged image is kept anyway. A campaign pins the image it ran by digest,
+      # so a moved tag leaves that digest untagged while it is still the only thing a re-run can
+      # start from. Not permanence -- see the reasoning at the deletion step.
+      GRACE_DAYS: 90
     permissions:
       packages: write
     strategy:
@@ -63,6 +67,7 @@ jobs:
           # Delete untagged versions that are not referenced by any tagged manifest
           PAGE=1
           DELETED=0
+          KEPT_RECENT=0
           while true; do
             VERSIONS=$(curl -sf -L \
               -H "Accept: application/vnd.github+json" \
@@ -75,19 +80,38 @@ jobs:
             while IFS= read -r item; do
               VERSION_ID=$(echo "$item" | jq -r '.id')
               DIGEST=$(echo "$item" | jq -r '.name')
-              if [[ -z "${REFERENCED[$DIGEST]+_}" ]]; then
-                echo "Deleting untagged+unreferenced: $VERSION_ID ($DIGEST)"
-                curl -sf -L -X DELETE \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "Authorization: Bearer ${GH_TOKEN}" \
-                  -H "X-GitHub-Api-Version: 2022-11-28" \
-                  "https://api.github.com/orgs/${ORG}/packages/container/${PACKAGE}/versions/${VERSION_ID}"
-                DELETED=$((DELETED + 1))
-              else
+              CREATED=$(echo "$item" | jq -r '.created_at')
+              if [[ -n "${REFERENCED[$DIGEST]+_}" ]]; then
                 echo "Keeping referenced: $VERSION_ID ($DIGEST)"
+                continue
               fi
+              # Untagged is not the same as unused. A campaign's results pin the image it ran
+              # by DIGEST, so once that tag moves on the digest it recorded is untagged --
+              # while still being the only thing a re-run of that campaign can start from.
+              # Deleting it immediately is what made "re-run last month's campaign"
+              # unanswerable, and nothing in the campaign said why.
+              #
+              # The grace window does not make images permanent -- that would not scale to
+              # the number of images this produces. It buys the interval in which a recent
+              # campaign is most likely to be re-run, and past it the honest answer is a
+              # rebuild: since each image records its own apt/pip lock
+              # (/etc/robovast/build-manifest) and its source refs are pinned, that is now a
+              # real path rather than archaeology.
+              AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$CREATED" +%s) ) / 86400 ))
+              if [[ "$AGE_DAYS" -lt "$GRACE_DAYS" ]]; then
+                echo "Keeping untagged but recent (${AGE_DAYS}d < ${GRACE_DAYS}d): $VERSION_ID ($DIGEST)"
+                KEPT_RECENT=$((KEPT_RECENT + 1))
+                continue
+              fi
+              echo "Deleting untagged+unreferenced, ${AGE_DAYS}d old: $VERSION_ID ($DIGEST)"
+              curl -sf -L -X DELETE \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/orgs/${ORG}/packages/container/${PACKAGE}/versions/${VERSION_ID}"
+              DELETED=$((DELETED + 1))
             done < <(echo "$VERSIONS" | jq -c '.[] | select(.metadata.container.tags | length == 0)')
 
             PAGE=$((PAGE + 1))
           done
-          echo "Done. Deleted $DELETED untagged unreferenced versions."
+          echo "Done. Deleted $DELETED untagged unreferenced versions, kept $KEPT_RECENT within the ${GRACE_DAYS}-day grace window."

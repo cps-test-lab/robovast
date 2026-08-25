@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+# Copyright (C) 2026 Frederik Pasch
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+"""Thin host-side storage lifecycle operations.
+
+Pure functions — no long-lived connection objects.  Each function opens its
+own connection (boto3 or ``google.cloud.storage``), performs the operation,
+and closes immediately.
+
+For embedded MinIO, a ``kubectl port-forward`` is opened for the duration of
+the call and torn down afterwards.  For external S3 / GCS the connection is
+direct.
+
+Public API
+----------
+* :func:`list_campaigns` — list campaign IDs present in storage.
+* :func:`campaign_exists` — check whether a campaign already has data.
+* :func:`delete_campaign` — permanently remove a single campaign's data.
+* :func:`cleanup_campaigns` — remove one or all campaigns, return what was removed.
+"""
+
+import contextlib
+import logging
+import os
+import socket
+import subprocess
+import time
+from typing import Optional
+
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
+
+from robovast.common.execution import is_campaign_dir
+
+logger = logging.getLogger(__name__)
+
+_S3_PORT = 9000
+_GCS_BATCH_SIZE = 100
+
+
+# ---------------------------------------------------------------------------
+# Internal: connection helpers
+# ---------------------------------------------------------------------------
+
+def _find_available_port(start_port: int = 18080, max_attempts: int = 100) -> int:
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("localhost", port))
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(
+        f"No available port in range {start_port}–{start_port + max_attempts}"
+    )
+
+
+#: Per-attempt deadline for :func:`forward_is_serving`. Short on purpose: this probe is
+#: what a stall detector polls, so it must report "not serving" in seconds rather than
+#: inheriting an S3 client's transfer-sized read timeout.
+FORWARD_PROBE_TIMEOUT_S = 5.0
+
+
+def forward_is_serving(local_port: int,
+                       timeout_s: float = FORWARD_PROBE_TIMEOUT_S) -> bool:
+    """Is the forward on *local_port* actually proxying to MinIO right now?
+
+    A TCP connect cannot answer this. ``kubectl port-forward`` opens its local listener
+    immediately, before (and regardless of whether) the tunnel to the pod carries data —
+    and a forward that has gone *stalled-but-alive* keeps accepting connections while
+    proxying nothing. So a connect-only check passes on a tunnel that is dead, which is
+    precisely the state this codebase spends the most effort recovering from.
+
+    Asking MinIO's unauthenticated readiness endpoint requires a byte to come *back*
+    through the tunnel, so it distinguishes the two. Any failure is a "no": the caller's
+    only decision is whether to keep this forward or replace it.
+    """
+    import urllib.error  # pylint: disable=import-outside-toplevel
+    import urllib.request  # pylint: disable=import-outside-toplevel
+
+    url = f"http://localhost:{local_port}/minio/health/ready"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310 - fixed localhost URL
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        # An HTTP status came back through the tunnel, so it *is* proxying. MinIO answers
+        # this path 200/503 only, but treating any status as "serving" keeps the probe a
+        # tunnel check rather than a MinIO health check — pod readiness is kubelet's job.
+        logger.debug("MinIO readiness on port %d answered HTTP %s", local_port, e.code)
+        return True
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        logger.debug("MinIO readiness probe on port %d failed: %s", local_port, e)
+        return False
+
+
+def open_minio_port_forward(namespace: str, context: Optional[str]):
+    """Open a ``kubectl port-forward`` to the embedded MinIO pod on a free local port.
+
+    Returns ``(proc, local_port)``: the running ``subprocess.Popen`` and the
+    forwarded local port (S3 reachable at ``http://localhost:<local_port>``). The
+    caller owns *proc* and must terminate it. Raises ``RuntimeError`` if the
+    tunnel does not become ready in time.
+
+    Readiness is :func:`forward_is_serving`, not a TCP connect: this function is also the
+    *repair* path for a stalled tunnel, and a connect-only check would happily hand back a
+    replacement that is just as dead — turning one stall into a rotation loop that reports
+    success every time.
+
+    Shared between host-side one-shot ops (:func:`_s3_connection`, which tears the
+    forward down after the call) and the off-cluster service, which keeps one
+    forward open for its lifetime.
+    """
+    local_port = _find_available_port()
+    ctx_args = ["--context", context] if context else []
+    cmd = (
+        ["kubectl"] + ctx_args + [
+            "port-forward", "-n", namespace,
+            "pod/robovast", f"{local_port}:{_S3_PORT}",
+        ]
+    )
+    pf_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # Budget, not iteration count: each probe now costs up to FORWARD_PROBE_TIMEOUT_S
+    # (the old connect took ~0ms), so a fixed 20 rounds would stretch to a minute and a
+    # half of blocking. kubectl's own tunnel setup is sub-second when the pod is up.
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if pf_proc.poll() is not None:
+            break  # kubectl exited (bad pod/namespace/context) — no amount of waiting helps
+        time.sleep(0.5)
+        if forward_is_serving(local_port, timeout_s=2.0):
+            return pf_proc, local_port
+    pf_proc.terminate()
+    raise RuntimeError(
+        f"kubectl port-forward to pod/robovast:{_S3_PORT} on local port {local_port} "
+        "never served MinIO's readiness endpoint")
+
+
+@contextlib.contextmanager
+def _s3_connection(cluster_config, namespace: str, context: Optional[str]):
+    """Yield a boto3 S3 client, opening a port-forward for embedded MinIO.
+
+    Only when one is actually needed. A port-forward is how a caller *off* the cluster
+    reaches embedded MinIO; in-cluster the service DNS name resolves directly, and shelling
+    out to ``kubectl`` there fails with ``FileNotFoundError`` -- the service image has no
+    ``kubectl`` and needs none, since everything else it does in-pod goes through the API
+    client or the cluster-internal endpoint. That failure reached users as a bare 500 on
+    every campaign deletion from the web UI, the CLI and the MCP tool alike, because all
+    three call the one op and this is the first thing it does.
+
+    The in-pod test is the same ``KUBERNETES_SERVICE_HOST`` probe the rest of the cluster
+    lane uses, rather than a new flag threaded down from the caller: whether a port-forward
+    is required is a property of where this process runs, which is exactly what that
+    variable answers, and no caller knows it better.
+    """
+    uses_embedded = cluster_config.uses_embedded_s3()
+    access_key, secret_key = cluster_config.get_s3_credentials()
+    region = cluster_config.get_s3_region()
+    endpoint = cluster_config.get_host_s3_endpoint()
+
+    pf_proc = None
+    if uses_embedded:
+        if os.environ.get("KUBERNETES_SERVICE_HOST"):
+            endpoint = cluster_config.get_s3_endpoint()
+        else:
+            pf_proc, local_port = open_minio_port_forward(namespace, context)
+            endpoint = f"http://localhost:{local_port}"
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
+        region_name=region,
+    )
+    try:
+        yield s3
+    finally:
+        if pf_proc is not None:
+            pf_proc.terminate()
+            try:
+                pf_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pf_proc.kill()
+
+
+@contextlib.contextmanager
+def _gcs_connection(cluster_config):
+    """Yield a ``google.cloud.storage.Client`` using the config's key file."""
+    from google.cloud import storage as gcs_storage  # pylint: disable=import-outside-toplevel
+
+    key_file = cluster_config.get_gcs_key_file()
+    if key_file:
+        gcs = gcs_storage.Client.from_service_account_json(key_file)
+    else:
+        gcs = gcs_storage.Client()
+    try:
+        yield gcs
+    finally:
+        pass  # google.cloud.storage.Client has no explicit close
+
+
+def _is_gcs(cluster_config) -> bool:
+    return cluster_config.get_storage_backend() == "gcs"
+
+
+def bucket_name(campaign_id: str) -> str:
+    """Sanitize a campaign ID into a valid S3 bucket name.
+
+    Per-bucket mode (embedded MinIO) names the bucket after the campaign, but
+    bucket names must be lowercase with no underscores.  The bucket is created
+    with this sanitized name (see ``in_pod_storage.campaign_storage_location``),
+    so all per-bucket operations must sanitize identically — otherwise MinIO
+    rejects an underscore-containing name with HTTP 400, not a 404.
+    """
+    return campaign_id.lower().replace("_", "-")
+
+
+def _delete_s3_prefix(s3, bucket: str, prefix: str) -> None:
+    """Delete all objects in *bucket* whose key starts with *prefix*.
+
+    Raises:
+        ValueError: If *prefix* is empty/None — that would delete the
+            **entire** bucket contents.
+    """
+    if not prefix or not prefix.strip():
+        raise ValueError(
+            "Refusing to delete with empty prefix — this would wipe the "
+            f"entire bucket '{bucket}'.  Pass a non-empty prefix."
+        )
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if objects:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def list_campaigns(
+    cluster_config,
+    namespace: str = "default",
+    context: Optional[str] = None,
+) -> list:
+    """Return a sorted list of campaign IDs present in storage.
+
+    Args:
+        cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`
+            instance.
+        namespace:      Kubernetes namespace (used only for embedded MinIO
+                        port-forward).
+        context:        Kubernetes context (or ``None`` for the active context).
+
+    Returns:
+        list[str]: Sorted campaign IDs.
+    """
+    if _is_gcs(cluster_config):
+        gcs_bucket = cluster_config.get_s3_bucket()
+        with _gcs_connection(cluster_config) as gcs:
+            blobs_iter = gcs.list_blobs(gcs_bucket, delimiter="/")
+            _ = list(blobs_iter)  # consume so blobs_iter.prefixes is populated
+            return sorted(
+                p.rstrip("/")
+                for p in blobs_iter.prefixes
+                if is_campaign_dir(p.rstrip("/"))
+            )
+
+    shared_bucket = cluster_config.get_s3_bucket()
+    with _s3_connection(cluster_config, namespace, context) as s3:
+        if shared_bucket:
+            paginator = s3.get_paginator("list_objects_v2")
+            campaigns: set = set()
+            for page in paginator.paginate(Bucket=shared_bucket, Delimiter="/"):
+                for prefix_obj in page.get("CommonPrefixes", []):
+                    prefix = prefix_obj["Prefix"].rstrip("/")
+                    if is_campaign_dir(prefix):
+                        campaigns.add(prefix)
+            return sorted(campaigns)
+        else:
+            response = s3.list_buckets()
+            return sorted(
+                b["Name"]
+                for b in response.get("Buckets", [])
+                if is_campaign_dir(b["Name"])
+            )
+
+
+def campaign_exists(
+    campaign_id: str,
+    cluster_config,
+    namespace: str = "default",
+    context: Optional[str] = None,
+) -> bool:
+    """Return ``True`` if *campaign_id* already has data in storage.
+
+    Args:
+        campaign_id:    Campaign identifier.
+        cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`.
+        namespace:      Kubernetes namespace.
+        context:        Kubernetes context.
+
+    Returns:
+        bool
+    """
+    if _is_gcs(cluster_config):
+        gcs_bucket = cluster_config.get_s3_bucket()
+        with _gcs_connection(cluster_config) as gcs:
+            blobs = gcs.list_blobs(gcs_bucket, prefix=f"{campaign_id}/", max_results=1)
+            return any(True for _ in blobs)
+
+    shared_bucket = cluster_config.get_s3_bucket()
+    with _s3_connection(cluster_config, namespace, context) as s3:
+        if shared_bucket:
+            response = s3.list_objects_v2(
+                Bucket=shared_bucket,
+                Prefix=f"{campaign_id}/",
+                MaxKeys=1,
+            )
+            return response.get("KeyCount", 0) > 0
+        else:
+            try:
+                s3.head_bucket(Bucket=bucket_name(campaign_id))
+                return True
+            except ClientError as exc:
+                code = exc.response["Error"]["Code"]
+                if code in ("404", "NoSuchBucket"):
+                    return False
+                raise
+
+
+def delete_campaign(
+    campaign_id: str,
+    cluster_config,
+    namespace: str = "default",
+    context: Optional[str] = None,
+) -> None:
+    """Permanently delete all data for *campaign_id* from storage.
+
+    In shared-bucket mode (external S3 / GCS) only the campaign's key prefix
+    is deleted; the shared bucket itself is left intact.  In per-bucket mode
+    (embedded MinIO) the entire bucket is deleted.
+
+    Args:
+        campaign_id:    Campaign identifier.
+        cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`.
+        namespace:      Kubernetes namespace.
+        context:        Kubernetes context.
+
+    Raises:
+        ValueError: If *campaign_id* is empty or does not look like a valid
+            campaign identifier.
+    """
+    if not campaign_id or not campaign_id.strip():
+        raise ValueError("campaign_id must not be empty.")
+    if not is_campaign_dir(campaign_id):
+        raise ValueError(
+            f"Refusing to delete '{campaign_id}': does not match the expected "
+            f"campaign naming pattern.  This guard prevents accidental "
+            f"deletion of unrelated data."
+        )
+    if _is_gcs(cluster_config):
+        gcs_bucket = cluster_config.get_s3_bucket()
+        with _gcs_connection(cluster_config) as gcs:
+            prefix = f"{campaign_id}/"
+            blobs = list(gcs.list_blobs(gcs_bucket, prefix=prefix))
+            for i in range(0, len(blobs), _GCS_BATCH_SIZE):
+                chunk = blobs[i : i + _GCS_BATCH_SIZE]
+                with gcs.batch():
+                    for blob in chunk:
+                        blob.delete()
+        logger.debug("Deleted GCS prefix '%s/' from bucket '%s'", campaign_id, gcs_bucket)
+        return
+
+    shared_bucket = cluster_config.get_s3_bucket()
+    with _s3_connection(cluster_config, namespace, context) as s3:
+        if shared_bucket:
+            _delete_s3_prefix(s3, shared_bucket, f"{campaign_id}/")
+            logger.debug(
+                "Deleted prefix '%s/' from shared S3 bucket '%s'", campaign_id, shared_bucket
+            )
+        else:
+            campaign_bucket = bucket_name(campaign_id)
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=campaign_bucket):
+                objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if objects:
+                    s3.delete_objects(Bucket=campaign_bucket, Delete={"Objects": objects})
+            s3.delete_bucket(Bucket=campaign_bucket)
+            logger.debug("Deleted S3 bucket '%s'", campaign_bucket)
+
+
+def cleanup_campaigns(
+    cluster_config,
+    namespace: str = "default",
+    context: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    running_campaigns: set | None = None,
+) -> list:
+    """Remove one or all *finished* campaigns from storage.
+
+    Campaigns listed in *running_campaigns* are **always skipped** to prevent
+    deleting data that is still being produced by active jobs.
+
+    Args:
+        cluster_config: :class:`~robovast.execution.cluster_config.base_config.BaseConfig`.
+        namespace:      Kubernetes namespace.
+        context:        Kubernetes context.
+        campaign_id:    If given, remove only this campaign.  If ``None``,
+                        remove all campaigns returned by :func:`list_campaigns`.
+        running_campaigns:
+                        Optional set of campaign IDs that have running or
+                        pending jobs.  These will be excluded from deletion
+                        even if they appear in storage.  Pass ``None`` only
+                        when the caller has already verified nothing is
+                        running.
+
+    Returns:
+        list[str]: The storage names actually removed — **not** a count, because the
+        caller has to retire each removed campaign's index marker, and one that survived
+        a failed delete must keep its marker or its data becomes invisible. In
+        per-campaign-bucket mode these are sanitized *bucket* names; map an id to one
+        with :func:`bucket_name` rather than trying to invert it.
+    """
+    if running_campaigns is None:
+        running_campaigns = set()
+
+    all_campaigns = list_campaigns(cluster_config, namespace, context)
+    if campaign_id:
+        # In per-bucket mode list_campaigns returns sanitized bucket names, so
+        # match either the raw ID (shared-bucket/GCS) or its sanitized form.
+        wanted = {campaign_id, bucket_name(campaign_id)}
+        to_remove = [c for c in all_campaigns if c in wanted]
+        if not to_remove:
+            logger.info("No campaign matching '%s' found in storage.", campaign_id)
+            return []
+    else:
+        to_remove = all_campaigns
+
+    if not to_remove:
+        logger.info("No campaigns found to remove.")
+        return []
+
+    # Safety: never delete campaigns that still have active jobs.
+    skipped = [c for c in to_remove if c in running_campaigns]
+    if skipped:
+        for name in skipped:
+            logger.warning(
+                "Skipping campaign '%s' — it still has running/pending jobs.",
+                name,
+            )
+    to_remove = [c for c in to_remove if c not in running_campaigns]
+
+    if not to_remove:
+        logger.info("No finished campaigns to remove (all still running).")
+        return []
+
+    removed = []
+    for name in to_remove:
+        try:
+            delete_campaign(name, cluster_config, namespace, context)
+            removed.append(name)
+            logger.info("Removed campaign '%s' from storage.", name)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Failed to remove campaign '%s': %s", name, exc)
+    return removed

@@ -7,20 +7,30 @@ How to run
    :commands: generate, variation-points, variation-types, list
 
 
-.. click:: robovast.execution.execution_utils.cli:execution
+.. Three directives rather than one, because sphinx-click only falls through to a group's
+   lazily-attached commands when its eager ``commands`` dict is *empty* — so a single
+   ``:commands: local, cluster`` on ``vast exec`` silently rendered neither (both arrive
+   through entry points, from ``robovast`` and ``robovast-client`` respectively). Each is
+   documented from the module that defines it instead.
+
+.. click:: robovast.client.exec_cli:execution
    :prog: vast exec
    :nested: full
-   :commands: local, cluster
+   :commands: command, stop-container
+
+.. click:: robovast.execution.execution_utils.cli:local
+   :prog: vast exec local
+   :nested: full
+
+.. click:: robovast.client.cluster_cli:cluster
+   :prog: vast exec cluster
+   :nested: full
+   :commands: run, stop, stop-job, log, download-cleanup
 
 .. click:: robovast.results_processing.cli:results
    :prog: vast results
    :nested: full
    :commands: postprocess, merge-campaigns, postprocess-commands
-
-.. click:: robovast.evaluation.result_analyzer.cli:evaluation
-   :prog: vast eval
-   :nested: full
-   :commands: gui
 
 
 Environment variables

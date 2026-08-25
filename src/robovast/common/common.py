@@ -20,24 +20,70 @@ import pickle
 import sys
 from dataclasses import asdict, is_dataclass
 
-import numpy as np
 import yaml
-from scenario_execution import \
-    get_scenario_parameters as _external_get_scenario_parameters
 
 from .config import validate_config
 from .file_cache import FileCache
 
+# numpy and scenario_execution are deliberately NOT imported here. This module is what
+# `from robovast.common import <name>` resolves to, so a module-level import of either
+# is paid by every `vast` invocation -- `vast wait` and `vast --help` included -- for a
+# simulator stack and an array library they never touch. See the two use sites below.
+
+
 logger = logging.getLogger(__name__)
 
 
-def load_config(config_file, subsection=None, allow_missing=False):
+def _warn_unsupported_version(config, config_file, subsection):
+    """Note an old snapshot once, without refusing to read a section out of it.
+
+    Reading e.g. ``results_processing`` from a version-1 file is fine -- that section is
+    unchanged -- but a caller should still know the file predates the current schema, in
+    case what they read looks stale.
+    """
+    from robovast.common.migrations import \
+        SUPPORTED_CONFIG_VERSION  # pylint: disable=import-outside-toplevel
+
+    version = (config or {}).get("version")
+    if version is not None and version != SUPPORTED_CONFIG_VERSION:
+        logger.debug(
+            "reading '%s' from %s, which declares config version %s (current is %s); the "
+            "section itself is version-independent", subsection, config_file, version,
+            SUPPORTED_CONFIG_VERSION)
+
+
+def _upgraded(config, config_file):
+    """Ladder *config* forward in memory, logging what ran. Returns the upgraded config.
+
+    Separate from the ladder itself so the log line -- the only trace that a campaign was
+    read through a migration rather than natively -- lives with the caller that knows the
+    file name.
+    """
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        needs_upgrade, upgrade_config)
+
+    if not needs_upgrade(config):
+        return config
+    upgraded, applied = upgrade_config(config)
+    logger.info("%s declares an older config version; applied migrations %s to read it "
+                "(the file itself is unchanged)", config_file, ", ".join(applied))
+    return upgraded
+
+
+def load_config(config_file, subsection=None, allow_missing=False, upgrade=False):
     """Load and parse scenario variation file.
 
     Args:
         config_file: Path to the configuration file
         subsection: Optional subsection to extract
         allow_missing: If True, return empty dict when subsection is missing instead of raising error
+        upgrade: Run the migration ladder **in memory** before validating, so a config
+            older than the current version still loads. For reading an *archived*
+            campaign -- displaying it, importing it, staging a retrigger -- where the
+            alternative is that a campaign stops being readable by the tool that produced
+            it. Off by default: authoring and launching a new campaign must still refuse
+            an old version rather than quietly accepting one. The file on disk is never
+            rewritten; see ``migrations/README.md`` for the three policies.
 
     Returns:
         Configuration dict or subsection dict
@@ -60,8 +106,23 @@ def load_config(config_file, subsection=None, allow_missing=False):
                 raise ValueError("No documents found in scenario file")
             config = documents[0]
 
-            # Validate the configuration
-            validate_config(config)
+            # Reading one *section* does not need the whole document to validate. That
+            # coupling made postprocessing fail on a perfectly good campaign: it
+            # discovers a ``.vast`` from the shared results directory, which also holds
+            # older campaigns' archived snapshots, and one of those being version 1 was
+            # enough to stop a v2 campaign from producing its results.
+            #
+            # Sections like ``results_processing`` did not change between versions, so a
+            # reader of one is not entitled to an opinion about the rest of the file. A
+            # caller loading the *whole* config still gets full validation, which is
+            # where an unsupported version genuinely matters.
+            if subsection:
+                _warn_unsupported_version(config, config_file, subsection)
+            elif upgrade:
+                config = _upgraded(config, config_file)
+                validate_config(config)
+            else:
+                validate_config(config)
 
             if subsection:
                 subsection_data = config.get(subsection, None)
@@ -79,7 +140,7 @@ def load_config(config_file, subsection=None, allow_missing=False):
                 return config
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML file: {e}")
-            sys.exit(1)
+            raise ValueError(f"Error parsing YAML file {config_file}: {e}") from e
 
 
 def dataclass_representer(dumper, data):
@@ -101,17 +162,21 @@ def convert_dataclasses_to_dict(obj):  # pylint: disable=too-many-return-stateme
     elif isinstance(obj, tuple):
         # Convert tuples to lists and recursively process elements
         return [convert_dataclasses_to_dict(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        # Convert numpy arrays to lists and recursively process elements
-        return [convert_dataclasses_to_dict(item) for item in obj.tolist()]
-    elif isinstance(obj, (np.integer, np.floating)):
-        # Convert numpy scalars to Python native types
-        return obj.item()
-    elif isinstance(obj, np.bool_):
-        # Convert numpy bool to Python bool
-        return bool(obj)
-    else:
-        return obj
+    # Consult numpy only if something already imported it. If it is not in sys.modules,
+    # no object in this process can be a numpy value, so the branches below cannot match
+    # -- and importing it to find that out is exactly the cost being avoided.
+    np = sys.modules.get("numpy")
+    if np is not None:
+        if isinstance(obj, np.ndarray):
+            # Convert numpy arrays to lists and recursively process elements
+            return [convert_dataclasses_to_dict(item) for item in obj.tolist()]
+        if isinstance(obj, (np.integer, np.floating)):
+            # Convert numpy scalars to Python native types
+            return obj.item()
+        if isinstance(obj, np.bool_):
+            # Convert numpy bool to Python bool
+            return bool(obj)
+    return obj
 
 
 def filter_configs(configs):
@@ -158,6 +223,9 @@ def get_scenario_parameters(scenario_file):
     if cached_params:
         return pickle.loads(cached_params)
     else:
+        from scenario_execution import \
+            get_scenario_parameters as \
+            _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
         params = _external_get_scenario_parameters(scenario_file)
         file_cache.save_file_to_cache([scenario_file], pickle.dumps(params), content=True, binary=True)
         return params

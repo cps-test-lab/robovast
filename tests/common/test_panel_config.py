@@ -1,0 +1,341 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""RunViewPanelConfig schema + custom-panel validation.
+
+Panel ``type`` is a core built-in, an installed ``robovast.panel_types`` entry point
+(``robovast_nav``'s ``costmap``), or ``custom`` (a user-authored bundle referenced by path).
+"""
+
+import pytest
+from pydantic import ValidationError
+
+from robovast.common.config import (DATA_QUERY_ROW_CAP, ConfigPanelConfig, ConfigV1, PanelPosition,
+                                    RunViewConfig, RunViewPanelConfig)
+from robovast.common.config_validation import _panel_problems
+
+
+def _viz(panels):
+    """A raw config whose run view declares *panels*."""
+    return {"visualization": {"results": {"run_view": {"panels": panels}}}}
+
+
+def test_builtin_shorthand():
+    assert RunViewPanelConfig.model_validate({"playback": None}).type == "playback"
+
+
+def test_package_panel_accepted_when_installed():
+    # robovast_nav registers the costmap panel_types entry point.
+    assert RunViewPanelConfig.model_validate({"costmap": {"title": "Nav2"}}).type == "costmap"
+
+
+def test_unknown_type_rejected():
+    with pytest.raises(ValidationError):
+        RunViewPanelConfig.model_validate({"totally_made_up": {}})
+
+
+def test_custom_requires_remote():
+    with pytest.raises(ValidationError):
+        RunViewPanelConfig.model_validate({"custom": {"module": "./x"}})
+
+
+def test_custom_accepted_with_remote():
+    p = RunViewPanelConfig.model_validate({"custom": {"remote": "panels/x", "module": "./x"}})
+    assert (p.type, p.remote, p.module) == ("custom", "panels/x", "./x")
+
+
+def test_remote_only_on_custom():
+    with pytest.raises(ValidationError):
+        RunViewPanelConfig.model_validate({"scene": {"remote": "panels/x"}})
+
+
+def test_validation_flags_missing_custom_bundle(tmp_path):
+    raw = _viz([
+        {"custom": {"remote": "panels/missing", "module": "./x"}}])
+    problems = _panel_problems(raw, str(tmp_path))
+    assert len(problems) == 1
+    assert problems[0]["field"] == "visualization.results.run_view.panels[0].remote"
+
+
+def test_validation_passes_when_bundle_present(tmp_path):
+    (tmp_path / "panels" / "ok").mkdir(parents=True)
+    (tmp_path / "panels" / "ok" / "remoteEntry.js").write_text("//\n")
+    raw = _viz([{"custom": {"remote": "panels/ok"}}])
+    assert _panel_problems(raw, str(tmp_path)) == []
+
+
+VEGA_SPEC = {"mark": "line", "encoding": {"x": {"field": "timestamp"}, "y": {"field": "v"}}}
+
+
+def _vega(**props):
+    return {"vega": {"source": {"table": "poses"}, "vega_lite": VEGA_SPEC, **props}}
+
+
+def test_vega_accepted_in_both_forms():
+    assert RunViewPanelConfig.model_validate(_vega()).type == "vega"
+    explicit = RunViewPanelConfig.model_validate(
+        {"type": "vega", "source": {"table": "poses"}, "vega_lite": VEGA_SPEC})
+    assert explicit.type == "vega"
+
+
+def test_vega_bindings_kept_as_passthrough():
+    # The bindings are interpreted by the panel plugin, like every other panel's, so they must
+    # survive validation in ``__pydantic_extra__`` rather than being dropped as unknown keys.
+    p = RunViewPanelConfig.model_validate(_vega(title="base_link"))
+    assert p.title == "base_link"
+    assert p.__pydantic_extra__["vega_lite"] == VEGA_SPEC
+    assert p.__pydantic_extra__["source"] == {"table": "poses"}
+
+
+@pytest.mark.parametrize("props", [
+    {"source": {"table": "poses"}},                          # no spec
+    {"source": {"table": "poses"}, "vega_lite": {}},          # empty spec
+    {"vega_lite": VEGA_SPEC},                                 # no source
+    {"source": {"filter": {"frame": "base_link"}}, "vega_lite": VEGA_SPEC},  # source without table
+])
+def test_vega_rejects_incomplete_bindings(props):
+    with pytest.raises(ValidationError):
+        RunViewPanelConfig.model_validate({"vega": props})
+
+
+def test_validation_reports_every_broken_vega_panel():
+    # Why this check exists at all: the schema raises on the first bad panel, so a .vast with two
+    # of them would only ever show one. ``validate_project`` is the collect-all report.
+    raw = _viz([
+        {"vega": {"source": {"table": "poses"}}},   # missing vega_lite
+        {"vega": {"vega_lite": VEGA_SPEC}},         # missing source
+    ])
+    fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
+    assert fields == ["visualization.results.run_view.panels[0].vega_lite", "visualization.results.run_view.panels[1].source"]
+
+
+def test_validation_passes_for_complete_vega_panel():
+    raw = _viz([_vega()])
+    assert _panel_problems(raw, "/nonexistent") == []
+
+
+@pytest.mark.parametrize("hz", [0, -1, "fast", float("inf"), True])
+def test_vega_rejects_thinning_that_cannot_thin(hz):
+    # Each of these reaches the browser as a bucket width and draws a *plausible* chart of the wrong
+    # rows -- 0 collapses the run into one sample -- so it has to be caught while the author is still
+    # holding the .vast rather than at replay time.
+    with pytest.raises(ValidationError):
+        RunViewPanelConfig.model_validate(_vega(source={"table": "poses", "decimate_hz": hz}))
+
+
+@pytest.mark.parametrize("hz", [5, 0.5, "2.5"])
+def test_vega_accepts_a_positive_rate(hz):
+    p = RunViewPanelConfig.model_validate(_vega(source={"table": "poses", "decimate_hz": hz}))
+    assert p.__pydantic_extra__["source"]["decimate_hz"] == hz
+
+
+def test_vega_rejects_a_row_cap_the_service_will_not_honour():
+    # The query clamps at DATA_QUERY_ROW_CAP, so a bigger number is not a bigger chart: it is the
+    # same head-truncated one, with the author believing otherwise.
+    with pytest.raises(ValidationError, match="clamped"):
+        RunViewPanelConfig.model_validate(_vega(max_rows=DATA_QUERY_ROW_CAP * 4))
+    assert RunViewPanelConfig.model_validate(_vega(max_rows=DATA_QUERY_ROW_CAP)).type == "vega"
+
+
+def test_validation_reports_thinning_problems_per_panel():
+    raw = _viz([
+        _vega(source={"table": "poses", "decimate_hz": 0}),
+        _vega(max_rows=99999),
+    ])
+    fields = [p["field"] for p in _panel_problems(raw, "/nonexistent")]
+    assert fields == [
+        "visualization.results.run_view.panels[0].source.decimate_hz",
+        "visualization.results.run_view.panels[1].max_rows",
+    ]
+
+
+@pytest.mark.parametrize("anchor", [
+    "top", "bottom", "left", "right",
+    "top-left", "top-right", "bottom-left", "bottom-right",
+    "top-center", "bottom-center", "left-center", "right-center",
+    "center",
+])
+def test_every_anchor_accepted(anchor):
+    assert PanelPosition(anchor=anchor).anchor == anchor
+
+
+def test_fill_replaces_the_anchor():
+    p = RunViewPanelConfig.model_validate({"scene3d": {"position": {"fill": True}}})
+    assert (p.position.fill, p.position.anchor) == (True, None)
+
+
+@pytest.mark.parametrize("position", [
+    {"fill": True, "anchor": "left"},    # fill is used instead of an anchor, not with one
+    {"fill": True, "width": 400},        # a filling panel is sized by the docks around it
+    {"fill": True, "height": "40%"},
+    {"anchor": "top", "width": 400},     # a full-width bar's width is ignored
+    {"anchor": "bottom", "width": 400},
+    {"anchor": "fill"},                  # fill stopped being an anchor
+])
+def test_placement_rejects_combinations_it_could_not_honour(position):
+    # Each of these used to be silently dropped by the layout engine, which is how a panel ends
+    # up somewhere its author did not ask for and cannot explain from the .vast.
+    with pytest.raises(ValidationError):
+        PanelPosition.model_validate(position)
+
+
+def test_only_one_panel_may_fill():
+    with pytest.raises(ValidationError):
+        RunViewConfig.model_validate({"panels": [
+            {"scene3d": {"position": {"fill": True}}},
+            {"camera": {"position": {"fill": True}}},
+        ]})
+
+
+def _column(*heights):
+    """A ``left`` column of members with the given heights (``None`` = takes the rest)."""
+    return {"panels": [
+        {"scenario_tree": {"position": {
+            "anchor": "left", "width": 320,
+            **({} if h is None else {"height": h})}}}
+        for h in heights
+    ]}
+
+
+@pytest.mark.parametrize("heights", [
+    ("50%", "50%"),        # split by ratio
+    ("70%", "30%"),
+    (550, None),           # exact pixels, then the rest
+    (None,),               # one member takes the whole column
+    ("calc(50% - 44px)", None),
+])
+def test_column_members_may_be_sized_by_ratio_pixels_or_remainder(heights):
+    assert len(RunViewConfig.model_validate(_column(*heights)).panels) == len(heights)
+
+
+@pytest.mark.parametrize("heights", [
+    (None, "50%"),         # the first takes the rest; the second would land on top of it
+    ("50%", None, "20%"),
+])
+def test_only_the_last_column_member_may_omit_its_height(heights):
+    with pytest.raises(ValidationError):
+        RunViewConfig.model_validate(_column(*heights))
+
+
+def test_a_hidden_fill_panel_does_not_count():
+    # Hidden panels are filtered out before layout, so they occupy no rectangle to collide over.
+    vis = RunViewConfig.model_validate({"panels": [
+        {"scene3d": {"position": {"fill": True}}},
+        {"camera": {"position": {"fill": True}, "hidden": True}},
+    ]})
+    assert len(vis.panels) == 2
+
+
+def test_json_schema_accepts_shorthand():
+    # The web config editor validates the .vast against ConfigV1's JSON Schema. The default
+    # schema requires a literal ``type`` property and flagged the shorthand every example
+    # config uses as ``Missing property "type"``; the branches below are what fixes that.
+    branches = ConfigV1.model_json_schema()["$defs"]["RunViewPanelConfig"]["anyOf"]
+    assert {"type": "string"} in branches  # bare ``- playback``
+    shorthand = next(b for b in branches if b.get("maxProperties") == 1)  # ``- costmap: {...}``
+    props = shorthand["additionalProperties"]["anyOf"][1]["properties"]
+    assert "title" in props and "position" in props and "type" not in props
+    assert any("type" in b.get("required", []) for b in branches)  # explicit form still offered
+
+def test_a_panel_on_the_wrong_surface_is_told_where_it_belongs():
+    """The likeliest mistake used to get the least useful answer.
+
+    Both of these were refused as "unknown panel type ... (package panels require the providing
+    plugin, e.g. 'robovast_nav', installed)" -- for a panel that plugin ships, on the other
+    surface. The author was sent to check an install that was already fine.
+    """
+    with pytest.raises(ValidationError) as run_in_config:
+        ConfigPanelConfig.model_validate({"costmap": None})
+    message = str(run_in_config.value)
+    assert "is a run-view panel" in message
+    assert "visualization.results.run_view.panels" in message
+    assert "installed" not in message  # the install hint is wrong for this case
+
+    with pytest.raises(ValidationError) as config_in_run:
+        RunViewPanelConfig.model_validate({"map2d": None})
+    assert "is a config-view panel" in str(config_in_run.value)
+    assert "visualization.config.panels" in str(config_in_run.value)
+
+
+def test_a_genuinely_unknown_type_keeps_the_install_hint():
+    with pytest.raises(ValidationError) as err:
+        ConfigPanelConfig.model_validate({"nope": None})
+    assert "unknown config-view panel type" in str(err.value)
+    assert "installed" in str(err.value)
+
+
+def test_a_type_valid_on_both_surfaces_is_accepted_on_both():
+    # scene3d is a core panel of each surface, so the wrong-surface branch must test membership
+    # rather than assume the two vocabularies are disjoint.
+    assert ConfigPanelConfig.model_validate({"scene3d": None}).type == "scene3d"
+    assert RunViewPanelConfig.model_validate({"scene3d": None}).type == "scene3d"
+
+
+def test_the_schema_names_each_surface_vocabulary():
+    """Which panels are possible *where*, in the schema an editor and an agent already fetch.
+
+    The vocabulary lives in a pydantic field validator, which no JSON Schema consumer can see, so
+    ``type`` was an untyped string on both models: the editor could not complete a panel type and
+    ``get_config_schema`` told an agent nothing at all.
+    """
+    defs = ConfigV1.model_json_schema()["$defs"]
+    config_enum = set(defs["ConfigPanelConfig"]["anyOf"][1]["properties"]["type"]["enum"])
+    run_enum = set(defs["RunViewPanelConfig"]["anyOf"][1]["properties"]["type"]["enum"])
+    assert {"parameters", "world", "scene3d", "custom"} <= config_enum
+    assert {"playback", "timeseries", "vega", "scene3d", "custom"} <= run_enum
+    assert "playback" not in config_enum and "parameters" not in run_enum
+    # the shorthand branch is keyed BY the type, so it carries the same vocabulary
+    shorthand = next(b for b in defs["ConfigPanelConfig"]["anyOf"] if b.get("maxProperties") == 1)
+    assert set(shorthand["propertyNames"]["enum"]) == config_enum
+
+
+def test_a_panel_that_declares_its_fields_gets_them_checked():
+    """The failure this exists to end: an unknown binding validated cleanly and drew nothing.
+
+    The only symptom was an empty panel in the browser, with nothing naming the key that was
+    ignored -- so the author looked for a broken map, a missing plugin, a stale bundle.
+    """
+    with pytest.raises(ValidationError) as err:
+        ConfigPanelConfig.model_validate({"map2d": {"maps": "files/depot.yaml"}})
+    assert "invalid binding for panel 'map2d'" in str(err.value)
+    assert "its fields are: map, markers" in str(err.value)
+
+    # ...and a valid one is untouched, in every source form the grammar offers.
+    for binding in ("files/depot.yaml", {"param": "map_file"}, {"internal": "_map_file"},
+                    {"role": "map"}):
+        ConfigPanelConfig.model_validate({"map2d": {"map": binding}})
+
+
+def test_a_binding_names_exactly_one_source():
+    with pytest.raises(ValidationError) as err:
+        ConfigPanelConfig.model_validate({"map2d": {"map": {"param": "m", "internal": "_m"}}})
+    assert "exactly one source" in str(err.value)
+
+
+def test_a_declared_marker_is_checked_too():
+    # scene3d is a core panel -- a name, not a plugin class -- so its bindings come from
+    # BUILTIN_PANEL_BINDINGS. Same check, same message shape.
+    with pytest.raises(ValidationError) as bad_kind:
+        ConfigPanelConfig.model_validate({"scene3d": {"markers": [{"kind": "blob", "pos": [0, 0]}]}})
+    assert "invalid binding for panel 'scene3d'" in str(bad_kind.value)
+
+    with pytest.raises(ValidationError) as no_position:
+        ConfigPanelConfig.model_validate({"scene3d": {"markers": [{"kind": "pose"}]}})
+    assert "needs a position" in str(no_position.value)
+
+    ConfigPanelConfig.model_validate({"scene3d": {"markers": [
+        {"kind": "pose", "pos": [-8, 0], "yaw": 0, "label": "start"},
+        {"kind": "pose", "param": "goal_pose", "offset": [-8, 0, 0]},
+        {"kind": "path", "internal": "_path", "label": "planned path"},
+    ]}})
+
+
+def test_a_panel_type_that_declares_nothing_keeps_its_free_form_bindings():
+    """Opt-in per type, which is what makes this safe to ship.
+
+    The run view's bindings are rich and unmodelled -- costmap layers, a whole Vega-Lite spec --
+    and none of them has to be modelled for a panel that *does* declare its fields to be checked.
+    """
+    RunViewPanelConfig.model_validate({"costmap": {"layers": {"map": {"topic": "/map"}},
+                                                   "whatever": {"nested": [1, 2]}}})
+    RunViewPanelConfig.model_validate({"timeseries": {"source": {"table": "poses"},
+                                                      "series": [{"column": "position.x"}]}})

@@ -187,7 +187,7 @@ class FileCache:
                 csv_hash = self.create_input_files_hash(input_files, strings_for_hash=strings_for_hash)
                 with open(md5_file, 'w', encoding='utf-8') as f:
                     f.write(csv_hash)
-                logging.info(f"Saved {cache_file} to cache (hash: {csv_hash})...")
+                logging.debug(f"Saved {cache_file} to cache (hash: {csv_hash})...")
         except Exception as e:
             logging.warning(f"Error saving to cache: {e}")
             return None
@@ -215,6 +215,6 @@ class FileCache:
                 os.remove(cache_file)
             if os.path.exists(md5_file):
                 os.remove(md5_file)
-            logging.info(f"Removed cache files: {cache_file}, {md5_file}")
+            logging.debug(f"Removed cache files: {cache_file}, {md5_file}")
         except Exception as e:
             logging.warning(f"Error removing cache files: {e}")

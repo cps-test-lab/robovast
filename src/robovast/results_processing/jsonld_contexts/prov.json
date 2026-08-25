@@ -1,0 +1,126 @@
+{
+    "@context": {
+        "@version": 1.1,
+        "prov": "http://www.w3.org/ns/prov#",
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+        "dcterms": "http://purl.org/dc/terms/",
+
+
+        "Entity": "prov:Entity",
+        "Agent": "prov:Agent",
+        "Person": "prov:Person",
+        "SoftwareAgent": "prov:SoftwareAgent",
+        "Organization": "prov:Organization",
+        "Activity": "prov:Activity",
+        "Collection": "prov:Collection",
+        "Bundle": "prov:Bundle",
+        "Plan": "prov:Plan",
+        "Role": "prov:Role",
+
+        "Usage": "prov:Usage",
+        "Generation": "prov:Generation",
+        "Invalidation": "prov:Invalidation",
+        "Communication": "prov:Communication",
+        "Association": "prov:Association",
+        "Attribution": "prov:Attribution",
+        "Delegation": "prov:Delegation",
+        "Derivation": "prov:Derivation",
+
+        "wasGeneratedBy": {
+            "@id": "prov:wasGeneratedBy",
+            "@type": "@id"
+        },
+        "wasDerivedFrom": {
+            "@id": "prov:wasDerivedFrom",
+            "@type": "@id"
+        },
+        "wasAttributedTo": {
+            "@id": "prov:wasAttributedTo",
+            "@type": "@id"
+        },
+        "wasInfluencedBy": {
+            "@id": "prov:wasInfluencedBy",
+            "@type": "@id"
+        },
+        "startedAtTime": {
+            "@id": "prov:startedAtTime",
+            "@type": "xsd:dateTime"
+        },
+        "used": {
+            "@id": "prov:used",
+            "@type": "@id"
+        },
+        "wasInformedBy": {
+            "@id": "prov:wasInformedBy",
+            "@type": "@id"
+        },
+        "endedAtTime": {
+            "@id": "prov:endedAtTime",
+            "@type": "xsd:dateTime"
+        },
+        "wasAssociatedWith": {
+            "@id": "prov:wasAssociatedWith",
+            "@type": "@id"
+        },
+        "actedOnBehalfOf": {
+            "@id": "prov:actedOnBehalfOf",
+            "@type": "@id"
+        },
+
+        "atLocation": {
+            "@id": "prov:atLocation",
+            "@type": "@id"
+        },
+        "hadMember": {
+            "@id": "prov:hadMember",
+            "@type": "@id"
+        },
+        "generatedAtTime": {
+            "@id": "prov:generatedAtTime",
+            "@type": "xsd:dateTime"
+        },
+        "specializationOf": {
+            "@id": "prov:specializationOf",
+            "@type": "@id"
+        },
+        "wasRevisionOf": {
+            "@id": "prov:wasRevisionOf",
+            "@type": "@id"
+        },
+        "wasInvalidatedBy": {
+            "@id": "prov:wasInvalidatedBy",
+            "@type": "@id"
+        },
+        "alternateOf": {
+            "@id": "prov:alternateOf",
+            "@type": "@id"
+        },
+        "references": {
+            "@id": "dcterms:references",
+            "@type": "@id"
+        },
+        "hasVersion": {
+            "@id": "dcterms:hasVersion",
+            "@type": "xsd:string"
+        },
+
+        "qualifiedGeneration": { "@id": "prov:qualifiedGeneration", "@type": "@id" },
+        "qualifiedUsage": { "@id": "prov:qualifiedUsage", "@type": "@id" },
+        "qualifiedInvalidation": { "@id": "prov:qualifiedInvalidation", "@type": "@id" },
+        "qualifiedCommunication": { "@id": "prov:qualifiedCommunication", "@type": "@id" },
+        "qualifiedAssociation": { "@id": "prov:qualifiedAssociation", "@type": "@id" },
+        "qualifiedAttribution": { "@id": "prov:qualifiedAttribution", "@type": "@id" },
+        "qualifiedDelegation": { "@id": "prov:qualifiedDelegation", "@type": "@id" },
+        "qualifiedDerivation": { "@id": "prov:qualifiedDerivation", "@type": "@id" },
+
+        "entity": { "@id": "prov:entity", "@type": "@id" },
+        "activity": { "@id": "prov:activity", "@type": "@id" },
+        "agent": { "@id": "prov:agent", "@type": "@id" },
+        "hadRole": { "@id": "prov:hadRole", "@type": "@id" },
+        "hadPlan": { "@id": "prov:hadPlan", "@type": "@id" },
+        "hadActivity": { "@id": "prov:hadActivity", "@type": "@id" },
+        "hadGeneration": { "@id": "prov:hadGeneration", "@type": "@id" },
+        "hadUsage": { "@id": "prov:hadUsage", "@type": "@id" },
+        "atTime": { "@id": "prov:atTime", "@type": "xsd:dateTime" }
+    }
+}

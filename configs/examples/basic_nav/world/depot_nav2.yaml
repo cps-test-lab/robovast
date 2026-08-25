@@ -1,0 +1,45 @@
+# roqsim TurtleBot 4 in the Depot world, wired for nav2 + AMCL (Gazebo-compatible).
+#
+# `extends` the bare Depot building (roqsim_scenes:depot, baked from the Gazebo/Fuel "Depot" model) and
+# adds the robot, the ROS 2 bridge, a ground-truth pose frame, and the simulation_interfaces control
+# plane. Run standalone with:
+#
+#   ros2 launch roqsim_nav2_example nav2_turtlebot_depot.launch.py            # headless
+#   ros2 launch roqsim_nav2_example nav2_turtlebot_depot.launch.py headless:=false
+#
+# Frame alignment with Gazebo (so roqsim is a drop-in behind the same map + scenario): the Depot
+# geometry keeps its native origin, and the robot spawns at world (-8, 0) -- exactly where nav2's
+# tb4_simulation_launch.py spawns it in gz. The nav2 map (maps/depot.yaml, origin [-7.14, -7.83]) is
+# defined about the map frame, and AMCL's initial pose is the map origin (0, 0) (nav2_params_depot.yaml).
+# Together these fix map = world + (8, 0), matching Gazebo. The ground_truth_pose plugin publishes the
+# base body's world pose as `map -> turtlebot4_base_link_gt`, reproducing Gazebo's gt frame (which is
+# likewise the world pose labelled `map`); the offline analysis that shifts gt by +8 m therefore
+# applies unchanged to both simulators.
+
+extends: roqsim_scenes:depot
+
+sim:
+  pacing: realtime
+  view:
+    lookat: [-2.697, 3.724, -0.639]
+    distance: 9.947
+    azimuth: 32.8
+    elevation: -9.8
+
+plugins:
+  # Spawn pose matches gz tb4_simulation_launch.py (world -8, 0); AMCL seeds at the map origin.
+  - spawn_robot: {model: turtlebot4, name: robot, pos: [-8.0, 0.0], yaw: 0.0}
+  # Ground-truth leaf frame map -> turtlebot4_base_link_gt for offline path evaluation (not wired
+  # into localization). Mirrors Gazebo's turtlebot4_base_link_gt. Listed BEFORE the bridge: the
+  # bridge binds ctx.interface once, in its own configure(), so a producer registered after it is
+  # never published (see the plugin-order rule in docs/architecture.rst).
+  - ground_truth_pose: {robot: robot}
+  # Publishes /clock, /odom, odom->base_link, /scan (rplidar_link), /joint_states, and subscribes
+  # /cmd_vel -- everything nav2 + AMCL consume. publish_static_tf is off because the launch runs a
+  # robot_state_publisher over the TB4 URDF, which publishes base_link and every link below it
+  # (including the sensor mounts) from the model; two publishers for one static transform is a TF
+  # conflict. The bridge keeps what only the simulator knows: odom->base_link and the clock.
+  - ros2_bridge: {publish_static_tf: false}
+  # simulation_interfaces control plane (spawn/get-state/step/reset), for the scenario-execution
+  # sim layer; harmless for a pure nav2 run.
+  - sim_interfaces: {}

@@ -1,0 +1,22 @@
+# A version-1 campaign, as they were actually written.
+#
+# The comment matters: `vast configuration upgrade` and the retrigger's staged migration both
+# have to keep it, because whoever opens a migrated config to work out what it does needs the
+# notes that explain it.
+version: 1
+metadata:
+  name: historic-v1
+  title: Nav2 recovery sweep (archived)
+execution:
+  # v1 had ONE image for the whole campaign, and secondary containers inherited it.
+  image: ghcr.io/cps-test-lab/robovast:latest
+  resources:
+    cpu: 1
+  secondary_containers:
+  # The sibling spelling: `nav:` with `resources:` indented beside it, not under it. This is
+  # what every real v1 campaign in this tree used, and it parses as {"nav": None, ...}.
+  - nav:
+    resources:
+      cpu: 2
+  runs: 2
+  scenario_file: scenario.osc

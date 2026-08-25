@@ -31,16 +31,17 @@ Requires: ``rdflib`` and ``pyld``.
 """
 import datetime as dt
 import json
-import yaml
 import logging
 import os
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple
 
 import rdflib
+import yaml
 from pyld import jsonld
-from rdflib import Namespace, PROV, DCAT, DCTERMS, FOAF
+from rdflib import DCAT, DCTERMS, FOAF, PROV, Namespace
 from rdflib.tools.rdf2dot import rdf2dot
 
 from robovast.common.variation.loader import load_variation_classes
@@ -75,13 +76,97 @@ _BASE_CONTEXT = {
 
 
 # ---------------------------------------------------------------------------
+# Context resolution
+# ---------------------------------------------------------------------------
+
+#: Directory holding byte-for-byte copies of the contexts named above.
+#: See its ``PROVENANCE.md`` for the source URLs and the pinned commit.
+_CONTEXT_DIR = Path(__file__).parent / "jsonld_contexts"
+
+#: Remote context URL -> the vendored file that answers for it.
+_VENDORED_CONTEXTS = {
+    "https://secorolab.github.io/metamodels/prov.json": "prov.json",
+    "https://secorolab.github.io/metamodels/metadata.json": "metadata.json",
+    "https://raw.githubusercontent.com/cps-test-lab/metamodels/refs/heads/main/robovast.json":
+        "robovast.json",
+}
+
+
+@lru_cache(maxsize=None)
+def _load_vendored_context(filename: str) -> str:
+    """Read one vendored context, once per process.
+
+    Returns the raw text rather than parsed JSON: ``pyld`` may mutate the
+    document it is handed, and a shared cached dict would let one compaction
+    corrupt the next.
+    """
+    path = _CONTEXT_DIR / filename
+    if not path.is_file():
+        # Falling back to the network here would trade a clear error for an
+        # intermittent one: provenance generation would appear to work and then
+        # hang or fail whenever the upstream host is unreachable.
+        raise FileNotFoundError(
+            f"Vendored JSON-LD context {filename!r} is missing from {_CONTEXT_DIR}. "
+            "It ships with the package; reinstall robovast, or restore the file as "
+            "described in that directory's PROVENANCE.md.")
+    return path.read_text(encoding="utf-8")
+
+
+def _vendored_document_loader(url: str, options=None):
+    """``pyld`` document loader that serves the pinned contexts from disk.
+
+    ``pyld`` re-resolves every context on every operation, and one
+    :func:`generate_prov_metadata` call runs four (compact, expand, flatten,
+    compact). Fetched over the network that is ~35s per test-suite run, and it
+    makes provenance generation fail whenever ``secoro.uni-bremen.de`` or
+    ``raw.githubusercontent.com`` is unreachable -- a campaign's provenance
+    should not depend on someone else's uptime.
+
+    Any URL outside the pinned set still goes to the network: that is a context
+    we have not vendored, and silently resolving it to something local would be
+    worse than the fetch.
+    """
+    filename = _VENDORED_CONTEXTS.get(url)
+    if filename is None:
+        return jsonld.get_document_loader()(url, options or {})
+    return {
+        "contentType": "application/ld+json",
+        "contextUrl": None,
+        "documentUrl": url,
+        "document": json.loads(_load_vendored_context(filename)),
+    }
+
+
+def _jsonld_options(**extra) -> dict:
+    """``pyld`` options wired to the vendored loader.
+
+    Passed per call rather than installed with ``jsonld.set_document_loader()``:
+    that setter is global to the process, and this module has no business
+    changing how unrelated code resolves its contexts.
+    """
+    return {"documentLoader": _vendored_document_loader, **extra}
+
+
+# ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
 def load_graph(file_path: str) -> "rdflib.Graph":
-    """Load a JSON-LD file into an rdflib Graph with standard namespace bindings."""
+    """Load a JSON-LD file into an rdflib Graph with standard namespace bindings.
+
+    The document is expanded through :func:`_jsonld_options` first, rather than
+    handed to rdflib as-is. rdflib resolves ``@context`` with its own loader,
+    which knows nothing about the vendored copies, so parsing the compacted file
+    directly went back to the network -- and failed outright when offline, which
+    is exactly the visualization step that runs by default after every campaign.
+    Expansion inlines every term, so the graph rdflib then sees needs no context
+    at all.
+    """
+    with open(file_path, encoding="utf-8") as f:
+        document = json.load(f)
+    expanded = jsonld.expand(document, _jsonld_options())
     g = rdflib.Graph()
-    g.parse(file_path, format="json-ld")
+    g.parse(data=json.dumps(expanded), format="json-ld")
     g.bind("robovast", ROBOVAST)
     g.bind("scenarios", SCENARIOS)
     return g
@@ -108,6 +193,20 @@ def _build_iri_context(dataset_iri: str) -> dict:
             }
         ]
     }
+
+
+def _as_list(value) -> list:
+    """A YAML value that may be written as one item or as a list, always as a list.
+
+    A string is the trap: it is iterable, so treating a single one as a sequence yields
+    its characters rather than one entry, and every downstream check then runs against
+    ``"h"``, ``"t"``, ``"t"``... None means "not given" and yields nothing.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+        return [value]
+    return list(value)
 
 
 def _build_agents(
@@ -151,7 +250,9 @@ def _build_agents(
         agent_cfg = dict(agent_cfg)
         # .vast uses "id"; fall back to legacy "name" key
         agent_id = agent_cfg.pop("id", agent_cfg.pop("name", "agent"))
-        config_files = agent_cfg.pop("configuration_files", [])
+        # Same one-or-many tolerance: a single configuration_file written unwrapped would
+        # otherwise be matched a character at a time, and warn once per character.
+        config_files = _as_list(agent_cfg.pop("configuration_files", []))
 
         # Match each configuration_file to its plan IRI
         agent_plan_iris = []
@@ -165,17 +266,34 @@ def _build_agents(
                     agent_id, cf,
                 )
 
-        # Build derived_from entity nodes from "source" key
-        derived_from_raw = agent_cfg.pop("derived_from", [])
+        # Build derived_from entity nodes. The value is what an author would write for
+        # "where this agent came from": one IRI, several, or a mapping when the source
+        # also carries a version. A bare string is the common case and used to be
+        # iterated character by character, which asked `.get` of a str and lost the whole
+        # provenance graph to an AttributeError.
         derived_from_iris = []
-        for df in derived_from_raw:
-            iri = df.get("source")
+        for df in _as_list(agent_cfg.pop("derived_from", [])):
+            if isinstance(df, str):
+                iri, version = df, None
+            elif isinstance(df, dict):
+                iri, version = df.get("source"), df.get("version")
+            else:
+                logger.warning(
+                    "Agent '%s': ignoring derived_from entry of type %s (expected an IRI "
+                    "string, or a mapping with a 'source' key): %r",
+                    agent_id, type(df).__name__, df,
+                )
+                continue
             if not iri:
+                logger.warning(
+                    "Agent '%s': ignoring derived_from entry with no source IRI: %r",
+                    agent_id, df,
+                )
                 continue
             derived_from_iris.append(iri)
             df_node = {_ID: iri, _TYPE: PROV["Entity"]}
-            if "version" in df:
-                df_node["hasVersion"] = df["version"]
+            if version is not None:
+                df_node["hasVersion"] = version
             location_nodes.append(df_node)
 
         agent_node: dict = {
@@ -222,7 +340,7 @@ def _build_vast_config(vast_config, campaign_ns):
                 _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
             }
-            # TODO: map related is idealy handled in robovast_nav
+            # TODO: map related is ideally handled in robovast_nav
             if var_type in ["PathVariationRandom", "ObstacleVariation", "ObstacleVariationWithDistanceTrigger", "PathVariationRasterized"]:
                 var_config["hasUnit"] = QUDT_UNIT["M"]
             for k, v in params.items():
@@ -310,14 +428,18 @@ def _build_dataset(dataset_iri, campaign_ns: Namespace, metadata: dict, vast_con
     creators = get_agents_by_type("creators")
     contributors = get_agents_by_type("contributors")
 
+    # Loop-invariant: derived from the campaign metadata, not from any publication
+    # entry. Must be bound before the loop — the dataset below always needs it, but
+    # the loop body runs only when a non-zenodo publication entry exists.
+    license_ = metadata.get("license", "").lower()
+    license_iri = f"http://purl.org/NET/rdflicense/{license_}"
+
     distributions = []
     published_date = None
     for d in vast_config.get("results_processing", {}).get("publication", []):
         if d == "zenodo":
             published_date = dt.datetime.now().isoformat()
             continue
-        license_ = metadata.get("license", "").lower()
-        license_iri = f"http://purl.org/NET/rdflicense/{license_}"
         for k, v in d.items():
             file_name = v.get("filename")
             v["metadata"]["license"] = license_iri
@@ -471,6 +593,14 @@ def generate_prov_metadata(
         if vast_files:
             vast_file_name = vast_files[0].name
 
+    if vast_file_name is None:
+        # Without this the next line joins a None and raises a TypeError naming neither
+        # the campaign nor the file it wanted -- and the caller logs that as the reason
+        # the whole provenance graph is missing.
+        raise FileNotFoundError(
+            f"No .vast file in {config_dir}, so the campaign's configuration cannot be "
+            f"read into the provenance graph.")
+
     with open(os.path.join(config_dir, vast_file_name), "r") as f:
         vast_cfg = yaml.safe_load(f)
 
@@ -505,6 +635,9 @@ def generate_prov_metadata(
         for p in campaign_dir.iterdir()
         if p.is_dir() and not p.name.startswith("_")
     )
+
+    # Contributions that raised, named in the graph below rather than only in the log.
+    contribution_gaps: list[str] = []
 
     for config_name in config_names:
         config_path = config_name + "/"
@@ -548,11 +681,17 @@ def generate_prov_metadata(
                     gen_activity_id=gen_activity[_ID],
                     vast_id=vast_config[_ID]
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one plugin must not lose the whole graph
+                # Logged AND recorded. A provenance graph is a published claim about how a result
+                # came to be, so a contribution that failed has to be visible in the artifact: a
+                # warning in this process is gone by the time anyone reads the graph, and the gap
+                # is then indistinguishable from a variation that had nothing to contribute. The
+                # other plugins still run.
                 logger.warning(
                     "Variation '%s' collect_prov_metadata failed for '%s': %s",
                     vtype_name, config_name, e,
                 )
+                contribution_gaps.append(f"{vtype_name} in {config_name}: {e}")
                 continue
 
             end_t = dt.datetime.fromisoformat(vdata.get("started_at")) + dt.timedelta(seconds=vdata.get("duration"))
@@ -785,13 +924,24 @@ def generate_prov_metadata(
         graph.append(metadata_activity)
         graph.append(graph_activity)
 
+    if contribution_gaps:
+        # The graph says what it is missing, in the graph. Without this a reader cannot tell an
+        # incomplete provenance record from a complete one.
+        graph.append({
+            _ID: campaign_ns["metadata.prov.json#provenance-gaps"],
+            _TYPE: [PROV["Entity"], ROBOVAST["ProvenanceGap"]],
+            ROBOVAST["missingContributions"]: sorted(contribution_gaps),
+        })
+
     # Compact the JSON-LD graph
     document = {"@graph": graph}
     document.update(iri_context)
-    compact = jsonld.compact(document, _BASE_CONTEXT, {"expandContext": _BASE_CONTEXT, "graph": True})
-    expanded = jsonld.expand(compact)
-    flattened = jsonld.flatten(expanded)
-    compact2 = jsonld.compact(flattened, iri_context, {"graph": True})
+    compact = jsonld.compact(
+        document, _BASE_CONTEXT,
+        _jsonld_options(expandContext=_BASE_CONTEXT, graph=True))
+    expanded = jsonld.expand(compact, _jsonld_options())
+    flattened = jsonld.flatten(expanded, None, _jsonld_options())
+    compact2 = jsonld.compact(flattened, iri_context, _jsonld_options(graph=True))
 
     prov_json_path = campaign_dir / "metadata.prov.json"
     with open(prov_json_path, "w", encoding="utf-8") as f:
@@ -813,4 +963,8 @@ def generate_prov_metadata(
         except Exception as e:  # noqa: BLE001
             logger.debug("Could not generate provenance PDF (dot not available?): %s", e)
 
+    if contribution_gaps:
+        return True, (f"PROV metadata written to {prov_json_path}, with "
+                      f"{len(contribution_gaps)} variation contribution(s) missing: "
+                      + "; ".join(sorted(contribution_gaps)))
     return True, f"PROV metadata written to {prov_json_path}"

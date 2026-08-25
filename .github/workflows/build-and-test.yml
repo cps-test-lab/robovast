@@ -23,21 +23,26 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Poetry
+      # First, and before the install: this costs seconds and answers a question the
+      # controller image otherwise answers minutes into a build, because that image installs
+      # from the lock. It has already reached CI unrelocked twice. Poetry is installed just
+      # for this -- the job itself uses `make venv` below -- and pinned to the version the
+      # Dockerfile uses, so this is the same verdict that build will reach.
+      - name: The lock must describe the manifest
         run: |
-          curl -sSL https://install.python-poetry.org | python3 -
+          pip install --quiet poetry==1.8.2
+          make check-lock
 
-      - name: Add Poetry to PATH
-        run: |
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install dependencies with Poetry
-        run: |
-          poetry install --no-root
-
-      - name: Install project packages
-        run: |
-          poetry install --extras "test"
+      # `make venv`, not `poetry install`: this repo ships five distributions that all
+      # populate the `robovast` namespace, and only three of them are path dependencies of
+      # the root. `poetry install` therefore produced an environment with no execution lane
+      # but `local` -- `vast exec cluster setup` did not exist and the CLI test failed on it
+      # -- and installed robovast-client as a *copy*, which tests/test_editable_installs.py
+      # exists to catch. The Makefile target is the single supported dev install and is what
+      # doc.yml already builds against; installing the same way here keeps CI testing the
+      # thing developers run.
+      - name: Install RoboVAST
+        run: make venv
 
       - name: Run CLI tests
         run: |
@@ -45,4 +50,15 @@ jobs:
 
       - name: Run unit tests
         run: |
-          poetry run pytest tests/ -q
+          . venv/bin/activate && pytest tests/ -q
+
+      # Two questions review does not reliably answer: did the config schema change without
+      # a version bump, and did the version move when nothing required it. `fetch-depth: 0`
+      # above is what makes the base-ref comparison possible.
+      - name: Check the config field snapshot is current
+        run: |
+          . venv/bin/activate && make check-config-fields
+
+      - name: Check the config version bump matches the schema change
+        run: |
+          . venv/bin/activate && make check-config-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}

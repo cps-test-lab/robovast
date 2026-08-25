@@ -1,0 +1,66 @@
+import osc.helpers
+import osc.ros
+import osc.nav2
+
+# Gazebo half: one local ros_launch brings up gz + the TB4 + nav2, then the trial is measured.
+# The measurement half (init_nav2, bag_record, nav_to_pose) is identical to scenario_roqsim.osc.
+
+scenario test_scenario:
+    robot: differential_drive_robot
+    goal_pose: pose_3d
+    # Set by the .vast; "False" keeps gz's SceneBroadcaster up, which the ground-truth frame needs.
+    sim_launch_package: string = ""
+    sim_launch_file: string = "files/gazebo_tb4_launch.py"
+    headless: string = "True"
+
+    do parallel:
+        ros_launch(sim_launch_package, sim_launch_file,
+            [key_value('headless', headless),
+             key_value('params_file', '/config/files/nav2_params.yaml'),
+             key_value('map', '/config/files/depot.yaml'),
+             key_value('autostart', 'False')],
+            wait_for_shutdown: false)
+        serial:
+            # Activate nav2 only once the simulator publishes. Nothing in nav2 waits for a
+            # simulator, and collision_monitor (source_timeout 1.0) fails closed at zero velocity
+            # if its scan source is dead at start-up. Bounded, so a simulator that never comes up
+            # fails the trial instead of hanging it.
+            serial:
+                timeout(60s)
+                # range_max because check_data resolves member_name with a plain getattr, so a
+                # nested field like 'clock.sec' is rejected. sensor_data QoS: a reliable subscriber
+                # never matches a best-effort publisher.
+                check_data(topic_name: '/scan',
+                           topic_type: 'sensor_msgs.msg.LaserScan',
+                           member_name: 'range_max',
+                           comparison_operator: comparison_operator!gt,
+                           expected_value: '0.0',
+                           qos_profile: qos_preset_profiles!sensor_data)
+            # command 0 is ManageLifecycleNodes.STARTUP. Localization before navigation, the order
+            # bringup_launch.py uses.
+            service_call(service_name: '/lifecycle_manager_localization/manage_nodes',
+                         service_type: 'nav2_msgs.srv.ManageLifecycleNodes',
+                         data: '{\"command\": 0}')
+            service_call(service_name: '/lifecycle_manager_navigation/manage_nodes',
+                         service_type: 'nav2_msgs.srv.ManageLifecycleNodes',
+                         data: '{\"command\": 0}')
+            robot.init_nav2(pose_3d())
+            # use_sim_time stamps every derived table with the simulator's clock, so both halves
+            # are comparable in sim seconds; /clock is recorded so wall-stamped topics
+            # (/behavior_tree_log) can be mapped back to it.
+            bag_record([
+                    '/clock',
+                    '/tf',
+                    '/tf_static',
+                    '/amcl_pose',
+                    '/behavior_tree_log',
+                    '/map',
+                    '/global_costmap/costmap',
+                    '/local_costmap/costmap',
+                    '/scan',
+                    '/odom'
+                ],
+                use_sim_time: true,
+                timestamp_suffix: false)
+            robot.nav_to_pose(goal_pose)
+            emit end

@@ -7,6 +7,18 @@ set -e  # Exit on first error
 # Save original directory
 ORIGINAL_DIR=$(pwd)
 
+# `make venv` is the only install that carries every distribution in this repo: the CLI is
+# split across robovast, robovast-client and robovast-cluster, so `poetry install` -- which
+# names none of the siblings -- yields a `vast` missing whole command groups. This script
+# used to run under `poetry run` and could therefore only ever see part of the surface it
+# claims to test.
+if [ ! -f "$ORIGINAL_DIR/venv/bin/activate" ]; then
+    echo "❌ No venv found. Run 'make venv' first."
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$ORIGINAL_DIR/venv/bin/activate"
+
 # Create temporary directory for tests
 TEMP_DIR=$(mktemp -d)
 echo "Created temporary directory: $TEMP_DIR"
@@ -40,35 +52,44 @@ commands=(
     "vast exec cluster setup"
     "vast exec cluster cleanup"
     "vast exec cluster run"
-    "vast exec cluster prepare-run"
+    "vast exec cluster monitor"
+    "vast exec cluster upgrade"
+    "vast results"
     "vast results download"
-    "vast eval"
-    "vast eval gui"
+    "vast results postprocess"
+    "vast results publish"
+    "vast image"
+    "vast workspace"
+    "vast files"
+    "vast doctor"
+    "vast wait"
 )
 
 # Test each command
 for cmd in "${commands[@]}"; do
-    echo "Testing: poetry run $cmd --help"
-    poetry run $cmd --help
-    exit_code=$?
-    
-    if [ $exit_code -ne 0 ]; then
-        echo "❌ Error: $cmd --help failed with exit code $exit_code"
+    echo "Testing: $cmd --help"
+    # Checked inline rather than through $? afterwards: `set -e` above already aborts the
+    # script on a non-zero exit, so the old `if [ $exit_code -ne 0 ]` branch was unreachable
+    # and the failure message it holds could never print.
+    if ! $cmd --help; then
+        echo "❌ Error: $cmd --help failed"
         exit 1
-    else
-        echo "✅ $cmd --help succeeded"
     fi
+    echo "✅ $cmd --help succeeded"
     echo ""
 done
 
 
 cd "$TEMP_DIR"
-poetry run --directory "$ORIGINAL_DIR" vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
-# poetry run --directory "$ORIGINAL_DIR" vast configuration generate ./test_generated
-# poetry run --directory "$ORIGINAL_DIR" vast configuration list
-# poetry run --directory "$ORIGINAL_DIR" vast configuration variation-types
-# poetry run --directory "$ORIGINAL_DIR" vast configuration variation-points
-# poetry run --directory "$ORIGINAL_DIR" vast execution local prepare-run --config test-fixed-values --runs 1 ./test_out
+vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
+vast config validate
+vast config info
+vast config list
+vast config variation-types
+vast config generate ./test_generated
+# No `vast config variation-points` here: it reads the variation points out of the
+# scenario files, and growth_sim -- the example this initializes -- is a plain simulation
+# with no scenario at all, so the command correctly fails with "No scenario file found".
 
 
 echo "================================="

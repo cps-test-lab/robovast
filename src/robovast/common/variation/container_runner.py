@@ -35,7 +35,11 @@ Two backends implement this:
 
 * :class:`LocalContainerRunner` (here) — ephemeral ``docker run --rm`` per call.
 * ``ClusterContainerRunner`` (in :mod:`robovast.execution.cluster_execution`) —
-  ``kubectl exec``-equivalent into a long-lived sidecar in the controller pod.
+  ``kubectl exec``-equivalent into a long-lived container in the campaign's auxiliary
+  pod. The controller-pod sidecar this used to be is gone with the controller pod; the
+  workspace is now mirrored in and out around each ``run`` rather than shared live,
+  which is why the contract above says "at the same absolute path" and not "the same
+  filesystem".
 """
 
 import logging
@@ -74,7 +78,12 @@ def run_with_live_output(cmd, progress_update_callback):
                 "Command failed (exit %d): %s\nOutput:\n%s",
                 proc.returncode, ' '.join(cmd), '\n'.join(output_lines)
             )
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
+            # The output is ATTACHED, not only logged. `CalledProcessError.__str__` is just
+            # "returned non-zero exit status 1", so a caller that turns this into a message
+            # for a user (the scene cache, into "no 3D geometry") had nothing to say about
+            # the cause, and the reason a build failed lived only in the service log.
+            raise subprocess.CalledProcessError(proc.returncode, cmd,
+                                                output='\n'.join(output_lines))
 
 
 @dataclass
@@ -128,6 +137,12 @@ class ContainerRunner(Protocol):
     def close(self) -> None:
         """Release any resources (temp dirs, etc.). Idempotent."""
 
+    # Optional, and deliberately not part of the Protocol -- a runner that cannot place a
+    # tree at a fixed absolute path simply does not define it, and
+    # ``stage_for_container`` refuses rather than running without the mount:
+    #
+    #     def expose(self, host_path: str, container_path: str) -> None
+
 
 # A factory maps a ContainerSpec to a concrete runner for the active backend.
 ContainerRunnerFactory = Callable[[ContainerSpec], ContainerRunner]
@@ -152,6 +167,16 @@ class LocalContainerRunner:
         except OSError:
             pass
         self.workspace = self._tmp
+        self._exposed: dict = {}
+
+    def expose(self, host_path: str, container_path: str) -> None:
+        """Also make *host_path* visible at the fixed *container_path*.
+
+        For a staged tree whose own files name absolute paths into each other: it can only
+        be read back where those paths resolve. Read-only, because the generator's output
+        is what ``collect_from_container`` brings back, never this.
+        """
+        self._exposed[str(container_path)] = str(host_path)
 
     def run(self, command: List[str], progress_update_callback=None) -> None:
         progress_update_callback = progress_update_callback or logger.debug
@@ -164,6 +189,8 @@ class LocalContainerRunner:
             "--network", "host",
             "-v", f"{self.workspace}:{self.workspace}",
         ]
+        for container_path, host_path in sorted(self._exposed.items()):
+            docker_cmd += ["-v", f"{host_path}:{container_path}:ro"]
         for key, val in (self._spec.env or {}).items():
             docker_cmd += ["-e", f"{key}={val}"]
         # `docker run` applies the image ENTRYPOINT to the trailing args. We

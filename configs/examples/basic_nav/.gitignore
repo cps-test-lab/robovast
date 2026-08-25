@@ -1,0 +1,7 @@
+# The browser scene descriptor the run view's 3D panel renders, compiled from the world by the
+# .vast's execution.generate: block at campaign preparation. Derived, and ~11 MB of mesh buffers
+# and textures -- never committed.
+files/scene/
+# RoboVAST results land here when the project is initialized in place.
+results/
+.robovast_project

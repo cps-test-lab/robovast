@@ -18,21 +18,21 @@
 Obstacle placement module for generating obstacle positions near navigation paths.
 """
 
+import logging
 import math
 import random
 from typing import List
 
 import numpy as np
-from PySide6.QtCore import QObject, Signal
 
 from .data_model import Orientation, Pose, Position, StaticObject
 from .map_loader import load_map
 
+logger = logging.getLogger(__name__)
 
-class ObstaclePlacer(QObject):
+
+class ObstaclePlacer:
     """Class for placing obstacles near navigation paths."""
-
-    status_update = Signal(str)
 
     def place_obstacles(
         self,
@@ -44,6 +44,7 @@ class ObstaclePlacer(QObject):
         robot_diameter: float = 0.354,
         waypoints: List[Pose] = None,
         min_arc_length: float = 0.0,
+        entity_prefix: str = "obstacle",
     ) -> List[tuple]:
         """Place obstacles near a navigation path as StaticObject instances.
 
@@ -57,6 +58,10 @@ class ObstaclePlacer(QObject):
             waypoints: List of Pose objects to avoid placing obstacles near (e.g., start/goal poses)
             min_arc_length: Minimum arc-length from the path start before obstacles can be placed.
                 Segments before this distance are excluded from sampling.
+            entity_prefix: Stem of the generated entity names (``<prefix>_<i>``). A campaign
+                placing more than one population needs distinct stems: the names travel to a
+                simulator that COMPILES the placement, where two populations both called
+                ``obstacle_0`` are a duplicate-name model-compilation failure.
 
         Returns:
             List of (StaticObject, path_point) tuples where path_point is the
@@ -93,10 +98,9 @@ class ObstaclePlacer(QObject):
         attempts = 0
 
         while len(obstacle_objects) < amount and attempts < max_attempts:
-            self.status_update.emit(
-                f"Attempting to place obstacle: {len(obstacle_objects) + 1}/{amount}, "
-                f"try {attempts + 1}/{max_attempts}"
-            )
+            logger.debug(
+                "Attempting to place obstacle: %d/%d, try %d/%d",
+                len(obstacle_objects) + 1, amount, attempts + 1, max_attempts)
             attempts += 1
             # Select a random segment based on length (longer segments get more
             # obstacles)
@@ -124,7 +128,7 @@ class ObstaclePlacer(QObject):
                 yaw = random.uniform(
                     -math.pi, math.pi
                 )  # Random rotation from -180° to +180°
-                name = f"obstacle_{len(obstacle_objects)}"
+                name = f"{entity_prefix}_{len(obstacle_objects)}"
 
                 obstacle = StaticObject(
                     entity_name=name,
@@ -144,6 +148,7 @@ class ObstaclePlacer(QObject):
         xacro_arguments: str = "",
         robot_diameter: float = 0.354,
         waypoints: List[Pose] = None,
+        entity_prefix: str = "obstacle",
     ) -> List[StaticObject]:
         """Place obstacles randomly on the map as StaticObject instances.
 
@@ -185,10 +190,9 @@ class ObstaclePlacer(QObject):
         attempts = 0
 
         while len(obstacle_objects) < amount and attempts < max_attempts:
-            self.status_update.emit(
-                f"Attempting to place obstacle: {len(obstacle_objects) + 1}/{amount}, "
-                f"try {attempts + 1}/{max_attempts}"
-            )
+            logger.debug(
+                "Attempting to place obstacle: %d/%d, try %d/%d",
+                len(obstacle_objects) + 1, amount, attempts + 1, max_attempts)
             attempts += 1
 
             # Select random free space coordinate
@@ -209,7 +213,7 @@ class ObstaclePlacer(QObject):
             ):
                 # Generate random yaw angle (rotation) for the obstacle
                 yaw = np.random.uniform(-math.pi, math.pi)  # Random rotation from -180° to +180°
-                name = f"obstacle_{len(obstacle_objects)}"
+                name = f"{entity_prefix}_{len(obstacle_objects)}"
 
                 obstacle = StaticObject(
                     entity_name=name,

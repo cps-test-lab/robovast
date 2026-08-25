@@ -1,0 +1,13 @@
+# A version-2 campaign: the format on main when the migration ladder was introduced.
+version: 2
+metadata:
+  name: historic-v2
+  title: Nav2 controller comparison (archived)
+execution:
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 1
+  runs: 2
+  scenario_file: scenario.osc

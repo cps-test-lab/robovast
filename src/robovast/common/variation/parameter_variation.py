@@ -17,14 +17,16 @@
 
 import random
 
-import numpy as np
+from .base_variation import DestinationConfig, Variation
 
-from ..config import VariationConfig
-from .base_variation import Variation
+# numpy is imported inside `variation()` rather than here. This module is reachable from
+# `robovast.common`, so a module-level import put an array library into every `vast`
+# invocation for the sake of two seeding calls and one `normal()` draw -- work that only
+# happens when a campaign's configurations are actually being generated.
 
 
-class ParameterVariationDistributionUniformConfig(VariationConfig):
-    name: str
+
+class ParameterVariationDistributionUniformConfig(DestinationConfig):
     num_variations: int
     min: float | int | None = None
     max: float | int | None = None
@@ -37,7 +39,8 @@ class ParameterVariationDistributionUniform(Variation):
 
     Expected parameters:
 
-    - ``name``: Name of the parameter to vary
+    - ``scenario`` **or** ``sim``: the destination this variation writes -- a scenario
+      parameter name, or a dotted key of the simulator backend
     - ``num_variations``: Number of configurations to create
     - ``min``: Minimum value for the parameter
     - ``max``: Maximum value for the parameter
@@ -50,7 +53,7 @@ class ParameterVariationDistributionUniform(Variation):
         self.progress_update("Running Parameter Variation (Random)...")
 
         # Extract parameters
-        param_name = self.parameters.name
+        param_name = self.parameters.destination
         num_variations = self.parameters.num_variations
         min_val = self.parameters.min
         max_val = self.parameters.max
@@ -58,10 +61,10 @@ class ParameterVariationDistributionUniform(Variation):
         seed = self.parameters.seed
 
         # Validate required parameters
-        if not param_name:
-            raise ValueError("Parameter 'name' is required for ParameterVariationDistributionUniform")
         if min_val is None or max_val is None:
             raise ValueError("Parameters 'min' and 'max' are required for ParameterVariationDistributionUniform")
+
+        import numpy as np  # pylint: disable=import-outside-toplevel
 
         # Set random seed for reproducibility when one is provided
         if seed is not None:
@@ -97,13 +100,12 @@ class ParameterVariationDistributionUniform(Variation):
         results = []
         for config in in_configs:
             for value in random_values:
-                results.append(self.update_config(config, {param_name: value}))
+                results.append(self.update_destination(config, {param_name: value}))
 
         return results
 
 
-class ParameterVariationDistributionGaussianConfig(VariationConfig):
-    name: str
+class ParameterVariationDistributionGaussianConfig(DestinationConfig):
     num_variations: int
     mean: float
     std: float
@@ -118,7 +120,8 @@ class ParameterVariationDistributionGaussian(Variation):
 
     Expected parameters:
 
-    - ``name``: Name of the parameter to vary
+    - ``scenario`` **or** ``sim``: the destination this variation writes -- a scenario
+      parameter name, or a dotted key of the simulator backend
     - ``num_variations``: Number of configurations to create
     - ``mean``: Mean value for the parameter
     - ``std``: Standard deviation for the parameter
@@ -133,7 +136,7 @@ class ParameterVariationDistributionGaussian(Variation):
         self.progress_update("Running Parameter Variation (Gaussian)...")
 
         # Extract parameters
-        param_name = self.parameters.name
+        param_name = self.parameters.destination
         num_variations = self.parameters.num_variations
         mean = self.parameters.mean
         std = self.parameters.std
@@ -143,14 +146,14 @@ class ParameterVariationDistributionGaussian(Variation):
         seed = self.parameters.seed
 
         # Validate required parameters
-        if not param_name:
-            raise ValueError("Parameter 'name' is required for ParameterVariationDistributionGaussian")
         if mean is None:
             raise ValueError("Parameter 'mean' is required for ParameterVariationDistributionGaussian")
         if std is None:
             raise ValueError("Parameter 'std' is required for ParameterVariationDistributionGaussian")
         if seed is None:
             raise ValueError("Parameter 'seed' is required for ParameterVariationDistributionGaussian")
+
+        import numpy as np  # pylint: disable=import-outside-toplevel
 
         # Set random seed
         random.seed(seed)
@@ -190,14 +193,13 @@ class ParameterVariationDistributionGaussian(Variation):
         results = []
         for config in in_configs:
             for value in random_values:
-                results.append(self.update_config(config, {param_name: value}))
+                results.append(self.update_destination(config, {param_name: value}))
 
         return results
 
 
-class ParameterVariationListConfig(VariationConfig):
-    name: str | list[str]
-    values: list[float | int | bool | dict | list]
+class ParameterVariationListConfig(DestinationConfig):
+    values: list[float | int | bool | dict | list | str]
 
 
 class ParameterVariationList(Variation):
@@ -205,27 +207,41 @@ class ParameterVariationList(Variation):
 
     Expected parameters:
 
-    - ``name``: Name of the parameter to vary, or a list of parameter names for
-      simultaneous multi-parameter variation.
-    - ``values``: List of values for the parameter.  When ``name`` is a list,
-      each entry must itself be a list of values — one per parameter name.
+    - ``scenario`` **or** ``sim``: the destination this variation writes -- a scenario
+      parameter name, or a dotted key of the simulator backend. Either may be a *list*
+      of destinations for simultaneous multi-parameter variation.
+    - ``values``: List of values for the parameter.  When the destination is a list,
+      each entry must itself be a list of values — one per destination.
 
-    Example (single parameter):
+    Example (a scenario parameter):
 
     .. code-block:: yaml
 
         - ParameterVariationList:
-            name: robot_radius
+            scenario: robot_radius
             values:
             - 0.175
             - 0.22
 
-    Example (multiple parameters varied together):
+    Example (the simulator's world, and a value inside it):
 
     .. code-block:: yaml
 
         - ParameterVariationList:
-            name:
+            sim: config
+            values:
+            - world/depot_nav2.yaml
+            - world/warehouse_nav2.yaml
+        - ParameterVariationList:
+            sim: components.floorplan.floor.friction
+            values: [0.6, 1.4]
+
+    Example (several destinations varied together):
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            scenario:
             - mesh_file
             - map_file
             values:
@@ -233,6 +249,23 @@ class ParameterVariationList(Variation):
               - environments/office/office.yaml
             - - environments/hospital/hospital.stl
               - environments/hospital/hospital.yaml
+
+    ``values`` includes a bare-string member, so a string-valued factor is written the
+    obvious way — ``values: [world/depot.yaml, world/warehouse.yaml]``. It did not always:
+    without it, ``values: ["False"]`` was *coerced* to the boolean ``False`` and handed a
+    bool to a parameter the scenario declares as ``string``, which is why the nested-list
+    form below used to be the only way to vary a string. With ``str`` in the union pydantic
+    matches the exact type instead, so a quoted value stays a string.
+
+    The multi-destination form is still the way to fix several values at one level without
+    multiplying the configuration count:
+
+    .. code-block:: yaml
+
+        - ParameterVariationList:
+            scenario: [sim_launch_package, sim_launch_file, headless]
+            values:
+            - ["nav2_bringup", "tb4_simulation_launch.py", "False"]
     """
     CONFIG_CLASS = ParameterVariationListConfig
 
@@ -240,12 +273,10 @@ class ParameterVariationList(Variation):
         self.progress_update("Running Parameter Variation (List)...")
 
         # Extract parameters
-        param_name = self.parameters.name
+        param_name = self.parameters.destination
         values = self.parameters.values
 
         # Validate required parameters
-        if not param_name:
-            raise ValueError("Parameter 'name' is required for ParameterVariationList")
         if not values or len(values) == 0:
             raise ValueError("Parameter 'values' must be a non-empty list for ParameterVariationList")
 
@@ -261,7 +292,7 @@ class ParameterVariationList(Variation):
                 if not isinstance(entry, list) or len(entry) != len(param_name):
                     raise ValueError(
                         f"Each entry in 'values' must be a list of length {len(param_name)} "
-                        f"to match 'name' {param_name}, got: {entry!r}"
+                        f"to match '{self.parameters.channel}' {param_name}, got: {entry!r}"
                     )
             for entry in values:
                 combo = dict(zip(param_name, entry))
@@ -271,7 +302,7 @@ class ParameterVariationList(Variation):
             for config in in_configs:
                 for entry in values:
                     combo = dict(zip(param_name, entry))
-                    results.append(self.update_config(config, combo))
+                    results.append(self.update_destination(config, combo))
         else:
             # Single-key form (original behaviour)
             for value in values:
@@ -280,6 +311,6 @@ class ParameterVariationList(Variation):
             results = []
             for config in in_configs:
                 for value in values:
-                    results.append(self.update_config(config, {param_name: value}))
+                    results.append(self.update_destination(config, {param_name: value}))
 
         return results

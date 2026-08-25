@@ -16,10 +16,17 @@
 
 """Persistent sqlite store for campaigns (search and batch).
 
-A single writer records the campaign, so status is live-queryable while it runs
-and the schema is the seam an in-cluster controller / web UI can later read. It
-is the single source of truth the results GUI reads. The schema is intentionally
-simple:
+A single writer records the campaign, so its scientific data is live-queryable
+while it runs and the schema is the seam an in-cluster controller / web UI can
+later read. This store is the source of truth for the campaign's **results data**
+(the params/objectives/measures/results the GUI reads), *not* for its live
+execution status: the run's phase/error/progress live in the controller's
+:class:`~robovast.execution.control_server.Status` while a process drives it, and
+its durable terminal record is ``_execution/outcome.json`` (which survives even a
+crash that never creates this database). The one way to recover a Status when no
+process is driving a campaign is
+:func:`robovast.execution.status_recovery.reconstruct_status_from_disk`. The
+schema is intentionally simple:
 
     campaign (1) --< batch (1) --< unit (one per param set / config)
 
@@ -37,27 +44,44 @@ a strategy can persist enough to resume.
 The canonical on-disk filename is :data:`STORE_FILENAME` (``campaign.db``),
 written at each campaign's root directory.
 
-The schema is versioned via sqlite's ``PRAGMA user_version`` (:data:`SCHEMA_VERSION`).
-On open, a store is migrated forward through :data:`_MIGRATIONS` so a database
-written by any older robovast can be read by a newer one. To evolve the layout,
-*append* a migration and bump :data:`SCHEMA_VERSION` — never edit an existing
-migration. Reads use ``SELECT *`` / explicit columns, so a store written by a
-*newer* robovast (unknown extra columns/tables) is still read best-effort.
+The schema is versioned via sqlite's ``PRAGMA user_version`` (:data:`SCHEMA_VERSION`),
+and defined in **two** places with distinct roles — both must be updated together:
+
+* :data:`_SCHEMA` is the **full current layout**, applied to a *fresh* database in one
+  step. It is what a reader consults to answer "what columns does ``run`` have?".
+* :data:`_MIGRATIONS` upgrades an *existing* database whose ``user_version`` is lower.
+  It is append-only: *add* an entry and bump :data:`SCHEMA_VERSION`, never edit one that
+  has shipped, since some store on disk has already applied it.
+
+Splitting them keeps ``_SCHEMA`` readable as the schema instead of a starting point that
+must be mentally replayed through every migration. The two cannot drift silently:
+``test_fresh_and_migrated_schemas_match`` builds a store both ways and compares the
+resulting ``sqlite_master``.
+
+Reads use ``SELECT *`` / explicit columns, so a store written by a *newer* robovast
+(unknown extra columns/tables) is still read best-effort.
 """
 
 import json
 import logging
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for "caller gave no start time, stamp now" — distinct from an explicit
+# ``None``, which records an unknown start time (see ``create_campaign``).
+_STAMP_NOW = object()
 
 # Canonical store filename, written at the root of every campaign directory
 # (a batch ``campaign-<id>/`` or a ``search-<ts>/`` root).
 STORE_FILENAME = "campaign.db"
 
+#: The full current layout, applied to a fresh database. Mirrors the cumulative effect of
+#: every entry in :data:`_MIGRATIONS`; see the module docstring for why both exist.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaign (
     id            INTEGER PRIMARY KEY,
@@ -70,7 +94,46 @@ CREATE TABLE IF NOT EXISTS campaign (
     stop_kind     TEXT,           -- which criterion ended a search (batches/metric/…)
     stop_reason   TEXT,           -- human-readable explanation
     batches       INTEGER,        -- batches completed
-    elapsed_s     REAL            -- wall-clock seconds
+    elapsed_s     REAL,           -- wall-clock seconds
+    description   TEXT,           -- the launcher's "what is this run for?"
+    -- Execution provenance, lifted from _execution/execution.yaml (see record_execution).
+    -- Typed columns for the fields compared ACROSS campaigns; execution_json keeps the
+    -- whole document so cluster_info/env/run_as_user stay reachable via json_extract.
+    robovast_version     TEXT,
+    execution_type       TEXT,    -- local | cluster
+    image                TEXT,
+    image_revision       TEXT,    -- repo@sha256:… the runs actually used
+    execution_started_at TEXT,    -- ISO 8601; execution.yaml's misnamed "execution_time"
+    execution_json       TEXT,
+    -- Who said they started this. Self-declared and unverified: with one shared secret
+    -- nobody can prove who they are, so this answers "who says they did?" and the UI
+    -- labels it as such. NULL means nobody gave a name -- a different fact from
+    -- somebody anonymous, and not one to paper over with a placeholder.
+    created_by    TEXT,
+    -- Which commit composed the campaign, and whether that commit describes it. Separate
+    -- from robovast_version because that falls back to a package semver when the git lookup
+    -- fails, so it can read as an answer while carrying no revision at all -- and "which
+    -- commit do I check out to re-run this?" needs a real one. robovast_dirty is the honest
+    -- half: a dirty checkout means the recorded revision does NOT describe the code that
+    -- ran, and a re-run cannot be verified against it.
+    robovast_revision        TEXT,
+    robovast_revision_source TEXT,   -- git | baked; a baked value is short, not truncated
+    robovast_dirty           INTEGER,  -- 0/1, NULL when it could not be determined
+    -- Where the configuration came from. A RECORD, never a link: nothing reads these back,
+    -- and a re-run still relaunches from the frozen _config/. The workspace named may have
+    -- been renamed or deleted since -- or, for an ingested campaign, may never have existed
+    -- on this deployment. Typed columns rather than a JSON blob by the same rule as the
+    -- execution provenance above: each is compared ACROSS campaigns ("what else came from
+    -- this workspace / ran this .vast / descends from this campaign"). Unlike execution_json
+    -- there is no larger document behind them -- these five ARE the record -- so a blob
+    -- beside them would be a second source of truth rather than a home for the remainder.
+    -- For a re-run the workspace columns name the ROOT of the chain, copied from the parent
+    -- at launch, so lineage survives the parent's deletion and needs no walking.
+    origin_kind           TEXT,   -- workspace | retrigger; open vocabulary
+    origin_workspace_id   TEXT,
+    origin_workspace_name TEXT,
+    origin_config_path    TEXT,   -- workspace-relative; _config/ keeps only the basename
+    origin_from_campaign  TEXT    -- the immediate parent, for origin_kind='retrigger'
 );
 CREATE TABLE IF NOT EXISTS batch (
     id          INTEGER PRIMARY KEY,
@@ -93,23 +156,276 @@ CREATE TABLE IF NOT EXISTS unit (
     result_dir    TEXT,
     created_at    REAL
 );
+CREATE TABLE IF NOT EXISTS job (
+    id           INTEGER PRIMARY KEY,
+    campaign_id  INTEGER NOT NULL REFERENCES campaign(id),
+    job_dir      TEXT,             -- campaign-relative, e.g. _jobs/batch-0/job-3
+    sysinfo_json TEXT,             -- sysinfo.yaml verbatim: one host record per job
+    created_at   REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dir ON job (campaign_id, job_dir);
+CREATE TABLE IF NOT EXISTS run (
+    id              INTEGER PRIMARY KEY,
+    unit_id         INTEGER NOT NULL REFERENCES unit(id),
+    run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
+    status          TEXT,               -- passed / failed / error / killed / invalid / unknown
+    passed          INTEGER,            -- 0/1
+    errors          INTEGER,
+    failures        INTEGER,
+    tests           INTEGER,
+    duration_s      REAL,
+    start_time      TEXT,               -- ISO 8601
+    failure_message TEXT,               -- NULL when passed
+    created_at      REAL,
+    job_id          INTEGER REFERENCES job(id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
+CREATE TABLE IF NOT EXISTS container_failure (
+    id            INTEGER PRIMARY KEY,
+    campaign_id   INTEGER NOT NULL REFERENCES campaign(id),
+    detected_at   TEXT,               -- ISO 8601, when the runner saw the restart
+    batch         TEXT,               -- the batch tag, e.g. batch-2
+    job_name      TEXT,               -- the Kubernetes Job
+    job_dir       TEXT,               -- campaign-relative, e.g. _jobs/batch-2/job-7
+    runs_json     TEXT,               -- ["<config>/<run>", ...] this job was executing
+    pod_name      TEXT,
+    node_name     TEXT,
+    container     TEXT,
+    role          TEXT,               -- scenario / sut / simulation / <ad-hoc> / init
+    image         TEXT,
+    image_id      TEXT,               -- the digest that actually ran
+    restart_count INTEGER,
+    reason        TEXT,               -- last_state.terminated.reason
+    exit_code     INTEGER,
+    signal        INTEGER,
+    signal_name   TEXT,               -- SIGBUS for 135; nobody should redo that by hand
+    message       TEXT,
+    started_at    TEXT,
+    finished_at   TEXT,
+    pod_phase     TEXT,
+    cpu_limit     TEXT,               -- as declared; NULL means NO LIMIT, itself a finding
+    memory_limit  TEXT,
+    log_status    TEXT,               -- captured / gone / empty / unavailable[: <code>]
+    log_lines     INTEGER,
+    log_tail      TEXT                -- the dead container's own last words
+);
+CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
+    ON container_failure (campaign_id);
+"""
+
+# 0 -> 1: the initial schema, frozen as it shipped. This is deliberately NOT
+# :data:`_SCHEMA`: that constant now carries the *current* layout, so reusing it here would
+# jump a v0 store straight to the newest tables and the later ``ALTER TABLE ... ADD
+# COLUMN`` steps would then fail on columns that already exist. A shipped migration is a
+# historical record — it describes what version 1 was, not what the schema is now. Uses
+# ``IF NOT EXISTS`` so a store created by a pre-versioning robovast (tables already
+# present, ``user_version`` 0) adopts version 1 without modification.
+_MIGRATION_INITIAL = """
+CREATE TABLE IF NOT EXISTS campaign (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT,
+    mode          TEXT,
+    config_dir    TEXT,
+    config_json   TEXT,
+    created_at    REAL,
+    strategy_state BLOB,
+    stop_kind     TEXT,
+    stop_reason   TEXT,
+    batches       INTEGER,
+    elapsed_s     REAL
+);
+CREATE TABLE IF NOT EXISTS batch (
+    id          INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL REFERENCES campaign(id),
+    idx         INTEGER NOT NULL,
+    dir         TEXT,
+    created_at  REAL
+);
+CREATE TABLE IF NOT EXISTS unit (
+    id            INTEGER PRIMARY KEY,
+    batch_id      INTEGER NOT NULL REFERENCES batch(id),
+    paramset_id   TEXT NOT NULL,
+    config_name   TEXT,
+    params_json   TEXT,
+    objective     REAL,
+    objectives_json TEXT,
+    measures_json TEXT,
+    n_samples     INTEGER,
+    status        TEXT,
+    result_dir    TEXT,
+    created_at    REAL
+);
+"""
+
+# 1 -> 2: per-run outcomes. ``unit`` stops one level short of the results tree —
+# ``n_samples`` and ``status`` are lossy roll-ups of runs that had no row of their
+# own. The ``run`` table completes ``campaign -> batch -> unit -> run`` and mirrors
+# each run's ``test.xml`` (the runner's contract), so pass/fail is queryable live
+# and ``data.db`` can be built from it instead of re-parsing the XML.
+_MIGRATION_ADD_RUN = """
+CREATE TABLE IF NOT EXISTS run (
+    id              INTEGER PRIMARY KEY,
+    unit_id         INTEGER NOT NULL REFERENCES unit(id),
+    run_id          INTEGER NOT NULL,   -- numeric run index within the config dir
+    status          TEXT,               -- passed / failed / error / killed / unknown
+    passed          INTEGER,            -- 0/1
+    errors          INTEGER,
+    failures        INTEGER,
+    tests           INTEGER,
+    duration_s      REAL,
+    start_time      TEXT,               -- ISO 8601
+    failure_message TEXT,               -- NULL when passed
+    created_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_run_unit ON run (unit_id);
+"""
+
+# 2 -> 3: the campaign's free-text description. ``name`` cannot carry it: it is an id
+# fragment (sanitized, no spaces — see ``campaign_id_for``), whereas this is the
+# launch-time "what is this run for?" a caller passes to ``start_campaign``. Stored
+# beside the campaign it describes, so it survives a service restart and travels with a
+# downloaded results tree instead of living only in the launcher's memory.
+_MIGRATION_ADD_DESCRIPTION = """
+ALTER TABLE campaign ADD COLUMN description TEXT;
+"""
+
+# 3 -> 4: the execution job, and the campaign's own provenance.
+#
+# ``job`` is its own table rather than columns on ``run`` because ``sysinfo.yaml`` is
+# written once per *job*, not per run: a packed multi-config job runs several
+# (config, run) pairs and they share one host record through each run dir's ``job``
+# symlink. A ``run.sysinfo_json`` would repeat the same blob across those runs and
+# destroy the fact that they shared a machine — which is exactly what makes "did the slow
+# runs land together?" answerable.
+#
+# The ``campaign`` columns lift ``_execution/execution.yaml`` into the row it describes.
+# They are the fields compared ACROSS campaigns ("which of these ran which image?"), and
+# the SQL interface can attach several campaigns at once, so keeping them in a YAML file
+# meant that join could not be written. ``execution_json`` retains the whole document;
+# the typed columns follow the convention ``unit.objective`` already sets by lifting the
+# scalar out of ``objectives_json``.
+_MIGRATION_ADD_JOB_AND_PROVENANCE = """
+CREATE TABLE IF NOT EXISTS job (
+    id           INTEGER PRIMARY KEY,
+    campaign_id  INTEGER NOT NULL REFERENCES campaign(id),
+    job_dir      TEXT,
+    sysinfo_json TEXT,
+    created_at   REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dir ON job (campaign_id, job_dir);
+ALTER TABLE run ADD COLUMN job_id INTEGER REFERENCES job(id);
+ALTER TABLE campaign ADD COLUMN robovast_version TEXT;
+ALTER TABLE campaign ADD COLUMN execution_type TEXT;
+ALTER TABLE campaign ADD COLUMN image TEXT;
+ALTER TABLE campaign ADD COLUMN image_revision TEXT;
+ALTER TABLE campaign ADD COLUMN execution_started_at TEXT;
+ALTER TABLE campaign ADD COLUMN execution_json TEXT;
+"""
+
+# 4 -> 5: who says they started the campaign.
+#
+# Nullable and never backfilled: campaigns that ran before anyone could give a name
+# genuinely have none, and inventing one would make the column lie about the past.
+_MIGRATION_ADD_CREATED_BY = """
+ALTER TABLE campaign ADD COLUMN created_by TEXT;
+"""
+
+# 5 -> 6: which commit composed the campaign.
+#
+# Queried across campaigns ("what else ran at this revision?", "which results came from a
+# dirty tree?"), so typed columns rather than json_extract from execution_json. Nullable and
+# never backfilled: a campaign recorded before this existed genuinely has no revision, and
+# `robovast_version` cannot be promoted into one -- it may hold a semver.
+_MIGRATION_ADD_CODE_REVISION = """
+ALTER TABLE campaign ADD COLUMN robovast_revision TEXT;
+ALTER TABLE campaign ADD COLUMN robovast_revision_source TEXT;
+ALTER TABLE campaign ADD COLUMN robovast_dirty INTEGER;
+"""
+
+# 6 -> 7: where the campaign's configuration came from.
+#
+# Typed rather than a JSON document because each column answers a cross-campaign question;
+# see the comment on the columns in _SCHEMA for why there is no origin_json beside them.
+# Nullable and never backfilled, for the same reason as created_by: a campaign recorded
+# before this existed genuinely has no origin, and the .vast basename recoverable from its
+# _config/ is not one -- it says nothing about which workspace, and inventing the rest would
+# make the column lie about the past.
+_MIGRATION_ADD_ORIGIN = """
+ALTER TABLE campaign ADD COLUMN origin_kind           TEXT;
+ALTER TABLE campaign ADD COLUMN origin_workspace_id   TEXT;
+ALTER TABLE campaign ADD COLUMN origin_workspace_name TEXT;
+ALTER TABLE campaign ADD COLUMN origin_config_path    TEXT;
+ALTER TABLE campaign ADD COLUMN origin_from_campaign  TEXT;
+"""
+
+# 7 -> 8: what a container died of, when the kubelet restarted it under a running trial.
+# Its own table rather than columns on ``run`` because the grain is the JOB: one container
+# death invalidates every run the job was carrying, so one row records one fact once
+# instead of duplicating a log tail per run. And because it must be writable when there are
+# no ``run`` rows at all -- a campaign that dies mid-batch never records any, which is
+# precisely the campaign whose evidence went missing.
+_MIGRATION_ADD_CONTAINER_FAILURE = """
+CREATE TABLE IF NOT EXISTS container_failure (
+    id            INTEGER PRIMARY KEY,
+    campaign_id   INTEGER NOT NULL REFERENCES campaign(id),
+    detected_at   TEXT,               -- ISO 8601, when the runner saw the restart
+    batch         TEXT,               -- the batch tag, e.g. batch-2
+    job_name      TEXT,               -- the Kubernetes Job
+    job_dir       TEXT,               -- campaign-relative, e.g. _jobs/batch-2/job-7
+    runs_json     TEXT,               -- ["<config>/<run>", ...] this job was executing
+    pod_name      TEXT,
+    node_name     TEXT,
+    container     TEXT,
+    role          TEXT,               -- scenario / sut / simulation / <ad-hoc> / init
+    image         TEXT,
+    image_id      TEXT,               -- the digest that actually ran
+    restart_count INTEGER,
+    reason        TEXT,               -- last_state.terminated.reason
+    exit_code     INTEGER,
+    signal        INTEGER,
+    signal_name   TEXT,               -- SIGBUS for 135; nobody should redo that by hand
+    message       TEXT,
+    started_at    TEXT,
+    finished_at   TEXT,
+    pod_phase     TEXT,
+    cpu_limit     TEXT,               -- as declared; NULL means NO LIMIT, itself a finding
+    memory_limit  TEXT,
+    log_status    TEXT,               -- captured / gone / empty / unavailable[: <code>]
+    log_lines     INTEGER,
+    log_tail      TEXT                -- the dead container's own last words
+);
+CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
+    ON container_failure (campaign_id);
 """
 
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 8
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
 # layout, append a migration (``ALTER TABLE ... ADD COLUMN``, ``CREATE TABLE``, a
-# backfill ``UPDATE`` ...) and bump :data:`SCHEMA_VERSION`; never edit an existing
-# entry. This lets a store written by any older robovast migrate forward on open.
+# backfill ``UPDATE`` ...), mirror it into :data:`_SCHEMA` **in the same column order**,
+# and bump :data:`SCHEMA_VERSION`; never edit an existing entry. This lets a store
+# written by any older robovast migrate forward on open, while ``_SCHEMA`` stays
+# readable as the current layout.
 _MIGRATIONS = [
-    # 0 -> 1: the initial schema. Uses ``IF NOT EXISTS`` so a store created by a
-    # pre-versioning robovast (its tables already present, ``user_version`` 0)
-    # adopts version 1 without modification.
-    _SCHEMA,
+    _MIGRATION_INITIAL,
+    _MIGRATION_ADD_RUN,
+    _MIGRATION_ADD_DESCRIPTION,
+    _MIGRATION_ADD_JOB_AND_PROVENANCE,
+    _MIGRATION_ADD_CREATED_BY,
+    _MIGRATION_ADD_CODE_REVISION,
+    _MIGRATION_ADD_ORIGIN,
+    _MIGRATION_ADD_CONTAINER_FAILURE,
 ]
+
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
+
+#: The origin columns, in the order :func:`read_campaign_origin` maps them onto
+#: ``CampaignOrigin``'s fields and :meth:`CampaignStore.create_campaign` binds them. One
+#: list so the INSERT, the SELECT and the mapping cannot drift apart.
+_ORIGIN_COLUMNS = ("origin_kind", "origin_workspace_id", "origin_workspace_name",
+                   "origin_config_path", "origin_from_campaign")
 
 
 class CampaignStore:
@@ -123,12 +439,13 @@ class CampaignStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Bring the store up to :data:`SCHEMA_VERSION`, applying each pending
-        migration in order.
+        """Bring the store up to :data:`SCHEMA_VERSION`.
 
-        A store written by an older robovast (lower ``user_version``, or 0 for
-        the pre-versioning schema) is upgraded in place. One written by a *newer*
-        robovast (higher ``user_version``) is left untouched and read
+        A brand-new database gets :data:`_SCHEMA` in one step — the current layout,
+        applied directly rather than reconstructed by replaying every migration. An
+        existing database (lower ``user_version``, or 0 for the pre-versioning schema) is
+        upgraded in place through the pending :data:`_MIGRATIONS`. One written by a
+        *newer* robovast (higher ``user_version``) is left untouched and read
         best-effort: our queries use ``SELECT *`` / explicit columns, so unknown
         columns and tables are simply ignored.
         """
@@ -139,11 +456,24 @@ class CampaignStore:
                     "Campaign store %s is schema v%d but this robovast supports "
                     "v%d; reading best-effort.", self.db_path, version, SCHEMA_VERSION)
             return
-        for v in range(version, SCHEMA_VERSION):
-            self._conn.executescript(_MIGRATIONS[v])
-            # PRAGMA can't be parameterised; v + 1 is an int we fully control.
-            self._conn.execute(f"PRAGMA user_version = {v + 1}")
+        if version == 0 and not self._has_tables():
+            # Fresh database: apply the current layout wholesale. Distinguished from a
+            # pre-versioning store (``user_version`` 0 *with* tables), which must go
+            # through the ladder so its existing rows keep their columns.
+            self._conn.executescript(_SCHEMA)
+        else:
+            for v in range(version, SCHEMA_VERSION):
+                self._conn.executescript(_MIGRATIONS[v])
+        # PRAGMA can't be parameterized; SCHEMA_VERSION is a constant we control.
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
+
+    def _has_tables(self) -> bool:
+        """True when this database already holds a campaign schema."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'").fetchone()
+        return bool(row[0])
 
     def close(self) -> None:
         self._conn.close()
@@ -155,11 +485,45 @@ class CampaignStore:
         self.close()
 
     def create_campaign(self, name: str, config: dict, mode: str = "search",
-                        config_dir: str = "") -> int:
+                        config_dir: str = "", created_at: Any = _STAMP_NOW,
+                        description: str = "", created_by: str = "",
+                        origin=None) -> int:
+        """Insert the campaign row. ``created_at`` is the campaign's START time.
+
+        Omitting it stamps now, which is correct for the live path: the controller calls
+        this as the campaign begins, in both modes. A caller building a store *after the
+        fact* (:func:`robovast.common.campaign_index.build_campaign_store`, for local
+        batch runs whose store cannot be written live) must pass the start time it
+        recovered from the results tree — "now" would mean indexing time, and the whole
+        service reads this column as the campaign's start (listing order, ``started_at``
+        in the UI). Passing ``None`` explicitly records NULL: an unknown start time,
+        which is the honest answer when the results tree has no record of it.
+
+        ``description`` is the launcher's free text about *this* run (empty when none
+        was given); it is recorded verbatim and never derived from the config.
+
+        ``created_by`` is the name the launcher gave for themselves, which with a shared
+        secret is a claim rather than a fact. Empty is stored as NULL, because "nobody
+        said" and "somebody called themselves X" are different answers and the UI shows
+        them differently.
+
+        ``origin`` is a :class:`robovast.service.interface.CampaignOrigin` recording where
+        the configuration came from, or ``None`` when the caller does not know -- a campaign
+        rebuilt after the fact by :mod:`robovast.common.campaign_index` cannot know, and
+        stores NULL rather than a guess. Empty fields are stored as NULL by the same rule as
+        ``created_by``. Nothing reads these back to run anything; see the class.
+        """
+        origin_values = (
+            (origin.kind or None, origin.workspace_id or None, origin.workspace_name or None,
+             origin.config_path or None, origin.from_campaign or None)
+            if origin is not None else (None,) * len(_ORIGIN_COLUMNS))
         cur = self._conn.execute(
-            "INSERT INTO campaign (name, mode, config_dir, config_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (name, mode, config_dir, json.dumps(config, default=str), time.time()),
+            "INSERT INTO campaign (name, mode, config_dir, config_json, created_at, "
+            f"description, created_by, {', '.join(_ORIGIN_COLUMNS)}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?, {', '.join('?' * len(_ORIGIN_COLUMNS))})",
+            (name, mode, config_dir, json.dumps(config, default=str),
+             time.time() if created_at is _STAMP_NOW else created_at,
+             description or None, created_by or None, *origin_values),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -183,11 +547,11 @@ class CampaignStore:
         status: str,
         result_dir: str,
         n_samples: Optional[int] = None,
-    ) -> None:
+    ) -> int:
         # Surface the sole objective as a queryable REAL column for the common
         # single-objective case; keep the full dict in JSON regardless.
         objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
-        self._conn.execute(
+        cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -202,6 +566,83 @@ class CampaignStore:
             ),
         )
         self._conn.commit()
+        return cur.lastrowid
+
+    def upsert_job(self, campaign_id: int, job_dir: str,
+                   sysinfo: Optional[dict]) -> Optional[int]:
+        """Record the execution job at *job_dir*, returning its row id.
+
+        Idempotent on ``(campaign_id, job_dir)``: a packed multi-config job is reached
+        once per run that ran inside it, and all of them describe the same host, so the
+        second and later calls resolve to the existing row instead of duplicating it.
+
+        ``sysinfo`` may be ``None`` — a job whose ``sysinfo.yaml`` never appeared still
+        gets a row, because *which* job a run belonged to is worth recording even when the
+        host record is missing. Returns ``None`` for an empty ``job_dir`` (a run with no
+        resolvable job), so the caller stores a NULL ``run.job_id`` rather than inventing
+        a job.
+        """
+        if not job_dir:
+            return None
+        row = self._conn.execute(
+            "SELECT id, sysinfo_json FROM job WHERE campaign_id = ? AND job_dir = ?",
+            (campaign_id, job_dir)).fetchone()
+        sysinfo_json = json.dumps(sysinfo, default=str) if sysinfo else None
+        if row is not None:
+            # Fill in a host record that was absent when the job row was first created
+            # (the first run seen may have preceded sysinfo.yaml being written).
+            if sysinfo_json and not row["sysinfo_json"]:
+                self._conn.execute("UPDATE job SET sysinfo_json = ? WHERE id = ?",
+                                   (sysinfo_json, row["id"]))
+                self._conn.commit()
+            return row["id"]
+        cur = self._conn.execute(
+            "INSERT INTO job (campaign_id, job_dir, sysinfo_json, created_at) "
+            "VALUES (?, ?, ?, ?)", (campaign_id, job_dir, sysinfo_json, time.time()))
+        self._conn.commit()
+        return cur.lastrowid
+
+    def record_runs(self, unit_id: int, runs: list[dict]) -> None:
+        """Record per-run outcomes for a unit (one ``run`` row per run).
+
+        Each dict is a :func:`robovast.common.campaign_data.read_run_outcome`
+        result: ``run_id``, ``status``, ``passed``, ``errors``, ``failures``,
+        ``tests``, ``duration_s``, ``start_time``, ``failure_message``.
+
+        When those dicts also carry ``job_dir`` / ``sysinfo`` (i.e. the caller passed a
+        campaign root to ``read_run_outcome``), the corresponding ``job`` rows are
+        upserted here and each run gets its ``job_id``. The owning campaign is looked up
+        from *unit_id* rather than taken as an argument, so it cannot be passed
+        inconsistently with the unit.
+        """
+        if not runs:
+            return
+        job_ids: dict[str, Optional[int]] = {}
+        if any(r.get("job_dir") for r in runs):
+            row = self._conn.execute(
+                "SELECT b.campaign_id AS cid FROM unit u JOIN batch b ON u.batch_id = b.id "
+                "WHERE u.id = ?", (unit_id,)).fetchone()
+            if row is not None:
+                for r in runs:
+                    job_dir = r.get("job_dir")
+                    if job_dir and job_dir not in job_ids:
+                        job_ids[job_dir] = self.upsert_job(
+                            row["cid"], job_dir, r.get("sysinfo"))
+        for r in runs:
+            r["job_id"] = job_ids.get(r.get("job_dir") or "")
+        now = time.time()
+        self._conn.executemany(
+            "INSERT INTO run (unit_id, run_id, status, passed, errors, failures, "
+            "tests, duration_s, start_time, failure_message, created_at, job_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (unit_id, r["run_id"], r["status"], r["passed"], r["errors"],
+                 r["failures"], r["tests"], r["duration_s"], r["start_time"],
+                 r["failure_message"], now, r.get("job_id"))
+                for r in runs
+            ],
+        )
+        self._conn.commit()
 
     def record_outcome(self, campaign_id: int, *, stop_kind: str, stop_reason: str,
                        batches: int, elapsed_s: float) -> None:
@@ -211,6 +652,90 @@ class CampaignStore:
             "elapsed_s = ? WHERE id = ?",
             (stop_kind, stop_reason, batches, elapsed_s, campaign_id),
         )
+        self._conn.commit()
+
+    def record_execution(self, campaign_id: int, execution: dict) -> None:
+        """Lift ``_execution/execution.yaml`` onto the campaign row.
+
+        Called once the backend has produced that file — which is *after* campaign
+        creation on both lanes, and on the local lane happens inside the run itself (a
+        generated shell script writes it), so it cannot be folded into
+        :meth:`create_campaign`.
+
+        The typed columns are the fields compared across campaigns; ``execution_json``
+        keeps the whole document so ``cluster_info`` / ``env`` / ``run_as_user`` stay
+        reachable. Note ``execution_time`` in the YAML is a *start timestamp*, not a
+        duration (``datetime.now()`` at execution start), hence the honest column name
+        ``execution_started_at``; the elapsed wall clock is ``elapsed_s``.
+        """
+        if not execution:
+            return
+        # `dirty` stays None when the YAML has no such key -- a campaign recorded before the
+        # field existed did not have a clean tree, it had an unknown one, and storing 0 would
+        # assert something nobody checked.
+        dirty = execution.get("robovast_dirty")
+        self._conn.execute(
+            "UPDATE campaign SET robovast_version = ?, execution_type = ?, image = ?, "
+            "image_revision = ?, execution_started_at = ?, execution_json = ?, "
+            "robovast_revision = ?, robovast_revision_source = ?, robovast_dirty = ? "
+            "WHERE id = ?",
+            (execution.get("robovast_version"), execution.get("execution_type"),
+             execution.get("image"), execution.get("image_revision"),
+             execution.get("execution_time"),
+             json.dumps(execution, default=str),
+             execution.get("robovast_revision"),
+             execution.get("robovast_revision_source"),
+             None if dirty is None else int(bool(dirty)),
+             campaign_id),
+        )
+        self._conn.commit()
+
+    #: The ``container_failure`` columns a record supplies, in insert order.
+    _CONTAINER_FAILURE_COLUMNS = (
+        "detected_at", "batch", "job_name", "job_dir", "runs_json", "pod_name",
+        "node_name", "container", "role", "image", "image_id", "restart_count", "reason",
+        "exit_code", "signal", "signal_name", "message", "started_at", "finished_at",
+        "pod_phase", "cpu_limit", "memory_limit", "log_status", "log_lines", "log_tail",
+    )
+
+    def record_container_failures(self, campaign_id: int, records) -> None:
+        """Record what containers died of, from ``_execution/container_failures.json``.
+
+        Idempotent on ``(job_name, container, detected_at)``: the file is the durable
+        record and this table is an index into it, so re-ingesting a campaign -- which
+        :mod:`campaign_index` does whenever a store is rebuilt from disk -- must not
+        multiply its incidents.
+
+        ``runs`` arrives as a list and is stored as JSON so one row can name every run the
+        job was carrying, which is the honest grain: they shared the container that died.
+        """
+        for record in records or ():
+            row = dict(record)
+            row["runs_json"] = json.dumps(row.get("runs") or [])
+            existing = self._conn.execute(
+                "SELECT 1 FROM container_failure WHERE campaign_id = ? AND job_name IS ? "
+                "AND container IS ? AND detected_at IS ?",
+                (campaign_id, row.get("job_name"), row.get("container"),
+                 row.get("detected_at"))).fetchone()
+            if existing:
+                continue
+            columns = ("campaign_id",) + self._CONTAINER_FAILURE_COLUMNS
+            values = (campaign_id,) + tuple(row.get(c) for c
+                                            in self._CONTAINER_FAILURE_COLUMNS)
+            self._conn.execute(
+                f"INSERT INTO container_failure ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' * len(columns))})", values)
+        self._conn.commit()
+
+    def record_elapsed(self, campaign_id: int, elapsed_s: float) -> None:
+        """Record the campaign's wall-clock duration.
+
+        Batch mode has no ``record_outcome`` (there is no search criterion that stopped
+        it), so without this its ``elapsed_s`` stayed NULL and "how long did this
+        campaign take" was unanswerable from the store for every batch campaign.
+        """
+        self._conn.execute("UPDATE campaign SET elapsed_s = ? WHERE id = ?",
+                           (elapsed_s, campaign_id))
         self._conn.commit()
 
     def save_strategy_state(self, campaign_id: int, state: bytes) -> None:
@@ -244,3 +769,315 @@ class CampaignStore:
         return list(self._conn.execute(
             "SELECT * FROM unit WHERE batch_id = ? ORDER BY id", (batch_id,)
         ).fetchall())
+
+    def runs(self, unit_id: int) -> list[sqlite3.Row]:
+        """Per-run outcome rows of a unit, in run-index order."""
+        return list(self._conn.execute(
+            "SELECT * FROM run WHERE unit_id = ? ORDER BY run_id", (unit_id,)
+        ).fetchall())
+
+    def run_counts(self, campaign_id: int) -> dict[str, int]:
+        """Pass/fail tallies for a campaign, from one ``GROUP BY`` over ``run``.
+
+        Returns ``num_runs`` (all rows), ``num_passed``, ``num_failed`` (status
+        ``failed`` only), ``num_errors`` (status ``error``) and ``num_killed`` (a job an
+        operator stopped by hand). An ``unknown`` run counts toward ``num_runs`` but none
+        of the others, so the four may sum to < ``num_runs``.
+
+        ``num_killed`` is reported apart from ``num_failed`` on purpose: a run somebody
+        stopped says nothing about the system under test, and folding it into the failures
+        would put a human intervention into the campaign's measured outcome.
+
+        ``num_composition_failed`` counts *units* rather than runs (a search draw
+        that could not be composed never produced one), so it is reported beside
+        the run tallies rather than folded into them: ``num_runs`` keeps meaning
+        "runs that happened".
+
+        ``num_no_sample`` counts units too, but for the opposite reason: the cell DID
+        run and its runs ARE in ``num_runs`` — nothing they produced was measurable, so
+        the search recorded the cell and moved on instead of scoring a fabricated value
+        or aborting. A campaign with a non-zero count here still has a valid objective;
+        what it has lost is coverage of those cells, which is why the number is reported
+        rather than absorbed.
+        """
+        rows = self._conn.execute(
+            "SELECT r.status AS status, COUNT(*) AS n FROM run r "
+            "JOIN unit u ON r.unit_id = u.id "
+            "JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? GROUP BY r.status", (campaign_id,)
+        ).fetchall()
+        by_status = {row["status"]: row["n"] for row in rows}
+        composition_failed = self._conn.execute(
+            "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? AND u.status = 'composition_failed'",
+            (campaign_id,)).fetchone()[0]
+        no_sample = self._conn.execute(
+            "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = ? AND u.status = 'no_sample'",
+            (campaign_id,)).fetchone()[0]
+        return {
+            "num_runs": sum(by_status.values()),
+            "num_passed": by_status.get("passed", 0),
+            "num_failed": by_status.get("failed", 0),
+            "num_errors": by_status.get("error", 0),
+            "num_killed": by_status.get("killed", 0),
+            "num_invalid": by_status.get("invalid", 0),
+            "num_composition_failed": composition_failed,
+            "num_no_sample": no_sample,
+        }
+
+
+def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of ``campaign.mode`` ('search'/'batch') from ``campaign.db``.
+
+    Returns ``None`` when the store is absent or unreadable. A read-only helper for
+    status reconstruction (see
+    :func:`robovast.execution.status_recovery.reconstruct_status_from_disk`), so it
+    never creates or migrates the store — it opens it read-only or gives up.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT mode FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def read_campaign_created_at(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of the campaign's start time as an ISO-8601 UTC string.
+
+    Reads ``campaign.created_at`` — recorded when the campaign begins, in both modes
+    (see :meth:`CampaignStore.create_campaign`). Opened **read-only**, like the other
+    readers here, so listing never migrates or locks a store a running campaign is
+    still writing.
+
+    Returns ``None`` when the store is absent, unreadable, or the column is NULL: a
+    genuinely unknown start time, not a swallowed error. Callers order such campaigns
+    last rather than substituting a directory mtime — a guessed start time would be
+    indistinguishable from a recorded one.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT created_at FROM campaign ORDER BY created_at LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or row[0] is None:
+        return None
+    return datetime.fromtimestamp(row[0], tz=timezone.utc).isoformat()
+
+
+def read_campaign_description(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of the campaign's free-text description from ``campaign.db``.
+
+    Opened **read-only**, like the other readers here, so listing never migrates or
+    locks a store a running campaign is still writing — which also means a store
+    written before the ``description`` column existed (schema < 3) is *not* migrated
+    on read: the ``sqlite3.Error`` for the unknown column is caught and reported as
+    "no description", the same as a campaign launched without one.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT description FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
+
+
+def read_campaign_created_by(campaign_dir: str | Path) -> Optional[str]:
+    """Best-effort read of who *said* they launched the campaign, or ``None``.
+
+    Read-only, like its neighbours, so listing never migrates or locks a store a running
+    campaign is still writing. A store written before this column existed (schema < 5)
+    therefore reports ``None`` — the same answer as a campaign launched without a name,
+    which is correct: neither knows who ran it.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute("SELECT created_by FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
+
+
+def read_campaign_origin(campaign_dir: str | Path):
+    """Best-effort read of where the campaign's configuration came from, or ``None``.
+
+    Returns a :class:`robovast.service.interface.CampaignOrigin`. ``None`` means the origin
+    is **not recorded** -- a store written before schema 7, or one whose columns are all
+    empty -- which is deliberately the same answer either way: neither knows where the
+    campaign came from, and there is nothing to show for it.
+
+    Read-only, like its neighbours, so listing never migrates or locks a store a running
+    campaign is still writing. That is also why a pre-7 store must not raise here: the
+    ``sqlite3.Error`` for the unknown column is the expected path for an old campaign, not a
+    failure.
+    """
+    from robovast.service.interface import CampaignOrigin
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                f"SELECT {', '.join(_ORIGIN_COLUMNS)} FROM campaign LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or not any(row):
+        return None
+    kind, workspace_id, workspace_name, config_path, from_campaign = row
+    return CampaignOrigin(
+        kind=kind or "", workspace_id=workspace_id or "",
+        workspace_name=workspace_name or "", config_path=config_path or "",
+        from_campaign=from_campaign or "")
+
+
+def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
+    """Best-effort read of per-run pass/fail tallies from ``campaign.db``.
+
+    Aggregates the ``run`` table (each ``campaign.db`` holds one campaign). Read
+    only — it never creates or migrates the store — so it is safe on the summary
+    hot path. Returns ``None`` when the store is absent, pre-``run``-table (schema
+    v1), or unreadable, letting the caller fall back to a disk walk; the returned
+    keys match :meth:`CampaignStore.run_counts`.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM run GROUP BY status").fetchall()
+            # Counts units, not runs: a search draw that could not be composed never
+            # produced one. Reported beside the run tallies rather than inside them, so
+            # ``num_runs`` keeps meaning "runs that happened" -- while the draw itself
+            # stops being invisible in every summary that reads these counts. Its own
+            # try: a store without a ``unit`` table still has usable run tallies, and
+            # losing them to a missing column would be the worse failure.
+            # ``no_sample`` is the same kind of unit-level fact: the cell ran, but nothing
+            # it produced was measurable, so it has runs AND belongs beside these counts.
+            try:
+                composition_failed = conn.execute(
+                    "SELECT COUNT(*) FROM unit WHERE status = 'composition_failed'"
+                ).fetchone()[0]
+                no_sample = conn.execute(
+                    "SELECT COUNT(*) FROM unit WHERE status = 'no_sample'"
+                ).fetchone()[0]
+            except sqlite3.Error:
+                composition_failed = 0
+                no_sample = 0
+    except sqlite3.Error:
+        return None  # no ``run`` table (v1) or unreadable store
+    by_status = {r[0]: r[1] for r in rows}
+    return {
+        "num_runs": sum(by_status.values()),
+        "num_passed": by_status.get("passed", 0),
+        "num_failed": by_status.get("failed", 0),
+        "num_errors": by_status.get("error", 0),
+        "num_killed": by_status.get("killed", 0),
+        "num_composition_failed": composition_failed,
+        "num_no_sample": no_sample,
+    }
+
+
+def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
+    """Best-effort read of a search's per-batch objective trajectory from ``campaign.db``.
+
+    One row per batch, aggregated in SQLite: the wire cost tracks the number of *batches*,
+    not the number of runs, which is what lets this answer a live campaign cheaply enough
+    to sit behind a panel and an MCP field.
+
+    Read-only and never migrating, exactly like :func:`read_run_counts`, so it is safe
+    against a store the controller is writing right now — which is the point. A batch's
+    objectives are committed per unit as the batch is evaluated, so this is readable the
+    instant a round finishes rather than after postprocessing, and it is the only path to
+    that data on the cluster lane (a SQL query there reads a snapshot from the object
+    store, which the campaign publishes only once, at the end).
+
+    ``status = 'evaluated'`` is required, not tidiness: a ``no_sample`` unit ran but
+    produced nothing measurable and a ``composition_failed`` one never ran at all, and both
+    carry empty objectives. Averaging them in would score cells that were never measured.
+    A batch where every unit is one of those comes back with ``n_scored = 0`` and ``None``
+    statistics — a gap, which a reader must not confuse with a batch that scored zero.
+
+    ``best_so_far`` is folded here rather than stored, because it is the only figure that
+    depends on the objective's *direction*; ``min``/``max``/``mean`` are raw, so no reader
+    has to know the direction to interpret a field name.
+
+    Returns ``None`` when there is no store to read, and a dict with ``unavailable`` set
+    when there is one but no scalar trajectory in it:
+
+    * ``batch_mode`` — not a search, so its single batch is not a trajectory;
+    * ``multi_objective`` — ``unit.objective`` is NULL whenever a search declares more than
+      one objective (see :meth:`CampaignStore.record_unit`), so there is nothing to trend;
+      the values are in ``objectives_json``;
+    * ``no_store`` — the ``batch``/``unit`` tables predate this schema.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    empty = {"objective_name": None, "direction": None, "batches": []}
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT mode, "
+                "json_extract(config_json, '$.search.objectives[0].name') AS name, "
+                "json_extract(config_json, '$.search.objectives[0].direction') AS direction, "
+                "json_array_length(json_extract(config_json, '$.search.objectives')) AS n_obj "
+                "FROM campaign LIMIT 1").fetchone()
+            if row is None:
+                return {**empty, "unavailable": "no_store"}
+            if (row["mode"] or "") != "search":
+                return {**empty, "unavailable": "batch_mode"}
+            if (row["n_obj"] or 0) > 1:
+                return {**empty, "unavailable": "multi_objective"}
+            rows = conn.execute(
+                # The 'evaluated' filter is a conditional AGGREGATE, not a join condition, and
+                # the difference is the whole point of reporting two counts. In the join it also
+                # removed the unmeasured units from `n_units`, so n_scored == n_units always and
+                # the coverage loss this exists to surface could never be seen. Here `n_units`
+                # is every cell the batch had and `n_scored` only the ones that yielded the
+                # objective, so `7/8` reads as what it is: one cell that produced nothing.
+                "SELECT b.idx AS idx, COUNT(u.id) AS n_units, "
+                "COUNT(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS n_scored, "
+                "MIN(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS lo, "
+                "MAX(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS hi, "
+                "AVG(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS mean "
+                "FROM batch b LEFT JOIN unit u ON u.batch_id = b.id "
+                "GROUP BY b.idx ORDER BY b.idx").fetchall()
+    except sqlite3.Error:
+        return {**empty, "unavailable": "no_store"}  # pre-batch/unit schema, or unreadable
+
+    maximize = (row["direction"] or "maximize") != "minimize"
+    batches, best = [], None
+    for r in rows:
+        scored = r["n_scored"] or 0
+        if scored:
+            reached = r["hi"] if maximize else r["lo"]
+            best = reached if best is None else (
+                max(best, reached) if maximize else min(best, reached))
+        batches.append({
+            "idx": r["idx"], "n_units": r["n_units"] or 0, "n_scored": scored,
+            # Raw and direction-free. `best_so_far` carries the direction, and it carries
+            # forward across a scoreless batch rather than resetting: the best found so far
+            # is still the best found so far when a round measures nothing.
+            "min": r["lo"] if scored else None,
+            "max": r["hi"] if scored else None,
+            "mean": r["mean"] if scored else None,
+            "best_so_far": best,
+        })
+    return {"objective_name": row["name"], "direction": row["direction"] or "maximize",
+            "batches": batches, "unavailable": None}

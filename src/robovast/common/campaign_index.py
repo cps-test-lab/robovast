@@ -25,12 +25,16 @@ their own store and are not indexed here.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-from .campaign_data import (aggregate_run_status, list_config_dirs,
-                            list_run_dirs, read_scenario_config)
+import yaml
+
+from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dirs,
+                            read_execution_metadata, read_run_outcomes, read_scenario_config)
 from .common import load_config
-from .store import STORE_FILENAME, CampaignStore
+from .store import STORE_FILENAME, CampaignStore, read_campaign_description
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,42 @@ def _newest_mtime(campaign_dir: Path) -> float:
     """Newest ``test.xml`` mtime in the tree (0.0 if none)."""
     times = [p.stat().st_mtime for p in campaign_dir.glob("*/*/test.xml")]
     return max(times) if times else 0.0
+
+
+def _recorded_start_time(campaign_dir: Path) -> Optional[float]:
+    """The campaign's real start time (epoch seconds), or None if unrecorded.
+
+    This indexer runs *after* the campaign finished, so "now" is the indexing time —
+    not a start time. The run itself recorded one: the generated run script writes
+    ``execution_time`` into ``_execution/execution.yaml`` as it starts (see
+    ``generate_execution_yaml_script``), which is exactly the execution path whose store
+    cannot be written live. Reading it keeps ``campaign.created_at`` meaning "campaign
+    start" in both modes, and keeps it stable across a rebuild of a stale store.
+
+    Returns None (recorded as NULL) when there is no such record: an unknown start time
+    is honest, whereas falling back to now or to a directory mtime would silently put an
+    old campaign at the top of a newest-first listing.
+    """
+    try:
+        recorded = read_execution_metadata(campaign_dir).get("execution_time")
+    except (FileNotFoundError, OSError, yaml.YAMLError) as e:
+        logger.warning("No execution record for %s (%s); campaign start time unknown",
+                       campaign_dir.name, e)
+        return None
+    if isinstance(recorded, datetime):  # yaml may parse the ISO string into a datetime
+        return recorded.timestamp()
+    if not recorded:
+        logger.warning("Execution record of %s has no execution_time; start time unknown",
+                       campaign_dir.name)
+        return None
+    try:
+        # The local run script writes ...HH:MM:SSZ (`date -u`); normalise the military
+        # suffix so parsing does not depend on Python >= 3.11 accepting it.
+        return datetime.fromisoformat(str(recorded).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        logger.warning("Unparsable execution_time %r in %s; start time unknown",
+                       recorded, campaign_dir.name)
+        return None
 
 
 def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
@@ -54,6 +94,11 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         if store_path.stat().st_mtime >= _newest_mtime(campaign_dir):
             logger.debug("Campaign store up to date: %s", store_path)
             return store_path
+    # Carried across the rebuild: unlike every other column, the description cannot be
+    # recovered from the results tree — the launcher's text exists only in the store. A
+    # rebuild that dropped it would silently blank the description of any campaign whose
+    # store is refreshed.
+    description = read_campaign_description(campaign_dir) or ""
     if store_path.exists():
         store_path.unlink()  # rebuild from scratch (schema/state may have changed)
 
@@ -63,7 +108,12 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
     vast_files = sorted(config_dir.glob("*.vast")) if config_dir.is_dir() else []
     if vast_files:
         try:
-            config_json = load_config(str(vast_files[0]))
+            # `upgrade=True`: this reads an ARCHIVED config, which may predate the current
+            # version. The strict policy would raise, and the except below would swallow it into
+            # an empty config -- so an old campaign's store rebuilt fine and silently lost the
+            # visualization block the GUI reads from it, for exactly the campaigns whose store
+            # had to be reconstructed. The archived file itself is not rewritten.
+            config_json = load_config(str(vast_files[0]), upgrade=True)
         except Exception as e:  # pylint: disable=broad-except
             logger.warning("Could not load %s for campaign store: %s", vast_files[0], e)
 
@@ -71,15 +121,23 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
         # Paths are stored relative to the campaign root (the dir holding
         # campaign.db) so the store survives the campaign being relocated.
         campaign_id = store.create_campaign(
-            campaign_dir.name, config_json, mode="batch", config_dir="_config")
+            campaign_dir.name, config_json, mode="batch", config_dir="_config",
+            created_at=_recorded_start_time(campaign_dir), description=description)
         batch_id = store.open_batch(campaign_id, 0, ".")
+        # Provenance is recoverable from the results tree (unlike the description), so a
+        # rebuilt store carries it too — otherwise "which image did this run use?" would
+        # answer NULL for exactly the campaigns whose store had to be reconstructed.
+        try:
+            store.record_execution(campaign_id, read_execution_metadata(campaign_dir))
+        except FileNotFoundError:
+            pass
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)
             try:
                 params = read_scenario_config(cfg_dir)
             except FileNotFoundError:
                 params = {}
-            store.record_unit(
+            unit_id = store.record_unit(
                 batch_id=batch_id,
                 paramset_id=cfg_dir.name,
                 config_name=cfg_dir.name,
@@ -90,5 +148,41 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 result_dir=cfg_dir.name,
                 n_samples=len(run_dirs),
             )
+            store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
     logger.info("Built campaign store: %s", store_path)
     return store_path
+
+
+def backfill_run_rows(campaign_dir) -> int:
+    """Populate the ``run`` table of an existing store from on-disk ``test.xml``.
+
+    For a store written by a robovast predating the ``run`` table (schema v1,
+    migrated to v2 with an empty ``run`` table on open), this fills in the per-run
+    outcomes without disturbing the controller-written ``campaign``/``batch``/``unit``
+    rows. Idempotent: a unit that already has ``run`` rows is skipped. Returns the
+    number of run rows inserted. Does nothing (returns 0) if the store is absent.
+
+    Resolve each unit's config dir from its ``result_dir`` (stored relative to the
+    campaign root), and record :func:`read_run_outcomes` for it — so a run missing
+    its ``test.xml`` is still recorded as ``unknown`` rather than dropped.
+    """
+    campaign_dir = Path(campaign_dir)
+    store_path = campaign_dir / STORE_FILENAME
+    if not store_path.is_file():
+        return 0
+    inserted = 0
+    with CampaignStore(store_path) as store:
+        for campaign in store.list_campaigns():
+            for batch in store.batches(campaign["id"]):
+                for unit in store.units(batch["id"]):
+                    if store.runs(unit["id"]):
+                        continue  # already backfilled / written live
+                    result_dir = unit["result_dir"]
+                    if not result_dir:
+                        continue
+                    rows = read_run_outcomes(campaign_dir / result_dir, campaign_dir)
+                    store.record_runs(unit["id"], rows)
+                    inserted += len(rows)
+    if inserted:
+        logger.info("Backfilled %d run row(s) into %s", inserted, store_path)
+    return inserted

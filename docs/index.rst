@@ -49,13 +49,24 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    :maxdepth: 2
    :caption: Contents:
 
+   quickstart
+   client
    setup
    how_to_run
    configuration
+   images
+   simulators
    example
    variation
    cluster_execution
    results_processing
    search
-   evaluation
+   analysis_notebooks
+   mcp
+   architecture
+   http_api
+   deployment
+   web_ui
+   run_capture
    developer_guide
+   future_work

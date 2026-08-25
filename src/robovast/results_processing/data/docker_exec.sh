@@ -34,7 +34,8 @@ Run a Python script with ROS from within a Docker container.
 
 OPTIONS:
     --image IMAGE           Use a custom Docker image (default: ghcr.io/cps-test-lab/robovast:latest)
-    --compat-version VER    Required compatibility version to check against the image
+    --compat-version VER    Highest container protocol this host speaks
+    --min-compat-version V  Lowest container protocol this host still supports
     --provenance-file PATH  Mount dirname(PATH) at /provenance in the container (for provenance JSON output)
     -h, --help              Show this help message
 
@@ -46,6 +47,8 @@ EOF
 # Provenance mount (optional)
 PROVENANCE_MOUNT=()
 COMPAT_VERSION=""
+MIN_COMPAT_VERSION=""
+COMPAT_LABEL="org.robovast.compat-version"
 
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
@@ -60,6 +63,10 @@ while [ $# -gt 0 ]; do
             ;;
         --compat-version)
             COMPAT_VERSION="$2"
+            shift 2
+            ;;
+        --min-compat-version)
+            MIN_COMPAT_VERSION="$2"
             shift 2
             ;;
         --provenance-file)
@@ -107,17 +114,32 @@ elif [ -e "$LAST_ARG" ]; then
     exit 1
 fi
 
-# Compatibility version check (reads /etc/robovast_compat_version inside the container)
+# Container protocol check. Label first (docker inspect, no container started), falling back to
+# the legacy file for images built before the label existed -- which is most archived campaigns.
 if [ -n "$COMPAT_VERSION" ]; then
-    IMAGE_COMPAT=$(docker run --rm "$DOCKER_IMAGE" cat /etc/robovast_compat_version 2>/dev/null || echo "")
-    if [ -z "$IMAGE_COMPAT" ] || [ "$COMPAT_VERSION" != "$IMAGE_COMPAT" ]; then
-        echo "ERROR: Compatibility version mismatch!"
-        echo "  Host robovast expects compat version: $COMPAT_VERSION"
-        echo "  Container image provides: ${IMAGE_COMPAT:-<missing>}"
-        echo "  Image: $DOCKER_IMAGE"
-        echo ""
-        echo "  Fix: Pull the latest image with 'docker pull $DOCKER_IMAGE'"
-        echo "       or rebuild with the matching robovast version."
+    MIN_COMPAT_VERSION="${MIN_COMPAT_VERSION:-$COMPAT_VERSION}"
+    IMAGE_COMPAT=$(docker inspect --format "{{index .Config.Labels \"$COMPAT_LABEL\"}}" "$DOCKER_IMAGE" 2>/dev/null || echo "")
+    COMPAT_SOURCE="label"
+    if [ -z "$IMAGE_COMPAT" ] || [ "$IMAGE_COMPAT" = "<no value>" ]; then
+        IMAGE_COMPAT=$(docker run --rm --entrypoint cat "$DOCKER_IMAGE" /etc/robovast_compat_version 2>/dev/null || echo "")
+        COMPAT_SOURCE="file"
+    fi
+    # A RANGE, not equality: postprocessing re-runs against the image a finished campaign
+    # recorded, so equality made every protocol bump retroactively un-postprocess-able.
+    if [ -z "$IMAGE_COMPAT" ]; then
+        echo "ERROR: cannot determine the container protocol version of '$DOCKER_IMAGE'."
+        echo "  This host speaks ${MIN_COMPAT_VERSION}..${COMPAT_VERSION}; the image reports"
+        echo "  neither the $COMPAT_LABEL label nor /etc/robovast_compat_version."
+        exit 1
+    elif [ "$IMAGE_COMPAT" -gt "$COMPAT_VERSION" ] || [ "$IMAGE_COMPAT" -lt "$MIN_COMPAT_VERSION" ]; then
+        echo "ERROR: '$DOCKER_IMAGE' speaks container protocol $IMAGE_COMPAT (from its $COMPAT_SOURCE),"
+        echo "  but this host speaks ${MIN_COMPAT_VERSION}..${COMPAT_VERSION}."
+        if [ "$IMAGE_COMPAT" -gt "$COMPAT_VERSION" ]; then
+            echo "  The image is NEWER than this robovast -- upgrade robovast."
+        else
+            echo "  Check out the robovast revision the campaign recorded"
+            echo "  (_execution/execution.yaml: robovast_revision) and postprocess there."
+        fi
         exit 1
     fi
 fi

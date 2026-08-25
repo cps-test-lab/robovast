@@ -1,4 +1,4 @@
-version: 1
+version: 2
 metadata:
   name: quadrotor_landing
 # Batch-mode example (no search block). Run with:
@@ -14,19 +14,22 @@ configuration:
   # trivial lands or fatal crashes.
   variations:
   - ParameterVariationList:
-      name: thrust_gain
+      scenario: thrust_gain
       values: [1.0, 2.0]
   - ParameterVariationList:
-      name: mass
+      scenario: mass
       values: [1.8, 2.8]
   - ParameterVariationList:
-      name: wind_strength
+      scenario: wind_strength
       values: [2.5, 4.0]
   - ParameterVariationList:
-      name: descent_rate
+      scenario: descent_rate
       values: [1.5, 2.5]
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
+  containers:
+    # All defaults: the framework image, resolved from the
+    # deployment's project (ROBOVAST_PROJECT).
+    scenario: {}
   runs: 5
   scenario_file: scenario.osc
   run_files:
@@ -39,9 +42,41 @@ results_processing:
   postprocessing:
   - search/metrics.py:QuadMetrics       # per-run metrics.csv (analysis + extract)
   - analysis/render.py:DescentVideo     # per-run descent.gif for the run notebook
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      campaign: analysis/analysis_campaign.ipynb
+visualization:
+  results:
+    # Web run-view: replay one run over its own (non-ROS) timeline. The sim writes
+    # trajectory.csv (t,x,z,vx,vz,tilt), which postprocessing loads into the `trajectory`
+    # table; `timeline` points the playback clock at its `t` column. The same generic panels
+    # that render nav runs render this one -- no source-specific code.
+    run_view:
+      panels:
+      - scene:
+          title: Descent (x vs altitude)
+          position: {anchor: center, width: 460, height: 420}
+          source: {table: trajectory, time_column: t}
+          x: x
+          y: z
+          trail: true
+      - timeseries:
+          title: Signals
+          position: {anchor: bottom-right, width: 480, height: 240}
+          source: {table: trajectory, time_column: t}
+          series:
+          - {column: z, label: altitude}
+          - {column: tilt, label: tilt}
+          - {column: vz, label: descent vel}
+      - state:
+          title: Now
+          position: {anchor: top-left, width: 240}
+          source: {table: trajectory, time_column: t}
+          fields:
+          - {column: z, label: height, unit: m}
+          - {column: tilt, label: tilt, unit: rad}
+          - {column: vz, label: descent, unit: m/s}
+      timeline: {table: trajectory, time_column: t}
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb

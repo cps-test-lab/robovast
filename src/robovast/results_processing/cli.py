@@ -17,31 +17,23 @@
 
 """CLI for results processing and management."""
 
-import fnmatch
-import os
 import sys
-import tarfile
 import time
 from pathlib import Path
 
 import click
 import yaml
-from dotenv import load_dotenv
 
-from robovast.common import fmt_size as _fmt_size, make_download_progress_callback
-from robovast.common.cli import get_project_config, handle_cli_exception
-from robovast.common.cli.project_config import ProjectConfig
+from robovast.client.errors import handle_cli_exception
+from robovast.client.project_config import ProjectConfig, get_project_config
+from robovast.common import fmt_size as _fmt_size
+from robovast.common import make_transfer_progress_callback
 from robovast.common.execution import is_campaign_dir
-from robovast.results_processing.merge_results import merge_results
-from robovast.execution.cluster_execution.share_providers import \
-    load_share_provider_plugins
 from robovast.results_processing import run_postprocessing
-from robovast.results_processing.fair_metadata import generate_prov_metadata
+from robovast.results_processing.merge_results import merge_results
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing import \
-    load_postprocessing_plugins
-from robovast.results_processing.publication import (load_publication_plugins,
-                                                     run_publication)
+from robovast.results_processing.postprocessing import load_postprocessing_plugins
+from robovast.results_processing.publication import load_publication_plugins, run_publication
 
 
 @click.group()
@@ -72,7 +64,11 @@ def results():
               help='Skip data.db creation.')
 @click.option('--skip-metadata', is_flag=True,
               help='Skip metadata.yaml generation.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins, skip_db, skip_metadata):
+@click.option('--campaign', '-i', default=None, metavar='CAMPAIGN',
+              help='Only (re)process a single campaign directory '
+                   '(e.g. navigation-2026-03-20-153630) instead of the most recent.')
+def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins,
+                    skip_db, skip_metadata, campaign):
     """Run postprocessing commands on run results.
 
     Executes postprocessing commands defined in the .vast file found in the
@@ -115,6 +111,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
         skip=list(skip_plugins),
         skip_db=skip_db,
         skip_metadata=skip_metadata,
+        campaign=campaign,
     )
 
     click.echo("\n" + "=" * 60)
@@ -136,7 +133,10 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
               help='Only publish a single campaign directory '
                    '(e.g. navigation-2026-03-20-153630). '
                    'Without this, all campaigns are published.')
-def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
+@click.option('--allow-opaque', is_flag=True,
+              help='Publish even when an input cannot be identified. The exemption is recorded '
+                   'in the dataset, so it is visible to whoever reads it rather than untraceable.')
+def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -182,7 +182,6 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
                 "(expected pattern: <name>-YYYY-MM-DD-HHMMSS)."
             )
 
-    _load_share_dotenv()
     click.echo("Starting publication...")
     click.echo(f"Results directory: {results_dir}")
     if campaign:
@@ -196,6 +195,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
         click.echo("Running postprocessing...")
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
+            campaign=campaign,
             output_callback=click.echo,
             vast_file=vast_file,
         )
@@ -208,6 +208,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
 
     # Run publication
     success, message = run_publication(
+        allow_opaque=allow_opaque,
         results_dir=results_dir,
         output_callback=click.echo,
         vast_file=vast_file,
@@ -221,6 +222,129 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign):
         click.echo(f"\u2717 {message}", err=True)
         sys.exit(1)
     click.echo(f"\u2713 {message}")
+
+
+@results.command(name='import')
+@click.argument('archive', type=click.Path(exists=True, dir_okay=False))
+@click.option('--force', is_flag=True, help='Replace a campaign of the same id already there.')
+@click.option('--rebuild-store', is_flag=True,
+              help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
+def import_cmd(archive, force, rebuild_store):
+    """Take a campaign archive into the service, and postprocess it if it needs it.
+
+    ARCHIVE is a ``.tar.gz`` on *this* machine -- one ``vast results download`` or ``vast
+    share download`` produced, or a colleague sent. It is uploaded to the service and
+    imported there, so the campaign lands where the web UI and every other client can see
+    it; the file itself is never deleted, it is yours.
+
+    Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
+    not from the results tree, so a campaign that is only unpacked is invisible. And when
+    the archive is a **raw** one -- no ``_execution/data.db``, which is what the share holds
+    -- postprocessing is chained automatically, because a campaign without its metric tables
+    is not one you can ask anything.
+
+    Long-running, so it returns once the import is under way: the campaign appears
+    immediately at phase ``importing``. Watch it with ``vast wait <campaign-id>``, or in the
+    campaign view.
+
+    There is no local-only mode. Import means "into a service" -- that is where the tracked
+    phase, the log and the chained postprocessing are. A results directory with no service
+    is postprocessed in place with ``vast results postprocess -r <dir>``.
+    """
+    from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
+        echo_target, service_client)
+    from robovast.service.interface import \
+        ImportCampaignRequest  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import \
+        push_campaign_archive  # pylint: disable=import-outside-toplevel
+
+    path = Path(archive)
+    with service_client(require_service=True) as (client, label):
+        echo_target(label)
+        click.echo(f"uploading {path.name} ({_fmt_size(path.stat().st_size)}) ...")
+        staged = push_campaign_archive(client, path)
+        ref = client.import_campaign(ImportCampaignRequest(
+            archive_path=staged, force=force, rebuild_store=rebuild_store))
+
+    click.echo(f"\u2713 importing {ref.campaign_id}")
+    if ref.note:
+        click.echo(f"  {ref.note}")
+    click.echo(f"  watch it with: vast wait {ref.campaign_id}")
+
+
+@results.command(name='backfill-provenance')
+@click.argument('results_dir', required=False, type=click.Path(exists=True))
+@click.option('--write', is_flag=True,
+              help='Actually write. Without this, report what would change and touch nothing.')
+@click.option('--force', is_flag=True,
+              help='Re-derive a block an earlier run already wrote.')
+def backfill_provenance_cmd(results_dir, write, force):
+    """Derive what an old campaign's provenance can still be recovered from.
+
+    Campaigns that ran before a field existed do not have it, and there is no way back to the
+    moment it was knowable. Some of it is still derivable, though, and gets less so over time:
+    a short revision resolves to a full one while the commit is reachable, and a tag resolves
+    to a digest while the registry still serves it.
+
+    Only ever ADDS, under a ``backfilled:`` block. A campaign's own record is evidence, so
+    nothing it wrote is replaced -- otherwise a reader can no longer tell which values the
+    campaign reported and which were inferred later. What cannot be derived is recorded as
+    unknown with the reason, because "nobody could tell" and "nobody looked" are different
+    answers.
+
+    Dry by default: this runs over published data.
+    """
+    from robovast.common.backfill import (  # pylint: disable=import-outside-toplevel
+        apply_backfill, plan_backfill)
+
+    if results_dir is None:
+        try:
+            results_dir = get_project_config().results_dir
+        except Exception as e:  # noqa: BLE001
+            handle_cli_exception(e)
+            return
+
+    root = Path(results_dir)
+    campaigns = sorted(d for d in root.iterdir() if d.is_dir() and is_campaign_dir(d.name))
+    if not campaigns:
+        click.echo(f"no campaign directories under {root}")
+        return
+
+    changed = skipped = 0
+    for campaign in campaigns:
+        plan = apply_backfill(campaign, force=force) if write else plan_backfill(campaign)
+        if plan.get("unavailable"):
+            click.echo(f"{campaign.name}: {click.style('skipped', fg='yellow')} "
+                       f"-- {plan['unavailable']}")
+            skipped += 1
+            continue
+        if plan["already_present"] and not force:
+            click.echo(f"{campaign.name}: already backfilled")
+            skipped += 1
+            continue
+
+        revision = plan["derived"]["robovast_revision"]
+        images = plan["derived"]["images"]
+        click.echo(f"{campaign.name}:")
+        if revision.get("value"):
+            click.echo(f"  revision  {revision['value']} ({revision['source']})")
+        else:
+            click.echo(f"  revision  {click.style('unknown', fg='yellow')} "
+                       f"-- {revision['unknown']}")
+        for role, entry in sorted((images.get("per_role") or {}).items()):
+            if entry.get("value"):
+                click.echo(f"  {role:<9} {entry['source']}")
+            else:
+                click.echo(f"  {role:<9} {click.style('unknown', fg='yellow')} "
+                           f"-- {entry['unknown']}")
+        changed += 1
+
+    click.echo("")
+    if write:
+        click.echo(f"wrote {changed} campaign(s), skipped {skipped}")
+    else:
+        click.echo(f"{changed} campaign(s) would change, {skipped} skipped. "
+                   f"Nothing written -- add --write.")
 
 
 @results.command(name='merge-campaigns')
@@ -326,6 +450,11 @@ def generate_metadata_cmd(results_dir, dot_pdf):
 
         click.echo(f"  Processing {campaign_dir.name}...")
         try:
+            # Deferred: `rdflib`/`pyld` are the `fair` extra, and this module is a CLI
+            # plugin loaded on every `vast` invocation -- importing them at module level
+            # would make the whole `results` group vanish wherever they are not installed.
+            from robovast.results_processing.fair_metadata import \
+                generate_prov_metadata  # pylint: disable=import-outside-toplevel
             success, message = generate_prov_metadata(
                 campaign_dir, metadata, generate_visualization=dot_pdf
             )
@@ -384,7 +513,6 @@ def list_postprocessing_commands():
     click.echo("    postprocessing:")
     click.echo("    - rosbags_tf_to_csv:")
     click.echo("        frames: [base_link, map]")
-    click.echo("    - rosbags_bt_to_csv")
     click.echo("    - command:")
     click.echo("        script: ../../../tools/custom_script.sh")
     click.echo("        args: [--arg, value]")
@@ -437,436 +565,146 @@ def list_publication_plugins():
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
 
 
-def _load_share_dotenv() -> None:
-    """Load ``.env`` using the same search order as ``cluster upload-to-share``."""
-    project_file = ProjectConfig.find_project_file()
-    if project_file:
-        project_dir = os.path.dirname(os.path.abspath(project_file))
-        pc = ProjectConfig.load()
-        if pc and pc.config_path:
-            load_dotenv(os.path.join(os.path.dirname(pc.config_path), ".env"), override=False)
-        load_dotenv(os.path.join(project_dir, ".env"), override=False)
-    else:
-        load_dotenv(override=False)
-
-
-# ---------------------------------------------------------------------------
-# Command
-# ---------------------------------------------------------------------------
-
 @results.command(name='download')
-@click.option('--output', '-o', default=None,
-              help='Directory to extract results into (uses project results dir if not specified)')
-@click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Only download this campaign (e.g. dynamic_obstacle-2025-02-27-123456 or campaign-2025-02-27-123456). '
-                   'Can be specified multiple times. Without this, downloads all campaigns.')
+@click.argument('campaigns', nargs=-1, required=True)
+@click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
+              help='Directory to write the archives into [default: the current directory]')
 @click.option('--force', '-f', is_flag=True,
-              help='Re-download and re-extract even if the campaign directory already exists')
-@click.option('--keep-archive', is_flag=True,
-              help='Keep the downloaded .tar.gz file after extraction')
-@click.option('--debug', is_flag=True,
-              help='Print HTTP request/response details (URL, status, headers) for debugging')
-def download_from_share_cmd(output, campaigns, force, keep_archive, debug):
-    """Download campaign archives from the configured share service.
+              help='Overwrite an archive of the same name that is already here')
+def download_cmd(campaigns, output, force):
+    """Download campaign archives from the service, one ``.tar.gz`` each.
 
-    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
-    For each ``<campaign-name>-<timestamp>.tar.gz`` found on the share the command:
+    That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing
+    is extracted, no results directory is written into, and no state is kept about what
+    you already have -- the archive is yours, to keep, copy, unpack, or hand back with
+    ``vast results import``.
 
-    \b
-    1. Checks whether the campaign directory already exists locally
-       (skips the download if it does, unless ``--force`` is given).
-    2. Streams the archive to a temporary file with a live progress bar.
-    3. Extracts the archive into the output directory.
-    4. Removes the temporary archive (unless ``--keep-archive``).
+    The archive is the campaign as the service holds it, postprocessing and all. The
+    share's raw, pre-postprocess snapshot is a different system with different
+    credentials: ``vast share download``.
 
-    Required ``.env`` variables:
-
-    \b
-    ROBOVAST_SHARE_TYPE      — share provider (e.g. ``gcs``, ``webdav``, ``sftp``)
-    ROBOVAST_GCS_BUCKET      — GCS bucket name         (when ROBOVAST_SHARE_TYPE=gcs)
-    ROBOVAST_WEBDAV_URL      — WebDAV collection URL   (when ROBOVAST_SHARE_TYPE=webdav)
-    ROBOVAST_WEBDAV_USER     — WebDAV username          (when ROBOVAST_SHARE_TYPE=webdav)
-    ROBOVAST_WEBDAV_PASSWORD — WebDAV password          (when ROBOVAST_SHARE_TYPE=webdav)
+    Writes into the current directory unless ``-o`` says otherwise -- an archive is a
+    file, not a results tree, so the project's results directory is the wrong home
+    for it.
     """
-    _load_share_dotenv()
+    from robovast.client.service_target import \
+        service_client  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import \
+        download_campaign_archive  # pylint: disable=import-outside-toplevel
 
-    if debug:
-        import logging  # pylint: disable=import-outside-toplevel
-        import http.client as http_client  # pylint: disable=import-outside-toplevel
-        http_client.HTTPConnection.debuglevel = 1
-        logging.basicConfig()
-        logging.getLogger().setLevel(logging.DEBUG)
-        requests_log = logging.getLogger("urllib3")
-        requests_log.setLevel(logging.DEBUG)
-        requests_log.propagate = True
-        click.echo("[debug] HTTP debug logging enabled", err=True)
+    out_dir = Path(output) if output else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if not share_type:
-        raise click.UsageError(
-            "ROBOVAST_SHARE_TYPE is not set.\n"
-            "Add it to a .env file in your project directory.\n"
-            "Example:\n"
-            "  ROBOVAST_SHARE_TYPE=gcs\n"
-            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
-        )
-
-    providers = load_share_provider_plugins()
-    if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\n"
-            f"Available providers: {available}"
-        )
-
-    try:
-        provider = providers[share_type]()
-    except click.UsageError:
-        raise
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-
-    # Resolve output directory
-    if output is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first, "
-                "or pass --output explicitly."
-            )
-        output = raw_config.results_dir
-
-    output_path = Path(output)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # List available archives
-    click.echo(f"Listing campaigns on {share_type}...")
-    try:
-        archives = provider.list_campaign_archives()
-    except NotImplementedError as exc:
-        raise click.UsageError(str(exc)) from exc
-    except click.UsageError:
-        raise
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-
-    if not archives:
-        click.echo("No campaign archives found on the share.")
-        return
-
-    # Filter by requested campaign IDs
-    requested = set(campaigns)
-    if requested:
-        def _archive_id(name: str) -> str:
-            # Strip leading prefix (e.g. "results/") and trailing ".tar.gz"
-            base = os.path.basename(name)
-            return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
-
-        archives = [a for a in archives if _archive_id(a) in requested]
-        if not archives:
-            raise click.UsageError(
-                f"None of the requested campaigns were found on the share.\n"
-                f"Requested: {', '.join(sorted(requested))}"
-            )
-
-    downloaded = 0
-    skipped = 0
-
-    for object_name in archives:
-        base = os.path.basename(object_name)
-        campaign_id = base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
-        campaign_dir = output_path / campaign_id
-
-        if campaign_dir.exists() and not force:
-            click.echo(f"  {campaign_id}  already exists, skipping (use --force to re-download)")
-            skipped += 1
-            continue
-
-        # Use a deterministic partial-download path so we can resume
-        tmp_path = str(output_path / f".{base}.part")
-        resume_offset = 0
-        if os.path.exists(tmp_path):
-            resume_offset = os.path.getsize(tmp_path)
-            click.echo(f"  {campaign_id}  resuming from {resume_offset / 1024 / 1024:.1f} MiB...")
-        else:
-            click.echo(f"  {campaign_id}  downloading...")
-
-        start = time.monotonic()
-        progress_cb = make_download_progress_callback(campaign_id, start)
-
-        # Keep the .part file when the download fails mid-transfer so the
-        # next invocation can resume from where it left off.
-        download_complete = False
-        try:
+    with service_client(require_service=True) as (client, label):
+        click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
+        written = skipped = 0
+        for campaign_id in campaigns:
+            dest = out_dir / f"{campaign_id}.tar.gz"
+            if dest.exists() and not force:
+                click.echo(f"  {dest.name}  already here, skipping "
+                           "(use --force to re-download)")
+                skipped += 1
+                continue
+            start = time.monotonic()
             try:
-                provider.download_archive(
-                    object_name, tmp_path, progress_cb,
-                    resume_offset=resume_offset,
-                )
-            except Exception as exc:
-                if isinstance(exc, (click.UsageError, click.ClickException)):
-                    raise
+                download_campaign_archive(
+                    client, campaign_id, str(dest),
+                    progress_callback=make_transfer_progress_callback(campaign_id, start))
+            # Ahead of the broad handler below, which would otherwise swallow click's own
+            # control flow and report a usage error as an unexpected failure.
+            except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
+                raise
+            except Exception as exc:  # noqa: BLE001
+                sys.stdout.write("\n")
                 handle_cli_exception(exc)
                 continue
             finally:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
-
-            # Extract
-            click.echo(f"  {campaign_id}  extracting...")
-            try:
-                with tarfile.open(tmp_path, "r:gz") as tf:
-                    tf.extractall(output_path)
-            except tarfile.TarError as exc:
-                raise click.ClickException(
-                    f"Failed to extract '{base}': {exc}"
-                ) from exc
-
-            elapsed = time.monotonic() - start
-            size_mib = os.path.getsize(tmp_path) / 1024 / 1024
-            click.echo(
-                f"  {campaign_id}  ✓  {size_mib:.1f} MiB in {elapsed:.0f}s"
-            )
-            downloaded += 1
-
-            if keep_archive:
-                dest_archive = output_path / base
-                os.replace(tmp_path, dest_archive)
-                tmp_path = ""  # don't delete below
-            download_complete = True
-        finally:
-            # Only remove the .part file after a fully successful
-            # download+extraction.  Any other exit path — network error,
-            # click exception, or Ctrl+C (KeyboardInterrupt) — leaves the
-            # partial file in place so the next run can resume.
-            if tmp_path and os.path.exists(tmp_path) and download_complete:
-                os.unlink(tmp_path)
+            click.echo(f"  {campaign_id}  \u2713  {_fmt_size(dest.stat().st_size)} "
+                       f"in {time.monotonic() - start:.0f}s  ->  {dest}")
+            written += 1
 
     click.echo()
-    parts = [f"✓ Downloaded {downloaded} campaign(s)"]
+    parts = [f"\u2713 Downloaded {written} archive(s)"]
     if skipped:
         parts.append(f"{skipped} skipped")
     click.echo("  ".join(parts))
 
 
-@results.command(name='list-share')
-@click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Only show specific campaigns (e.g. campaign-2025-02-27-123456). '
-                   'Can be specified multiple times. Without this, shows all campaigns.')
-def list_share_cmd(campaigns):
-    """List campaign archives on the configured share service with sizes.
+def _require_service_client():
+    """Resolve the reachable robovast-service client, or raise a clean UsageError.
 
-    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
-    Prints one line per archive with its size on the share.
-
-    Required ``.env`` variables:
-
-    \b
-    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
-    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
+    The service-routed campaign operations (reprocess, delete) all go through it —
+    it owns the backend (local Docker / cluster + object store), so the CLI needs
+    no kubeconfig or object-store credentials of its own.
     """
-    _load_share_dotenv()
-
-    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if not share_type:
+    from robovast.client.service_target import \
+        detected_service_url  # pylint: disable=import-outside-toplevel
+    url = detected_service_url()
+    if not url:
         raise click.UsageError(
-            "ROBOVAST_SHARE_TYPE is not set.\n"
-            "Add it to a .env file in your project directory.\n"
-            "Example:\n"
-            "  ROBOVAST_SHARE_TYPE=gcs\n"
-            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
-        )
-
-    providers = load_share_provider_plugins()
-    if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\n"
-            f"Available providers: {available}"
-        )
-
-    try:
-        provider = providers[share_type]()
-    except click.UsageError:
-        raise
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-
-    click.echo(f"Listing campaigns on {share_type}...")
-    try:
-        archives = provider.list_campaign_archives_with_size()
-    except NotImplementedError as exc:
-        raise click.UsageError(str(exc)) from exc
-    except click.UsageError:
-        raise
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-
-    if not archives:
-        click.echo("No campaign archives found on the share.")
-        return
-
-    # Filter by requested campaign IDs
-    if campaigns:
-        requested = set(campaigns)
-
-        def _archive_id(name: str) -> str:
-            base = os.path.basename(name)
-            return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
-
-        archives = [(n, s) for n, s in archives if _archive_id(n) in requested]
-        if not archives:
-            raise click.UsageError(
-                f"None of the requested campaigns were found on the share.\n"
-                f"Requested: {', '.join(sorted(campaigns))}"
-            )
-
-    total_size = 0
-    for object_name, size in sorted(archives):
-        base = os.path.basename(object_name)
-        campaign_id = base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
-        size_str = _fmt_size(size) if size >= 0 else "unknown size"
-        click.echo(f"  {campaign_id}  {size_str}")
-        if size >= 0:
-            total_size += size
-
-    click.echo()
-    known_sizes = [(n, s) for n, s in archives if s >= 0]
-    if known_sizes:
-        click.echo(f"  {len(archives)} campaign(s)  total {_fmt_size(total_size)}")
-    else:
-        click.echo(f"  {len(archives)} campaign(s)")
+            "No robovast-service is reachable. Start one with 'vast serve' (local) "
+            "or tunnel to a cluster service first.")
+    from robovast.service.client import RobovastClient  # pylint: disable=import-outside-toplevel
+    return RobovastClient(url)
 
 
-@results.command(name='remove-from-share')
-@click.option('--campaign', '-i', 'campaigns', multiple=True, required=True,
-              help='Campaign to remove (e.g. campaign-2025-02-27-123456 or '
-                   'campaign-2026-03-09-*). Can be specified multiple times. '
-                   'Wildcards (* ? [...]) are supported.')
-@click.option('--yes', '-y', is_flag=True,
-              help='Skip confirmation prompt')
-def remove_from_share_cmd(campaigns, yes):
-    """Remove campaign archives from the configured share service.
+@results.command(name='reprocess')
+@click.argument('campaign', metavar='CAMPAIGN')
+@click.option('--force', '-f', is_flag=True,
+              help='Bypass per-rosbag caches and reprocess all bags.')
+@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
+              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
+def reprocess_cmd(campaign, force, skip_plugins):
+    """(Re)run analysis postprocessing for one CAMPAIGN via the robovast-service.
 
-    Reads the same ``.env`` configuration as ``cluster upload-to-share``.
-    Each named campaign archive is permanently deleted from the share.
-    Wildcards (``*``, ``?``, ``[…]``) are supported in campaign names;
-    e.g. ``campaign-2026-03-09-*`` removes all campaigns from that day.
-
-    Required ``.env`` variables:
-
-    \b
-    ROBOVAST_SHARE_TYPE  — share provider (e.g. ``gcs``)
-    ROBOVAST_GCS_BUCKET  — GCS bucket name  (when ROBOVAST_SHARE_TYPE=gcs)
-    ROBOVAST_GCS_KEY_FILE — service-account key file with delete permission
+    The backend-neutral counterpart of ``vast results postprocess`` (which runs
+    in-process against a local results dir): this is campaign-scoped and routes
+    through the service, so it also drives a **cluster** campaign — the rosbag→CSV
+    step runs in-cluster and ``data.db`` is rebuilt. Mirrors the web "Retrigger
+    postprocessing" action and the MCP ``run_postprocessing`` tool.
     """
-    _load_share_dotenv()
-
-    share_type = os.environ.get("ROBOVAST_SHARE_TYPE", "").strip()
-    if not share_type:
-        raise click.UsageError(
-            "ROBOVAST_SHARE_TYPE is not set.\n"
-            "Add it to a .env file in your project directory.\n"
-            "Example:\n"
-            "  ROBOVAST_SHARE_TYPE=gcs\n"
-            "  ROBOVAST_GCS_BUCKET=my-robovast-results"
-        )
-
-    providers = load_share_provider_plugins()
-    if share_type not in providers:
-        available = ", ".join(sorted(providers)) or "(none installed)"
-        raise click.UsageError(
-            f"Unknown share type '{share_type}'.\n"
-            f"Available providers: {available}"
-        )
-
+    from robovast.service.interface import \
+        RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
+    client = _require_service_client()
     try:
-        provider = providers[share_type]()
-    except click.UsageError:
-        raise
+        res = client.run_postprocessing(RunPostprocessingRequest(
+            campaign_id=campaign, force=force, skip=list(skip_plugins)))
     except Exception as exc:
         handle_cli_exception(exc)
         return
+    if not res.ok:
+        raise click.ClickException(res.message or "postprocessing failed")
+    click.echo(f"✓ {res.message or 'postprocessing complete'}")
 
-    # List archives to resolve object names for the requested campaign IDs
-    click.echo(f"Listing campaigns on {share_type}...")
+
+@results.command(name='delete')
+@click.argument('campaign', metavar='CAMPAIGN')
+@click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
+def delete_campaign_cmd(campaign, yes):
+    """Permanently delete one CAMPAIGN wholesale via the robovast-service.
+
+    Removes the campaign's durable home — its directory under the results root on a
+    local service, or its object-store data (plus any leftover Kubernetes Jobs and
+    the service's cache) on a cluster service. This is the full "forget this
+    campaign" action; ``vast execution cluster download-cleanup`` only frees
+    object-store buckets, and ``vast share remove`` only touches the
+    external share (which this command leaves untouched).
+
+    The service refuses a campaign that is still running — stop it first. This is
+    irreversible.
+    """
+    if not yes and not click.confirm(
+            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
+        click.echo("Aborted.")
+        return
+    client = _require_service_client()
     try:
-        all_archives = provider.list_campaign_archives_with_size()
-    except NotImplementedError as exc:
-        raise click.UsageError(str(exc)) from exc
-    except click.UsageError:
-        raise
+        res = client.delete_campaign(campaign)
     except Exception as exc:
         handle_cli_exception(exc)
         return
-
-    def _archive_id(name: str) -> str:
-        base = os.path.basename(name)
-        return base[: -len(".tar.gz")] if base.endswith(".tar.gz") else base
-
-    def _is_glob(pattern: str) -> bool:
-        return any(c in pattern for c in ("*", "?", "["))
-
-    # Match each pattern (exact or glob) against all archive IDs
-    matched: dict[str, tuple[str, int]] = {}  # archive_id -> (object_name, size)
-    for archive_name, size in all_archives:
-        aid = _archive_id(archive_name)
-        for pattern in campaigns:
-            if fnmatch.fnmatch(aid, pattern):
-                matched[aid] = (archive_name, size)
-                break
-
-    to_remove = list(matched.values())
-
-    # Report patterns that matched nothing
-    unmatched_exact = [p for p in campaigns if not _is_glob(p) and not any(
-        fnmatch.fnmatch(_archive_id(n), p) for n, _ in all_archives
-    )]
-    unmatched_glob = [p for p in campaigns if _is_glob(p) and not any(
-        fnmatch.fnmatch(_archive_id(n), p) for n, _ in all_archives
-    )]
-    if unmatched_exact:
-        raise click.UsageError(
-            f"Campaign(s) not found on the share: {', '.join(sorted(unmatched_exact))}\n"
-            "Use 'vast results list-share' to see available campaigns."
-        )
-    for pattern in unmatched_glob:
-        click.echo(f"  Warning: no campaigns matched pattern '{pattern}'")
-
-    if not to_remove:
-        click.echo("No campaigns to remove.")
-        return
-
-    if not yes:
-        click.echo()
-        for object_name, size in sorted(to_remove):
-            size_str = f"  ({_fmt_size(size)})" if size >= 0 else ""
-            click.echo(f"  {_archive_id(object_name)}{size_str}")
-        click.echo()
-        click.confirm(
-            f"Remove {len(to_remove)} campaign archive(s) from {share_type}?",
-            abort=True,
-        )
-
-    removed = 0
-    for object_name, _size in sorted(to_remove):
-        campaign_id = _archive_id(object_name)
-        click.echo(f"  {campaign_id}  removing...")
-        try:
-            provider.remove_archive(object_name)
-        except NotImplementedError as exc:
-            raise click.UsageError(str(exc)) from exc
-        except click.UsageError:
-            raise
-        except Exception as exc:
-            handle_cli_exception(exc)
-            continue
-        click.echo(f"  {campaign_id}  ✓ removed")
-        removed += 1
-
-    click.echo()
-    click.echo(f"✓ Removed {removed} campaign archive(s) from {share_type}.")
+    if not res.ok:
+        raise click.ClickException(res.message or "delete failed")
+    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")

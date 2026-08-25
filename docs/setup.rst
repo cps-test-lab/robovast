@@ -1,3 +1,4 @@
+.. _setup:
 
 Setup
 =====
@@ -20,14 +21,51 @@ Clone the RoboVAST repository:
    git clone https://github.com/cps-test-lab/robovast.git
    cd robovast
 
-Install RoboVAST and the navigation extension in editable mode:
+Install RoboVAST and its sibling packages in editable mode:
 
 .. code-block:: bash
 
    pip install -e .
    pip install -e src/robovast_nav
+   pip install -e src/robovast_sim_roqsim
+   pip install -e src/robovast_cluster     # only if you will drive a Kubernetes cluster
+   pip install -e src/robovast_client      # LAST -- see below
+
+Order matters, and ``robovast-client`` last is the part that surprises. It is a
+**non-optional path dependency** of ``robovast``, so ``pip install -e .`` resolves it and
+installs a plain *copy* into ``site-packages`` — silently replacing an editable install done
+earlier. Editing ``src/robovast_client`` then has no effect, with nothing said. Installing it
+after everything that depends on it is what makes the editable install the one that survives.
+
+The others go in the order shown because each depends on ``robovast`` and never the reverse —
+which is what keeps the dependency graph acyclic. ``poetry install`` at the root will **not**
+give you the lanes: they are separate distributions built on this one, not extras of it.
+
+``pip install -e src/robovast_client`` alone is a complete, supported install — a ``vast`` that
+can log in, push workspaces, have the service build their images, wait for campaigns and fetch
+results, in 13 packages and about 30 MB. Every verb it offers only *drives* a service; nothing
+it can run needs a simulator, Docker or a kubeconfig.
+
+Adding ``pip install -e .`` gives you a service that can run **local Docker
+campaigns**, with no Kubernetes client anywhere in the environment. That is the point of the split,
+so declining the cluster package is a supported setup rather than a broken one: ``vast exec`` simply
+lists ``local`` and not ``cluster``, and ``vast doctor`` reports ``cluster support: not installed``
+as a warning. Add ``robovast-cluster`` when you need the Kubernetes lane, and ``vast serve
+--backend cluster`` starts working.
 
 This will install the ``vast`` command and all its plugins.
+
+.. note::
+
+   ``make venv`` from a checkout does all of the above in the right order. Prefer it — a missing
+   sibling shows up as an *entry point* that is absent rather than an import error, which reads as
+   broken code rather than an incomplete environment.
+
+The web UI is not built by ``pip``. For a source checkout, build it once with
+``cd frontend/ui && npm ci && npm run build`` — ``vast serve`` then finds it there and
+picks up every rebuild. A wheel carries it instead: ``make build`` runs ``make ui-stage``
+first, which copies the built assets into the package so an installed service has a UI.
+Without either, ``vast serve`` warns and serves the API alone.
 The ``vast`` command provides a unified interface to all RoboVAST functionality.
 
 .. code-block:: bash
@@ -106,6 +144,22 @@ After setup, the following command should show the cluster information:
    kubectl cluster-info
 
 For debugging and monitoring, we recommend installing `k9s <https://k9scli.io/>`_.
+
+GPU nodes (optional)
+""""""""""""""""""""
+
+Only needed to render simulation cameras in hardware; campaigns run without it, in software.
+On each GPU node install the NVIDIA driver and the `NVIDIA container toolkit
+<https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>`_
+— the toolkit is what allows a container to be handed the device at all. RKE2 and k3s
+register a ``nvidia`` RuntimeClass once it is present, which is what RoboVAST looks for:
+
+.. code-block:: bash
+
+   kubectl get runtimeclass          # a 'nvidia' entry means the node is ready
+
+Everything above the host — making the GPU schedulable and requesting it per job — is done by
+``vast execution cluster setup``. See :ref:`cluster-gpu`.
 
 
 Docker

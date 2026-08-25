@@ -280,7 +280,7 @@ class FileCache2:
                     f.write(data if isinstance(data, str) else data.decode())
             with open(md5_path, "w", encoding="utf-8") as f:
                 f.write(fp)
-            logger.info("Saved %s to cache (hash: %s)", cache_path, fp)
+            logger.debug("Saved %s to cache (hash: %s)", cache_path, fp)
         except Exception as e:
             logger.warning("Error saving to cache: %s", e)
             self._remove(key)
@@ -308,7 +308,7 @@ class FileCache2:
         try:
             with open(md5_path, "w", encoding="utf-8") as f:
                 f.write(fp)
-            logger.info("Committed cache at %s (hash: %s)", cache_path, fp)
+            logger.debug("Committed cache at %s (hash: %s)", cache_path, fp)
         except Exception as e:
             logger.warning("Error committing cache: %s", e)
             raise
@@ -329,7 +329,7 @@ class FileCache2:
     def remove(self, key: Union[CacheKey, Any]) -> None:
         """Remove cache entry for key."""
         self._remove(key)
-        logger.info("Removed cache entry for key")
+        logger.debug("Removed cache entry for key")
 
     def get_json(self, key: Union[CacheKey, Any]) -> Optional[Any]:
         """

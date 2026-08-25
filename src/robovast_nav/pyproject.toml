@@ -1,22 +1,34 @@
 [tool.poetry]
 name = "robovast-nav"
-version = "1.0.0"
+version = "2.1.0"
 description = "Navigation-specific variation types for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "robovast_nav"}]
+# The costmap run-view panel ships as a built Module-Federation remote (see web/), served by the
+# robovast service from this package data. Built by `npm --prefix web install && npm --prefix web run
+# build` into robovast_nav/web/dist. The web/ build sources are excluded from the distribution.
+include = [{path = "robovast_nav/web/dist/**/*", format = ["sdist", "wheel"]}]
+exclude = ["web"]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-robovast = "^1.0.0"
+robovast = "^2.0.0"
 robovast-mcp = {version = "^0.1.0", optional = true}
-pyside6-essentials = "^6.6"
 scipy = "^1.11"
+# Imported by mcp_plugin (map rasters) and the notebook map visualizer. Declared here
+# because they are this package's imports; robovast used to carry it for everyone.
+matplotlib = "^3.10"
 numpy = "^1.26"
 Pillow = "^12.0"
 pyyaml = "^6.0"
-opencv-python-headless = ">=4.8"
+# Not optional, unlike robovast's own `fair` extra: the three variation modules build their
+# PROV-O namespace constants at module scope, so `Namespace` has to resolve at import time
+# for the entry points to load at all. It read as optional because every dev venv happened
+# to carry it -- installed by hand or with `fair` -- and only a clean docs build ever
+# imported FloorplanVariation without it.
+rdflib = "^7.0"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "FloorplanVariation" = "robovast_nav.variation.floorplan_variation:FloorplanVariation"
@@ -25,6 +37,17 @@ opencv-python-headless = ">=4.8"
 "PathVariationRasterized" = "robovast_nav.variation.path_variation:PathVariationRasterized"
 "ObstacleVariation" = "robovast_nav.variation.obstacle_variation:ObstacleVariation"
 "ObstacleVariationWithDistanceTrigger" = "robovast_nav.variation.obstacle_variation_with_distance_trigger:ObstacleVariationWithDistanceTrigger"
+
+[tool.poetry.plugins."robovast.panel_types"]
+costmap = "robovast_nav.panels:CostmapPanelType"
+map2d = "robovast_nav.panels:Map2DPanelType"
+nav2_behavior_tree = "robovast_nav.panels:Nav2BehaviorTreePanelType"
+
+[tool.poetry.plugins."robovast.service_endpoints"]
+costmap = "robovast_nav.service_endpoints:CostmapEndpoint"
+
+[tool.poetry.plugins."robovast.postprocessing_commands"]
+nav2_bt_tree = "robovast_nav.postprocessing:Nav2BtTree"
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
 nav = "robovast_nav.mcp_plugin:NavMCPPlugin"

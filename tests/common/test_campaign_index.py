@@ -7,23 +7,26 @@
 import textwrap
 
 from robovast.common.campaign_index import build_campaign_store
-from robovast.common.store import STORE_FILENAME, CampaignStore
+from robovast.common.store import (STORE_FILENAME, CampaignStore, read_campaign_created_at,
+                                   read_campaign_description)
 
 VAST = textwrap.dedent("""\
-    version: 1
+    version: 2
     configuration:
     - name: ca
       parameters:
       - speed: 1.0
     execution:
-      image: img
+      containers: {scenario: {image: img}}
       runs: 2
       scenario_file: scenario.osc
-    evaluation:
-      visualization:
-      - Analysis:
-          run: analysis/run.ipynb
-          campaign: analysis/camp.ipynb
+    visualization:
+      results:
+        explorer:
+          notebooks:
+          - Analysis:
+              run: analysis/run.ipynb
+              campaign: analysis/camp.ipynb
     """)
 
 
@@ -78,11 +81,75 @@ def test_build_campaign_store_batch(tmp_path):
         assert all(u["n_samples"] == 2 for u in units.values())
         assert units["ca"]["result_dir"] == "ca"
 
-    # config_json carries the evaluation.visualization block for the GUI.
+    # config_json carries the explorer notebooks, which is how they resolve for a
+    # campaign read back from its store.
     import json
     with CampaignStore(store_path) as store:
         cfg = json.loads(store.list_campaigns()[0]["config_json"])
-    assert cfg["evaluation"]["visualization"][0]["Analysis"]["run"] == "analysis/run.ipynb"
+    notebooks = cfg["visualization"]["results"]["explorer"]["notebooks"]
+    assert notebooks[0]["Analysis"]["run"] == "analysis/run.ipynb"
+
+
+def _write_execution_record(campaign, execution_time: str) -> None:
+    """Write the ``_execution/execution.yaml`` the local run script produces."""
+    (campaign / "_execution").mkdir(parents=True, exist_ok=True)
+    (campaign / "_execution" / "execution.yaml").write_text(
+        f"execution_time: '{execution_time}'\nruns: 1\nexecution_type: local\n")
+
+
+def test_created_at_is_the_recorded_start_not_the_indexing_time(tmp_path):
+    """created_at means "campaign start" — even though this indexer runs afterwards.
+
+    The store cannot be written live for local batch runs, so this indexer builds it
+    after the fact. Stamping ``time.time()`` there would record the *indexing* time,
+    which the service then shows as ``started_at`` and orders the campaign list by —
+    putting an old campaign among the most recent ones.
+    """
+    campaign = _make_campaign(tmp_path, {"ca": [0]})
+    _write_execution_record(campaign, "2026-06-17T10:10:10Z")
+
+    build_campaign_store(campaign)
+    assert read_campaign_created_at(campaign) == "2026-06-17T10:10:10+00:00"
+
+    # A rebuild must not restamp it: re-indexing an old campaign must not move it.
+    build_campaign_store(campaign, force=True)
+    assert read_campaign_created_at(campaign) == "2026-06-17T10:10:10+00:00"
+
+
+def test_rebuild_keeps_the_description(tmp_path):
+    """The launcher's description is the one column no results tree can supply, so a
+    forced rebuild must carry it over instead of blanking it."""
+    campaign = _make_campaign(tmp_path, {"ca": [0]})
+    _write_execution_record(campaign, "2026-06-17T10:10:10Z")
+    build_campaign_store(campaign)
+    with CampaignStore(campaign / STORE_FILENAME) as store:
+        store._conn.execute("UPDATE campaign SET description = ?", ("the full sweep",))
+        store._conn.commit()
+
+    build_campaign_store(campaign, force=True)
+    assert read_campaign_description(campaign) == "the full sweep"
+
+
+def test_created_at_is_null_when_the_start_was_never_recorded(tmp_path):
+    """No execution record -> unknown start time, not a guessed one."""
+    campaign = _make_campaign(tmp_path, {"ca": [0]})  # no _execution/execution.yaml
+
+    build_campaign_store(campaign)
+    assert read_campaign_created_at(campaign) is None
+
+
+def test_live_created_at_defaults_to_now(tmp_path):
+    """The live path is unchanged: omitting created_at stamps the current time.
+
+    This is what the controller does at the start of a run, in both modes.
+    """
+    import time
+
+    before = time.time()
+    with CampaignStore(tmp_path / "search" / STORE_FILENAME) as store:
+        store.create_campaign("search-2026-06-17-101010", {}, mode="search")
+        created_at = store.list_campaigns()[0]["created_at"]
+    assert before <= created_at <= time.time()
 
 
 def test_build_campaign_store_idempotent_and_force(tmp_path):

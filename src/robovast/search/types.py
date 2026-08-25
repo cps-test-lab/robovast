@@ -65,9 +65,15 @@ class Evaluation:
 
     Attributes:
         params: The evaluated parameter set.
-        objectives: Named optimized values the extractor returned (>=1). Single-
-            objective strategies read the sole entry; multi-objective uses all.
-        measures: Named quality-diversity behavior values (``{}`` when unused).
+        objectives: The objectives the campaign DECLARED, in declared order (>=1).
+            Single-objective strategies read the sole entry; multi-objective uses
+            all. Narrowed by :class:`~robovast.search.evaluator.Evaluator` to exactly
+            those names, so this dict never carries whatever else an extractor chose
+            to report -- code that keys on its SIZE (``record_unit``'s scalar lift)
+            is therefore reading the campaign's declaration, not the extractor's mood.
+        measures: Named measurements that are not optimized: the quality-diversity
+            behavior values an archive bins on, plus anything the extractor reported
+            beside the objectives (``{}`` when there is neither).
         n_samples: How many repetitions (completed runs) the values were
             aggregated over — a point estimate from this many samples, so a
             noise-aware strategy can reason about confidence.

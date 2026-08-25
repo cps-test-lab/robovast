@@ -1,18 +1,18 @@
-version: 1
+version: 2
 metadata:
   name: growth_sim
 configuration:
 - name: test
   variations:
   - ParameterVariationList:
-      name: growth_rate
+      scenario: growth_rate
       values:
       - 0.05
       - 0.1
       - 0.3
       - 0.5
   - ParameterVariationList:
-      name: initial_population
+      scenario: initial_population
       values:
       - 50
       - 100
@@ -22,13 +22,15 @@ configuration:
   - growth_rate: 0.07
   - initial_population: 123
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
-  resources:
-    cpu: 1
+  containers:
+    scenario:
+      resources:
+        cpu: 1
   runs: 2
   env:
   - ENABLE_X11: "false"
   scenario_file: scenario.osc
+  mode: base
   run_files:
   - "files/*.py"
   - "files/*.sh"
@@ -36,11 +38,13 @@ execution:
   post_command: /config/files/post_command.sh
 results_processing:
   postprocessing:
-    - command:
-        script: postprocess.sh
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      campaign: analysis/analysis_campaign.ipynb
+  - command:
+      script: postprocess.sh
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          campaign: analysis/analysis_campaign.ipynb

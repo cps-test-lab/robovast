@@ -61,12 +61,16 @@ executing the plugin.
 """
 
 import inspect
+import logging
 import os
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from robovast.common.common import load_config
 from robovast.common.results_utils import find_campaign_vast_file
+
+logger = logging.getLogger(__name__)
 
 
 def load_publication_plugins() -> Dict[str, Callable]:
@@ -183,6 +187,77 @@ def _get_plugin_type(plugin_func: Callable) -> str:
     return getattr(plugin_func, "plugin_type", "packaging")
 
 
+#: Filename of the manifest written beside the campaign's other records. Part of the published
+#: dataset, because a reader has to be able to check the reproducibility claim rather than take
+#: it on trust -- and because it is the only place a granted exemption is recorded.
+#:
+#: The ``metadata.`` prefix is deliberate: this is written at publication time, like
+#: ``metadata.yaml`` and ``metadata.prov.json``, so the prefix keeps the three publication
+#: artifacts together and apart from ``campaign.db`` and the ``_``-prefixed directories, which are
+#: written at other stages. Do not "tidy" it to a bare name -- the grouping is the point.
+#:
+#: It stays a file at the campaign root rather than moving into ``campaign.db``, which is
+#: regenerable: ``build_campaign_store`` reconstructs the store from the tree, and the granted
+#: exemption is a decision derivable from nothing in it, so a rebuild would silently drop the one
+#: record saying a human knowingly published an unidentifiable input.
+REPRODUCIBILITY_FILENAME = "metadata.reproducibility.yaml"
+
+
+def _reproducibility_gate(campaign_dir, output, allow_opaque: bool) -> Tuple[bool, str]:
+    """Classify the campaign's inputs, write the manifest, and decide whether to publish.
+
+    Publication is the last moment this is cheap. Afterwards the dataset has a DOI, is cited, and
+    every gap is permanent -- so an input nobody can identify is refused here rather than
+    discovered by whoever tries to reproduce it.
+
+    A *private* input does not block. Refusing everything a stranger cannot fetch would refuse
+    most real research; refusing only what nobody can **identify** is a claim that can be
+    honoured, and the private input's commit is what makes it reproducible for someone with
+    access.
+    """
+    import yaml
+
+    from robovast.results_processing.reproducibility import reproducibility_manifest
+
+    campaign_root = Path(campaign_dir).parent if Path(campaign_dir).name == "_config" \
+        else Path(campaign_dir)
+    try:
+        manifest = reproducibility_manifest(campaign_root)
+    except Exception as e:  # pylint: disable=broad-except
+        # Never block publication because the *check* broke -- that would make a bug here look
+        # like an unreproducible dataset.
+        logger.warning("Could not classify reproducibility for %s: %s", campaign_root, e)
+        return True, ""
+
+    counts = manifest["counts"]
+    output(f"Reproducibility: {counts['public']} public, {counts['private']} private "
+           f"(recorded commit), {counts['opaque']} unidentifiable")
+    for entry in manifest["inputs"]:
+        if entry["class"] == "opaque":
+            output(f"  ! {entry['input']}: {entry['why']}")
+
+    manifest["exemption_granted"] = bool(manifest["opaque"]) and allow_opaque
+    try:
+        with open(campaign_root / REPRODUCIBILITY_FILENAME, "w", encoding="utf-8") as handle:
+            yaml.dump(manifest, handle, default_flow_style=False, sort_keys=False)
+    except OSError as e:
+        logger.warning("Could not write %s: %s", REPRODUCIBILITY_FILENAME, e)
+
+    if not manifest["opaque"] or allow_opaque:
+        if manifest["opaque"]:
+            output("Publishing anyway (--allow-opaque); the exemption is recorded in "
+                   f"{REPRODUCIBILITY_FILENAME}.")
+        return True, ""
+    return False, (
+        f"Refusing to publish: {len(manifest['opaque'])} input(s) cannot be identified "
+        f"({', '.join(manifest['opaque'])}).\n"
+        f"A published dataset that depends on something nobody can name is not reproducible by "
+        f"anyone, including us. See {REPRODUCIBILITY_FILENAME} for the full classification.\n"
+        f"Fix what can be fixed ('vast results backfill-provenance' can sometimes derive a "
+        f"missing revision), or publish anyway with --allow-opaque, which records the exemption "
+        f"in the dataset.")
+
+
 def run_publication(
     results_dir: str,
     output_callback=None,
@@ -190,6 +265,7 @@ def run_publication(
     force: bool = False,
     skip_upload: bool = False,
     campaign: Optional[str] = None,
+    allow_opaque: bool = False,
 ) -> Tuple[bool, str]:
     """Run all publication plugins defined in the .vast configuration.
 
@@ -203,6 +279,9 @@ def run_publication(
         skip_upload: When ``True``, skip all plugins with
             ``plugin_type == "upload"`` (e.g. zenodo).  Only packaging plugins
             (e.g. zip) are executed.  Useful for local dry-runs before uploading.
+        allow_opaque: Publish even when an input cannot be identified.  The exemption is
+            recorded in the dataset's own manifest, so it is visible to whoever reads it
+            later rather than being a decision that left no trace.
 
     Returns:
         Tuple of (success, message).
@@ -234,6 +313,10 @@ def run_publication(
     entries = get_publication_config(vast_path)
     if not entries:
         return True, "No publication entries defined."
+
+    gate_ok, gate_message = _reproducibility_gate(config_dir, output, allow_opaque)
+    if not gate_ok:
+        return False, gate_message
 
     plugins = load_publication_plugins()
 

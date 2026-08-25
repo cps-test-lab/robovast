@@ -1,0 +1,4 @@
+# Placeholder scenario. The pre-flight and prepare() only need it to exist.
+scenario historic_v1:
+    do serial:
+        wait elapsed(1s)

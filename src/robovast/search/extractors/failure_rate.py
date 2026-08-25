@@ -27,7 +27,8 @@ from pathlib import Path
 
 from robovast.common.campaign_data import read_test_result
 
-from ..extractor import Extractor, ExtractResult, completed_run_dirs
+from ..extractor import (Extractor, ExtractResult, NoSampleError,
+                         completed_run_dirs)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,15 @@ class FailureRate(Extractor):
     def extract(self, config_dir: Path) -> ExtractResult:
         completed = completed_run_dirs(config_dir)
         if not completed:
-            logger.warning("No completed runs with results in %s; failure_rate=0.0", config_dir)
-            return ExtractResult(objectives={"failure_rate": 0.0})
+            # Not 0.0. This cell produced no result at all, and 0.0 here reads as "nothing
+            # failed" -- the exact opposite of what happened, and indistinguishable from a
+            # cell whose runs all passed. Worse for a *maximized* objective: 0.0 is the
+            # least interesting score, so the search would steer AWAY from the parameter
+            # sets whose runs are dying, which is where the failures it hunts actually are.
+            # NoSampleError is the honest answer; the controller records the cell and
+            # continues, so refusing to invent a number no longer costs the campaign.
+            raise NoSampleError(
+                f"{config_dir}: no run produced a result (no test.xml), so failure_rate "
+                f"has nothing to measure -- scoring 0.0 would claim that nothing failed")
         failures = sum(1 for run_dir in completed if not read_test_result(run_dir)["success"])
         return ExtractResult(objectives={"failure_rate": failures / len(completed)})

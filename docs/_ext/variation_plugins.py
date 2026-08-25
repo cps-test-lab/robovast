@@ -58,6 +58,7 @@ class VariationPluginDirective(Directive):
         if docstring:
             lines.extend(textwrap.dedent(docstring).splitlines())
             lines.append("")
+        lines.extend(_outputs_lines(cls))
 
         node = nodes.section()
         node.document = self.state.document
@@ -65,6 +66,40 @@ class VariationPluginDirective(Directive):
             StringList(lines), self.content_offset, node,
         )
         return list(node.children)
+
+
+def _outputs_lines(cls):
+    """RST describing what this plugin writes, and how a campaign binds it.
+
+    Read from the config class rather than the docstring so the rendered page cannot drift
+    from what validation enforces -- the failure mode a hand-written "Generated outputs"
+    section had, and did: two plugins documented parameter names they no longer wrote.
+    """
+    config_class = getattr(cls, "CONFIG_CLASS", None)
+    fields = getattr(config_class, "model_fields", None) or {}
+    if not {"scenario", "sim"} <= set(fields):
+        return []
+
+    slots = getattr(config_class, "SLOTS", ()) or ()
+    lines = ["", "**Outputs**", ""]
+    if slots:
+        lines.append(
+            "This variation writes several values, so a campaign binds each **output slot** "
+            "to a channel and a destination:")
+        lines += ["", ".. code-block:: yaml", ""]
+        lines += [f"    scenario: {{{slots[0]}: <parameter the scenario declares>}}"]
+        if len(slots) > 1:
+            lines.append(f"    sim:      {{{slots[1]}: <key of the simulator backend>}}")
+        lines += ["", "Slots: " + ", ".join(f"``{s}``" for s in slots) + ".",
+                  "Every slot must be bound, each to exactly one channel.", ""]
+    else:
+        lines += [
+            "This variation writes one value. Name its destination with **exactly one** of "
+            "``scenario:`` (a parameter the scenario file declares) or ``sim:`` (a key of "
+            "the simulator backend, or a path under its dotted root):", "",
+            ".. code-block:: yaml", "",
+            "    scenario: <parameter>", "    # or", "    sim: <backend key or path>", ""]
+    return lines
 
 
 def setup(app: Sphinx):

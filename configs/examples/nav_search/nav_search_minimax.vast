@@ -1,0 +1,136 @@
+version: 2
+metadata:
+  name: nav_search_minimax
+  title: "Which tuning survives the worst the world can do"
+  description: |
+    A nested search: an outer pass over the nav2 settings we choose, and for each one an
+    inner adversary over the doorway and the walker we do not. A tuning's score is the
+    worst its adversary could find, so the winner is the one whose bad day is least bad
+    -- which is not the one that looks best on average.
+
+    Cost multiplies: outer x inner x repetitions. It is the most expensive campaign here
+    and the only one that answers what to actually ship.
+  keywords: [robotics, navigation, ROS2, roqsim, nav2, search, minimax, robust-design]
+
+search:
+  strategy: search/minimax.py:Minimax
+  strategy_parameters:
+    outer: [inflation_radius, max_speed]
+    inner: [gap_width, walker_dwell]
+    inner_budget: 6
+    outer_candidates: 5
+  search_space:
+    gap_width:        {type: float, low: 0.4,  high: 1.6}
+    walker_dwell:     {type: float, low: 0.0,  high: 8.0}
+    inflation_radius: {type: float, low: 0.20, high: 0.80}
+    max_speed:        {type: float, low: 0.10, high: 0.50}
+  variations:
+  - variations/doorway.py:DoorwayVariation:
+      sim: {instances: components.barrier.instances}
+      gap_width: $gap_width
+  - ParameterVariationList:
+      sim: components.pedestrian.dwell
+      values: [$walker_dwell]
+  - ParameterVariationList:
+      scenario: inflation_radius
+      values: [$inflation_radius]
+  # The scenario takes a velocity triple; the search varies its linear component and the
+  # rest stays what nav2_params.yaml declares.
+  - ParameterVariationList:
+      scenario: max_speed
+      values: [[$max_speed, 0.0, 2.0]]
+  postprocessing:
+  # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
+  # each batch is scored, while results_processing runs once the campaign is over. Without
+  # it the extractor reads a poses.csv that does not exist yet and refuses the batch.
+  #
+  # Written exactly as results_processing below, because it is now dispatched the same way:
+  # the commands that need the campaign's own image go to an in-cluster conversion Job and
+  # the rest run in the controller. Before that, everything ran in the controller and the
+  # converters failed there, so the extractor refused every batch.
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - search/nav_metrics.py:NavMetrics
+  extract:
+    plugin: search/nav_extract.py:NavExtract
+    params: {aggregate: worst, timeout: 120.0}
+  objectives:
+  - {name: robustness, direction: minimize}
+  per_batch: 6
+  budget:
+  - runs: 270
+  stopping:
+  - metric: {name: outer_best, op: '>=', value: 0.2}
+  seed: 1
+
+visualization:
+  results:
+    explorer:
+      notebooks:
+      # One campaign view per strategy: four cells, one figure, and headline numbers
+      # computed from the campaign rather than written into the prose -- so a notebook
+      # cannot claim a finding its own data does not support.
+      - Analysis:
+          campaign: analysis/nav_search_minimax.ipynb
+
+execution:
+  containers:
+    # roqsim, from the deployment's project. Nothing here names an image: which registry it
+    # comes from is ROBOVAST_PROJECT's business, and naming one pins the example to a site.
+    simulation:
+      backend: roqsim
+      config: world/empty_room.yaml
+      resources: {cpu: 1, memory: 2Gi}
+    # The system under test, kept vanilla: a nav2 image plus the TB4 description. That is
+    # the claim this shape makes -- point it at any nav2 image and it works.
+    sut:
+      image: family:robovast
+      system_packages:
+      - ros-jazzy-nav2-minimal-tb4-description
+      resources: {cpu: 4, memory: 4Gi}
+    scenario:
+      resources: {cpu: 1.25, memory: 2Gi}
+  mode: ros2
+  # Declared with the memory limits, not instead of them: adding limits alone shrinks an
+  # otherwise-unbounded /dev/shm down to them, and a run that overruns shared memory dies of
+  # SIGBUS (exit 135) rather than a clean OOM -- which arrives with nothing explaining it.
+  shm_size: 1Gi
+  runs: 3
+  # Declared, unlike every other example in this repo. Without it `stalled` is null, no
+  # verdict about a wedged run is possible, and `vast wait` cannot exit on one. The trial
+  # bounds itself at 120 s; this is the outer backstop for a run that wedges before its own
+  # timeout arms.
+  #
+  # 600 and not 300 in a SEARCH: this is a no-progress deadline, and in a search loop a
+  # batch is followed by an in-cluster bag conversion before anything is scored. Progress
+  # legitimately pauses for the length of that Job, and at 300 the stall verdict fired
+  # while it was working -- reporting a wedge that was not one. The batch-mode grid keeps
+  # 300, because its conversion runs after the campaign rather than inside it.
+  timeout: 600
+  scenario_file: scenario_roqsim.osc
+  run_files:
+  # Per-extension rather than "files/*": that glob crosses '/', so it also sweeps
+  # __pycache__/*.pyc -- and run_files are hashed into the config identity, so a stray
+  # recompile perturbs it.
+  - "files/*.yaml"
+  - "files/*.pgm"
+  - "files/*.xml"
+  - "files/*.py"
+  env:
+  - PYTHONUNBUFFERED: "1"
+
+results_processing:
+  postprocessing:
+  - rosbags_tf_to_csv:
+      frames: all
+      require: [base_link, odom, turtlebot4_base_link_gt]
+  - rosbags_to_csv:
+      topics: [/collision, /clearance]
+  - rosbags_nav2bt_to_csv
+  - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
+  - search/nav_metrics.py:NavMetrics

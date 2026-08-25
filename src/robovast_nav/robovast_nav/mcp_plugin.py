@@ -14,84 +14,280 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP plugin for robovast-nav: navigation analysis, environment, and map tools."""
+"""MCP plugin for robovast-nav: navigation analysis, environment, and map tools.
+
+Two sources, chosen by what actually holds the fact, and never by what is easiest to
+open from here:
+
+**The database.** Trajectories, action feedback and everything derived from them are read
+with SQL over the campaign's ``data.db``, exactly as the core ``results`` plugin reads
+everything else. Postprocessing already ingests each CSV it produces into a table keyed on
+``(config_name, run_id)``, so re-parsing ``poses.csv`` was a second reader of the same
+fact — one that only worked when the run happened to sit on this host's disk, and that
+pulled a whole file to answer a question about eight numbers.
+
+**Files, through the address space.** Maps, videos and the resolved scenario parameters are
+artifacts with no table behind them. They are reached by their ``/results/<campaign_id>/…``
+address via the service, not by building a local path: a cluster campaign's durable home is
+the object store, and a local-path read reported every one of them as "not found".
+"""
 
 from __future__ import annotations
 
-import csv
+import contextlib
 import io
 import logging
 import math
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import matplotlib
 import numpy as np
 import yaml
-from matplotlib import patches as mpatches
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
+from matplotlib import patches as mpatches
 
-from robovast.common.campaign_data import (
-    read_resolved_configurations,
-    read_scenario_config,
-)
-from robovast.evaluation.mcp_server.plugin_common import _get_config_by_identifier_or_name
-from robovast.evaluation.mcp_server.results_resolver import (
-    resolve_campaign_path,
-    resolve_config_path,
-    resolve_run_path,
-)
+from robovast.client.file_address import RESULTS, format_address
+from robovast.mcp_server import data_access, service_access
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  # pylint: disable=wrong-import-position,ungrouped-imports
 
 logger = logging.getLogger(__name__)
 
+#: Ceiling the read-only query layer clamps ``max_rows`` to. Named here so the sampling
+#: notice can state the real limit rather than a number that drifts from it.
+_QUERY_MAX_ROWS = 5000
+
+
+class NavDataError(Exception):
+    """A nav read that cannot be answered, with a message the caller can act on.
+
+    Every tool converts this to ``{"error": …}``. It exists so the helpers can refuse
+    from anywhere without each of them having to know the caller's response shape — and
+    so a missing campaign stops arriving at an MCP client as a protocol-level exception.
+    """
+
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Reaching a campaign: files by address, data by SQL
 # ---------------------------------------------------------------------------
 
-def _downsample_rows(rows: list, max_rows: int) -> list:
-    """Return at most *max_rows* rows using stride-based sampling."""
-    if len(rows) <= max_rows:
-        return rows
-    stride = len(rows) / max_rows
-    return [rows[int(i * stride)] for i in range(max_rows)]
+def _client():
+    """The service when one answers, else an in-process transport over local results."""
+    return service_access.client_or_local()
 
 
-def _quaternion_to_yaw(x: float, y: float, z: float, w: float) -> float:
-    """Convert quaternion to yaw angle in radians."""
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
+def _address(campaign_id: str, *parts) -> str:
+    """The ``/results/<campaign_id>/<path>`` address for *parts*."""
+    return format_address(RESULTS, campaign_id,
+                          "/".join(str(p).strip("/") for p in parts if str(p)))
 
 
-def _find_jsonld_file(campaign: str, filename: str) -> Path | None:
-    """Find a JSON-LD file in the first environment under _transient/."""
-    campaign_path = resolve_campaign_path(campaign)
-    transient = campaign_path / "_transient"
-    if not transient.is_dir():
-        return None
-    for d in sorted(transient.iterdir()):
-        candidate = d / "json-ld" / filename
-        if candidate.exists():
-            return candidate
-    return None
+def _read_text(campaign_id: str, *parts) -> str:
+    """Text of a campaign file, by address."""
+    address = _address(campaign_id, *parts)
+    try:
+        return _client().read_file(address, lines=0).content
+    except Exception as e:  # noqa: BLE001
+        raise NavDataError(f"could not read {address}: {e}") from e
 
 
-def _read_poses_csv(path: Path, frame: str) -> list[dict]:
-    """Read poses.csv, filtering by frame name."""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        first_line = f.readline()
-        if first_line.startswith("#"):
-            reader = csv.DictReader(f)
-        else:
-            f.seek(0)
-            reader = csv.DictReader(f)
-        rows = [r for r in reader if r.get("frame") == frame]
-    return rows
+def _read_yaml(campaign_id: str, *parts) -> dict:
+    """A campaign YAML file, parsed."""
+    address = _address(campaign_id, *parts)
+    try:
+        return yaml.safe_load(_read_text(campaign_id, *parts)) or {}
+    except yaml.YAMLError as e:
+        raise NavDataError(f"could not parse {address}: {e}") from e
+
+
+def _list_dir(campaign_id: str, *parts) -> list[str]:
+    """Entry names in a campaign directory, by address. Directories end in ``/``."""
+    address = _address(campaign_id, *parts).rstrip("/") + "/"
+    try:
+        return list(_client().list_files(address, limit=1000).entries)
+    except Exception as e:  # noqa: BLE001
+        raise NavDataError(f"could not list {address}: {e}") from e
+
+
+@contextlib.contextmanager
+def _materialized(campaign_id: str, prefix: tuple, names):
+    """Copy campaign files into a temp dir and yield it, so path-based readers can run.
+
+    The map visualizer takes a filesystem path, and a cluster campaign has none — its files
+    are objects. Fetching the bytes by address and writing them side by side (keeping their
+    names, so a map YAML still finds its image) is what lets it work on either backend
+    instead of only the local one.
+    """
+    client = _client()
+    with tempfile.TemporaryDirectory(prefix="robovast-nav-") as tmp:
+        root = Path(tmp)
+        for name in names:
+            address = _address(campaign_id, *prefix, name)
+            try:
+                (root / name).write_bytes(client.read_file_bytes(address))
+            except Exception as e:  # noqa: BLE001
+                raise NavDataError(f"could not fetch {address}: {e}") from e
+        yield root
+
+
+def _scenario_params(campaign_id: str, config_name: str, *,
+                     required: bool = True) -> dict:
+    """A configuration's resolved scenario parameters, unwrapped from the scenario name.
+
+    ``required=False`` yields ``{}`` for a configuration that has no ``scenario.config``
+    at all, so a caller with a second place to look can go there instead of reporting a
+    read failure the user cannot act on.
+    """
+    try:
+        content = _read_yaml(campaign_id, config_name, "_config", "scenario.config")
+    except NavDataError:
+        if required:
+            raise NavDataError(
+                f"config {config_name!r} of {campaign_id!r} has no "
+                "_config/scenario.config, which is where a configuration's resolved "
+                "scenario parameters are recorded. Check the config name against "
+                f"list_files('/results/{campaign_id}/').") from None
+        return {}
+    if isinstance(content, dict) and len(content) == 1:
+        content = next(iter(content.values()))
+    return content or {}
+
+
+def _lit(value) -> str:
+    """A SQL string literal. The query transports take SQL text, not bound parameters."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _tables(campaign_id: str) -> dict[str, list[str]]:
+    """``{table_name: [column, …]}`` for the campaign's queryable data.
+
+    Consulted before every query so a missing table becomes "postprocessing has not run
+    this step" — which names the fix — instead of SQLite's "no such table".
+    """
+    described = data_access.describe(campaign_id)
+    if "error" in described:
+        raise NavDataError(described["error"])
+    return {t["table"]: [c.split(" ", 1)[0] for c in t.get("columns", [])]
+            for t in described.get("tables", []) if t.get("schema") == "main"}
+
+
+def _require_table(campaign_id: str, name: str, produced_by: str) -> list[str]:
+    """The columns of table *name*, or a refusal naming the plugin that would create it."""
+    tables = _tables(campaign_id)
+    if name not in tables:
+        available = ", ".join(sorted(tables)) or "(none)"
+        raise NavDataError(
+            f"campaign {campaign_id!r} has no {name!r} table, so this cannot be "
+            f"answered. It is created by the {produced_by!r} postprocessing step — "
+            f"configure it in the .vast and re-run postprocessing with the "
+            f"run_postprocessing tool. Tables present: {available}.")
+    return tables[name]
+
+
+def _find_table(campaign_id: str, patterns: tuple, produced_by: str) -> str:
+    """The one table whose name matches any of *patterns*, or a refusal listing what is there."""
+    import fnmatch  # pylint: disable=import-outside-toplevel
+    tables = _tables(campaign_id)
+    matches = sorted(t for t in tables
+                     if any(fnmatch.fnmatch(t, p) for p in patterns))
+    if not matches:
+        available = ", ".join(sorted(tables)) or "(none)"
+        raise NavDataError(
+            f"campaign {campaign_id!r} has no table matching {list(patterns)}, so this "
+            f"cannot be answered. Such a table is created by the {produced_by!r} "
+            f"postprocessing step — configure it in the .vast and re-run postprocessing "
+            f"with the run_postprocessing tool. Tables present: {available}.")
+    return matches[0]
+
+
+def _query(campaign_id: str, sql: str, limit: int = _QUERY_MAX_ROWS) -> list[dict]:
+    """Rows of a read-only ``SELECT``, or a refusal carrying the query layer's message."""
+    result = data_access.query(campaign_id, sql, limit)
+    if "error" in result:
+        raise NavDataError(result["error"])
+    return result.get("rows") or []
+
+
+def _stride_sql(inner: str, order_by: str, limit: int) -> str:
+    """Wrap *inner* so it returns at most *limit* evenly-spaced rows, plus the true count.
+
+    The sampling happens in the database rather than after transferring everything: a
+    30-second run holds several thousand poses, and the caller asked for a couple of
+    hundred. ``total_points`` rides along on every row so the reply can state what the
+    stride was taken from — a thinned trajectory that does not say so reads as the whole
+    one.
+    """
+    return f"""
+        WITH src AS ({inner}),
+             idx AS (SELECT *, ROW_NUMBER() OVER (ORDER BY {order_by}) - 1 AS _i,
+                            COUNT(*) OVER () AS _n
+                     FROM src)
+        SELECT * FROM idx
+        WHERE _n <= {limit} OR _i % MAX(1, (_n + {limit} - 1) / {limit}) = 0
+        ORDER BY _i
+        LIMIT {limit}
+    """
+
+
+def _pose_source(campaign_id: str, config_name: str, run_id: int, frame: str) -> str:
+    """The ``SELECT`` yielding one run's poses in a frame, typed and named uniformly.
+
+    ``CAST`` is not optional: a ``data.db`` built before typed ingest stores every column
+    as TEXT, where ``MAX`` and ``ORDER BY`` compare lexicographically ('10.02' < '9.5')
+    and would report a wrong maximum without failing.
+
+    ``t`` is the MEASUREMENT time (``stamp``) when the producer supplied one, falling back to the
+    arrival time. It matters here for one figure in particular: ``max_speed_m_s`` is a
+    ``MAX(distance/dt)``, which structurally selects whichever sample got the smallest ``dt`` --
+    so on an arrival clock it reports the worst quantisation artefact in the run rather than the
+    robot's fastest moment. The distances and the deviation geometry are time-free and unaffected.
+    """
+    return f"""
+        SELECT CAST(COALESCE(NULLIF("stamp", ''), "timestamp") AS REAL) AS t,
+               CAST("position.x" AS REAL) AS x,
+               CAST("position.y" AS REAL) AS y,
+               CAST("orientation.yaw" AS REAL) AS yaw
+        FROM poses
+        WHERE config_name = {_lit(config_name)}
+          AND CAST(run_id AS INTEGER) = {int(run_id)}
+          AND frame = {_lit(frame)}
+    """
+
+
+def _require_poses(campaign_id: str, config_name: str, run_id: int, frame: str) -> None:
+    """Refuse early, naming the frames that *do* exist, when the frame filter matches nothing.
+
+    An empty trajectory and a misspelled frame are the same empty result set, and the
+    second is by far the more likely — so the frames present are part of the refusal.
+    """
+    columns = _require_table(campaign_id, "poses", "rosbags_tf_to_csv")
+    # `stamp` is required, not optional: it is the measurement time the speed figures are computed
+    # from, and a table without it is a recording from before the pose contract. Refusing here
+    # turns a raw "no such column" out of _pose_source into a message that says what to re-run.
+    missing = [c for c in ("timestamp", "stamp", "position.x", "position.y", "orientation.yaw")
+               if c not in columns]
+    if missing:
+        raise NavDataError(
+            f"the 'poses' table of {campaign_id!r} is missing {missing}; it has "
+            f"{columns}. This is a different recording than rosbags_tf_to_csv produces.")
+    present = _query(campaign_id, f"""
+        SELECT DISTINCT frame FROM poses
+        WHERE config_name = {_lit(config_name)}
+          AND CAST(run_id AS INTEGER) = {int(run_id)}
+    """)
+    frames = [r["frame"] for r in present]
+    if not frames:
+        raise NavDataError(
+            f"no poses recorded for run {run_id} of config {config_name!r} in "
+            f"{campaign_id!r}.")
+    if frame not in frames:
+        raise NavDataError(
+            f"frame {frame!r} was not recorded for run {run_id} of "
+            f"{config_name!r}; recorded frames: {', '.join(sorted(frames))}.")
 
 
 def _point_to_segment_distance(
@@ -112,387 +308,350 @@ def _point_to_segment_distance(
     return math.sqrt((px - proj_x) ** 2 + (py - proj_y) ** 2)
 
 
+def _reporting(fn):
+    """Turn a :class:`NavDataError` into the ``{"error": …}`` every other MCP tool returns.
+
+    The nav tools used to let a ``ValueError`` escape, which reaches an MCP client as a
+    protocol error rather than as an answer — so "this campaign is on the cluster, not
+    here" was indistinguishable from the server being broken.
+    """
+    import functools  # pylint: disable=import-outside-toplevel
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except NavDataError as e:
+            return {"error": str(e)}
+    return _wrapped
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
 
-def nav_describe_data_model() -> dict[str, str]:
-    """Return descriptions of the core navigation data-model types.
-
-    These types (``Position``, ``Orientation``, ``Pose``,
-    ``StaticObject``) are the building blocks used by all nav
-    variation types.
-    """
-    return {
-        "Position": "2D position with x (float) and y (float) coordinates in meters.",
-        "Orientation": "Heading in the 2D plane expressed as yaw (float) in radians.",
-        "Pose": "Combined Position and Orientation representing a robot pose.",
-        "Object": (
-            "An obstacle/object with entity_name (str), model (str), "
-            "spawn_pose (Pose), and optional xacro_arguments (str). It can be spawned within the simulation."
-        ),
-    }
-
-
-def nav_get_planned_path(campaign: str, config: str) -> dict:
-    """Get the planned navigation path waypoints for a config.
+@_reporting
+def nav_get_obstacles(campaign_id: str, config_name: str) -> dict:
+    """What was in the robot's way? A configuration's static obstacles.
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name (``list_files`` on the campaign root
+            shows them).
+
+    Returns:
+        ``{obstacles, total}``, each ``{entity_name, model, x, y, yaw}`` — meters and
+        radians — plus ``xacro_arguments`` where the configuration sets them.
+        Or ``{error}``.
     """
-    campaign_path = resolve_campaign_path(campaign)
-    try:
-        configurations = read_resolved_configurations(campaign_path)
-    except FileNotFoundError:
-        return {"error": "no planned path found."}
+    # From the configuration's resolved scenario.config, not SQL — and that was checked,
+    # not assumed: ``unit.params_json`` (via run_view) records the parameters the campaign
+    # *varied*, and ``config_view`` the ``.vast`` as authored, which holds the variation
+    # *spec*. Neither holds the resolved object list, so there is no table to query.
+    objects = _scenario_params(campaign_id, config_name).get("static_objects") or []
 
-    for cfg in configurations.get("configs", []):
-        if cfg.get("name") == config:
-            path = cfg.get("_path")
-            if path:
-                return {
-                    "num_waypoints": len(path),
-                    "path_length": cfg.get("_path_length"),
-                    "waypoints": path,
-                }
-            return {"error": "Data source is available, but no path found. May not be a navigation config."}
-
-    return {"error": f"Config '{config}' not found in configurations."}
-
-
-def nav_get_obstacles(campaign: str, config: str) -> list[dict]:
-    """Get static obstacle definitions for a navigation config.
-
-    Returns a list of obstacles with entity_name, model, position,
-    orientation, and xacro_arguments.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name.
-    """
-    config_path = resolve_config_path(campaign, config)
-    params = read_scenario_config(config_path)
-    objects = params.get("static_objects", [])
-    if not objects:
-        return []
-
-    result = []
+    obstacles = []
     for obj in objects:
-        entry: dict[str, Any] = {"entity_name": obj.get("entity_name")}
-        entry["model"] = obj.get("model")
-        pose = obj.get("spawn_pose", {})
-        pos = pose.get("position", {})
-        orient = pose.get("orientation", {})
-        entry["x"] = pos.get("x")
-        entry["y"] = pos.get("y")
-        entry["yaw"] = orient.get("yaw")
+        pose = obj.get("spawn_pose", {}) or {}
+        entry: dict[str, Any] = {
+            "entity_name": obj.get("entity_name"),
+            "model": obj.get("model"),
+            "x": (pose.get("position") or {}).get("x"),
+            "y": (pose.get("position") or {}).get("y"),
+            "yaw": (pose.get("orientation") or {}).get("yaw"),
+        }
         if "xacro_arguments" in obj:
             entry["xacro_arguments"] = obj["xacro_arguments"]
-        result.append(entry)
-    return result
+        obstacles.append(entry)
+    return {"obstacles": obstacles, "total": len(obstacles)}
 
 
+@_reporting
 def nav_get_trajectory(
-    campaign: str,
-    config: str,
-    run: int,
+    campaign_id: str,
+    config_name: str,
+    run_id: int,
     frame: str = "base_link",
-    max_points: int = 200,
+    limit: int = 200,
+    stats_only: bool = False,
 ) -> dict:
-    """Get the robot trajectory for a run.
+    """Where did the robot go? One run's trajectory, as points or as a summary.
 
-    Reads ``poses.csv`` (produced by ``rosbags_tf_to_csv``
-    postprocessing) and returns downsampled trajectory points.
+    From the ``poses`` table (needs ``rosbags_tf_to_csv`` postprocessing).
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
-        run: Run number.
-        frame: TF frame name to extract (default ``base_link``).
-        max_points: Maximum trajectory points (default 200).
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name.
+        run_id: Run index within that configuration.
+        frame: TF frame (default ``base_link``); an unrecorded frame is refused with the
+            list of those that were recorded.
+        limit: Maximum points; sampled at an even stride beyond that, with
+            ``total_points`` stating the true count.
+        stats_only: Return the summary instead of the points. Computed over **every**
+            recorded pose regardless of ``limit`` — a statistic from a thinned trajectory
+            is a different number that looks like the same one.
+
+    Returns:
+        Points: ``{frame, total_points, returned_points, sampled, points}``, each point
+        ``{timestamp, x, y, yaw}``. With ``stats_only``: ``{frame, num_points,
+        total_distance_m, duration_sec, avg_speed_m_s, max_speed_m_s, start_pose,
+        end_pose, bounding_box}`` (poses are ``{x, y, yaw}``, yaw in radians).
+        Or ``{error}``.
     """
-    run_path = resolve_run_path(campaign, config, run)
-    csv_path = run_path / "poses.csv"
-    if not csv_path.exists():
+    _require_poses(campaign_id, config_name, run_id, frame)
+    source = _pose_source(campaign_id, config_name, run_id, frame)
+
+    if stats_only:
+        rows = _query(campaign_id, f"""
+            WITH p AS ({source}),
+                 d AS (SELECT t, x, y, yaw,
+                              x - LAG(x) OVER w AS dx,
+                              y - LAG(y) OVER w AS dy,
+                              t - LAG(t) OVER w AS dt,
+                              FIRST_VALUE(x)  OVER w AS x0,
+                              FIRST_VALUE(y)  OVER w AS y0,
+                              FIRST_VALUE(yaw) OVER w AS yaw0,
+                              LAST_VALUE(x)  OVER wf AS x1,
+                              LAST_VALUE(y)  OVER wf AS y1,
+                              LAST_VALUE(yaw) OVER wf AS yaw1
+                       FROM p
+                       WINDOW w  AS (ORDER BY t),
+                              wf AS (ORDER BY t
+                                     ROWS BETWEEN UNBOUNDED PRECEDING
+                                              AND UNBOUNDED FOLLOWING))
+            SELECT COUNT(*)                                        AS num_points,
+                   SUM(COALESCE(SQRT(dx*dx + dy*dy), 0))           AS total_distance_m,
+                   MAX(t) - MIN(t)                                 AS duration_sec,
+                   MAX(CASE WHEN dt > 0 THEN SQRT(dx*dx + dy*dy) / dt END)
+                                                                   AS max_speed_m_s,
+                   MIN(x) AS min_x, MAX(x) AS max_x,
+                   MIN(y) AS min_y, MAX(y) AS max_y,
+                   MIN(x0) AS x0, MIN(y0) AS y0, MIN(yaw0) AS yaw0,
+                   MIN(x1) AS x1, MIN(y1) AS y1, MIN(yaw1) AS yaw1
+            FROM d
+        """, limit=1)
+        r = rows[0]
+        duration = r["duration_sec"] or 0.0
+        distance = r["total_distance_m"] or 0.0
         return {
-            "error": (
-                "poses.csv not found. Run 'vast analysis postprocess' "
-                "with rosbags_tf_to_csv configured in the .vast file."
-            )
+            "frame": frame,
+            "num_points": r["num_points"],
+            "total_distance_m": distance,
+            "duration_sec": duration,
+            "avg_speed_m_s": distance / duration if duration > 0 else 0.0,
+            "max_speed_m_s": r["max_speed_m_s"] or 0.0,
+            "start_pose": {"x": r["x0"], "y": r["y0"], "yaw": r["yaw0"]},
+            "end_pose": {"x": r["x1"], "y": r["y1"], "yaw": r["yaw1"]},
+            "bounding_box": {"min_x": r["min_x"], "max_x": r["max_x"],
+                             "min_y": r["min_y"], "max_y": r["max_y"]},
         }
 
-    rows = _read_poses_csv(csv_path, frame)
-    if not rows:
-        return {"error": f"No data found for frame '{frame}' in poses.csv."}
-
-    sampled = _downsample_rows(rows, max_points)
-    points = []
-    for r in sampled:
-        yaw = _quaternion_to_yaw(
-            float(r.get("orientation.x", 0)),
-            float(r.get("orientation.y", 0)),
-            float(r.get("orientation.z", 0)),
-            float(r.get("orientation.w", 1)),
-        )
-        points.append({
-            "timestamp": float(r.get("timestamp", 0)),
-            "x": float(r.get("position.x", 0)),
-            "y": float(r.get("position.y", 0)),
-            "yaw": yaw,
-        })
-
+    limit = max(1, limit)
+    rows = _query(campaign_id, _stride_sql(source, "t", limit), limit=limit)
+    total = rows[0]["_n"] if rows else 0
     return {
         "frame": frame,
-        "total_points": len(rows),
-        "returned_points": len(points),
-        "points": points,
+        "total_points": total,
+        "returned_points": len(rows),
+        "sampled": total > len(rows),
+        "points": [{"timestamp": r["t"], "x": r["x"], "y": r["y"], "yaw": r["yaw"]}
+                   for r in rows],
     }
 
 
-def nav_get_trajectory_stats(
-    campaign: str,
-    config: str,
-    run: int,
-    frame: str = "base_link",
-) -> dict:
-    """Compute trajectory statistics for a run.
-
-    Returns total distance, duration, average/max speed, start/end
-    pose, and bounding box.
-
-    Requires ``rosbags_tf_to_csv`` postprocessing.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name.
-        run: Run number.
-        frame: TF frame name (default ``base_link``).
-    """
-    run_path = resolve_run_path(campaign, config, run)
-    csv_path = run_path / "poses.csv"
-    if not csv_path.exists():
-        return {
-            "error": (
-                "poses.csv not found. Run 'vast analysis postprocess' "
-                "with rosbags_tf_to_csv configured in the .vast file."
-            )
-        }
-
-    rows = _read_poses_csv(csv_path, frame)
-    if not rows:
-        return {"error": f"No data found for frame '{frame}' in poses.csv."}
-
-    xs = [float(r.get("position.x", 0)) for r in rows]
-    ys = [float(r.get("position.y", 0)) for r in rows]
-    ts = [float(r.get("timestamp", 0)) for r in rows]
-
-    total_dist = 0.0
-    speeds = []
-    for i in range(1, len(xs)):
-        dx = xs[i] - xs[i - 1]
-        dy = ys[i] - ys[i - 1]
-        dt = ts[i] - ts[i - 1]
-        dist = math.sqrt(dx * dx + dy * dy)
-        total_dist += dist
-        if dt > 0:
-            speeds.append(dist / dt)
-
-    duration = ts[-1] - ts[0] if len(ts) > 1 else 0.0
-    avg_speed = total_dist / duration if duration > 0 else 0.0
-    max_speed = max(speeds) if speeds else 0.0
-
-    start_yaw = _quaternion_to_yaw(
-        float(rows[0].get("orientation.x", 0)),
-        float(rows[0].get("orientation.y", 0)),
-        float(rows[0].get("orientation.z", 0)),
-        float(rows[0].get("orientation.w", 1)),
-    )
-    end_yaw = _quaternion_to_yaw(
-        float(rows[-1].get("orientation.x", 0)),
-        float(rows[-1].get("orientation.y", 0)),
-        float(rows[-1].get("orientation.z", 0)),
-        float(rows[-1].get("orientation.w", 1)),
-    )
-
-    return {
-        "frame": frame,
-        "num_points": len(rows),
-        "total_distance_m": total_dist,
-        "duration_sec": duration,
-        "avg_speed_m_s": avg_speed,
-        "max_speed_m_s": max_speed,
-        "start_pose": {"x": xs[0], "y": ys[0], "yaw": start_yaw},
-        "end_pose": {"x": xs[-1], "y": ys[-1], "yaw": end_yaw},
-        "bounding_box": {
-            "min_x": min(xs), "max_x": max(xs),
-            "min_y": min(ys), "max_y": max(ys),
-        },
-    }
-
-
+@_reporting
 def nav_get_action_feedback(
-    campaign: str,
-    config: str,
-    run: int,
-    max_rows: int = 200,
+    campaign_id: str,
+    config_name: str,
+    run_id: int,
+    limit: int = 200,
 ) -> dict:
-    """Get navigation action feedback data for a run.
+    """Get navigation action feedback for a run.
+
+    Queried from the table the ``rosbags_action_to_csv`` postprocessing step produced for
+    the ``navigate_to_pose`` action, so it answers on either backend. The columns are
+    whatever that recording holds; they are reported in ``columns``.
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
-        run: Run number.
-        max_rows: Maximum rows to return (default 200).
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name.
+        run_id: Run index within that configuration.
+        limit: Maximum rows to return; the result is sampled at an even stride when there
+            are more. ``total_rows`` always states the true count.
+
+    Returns:
+        ``{table, columns, total_rows, returned_rows, sampled, rows}`` or ``{error}``.
     """
-    run_path = resolve_run_path(campaign, config, run)
-
-    candidates = (
-        list(run_path.glob("*navigate_to_pose*feedback*.csv"))
-        + list(run_path.glob("*nav*feedback*.csv"))
-    )
-    if not candidates:
-        return {
-            "error": (
-                "Navigation action feedback CSV not found. Run 'vast analysis postprocess' "
-                "with rosbags_action_to_csv configured (action: navigate_to_pose)."
-            )
-        }
-
-    csv_path = candidates[0]
-    with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
-        first_line = f.readline()
-        if first_line.startswith("#"):
-            reader = csv.DictReader(f)
-        else:
-            f.seek(0)
-            reader = csv.DictReader(f)
-        rows = list(reader)
-
-    sampled = _downsample_rows(rows, max_rows)
+    table = _find_table(campaign_id,
+                        ("*navigate_to_pose*feedback*", "*nav*feedback*"),
+                        "rosbags_action_to_csv")
+    columns = [c for c in _tables(campaign_id)[table] if not c.startswith("_")]
+    limit = max(1, limit)
+    quoted = ", ".join(f'"{c}"' for c in columns)
+    order = '"timestamp"' if "timestamp" in columns else "rowid"
+    rows = _query(campaign_id, _stride_sql(
+        f'SELECT {quoted}, rowid FROM "{table}" '
+        f'WHERE config_name = {_lit(config_name)} '
+        f'AND CAST(run_id AS INTEGER) = {int(run_id)}',
+        order, limit), limit=limit)
+    total = rows[0]["_n"] if rows else 0
     return {
-        "source_file": csv_path.name,
-        "total_rows": len(rows),
-        "returned_rows": len(sampled),
-        "columns": list(reader.fieldnames or []),
-        "data": sampled,
+        "table": table,
+        "columns": columns,
+        "total_rows": total,
+        "returned_rows": len(rows),
+        "sampled": total > len(rows),
+        "rows": [{c: r[c] for c in columns} for r in rows],
     }
 
 
+def _planned_path(campaign_id: str, config_name: str) -> list[dict]:
+    """The configuration's planned path waypoints, from ``_transient/configurations.yaml``.
+
+    Not from SQL, and this was checked rather than assumed: ``_path`` is an
+    ``other_values`` entry written by the nav path variations
+    (``robovast_nav/variation/path_variation.py``), so it never reaches
+    ``unit.params_json`` (which holds only the varied parameters) nor ``config_view``
+    (the ``.vast`` as authored). ``configurations.yaml`` is the only record of it.
+    """
+    configurations = _read_yaml(campaign_id, "_transient", "configurations.yaml")
+    for cfg in configurations.get("configs", []) or []:
+        if cfg.get("name") == config_name:
+            path = cfg.get("_path")
+            if not path:
+                raise NavDataError(
+                    f"config {config_name!r} records no planned path (`_path`), so it "
+                    "was not generated by a nav path variation — there is nothing to "
+                    "compare the trajectory against.")
+            return path
+    raise NavDataError(
+        f"config {config_name!r} is not in this campaign's configurations.yaml.")
+
+
+@_reporting
 def nav_get_path_deviation(
-    campaign: str,
-    config: str,
-    run: int,
+    campaign_id: str,
+    config_name: str,
+    run_id: int,
     frame: str = "base_link",
+    limit: int = _QUERY_MAX_ROWS,
 ) -> dict:
-    """Compute path deviation between actual trajectory and planned path.
+    """How closely did it follow the plan? Cross-track error and path efficiency.
 
-    Compares the actual trajectory from ``poses.csv`` against the
-    planned path from ``configurations.yaml``.  Returns cross-track
-    error statistics and efficiency ratio.
-
-    Requires ``rosbags_tf_to_csv`` postprocessing.
+    Cross-track error is each pose's distance to the nearest planned segment. Needs a
+    configuration generated by a nav path variation (only those record a planned path).
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
-        run: Run number.
-        frame: TF frame name (default ``base_link``).
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name.
+        run_id: Run index within that configuration.
+        frame: TF frame (default ``base_link``).
+        limit: Maximum poses for the cross-track pass.
+
+    Returns:
+        ``{mean_cross_track_error_m, max_cross_track_error_m, actual_distance_m,
+        planned_distance_m, efficiency_ratio, points_used, total_points, sampled}``
+        or ``{error}``.
+
+        ``actual_distance_m`` is summed over every recorded pose and does not change with
+        ``limit``; the cross-track figures use the poses fetched, which
+        ``points_used``/``total_points`` report.
     """
-    run_path = resolve_run_path(campaign, config, run)
-    csv_path = run_path / "poses.csv"
-    if not csv_path.exists():
-        return {
-            "error": (
-                "poses.csv not found. Run 'vast analysis postprocess' "
-                "with rosbags_tf_to_csv configured in the .vast file."
-            )
-        }
+    _require_poses(campaign_id, config_name, run_id, frame)
+    planned = _planned_path(campaign_id, config_name)
 
-    rows = _read_poses_csv(csv_path, frame)
+    source = _pose_source(campaign_id, config_name, run_id, frame)
+    limit = max(2, min(limit, _QUERY_MAX_ROWS))
+    rows = _query(campaign_id, _stride_sql(source, "t", limit), limit=limit)
     if not rows:
-        return {"error": f"No data found for frame '{frame}' in poses.csv."}
+        raise NavDataError(
+            f"no poses in frame {frame!r} for run {run_id} of {config_name!r}.")
+    total_points = rows[0]["_n"]
 
-    campaign_path = resolve_campaign_path(campaign)
-    try:
-        configurations = read_resolved_configurations(campaign_path)
-    except FileNotFoundError:
-        return {"error": "configurations.yaml not found."}
-
-    planned_path = None
-    for cfg in configurations.get("configs", []):
-        if cfg.get("name") == config:
-            planned_path = cfg.get("_path")
-            break
-
-    if not planned_path:
-        return {"error": "No planned path found for this config."}
-
-    actual_xs = [float(r.get("position.x", 0)) for r in rows]
-    actual_ys = [float(r.get("position.y", 0)) for r in rows]
-    actual_dist = sum(
-        math.sqrt((actual_xs[i] - actual_xs[i - 1]) ** 2 + (actual_ys[i] - actual_ys[i - 1]) ** 2)
-        for i in range(1, len(actual_xs))
-    )
+    # Summed in the database over the full recording, so thinning the cross-track pass
+    # cannot quietly shorten the distance the robot is reported to have driven.
+    actual_dist = _query(campaign_id, f"""
+        WITH p AS ({source}),
+             d AS (SELECT x - LAG(x) OVER w AS dx, y - LAG(y) OVER w AS dy
+                   FROM p WINDOW w AS (ORDER BY t))
+        SELECT SUM(COALESCE(SQRT(dx*dx + dy*dy), 0)) AS m FROM d
+    """, limit=1)[0]["m"] or 0.0
 
     planned_dist = sum(
-        math.sqrt(
-            (planned_path[i]["x"] - planned_path[i - 1]["x"]) ** 2 +
-            (planned_path[i]["y"] - planned_path[i - 1]["y"]) ** 2
-        )
-        for i in range(1, len(planned_path))
-    )
+        math.sqrt((planned[i]["x"] - planned[i - 1]["x"]) ** 2 +
+                  (planned[i]["y"] - planned[i - 1]["y"]) ** 2)
+        for i in range(1, len(planned)))
 
-    cross_track_errors = []
-    for ax, ay in zip(actual_xs, actual_ys):
-        min_dist = float("inf")
-        for i in range(len(planned_path) - 1):
-            d = _point_to_segment_distance(
-                ax, ay,
-                planned_path[i]["x"], planned_path[i]["y"],
-                planned_path[i + 1]["x"], planned_path[i + 1]["y"],
-            )
-            min_dist = min(min_dist, d)
-        cross_track_errors.append(min_dist)
-
-    mean_cte = sum(cross_track_errors) / len(cross_track_errors) if cross_track_errors else 0.0
-    max_cte = max(cross_track_errors) if cross_track_errors else 0.0
+    cross_track = []
+    for r in rows:
+        nearest = float("inf")
+        for i in range(len(planned) - 1):
+            nearest = min(nearest, _point_to_segment_distance(
+                r["x"], r["y"],
+                planned[i]["x"], planned[i]["y"],
+                planned[i + 1]["x"], planned[i + 1]["y"]))
+        cross_track.append(nearest)
 
     return {
-        "mean_cross_track_error_m": mean_cte,
-        "max_cross_track_error_m": max_cte,
+        "mean_cross_track_error_m": sum(cross_track) / len(cross_track),
+        "max_cross_track_error_m": max(cross_track),
         "actual_distance_m": actual_dist,
         "planned_distance_m": planned_dist,
         "efficiency_ratio": planned_dist / actual_dist if actual_dist > 0 else None,
+        "points_used": len(rows),
+        "total_points": total_points,
+        "sampled": total_points > len(rows),
     }
 
 
-def nav_get_map_info(campaign: str, config: str) -> dict:
-    """Get map metadata for a navigation configuration.
+def _map_dir_and_yaml(campaign_id: str, config_name: str) -> tuple[tuple, str]:
+    """``((path, parts…), yaml_name)`` for the configuration's map.
 
-    Reads the map YAML file from ``_config/maps/`` and returns
-    resolution, origin, dimensions, and threshold values.
+    Preferred source is the configuration's own resolved ``map_file`` scenario parameter,
+    which is campaign-relative; the ``_config/maps/`` listing is used when the parameter
+    is absent (a scenario that hard-codes its map).
+    """
+    map_file = _scenario_params(campaign_id, config_name, required=False).get("map_file")
+    if map_file:
+        parts = str(map_file).strip("/").split("/")
+        return tuple(parts[:-1]), parts[-1]
+
+    prefix = (config_name, "_config", "maps")
+    try:
+        yamls = [e for e in _list_dir(campaign_id, *prefix) if e.endswith(".yaml")]
+    except NavDataError:
+        yamls = []  # no maps/ directory at all — the same verdict as an empty one
+    if not yamls:
+        raise NavDataError(
+            f"config {config_name!r} has no 'map_file' scenario parameter and no "
+            f"*.yaml under _config/maps/ — this is not a navigation configuration.")
+    return prefix, yamls[0]
+
+
+@_reporting
+def nav_get_map_info(campaign_id: str, config_name: str,
+                     occupancy: bool = False) -> dict:
+    """Get a navigation configuration's map: metadata, and optionally cell occupancy.
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name.
+        occupancy: Also read the image and count occupied / free / unknown cells against
+            the YAML's thresholds. Costs a transfer of the raster; the metadata alone
+            does not.
+
+    Returns:
+        ``{map_name, resolution, origin, occupied_thresh, free_thresh, negate,
+        image_file, width_px, height_px, width_m, height_m}``, plus with ``occupancy``
+        ``{total_cells, occupied_cells, free_cells, unknown_cells, occupied_ratio,
+        free_ratio, unknown_ratio}``. Or ``{error}``.
     """
-    config_path = resolve_config_path(campaign, config)
-    maps_dir = config_path / "_config" / "maps"
-    if not maps_dir.is_dir():
-        return {"error": "No maps/ directory found. This may not be a navigation campaign."}
-
-    yaml_files = list(maps_dir.glob("*.yaml"))
-    if not yaml_files:
-        return {"error": "No map YAML file found in _config/maps/."}
-
-    map_yaml_path = yaml_files[0]
-    with open(map_yaml_path, "r", encoding="utf-8") as f:
-        map_config = yaml.safe_load(f)
+    prefix, yaml_name = _map_dir_and_yaml(campaign_id, config_name)
+    map_config = _read_yaml(campaign_id, *prefix, yaml_name)
 
     result: dict[str, Any] = {
-        "map_name": map_yaml_path.stem,
+        "map_name": yaml_name.rsplit(".", 1)[0],
         "resolution": map_config.get("resolution"),
         "origin": map_config.get("origin"),
         "occupied_thresh": map_config.get("occupied_thresh"),
@@ -502,155 +661,102 @@ def nav_get_map_info(campaign: str, config: str) -> dict:
     }
 
     image_name = map_config.get("image", "")
-    if image_name:
-        image_path = maps_dir / image_name
-        if image_path.exists():
-            try:
-                from PIL import Image as PILImage  # pylint: disable=import-outside-toplevel
-                with PILImage.open(image_path) as img:
-                    w, h = img.size
-                    result["width_px"] = w
-                    result["height_px"] = h
-                    res = map_config.get("resolution", 0.05)
-                    result["width_m"] = w * res
-                    result["height_m"] = h * res
-            except ImportError:
-                pass
-
-    return result
-
-def nav_get_map_occupancy_stats(campaign: str, config: str) -> dict:
-    """Compute occupancy statistics for a map.
-
-    Reads the PGM image and computes occupied, free, and unknown
-    cell counts based on the threshold values from the YAML file.
-
-    Args:
-        campaign: Campaign name.
-        config: Configuration name.
-    """
-    config_path = resolve_config_path(campaign, config)
-    maps_dir = config_path / "_config" / "maps"
-    if not maps_dir.is_dir():
-        return {"error": "No maps/ directory found."}
-
-    yaml_files = list(maps_dir.glob("*.yaml"))
-    if not yaml_files:
-        return {"error": "No map YAML file found."}
-
-    with open(yaml_files[0], "r", encoding="utf-8") as f:
-        map_config = yaml.safe_load(f)
-
-    image_name = map_config.get("image", "")
-    image_path = maps_dir / image_name
-    if not image_path.exists():
-        return {"error": f"Map image not found: {image_name}"}
+    if not image_name:
+        if occupancy:
+            raise NavDataError(
+                f"map {yaml_name!r} declares no 'image', so there are no cells to count.")
+        return result
 
     try:
         from PIL import Image as PILImage  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return {"error": "PIL/numpy not available for map analysis."}
+    except ImportError as e:
+        if occupancy:
+            raise NavDataError("Pillow is not installed; cannot read the map raster.") from e
+        return result
 
-    with PILImage.open(image_path) as img:
-        arr = np.array(img, dtype=float) / 255.0
+    with _materialized(campaign_id, prefix, [image_name]) as root:
+        with PILImage.open(root / image_name) as img:
+            width, height = img.size
+            arr = np.array(img, dtype=float) / 255.0 if occupancy else None
 
-    occupied_thresh = map_config.get("occupied_thresh", 0.65)
-    free_thresh = map_config.get("free_thresh", 0.196)
+    result["width_px"] = width
+    result["height_px"] = height
+    resolution = map_config.get("resolution") or 0.05
+    result["width_m"] = width * resolution
+    result["height_m"] = height * resolution
 
-    total = arr.size
-    occupied = int(np.sum(arr < free_thresh))
-    free_cells = int(np.sum(arr > occupied_thresh))
-    unknown = total - occupied - free_cells
-
-    return {
-        "total_cells": total,
-        "occupied_cells": occupied,
-        "free_cells": free_cells,
-        "unknown_cells": unknown,
-        "occupied_ratio": occupied / total,
-        "free_ratio": free_cells / total,
-        "unknown_ratio": unknown / total,
-    }
+    if occupancy:
+        occupied_thresh = map_config.get("occupied_thresh", 0.65)
+        free_thresh = map_config.get("free_thresh", 0.196)
+        total = arr.size
+        occupied = int(np.sum(arr < free_thresh))
+        free_cells = int(np.sum(arr > occupied_thresh))
+        unknown = total - occupied - free_cells
+        result.update({
+            "total_cells": total,
+            "occupied_cells": occupied,
+            "free_cells": free_cells,
+            "unknown_cells": unknown,
+            "occupied_ratio": occupied / total,
+            "free_ratio": free_cells / total,
+            "unknown_ratio": unknown / total,
+        })
+    return result
 
 
 def draw_map(
-    campaign: str,
-    config: str,
+    campaign_id: str,
+    config_name: str,
     layers: list[dict] | None = None,
     figsize: list[int] | None = None,
     title: str | None = None,
     show_legend: bool = True,
 ) -> Image:
-    """Render a map with overlaid layers and return a PNG image.
+    """Render the configuration's map with overlays — a trajectory, goals, obstacles.
 
-    All coordinates are world coordinates (meters).
+    All coordinates are world meters. Feed it points from ``nav_get_trajectory`` or
+    ``nav_get_obstacles``.
 
     Args:
-        campaign: Campaign name.
-        config: Configuration name.
-        layers: Ordered list of drawing layers. Each layer is a dict
-            with a ``type`` key and type-specific fields. Common fields
-            available on every layer: ``color`` (matplotlib colour
-            string), ``alpha`` (opacity 0–1), ``label`` (legend label).
+        campaign_id: Campaign identifier.
+        config_name: Configuration directory name.
+        layers: Drawn in order. Every layer takes ``color``, ``alpha``, ``label``
+            (matplotlib names), plus by ``type``:
+            ``path`` — ``points`` [[x,y],…], ``linewidth``, ``show_endpoints``;
+            ``points`` — ``points``, ``marker`` (matplotlib code), ``size``;
+            ``circle`` — ``x``, ``y``, ``radius``;
+            ``rectangle`` — ``x``, ``y``, ``width``, ``height``, ``yaw``;
+            ``polygon`` — ``points`` (≥3);
+            ``arrow`` — ``x``, ``y``, ``dx``, ``dy``, ``head_width``.
+        figsize: ``[width, height]`` in inches (default ``[12, 10]``).
+        title: Title drawn above the map.
+        show_legend: Draw a legend when any layer has a ``label``.
 
-            **Layer types:**
-
-            ``"path"`` — polyline through world-coordinate points.
-
-            - ``points``: list of [x, y] pairs (required, ≥ 2).
-            - ``linewidth``: line width in points (default 2.0).
-            - ``show_endpoints``: draw start/end dot markers (default true).
-
-            ``"points"`` — scatter markers at world-coordinate positions.
-
-            - ``points``: list of [x, y] pairs (required).
-            - ``marker``: matplotlib marker — ``"o"`` circle, ``"s"``
-              square, ``"^"`` triangle, ``"*"`` star, ``"D"`` diamond,
-              ``"P"`` plus-filled, ``"X"`` x-filled, ``"p"`` pentagon,
-              ``"h"`` hexagon (default ``"o"``).
-            - ``size``: marker size in points (default 8).
-
-            ``"circle"`` — filled circle.
-
-            - ``x``, ``y``: centre in world coordinates (required).
-            - ``radius``: radius in meters (default 0.5).
-
-            ``"rectangle"`` — filled rectangle, optionally rotated.
-
-            - ``x``, ``y``: centre in world coordinates (required).
-            - ``width``, ``height``: dimensions in meters (required).
-            - ``yaw``: rotation in radians (default 0).
-
-            ``"polygon"`` — filled closed polygon.
-
-            - ``points``: list of [x, y] pairs (required, ≥ 3).
-
-            ``"arrow"`` — directional arrow.
-
-            - ``x``, ``y``: tail position (required).
-            - ``dx``, ``dy``: delta to head in meters (required).
-            - ``head_width``: arrowhead width in meters (default 0.1).
-
-        figsize: Figure size as [width, height] in inches (default [12, 10]).
-        title: Optional title drawn above the map.
-        show_legend: Render a legend when any layer has a label (default true).
+    Raises:
+        NavDataError: The configuration has no map (an image tool has no result dict to
+            carry an ``{"error": …}`` in, so it raises instead).
     """
-    from robovast_nav.gui.map_visualizer import MapVisualizer  # pylint: disable=import-outside-toplevel
+    from robovast_nav.map_visualizer import \
+        MapVisualizer  # pylint: disable=import-outside-toplevel
 
-    cfg = _get_config_by_identifier_or_name(campaign, config)
-    if cfg is None:
-        raise FileNotFoundError(f"Config '{config}' not found in campaign '{campaign}'")
-    map_file = cfg.get("config", {}).get("map_file")
-    if not map_file:
-        raise FileNotFoundError(f"No map_file in metadata for config '{config}'")
-    map_yaml = str(resolve_campaign_path(campaign) / map_file)
+    # Straight from the configuration's own resolved scenario parameters, rather than the
+    # campaign metadata.yaml this used to read: that file is written by postprocessing, so
+    # drawing the map of a campaign that had merely run used to fail.
+    prefix, yaml_name = _map_dir_and_yaml(campaign_id, config_name)
+    map_config = _read_yaml(campaign_id, *prefix, yaml_name)
+    image_name = map_config.get("image")
+    if not image_name:
+        raise NavDataError(f"map {yaml_name!r} declares no 'image' to draw.")
 
-    viz = MapVisualizer()
-    if not viz.load_map(map_yaml):
-        raise ValueError(f"Failed to load map from: {map_yaml}")
-
-    fw, fh = (figsize[0], figsize[1]) if figsize and len(figsize) == 2 else (12, 10)
-    fig, ax = viz.create_figure(figsize=(fw, fh))
+    # The visualizer opens a path, and a cluster campaign's map is an object store entry.
+    # Both files land in one temp dir under their own names so the YAML's relative
+    # ``image:`` reference still resolves.
+    with _materialized(campaign_id, prefix, [yaml_name, image_name]) as root:
+        viz = MapVisualizer()
+        if not viz.load_map(str(root / yaml_name)):
+            raise NavDataError(f"could not load the map of config {config_name!r}")
+        fw, fh = (figsize[0], figsize[1]) if figsize and len(figsize) == 2 else (12, 10)
+        fig, ax = viz.create_figure(figsize=(fw, fh))
 
     if title:
         ax.set_title(title)
@@ -746,138 +852,17 @@ def draw_map(
     return Image(data=buf.getvalue(), format="png")
 
 
-def display_simulation_screenshot(
-    campaign: str,
-    config: str,
-    run: int,
-    simulation_time: float,
-) -> Image:
-    """Return a simulation camera screenshot at the given simulation time.
-
-    Locates the single WebM camera recording for the specified run and seeks
-    to the frame corresponding to *simulation_time* (seconds since the start of the simulation,
-    as used by ROS). The video time offset is derived from the rosbag
-    ``metadata.yaml`` starting_time so that the correct frame is selected even
-    when the bag was recorded mid-session.
-
-    Args:
-        campaign: Campaign directory name (e.g. ``performance-2026-03-10-213012``).
-        config:   Config directory name (e.g. ``uniraster-59-1``).
-        run:      Run index (integer, e.g. ``0``).
-        simulation_time: Simulation time in seconds (float, since the start of the simulation).
-
-
-    Returns:
-        PNG screenshot as an MCP ``Image``.
-
-    Raises:
-        FileNotFoundError: No ``.webm`` file found in the run directory.
-        ValueError: More than one ``.webm`` file exists (pass the correct one
-            explicitly or clean up the directory).
-    """
-    import cv2  # pylint: disable=import-outside-toplevel
-
-    run_path: Path = resolve_run_path(campaign, config, run)
-
-    # --- Locate the single .webm file ---
-    webm_files = list(run_path.glob("*.webm"))
-    if len(webm_files) == 0:
-        raise FileNotFoundError(f"No .webm file found in {run_path}")
-    if len(webm_files) > 1:
-        names = ", ".join(f.name for f in sorted(webm_files))
-        raise ValueError(
-            f"Multiple .webm files found in {run_path}: {names}. "
-            "Cannot auto-select; please remove the unwanted file."
-        )
-    webm_path = webm_files[0]
-
-    # --- Determine video seek offset from rosbag metadata ---
-    seek_s = 0.0
-    rosbag_dirs = [
-        d for d in run_path.iterdir()
-        if d.is_dir() and (d / "metadata.yaml").exists()
-    ]
-    if rosbag_dirs:
-        meta_file = rosbag_dirs[0] / "metadata.yaml"
-        try:
-            with meta_file.open() as fh:
-                meta = yaml.safe_load(fh)
-            ns = (
-                meta["rosbag2_bagfile_information"]["starting_time"][
-                    "nanoseconds_since_epoch"
-                ]
-            )
-            bag_start_s = ns / 1e9
-            seek_s = max(0.0, simulation_time - bag_start_s)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not read rosbag metadata for time offset: %s", exc)
-            seek_s = 0.0
-    else:
-        logger.warning(
-            "No rosbag metadata.yaml found in %s; seeking to t=0", run_path
-        )
-
-    # --- Extract frame with OpenCV ---
-    cap = cv2.VideoCapture(str(webm_path))
-    try:
-        # Determine video duration so we can clamp the seek position rather than
-        # silently wrapping to the first frame when the timestamp overshoots the end.
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        vid_fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
-        video_duration_s = (total_frames / vid_fps) if total_frames > 0 else None
-
-        if video_duration_s is not None and seek_s >= video_duration_s:
-            clamped = max(0.0, video_duration_s - 1.0 / vid_fps)
-            logger.warning(
-                "simulation_time %.3f s maps to seek offset %.3f s which exceeds "
-                "video duration %.3f s for %s; clamping to last frame (%.3f s)",
-                simulation_time,
-                seek_s,
-                video_duration_s,
-                webm_path.name,
-                clamped,
-            )
-            seek_s = clamped
-
-        cap.set(cv2.CAP_PROP_POS_MSEC, seek_s * 1000.0)
-        ret, frame = cap.read()
-        if not ret:
-            # Decoder-level seek failure (e.g. keyframe alignment) — last-resort fallback
-            logger.warning(
-                "Seek to %.3f s failed for %s; falling back to first frame",
-                seek_s,
-                webm_path.name,
-            )
-            cap.set(cv2.CAP_PROP_POS_MSEC, 0.0)
-            ret, frame = cap.read()
-        if not ret:
-            raise RuntimeError(f"Could not read any frame from {webm_path}")
-    finally:
-        cap.release()
-
-    # --- Encode frame as PNG and return ---
-    success, png_buf = cv2.imencode(".png", frame)
-    if not success:
-        raise RuntimeError("cv2.imencode failed to produce PNG data")
-    return Image(data=png_buf.tobytes(), format="png")
-
-
 # ---------------------------------------------------------------------------
 # Plugin class
 # ---------------------------------------------------------------------------
 
 _TOOLS = [
-    nav_describe_data_model,
-    # nav_get_path,
     nav_get_obstacles,
     nav_get_trajectory,
-    nav_get_trajectory_stats,
     nav_get_action_feedback,
     nav_get_path_deviation,
     nav_get_map_info,
-    nav_get_map_occupancy_stats,
     draw_map,
-    display_simulation_screenshot,
 ]
 
 

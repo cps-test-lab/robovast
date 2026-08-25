@@ -1,4 +1,4 @@
-version: 1
+version: 2
 metadata:
   name: quadrotor_landing_random
 # Iterative random search. Run with:  vast execution local run
@@ -9,7 +9,10 @@ metadata:
 # A search: section is self-contained — its configurations are synthesized from
 # search_space.
 execution:
-  image: ghcr.io/cps-test-lab/robovast:latest
+  containers:
+    # All defaults: the framework image, resolved from the
+    # deployment's project (ROBOVAST_PROJECT).
+    scenario: {}
   runs: 5
   scenario_file: scenario.osc
   run_files:
@@ -19,13 +22,13 @@ search:
   # ---- universal core (same shape for every strategy) ----
   strategy: random
   search_space:
-    thrust_gain:   {type: float, low: 0.3, high: 3.0}
-    mass:          {type: float, low: 0.5, high: 3.0}
-    descent_rate:  {type: float, low: 0.1, high: 2.5}
+    thrust_gain: {type: float, low: 0.3, high: 3.0}
+    mass: {type: float, low: 0.5, high: 3.0}
+    descent_rate: {type: float, low: 0.1, high: 2.5}
     # wind_speed (m/s) + turbulence feed the local WindFieldVariation, which
     # computes the sim's wind_strength (a quadratic-drag wind model).
-    wind_speed:    {type: float, low: 0.0, high: 12.0}
-    turbulence:    {type: float, low: 0.0, high: 0.5}
+    wind_speed: {type: float, low: 0.0, high: 12.0}
+    turbulence: {type: float, low: 0.0, high: 0.5}
   # A LOCAL variation plugin (./variations/wind.py) referenced as a file:Class.
   # thrust_gain/mass/descent_rate are not referenced below, so they fall back to
   # direct scenario parameters; wind_speed/turbulence drive the variation.
@@ -46,13 +49,15 @@ search:
   - batches: 4
   seed: 0
   # random takes no strategy_parameters
-evaluation:
-  visualization:
-  - Analysis:
-      run: analysis/analysis_run.ipynb
-      config: analysis/analysis_config.ipynb
-      batch: analysis/analysis_batch.ipynb
-      campaign: analysis/analysis_qd.ipynb
+visualization:
+  results:
+    explorer:
+      notebooks:
+      - Analysis:
+          run: analysis/analysis_run.ipynb
+          config: analysis/analysis_config.ipynb
+          batch: analysis/analysis_batch.ipynb
+          campaign: analysis/analysis_qd.ipynb
 results_processing:
   postprocessing:
   - analysis/render.py:DescentVideo

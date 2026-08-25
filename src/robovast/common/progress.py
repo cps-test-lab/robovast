@@ -40,20 +40,38 @@ def _fmt_rate(bps: float) -> str:
     return f"{bps:.0f} B/s"
 
 
-def make_download_progress_callback(label: str, start: float):
-    """Return a ``(received, total)`` callback that prints a download progress bar.
+def make_transfer_progress_callback(label: str, start: float):
+    """Return a ``(transferred, total)`` callback that prints a progress bar.
+
+    Direction-neutral: the providers report ``(bytes_moved, total)`` the same way
+    whichever way the bytes are going, so one bar serves a download from the share and
+    an upload to it. (It was named for downloads while it only had one; an upload
+    printing "download" was the tell.)
 
     Args:
         label: Label shown to the left of the bar (e.g. a campaign ID).
-        start: ``time.monotonic()`` timestamp of when the download started.
+        start: ``time.monotonic()`` timestamp of when the transfer started.
 
     Returns:
-        A callable ``(received: int, total: int) -> None``.
+        A callable ``(transferred: int, total: int) -> None``. A *total* of 0 or less
+        means "length unknown" -- a streamed transfer, which is what a campaign archive
+        is: the service tars it on the fly, so there is no ``Content-Length`` to divide
+        by -- and prints a running byte count instead of a bar.
     """
     last_pct = [-1.0]
+    last_unsized = [0.0]
 
     def _cb(received: int, total: int) -> None:
         if total <= 0:
+            # Throttled like the sized branch below, and for a sharper reason: with no
+            # total there is no percentage to advance, so an unthrottled write here fires
+            # once per chunk. On a 12 MB archive that is thousands of carriage returns,
+            # which a terminal renders as one line and every log, CI job and captured
+            # tool output records in full.
+            now = time.monotonic()
+            if now - last_unsized[0] < 0.2:
+                return
+            last_unsized[0] = now
             sys.stdout.write(f"\r{label}  {_fmt_size(received)}" + _CLEAR_EOL)
             sys.stdout.flush()
             return

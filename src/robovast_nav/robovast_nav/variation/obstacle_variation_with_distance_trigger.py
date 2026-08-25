@@ -21,8 +21,8 @@ ahead of the robot's start.
 
 Two scenario parameters are written:
 
-* *spawn_trigger_point*  — the spawn pose position of the single placed obstacle.
-* *spawn_trigger_threshold* — the trigger distance (arc-length in meters) that was used.
+* *trigger_point*     — the spawn pose position of the single placed obstacle.
+* *trigger_threshold* — the trigger distance (arc-length in meters) that was used.
 
 trigger_distance can be a single float or a list of floats.  When a list is provided, one
 output configuration is produced per value (multiplied with the normal count/in_configs fan-out).
@@ -36,9 +36,10 @@ import numpy as np
 from pydantic import ConfigDict, field_validator, model_validator
 
 from robovast.common import convert_dataclasses_to_dict
-from ..data_model import Orientation, Pose, Position
-from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig, ObstacleVariationGuiRenderer
 
+from .. import config_view
+from ..data_model import Orientation, Pose, Position
+from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig
 
 # ---------------------------------------------------------------------------
 # Config model
@@ -48,20 +49,23 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     """Configuration for ObstacleVariationWithDistanceTrigger.
 
     Inherits all fields from ObstacleVariationConfig and adds:
-    - spawn_trigger_point:     scenario parameter name to store the obstacle position.
-    - spawn_trigger_threshold: scenario parameter name to store the trigger distance.
+    - the ``trigger_point`` / ``trigger_threshold`` output slots, bound by the campaign.
     - trigger_distance:        arc-length (m) before the obstacle; a single float or a list
                                of floats (one output config per value).
     - start_pose:              optional explicit start pose (dict).
-    - goal_pose:               optional explicit goal pose (dict).
+    - goal_pose:               optional explicit goal pose (dict); only for scenarios
+                               declaring the singular parameter.
 
     Exactly one obstacle must be configured (i.e. a single ObstacleConfig entry with amount=1).
     """
 
     model_config = ConfigDict(extra='forbid')
 
-    spawn_trigger_point: str
-    spawn_trigger_threshold: str
+    #: Two further outputs, so the same binding form covers them: where the obstacle sits and
+    #: how far along the path the trial should act on it. They used to be config keys whose
+    #: *values* were parameter names, which is a slot binding without saying so.
+    SLOTS = ("objects", "trigger_point", "trigger_threshold")
+
     trigger_distance: Union[float, List[float]]
     start_pose: Optional[dict] = None
     goal_pose: Optional[dict] = None
@@ -90,40 +94,6 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
 # GUI renderer
 # ---------------------------------------------------------------------------
 
-class ObstacleVariationWithDistanceTriggerGuiRenderer(ObstacleVariationGuiRenderer):
-    """Renders path, obstacles, and the spawn trigger point on the map."""
-
-    def update_gui(self, config, path):
-        # Draw path
-        nav_path = config.get('_path', None)
-        if nav_path:
-            plain_path = [(p.x, p.y) for p in nav_path]
-            self.gui_object.draw_path(plain_path,
-                                      color='red', linewidth=2.0,
-                                      alpha=0.8, label='Path',
-                                      show_endpoints=True)
-
-        # Draw obstacles via parent renderer
-        super().update_gui(config, path)
-
-        # Draw spawn trigger point
-        tp = config.get('_spawn_trigger_point')
-        if tp:
-            x, y = tp['x'], tp['y']
-            self.gui_object.draw_circle(x, y, radius=0.25,
-                                        color='orange', alpha=0.9,
-                                        label='Spawn Trigger Point')
-            self.gui_object.map_visualizer.ax.annotate(
-                'trigger', xy=(x, y), fontsize=7,
-                color='orange', ha='center', va='bottom'
-            )
-            self.gui_object.canvas.draw()
-
-
-# ---------------------------------------------------------------------------
-# Variation class
-# ---------------------------------------------------------------------------
-
 class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     """Places exactly one obstacle at a position at least *trigger_distance* arc-length ahead of the robot's start along the planned path.
 
@@ -132,37 +102,40 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     Expected parameters:
 
     - ``name``: Name of the parameter to store the placed obstacle.
-    - ``spawn_trigger_point``: Scenario parameter name to receive the obstacle's spawn
+    - ``trigger_point`` (slot): receives the obstacle's spawn
       pose position.
-    - ``spawn_trigger_threshold``: Scenario parameter name to receive the trigger
+    - ``trigger_threshold`` (slot): receives the trigger
       distance value that was used.
-    - ``trigger_distance``: Arc-length in metres from the start to the obstacle.
+    - ``trigger_distance``: Arc-length in meters from the start to the obstacle.
       Accepts a single float or a list of floats — one output configuration is produced
       per value.
     - ``obstacle_configs``: List of obstacle configurations (same format as
       :class:`ObstacleVariation`).  Total ``amount`` across all entries must equal
       exactly 1.
     - ``seed``: Seed for random number generation to ensure reproducibility.
-    - ``robot_diameter``: Diameter of the robot for collision checking in metres.
+    - ``robot_diameter``: Diameter of the robot for collision checking in meters.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
     - ``count``: Number of obstacle configurations to generate (default: ``1``).
     - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``).
     - ``goal_pose``: Optional explicit goal pose (dict with ``x``, ``y``, ``yaw``).
+      Applies to scenarios declaring the singular ``goal_pose`` parameter; a
+      scenario taking ``goal_poses`` gets its list from the config unchanged.
 
     Generated outputs:
 
     - ``<name>``: Placed obstacle with spawn pose and model information.
-    - ``<spawn_trigger_point>``: Position of the placed obstacle.
-    - ``<spawn_trigger_threshold>``: The trigger distance value that was applied.
+    - ``trigger_point``: Position of the placed obstacle.
+    - ``trigger_threshold``: The trigger distance value that was applied.
 
     Example:
 
     .. code-block:: yaml
 
         - ObstacleVariationWithDistanceTrigger:
-            name: dynamic_objects
-            spawn_trigger_point: spawn_trigger_point
-            spawn_trigger_threshold: spawn_trigger_threshold
+            scenario:
+              objects: dynamic_objects
+              trigger_point: spawn_trigger_point
+              trigger_threshold: spawn_trigger_threshold
             trigger_distance: [1.0, 2.0]
             obstacle_configs:
             - amount: 1
@@ -175,7 +148,12 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     """
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
-    GUI_RENDERER_CLASS = ObstacleVariationWithDistanceTriggerGuiRenderer
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The obstacles, plus the trigger point that spawns them."""
+        del base_path
+        return config_view.trigger_contribution(config)
 
     def variation(self, in_configs):
         self.progress_update("Running ObstacleVariationWithDistanceTrigger...")
@@ -194,9 +172,16 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
                         result = self._generate_obstacles_for_config(
                             self.base_path, effective_config, list(expanded_configs)
                         )
-                        # Propagate spawn trigger point to a private key for GUI access
+                        # Propagate spawn trigger point to a private key for GUI access.
+                        # Read back from the destination the campaign BOUND the slot to, the
+                        # same way ObstacleVariation resolves `objects`. It used to be
+                        # `self.parameters.spawn_trigger_point` -- a config key whose value was
+                        # a parameter name, which is what output slots replaced, so the
+                        # attribute no longer exists and every campaign using this variation
+                        # failed at generation.
+                        trigger_point_name = self.parameters.binding('trigger_point')[1]
                         for r in result:
-                            tp = r['config'].get(self.parameters.spawn_trigger_point)
+                            tp = r['config'].get(trigger_point_name)
                             if tp:
                                 r['_spawn_trigger_point'] = tp
                         results.extend(result)
@@ -228,26 +213,29 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         )
 
     def _inject_poses(self, config):
-        """Return a deep copy of *config* with start_pose / goal_pose converted to
-        Pose objects and injected into config['config']. Explicit variation parameters
-        take priority; otherwise the existing config values are used (and converted if
-        they are still in dict form from YAML parameters)."""
+        """Return a deep copy of *config* with its poses converted to Pose objects.
+
+        Conversion is in place: whichever spelling the config already carries
+        (``goal_pose`` or ``goal_poses``) is the one written back. Neither key is
+        added nor removed — the scenario's own parameter set decides which exists,
+        and injecting the other spelling makes the OSC reject an undeclared
+        parameter at startup. Explicit variation parameters override the config
+        values; YAML-sourced poses arrive as dicts and must be converted, since the
+        base class plans the path itself when no path variation ran before it.
+        """
         effective = copy.deepcopy(config)
 
-        # Determine source poses (variation parameters override config)
         raw_start = self.parameters.start_pose or effective['config'].get('start_pose')
-        raw_goal = self.parameters.goal_pose or (
-            effective['config'].get('goal_pose')
-            or (effective['config'].get('goal_poses') or [None])[0]
-        )
-
         if raw_start is not None:
             effective['config']['start_pose'] = self._dict_to_pose(raw_start)
+
+        raw_goal = self.parameters.goal_pose or effective['config'].get('goal_pose')
         if raw_goal is not None:
             effective['config']['goal_pose'] = self._dict_to_pose(raw_goal)
-            # Remove goal_poses so the base class derives it from goal_pose alone,
-            # avoiding unknown parameter errors in the OSC scenario.
-            effective['config'].pop('goal_poses', None)
+
+        raw_goals = effective['config'].get('goal_poses')
+        if raw_goals:
+            effective['config']['goal_poses'] = [self._dict_to_pose(g) for g in raw_goals]
 
         return effective
 
@@ -260,10 +248,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         return self._current_trigger_distance
 
     def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
-        """Return spawn_trigger_point (obstacle position) and spawn_trigger_threshold.
+        """The two extra outputs, by SLOT -- the campaign names their destinations.
 
-        * spawn_trigger_point     — the spawn pose position of the single placed obstacle.
-        * spawn_trigger_threshold — the current trigger distance value.
+        * ``trigger_point``     — the spawn pose position of the single placed obstacle.
+        * ``trigger_threshold`` — the current trigger distance value.
         """
         if not obstacle_objects:
             return {}
@@ -271,10 +259,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         obj_dict = convert_dataclasses_to_dict([obstacle_objects[0]])[0]
         pos = obj_dict['spawn_pose']['position']
         return {
-            self.parameters.spawn_trigger_point: {
+            'trigger_point': {
                 'x': pos['x'],
                 'y': pos['y'],
                 'z': 0.0,
             },
-            self.parameters.spawn_trigger_threshold: self._current_trigger_distance,
+            'trigger_threshold': self._current_trigger_distance,
         }

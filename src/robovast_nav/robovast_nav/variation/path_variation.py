@@ -23,13 +23,13 @@ from pydantic import BaseModel, ConfigDict
 from rdflib import Namespace
 
 from robovast.common import FileCache
-from robovast.common.variation import VariationGuiRenderer
-from robovast.common.variation.base_variation import ProvContribution
+from robovast.common.variation.base_variation import (SIM_CHANNEL, DestinationConfig,
+                                                      ProvContribution)
 
 from ..data_model import Orientation, Pose, Position
-from ..gui.navigation_gui import NavigationGui
 from ..path_generator import PathGenerator
 from ..waypoint_generator import WaypointGenerator
+from .. import config_view
 from .nav_base_variation import NavVariation
 
 ROBOVAST = Namespace("https://purl.org/robovast/metamodels/")
@@ -42,10 +42,24 @@ class PoseConfig(BaseModel):
     yaw: float
 
 
-class PathVariationRandomConfig(BaseModel):
+class PathVariationRandomConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
-    start_pose: str | PoseConfig
-    goal_poses: str | list[dict] | list[PoseConfig]  # Can be a reference like "@goal_poses" or "@goal_pose"
+
+    #: This variation produces a start pose and one or more goal poses. The campaign binds
+    #: each to the parameter its scenario declares:
+    #:
+    #: .. code-block:: yaml
+    #:
+    #:     - PathVariationRandom:
+    #:         scenario: {start: start_pose, goal: goal_poses}
+    #:
+    #: Whether ``goal`` receives one pose or a list is **not** a key here: it is read from
+    #: the scenario's own declaration of that parameter (``pose_3d`` versus
+    #: ``list of pose_3d``). That used to be inferred by comparing the destination name to
+    #: the literal string ``"goal_pose"``, which meant the name both chose the shape and was
+    #: then ignored -- and could contradict the scenario, failing at run time.
+    SLOTS = ("start", "goal")
+
     num_goal_poses: Optional[int] = None  # Number of goal poses to generate (optional, defaults based on target parameter)
     num_goal_poses_per_m: Optional[float | list[float]] = None  # Goal poses per meters of path length; single value or list for additional variations
     map_file: Optional[str] = None
@@ -57,117 +71,96 @@ class PathVariationRandomConfig(BaseModel):
     robot_diameter: float
 
 
-class PathVariationGuiRenderer(VariationGuiRenderer):
+class StartGoalSlots:  # pylint: disable=no-member
+    """Resolving the ``start`` / ``goal`` output bindings, shared by both path variations.
 
-    def update_gui(self, config, path):
-        path = config.get('_path', None)
-        if path:
-            plain_path = [(p.x, p.y) for p in path]
-            self.gui_object.draw_path(plain_path,
-                                      color='red', linewidth=2.0,
-                                      alpha=0.8, label='Path',
-                                      show_endpoints=True)
+    A mixin: ``parameters`` and ``scenario_parameter_is_list`` are supplied by the config
+    class this is mixed into, so pylint sees attribute access with no attribute to find.
 
-        # Handle both single goal pose and multiple goal poses
-        # Check both possible parameter names
-        goal_poses = config.get('config', {}).get('goal_poses', None)
-        goal_pose = config.get('config', {}).get('goal_pose', None)
+    Here rather than in each class because the two used to answer "one pose or a list?"
+    *differently* -- one comparing the destination name to the literal string
+    ``"goal_pose"``, the other keying on ``num_goal_poses == 1``. Two rules for one question
+    is how they came to disagree with each other and with the scenario.
+    """
 
-        if goal_pose is not None:
-            # Single pose parameter
-            goal_poses_list = [goal_pose]
-            label = 'Goal Pose'
-        elif goal_poses is not None:
-            # Multiple poses parameter
-            if isinstance(goal_poses, list):
-                goal_poses_list = goal_poses
-                label = 'Goal Poses'
-            else:
-                goal_poses_list = [goal_poses]
-                label = 'Goal Pose'
-        else:
-            goal_poses_list = []
-            label = 'Goal Poses'
+    def _start_destination(self) -> str:
+        """The parameter the ``start`` slot is bound to."""
+        return self.parameters.binding("start")[1]
 
-        if goal_poses_list:
-            # Extract x and y coordinates from Pose objects
-            x_coords = [pose.position.x for pose in goal_poses_list]
-            y_coords = [pose.position.y for pose in goal_poses_list]
+    def _goal_destination(self):
+        """``(destination, single_pose_mode)`` for the ``goal`` slot.
 
-            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
-                                                      s=10,  # marker size
-                                                      c='blue',
-                                                      alpha=0.9,
-                                                      label=label,
-                                                      zorder=10)
-
-        # Visualize raster points if available
-        raster_points = config.get('_raster_points', None)
-        if raster_points:
-            # Draw all raster points at once for better performance
-            x_coords = [point[0] for point in raster_points]
-            y_coords = [point[1] for point in raster_points]
-            self.gui_object.map_visualizer.ax.scatter(x_coords, y_coords,
-                                                      s=3,  # marker size
-                                                      c='gray',
-                                                      alpha=0.3,
-                                                      label='Raster Points',
-                                                      zorder=2)
-
-        # Final canvas draw to update display
-        self.gui_object.canvas.draw()
+        The shape is the scenario's own declaration of that parameter, so a campaign binding
+        ``goal`` to a ``pose_3d`` gets one pose and one binding it to a ``list of pose_3d``
+        gets a list -- whatever it named them.
+        """
+        channel, destination = self.parameters.binding("goal")
+        if channel == SIM_CHANNEL:
+            raise ValueError(
+                f"{type(self).__name__}: 'goal' cannot be bound to the 'sim' channel -- "
+                "whether it takes one pose or a list is read from the scenario's "
+                "declaration, and the simulator's schema is not readable here. Bind it "
+                "under 'scenario:'.")
+        return destination, not self.scenario_parameter_is_list(destination)
 
 
-class PathVariationRandom(NavVariation):
+class PathVariationRandom(StartGoalSlots, NavVariation):
     """Generates random navigation paths with multiple waypoints between start and goal poses.
+
+    Outputs (bound by the campaign, see :class:`PathVariationRandomConfig`):
+
+    - ``start``: the generated start pose.
+    - ``goal``: the generated goal pose(s).
+
+    .. code-block:: yaml
+
+        - PathVariationRandom:
+            scenario: {start: start_pose, goal: goal_poses}
+            path_length: 15.0
+            num_paths: 1
+            num_goal_poses: 4
+            min_distance: 1.0
+            seed: 42
+            robot_diameter: 0.35
 
     Expected parameters:
 
-    - ``start_pose``: Start position as parameter reference (``@start_pose``) or direct
-      pose with ``x``, ``y``, ``yaw`` (in metres and radians).
-    - ``goal_poses``: Goal positions as parameter reference (``@goal_poses`` or
-      ``@goal_pose``) or list of poses.
     - ``num_goal_poses``: Number of goal poses to generate per path.
-    - ``path_length``: Target path length in metres.
+    - ``path_length``: Target path length in meters.
     - ``num_paths``: Number of different paths to generate.
-    - ``min_distance``: Minimum distance between consecutive waypoints in metres.
+    - ``min_distance``: Minimum distance between consecutive waypoints in meters.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
-    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+    - ``path_length_tolerance``: Acceptable deviation from target path length in meters
       (default: ``0.5``).
     - ``seed``: Random seed for reproducible generation.
-    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``robot_diameter``: Robot diameter for collision checking in meters.
 
     Behaviour:
 
     - Generates sequential waypoints with target distances between them.
     - Validates path length within the specified tolerance.
-    - Automatically detects output parameter name from reference: ``@goal_pose`` outputs
-      a single pose, ``@goal_poses`` outputs a list.
-    - Uses path caching for performance optimisation.
-
-    Generated outputs:
-
-    - ``start_pose``: Generated or specified start pose.
-    - ``goal_pose`` or ``goal_poses``: Generated goal pose(s) depending on reference.
+    - Writes one pose or a list to ``goal`` according to how the **scenario** declares that
+      parameter (``pose_3d`` versus ``list of pose_3d``).
+    - Uses path caching for performance optimization.
     """
 
     CONFIG_CLASS = PathVariationRandomConfig
-    GUI_CLASS = NavigationGui
-    GUI_RENDERER_CLASS = PathVariationGuiRenderer
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The planned path, its start/goal poses, and the map they were planned on."""
+        del base_path
+        return config_view.path_contribution(config)
 
     @classmethod
     def collect_prov_metadata(cls, config_entry, campaign_namespace, config_namespace, gen_activity_id, vast_id):
         """Contribute navigation goal count to the PROV scenario node."""
         config_cfg = config_entry.get("config", {})
-        goal_pose = config_cfg.get("goal_pose")
-        goal_poses = config_cfg.get("goal_poses")
+        goals = config_cfg.get(config_entry.get("_goal_parameter_name"))
 
-        if goal_pose is not None:
-            count = 1 if isinstance(goal_pose, dict) else (len(goal_pose) if goal_pose else 0)
-        elif goal_poses is not None:
-            count = len(goal_poses) if goal_poses else 0
-        else:
+        if goals is None:
             return None
+        count = len(goals) if isinstance(goals, list) else 1
 
         return ProvContribution(scenario_properties={ROBOVAST["n_goals"]: count})
 
@@ -175,15 +168,9 @@ class PathVariationRandom(NavVariation):
         self.progress_update("Running Path Variation...")
         results = []
 
-        for config in in_configs:
-            # Detect if we should output single pose or multiple poses based on parameter name
-            # Use the configuration reference to determine target parameter
-            goal_param_name = 'goal_poses'  # Default
-            if isinstance(self.parameters.goal_poses, str):
-                ref_name = self.parameters.goal_poses.lstrip('@')
-                goal_param_name = ref_name
+        goal_param, single_pose_mode = self._goal_destination()
 
-            single_pose_mode = goal_param_name == 'goal_pose'
+        for config in in_configs:
 
             # Validate that at most one of num_goal_poses / num_goal_poses_per_m is set.
             if self.parameters.num_goal_poses is not None and self.parameters.num_goal_poses_per_m is not None:
@@ -191,7 +178,7 @@ class PathVariationRandom(NavVariation):
                     "PathVariationRandom: 'num_goal_poses' and 'num_goal_poses_per_m' are mutually exclusive."
                 )
 
-            self.progress_update(f"Detected target parameter '{goal_param_name}'")
+            self.progress_update(f"Writing goals to '{goal_param}'")
 
             # Normalize path_length to a list so a single float and a list are
             # handled uniformly. Each length value produces num_paths variations.
@@ -223,7 +210,7 @@ class PathVariationRandom(NavVariation):
                         effective_num_goal_poses = self.parameters.num_goal_poses if self.parameters.num_goal_poses is not None else 1
 
                     self.progress_update(
-                        f"Detected target parameter '{goal_param_name}' - generating "
+                        f"Writing goals to '{goal_param}' - generating "
                         f"{effective_num_goal_poses} goal pose(s) "
                         f"(path_length={target_path_length}"
                         + (f", num_goal_poses_per_m={ngp_per_m}" if ngp_per_m is not None else "") + ")"
@@ -241,19 +228,13 @@ class PathVariationRandom(NavVariation):
                               f"path_length={target_path_length}, num_goal_poses={effective_num_goal_poses}, "
                               f"path_index={path_index}, seed={current_seed}")
                         start_pose, goal_poses, path, map_file, actual_path_length = self.generate_path_for_config(
-                            self.base_path, config, path_index, current_seed, target_path_length,
+                            self.output_dir, config, path_index, current_seed, target_path_length,
                             num_goal_poses=effective_num_goal_poses
                         )
 
-                        # Format goal_poses based on the target parameter
-                        if single_pose_mode and len(goal_poses) >= 1:
-                            # Single pose mode: output the first pose directly (not in a list)
-                            formatted_goal_poses = goal_poses[0]
-                            target_param = 'goal_pose'
-                        else:
-                            # Multiple poses mode: output as list
-                            formatted_goal_poses = goal_poses
-                            target_param = 'goal_poses'
+                        # Shape comes from what the scenario declared, not from the name.
+                        formatted_goal_poses = (
+                            goal_poses[0] if single_pose_mode and goal_poses else goal_poses)
 
                         other_values = {
                             '_path': path,
@@ -261,9 +242,12 @@ class PathVariationRandom(NavVariation):
                         }
                         if not config.get("config", {}).get("map_file"):
                             other_values['_map_file'] = map_file
-                        new_config = self.update_config(config, {
-                            'start_pose': start_pose,
-                            target_param: formatted_goal_poses},
+                        # The renderer cannot know what the campaign named these, so the
+                        # resolved destination travels with the configuration.
+                        other_values['_goal_parameter_name'] = goal_param
+                        new_config = self.update_slots(
+                            config,
+                            {'start': start_pose, 'goal': formatted_goal_poses},
                             other_values=other_values,
                         )
                         results.append(new_config)
@@ -456,9 +440,20 @@ class PathVariationRandom(NavVariation):
         return start_pose, goal_poses, path, map_file_path, length
 
 
-class PathVariationRasterizedConfig(BaseModel):
+class PathVariationRasterizedConfig(DestinationConfig):
     model_config = ConfigDict(extra='forbid')
-    start_pose: Optional[str | PoseConfig] = None
+
+    #: Same two outputs as :class:`PathVariationRandomConfig`, bound the same way. The goal
+    #: shape likewise comes from the scenario's declaration -- it used to key on
+    #: ``num_goal_poses == 1``, a second rule for the same question that could disagree both
+    #: with the scenario and with the other path variation.
+    SLOTS = ("start", "goal")
+
+    #: A fixed pose to start from, or ``@parameter`` to take it from one an earlier
+    #: variation set. Input only: where the generated start pose *goes* is the ``start``
+    #: binding above. The two used to share one key, so ``start_pose: start_pose`` was a
+    #: destination and ``start_pose: {x: .., y: ..}`` was a value.
+    start_from: Optional[str | PoseConfig] = None
     num_goal_poses: Optional[int] = 1  # Number of goal poses to generate
     map_file: Optional[str] = None
     raster_size: float  # Grid spacing for square rasterization in meters
@@ -469,16 +464,16 @@ class PathVariationRasterizedConfig(BaseModel):
     robot_diameter: float
 
 
-class PathVariationRasterized(NavVariation):
-    """Creates route variations covering all areas of the map using a square grid rasterisation.
+class PathVariationRasterized(StartGoalSlots, NavVariation):
+    """Creates route variations covering all areas of the map using a square grid rasterization.
 
     Generates paths between raster points that meet specified path length criteria.
 
     Expected parameters:
 
-    - ``raster_size``: Grid spacing between raster points in metres.
-    - ``path_length``: Target path length in metres.
-    - ``robot_diameter``: Robot diameter for collision checking in metres.
+    - ``raster_size``: Grid spacing between raster points in meters.
+    - ``path_length``: Target path length in meters.
+    - ``robot_diameter``: Robot diameter for collision checking in meters.
     - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
       or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
       are used as potential start poses.
@@ -486,9 +481,9 @@ class PathVariationRasterized(NavVariation):
       Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
       algorithm.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
-    - ``raster_offset_x``: X-axis offset for grid alignment in metres (default: ``0.0``).
-    - ``raster_offset_y``: Y-axis offset for grid alignment in metres (default: ``0.0``).
-    - ``path_length_tolerance``: Acceptable deviation from target path length in metres
+    - ``raster_offset_x``: X-axis offset for grid alignment in meters (default: ``0.0``).
+    - ``raster_offset_y``: Y-axis offset for grid alignment in meters (default: ``0.0``).
+    - ``path_length_tolerance``: Acceptable deviation from target path length in meters
       (default: ``0.5``).
 
     Behaviour:
@@ -510,8 +505,12 @@ class PathVariationRasterized(NavVariation):
     """
 
     CONFIG_CLASS = PathVariationRasterizedConfig
-    GUI_CLASS = NavigationGui
-    GUI_RENDERER_CLASS = PathVariationGuiRenderer
+
+    @classmethod
+    def config_view_data(cls, config, base_path):
+        """The planned path, its start/goal poses, and the map they were planned on."""
+        del base_path
+        return config_view.path_contribution(config)
 
     def variation(self, in_configs):
         self.progress_update("Running Rasterized Path Variation...")
@@ -537,20 +536,20 @@ class PathVariationRasterized(NavVariation):
             self.progress_update(f"Generated {len(raster_points)} valid raster points")
 
             # Determine start poses
-            if self.parameters.start_pose:
-                if isinstance(self.parameters.start_pose, str):
+            if self.parameters.start_from:
+                if isinstance(self.parameters.start_from, str):
                     # Reference to a config parameter
-                    pose_ref = self.parameters.start_pose.lstrip('@')
+                    pose_ref = self.parameters.start_from.lstrip('@')
                     self.check_scenario_parameter_reference(pose_ref)
                     start_poses = [None]  # Will be resolved from config later
                 else:
                     # Directly specified pose
                     start_pose = Pose(
                         position=Position(
-                            x=self.parameters.start_pose.x,
-                            y=self.parameters.start_pose.y),
+                            x=self.parameters.start_from.x,
+                            y=self.parameters.start_from.y),
                         orientation=Orientation(
-                            yaw=self.parameters.start_pose.yaw
+                            yaw=self.parameters.start_from.yaw
                         )
                     )
                     if not waypoint_generator.is_valid_position(
@@ -627,22 +626,19 @@ class PathVariationRasterized(NavVariation):
                     max_length = path_length + self.parameters.path_length_tolerance
 
                     if min_length <= actual_path_length <= max_length:
-                        # Format goal_poses based on num_goal_poses
-                        if self.parameters.num_goal_poses == 1:
-                            formatted_goal_poses = goal_pose
-                            target_param = 'goal_pose'
-                        else:
-                            formatted_goal_poses = [goal_pose]
-                            target_param = 'goal_poses'
+                        # Shape from the scenario's declaration, not from num_goal_poses.
+                        goal_dest, single = self._goal_destination()
+                        formatted_goal_poses = goal_pose if single else [goal_pose]
 
-                        new_config = self.update_config(config, {
-                            'start_pose': start_pose,
-                            target_param: formatted_goal_poses},
+                        new_config = self.update_slots(
+                            config,
+                            {'start': start_pose, 'goal': formatted_goal_poses},
                             other_values={
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': actual_path_length
+                                '_path_length': actual_path_length,
+                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                     else:
@@ -705,22 +701,21 @@ class PathVariationRasterized(NavVariation):
                     max_length = path_length + self.parameters.path_length_tolerance
 
                     if min_length <= actual_path_length <= max_length:
-                        # Format goal_poses based on num_goal_poses
-                        if self.parameters.num_goal_poses == 1:
-                            formatted_goal_poses = goal_poses_list[0] if goal_poses_list else None
-                            target_param = 'goal_pose'
-                        else:
-                            formatted_goal_poses = goal_poses_list
-                            target_param = 'goal_poses'
+                        # Shape from the scenario's declaration, not from num_goal_poses.
+                        goal_dest, single = self._goal_destination()
+                        formatted_goal_poses = (
+                            (goal_poses_list[0] if goal_poses_list else None) if single
+                            else goal_poses_list)
 
-                        new_config = self.update_config(config, {
-                            'start_pose': start_pose,
-                            target_param: formatted_goal_poses},
+                        new_config = self.update_slots(
+                            config,
+                            {'start': start_pose, 'goal': formatted_goal_poses},
                             other_values={
                                 '_path': path,
                                 **({'_map_file': map_file_path} if not config.get('config', {}).get('map_file') else {}),
                                 '_raster_points': raster_points,
-                                '_path_length': actual_path_length
+                                '_path_length': actual_path_length,
+                                '_goal_parameter_name': goal_dest,
                         })
                         results.append(new_config)
                         self.progress_update(f"  Generated valid multi-goal path with {len(goal_poses_list)} goals")

@@ -1,0 +1,190 @@
+# `robovast-client` exists so that talking to a service costs three dependencies instead
+# of the ~88 a full install pulls. That is a claim about an environment this repository's
+# own CI otherwise never creates: `make venv` installs everything, so every other job
+# proves the client works *alongside* the core rather than without it. This one builds the
+# wheel, installs it into a Python that has nothing else, and drives it.
+name: Client Only
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+env:
+  CLIENT_VENV: /tmp/client-only
+
+jobs:
+  client-only:
+    name: 'robovast-client installs and runs on its own'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # The wheel, not the source directory: what ships is what has to work, and a
+      # packaging mistake -- a module missing from `packages`, a dependency declared in
+      # the wrong manifest -- is invisible to an install from the tree. Poetry is pinned
+      # to the version build-and-test.yml uses so both reach the same verdict.
+      - name: Build the client wheel
+        run: |
+          pip install --quiet poetry==1.8.2
+          cd src/robovast_client && poetry build --format wheel
+
+      # A venv of its own. The job's interpreter now has poetry and its dependencies in
+      # it, and "works without" is a claim about a machine that has none of that.
+      - name: Install it into an empty environment
+        run: |
+          python -m venv "$CLIENT_VENV"
+          "$CLIENT_VENV/bin/pip" install --quiet src/robovast_client/dist/*.whl
+          "$CLIENT_VENV/bin/pip" list
+
+      # The named packages are the ones whose absence *is* the distribution: the core and
+      # the cluster lane it must not drag in, and the four heavyweights that make a full
+      # install 290 MB. The count and the size catch the case nobody thought to name --
+      # both are loose enough to survive a dependency that pydantic or requests grows on
+      # its own, and far tighter than any of the forbidden packages would leave them
+      # (kubernetes alone brings a dozen distributions; numpy and pandas, 152 MB).
+      - name: Nothing heavy came with it
+        run: |
+          "$CLIENT_VENV/bin/python" - <<'EOF'
+          import json, pathlib, subprocess, sys, sysconfig
+
+          installed = {d["name"].lower().replace("_", "-")
+                       for d in json.loads(subprocess.run(
+                           [sys.executable, "-m", "pip", "list", "--format=json"],
+                           capture_output=True, text=True, check=True).stdout)}
+          forbidden = {"robovast", "robovast-cluster", "robovast-nav", "kubernetes",
+                       "pandas", "numpy", "matplotlib", "fastapi", "docker", "mujoco"}
+          present = sorted(installed & forbidden)
+          assert not present, f"robovast-client pulled in {present}"
+
+          assert len(installed) <= 20, (
+              f"robovast-client's closure grew to {len(installed)} distributions: "
+              f"{sorted(installed)}")
+
+          site = pathlib.Path(sysconfig.get_paths()["purelib"])
+          megabytes = sum(f.stat().st_size for f in site.rglob("*") if f.is_file()) >> 20
+          print(f"{len(installed)} distributions, {megabytes} MB installed")
+          assert megabytes <= 60, f"robovast-client's install grew to {megabytes} MB"
+          EOF
+
+      # `--help` builds the command and every option, which is where a module-level import
+      # of something absent surfaces. `exec cluster run` is the verb the whole distribution
+      # exists to make reachable, so it is not left to a smoke test of the root group.
+      - name: The CLI runs
+        run: |
+          set -e
+          "$CLIENT_VENV/bin/vast" --version
+          for argv in "--help" "login --help" "logout --help" "doctor --help" \
+                      "workspace --help" "files --help" "wait --help" \
+                      "exec --help" "exec cluster --help" "exec cluster run --help"; do
+            echo "vast $argv"
+            # shellcheck disable=SC2086
+            "$CLIENT_VENV/bin/vast" $argv > /dev/null
+          done
+
+      # A deferred import inside a verb passes `--help` and fails when someone runs it, so
+      # the import check is done explicitly over everything the wheel shipped rather than
+      # inferred from the CLI having started.
+      - name: Every module the wheel shipped imports
+        run: |
+          "$CLIENT_VENV/bin/python" - <<'EOF'
+          import importlib, pkgutil, sys
+
+          import robovast
+
+          modules, failures = [], []
+          for package in ("robovast.client", "robovast.service", "robovast.execution"):
+              modules.append(package)
+              for found in pkgutil.walk_packages(
+                      importlib.import_module(package).__path__, package + "."):
+                  modules.append(found.name)
+          for name in modules:
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:  # noqa: BLE001 - report them all, not the first
+                  failures.append(f"{name}: {exc!r}")
+
+          assert not failures, "\n".join(failures)
+          assert len(modules) >= 10, f"only found {modules}; is the wheel packaged right?"
+          leaked = sorted({"kubernetes", "pandas", "numpy", "yaml"} & set(sys.modules))
+          assert not leaked, f"importing the client loaded {leaked}"
+          print(f"{len(modules)} modules imported, nothing heavy loaded")
+          EOF
+
+      # Importing a module does not execute the imports deferred inside its functions, so
+      # the step above stops exactly where this distribution's leaks have always been: a
+      # verb that imports cleanly and dies the moment somebody runs it. The functions whose
+      # bodies reach across the boundary are therefore CALLED. `vast doctor` is the widest
+      # of them -- the cluster lane, the core's version helpers and `kubernetes` -- and the
+      # only one that reaches them without a service to talk to.
+      - name: Verbs that defer imports run, not just import
+        run: |
+          "$CLIENT_VENV/bin/python" - <<'EOF'
+          import sys
+
+          from robovast.client.app_version import running_revision, running_version
+          from robovast.client.doctor import run_checks
+          from robovast.service.http_client import RobovastClient
+
+          # Doctor's own verdict is not the subject -- this job has no service, so failing
+          # checks are correct. Only that it produced checks instead of a traceback.
+          checks = {c.name: c for c in run_checks()}
+          lane = checks.get("cluster support")
+          assert lane is not None, (
+              f"no 'cluster support' verdict in {sorted(checks)}; check_cluster's "
+              "ImportError guard did not fire, so this is not the client-only install "
+              "it claims to be")
+          assert not lane.ok and lane.optional, (
+              "a missing cluster lane must be advisory: a client-only install is a "
+              f"complete install, not a broken one (ok={lane.ok}, optional={lane.optional})")
+
+          # The metadata fallback, which is the only version this install can report.
+          version = running_version()
+          assert version != "0.0.0+unknown", (
+              "running_version() fell through to its no-metadata answer, so a perfectly "
+              "good client-only install reports itself as a broken one")
+          assert running_revision() == "", (
+              f"running_revision() returned {running_revision()!r}; with no core to ask "
+              "there is no revision, and '' is what says so")
+
+          # No URL and no in-process transport: it must name the remedy, not raise
+          # ModuleNotFoundError for a module the caller never mentioned.
+          try:
+              RobovastClient("")
+          except RuntimeError as exc:
+              assert "vast login" in str(exc), f"refusal does not name the remedy: {exc}"
+          else:
+              raise AssertionError("RobovastClient('') must refuse with no service")
+
+          heavy = {"kubernetes", "pandas", "numpy", "yaml", "docker"}
+          leaked = sorted(heavy & set(sys.modules))
+          assert not leaked, f"driving the client's deferred imports loaded {leaked}"
+          print(f"deferred imports resolved; {len(checks)} checks, version {version}")
+          EOF
+
+      # The same path through the CLI, for the click layer and the exit code. It is
+      # EXPECTED to exit non-zero: with no login and no service those checks are correctly
+      # ✗. What must not happen is a traceback -- that is the difference between "your
+      # install is incomplete", which this one is on purpose, and "the tool is broken".
+      - name: '`vast doctor` reports rather than crashes'
+        run: |
+          "$CLIENT_VENV/bin/vast" doctor > doctor.log 2>&1 || true
+          cat doctor.log
+          grep -q 'cluster support' doctor.log \
+            || { echo '::error::doctor never reached the cluster-lane check'; exit 1; }
+          if grep -qE 'Traceback|ModuleNotFoundError|ImportError' doctor.log; then
+            echo '::error::doctor crashed instead of reporting'
+            exit 1
+          fi

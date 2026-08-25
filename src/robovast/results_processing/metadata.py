@@ -38,11 +38,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (
-    read_execution_metadata,
-    read_sysinfo,
-    read_test_result,
-)
+from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
+                                           read_launch_record, read_sysinfo, read_test_result)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
@@ -164,6 +161,24 @@ class MetadataGenerator:
 
         # --- execution metadata ----------------------------------------
         metadata["execution"] = read_execution_metadata(self.campaign_dir)
+        # How the campaign was ASKED FOR, nested under what then happened. The two are
+        # separate files because they can only be written at different times (see
+        # campaign_data._LAUNCH_FILENAME), but nobody reading a published campaign should
+        # have to know that -- so the document re-joins them here. `runs` appears on both
+        # sides on purpose: `launch.runs` is the request (0 = "take the .vast's"),
+        # `execution.runs` the effective count, and only the pair shows an override.
+        launch = read_launch_record(self.campaign_dir)
+        if launch is not None:
+            metadata["execution"]["launch"] = launch
+        # What a human did to this campaign while it ran -- kills and probes alike. Present only
+        # when something was done, so the overwhelming majority of campaigns say nothing here
+        # rather than carrying an empty key readers learn to skip. It belongs in the published
+        # document because a reader deciding whether to trust a number has to be able to see that
+        # somebody reached into the run that produced it, and the results tree is the only place
+        # that outlives the session which did it.
+        interventions = read_interventions(self.campaign_dir)
+        if interventions:
+            metadata["execution"]["interventions"] = interventions
 
         # --- campaign-level postprocessing provenance ------------------
         pp_yaml_path = self.campaign_dir / "_transient" / "postprocessing.yaml"
@@ -296,6 +311,7 @@ def generate_campaign_metadata(
     results_dir: str,
     vast_file: Optional[str] = None,
     output_callback=None,
+    campaign: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Run the full metadata generation pipeline for all campaigns.
 
@@ -312,6 +328,8 @@ def generate_campaign_metadata(
         vast_file: Optional explicit ``.vast`` file path.  When ``None``,
             the ``.vast`` file is discovered from the most recent campaign.
         output_callback: Optional callable for status messages.
+        campaign: Restrict generation to this campaign directory name. ``None``
+            processes every campaign under *results_dir* (the default).
 
     Returns:
         Tuple ``(success, message)``.
@@ -326,12 +344,16 @@ def generate_campaign_metadata(
     if not results_path.is_dir():
         return False, f"Results directory does not exist: {results_dir}"
 
-    # Find campaign directories
+    # Find campaign directories — restricted to one when the caller targets it, so
+    # reprocessing a campaign never touches (or fails on) its siblings.
     campaign_dirs = sorted(
         d for d in results_path.iterdir()
         if d.is_dir() and is_campaign_dir(d.name)
+        and (campaign is None or d.name == campaign)
     )
     if not campaign_dirs:
+        if campaign is not None:
+            return False, f"Campaign {campaign!r} not found in {results_dir}"
         return False, f"No campaign directories found in {results_dir}"
 
     # Load variation classes (for metadata hooks)
@@ -390,7 +412,8 @@ def generate_campaign_metadata(
 
             # Generate PROV-O provenance graph (metadata.prov.json)
             try:
-                from .fair_metadata import generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+                from .fair_metadata import \
+                    generate_prov_metadata  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
                 prov_success, prov_msg = generate_prov_metadata(
                     campaign_dir, metadata, generate_visualization=False
                 )
@@ -399,7 +422,13 @@ def generate_campaign_metadata(
                 else:
                     logger.warning("PROV metadata: %s", prov_msg)
             except Exception as prov_exc:  # noqa: BLE001
-                logger.warning("PROV metadata generation failed: %s", prov_exc)
+                # Non-fatal on purpose -- the runs and their metadata.yaml are the
+                # deliverable, and a provenance graph that cannot be built should not
+                # discard them. With exc_info, though: without a traceback this reports
+                # a bare "'str' object has no attribute 'get'" that names neither the
+                # key nor the agent it came from, which is how one such failure survived
+                # in every campaign's log.
+                logger.warning("PROV metadata generation failed: %s", prov_exc, exc_info=True)
 
     except Exception as e:
         return False, f"Metadata generation failed: {e}"

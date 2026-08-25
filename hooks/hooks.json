@@ -1,0 +1,68 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*__start_campaign",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py record",
+            "statusMessage": "Noting the campaign to wait for"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__stop_campaign",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py clear",
+            "statusMessage": "Clearing a settled campaign"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py delegated",
+            "statusMessage": "Noting a backgrounded campaign waiter"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__(get_campaign_status|get_job_state)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py rearm",
+            "statusMessage": "Noting a campaign reported as wedged"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py check",
+            "statusMessage": "Checking for a campaign still running"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/campaign_watch.py check",
+            "statusMessage": "Checking for a campaign still running"
+          }
+        ]
+      }
+    ]
+  }
+}

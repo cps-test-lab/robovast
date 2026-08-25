@@ -52,6 +52,31 @@ def test_non_variation_file_ref_raises(tmp_path):
             {"variations": [{"bad.py:NotAVariation": {}}]}, str(tmp_path))
 
 
+def test_oneof_child_file_ref_resolves(tmp_path):
+    """A OneOfVariation child may itself be a local ``<path>.py:<Class>`` ref."""
+    from robovast.common.variation.one_of_variation import OneOfVariation
+
+    (tmp_path / "myvar.py").write_text(LOCAL_VARIATION)
+    one_of = OneOfVariation(
+        str(tmp_path),
+        {"variations": [{"myvar.py:TagVariation": {}}]},
+        {}, lambda *_: None, None, str(tmp_path))
+    out = one_of.variation([{"name": "c", "config": {}}])
+    assert len(out) == 1
+    assert out[0]["config"]["tag"] == "x"
+
+
+def test_oneof_unknown_child_raises(tmp_path):
+    from robovast.common.variation.one_of_variation import OneOfVariation
+
+    one_of = OneOfVariation(
+        str(tmp_path),
+        {"variations": [{"NoSuchVariation": {}}]},
+        {}, lambda *_: None, None, str(tmp_path))
+    with pytest.raises(ValueError, match="Unknown variation type"):
+        one_of.variation([{"name": "c", "config": {}}])
+
+
 @pytest.mark.skipif(
     not os.path.exists(os.path.join(QUAD, "variations", "wind.py")),
     reason="quadrotor wind variation example not available")

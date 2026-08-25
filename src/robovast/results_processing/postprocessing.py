@@ -17,7 +17,9 @@
 """Postprocessing functionality for run result data."""
 import inspect
 import json
+import logging
 import os
+import re
 import tempfile
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -27,9 +29,9 @@ import yaml
 
 from robovast.common.common import load_config
 from robovast.common.plugin_ref import is_file_ref, load_ref
+from robovast.common.results_utils import find_campaign_vast_file
 from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.postprocessing_plugins import generate_data_db
-from robovast.common.results_utils import find_campaign_vast_file
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
 
@@ -87,7 +89,15 @@ def resolve_postprocessing_plugin(plugin_name: str, config_dir: str,
     """
     if is_file_ref(plugin_name):
         cls = load_ref(plugin_name, POSTPROCESSING_GROUP, config_dir)
-        return cls() if inspect.isclass(cls) else cls
+        plugin = cls() if inspect.isclass(cls) else cls
+        # A postprocessing plugin is invoked by calling it (BasePostprocessingPlugin
+        # via __call__, or a plain callable). Reject anything else up front so the
+        # error is reported at load/validation time rather than mid-run.
+        if not callable(plugin):
+            raise ValueError(
+                f"Postprocessing plugin '{plugin_name}' is not callable; it must be "
+                f"a BasePostprocessingPlugin subclass or a callable.")
+        return plugin
     if plugins is None:
         plugins = load_postprocessing_plugins()
     if plugin_name not in plugins:
@@ -213,14 +223,112 @@ def execute_postprocessing_plugin(
 _ROSBAG_BATCH_MAP: Dict[str, Tuple[str, str]] = {
     "rosbags_to_csv":        ("to_csv",         "rosbag2"),
     "rosbags_tf_to_csv":     ("tf_to_csv",       "rosbag2"),
-    "rosbags_bt_to_csv":     ("bt_to_csv",       "rosbag2"),
+    "rosbags_nav2bt_to_csv": ("nav2_bt_to_csv",  "rosbag2"),
     "rosbags_action_to_csv": ("action_to_csv",   "rosbag2"),
     "rosbags_rosout_to_csv": ("rosout_to_csv",   "logs/rosout_bag"),
+    "rosbags_clock_to_csv":  ("clock_to_csv",    "logs/rosout_bag"),
+    "rosbags_costmap_to_csv": ("costmap_to_csv", "rosbag2"),
     "rosbags_to_webm":       ("to_webm",         "rosbag2"),
 }
 
+#: Handlers on the *infrastructure* bag (``logs/rosout_bag``, recorded by the entrypoint in
+#: wall time for the whole container's life), auto-injected for every campaign because both
+#: answer questions no campaign should have to ask for: what the run said, and how its wall
+#: clock relates to sim time. Each is still skippable by name (``skip=[…]``).
+_AUTO_INFRA_HANDLERS: Tuple[str, ...] = ("rosbags_rosout_to_csv", "rosbags_clock_to_csv")
 
-def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
+#: Postprocessing command names that are not entry points but are transparently
+#: rewritten into a batched ``rosbags_process`` call at runtime (see
+#: :func:`_batch_rosbags_commands`). Validation must treat these as valid too,
+#: otherwise it rejects configs the runtime would happily execute.
+ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
+
+#: Everything the cluster lane's postprocessing **Job** runs, and therefore everything the in-pod
+#: pass must skip. The aliases above plus ``rosbags_process`` itself, which a ``.vast`` may name
+#: directly (:class:`~robovast.results_processing.postprocessing_plugins.RosbagsProcess` documents
+#: that spelling) and which ``postprocess_job.rosbag_commands_for`` already collects for the Job.
+#:
+#: Without ``rosbags_process`` here the two sides disagree and a directly-authored call runs TWICE:
+#: once in the Job, correctly, and once in the controller pod through ``docker_exec.sh`` -- which
+#: shells out to ``docker run`` and cannot work there, so the compat check reads an empty string and
+#: the campaign fails with "container image provides: <missing>" against an image that carries the
+#: file. The data is already correct by then, which is what makes the failure so misleading.
+ROSBAG_JOB_NAMES: frozenset = ROSBAG_BATCH_NAMES | {"rosbags_process"}
+
+#: Commands that register a video in a run's ``videos`` table (``rosbags_process.VIDEOS_CSV``),
+#: which is what the run view's ``camera`` panel and ``get_camera_frame`` read.
+#:
+#: A set rather than one name because that manifest is a **contract**, not this step's private
+#: file: a producer that renders its own video joins by writing the same row and adding itself
+#: here. Validation reads this to tell a campaign that declares a camera panel and nothing to
+#: fill it, which is otherwise only discovered once the compute is spent.
+VIDEO_PRODUCER_COMMANDS: frozenset = frozenset({"rosbags_to_webm"})
+
+
+#: Plugins that run for every campaign without being declared, appended after the
+#: (batched) rosbag conversions because they read what those produce — ``run_log`` needs
+#: ``rosout.csv`` and both need the ``clock_map.csv`` that ``rosbags_clock_to_csv`` writes.
+#: Skippable by name, like any other command.
+AUTO_PLUGINS: Tuple[str, ...] = ("run_log", "resource_usage")
+
+
+def _append_auto_plugins(commands: List, skip: "set | None" = None) -> List:
+    """Append :data:`AUTO_PLUGINS` not already present and not skipped.
+
+    A campaign that declares one itself keeps its own parameters and its own position in
+    the order, rather than getting a second, default-configured copy.
+    """
+    skip_names = set(skip or ())
+    declared = {c if isinstance(c, str) else list(c.keys())[0] for c in commands}
+    return list(commands) + [name for name in AUTO_PLUGINS
+                             if name not in declared and name not in skip_names]
+
+
+#: What a cause-shaped line looks like. A failing step's first line is usually its exit status
+#: ("rosbags_process failed with exit code 1"), which says THAT it failed and nothing about why;
+#: the reason is further down, in the tool's own output. Two shapes cover nearly all of it: a
+#: line a tool prefixes ("Error: ...", "usage: ..."), and a Python exception line, whose class
+#: name carries the word rather than starting with it -- ``ValueError: no such column`` is the
+#: line that matters and begins with a V.
+_CAUSE_RE = re.compile(
+    r"^([A-Za-z_][\w.]*(Error|Exception)\b|error|fatal|traceback|exception|usage:)",
+    re.IGNORECASE,
+)
+
+#: How much of the cause to carry. The field is read in a campaign list and a tooltip, so it must
+#: stay one glanceable line -- but a truncated cause still names the thing that went wrong, which
+#: an exit code never does.
+_CAUSE_CHARS = 300
+
+
+def _failure_summary(message: object) -> str:
+    """One line for the status field: what failed, and -- where the output says so -- why.
+
+    Previously this was ``splitlines()[0]``, on the reasoning that a plugin may print a whole
+    traceback and the status field is small. True, but it made the field useless for the most
+    common failure: ``rosbags_process failed with exit code 1`` reached the campaign list, the
+    web UI and the MCP status, while ``Error: unknown handler type(s): ['nav2bt_to_csv']`` --
+    the line that says what to fix -- stayed in a log nobody reads until they are already stuck.
+
+    So: the first line still leads, and the LAST cause-shaped line is appended when there is one.
+    Last rather than first because a traceback ends with its exception; a tool that prints one
+    error prints it once, so the two coincide.
+    """
+    lines = [line.strip() for line in str(message).strip().splitlines() if line.strip()]
+    if not lines:
+        return "failed (no output)"
+    head = lines[0]
+    causes = [line for line in lines[1:] if _CAUSE_RE.match(line)]
+    if not causes:
+        return head
+    cause = causes[-1]
+    if len(cause) > _CAUSE_CHARS:
+        cause = cause[:_CAUSE_CHARS - 1] + "…"
+    return f"{head} — {cause}"
+
+
+def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
+                            skip: "set | None" = None) -> List:
     """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
 
     Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
@@ -230,31 +338,34 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
     ``bag_dir``; all other batchable commands are removed.  Non-batchable
     commands keep their original order.
 
-    ``rosout_to_csv`` is always added unless *skip_rosout* is ``True``.
+    The infrastructure-bag handlers (:data:`_AUTO_INFRA_HANDLERS`) are always added unless
+    named in *skip* (or, for rosout, *skip_rosout*).
 
     Args:
         commands: Raw list of postprocessing commands from the .vast config.
         skip_rosout: When ``True``, omit rosout processing entirely (neither
             auto-injected nor taken from explicit ``rosbags_rosout_to_csv``
             commands in the config).
+        skip: Batch plugin names to leave out, so an auto-injected handler can be
+            declined by name without a dedicated flag per handler.
 
     Returns:
         New command list with batchable commands replaced by rosbags_process calls.
     """
+    skip_names = set(skip or ())
+    if skip_rosout:
+        skip_names.add("rosbags_rosout_to_csv")
     # bag_dir → list of handler dicts for that bag dir
     bag_dir_plugins: Dict[str, List[dict]] = {}
     # bag_dir → index in result where the placeholder lives
     bag_dir_slot: Dict[str, int] = {}
     result: List = []
 
-    rosout_bag_dir = _ROSBAG_BATCH_MAP["rosbags_rosout_to_csv"][1]
-
     for cmd in commands:
         plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
         if plugin_name in _ROSBAG_BATCH_MAP:
             handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
-            # Skip rosout if requested
-            if skip_rosout and handler_type == "rosout_to_csv":
+            if plugin_name in skip_names:
                 continue
             params = {} if isinstance(cmd, str) else (cmd[plugin_name] or {})
             # Allow per-command bag_dir override; pop it so it's not passed to handler
@@ -267,23 +378,27 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False) -> List:
         else:
             result.append(cmd)
 
-    # Always include rosout unless explicitly skipped
-    if not skip_rosout and not any(
-        p.get("type") == "rosout_to_csv"
-        for plugins in bag_dir_plugins.values()
-        for p in plugins
-    ):
-        bag_dir_plugins.setdefault(rosout_bag_dir, []).append({"type": "rosout_to_csv"})
-        if rosout_bag_dir not in bag_dir_slot:
-            bag_dir_slot[rosout_bag_dir] = len(result)
+    # Always include the infrastructure-bag handlers unless declined by name. A config that
+    # declares one itself (with parameters) keeps its own version rather than getting a
+    # second, default-configured copy.
+    present = {p.get("type") for plugins in bag_dir_plugins.values() for p in plugins}
+    for name in _AUTO_INFRA_HANDLERS:
+        handler_type, bag_dir = _ROSBAG_BATCH_MAP[name]
+        if name in skip_names or handler_type in present:
+            continue
+        bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type})
+        if bag_dir not in bag_dir_slot:
+            bag_dir_slot[bag_dir] = len(result)
             result.append(None)
 
-    # Fill placeholder slots with the batch commands; rosout_to_csv always last
+    # Fill placeholder slots with the batch commands; the auto-injected infrastructure
+    # handlers run last, so an explicitly configured handler's output is in place first.
+    auto_types = {_ROSBAG_BATCH_MAP[n][0] for n in _AUTO_INFRA_HANDLERS}
     for bag_dir, slot_idx in bag_dir_slot.items():
         plugins = bag_dir_plugins[bag_dir]
-        rosout = [p for p in plugins if p.get("type") == "rosout_to_csv"]
-        others = [p for p in plugins if p.get("type") != "rosout_to_csv"]
-        result[slot_idx] = {"rosbags_process": {"plugins": others + rosout, "bag_dir": bag_dir}}
+        auto = [p for p in plugins if p.get("type") in auto_types]
+        others = [p for p in plugins if p.get("type") not in auto_types]
+        result[slot_idx] = {"rosbags_process": {"plugins": others + auto, "bag_dir": bag_dir}}
 
     return result
 
@@ -344,6 +459,34 @@ def get_postprocessing_commands(config_path: str) -> List[dict]:
             return postprocessing_cmds
 
 
+#: Written by a conversion that ran elsewhere -- the cluster lane's postprocessing Job --
+#: and carried back with its outputs. Named here and in
+#: ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
+#: half.
+STAGED_PROVENANCE = "_execution/rosbags_provenance.json"
+
+
+def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
+    """Provenance recorded by a stage that ran outside this process, or ``[]``.
+
+    Absent is the normal case -- the local lane records everything inline -- so a missing
+    file is not a problem. A malformed one is logged rather than raised: provenance is a
+    description of work that already succeeded, and failing the campaign because its
+    description could not be read would turn a complete result into a failed one.
+    """
+    path = Path(campaign_dir) / STAGED_PROVENANCE
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) or {}
+    except (OSError, json.JSONDecodeError) as e:
+        logging.getLogger(__name__).warning(
+            "Could not read staged provenance %s: %s", path, e)
+        return []
+    entries = data.get("entries")
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
 def _write_postprocessing_provenance_yaml(
     campaign_dir: str,
     entries: List[dict],
@@ -400,6 +543,23 @@ def _write_postprocessing_provenance_yaml(
 
 
 
+def campaign_defines_postprocessing(campaign_dir: str) -> bool:
+    """True if *campaign_dir*'s snapshotted config defines postprocessing commands.
+
+    Reads the campaign's own ``_config/*.vast`` — the authoritative config
+    ``run_postprocessing`` uses — so the answer is per-campaign, not "some campaign
+    under a results dir". Used to decide whether a finished campaign's stored data is
+    the *postprocessed* archive or the minimal pre-postprocess data: a ``.vast`` with
+    no ``results_processing.postprocessing`` entries yields the minimal data even
+    though the run still reaches ``finished`` (and still builds ``data.db``).
+    """
+    config_dir = os.path.join(campaign_dir, "_config")
+    if not os.path.isdir(config_dir):
+        return False
+    vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast"))
+    return bool(vasts) and bool(get_postprocessing_commands(vasts[0]))
+
+
 def is_postprocessing_needed(
         results_dir: str,
         vast_file: Optional[str] = None,
@@ -419,6 +579,9 @@ def is_postprocessing_needed(
     Returns:
         ``True`` if postprocessing should be run, ``False`` otherwise.
     """
+    # Same normalisation as run_postprocessing, so the two agree on which directory a
+    # relative path names before one of them answers a question about the other's work.
+    results_dir = os.path.abspath(results_dir)
     if not os.path.exists(results_dir):
         return False
 
@@ -445,12 +608,18 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip: Optional[List[str]] = None,
         skip_db: bool = False,
         skip_metadata: bool = False,
+        campaign: Optional[str] = None,
 ):
-    """Run postprocessing commands on run results.
+    """Run postprocessing commands on **one campaign's** run results.
 
-    The postprocessing configuration is read from the ``.vast`` file found in
-    the most recent ``campaign-<id>/_config/`` directory under *results_dir*,
-    unless *vast_file* is provided explicitly.
+    One call processes exactly one campaign — the one named by *campaign*, or the
+    most recent under *results_dir*. Each campaign snapshots its own config, so
+    there is no "process every campaign with one config" mode; a caller that wants
+    several loops over them and passes each one here (that way every campaign is
+    processed with *its own* config).
+
+    The postprocessing configuration is read from that campaign's
+    ``_config/`` directory, unless *vast_file* is provided explicitly.
 
     Args:
         results_dir: Directory containing run results (parent of campaign-* dirs)
@@ -461,6 +630,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         debug: If True, include full plugin stdout in output; otherwise show only the summary line.
         skip_rosout: If True, skip rosout processing entirely (shorthand for ``skip=['rosbags_rosout_to_csv']``).
         skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
+        campaign: Which campaign directory to process. ``None`` uses the most
+            recent one.
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -472,28 +643,60 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         else:
             print(msg)
 
+    # Absolute from here on: container plugins are launched with cwd set to the package's
+    # data/ directory (see RosbagsProcessPlugin), so a relative results_dir resolves against
+    # that instead of the user's. docker_exec.sh then finds no directory to mount, skips the
+    # -v silently, and the container reports 0 rosbags found as a success.
+    results_dir = os.path.abspath(results_dir)
+
     # Validate results directory
     if not os.path.exists(results_dir):
         return False, f"Results directory does not exist: {results_dir}"
 
+    # -- which campaign: exactly one, always ------------------------------------
+    # One call postprocesses one campaign. Each campaign snapshots its own config,
+    # so there is no coherent "process everything with one config" mode; a caller
+    # that wants several loops and passes each campaign here.
+    if campaign is None:
+        _vast, _config_dir = find_campaign_vast_file(results_dir)
+        if _vast is None:
+            return False, (
+                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
+                "Ensure at least one execution campaign has been completed."
+            )
+        campaign = os.path.basename(str(Path(_config_dir).parent))
+    campaign_dir = os.path.join(results_dir, campaign)
+    if not os.path.isdir(campaign_dir):
+        return False, f"Campaign {campaign!r} not found under {results_dir}"
+    output(f"Campaign: {campaign}")
+
+    # -- which config: an override wins, else the campaign's own snapshot --------
     if vast_file is not None:
-        # Explicit override: validate the supplied path and skip campaign discovery
         if not os.path.isfile(vast_file):
             return False, f"Override .vast file does not exist: {vast_file}"
         vast_path = os.path.abspath(vast_file)
         config_dir = os.path.dirname(vast_path)
         output(f"Using override config: {vast_path}")
     else:
-        # Discover the .vast config file from the most recent campaign
-        vast_path, config_dir = find_campaign_vast_file(results_dir)
-        if vast_path is None:
-            return False, (
-                f"No .vast file found in any campaign-*/_config/ directory under: {results_dir}\n"
-                "Ensure at least one execution campaign has been completed."
-            )
-        output(f"Using config from: {vast_path}")
+        config_dir = os.path.join(campaign_dir, "_config")
+        vasts = sorted(str(p) for p in Path(config_dir).glob("*.vast")) \
+            if os.path.isdir(config_dir) else []
+        if not vasts:
+            return False, (f"No .vast file in {config_dir}. "
+                           f"Is {campaign!r} a valid campaign under {results_dir}?")
+        vast_path = vasts[0]
+        output(f"Using config from campaign {campaign}: {vast_path}")
 
-    campaign_dir = str(Path(config_dir).parent)
+    # Everything below operates on this campaign only — the plugins scan its tree
+    # and metadata is generated for it, never for its siblings.
+    scope_dir = campaign_dir
+
+    # Make the campaign's declared `plugins:` importable for postprocessing (entry-point
+    # plugins and the deps of local file-ref plugins), installing them into the
+    # campaign's own .robovast_plugins/ if absent — so a re-run in a fresh process /
+    # fetched campaign (post-restart) resolves them, not just the original run.
+    from robovast.common.config_plugins import ensure_plugins_importable
+    ensure_plugins_importable(campaign_dir, vast_path=vast_path)
 
     # Read execution image from execution.yaml (if available)
     execution_image = None
@@ -536,7 +739,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     # Batch all batchable rosbags_* commands into a single rosbags_process call
     # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
     # included unless skipped.
-    commands = _batch_rosbags_commands(commands, skip_rosout="rosbags_rosout_to_csv" in skip_set)
+    commands = _batch_rosbags_commands(commands, skip=skip_set)
+
+    # The log merge, appended so it runs after the bag conversions it reads (rosout.csv and
+    # clock_map.csv). Auto-injected for the same reason those are: a run whose output cannot
+    # be read afterwards cannot be explained, and nobody should have to ask for that.
+    commands = _append_auto_plugins(commands, skip_set)
 
     # Validate all commands first
     for command in commands:
@@ -549,6 +757,11 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
         # Execute each postprocessing command
         success = True
+        # What failed, and why -- carried into the returned message rather than only printed.
+        # "Postprocessing failed!" on its own sends every reader to the log to find out which of
+        # five steps broke; the reason is known right here, and the status is where it is looked
+        # for first (``postprocessing_error``, the campaign view's failure box).
+        failures: List[str] = []
 
         for i, command in enumerate(commands, 1):
             # Parse command to get plugin name and parameters
@@ -564,10 +777,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 params = command[plugin_name] or {}
                 if not isinstance(params, dict):
                     output(f"[{i}/{len(commands)}] ✗ Invalid command format: parameters must be a dict")
+                    failures.append(f"{plugin_name}: parameters must be a dict")
                     success = False
                     continue
             else:
                 output(f"[{i}/{len(commands)}] ✗ Invalid command format: must be string or dict, got {type(command)}")
+                failures.append(f"command {i}: must be a string or a dict, got {type(command)}")
                 success = False
                 continue
 
@@ -577,6 +792,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 plugin_func = resolve_postprocessing_plugin(plugin_name, config_dir, plugins)
             except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError) as e:
                 output(f"[{i}/{len(commands)}] ✗ {e}")
+                failures.append(f"{plugin_name}: {e}")
                 success = False
                 continue
 
@@ -588,7 +804,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                 plugin_name=plugin_name,
                 plugin_func=plugin_func,
                 params=params,
-                results_dir=results_dir,
+                results_dir=scope_dir,
                 config_dir=config_dir,
                 provenance_file=provenance_file,
                 execution_image=execution_image,
@@ -600,13 +816,24 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
             if not plugin_success:
                 output(f"✗ {message}")
+                failures.append(f"{plugin_name}: {_failure_summary(message)}")
                 success = False
                 continue
             display_message = message if debug else message.splitlines()[0]
             output(f"✓ {display_message}")
 
+    # Entries from work this process did not run. On the cluster lane the rosbag
+    # conversions happen in a Job, and this pass runs with those steps skipped -- so
+    # without merging its record, a cluster campaign's provenance would describe only
+    # the steps that happened to run here, and silently omit the rest.
+    all_provenance_entries = (_staged_provenance_entries(campaign_dir)
+                              + all_provenance_entries)
+
     # Write postprocessing.yaml in campaign/_transient/
     _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
+
+    _record_campaign_providers(campaign_dir, output)
+
 
     # Build SQLite data.db for the campaign
     if skip_db:
@@ -624,10 +851,92 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     else:
         meta_success, meta_msg = generate_campaign_metadata(
             results_dir, vast_file=vast_file, output_callback=output_callback,
+            campaign=campaign,
         )
         if not meta_success:
             output(f"Warning: Metadata generation failed: {meta_msg}")
 
     if success:
         return True, "Postprocessing completed successfully!"
-    return False, "Postprocessing failed!"
+    if not failures:
+        # Belt and braces: a future early-exit that sets success=False without recording why
+        # would otherwise regress to the message this replaced.
+        return False, "Postprocessing failed (no step reported a reason; see the log)"
+    detail = "; ".join(failures[:3])
+    more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+    return False, (f"Postprocessing failed: {len(failures)} of {len(commands)} step(s) — "
+                   f"{detail}{more}")
+
+
+def _campaign_provider_records(campaign_dir) -> list:
+    """Every container's distributions record from this campaign's job dirs.
+
+    ``_jobs/[<batch>/]job-N/`` is the shared job-artifact layout -- see
+    ``run_slices.iter_run_slices`` for its authority, and ``resource_usage`` for the sibling
+    that reads ``resource_usage_<container>.csv`` out of the same directories. The batch level
+    is optional (the cluster lane has one, the local lane does not), so the walk is recursive
+    rather than assuming either shape.
+
+    Per CONTAINER, because that is how they were written: in the ROS shape the simulator runs
+    in a container of its own, so a record from the main container alone would name none of the
+    campaign's asset providers.
+    """
+    import glob  # pylint: disable=import-outside-toplevel
+
+    pattern = os.path.join(str(campaign_dir), "_jobs", "**", "distributions_*.json")
+    records = []
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue          # one unreadable container's record is not the campaign's answer
+        if isinstance(data, dict):
+            records.append(data)
+    return records
+
+
+def _record_campaign_providers(campaign_dir, output) -> None:
+    """Write ``_execution/providers.yaml``: which distributions supplied this campaign's assets.
+
+    Derived here, in stage 2, rather than when the campaign was prepared. The question is
+    "which installed distributions register a provider group", and only a container can answer
+    it -- the packages are in its image and nowhere else. Prepared instead by walking the
+    preparing process's own interpreter, the answer was right on a local lane (roqsim is
+    installed beside the service) and empty on a cluster one (the service pod carries no
+    simulator), so a campaign that used three private providers recorded none.
+
+    Stage 2 is the one place both lanes run: ``run_host_postprocessing`` delegates here for the
+    cluster, and the CLI and controller come here directly, "so there is no second
+    implementation of the postprocessing sequence".
+
+    Three states, and the distinction is the point. Populated is "these providers"; empty is
+    "asked, and there were none"; ABSENT is "could not ask", which
+    :func:`read_providers_record` documents as unknown and the publication gate classifies as
+    opaque. No records, or no groups to filter by, means the question was never put -- so the
+    record is left absent rather than written empty, because an empty one claims a campaign
+    depended on nothing.
+    """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        campaign_asset_groups, write_providers_record)
+    from robovast.common.config_plugins import \
+        providers_from_records  # pylint: disable=import-outside-toplevel
+
+    try:
+        records = _campaign_provider_records(campaign_dir)
+        groups = campaign_asset_groups(campaign_dir)
+        if not records or not groups:
+            output(
+                "Not recording asset providers: "
+                + ("no container recorded its distributions (a campaign whose runs predate "
+                   "that record, or never started)" if not records else
+                   "this campaign's simulator backend could not be resolved here, so there is "
+                   "no set of provider groups to filter by")
+                + " -- leaving the record absent (unknown) rather than empty.")
+            return
+        providers = providers_from_records(records, groups)
+        write_providers_record(campaign_dir, providers)
+        output(f"✓ recorded {len(providers)} asset provider(s) from "
+               f"{len(records)} container record(s)")
+    except Exception as e:  # pylint: disable=broad-except
+        output(f"Warning: could not record asset providers: {e}")

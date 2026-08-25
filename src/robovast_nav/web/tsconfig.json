@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    // The shared panel contract + clock scaffolding, resolved by path rather than installed: it is
+    // in-tree source, and both this package and frontend/ui/ compile it with their own toolchain. Must match
+    // the vite `resolve.alias`.
+    //
+    // `react` is mapped too because the kit's sources sit outside this package, so node-style
+    // resolution would walk up from THEIR directory and never reach this node_modules. Pinning it here
+    // is also what guarantees the kit is typechecked against the same React version the remote bundles.
+    "paths": {
+      "@robovast/panel-kit": ["../../../frontend/panel-kit/src/index.ts"],
+      "react": ["./node_modules/@types/react"]
+    }
+  },
+  "include": ["src"]
+}

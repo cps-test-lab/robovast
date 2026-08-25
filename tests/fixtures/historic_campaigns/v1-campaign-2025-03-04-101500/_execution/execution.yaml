@@ -1,0 +1,11 @@
+# No robovast_revision, no robovast_dirty: this campaign predates them, which is the point.
+execution_time: '2025-03-04T10:15:00'
+robovast_version: 1.4.0
+runs: 2
+execution_type: local
+image: ghcr.io/cps-test-lab/robovast:latest
+image_revision: ghcr.io/cps-test-lab/robovast@sha256:1111111111111111111111111111111111111111111111111111111111111111
+images:
+  scenario: ghcr.io/cps-test-lab/robovast:latest
+image_revisions:
+  scenario: ghcr.io/cps-test-lab/robovast@sha256:1111111111111111111111111111111111111111111111111111111111111111

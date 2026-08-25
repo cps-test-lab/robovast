@@ -1,0 +1,150 @@
+import osc.helpers
+import osc.ros
+import osc.nav2
+import osc.remote
+# set_yaml_value lives here, not in helpers -- a scenario that mutates the stack's own
+# parameters needs it, and the parser's complaint is "unknown behavior", which reads like a
+# typo rather than a missing import.
+import osc.dataops
+
+# One crossing of the room, and the same one for every campaign in this directory.
+#
+# Copied from basic_nav/scenario_roqsim.osc, whose bring-up gate and remote() launch are
+# hard-won, and then made smaller: no dynamic-obstacle trigger, no per-configuration map, no
+# set_entity_state. Everything about the WORLD that these campaigns vary -- the doorway, the
+# walker's timing, the lidar noise, the seed -- rides the `sim:` channel into the compiled
+# model, so nothing about the environment has to happen at run time.
+#
+# What does happen here is the nav2 parameter mutation below, and it has to: those are the
+# system under test's own settings, not the world's, and there is no channel into a stack
+# that is launched rather than compiled. Their defaults match the checked-in params file, so
+# the campaigns that vary none of them run exactly what the file says.
+#
+# All ten campaigns share this file unedited, which is what makes a difference in their
+# results attributable to the search strategy and to nothing else.
+
+scenario test_scenario:
+    # Short by design: a ~5 m crossing is 20-30 s of driving. Bounded well above that so a
+    # recovering run still finishes, but low enough that a STUCK run becomes a verdict
+    # quickly -- a timeout here is a failure mode these searches are meant to find, not an
+    # accident to be waited out.
+    timeout(120s)
+
+    # Seeds AMCL, and must match world/empty_room.yaml's spawn_robot pos. empty_room's map
+    # (files/empty_room.yaml, origin [-5,-5]) is co-registered with the world, so map ==
+    # world and one pose serves both frames -- unlike Depot, where map = world + (8,0) and
+    # every analysis has to remember the offset.
+    start_pose: pose_3d = pose_3d(position: position_3d(x: -2.5m, y: 0.0m))
+    goal_pose:  pose_3d = pose_3d(position: position_3d(x:  2.5m, y: 0.0m))
+
+    # THE STACK UNDER TEST. Defaults match files/nav2_params.yaml, so a campaign that varies
+    # neither writes back exactly what was already there and the adversarial campaigns are
+    # unaffected. They exist because a trade-off is only meaningful over things somebody
+    # CHOOSES: searching the environment finds what breaks a fixed stack, and searching the
+    # stack asks what a tuning costs -- and only the second is a design decision.
+    inflation_radius: float = 0.55
+    max_speed: list of float = [0.5, 0.0, 2.0]
+
+    robot: differential_drive_robot
+
+    do serial:
+        # THIS CONFIGURATION'S nav2 PARAMETERS, written into a copy so the checked-in file
+        # stays the record of the defaults.
+        run_process("cp /config/files/nav2_params.yaml /out/nav2_params.yaml")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "global_costmap.global_costmap.ros__parameters.inflation_layer.inflation_radius",
+            value: inflation_radius,
+            value_type: "float")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius",
+            value: inflation_radius,
+            value_type: "float")
+        set_yaml_value("/out/nav2_params.yaml",
+            key_path: "velocity_smoother.ros__parameters.max_velocity",
+            value: max_speed,
+            value_type: "list")
+
+        # Gate the LAUNCH, not the activation. Two cross-container lifecycle service_calls
+        # cannot work (service_call fires call_async once with no wait_for_service, so the
+        # request is dropped into a container whose server it has not finished matching),
+        # and nav2 must not come up against a silent simulator or collision_monitor fails
+        # closed at zero velocity. Bounded, so a simulator that never comes up fails the
+        # trial instead of hanging it.
+        #
+        # /scan and not /scan_sim: with roqsim-native lidar noise there is no
+        # laserscan_modification node in the SUT, so the simulator publishes the scan the
+        # stack consumes directly. One fewer node in the graph, and a consequence of
+        # choosing the native noise channel.
+        serial:
+            timeout(60s)
+            wait_for_topics(topics: ['/clock'])
+            check_data(topic_name: '/scan',
+                       topic_type: 'sensor_msgs.msg.LaserScan',
+                       member_name: 'range_max',
+                       comparison_operator: comparison_operator!gt,
+                       expected_value: '0.0',
+                       qos_profile: qos_preset_profiles!sensor_data)
+        parallel:
+            ros_launch('', '/config/files/nav2_sut.launch.py',
+                [key_value('params_file', '/out/nav2_params.yaml'),   # the MUTATED copy
+                 key_value('map', '/config/files/empty_room.yaml'),
+                 key_value('autostart', 'true')],
+                wait_for_shutdown: false) with:
+                    # Stated, not left at the 10s default: this waits for a server in
+                    # ANOTHER container, and a cluster batch starts many pods at once, so
+                    # bring-up crosses 10s routinely. Measured on a search campaign: all 5
+                    # runs of one parameter set failed on the default. It is a bring-up
+                    # wait, not part of the trial, so a generous value costs nothing and the
+                    # scenario's own timeout() still bounds the run.
+                    remote('ipc:///ipc/sut', setup_timeout: 120s)
+            parallel:
+                serial:
+                    # Waits for amcl and bt_navigator to report active, retrying every tick
+                    # -- which is what absorbs however long the composed nodes take.
+                    robot.init_nav2(start_pose)
+                    bag_record([
+                            # use_sim_time stamps every derived table with the simulator's
+                            # clock, so a trial reads the same in sim seconds however fast
+                            # the machine ran. /clock is recorded so a wall-stamped topic
+                            # can still be mapped back to it.
+                            '/clock',
+                            '/tf',
+                            '/tf_static',
+                            '/amcl_pose',
+                            '/behavior_tree_log',
+                            '/map',
+                            '/global_costmap/costmap',
+                            '/local_costmap/costmap',
+                            '/scan',
+                            '/odom',
+                            # The two halves of the oracle. /collision is the verdict -- a
+                            # real contact force, latched. /clearance is the gradient -- how
+                            # close it came, measured against real geometry in the
+                            # simulator. Recorded rather than recomputed offline: a
+                            # clearance derived from these poses would miss the closest
+                            # approach between samples, and would need a footprint radius
+                            # that the simulator does not.
+                            '/collision',
+                            '/clearance'
+                        ],
+                        use_sim_time: true,
+                        timestamp_suffix: false)
+                    robot.nav_to_pose(goal_pose)
+                    emit end
+                # The failure oracle, fed by the world's contact_monitor.
+                #
+                # Compares the VALUE, and must: contact_monitor publishes std_msgs/Bool at
+                # 30 Hz from the first step, False included. Waiting for any message on
+                # /collision would fail every trial instantly.
+                #
+                # Deliberately NOT watching /clearance: a near-miss threshold here would be
+                # a second, differently-calibrated way to fail one trial, and the two would
+                # eventually disagree about whether it failed. Clearance grades the run
+                # afterwards; contact decides it.
+                serial:
+                    check_data(topic_name: '/collision',
+                               topic_type: 'std_msgs.msg.Bool',
+                               member_name: 'data',
+                               comparison_operator: comparison_operator!eq,
+                               expected_value: 'True')
+                    emit fail

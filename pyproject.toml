@@ -1,44 +1,63 @@
 [tool.poetry]
 name = "robovast"
-version = "1.0.0"
+version = "2.1.0"
 description = "RoboVast project"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "robovast", from = "src"}]
+# The built web UI, staged into the package by `make ui-stage` (which `build`
+# runs). Needs an explicit include because the source is git-ignored and poetry
+# excludes ignored files by default -- and it has to land *inside* the package,
+# since an installed module cannot resolve up to a repo-root directory.
+include = [{path = "src/robovast/_ui/**/*", format = "wheel"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 click = "^8.1"
 pyyaml = "^6.0"
+# Round-trip YAML, for ONE job: `vast configuration upgrade` and the manual-migration
+# workflow rewrite a .vast a human then edits, and pyyaml's safe_load/dump silently drops
+# every comment. The .vast files in this repo carry load-bearing ones, and handing someone
+# a decommented file to make decisions in defeats the purpose. Every *reading* path still
+# uses pyyaml -- see robovast/common/migrations/__init__.py for the split.
+"ruamel.yaml" = "^0.18"
 numpy = "^1.26"
 pandas = "^2.2"
-# Qt desktop GUI (config editor / result analyzer). Optional: headless installs
-# (the in-cluster controller, CI) skip it, and PySide6 ships no linux-aarch64
-# wheels. Install with the ``gui`` extra for the desktop tools. GUI imports are
-# already lazy / guarded, so the rest of robovast runs without it.
-pyside6-essentials = {version = "^6.6", optional = true}
-pyside6-addons = {version = "^6.6", optional = true}
-matplotlib = "^3.10"
-nbformat = "^5.9"
-nbconvert = "^7.16"
-lxml-html-clean = "^0.1"
-kubernetes = "^34.1"
-boto3 = "^1.35"
-google-cloud-storage = "^2.0"
-scipy = "^1.16"
+# Only analysis notebooks import these; nothing in robovast
+# itself does. Optional so a service that never renders a notebook -- and every
+# client -- skips them. The controller image installs the ``analysis`` extra because
+# `render_campaign_notebook` executes notebooks in-process.
+matplotlib = {version = "^3.10", optional = true}
+# The notebook toolchain: only `notebook_render` imports it, and only when a campaign
+# notebook is actually rendered. `ipykernel` and `lxml-html-clean` have no importer at
+# all -- they are the kernel nbconvert executes with and the sanitizer it renders HTML
+# through, so they are runtime requirements of the same extra.
+nbformat = {version = "^5.9", optional = true}
+nbconvert = {version = "^7.16", optional = true}
+# nbconvert pulls nbclient in itself, but the service's notebook endpoint imports it
+# directly (to recognise a CellExecutionError), so it is named rather than assumed.
+# Range rather than a caret: this declaration must not fight nbconvert's own resolution
+# of the same package -- naming it is about it being installed, not about which version.
+nbclient = {version = ">=0.10,<1.0", optional = true}
+lxml-html-clean = {version = "^0.1", optional = true}
+scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
-docker = "^7.0"
-ruamel-yaml = "^0.18"
 scenario-execution = "^1.3.0"
-rdflib = "^7.0"
-pyld = "^2.0"
-ipykernel = "^7.1.0"
+# FAIR/PROV metadata generation, one module. Both call sites defer the import.
+rdflib = {version = "^7.0", optional = true}
+pyld = {version = "^2.0", optional = true}
+ipykernel = {version = "^7.1.0", optional = true}
 python-dotenv = "^1.0"
-fastmcp = "3.1.0"
-paramiko = "^4.0"
+fastmcp = "3.4.4"
+# The SFTP share provider only, and imported by it lazily (see share_providers/sftp.py):
+# an install without this extra loads the `sftp` provider like any other and reports the
+# missing dependency only if a share of that type is actually used.
+paramiko = {version = "^4.0", optional = true}
+psutil = "^7.0"
 requests = "^2.32"
-fastapi = "^0.115"
+# fastmcp 3.4.4 pulls in starlette>=1.0; only fastapi>=0.139 dropped its starlette<0.49 cap.
+fastapi = ">=0.139,<1.0"
 uvicorn = ">=0.35,<1.0"  # aligned with fastmcp's uvicorn>=0.35
 # Optional documentation dependencies
 sphinx = {version = "^7.0.0", optional = true}
@@ -58,6 +77,24 @@ pytest = {version = "^8.0", optional = true}
 # composes nav configs (host, cluster controller) needs it; the ROS-runtime
 # image / pure batch-only contexts can skip it.
 robovast-nav = {path = "src/robovast_nav", optional = true}
+# The roqsim (MuJoCo) simulator backend -- the `backend: roqsim` entry point in
+# the `robovast.simulators` group. Path dependency on the sibling
+# robovast-sim-roqsim package (src/robovast_sim_roqsim, published standalone).
+# Optional because RoboVAST must not *require* a simulator: `pip install robovast`
+# names none, and a third-party backend arrives the same way, through its own package.
+# Unlike `nav` it costs nothing to carry -- the backend is container specs and strings,
+# and pydantic is already a dependency above -- which is why the service/controller
+# image installs it by default (container/controller/Dockerfile). That is what lets a
+# campaign say `backend: roqsim` without shipping the package itself in `plugins:`.
+robovast-sim-roqsim = {path = "src/robovast_sim_roqsim", optional = true}
+# The client layer -- the interface models, the HTTP client, the credential store, the
+# things a client needs to talk to a service. Path dependency on the sibling
+# robovast-client package (src/robovast_client, published standalone).
+#
+# NOT optional, unlike the two above: this is the layer robovast is built on, not a
+# capability it can decline. The direction matters and is the whole reason the split is
+# safe -- robovast-client depends on nothing of ours, so this edge cannot become a cycle.
+robovast-client = {path = "src/robovast_client"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"
@@ -67,32 +104,68 @@ sphinx-click = "^5.0.0"
 
 [tool.poetry.extras]
 nav = ["robovast-nav"]
-gui = ["pyside6-essentials", "pyside6-addons"]
+roqsim = ["robovast-sim-roqsim"]
+analysis = ["matplotlib", "scipy"]
+notebooks = ["nbformat", "nbconvert", "nbclient", "ipykernel", "lxml-html-clean"]
+fair = ["rdflib", "pyld"]
+sftp = ["paramiko"]
 docs = ["sphinx", "sphinx-rtd-theme", "sphinxcontrib-spelling", "sphinx-click"]
 qd = ["ribs", "shapely"]
 optuna = ["optuna"]
-test = ["pytest", "ribs", "shapely", "optuna"]
+# The suite imports the modules these belong to, so they are test requirements even
+# though the runtime treats them as optional: tests/results_processing imports
+# fair_metadata (rdflib, pyld at module scope) and notebook_render (nbformat,
+# nbconvert, plus the kernel and sanitizer they render through). ribs/shapely/optuna
+# were already here for the same reason. Leaving them out did not fail visibly --
+# every dev venv had them from some earlier install, and robovast-nav supplies
+# matplotlib, scipy and rdflib as hard dependencies -- so only a clean CI run ever
+# hit the collection error. Deliberately NOT paramiko: test_cli_startup_weight lists
+# it as forbidden at CLI startup.
+test = ["pytest", "ribs", "shapely", "optuna", "rdflib", "pyld", "nbformat",
+        "nbconvert", "nbclient", "ipykernel", "lxml-html-clean"]
 
-[tool.poetry.scripts]
-vast = "robovast.common.cli.cli:main"
+# No [tool.poetry.scripts] here: the `vast` entry point belongs to robovast-client, which
+# owns the root command group. Declaring it in both would have two distributions racing to
+# install the same console script.
+
+# Work the root command group must do before any command runs, but that belongs to this
+# distribution. The `.env` read is core's because everything a `.env` carries -- share
+# credentials, ntfy, registry, image pins -- is consumed here and by the lanes.
+[tool.poetry.plugins."robovast.cli_startup"]
+env-file = "robovast.common.env_file:load_env_file"
 
 [tool.poetry.plugins."robovast.cli_plugins"]
+# The verbs that need the core -- a service implementation, Docker, the UI build, the
+# results reader. They attach to the client's root group like any other plugin, so a
+# client-only install simply does not have them rather than having them and failing.
+init = "robovast.common.cli.core_commands:init"
+serve = "robovast.common.cli.core_commands:serve"
+ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
-execution = "robovast.execution.execution_utils.cli:execution"
 results = "robovast.results_processing.cli:results"
-evaluation = "robovast.evaluation.result_analyzer.cli:evaluation"
+# `vast share`: four of its six verbs instantiate a share provider, so the group needs
+# the core. `export`/`import` only drive the service and could live in the client, but
+# one group split across two distributions is worse than the asymmetry.
+share = "robovast.execution.share_cli:share"
+# No `execution` here: `vast exec` is the client's group now, because the launch path
+# (push a project, ask the service to run it) needs nothing the core provides. What
+# needed the core was `vast exec local`, which attaches below.
 
-[tool.poetry.plugins."robovast.cluster_configs"]
-minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"
-rke2 = "robovast.execution.cluster_config.rke2:Rke2ClusterConfig"
-gcp = "robovast.execution.cluster_config.gcp:GcpClusterConfig"
-azure = "robovast.execution.cluster_config.azure:AzureClusterConfig"
+# `vast exec local`. Attached to the client's `exec` group lazily, so Docker and the
+# config schema stay out of every other `vast` invocation.
+[tool.poetry.plugins."robovast.exec_plugins"]
+local = "robovast.execution.execution_utils.cli:local"
+
+# Execution lanes `vast serve` can run. Resolved by name so the core never has to
+# import the cluster package to start a service -- see service/serve_backends.py.
+[tool.poetry.plugins."robovast.execution_backends"]
+local = "robovast.service.local_serve_backend:LocalServeBackend"
 
 [tool.poetry.plugins."robovast.share_providers"]
-nextcloud = "robovast.execution.cluster_execution.share_providers.nextcloud:NextcloudShareProvider"
-gcs = "robovast.execution.cluster_execution.share_providers.gcs:GcsShareProvider"
-sftp = "robovast.execution.cluster_execution.share_providers.sftp:SftpShareProvider"
-webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShareProvider"
+nextcloud = "robovast.execution.share_providers.nextcloud:NextcloudShareProvider"
+gcs = "robovast.execution.share_providers.gcs:GcsShareProvider"
+sftp = "robovast.execution.share_providers.sftp:SftpShareProvider"
+webdav = "robovast.execution.share_providers.webdav:WebDavShareProvider"
 
 [tool.poetry.plugins."robovast.variation_types"]
 "ParameterVariationList" = "robovast.common.variation.parameter_variation:ParameterVariationList"
@@ -102,15 +175,23 @@ webdav = "robovast.execution.cluster_execution.share_providers.webdav:WebDavShar
 
 [tool.poetry.plugins."robovast.search_strategies"]
 random = "robovast.search.strategies.random_search:RandomSearch"
+halton = "robovast.search.strategies.halton:HaltonSearch"
+boundary = "robovast.search.strategies.boundary:BoundarySearch"
 qd = "robovast.search.strategies.qd:QDStrategy"
 optuna = "robovast.search.strategies.optuna:OptunaStrategy"
 
 [tool.poetry.plugins."robovast.extractors"]
 failure_rate = "robovast.search.extractors.failure_rate:FailureRate"
 
+[tool.poetry.plugins."robovast.input_generators"]
+shell = "robovast.common.input_generation:Shell"
+
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
+compress = "robovast.results_processing.postprocessing_plugins:Compress"
+resource_usage = "robovast.results_processing.postprocessing_plugins:ResourceUsage"
 rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
+run_log = "robovast.results_processing.postprocessing_plugins:RunLog"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
@@ -119,14 +200,36 @@ zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
 [tool.poetry.plugins."robovast.metadata_processing"]
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
-docs = "robovast.evaluation.mcp_server.plugins.docs:DocsPlugin"
-campaign_metadata = "robovast.evaluation.mcp_server.plugins.campaign_metadata:CampaignMetadataPlugin"
-configuration_metadata = "robovast.evaluation.mcp_server.plugins.configuration_metadata:ConfigurationMetadataPlugin"
-plugin_metadata = "robovast.evaluation.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
-run_metadata = "robovast.evaluation.mcp_server.plugins.run_metadata:RunMetadataPlugin"
-run_data = "robovast.evaluation.mcp_server.plugins.run_data:RunDataPlugin"
-search_metadata = "robovast.evaluation.mcp_server.plugins.search_metadata:SearchMetadataPlugin"
-prompts = "robovast.evaluation.mcp_server.plugins.prompts:PromptsPlugin"
+# Grouped by lifecycle phase: author -> run -> read -> dispose, then the reference
+# material. Files span every phase, so they are one address space rather than a phase.
+files = "robovast.mcp_server.plugins.files:FilesPlugin"
+authoring = "robovast.mcp_server.plugins.authoring:AuthoringPlugin"
+execution = "robovast.mcp_server.plugins.execution:ExecutionPlugin"
+results = "robovast.mcp_server.plugins.results:ResultsPlugin"
+run_logs = "robovast.mcp_server.plugins.run_logs:RunLogsPlugin"
+results_lifecycle = "robovast.mcp_server.plugins.results_lifecycle:ResultsLifecyclePlugin"
+reference = "robovast.mcp_server.plugins.reference:ReferencePlugin"
+docs = "robovast.mcp_server.plugins.docs:DocsPlugin"
+examples = "robovast.mcp_server.plugins.examples:ExamplesPlugin"
+plugin_metadata = "robovast.mcp_server.plugins.plugin_metadata:PluginMetadataPlugin"
+image_catalog = "robovast.mcp_server.plugins.image_catalog:ImageCatalogPlugin"
+prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
+
+[tool.isort]
+# Without this, isort classifies `robovast` as third-party -- there is no top-level
+# `robovast/` directory to infer it from, only `src/robovast*/`. Bare `isort .` then
+# merges first-party imports into the third-party block and deletes the blank line
+# between them, "fixing" 147 files by making every one of them worse. That is why the
+# repo has never had a clean isort run: the failures were the tool's, not the code's.
+known_first_party = ["robovast", "robovast_nav", "robovast_sim_roqsim"]
+src_paths = ["src", "tests"]
+# GRID (0) -- aligned to the opening paren, several names per line. Chosen by measuring
+# every mode against the tree: the imports here have no one consistent style, so all six
+# reformat ~180 files, and this is the one the majority already look like. Matching what
+# is there beats imposing something tidier.
+line_length = 100
+multi_line_output = 0
+include_trailing_comma = false
 
 [build-system]
 requires = ["poetry-core"]

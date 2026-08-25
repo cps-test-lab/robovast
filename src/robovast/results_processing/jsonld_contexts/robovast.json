@@ -1,0 +1,265 @@
+{
+  "@context": [
+    {
+      "agn": "https://purl.org/secorolab/metamodels/agent#",
+      "scenarios": "https://purl.org/secorolab/metamodels/scenarios/osc/",
+      "env": "https://purl.org/secorolab/metamodels/environment#",
+      "robovast": "https://purl.org/robovast/metamodels/",
+      "xsd": "http://www.w3.org/2001/XMLSchema#",
+      "prov": "http://www.w3.org/ns/prov#",
+      "dcterms": "http://purl.org/dc/terms/",
+      "qudt": "http://qudt.org/schema/qudt/",
+      "unit": "http://qudt.org/vocab/unit/",
+      "jazzy": "https://docs.ros.org/en/jazzy/p/",
+      "vars": "https://purl.org/robovast/metamodels/variation/",
+
+      "Campaign": "robovast:Campaign",
+
+      "CampaignExecution": "robovast:CampaignExecution",
+      "docker_image": {
+        "@id": "robovast:execution#image",
+        "@type": "xsd:string"
+      },
+
+      "VastConfiguration": "robovast:VastConfiguration",
+      "configurations": {
+        "@id": "robovast:vast/configurations/",
+        "@type": "@id"
+      },
+      "runs": {
+        "@id": "robovast:vast/execution#runs",
+        "@type": "xsd:integer"
+      },
+
+      "ConfigGeneration": "robovast:ConfigGeneration",
+      "FloorPlanTransformation": "robovast:FloorPlanTransformation",
+      "FloorPlanGeneration": "robovast:FloorPlanGeneration",
+      "FloorPlanVariation": "robovast:FloorPlanVariation",
+
+      "Variation": "robovast:Variation",
+      "variations": {
+        "@id": "robovast:variations",
+        "@type": "@id",
+        "@container": "@list"
+      },
+
+      "ParameterVariation": "vars:ParameterVariation",
+      "param_name": {
+        "@id": "robovast:param_name",
+        "@type": "xsd:string"
+      },
+
+      "ParameterList": "vars:ParameterList",
+      "param_values": {
+        "@id": "vars:param_values"
+      },
+      "hasUnit": {
+        "@id": "qudt:hasUnit",
+        "@type": "@id"
+      },
+
+      "ParameterDistribution": "vars:ParameterDistribution",
+      "num_variations": {
+        "@id": "vars:num_variations",
+        "@type": "xsd:integer"
+      },
+      "seed": {
+        "@id": "vars:seed",
+        "@type": "xsd:integer"
+      },
+      "min": {
+        "@id": "vars:min",
+        "@type": "xsd:float"
+      },
+      "max": {
+        "@id": "vars:max",
+        "@type": "xsd:float"
+      },
+      "type": {
+        "@id": "vars:type",
+        "@type": "xsd:string"
+      },
+
+      "UniformDistribution": "vars:UniformDistribution",
+
+      "GaussianDistribution": "vars:GaussianDistribution",
+      "mean": {
+        "@id": "vars:GaussianDistribution#mean",
+        "@type": "xsd:float"
+      },
+      "std": {
+        "@id": "vars:GaussianDistribution#std",
+        "@type": "xsd:float"
+      },
+
+      "OneOfVariation": "vars:OneOfVariation",
+
+      "FloorplanGeneration": "vars:FloorplanGeneration",
+      "floorplans": {
+        "@id": "vars:floorplans",
+        "@type": "@id"
+      },
+
+      "FloorplanVariation": "vars:FloorplanVariation",
+      "variation_files": {
+        "@id": "vars:FloorplanVariation#variation_files",
+        "@type": "xsd:string"
+      },
+
+      "PathVariation": "vars:PathVariation",
+      "start_pose": "vars:start_pose",
+      "goal_poses": {
+        "@id": "vars:goal_poses",
+        "@container": "@list"
+      },
+      "num_goal_poses": {
+        "@id": "vars:num_goal_poses",
+        "@type": "xsd:integer"
+      },
+      "map_file": {
+        "@id": "vars:map_file",
+        "@type": "@id"
+      },
+      "path_length_tolerance": {
+        "@id": "vars:path_length_tolerance",
+        "@type": "xsd:float"
+      },
+      "robot_diameter": {
+        "@id": "vars:robot_diameter",
+        "@type": "xsd:float"
+      },
+      "path_length": {
+        "@id": "vars:path_length",
+        "@type": "xsd:float"
+      },
+
+      "RandomPath": "vars:RandomPath",
+      "num_paths": {
+        "@id": "vars:num_paths",
+        "@type": "xsd:integer"
+      },
+      "min_distance": {
+        "@id": "vars:min_distance",
+        "@type": "xsd:float"
+      },
+
+      "RasterizedPath": "vars:RasterizedPath",
+      "raster_size": {
+        "@id": "vars:raster_size",
+        "@type": "xsd:float"
+      },
+      "x": {
+        "@id": "vars:x",
+        "@type": "xsd:float"
+      },
+      "y": {
+        "@id": "vars:y",
+        "@type": "xsd:float"
+      },
+      "yaw": {
+        "@id": "vars:yaw",
+        "@type": "xsd:float"
+      },
+      "raster_offset_x": {
+        "@id": "vars:raster_offset_x",
+        "@type": "xsd:float"
+      },
+      "raster_offset_y": {
+        "@id": "vars:raster_offset_y",
+        "@type": "xsd:float"
+      },
+
+      "ObstacleVariation": "vars:ObstacleVariation",
+      "obstacle_configs": {
+        "@id": "vars:obstacle_configs",
+        "@container": "@list",
+        "@type": "@id"
+      },
+      "amount": {
+        "@id": "vars:amount",
+        "@type": "xsd:float"
+      },
+      "amount_per_m": {
+        "@id": "vars:amount_per_m",
+        "@type": "xsd:float"
+      },
+      "max_distance": {
+        "@id": "vars:max_distance",
+        "@type": "xsd:float"
+      },
+      "model": {
+        "@id": "vars:model",
+        "@type": "@id"
+      },
+      "xacro_arguments": {
+        "@id": "vars:xacro_arguments",
+        "@type": "xsd:string"
+      },
+      "count": {
+        "@id": "vars:count",
+        "@type": "xsd:integer"
+      },
+
+      "StaticObstacle": "vars:StaticObstacle",
+      "DynamicObstacle": "vars:DynamicObstacle",
+
+      "ObstacleWithDistanceTrigger": "vars:ObstacleWithDistanceTrigger",
+      "spawn_trigger_point": "robovast:param_name",
+      "spawn_trigger_threshold": "robovast:param_name",
+      "trigger_distance": {
+        "@id": "vars:trigger_distance",
+        "@type": "xsd:float"
+      },
+      "goal_pose": "var:goal_poses",
+
+      "n_goals": {
+        "@id": "scenarios:n_goals",
+        "@type": "xsd:integer"
+      },
+      "n_obstacles": {
+        "@id": "scenarios:n_obstacles",
+        "@type": "xsd:integer"
+      },
+
+      "TestExecution": "robovast:TestExecution",
+      "sysinfo": {
+        "@id": "robovast:sysinfo",
+        "@type": "@id"
+      },
+      "success": {
+        "@id": "robovast:success",
+        "@type": "xsd:boolean"
+      },
+
+      "RosBag": "robovast:RosBag",
+
+      "MCAPFile": "robovast:MCAPFile",
+      "message_types": {
+        "@id": "robovast:ros/message_types/",
+        "@type": "@id"
+      },
+
+      "BagFileMetadata": "robovast:BagFile#Metadata",
+
+      "TestResult": "robovast:TestResult",
+      "LogFile": "robovast:LogFile",
+
+      "Postprocessing": "robovast:Postprocessing",
+      "plugin": {
+        "@id": "robovast:plugin",
+        "@type": "xsd:string"
+      },
+      "Plugin": "robovast:Plugin",
+      "frames": {
+        "@id": "robovast:frames",
+        "@type": "xsd:string"
+      },
+
+      "Traces": "robovast:Traces",
+      "PostprocessingMetadata": "robovast:PostprocessingMetadata",
+      "CampaignMetadata": "robovast:Campaign#Metadata",
+      "PostprocessingGraph": "robovast:PostprocessingGraph",
+      "CampaignGraph": "robovast:Campaign#Graph"
+    }
+  ]
+}

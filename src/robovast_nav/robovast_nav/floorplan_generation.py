@@ -94,9 +94,8 @@ def _create_config_for_floorplan(
     floorplan_name,
     output_dir,
     in_config,
-    map_file_parameter_name,
-    mesh_file_parameter_name,
-    update_config_fn
+    update_slots_fn,
+    mesh_format="stl"
 ):
     """Create a configuration entry for a generated floorplan with its artifacts.
 
@@ -104,15 +103,16 @@ def _create_config_for_floorplan(
         floorplan_name: Name of the floorplan (used as subdirectory name)
         output_dir: Base output directory containing floorplan artifacts
         in_config: Input configuration to update
-        map_file_parameter_name: Config key for map file parameter
-        mesh_file_parameter_name: Config key for mesh file parameter
-        update_config_fn: Function to update config with new values
+        update_slots_fn: The variation's ``update_slots``; it resolves each slot to the
+            channel and destination the campaign bound it to
+        mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``)
 
     Returns:
         Updated configuration dictionary
     """
     maps_dir = os.path.join(output_dir, floorplan_name, 'maps')
     mesh_dir = os.path.join(output_dir, floorplan_name, '3d-mesh')
+    mesh_ext = '.' + mesh_format
 
     def _pick(directory, suffix, exclude_suffix=None):
         if not os.path.isdir(directory):
@@ -127,12 +127,12 @@ def _create_config_for_floorplan(
     # (e.g. ``rooms.yaml``), which need not match the variation folder name
     # (e.g. ``rooms_1``). Discover the actual files rather than assuming the name.
     map_yaml_name = _pick(maps_dir, '.yaml')
-    mesh_stl_name = _pick(mesh_dir, '.stl', exclude_suffix='.stl.yaml')
+    mesh_stl_name = _pick(mesh_dir, mesh_ext, exclude_suffix=mesh_ext + '.yaml')
 
     if not map_yaml_name:
         raise FileNotFoundError(f"Warning: Map file (*.yaml) not found in: {maps_dir}")
     if not mesh_stl_name:
-        raise FileNotFoundError(f"Warning: Mesh file (*.stl) not found in: {mesh_dir}")
+        raise FileNotFoundError(f"Warning: Mesh file (*{mesh_ext}) not found in: {mesh_dir}")
 
     map_stem = map_yaml_name[:-len('.yaml')]
     map_pgm_name = map_stem + '.pgm'
@@ -153,23 +153,68 @@ def _create_config_for_floorplan(
     rel_mesh_path = os.path.join('3d-mesh', mesh_stl_name)
     rel_mesh_metadata_path = os.path.join('3d-mesh', mesh_yaml_name)
 
-    new_config = update_config_fn(in_config, {
-        map_file_parameter_name: rel_map_yaml_path,
-        mesh_file_parameter_name: rel_mesh_path,
+    # Deploy the json-ld sibling of 3d-mesh/ next to the mesh. It is the mesh's structured source
+    # (every wall/column as an exact convex polyhedron), which a simulator needs to build collision
+    # geometry: a concave floorplan mesh collides only by its convex hull, i.e. a solid block filling
+    # the building. Simulators that don't need it simply ignore these files.
+    jsonld_dir = os.path.join(output_dir, floorplan_name, 'json-ld')
+    jsonld_files = [
+        (os.path.join('json-ld', f), os.path.join(jsonld_dir, f))
+        for f in sorted(os.listdir(jsonld_dir))
+        if os.path.isfile(os.path.join(jsonld_dir, f))
+    ] if os.path.isdir(jsonld_dir) else []
+
+    # By SLOT, not by parameter name: the campaign decides which channel each artifact
+    # lands on, and the map and the mesh routinely land on different ones -- nav2 reads the
+    # map at run time while the simulator has to compile the mesh in.
+    new_config = update_slots_fn(in_config, {
+        'map': rel_map_yaml_path,
+        'mesh': rel_mesh_path,
     },
         config_files=[
         (rel_map_yaml_path, map_file_path),
         (rel_map_pgm_path, map_pgm_path),
         (rel_mesh_path, mesh_file_path),
         (rel_mesh_metadata_path, mesh_file_metadata_path)
-    ],
+    ] + jsonld_files,
         other_values={
             '_map_file': map_file_path,
     })
     return new_config
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
+def _mesh_command(mesh_format):
+    """Build the scenery_builder ``mesh`` sub-command for *mesh_format*.
+
+    ``stl`` is scenery_builder's default, so we omit ``--format`` for it to stay
+    compatible with images that predate the flag; other formats pass it through.
+    """
+    if mesh_format and mesh_format != "stl":
+        return ["mesh", "--format", mesh_format]
+    return ["mesh"]
+
+
+def _occ_grid_command(laser_height):
+    """Build the scenery_builder ``occ-grid`` sub-command.
+
+    ``laser_height`` is the height the floorplan is SLICED at to make the grid, and it is a
+    property of the robot that will localize in it -- a TurtleBot 4's RPLIDAR sits at 0.2 m,
+    scenery_builder's default is 0.7 m. Not a detail: regenerating the metamorphic dataset's
+    hexagon at the default reproduced its ``.pgm`` in every respect except 441 of 25232 cells
+    (1.75%), because a floorplan's geometry is height-dependent. A campaign whose map came out
+    of this pipeline and whose robot's scanner is not at 0.7 m therefore has to be able to say
+    so; without it the map nav2 localizes in silently stops being the map the environment was
+    measured with.
+
+    Omitted when unset, so an image predating the flag still works and the default is
+    scenery_builder's rather than a second one maintained here.
+    """
+    if laser_height is None:
+        return ["occ-grid"]
+    return ["occ-grid", "--laser-height", str(laser_height)]
+
+
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -193,9 +238,10 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         variation = os.path.splitext(os.path.basename(variation_file))[0]
         progress_update_callback(f"\nProcessing: {variation}")
 
-        file_cache = FileCache(base_path, "floorplan_variation", [variation_file, num_variations, seed_value])
+        file_cache = FileCache(base_path, "floorplan_variation",
+                               [variation_file, num_variations, seed_value, mesh_format, laser_height])
         files_for_hash = [variation_file_path]  # TODO: add fpm
-        strings_for_hash = [str(num_variations), str(seed_value)]
+        strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -273,9 +319,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                     "generate",
                     "-i", temp_transform_path,
                     "-o", temp_generate_output_path,
-                    "occ-grid",
-                    "mesh"
-                ]
+                ] + _occ_grid_command(laser_height) + _mesh_command(mesh_format)
                 try:
                     container_runner.run(cmd3, progress_update_callback)
                 except subprocess.CalledProcessError as e:
@@ -342,7 +386,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
     return floorplan_names, floorplan_versions
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -354,6 +398,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             (see robovast.common.variation.container_runner).
         scenery_builder_version: Optional version string for the scenery_builder image.
             Written into the cache tar so it survives cache hits.
+        mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``).
+        laser_height: Height (m) the occupancy grid is sliced at, or None for
+            scenery_builder's default. See :func:`_occ_grid_command`.
 
     Returns:
         Tuple of (floorplan_names, versions) where floorplan_names is a list of
@@ -384,9 +431,13 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_basename = os.path.splitext(os.path.basename(floorplan_file))[0]
         progress_update_callback(f"\nProcessing: {floorplan_basename}")
 
-        file_cache = FileCache(base_path, "floorplan_generation", [floorplan_file])
+        # laser_height is in the key for the same reason mesh_format is: it changes the bytes
+        # produced from an unchanged .fpm, so a cache hit across two values would serve one
+        # campaign's map to another.
+        file_cache = FileCache(base_path, "floorplan_generation",
+                               [floorplan_file, mesh_format, laser_height])
         files_for_hash = [floorplan_file_path]
-        strings_for_hash = []
+        strings_for_hash = [mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -425,9 +476,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 "generate",
                 "-i", temp_transform_path,
                 "-o", temp_generate_output_path,
-                "occ-grid",
-                "mesh"
-            ]
+            ] + _occ_grid_command(laser_height) + _mesh_command(mesh_format)
             progress_update_callback("Generating floorplan. This may take a while...")
             try:
                 container_runner.run(cmd_generate, progress_update_callback)
