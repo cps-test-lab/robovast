@@ -651,8 +651,22 @@ class BatchJobRunner:
 
         Used for the (globally unique, K8s-safe) job name and the
         ``<tag>.params.yaml`` file, so these never collide across batches.
+
+        **The batch tag is flattened, because it is not always flat.** A batch whose
+        parameter sets ask for different repetition counts is tagged ``batch-<n>/reps-<k>``
+        -- the grouping is real and the slash belongs in ``_jobs/``, where it is a directory
+        (see :meth:`_job_artifact_path`). It cannot survive here: this tag names a *file*,
+        where the slash became an unmade directory and the campaign died on
+        ``_transient/batch-1/reps-3-job-0.params.yaml`` before its first run, and a
+        Kubernetes Job, where a slash is not a legal DNS-1123 label. This method promised
+        "flat, slash-free" and left it to its caller to be true; only a campaign with
+        non-uniform repetitions ever made it false.
         """
-        return f"{self._batch_tag}-job-{index}" if self._batch_tag else f"job-{index}"
+        if not self._batch_tag:
+            return f"job-{index}"
+        # Replaced rather than stripped, so ``batch-1/reps-3`` and ``batch-1/reps-5`` stay
+        # distinct -- they are different jobs and this tag is what keys them apart.
+        return f"{self._batch_tag.replace('/', '-')}-job-{index}"
 
     def _job_artifact_path(self, index: int) -> str:
         """Path of the job's artifact dir under ``_jobs/`` (no leading ``_jobs/``).
