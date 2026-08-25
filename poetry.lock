@@ -580,6 +580,23 @@ files = [
 colorama = {version = "*", markers = "platform_system == \"Windows\""}
 
 [[package]]
+name = "cmaes"
+version = "0.11.1"
+description = "Lightweight Covariance Matrix Adaptation Evolution Strategy (CMA-ES) implementation for Python 3."
+optional = true
+python-versions = ">=3.7"
+files = [
+    {file = "cmaes-0.11.1-py3-none-any.whl", hash = "sha256:1de77d2175045389680619c1e9b6d59d90e7888524d9e440e1704ba001de9fcc"},
+    {file = "cmaes-0.11.1.tar.gz", hash = "sha256:cf71fa3679814723be771f2c9edd85f465b1bc1e409e1ad6d8a9e481efcd5160"},
+]
+
+[package.dependencies]
+numpy = "*"
+
+[package.extras]
+cmawm = ["scipy"]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 description = "Cross-platform colored terminal text."
@@ -5249,13 +5266,13 @@ docs = ["sphinx", "sphinx-click", "sphinx-rtd-theme", "sphinxcontrib-spelling"]
 fair = ["pyld", "rdflib"]
 nav = ["robovast-nav"]
 notebooks = ["ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbformat"]
-optuna = ["optuna"]
+optuna = ["cmaes", "optuna"]
 qd = ["ribs", "shapely"]
 roqsim = ["robovast-sim-roqsim"]
 sftp = ["paramiko"]
-test = ["ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbformat", "optuna", "pyld", "pytest", "rdflib", "ribs", "shapely"]
+test = ["cmaes", "ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbformat", "optuna", "pyld", "pytest", "rdflib", "ribs", "shapely"]
 
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "534f88e03ad97674eff0d4f44ba0423670b21cb3f5a8c3e2425166ea8309618a"
+content-hash = "a2a656f0024dc2e0aac3733323e2ea9eba3b0d44e5ccbdfeba6dd53a36ae4a80"
