@@ -199,6 +199,10 @@ jobs:
       # moving target: two runs overlapping on main -- which has happened -- would otherwise let
       # roqsim build on the other run's base while looking like a matched pair.
       digest: ${{ steps.digest.outputs.digest }}
+      # The tag metadata-action chose for this event, for the one consumer that cannot use a
+      # digest -- see integration-test. Taken from the step that published it rather than
+      # recomputed from the event, which is how the two drift.
+      tag: ${{ steps.meta.outputs.version }}
     steps:
       # For container/platforms.env, which the architecture assertion below reads.
       - uses: actions/checkout@v4
@@ -434,12 +438,21 @@ jobs:
           poetry install --no-root
           poetry install
 
-      # The digest merge-base just published, so this tests the bytes this run produced rather
-      # than whatever the tag points at by the time the job gets here.
+      # A TAG, deliberately, where roqsim above takes a digest.
+      #
+      # `--image` is not an image reference: test_vast.py splits it into ROBOVAST_PROJECT and
+      # ROBOVAST_PROJECT_TAG, and the framework recomposes `<project>/<member>:<tag>` for each
+      # member of the family -- robovast, robovast-roqsim, robovast-sidecar. One override moves
+      # all of them, so it names a tag they share; three images have three digests and no single
+      # digest can name the set. Passing one here parsed as project="...robovast@sha256" and
+      # tag="<hex>", producing a reference to an image that does not exist.
+      #
+      # From merge-base's metadata-action output, so this is the tag that run actually published
+      # rather than the event logic reimplemented a second time.
       - name: Compute image tag
         id: image
         run: |
-          echo "tag=ghcr.io/${{ github.repository }}@${{ needs.merge-base.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          echo "tag=ghcr.io/${{ github.repository }}:${{ needs.merge-base.outputs.tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Run Example tests
         run: |
