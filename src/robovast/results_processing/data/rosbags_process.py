@@ -54,15 +54,16 @@ import time
 import zlib
 from abc import ABC, abstractmethod
 from multiprocessing import Pool, cpu_count
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import rosbag2_py
 import yaml
 from rclpy.serialization import deserialize_message
-from rosbags_common import (CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, DEFAULT_CLOCK_TOLERANCE_S,
-                            ClockDecimator, find_rosbags, gen_msg_values, is_under_tolerated_root,
-                            failing_bag_output, handler_error_pointer, register_video,
+from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
+                            DEFAULT_CLOCK_TOLERANCE_S, BagResult, ClockDecimator,
+                            failing_bag_output, find_rosbags, gen_msg_values,
+                            handler_error_pointer, is_under_tolerated_root, register_video,
                             resolve_tolerated_roots, write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
@@ -1090,34 +1091,6 @@ def _write_cache(run_dir: str, fingerprint: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class BagResult(NamedTuple):
-    """One bag's outcome, as it travels back through the Pool.
-
-    Named rather than a bare tuple because the worker returns from five places and the
-    parent reads it in four, with nothing tying the two ends together: widening a
-    positional tuple means editing all nine and getting a ``ValueError`` at unpack time
-    for the one that was missed. That error would surface only inside the ROS execution
-    container -- past the ``rosbag2_py`` import, where nothing in the test suite reaches
-    -- so the failure mode is "works everywhere it can be tested". With defaults, a
-    return site that does not mention a field gets the field's neutral value instead.
-
-    A ``NamedTuple`` specifically: this crosses a ``multiprocessing`` boundary, so it has
-    to pickle, and it must cost nothing beyond the standard library (this script runs with
-    stdlib + ROS libs and one sibling import, nothing else).
-    """
-
-    #: The bag this describes.
-    bag_path: str
-    #: Records written, or a sentinel: ``-1`` cache hit, ``-2`` the bag could not be
-    #: processed, ``0`` opened but produced nothing.
-    total: int
-    #: ``(record_count, output_files)`` per handler.
-    handler_results: Sequence[Tuple[int, List[str]]] = ()
-    #: What the worker printed, kept only for a bag that failed — see the capture below.
-    #: Defaults empty: a result that says nothing about failing did not fail.
-    output: str = ""
-
-
 def process_rosbag_worker(args: tuple) -> BagResult:
     """Process a single rosbag with all configured handlers.
 
@@ -1137,7 +1110,7 @@ def process_rosbag_worker(args: tuple) -> BagResult:
     if not force:
         fingerprint = _bag_fingerprint(bag_path, plugin_configs_hash)
         if _read_cache(run_dir) == fingerprint:
-            return BagResult(bag_path, -1)  # cache hit — already processed
+            return BagResult(bag_path, CACHED)  # already converted
 
     # The worker's own output is captured rather than interleaved: 32 workers printing
     # through the progress bar would shred it. Captured, NOT discarded -- this used to be a
@@ -1165,7 +1138,7 @@ def process_rosbag_worker(args: tuple) -> BagResult:
                 print(f"  ✗ Handler '{handler_type}' init failed: {e}")
 
         if not handlers:
-            return BagResult(bag_path, -2, output=captured.getvalue())
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Detect storage format from metadata.yaml, fall back to mcap
         storage_id = "mcap"
@@ -1196,7 +1169,7 @@ def process_rosbag_worker(args: tuple) -> BagResult:
             }
         except Exception as e:
             print(f"✗ {bag_path}: failed to open — {e}")
-            return BagResult(bag_path, -2, output=captured.getvalue())
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Call on_begin for each handler; remove those that fail
         active_handlers: List[RosbagHandler] = []
@@ -1208,10 +1181,13 @@ def process_rosbag_worker(args: tuple) -> BagResult:
                 print(f"  ✗ Handler {type(h).__name__} on_begin failed: {e}")
 
         if not active_handlers:
-            # No records, and the reason is the on_begin failures just printed -- so this
-            # carries them home too. Counted as "no-data" rather than an error, which is
-            # why surfacing the output matters: the tally alone reads like an empty bag.
-            return BagResult(bag_path, 0, output=captured.getvalue())
+            # FAILED, not 0. Every handler refused to start, so nothing was going to be
+            # written -- but 0 means "opened fine, produced nothing", which the aggregate
+            # tallies as no-data and never counts in ``error_bags``. The step then exited
+            # 0 and reported success for a bag whose handlers had all thrown, which is the
+            # exact thing the exit-code contract below says must not happen. The on_begin
+            # failures just printed travel home with it.
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Build topic→handlers dispatch map (intersect with topics in this bag)
         topic_to_handlers: Dict[str, List[RosbagHandler]] = {}
@@ -1429,10 +1405,10 @@ def main() -> int:
     # Aggregate and write provenance
     for result in all_results:
         bag_path, handler_results = result.bag_path, result.handler_results
-        if result.total == -1:
+        if result.cached:
             cached_bags += 1
             continue
-        if result.total == -2:
+        if result.failed:
             if _is_tolerated(bag_path):
                 expected_error_bags += 1
             else:

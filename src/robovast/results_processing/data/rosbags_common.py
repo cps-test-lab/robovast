@@ -20,7 +20,7 @@ import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 # -- the wall<->sim clock map -------------------------------------------------
 #
@@ -380,3 +380,52 @@ def handler_error_pointer(has_output: bool) -> str:
     """
     return ("see the error output above" if has_output
             else "the workers printed nothing about them")
+
+
+#: ``BagResult.total`` sentinels. Named because they are tested far from where they are
+#: produced, and ``-1``/``-2`` at a branch says nothing about which one means what.
+#: They stay ints rather than an enum: the value crosses a ``multiprocessing`` boundary and
+#: shares a slot with a record count, and the handler protocol below produces ``-2`` of its
+#: own -- splitting status from count properly means changing nine ``on_end`` signatures in
+#: a module no test can import (``rosbag2_py`` at module level), which is a wide mechanical
+#: change with no way to verify it.
+CACHED = -1
+FAILED = -2
+
+
+class BagResult(NamedTuple):
+    """One bag's outcome, as it travels back through the Pool.
+
+    Named rather than a bare tuple because the worker returns from five places and the
+    parent reads it in four, with nothing tying the two ends together: widening a
+    positional tuple means editing all nine and getting a ``ValueError`` at unpack time
+    for the one that was missed. That error would surface only inside the ROS execution
+    container -- past the ``rosbag2_py`` import, where nothing in the test suite reaches
+    -- so the failure mode is "works everywhere it can be tested". With defaults, a
+    return site that does not mention a field gets the field's neutral value instead.
+
+    A ``NamedTuple`` specifically: this crosses a ``multiprocessing`` boundary, so it has
+    to pickle, and it must cost nothing beyond the standard library (this script runs with
+    stdlib + ROS libs and one sibling import, nothing else).
+    """
+
+    #: The bag this describes.
+    bag_path: str
+    #: Records written, or a sentinel: ``-1`` cache hit, ``-2`` the bag could not be
+    #: processed, ``0`` opened but produced nothing.
+    total: int
+    #: ``(record_count, output_files)`` per handler.
+    handler_results: Sequence[Tuple[int, List[str]]] = ()
+    #: What the worker printed, kept only for a bag that failed — see the capture below.
+    #: Defaults empty: a result that says nothing about failing did not fail.
+    output: str = ""
+
+    @property
+    def cached(self) -> bool:
+        """Already converted; its outputs are on disk and nothing was re-read."""
+        return self.total == CACHED
+
+    @property
+    def failed(self) -> bool:
+        """The bag could not be processed at all — unopenable, or no handler would start."""
+        return self.total == FAILED

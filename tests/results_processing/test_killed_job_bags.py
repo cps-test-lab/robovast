@@ -228,3 +228,58 @@ def test_the_error_pointer_never_points_at_nothing():
     from robovast.results_processing.data.rosbags_common import handler_error_pointer
     assert handler_error_pointer(True) == "see the error output above"
     assert "printed nothing" in handler_error_pointer(False)
+
+
+# -- a bag's outcome, and the sentinel that decides the exit code --------------------------
+
+
+def test_a_bag_no_handler_would_start_is_a_failure_not_an_empty_bag():
+    """It returned 0 — "opened fine, produced nothing" — so the aggregate tallied it as
+    no-data, never counted it in ``error_bags``, and the step exited 0. A bag whose every
+    handler threw in on_begin was reported as a successful conversion, which is precisely
+    what the exit-code contract in ``rosbags_process`` says must not happen.
+    """
+    from robovast.results_processing.data.rosbags_common import FAILED, BagResult
+    result = BagResult("/b/rosbag2", FAILED, output="  ✗ Handler X on_begin failed: boom\n")
+    assert result.failed is True
+    assert result.cached is False
+
+
+def test_a_bag_that_opened_and_wrote_nothing_is_not_a_failure():
+    """The other half of the distinction: 0 records is a real, non-failing outcome, and
+    conflating it with FAILED would fail campaigns that simply recorded an empty topic."""
+    from robovast.results_processing.data.rosbags_common import BagResult
+    empty = BagResult("/b/rosbag2", 0)
+    assert empty.failed is False and empty.cached is False
+
+
+def test_a_cache_hit_is_neither():
+    from robovast.results_processing.data.rosbags_common import CACHED, BagResult
+    hit = BagResult("/b/rosbag2", CACHED)
+    assert hit.cached is True and hit.failed is False
+    assert hit.handler_results == () and hit.output == ""
+
+
+def test_a_result_that_omits_a_field_degrades_rather_than_raising():
+    """Why this is a NamedTuple with defaults: the worker returns from five places and the
+    parent reads it in four. Widening a bare tuple once already left a three-tuple meeting
+    a four-way unpack — a ValueError reachable only inside the ROS container, where no test
+    goes."""
+    from robovast.results_processing.data.rosbags_common import FAILED, BagResult
+    assert BagResult("/b", FAILED).output == ""
+
+
+def test_the_empty_default_is_not_shared_mutable_state():
+    from robovast.results_processing.data.rosbags_common import BagResult
+    a, b = BagResult("/x", 0), BagResult("/y", 0)
+    assert a.handler_results is b.handler_results
+    assert isinstance(a.handler_results, tuple)  # a shared mutable default is its own bug
+
+
+def test_a_result_survives_the_pool_boundary():
+    """It is returned from a worker process, so it has to pickle — which rules out a type
+    defined anywhere but module scope."""
+    import pickle
+    from robovast.results_processing.data.rosbags_common import FAILED, BagResult
+    result = BagResult("/b", FAILED, [(3, ["a.csv"])], "boom\n")
+    assert pickle.loads(pickle.dumps(result)) == result
