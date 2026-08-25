@@ -385,6 +385,102 @@ def log(campaign, follow, namespace, context):
         handle_cli_exception(e)
 
 
+@cluster.command()
+@click.option('--yes', '-y', is_flag=True,
+              help='Do not ask before rolling over live campaigns. For scripts; without it '
+                   'a non-interactive run aborts rather than rolling silently.')
+@click.option('--wait', is_flag=True,
+              help='Block until the new pod is the one serving, instead of returning once '
+                   'the roll has been asked for.')
+@target_options
+def restart(yes, wait, namespace, context):
+    """Roll the deployed service onto the newest image at its tag, and nothing else.
+
+    Asks the service to restart itself, so this needs only a URL and a token -- which is the
+    point: ``vast exec cluster upgrade`` needs a kubeconfig, so somebody who reached the
+    deployment through ``vast login`` had the web UI's button and no command at all.
+
+    \b
+    restart  the image, by stamping the Deployment's restart annotation. With
+             imagePullPolicy: Always that is what moves a floating tag onto new bytes.
+    upgrade  that, plus RBAC, the Kueue queues, the registry ingress route, the credential
+             Secrets and the build daemon.
+
+    **This reconciles none of those.** A version needing a permission the last one did not
+    will deploy and then fail at runtime with a 403, which reads as a bug rather than as a
+    missed migration. So this is the command for "new bytes are published and nothing else
+    changed"; for a version bump, a missed RBAC migration, a rotated Secret or a registry
+    move, use ``vast exec cluster upgrade``. The Secrets in particular are rebuilt from the
+    operator's environment, which the pod does not have, so they can never be done from in
+    there at any level of privilege.
+
+    Refuses while campaigns are live -- their controller runs in the pod being replaced --
+    and names them. ``--yes`` skips the question.
+    """
+    try:
+        with service_client(namespace, context, require_service=True) as (client, target):
+            _echo_target(target)
+            info = client.upgrade_info()
+            if not info.supported:
+                raise click.ClickException(info.unsupported_reason)
+            live = info.active_campaigns
+            if live and not yes:
+                click.echo(f"  {len(live)} campaign(s) are live, and the pod this replaces "
+                           f"is where their controller runs:")
+                for campaign in live:
+                    click.echo(f"    {campaign.campaign_id}  [{campaign.phase}]")
+                # abort=True and no --force twin: on a non-TTY click.confirm aborts by
+                # itself, so a script that did not pass --yes fails loudly rather than
+                # rolling over a campaign nobody was watching.
+                click.confirm("  roll anyway?", abort=True)
+            before = info.running_digest
+            # force only carries the answer already given above. Sending it unconditionally
+            # would make the service's own refusal unreachable, leaving this the only place
+            # the guard exists -- and the web UI would then be guarding on its own copy.
+            result = client.upgrade_service(bool(live))
+            if not result.ok:
+                raise click.ClickException(result.message or "restart failed")
+            click.echo(f"✓ {result.message}")
+            if wait:
+                _wait_for_handover(client, before)
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+#: How long to watch for the new pod. Matches ``vast exec cluster upgrade --timeout``'s
+#: default, so the two give up at the same point and an operator comparing them is not
+#: told two different stories.
+_HANDOVER_TIMEOUT_S = 180.0
+
+
+def _wait_for_handover(client, before):
+    """Block until the running digest changes, or say we could not tell.
+
+    Watches the digest rather than trusting the call that asked for the roll: that returns
+    as soon as the Deployment is patched. ``running_image_digest`` reads the newest Running
+    pod, so this answers the same whichever pod the Service happens to route a poll to.
+    """
+    import time
+    deadline = time.time() + _HANDOVER_TIMEOUT_S
+    while time.time() < deadline:
+        time.sleep(3.0)
+        try:
+            now = client.upgrade_info().running_digest
+        except Exception:  # pylint: disable=broad-except
+            continue  # expected once or twice at the handover; a blip is not a failure
+        if now and now != before:
+            click.echo(f"✓ the new pod is serving ({now[:19]})")
+            return
+    # Not phrased as a failure: the roll may simply be slow, and the command that can say
+    # why is the one named here.
+    click.echo("  the new pod has not taken over yet. 'vast exec cluster upgrade' reports "
+               "the reason Kubernetes gave -- an image it cannot pull, a node it cannot "
+               "schedule on, a crash-loop.")
+
+
 @cluster.command(name='download-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Only remove this campaign\'s bucket (e.g. campaign-2025-02-27-123456). Without this, removes all campaign buckets.')

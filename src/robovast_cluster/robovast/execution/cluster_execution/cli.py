@@ -58,6 +58,33 @@ def _fmt_rate(bps):
     return f"{bps:.0f} B/s"
 
 
+def _live_campaigns():
+    """``(campaign_id, phase)`` for campaigns the service is still driving, or ``None``.
+
+    Asks the **service**, never Kubernetes. The service drives campaigns in-process, so its
+    own list is the authority; going to the API server would answer a nearby but different
+    question -- Jobs exist -- and would miss a campaign between batches, in variation or in
+    postprocessing, which are precisely the phases where a roll is most destructive. It also
+    keeps this and the web UI's Admin page answering out of one source.
+
+    ``None`` is not an empty list: it means the question could not be asked at all, and the
+    two must not collapse. "No campaigns are running" permits a silent roll; "I could not
+    find out" does not.
+    """
+    from robovast.service.http_client import RobovastClient
+    from robovast.service.interface import ListCampaignsRequest
+    from robovast.client.status import is_terminal
+
+    url = detected_service_url()
+    if not url:
+        return None
+    try:
+        resp = RobovastClient(url).list_campaigns(ListCampaignsRequest(limit=100))
+    except Exception:  # pylint: disable=broad-except
+        return None
+    return [(c.campaign_id, c.phase) for c in resp.campaigns if not is_terminal(c.phase)]
+
+
 def _monitor_via_service(namespace, kube_context, interval, once):
     """Monitor campaigns through the robovast-service.
 
@@ -836,8 +863,11 @@ def run_cleanup(campaign, data, force, namespace, context):
                    'queues, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
+@click.option('--yes', '-y', is_flag=True, default=False,
+              help='Do not ask before rolling over live campaigns. For scripts; without it '
+                   'a non-interactive run aborts rather than rolling silently.')
 def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
-            buildkit_cache_min_free, buildkit_cache_reserved, no_restart):
+            buildkit_cache_min_free, buildkit_cache_reserved, no_restart, yes):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -870,6 +900,12 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
     to do the former while a campaign is in flight, because the campaign controller lives in
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
+
+    Before the roll it asks the service which campaigns are live and names them, for the
+    reason ``--no-restart`` exists: the pod being replaced is where their controller runs.
+    ``--yes`` skips the question. A service that cannot be reached is reported and the roll
+    goes ahead -- a wedged service is a reason to upgrade, not a reason to refuse -- and
+    that is said out loud, so a silent roll never has to be read as "nothing was running".
 
     Reads the environment like every ``vast`` command -- ``./.env`` then
     ``~/.config/robovast/env`` -- so ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG``
@@ -961,6 +997,26 @@ def upgrade(namespace, kube_context, timeout, buildkit_cache_max,
             click.echo("  run 'vast exec cluster upgrade' without --no-restart to move the "
                        "image or pick up changed Secrets")
             return
+        # The last moment to ask. Everything above is picked up by the RUNNING pod, which
+        # is exactly why --no-restart returns before here; below this line the pod is
+        # replaced, and the campaign controller lives in it -- the same reasoning the
+        # --no-restart block above states at length.
+        live = _live_campaigns()
+        if live is None:
+            # Said, not swallowed. Refusing here would block the one case where the upgrade
+            # IS the recovery -- a service too wedged to answer -- so it proceeds; but an
+            # operator must not read a silent roll as "nothing was running".
+            click.echo("  could not ask the service which campaigns are live; rolling "
+                       "without that check")
+        elif live and not yes:
+            click.echo(f"  {len(live)} campaign(s) are live, and the pod this replaces is "
+                       f"where their controller runs:")
+            for campaign_id, phase in live:
+                click.echo(f"    {campaign_id}  [{phase}]")
+            # abort=True, and no --force twin: on a non-TTY click.confirm aborts by itself,
+            # so a script that did not pass --yes fails loudly instead of rolling over a
+            # campaign nobody was watching.
+            click.confirm("  roll anyway?", abort=True)
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, public_origin=public_origin)
