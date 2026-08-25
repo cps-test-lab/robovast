@@ -16,8 +16,11 @@ Three properties this defends, each of which was a wrong answer at some point:
 """
 
 import json
+import sys
 import tarfile
+import threading
 import time
+import traceback
 from pathlib import Path
 
 import pytest
@@ -67,6 +70,55 @@ def _service(tmp_path, monkeypatch):
     return transport
 
 
+def _stuck_report(service, campaign_id) -> str:
+    """What the import was doing when it ran out of time.
+
+    An expired deadline says only that the worker did not finish, which is the one thing
+    already known. Everything that distinguishes the possible causes -- a phase it never
+    left, a step that logged its start and not its end, a thread parked in a network read --
+    is still in the process at that moment and is gone the instant the assertion is raised.
+
+    Best-effort throughout: this runs while a test is already failing, and a diagnostic that
+    raises replaces a real failure with its own.
+    """
+    parts = []
+    try:
+        entry = service._campaigns.get(campaign_id)  # pylint: disable=protected-access
+        snap = entry.state.snapshot() if entry is not None else None
+        parts.append(f"tracked phase: {getattr(snap, 'phase', None)!r} "
+                     f"stage: {getattr(snap, 'stage', None)!r} "
+                     f"error: {getattr(snap, 'error', None)!r}")
+    except Exception as exc:  # pylint: disable=broad-except
+        parts.append(f"tracked entry unreadable: {exc!r}")
+
+    # The campaign log is where the import narrates itself, so its last lines name the step
+    # that started and never returned.
+    try:
+        log = (Path(service._campaigns_root())  # pylint: disable=protected-access
+               / campaign_id / "_execution" / "import.log")
+        if log.exists():
+            tail = log.read_text(errors="replace").splitlines()[-25:]
+            parts.append("import.log tail:\n  " + "\n  ".join(tail))
+        else:
+            parts.append(f"no import.log at {log}")
+    except Exception as exc:  # pylint: disable=broad-except
+        parts.append(f"import.log unreadable: {exc!r}")
+
+    # The worker runs in a thread, so its stack is the answer to "where is it blocked?" --
+    # a pip install waiting on credentials and a busy loop look identical from outside.
+    try:
+        named = {t.ident: t.name for t in threading.enumerate()}
+        for ident, frame in sys._current_frames().items():  # pylint: disable=protected-access
+            if ident == threading.get_ident():
+                continue
+            stack = "".join(traceback.format_stack(frame)).rstrip()
+            parts.append(f"thread {named.get(ident, ident)!r}:\n{stack}")
+    except Exception as exc:  # pylint: disable=broad-except
+        parts.append(f"thread stacks unavailable: {exc!r}")
+
+    return "\n".join(parts)
+
+
 def _wait_done(service, campaign_id, timeout=30.0):
     """Block until the tracked entry leaves the live phases, or fail loudly."""
     deadline = time.monotonic() + timeout
@@ -76,7 +128,9 @@ def _wait_done(service, campaign_id, timeout=30.0):
                 Phase.FINISHED, Phase.FAILED):
             return entry.state.snapshot()
         time.sleep(0.05)
-    raise AssertionError(f"import of {campaign_id} did not finish within {timeout}s")
+    raise AssertionError(
+        f"import of {campaign_id} did not finish within {timeout}s\n"
+        f"{_stuck_report(service, campaign_id)}")
 
 
 def test_the_campaign_is_named_and_listed_before_any_extraction(service, tmp_path):
