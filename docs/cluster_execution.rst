@@ -57,7 +57,9 @@ them. Internally:
    ``Job`` per packed job. Each job runs an ``initContainer`` that pulls its
    config files from storage and a main ``robovast`` container that executes the
    scenario. (Variations that declare an auxiliary container get a per-campaign
-   aux pod the driver execs into during composition.)
+   aux pod the driver execs into during composition. Composing *outside* a campaign —
+   ``preview_configurations`` — gets the same pod held by the container-exec manager
+   instead, so an authoring loop reuses one warm pod and idleness reaps it.)
 3. **Queueing** — a Job is created only when sufficient CPU/memory is available,
    so a campaign cannot oversubscribe the cluster. Step 2 therefore paces itself
    against this rather than creating the whole plan up front.

@@ -127,27 +127,31 @@ class ImageNotBuilt(ActionableError):
 class AuxContainerUnavailable(ActionableError):
     """A variation needs an auxiliary container and nothing can provide one here.
 
-    A container runner for a *variation's* helper image exists only inside a campaign's
-    composition: the cluster lane installs a per-campaign aux-pod factory, and the local
-    lane falls back to ``docker`` on the service host. Anything composing **outside** a
-    campaign -- ``validate_project``, ``preview_configurations``, a scene or screenshot
-    query -- has neither.
+    A runner for a *variation's* helper image is arranged **per span** by whoever is about
+    to compose (``LocalTransport._aux_runner_context``): a campaign gets one for the run, a
+    preview gets one held by the exec manager, and the local lane needs none because
+    ``docker`` on the service host is the fallback. This is raised when a composition
+    reached a variation that wants one and none of the three applied -- a process with no
+    backend and no ``docker``, or a caller that composed without arranging anything.
 
-    Deliberately still true after the world check moved onto the exec lane's query pool
-    (``service/world_query.py``): that pool runs a *read-only question* in a container the
-    service already knows how to start, while a variation's aux container is a helper image
-    the variation writes into. The second is what has no runner here, and merging the two
-    would hand a variation a container it cannot use as one.
+    So the reason is always the *caller's context*, never the ``.vast``: the same file
+    composes wherever a runner is arranged. This class used to say a runner exists only
+    inside a campaign's composition, which was already false when it was written -- the
+    scene cache had been opening an aux pod outside one for the cache fills -- and reading
+    it as a rule is what left ``preview_configurations`` refusing a perfectly good sweep.
 
-    What was missing is that the *composition* path never refused. It fell through to the
-    local ``docker run`` fallback and died in ``Popen`` with a bare ``FileNotFoundError:
-    'docker'`` -- which reads as a broken ``.vast`` rather than as a runner that was never
-    wired, and names neither the variation nor the container it wanted. This is that
-    refusal, with the :attr:`~ActionableError.next_step` that says what would exercise it
-    and what that costs.
+    What this does *not* extend to is the exec lane's **query slot**: that runs a read-only
+    question in a campaign's own image with nothing written back, so it is not a substitute
+    for a helper image a variation writes into. A held *aux* slot in the same manager is,
+    and is how a preview gets one.
+
+    Before this refusal existed the composition path fell through to the local ``docker
+    run`` and died in ``Popen`` with a bare ``FileNotFoundError: 'docker'`` -- which reads
+    as a broken ``.vast`` rather than as a runner that was never arranged, and names neither
+    the variation nor the container it wanted.
 
     Deliberately *conditional*: on a host that has ``docker`` the local fallback genuinely
-    works, and previewing a container-backed variation there must keep working.
+    works, and composing a container-backed variation there must keep working.
     """
 
 

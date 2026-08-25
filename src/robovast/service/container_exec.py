@@ -146,7 +146,12 @@ class ExecLane(Protocol):
 
     def start_held(self, spec: "ExecSpec", deadline_s: int,
                    slot: str = SLOT_USER) -> None:
-        """Start *slot*'s container, idle, so commands can be exec'd into it."""
+        """Start *slot*'s container, idle, so commands can be exec'd into it.
+
+        With :attr:`ExecSpec.aux_spec` set the container is a variation's helper image:
+        nothing is staged into it and it is created however that lane already creates an
+        aux container. A lane with no separate aux mechanism may ignore the field.
+        """
 
     def exec_in(self, target, argv: list, limit_s: int,
                 env: dict | None = None) -> tuple[int, str, str, bool]:
@@ -198,8 +203,16 @@ class ExecSpec:
     def __init__(self, *, image: str, command: str, config_dir: str,
                  env: dict, workspace_dir: str = "", workspace_id: str = "",
                  config_name: str = "", log_path: str = "", staging_dir: str = "",
-                 gui: bool = False, image_identity: str = ""):
+                 gui: bool = False, image_identity: str = "", aux_spec=None):
         self.image = image
+        #: The :class:`~robovast.common.variation.container_runner.ContainerSpec` this
+        #: container exists to *be*, when it is a variation's helper image rather than a
+        #: campaign's. Set only by :meth:`ExecManager.hold`, and what tells a lane to
+        #: create the container from the aux manifest and stage nothing into it: an aux
+        #: runner mirrors its own workspace around each command, so there is no ``/config``
+        #: tree to put there and no command to run at creation. ``None`` is every other
+        #: held container, whose contract is unchanged.
+        self.aux_spec = aux_spec
         #: The registry-free name of :attr:`image`, for the caller. The concrete ref is a
         #: local docker tag on one lane and a registry-qualified one on the other, and the
         #: second must never reach a client — but a caller still needs to know *which* image
@@ -612,6 +625,40 @@ class ContainerExecManager:
                                          slot=SLOT_USER)
         self._touch(SLOT_USER)
         return result
+
+    def hold(self, spec: ExecSpec, identity: tuple, limit_s: int) -> str:
+        """Hold a container for *identity* and return its slot, running nothing in it.
+
+        :meth:`run` always execs a command; a variation's auxiliary container is the other
+        shape — the caller wants the *container*, and the commands arrive later and
+        repeatedly, from the plugin composing against it. So this starts or reuses the slot
+        and stops there.
+
+        Deliberately a **query** slot, not a family of its own: the query policy is already
+        this one written down — "they hold nothing but a warm image, so reaping one costs
+        only latency and the windows are far longer" — because an aux runner mirrors its
+        workspace around each command and leaves nothing in the container between them. It
+        shares :data:`QUERY_POOL_MAX` with the introspection containers for the same
+        reason: they are the same kind of thing competing for one lane.
+        """
+        slot = query_slot(identity)
+        self._evict_query_over_cap(keep=slot)
+        reused = self._ensure_held(spec, limit_s, identity, slot)
+        with self._lock:
+            if slot in self._held:
+                self._held[slot]["reused"] = reused
+        self._touch(slot)
+        return slot
+
+    def release_hold(self, slot: str) -> None:
+        """Done using *slot* — start its idle window. It is **not** stopped.
+
+        The whole point of holding it: the next caller with the same identity reuses a warm
+        container, and the reaper owns its death. Stopping here would also make two
+        concurrent holders of one slot destroy each other's container, which is exactly the
+        failure a per-call session had.
+        """
+        self._touch(slot)
 
     def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
         """Stop *slot*'s container. Nothing held is an empty result, not a failure.
