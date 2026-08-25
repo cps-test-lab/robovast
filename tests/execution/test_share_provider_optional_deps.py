@@ -9,10 +9,14 @@ command -- to people using a WebDAV or GCS share who will never open an SFTP con
 """
 
 import importlib
+import logging
 import sys
 
 import click
 import pytest
+
+from robovast.execution.share_providers import (load_share_provider_plugins,
+                                                unavailable_share_type_message)
 
 
 @pytest.fixture
@@ -30,13 +34,14 @@ def no_paramiko(monkeypatch):
     return importlib.import_module("robovast.execution.share_providers.sftp")
 
 
-def test_sftp_entry_point_loads_without_paramiko(no_paramiko):
+def test_sftp_entry_point_loads_without_paramiko(no_paramiko, caplog):
     """The regression: loading the plugin set must not warn about a missing paramiko."""
-    from robovast.execution import share_providers
-    providers = share_providers.load_share_provider_plugins()
+    with caplog.at_level(logging.WARNING):
+        providers = load_share_provider_plugins()
     assert "sftp" in providers
     assert providers["sftp"] is no_paramiko.SftpShareProvider
-    assert share_providers._LOAD_ERRORS == {}
+    assert "Failed to load share provider plugin" not in caplog.text
+    assert "paramiko" not in caplog.text
 
 
 def test_using_sftp_without_paramiko_names_the_extra(no_paramiko, monkeypatch):
@@ -52,15 +57,24 @@ def test_using_sftp_without_paramiko_names_the_extra(no_paramiko, monkeypatch):
     assert "robovast[sftp]" in str(excinfo.value)
 
 
-def test_broken_provider_is_not_reported_as_unknown(monkeypatch):
-    """A registered-but-unloadable share type must not be reported as a typo."""
-    from robovast.execution import share_providers
-    monkeypatch.setitem(share_providers._LOAD_ERRORS, "sftp",
-                        "No module named 'paramiko'")
-    message = share_providers.unavailable_share_type_message("sftp", {"webdav": object})
-    assert "paramiko" in message
+def test_a_provider_that_does_fail_to_load_is_not_reported_as_unknown(monkeypatch):
+    """A share type that is spelled right must not be reported as unknown.
+
+    Driven through a provider that really does break -- WebDAV needs ``requests`` at
+    module scope -- rather than by planting the failure, so what is checked is the path
+    a user takes: the loader records why, and the lookup that then misses says so.
+    """
+    monkeypatch.setitem(sys.modules, "requests", None)
+    monkeypatch.delitem(sys.modules, "robovast.execution.share_providers.webdav",
+                        raising=False)
+    providers = load_share_provider_plugins()
+    assert "webdav" not in providers
+
+    message = unavailable_share_type_message("webdav", providers)
+    assert "requests" in message
     assert "Unknown share type" not in message
 
-    unknown = share_providers.unavailable_share_type_message("sfpt", {"webdav": object})
-    assert "Unknown share type 'sfpt'" in unknown
-    assert "webdav" in unknown
+    # A name nobody registered still gets the list of what is there.
+    unknown = unavailable_share_type_message("wbdav", providers)
+    assert "Unknown share type 'wbdav'" in unknown
+    assert "gcs" in unknown
