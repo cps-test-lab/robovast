@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -33,6 +34,34 @@ def get_cpu_info() -> Dict[str, Any]:
         cpu_name = None
 
     return {"cpu_name": cpu_name}
+
+
+#: Prefix on a hashed node identity, so a reader can tell one from a hostname at a glance.
+NODE_LABEL_PREFIX = "node-"
+
+#: Hex characters kept from the digest. The identity being protected is the node NAME, whose
+#: entropy is far below the digest's either way, so a longer label would buy nothing.
+NODE_LABEL_HEX = 12
+
+
+def node_label(name: Optional[str]) -> Optional[str]:
+    """A stable, non-obvious label for the node called *name*, or ``None`` for no node.
+
+    Hashed HERE, in the container, because this is the one place the node's name exists and
+    the point is that it goes no further: the file this script writes ships inside the
+    campaign archive, so a name recorded raw would travel with every published dataset.
+
+    A plain digest of the name, with no salt, so that anyone holding the right name can
+    recompute the label and find it -- no mapping has to be stored, kept in step, or
+    shipped alongside the data. The cost of that is inherent and worth being explicit
+    about: node names are enumerable, so this defeats casual disclosure -- a reader learns
+    no names and no naming scheme -- but not someone who already suspects a scheme and
+    wants it confirmed. It is not a secret; it is a name that carries no information.
+    """
+    if not name:
+        return None
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    return NODE_LABEL_PREFIX + digest[:NODE_LABEL_HEX]
 
 
 def parse_external_kv(pairs) -> Dict[str, Any]:
@@ -280,6 +309,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--node-name",
+        metavar="NAME",
+        help=(
+            "The cluster node this run landed on. Recorded ONLY as its hashed "
+            "'node_label' -- the name itself is never written, because this file travels "
+            "in the campaign archive. Empty or absent records no label, which is the "
+            "honest answer off a cluster."
+        ),
+    )
+    parser.add_argument(
         "--no-sysinfo",
         action="store_true",
         help="Skip the sysinfo output. For a container that only reports its distributions.",
@@ -291,6 +330,10 @@ def main() -> None:
         external = parse_external_kv(args.external)
     except ValueError as exc:
         parser.error(str(exc))
+
+    label = node_label(args.node_name)
+    if label:
+        external["node_label"] = label
 
     if not args.no_sysinfo:
         sysinfo = build_sysinfo(external)

@@ -640,7 +640,7 @@ because it is about to be deleted — and lands in **two** places, deliberately:
 
 ::
 
-   SELECT run_key, node_name, container, role, exit_code, signal_name, reason, memory_limit
+   SELECT run_key, node_label, container, role, exit_code, signal_name, reason, memory_limit
    FROM container_failure_view ORDER BY run_key
 
 ``signal_name`` is usually the answer: ``exit_code`` 135 is ``128 + 7``, i.e. ``SIGBUS``, and

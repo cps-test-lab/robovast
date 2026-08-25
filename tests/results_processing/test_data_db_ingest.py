@@ -261,7 +261,7 @@ def test_runs_records_the_machine_and_the_rate_the_run_achieved(tmp_path):
                  "start_time TEXT, job_id INTEGER)")
     conn.execute("INSERT INTO unit VALUES (1, 'cfg-a', '{}', NULL)")
     conn.execute("INSERT INTO job VALUES (1, ?)", (json.dumps(
-        {"node_name": "worker-a", "instance_type": "x86_64", "cpu_name": "Test CPU",
+        {"node_label": "node-abc123def456", "instance_type": "x86_64", "cpu_name": "Test CPU",
          "available_cpus": 4, "available_mem": "8Gi"}),))
     conn.execute("INSERT INTO run VALUES (1, 0, 'passed', 1, 0, 0, 10.0, NULL, 1)")
     conn.commit()
@@ -271,7 +271,7 @@ def test_runs_records_the_machine_and_the_rate_the_run_achieved(tmp_path):
     db = _connect(root)
     assert _types(db, "runs")["clock_map_sim_span_s"] == "REAL"
     row = db.execute("SELECT * FROM runs WHERE config_name='cfg-a'").fetchone()
-    assert row["node_name"] == "worker-a"
+    assert row["node_label"] == "node-abc123def456"
     assert row["clock_map_wall_span_s"] == pytest.approx(10.0)
     assert row["clock_map_sim_span_s"] == pytest.approx(15.0)
     assert (row["clock_map_sim_span_s"] / row["clock_map_wall_span_s"]
