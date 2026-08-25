@@ -27,7 +27,7 @@ _SUT_SIGBUS = {
     "job_dir": "_jobs/batch-2/job-37",
     "runs": ["cfg-1/0"],
     "pod_name": "rrroqs-x-37-pod",
-    "node_name": "a-node",
+    "node_label": "node-abc123def456",
     "pod_phase": "Running",
     "container": "sut",
     "role": "sut",
@@ -77,7 +77,7 @@ def test_forensics_are_queryable_when_the_campaign_never_postprocesses(tmp_path)
 
     result = query_data_db(
         tmp_path,
-        "SELECT run_key, node_name, container, role, exit_code, signal_name, reason, "
+        "SELECT run_key, node_label, container, role, exit_code, signal_name, reason, "
         "memory_limit FROM container_failure_view ORDER BY run_key")
 
     assert "error" not in result
@@ -85,7 +85,7 @@ def test_forensics_are_queryable_when_the_campaign_never_postprocesses(tmp_path)
     assert row["run_key"] == "cfg-1/0"
     assert (row["exit_code"], row["signal_name"]) == (135, "SIGBUS")
     assert row["container"] == "sut" and row["role"] == "sut"
-    assert row["node_name"] == "a-node"
+    assert row["node_label"] == "node-abc123def456"
     # None means NO memory limit was declared. The absence is a finding about the
     # campaign, and reconstructing it later means finding the .vast that ran.
     assert row["memory_limit"] is None

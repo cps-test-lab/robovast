@@ -677,7 +677,7 @@ def container_failure_message(record: dict[str, Any]) -> str:
     code = record.get("exit_code")
     signal_name = record.get("signal_name")
     how = signal_name or (f"exit {code}" if code is not None else "an unreported cause")
-    node = record.get("node_name")
+    node = record.get("node_label")
     text = f"{container} died of {how}"
     if reason:
         text += f" ({reason})"

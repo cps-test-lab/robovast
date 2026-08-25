@@ -1134,10 +1134,10 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
         # downward API, or a suffixed string like "16Gi" when the .vast set a limit. It is
         # normalized to bytes here so the column can be compared and averaged; reading it
         # raw would make the column numeric in some runs and text in others.
-        # ``node_name`` is empty for a local run and for any cluster run recorded before
-        # the pod carried it; both become NULL rather than a placeholder, so "we do not
+        # ``node_label`` is absent for a local run and for any cluster run recorded before
+        # the pod hashed one; both become NULL rather than a placeholder, so "we do not
         # know which machine" is never mistaken for a machine called "".
-        return (si.get("instance_type"), si.get("node_name") or None, si.get("cpu_name"),
+        return (si.get("instance_type"), si.get("node_label") or None, si.get("cpu_name"),
                 si.get("available_cpus"), to_bytes(si.get("available_mem")))
 
     # Resolved params + objective per config, and per-run outcomes, from
@@ -1205,11 +1205,14 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
     base_cols = ["config_name", "run_id", "status", "passed",
                  "duration_s", "errors", "failures", "objective",
                  "start_time", "end_time",
-                 # ``node_name`` is the machine, ``instance_type`` its kind. Both, because
+                 # ``node_label`` is the machine, ``instance_type`` its kind. Both, because
                  # neither answers the other: on a cloud cluster the kind is what runs
                  # compare across, and on bare metal it is the same string for every node,
-                 # so only the name separates a slow machine from a fast one.
-                 "instance_type", "node_name", "cpu_name",
+                 # so only the machine separates a slow one from a fast one. It is a hash
+                 # of the node's name rather than the name (see ``collect_sysinfo``), and
+                 # is deliberately NOT called ``node_name``: that name already means a
+                 # behaviour-tree node in ``nav2_behavior_tree``.
+                 "instance_type", "node_label", "cpu_name",
                  "available_cpus", "available_mem_bytes",
                  # The run's shared-memory pool: what it peaked at, and the limit that was in
                  # force. Beside ``available_mem_bytes`` because it is the same kind of fact
@@ -1289,14 +1292,14 @@ def _build_runs_table(conn, campaign_path, config_dirs) -> None:
             duration = o["duration_s"]
             start_time = o["start_time"]
             end_time = _end_time(start_time, duration)
-            (instance_type, node_name, cpu_name,
+            (instance_type, node_label, cpu_name,
              avail_cpus, avail_mem) = _sysinfo_fields(o)
             clock_info = _clock_map_info(campaign_path, config_name, run_id)
             shm_peak, shm_limit = _shm_info(campaign_path, config_name, run_id)
             base_vals = [config_name, run_id, status, passed, duration,
                          errors, failures, objective,
                          start_time, end_time,
-                         instance_type, node_name, cpu_name, avail_cpus, avail_mem,
+                         instance_type, node_label, cpu_name, avail_cpus, avail_mem,
                          shm_peak, shm_limit,
                          clock_info.source, clock_info.samples, clock_info.wall_span_s,
                          clock_info.sim_span_s,

@@ -73,9 +73,9 @@ from robovast.common.campaign_data import (KIND_INVALID, record_container_failur
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import job_deadline_seconds
 from robovast.common.execution import (build_job_parameter_documents, create_job_links,
-                                       dump_multi_document_yaml, job_artifact_rel, read_job_links,
-                                       resolve_sidecar_image, sidecar_backend_env,
-                                       write_job_links_manifest)
+                                       dump_multi_document_yaml, job_artifact_rel, node_label,
+                                       read_job_links, resolve_sidecar_image,
+                                       sidecar_backend_env, write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
                                          RunOptions)
@@ -1837,6 +1837,64 @@ class KubernetesBackend(ExecutionBackend):
         # and re-asking the registry fifty times answers a question that must not change
         # between batches anyway (see BatchJobRunner._pin_image_refs).
         self._image_digest_cache: dict = {}
+        # node label -> that machine's facts, built once and reused. A campaign's runs
+        # land on the same handful of machines thousands of times, and what a machine IS
+        # cannot change between two runs of one campaign, so this is asked once per
+        # campaign rather than once per job -- the same reasoning _discover_gpu_support
+        # states for the GPU probe.
+        self._node_facts_cache: dict | None = None
+
+    def node_facts(self, label: str) -> dict | None:
+        """The machine behind *label*, from this cluster's own nodes. See the base.
+
+        Reads every node once, hashes each name the way the pod did, and answers from
+        that map. Hashing our own view is what makes the lookup possible at all -- the
+        label reaching us cannot be reversed -- and it means a label we do not recognise
+        yields ``None`` rather than a guess.
+        """
+        if self._node_facts_cache is None:
+            self._node_facts_cache = self._read_node_facts()
+        return self._node_facts_cache.get(label)
+
+    def _read_node_facts(self) -> dict:
+        """``{node label: facts}`` for every node this cluster has, or ``{}``.
+
+        Never raises: provenance is worth having and not worth failing a campaign for, so
+        an unreachable API or a missing permission records the machines with no facts
+        rather than ending the run.
+        """
+        try:
+            self._init_k8s_clients()
+            v1 = client.CoreV1Api(self.k8s_api_client)
+            nodes = (v1.list_node().items or [])
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug("Could not read node facts: %s", exc)
+            return {}
+        facts = {}
+        for node in nodes:
+            name = getattr(getattr(node, "metadata", None), "name", None)
+            label = node_label(name)
+            if not label:
+                continue
+            status = getattr(node, "status", None)
+            info = getattr(status, "node_info", None)
+            facts[label] = {
+                "capacity": dict(getattr(status, "capacity", None) or {}),
+                "allocatable": dict(getattr(status, "allocatable", None) or {}),
+                # machineID and systemUUID are deliberately absent: they identify the
+                # hardware, and shipping them beside a label whose whole purpose is that
+                # it does not would hand back what hashing the name took away.
+                "node_info": {k: v for k, v in vars(info).items()
+                              if v is not None and not k.startswith("_")
+                              and k not in ("machine_id", "system_uuid", "boot_id")}
+                             if info is not None else {},
+                # kubernetes.io/hostname restates the node's name, so it would put the
+                # hostname back into the record by value.
+                "labels": {k: v for k, v in
+                           (getattr(getattr(node, "metadata", None), "labels", None)
+                            or {}).items() if k != "kubernetes.io/hostname"},
+            }
+        return facts
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions, whole_campaign: bool = False) -> None:

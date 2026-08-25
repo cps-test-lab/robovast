@@ -706,7 +706,7 @@ def _container_failures(campaign_id: str) -> list:
     """
     try:
         rows = data_access.rows(campaign_id, """
-            SELECT detected_at, job_name, node_name, container, role, reason, exit_code,
+            SELECT detected_at, job_name, node_label, container, role, reason, exit_code,
                    signal_name, memory_limit, cpu_limit, log_status, runs_json
             FROM campaign.container_failure ORDER BY detected_at DESC
         """)
@@ -715,7 +715,7 @@ def _container_failures(campaign_id: str) -> list:
     out = []
     for row in rows or ():
         entry = {k: row.get(k) for k in
-                 ("detected_at", "job_name", "node_name", "container", "role", "reason",
+                 ("detected_at", "job_name", "node_label", "container", "role", "reason",
                   "exit_code", "signal_name", "log_status")}
         # Surfaced explicitly rather than left NULL: "no memory limit was declared" is a
         # finding about the campaign, not a gap in the record.

@@ -43,9 +43,14 @@ def test_no_name_is_stored_as_null_not_as_a_placeholder(store_path):
 def test_a_store_from_before_the_column_migrates_forward(tmp_path):
     """An older store gains the column on open, and reads as unattributed until then."""
     path = tmp_path / "campaign.db"
+    # A REAL store at v4: the ladder replayed to that point, not a hand-picked table.
+    # A store that genuinely reached v4 has every table the earlier steps created, and a
+    # thinner stub would let a later migration that touches one of them pass here and fail
+    # on a real database.
+    from robovast.common.store import _MIGRATIONS
     conn = sqlite3.connect(path)
-    conn.executescript(
-        "CREATE TABLE campaign (id INTEGER PRIMARY KEY, name TEXT, description TEXT);")
+    for migration in _MIGRATIONS[:4]:
+        conn.executescript(migration)
     conn.execute("PRAGMA user_version = 4")
     conn.commit()
     conn.close()

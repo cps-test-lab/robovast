@@ -68,7 +68,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +161,22 @@ CREATE TABLE IF NOT EXISTS job (
     campaign_id  INTEGER NOT NULL REFERENCES campaign(id),
     job_dir      TEXT,             -- campaign-relative, e.g. _jobs/batch-0/job-3
     sysinfo_json TEXT,             -- sysinfo.yaml verbatim: one host record per job
-    created_at   REAL
+    created_at   REAL,
+    node_label   TEXT              -- which machine; joins to node.node_label
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_dir ON job (campaign_id, job_dir);
+CREATE TABLE IF NOT EXISTS node (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    node_label       TEXT,            -- hash of the node's name; never the name itself
+    cpu_name         TEXT,            -- /proc/cpuinfo model, which Kubernetes cannot report
+    capacity_json    TEXT,            -- status.capacity: cpu, memory, gpu, ephemeral-storage
+    allocatable_json TEXT,            -- status.allocatable: what the scheduler may hand out
+    node_info_json   TEXT,            -- status.nodeInfo minus machineID/systemUUID
+    labels_json      TEXT,            -- metadata.labels minus kubernetes.io/hostname
+    first_seen       REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_label ON node (campaign_id, node_label);
 CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
     unit_id         INTEGER NOT NULL REFERENCES unit(id),
@@ -189,7 +202,7 @@ CREATE TABLE IF NOT EXISTS container_failure (
     job_dir       TEXT,               -- campaign-relative, e.g. _jobs/batch-2/job-7
     runs_json     TEXT,               -- ["<config>/<run>", ...] this job was executing
     pod_name      TEXT,
-    node_name     TEXT,
+    node_label    TEXT,               -- hashed, like node.node_label -- never a hostname
     container     TEXT,
     role          TEXT,               -- scenario / sut / simulation / <ad-hoc> / init
     image         TEXT,
@@ -398,8 +411,42 @@ CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
     ON container_failure (campaign_id);
 """
 
+# 8 -> 9: which MACHINE a job ran on, and what that machine is.
+#
+# A run could say what CPU model it saw but not which of several identical-looking nodes it
+# landed on, so on a mixed cluster a slower machine was indistinguishable from run-to-run
+# variance. ``node`` holds one row per machine a campaign actually USED -- not per cluster
+# node, which would describe mostly machines the campaign never touched and would go stale
+# between batches.
+#
+# Keyed by ``node_label``, a hash of the node's name (see ``collect_sysinfo.node_label``),
+# because campaign data is published: a name would ship in every archive. The rename of
+# ``container_failure.node_name`` is part of the same change -- that column held a raw
+# hostname, and leaving it under a name that now means something else would be worse than
+# either.
+#
+# Existing rows are NOT backfilled: these migrations are executed as plain SQL and SQLite
+# has no sha256, so a hostname already stored stays stored. This makes new campaigns clean;
+# it does not retroactively clean old ones.
+_MIGRATION_ADD_NODE = """
+CREATE TABLE IF NOT EXISTS node (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    node_label       TEXT,
+    cpu_name         TEXT,
+    capacity_json    TEXT,
+    allocatable_json TEXT,
+    node_info_json   TEXT,
+    labels_json      TEXT,
+    first_seen       REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_label ON node (campaign_id, node_label);
+ALTER TABLE job ADD COLUMN node_label TEXT;
+ALTER TABLE container_failure RENAME COLUMN node_name TO node_label;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -417,6 +464,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_CODE_REVISION,
     _MIGRATION_ADD_ORIGIN,
     _MIGRATION_ADD_CONTAINER_FAILURE,
+    _MIGRATION_ADD_NODE,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -428,6 +476,18 @@ _ORIGIN_COLUMNS = ("origin_kind", "origin_workspace_id", "origin_workspace_name"
                    "origin_config_path", "origin_from_campaign")
 
 
+def _json_or_none(value) -> Optional[str]:
+    """JSON for a value worth storing, or ``None`` -- so an absent fact stays NULL.
+
+    An empty mapping is ``None`` too: "the API returned nothing for this" and "the node
+    genuinely has no labels" are not worth distinguishing in a provenance record, and
+    ``{}`` would read as the second while usually meaning the first.
+    """
+    if not value:
+        return None
+    return json.dumps(value, default=str, sort_keys=True)
+
+
 class CampaignStore:
     """Thin sqlite wrapper for recording a search campaign."""
 
@@ -437,6 +497,24 @@ class CampaignStore:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._migrate()
+        # Set by whoever has a cluster to ask (see :meth:`set_node_facts_resolver`).
+        # Absent by default so this module keeps no Kubernetes dependency and every
+        # caller that has no cluster -- the local lane, a re-index, an import -- works
+        # unchanged.
+        self._node_facts: Optional[Callable[[str], Optional[dict]]] = None
+
+    def set_node_facts_resolver(
+            self, resolver: Optional[Callable[[str], Optional[dict]]]) -> None:
+        """Install what turns a node label into that machine's hardware facts.
+
+        The store learns a machine's LABEL from the run's own sysinfo, but the facts
+        behind it -- cores, memory, kernel -- live in the cluster API, which a storage
+        module has no business dialling. So the driver, which has both, hands the lookup
+        in. Without one the ``node`` rows still appear, carrying the label and the CPU
+        model the run itself reported; only the API-side facts are missing, which is the
+        honest result of nobody being able to ask.
+        """
+        self._node_facts = resolver
 
     def _migrate(self) -> None:
         """Bring the store up to :data:`SCHEMA_VERSION`.
@@ -568,8 +646,61 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
+    def upsert_node(self, campaign_id: int, label: str,
+                    cpu_name: Optional[str] = None,
+                    facts: Optional[dict] = None) -> None:
+        """Record the machine *label* names, idempotently per campaign.
+
+        One row per machine a campaign actually USED -- not per cluster node. A campaign
+        that ran on two of a cluster's forty gets two rows, so the record scales with the
+        campaign rather than the cluster and cannot go stale describing machines it never
+        touched.
+
+        *facts* is what only the Kubernetes API can say (capacity, allocatable, nodeInfo,
+        labels); ``None`` means nobody could ask -- the local lane, an unreadable node, or
+        a re-index with no cluster in reach. The row is still written, because *which*
+        machine a run used is worth recording even when its hardware is not available.
+        *cpu_name* comes the other way, from the run's own ``/proc/cpuinfo``: Kubernetes
+        reports no CPU model at all, so it is the one hardware fact the API cannot supply.
+        """
+        if not label:
+            return
+        row = self._conn.execute(
+            "SELECT id, cpu_name, capacity_json, allocatable_json, node_info_json, "
+            "labels_json FROM node WHERE campaign_id = ? AND node_label = ?",
+            (campaign_id, label)).fetchone()
+        facts = facts or {}
+        cols = {
+            "cpu_name": cpu_name,
+            "capacity_json": _json_or_none(facts.get("capacity")),
+            "allocatable_json": _json_or_none(facts.get("allocatable")),
+            "node_info_json": _json_or_none(facts.get("node_info")),
+            "labels_json": _json_or_none(facts.get("labels")),
+        }
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO node (campaign_id, node_label, cpu_name, capacity_json, "
+                "allocatable_json, node_info_json, labels_json, first_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (campaign_id, label, cols["cpu_name"], cols["capacity_json"],
+                 cols["allocatable_json"], cols["node_info_json"], cols["labels_json"],
+                 time.time()))
+            self._conn.commit()
+            return
+        # Fill gaps only. The first writer wins, so a later job on the same machine cannot
+        # rewrite the record -- and a job that could not reach the API cannot blank out
+        # facts an earlier one did record.
+        missing = {k: v for k, v in cols.items() if v is not None and row[k] is None}
+        if missing:
+            assignments = ", ".join(f"{k} = ?" for k in missing)
+            self._conn.execute(f"UPDATE node SET {assignments} WHERE id = ?",
+                               (*missing.values(), row["id"]))
+            self._conn.commit()
+
     def upsert_job(self, campaign_id: int, job_dir: str,
-                   sysinfo: Optional[dict]) -> Optional[int]:
+                   sysinfo: Optional[dict],
+                   node_facts: Optional[Callable[[str], Optional[dict]]] = None
+                   ) -> Optional[int]:
         """Record the execution job at *job_dir*, returning its row id.
 
         Idempotent on ``(campaign_id, job_dir)``: a packed multi-config job is reached
@@ -588,17 +719,25 @@ class CampaignStore:
             "SELECT id, sysinfo_json FROM job WHERE campaign_id = ? AND job_dir = ?",
             (campaign_id, job_dir)).fetchone()
         sysinfo_json = json.dumps(sysinfo, default=str) if sysinfo else None
+        # Already hashed when it was written: the pod recorded the label, never the name
+        # (``collect_sysinfo.node_label``). Nothing here can un-hash it, which is the point.
+        label = (sysinfo or {}).get("node_label") or None
+        if label:
+            self.upsert_node(campaign_id, label, (sysinfo or {}).get("cpu_name"),
+                             node_facts(label) if node_facts else None)
         if row is not None:
             # Fill in a host record that was absent when the job row was first created
             # (the first run seen may have preceded sysinfo.yaml being written).
             if sysinfo_json and not row["sysinfo_json"]:
-                self._conn.execute("UPDATE job SET sysinfo_json = ? WHERE id = ?",
-                                   (sysinfo_json, row["id"]))
+                self._conn.execute(
+                    "UPDATE job SET sysinfo_json = ?, node_label = ? WHERE id = ?",
+                    (sysinfo_json, label, row["id"]))
                 self._conn.commit()
             return row["id"]
         cur = self._conn.execute(
-            "INSERT INTO job (campaign_id, job_dir, sysinfo_json, created_at) "
-            "VALUES (?, ?, ?, ?)", (campaign_id, job_dir, sysinfo_json, time.time()))
+            "INSERT INTO job (campaign_id, job_dir, sysinfo_json, created_at, node_label) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (campaign_id, job_dir, sysinfo_json, time.time(), label))
         self._conn.commit()
         return cur.lastrowid
 
@@ -627,7 +766,7 @@ class CampaignStore:
                     job_dir = r.get("job_dir")
                     if job_dir and job_dir not in job_ids:
                         job_ids[job_dir] = self.upsert_job(
-                            row["cid"], job_dir, r.get("sysinfo"))
+                            row["cid"], job_dir, r.get("sysinfo"), self._node_facts)
         for r in runs:
             r["job_id"] = job_ids.get(r.get("job_dir") or "")
         now = time.time()
@@ -693,7 +832,7 @@ class CampaignStore:
     #: The ``container_failure`` columns a record supplies, in insert order.
     _CONTAINER_FAILURE_COLUMNS = (
         "detected_at", "batch", "job_name", "job_dir", "runs_json", "pod_name",
-        "node_name", "container", "role", "image", "image_id", "restart_count", "reason",
+        "node_label", "container", "role", "image", "image_id", "restart_count", "reason",
         "exit_code", "signal", "signal_name", "message", "started_at", "finished_at",
         "pod_phase", "cpu_limit", "memory_limit", "log_status", "log_lines", "log_tail",
     )
