@@ -387,6 +387,9 @@ def _scenario_file_problems(raw, vast_dir):
 #: ``field`` of every panel problem, so a report points at the key the author actually wrote.
 RUN_VIEW_PANELS = "visualization.results.run_view.panels"
 
+#: ...and where an Explorer notebook lives, for the same reason.
+EXPLORER_NOTEBOOKS = "visualization.results.explorer.notebooks"
+
 
 def _run_view_panels(raw):
     """The raw ``visualization.results.run_view.panels`` list, or ``[]``.
@@ -720,6 +723,51 @@ def _panel_problems(raw, vast_dir):
     return problems
 
 
+def _explorer_notebook_problems(raw, vast_dir):
+    """Every notebook the Explorer declares must exist next to the ``.vast``.
+
+    A declared notebook that is not in the project is skipped at staging with a warning in
+    the controller log, and the campaign then runs to completion with an Explorer tab that
+    cannot render -- the failure arrives when someone opens the results, days later, and the
+    only record of the cause is a log line nobody is reading by then. It is also the exact
+    shape of a project pushed without its ``analysis/`` directory, which is easy to do and
+    which nothing else reports.
+    """
+    from robovast.common.config import \
+        visualization_block  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_generation import \
+        _validate_relative_path  # pylint: disable=import-outside-toplevel
+
+    views = visualization_block(raw, "results", "explorer", "notebooks")
+    if not isinstance(views, list):
+        return []
+
+    problems = []
+    for i, view in enumerate(views):
+        if not isinstance(view, dict):
+            continue
+        for workload, scopes in view.items():
+            if not isinstance(scopes, dict):
+                continue
+            for scope, rel in scopes.items():
+                if not isinstance(rel, str) or not rel:
+                    continue
+                field = f"{EXPLORER_NOTEBOOKS}[{i}].{workload}.{scope}"
+                try:
+                    _validate_relative_path(rel, field)
+                except ValueError as e:
+                    problems.append(_problem("notebook", str(e), field=field))
+                    continue
+                if not os.path.isfile(os.path.join(vast_dir, rel)):
+                    problems.append(_problem(
+                        "notebook",
+                        f"analysis notebook not found: {rel} (declared for the {scope!r} "
+                        f"scope of workload {workload!r}; the path is relative to the "
+                        f".vast, and the file must be in the project that is pushed)",
+                        field=field))
+    return problems
+
+
 def _scenario_parameter_names(scenario_file):
     """Return the parameter names declared by the scenario, or None if unreadable."""
     from robovast.common.common import \
@@ -1048,6 +1096,9 @@ def validate_project_file(config_path):
 
     # Custom run-view panel bundles must exist next to the .vast.
     problems.extend(_panel_problems(raw, vast_dir))
+
+    # ...and so must every notebook the Explorer declares, or its tab cannot render.
+    problems.extend(_explorer_notebook_problems(raw, vast_dir))
 
     # A campaign-scope 3D scene descriptor must be produced by a generator or matched by
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.

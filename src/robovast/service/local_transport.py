@@ -49,7 +49,8 @@ from typing import Callable, Optional
 from robovast.client import file_address
 from robovast.client.safe_path import safe_join
 from robovast.common import file_view
-from robovast.common.config import SCENARIO_CONTAINER, SIMULATION_CONTAINER
+from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
+                                    SIMULATION_CONTAINER)
 from robovast.common.host_display import require_host_display
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (ControllerState, Phase, Status, failure_detail,
@@ -4651,11 +4652,13 @@ class LocalTransport(RobovastInterface):
         self._publish_config_edit(request.campaign_id)
         return PanelsSource(campaign_id=request.campaign_id, content=request.content)
 
-    # Node levels the web Explorer tree can address (campaign → batch → config → run), the
-    # same set the desktop viewer offers. ``batch`` is a *logical* level: it has no directory
-    # of its own (see :meth:`_node_data_dir`), so it is identified by the injected ``BATCH``
-    # index instead, and it only appears in the tree for a search campaign.
-    _VIS_LEVELS = ("run", "config", "batch", "campaign")
+    # Node levels the web Explorer tree can address (campaign → batch → config → run).
+    # ``batch`` is a *logical* level: it has no directory of its own (see
+    # :meth:`_node_data_dir`), so it is identified by the injected ``BATCH`` index instead,
+    # and it only appears in the tree for a search campaign. Taken from the config module,
+    # which is where the set a ``.vast`` may name belongs -- validation rejects a scope
+    # outside it, and a second copy here is one that could disagree with what was accepted.
+    _VIS_LEVELS = EXPLORER_SCOPES
 
     def _visualization_workloads(self, campaign_id: str):
         """Parse ``visualization.results.explorer.notebooks`` from the snapshot ``.vast``.

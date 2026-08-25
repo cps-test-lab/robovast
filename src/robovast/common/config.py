@@ -1133,6 +1133,14 @@ class RunViewConfig(BaseModel):
         return self
 
 
+#: The tree levels an Explorer notebook can be declared for, outermost last. ``batch`` is a
+#: *logical* level with no directory of its own, and appears in the tree only for a search
+#: campaign. Lives here rather than in the service because it is part of what a ``.vast`` may
+#: say: the renderer keeps only the scopes it recognises, so a misspelled one used to drop the
+#: notebook with nothing said anywhere.
+EXPLORER_SCOPES = ("run", "config", "batch", "campaign")
+
+
 class ExplorerConfig(BaseModel):
     """The Results **Explorer**: analysis notebooks, executed server-side per selected tree
     node (campaign / batch / config / run) and rendered as HTML."""
@@ -1158,6 +1166,30 @@ class ExplorerConfig(BaseModel):
                         f"notebook workload '{name}' uses a reserved name: the Explorer already "
                         f"shows a built-in Log tab for every run, so this would add a second tab "
                         f"reading the same. Rename the workload."
+                    )
+        return self
+
+    @model_validator(mode='after')
+    def _known_scopes_only(self):
+        """Every scope key must be one the Explorer can address.
+
+        The renderer selects the scopes it knows and ignores the rest, so a typo -- or a scope
+        renamed since the ``.vast`` was written, as ``single_test`` was -- left the notebook
+        declared, staged, and never rendered, with no tab and no message to say why.
+        """
+        for view in (self.notebooks or []):
+            if not isinstance(view, dict):
+                continue
+            for name, scopes in view.items():
+                if not isinstance(scopes, dict):
+                    continue
+                unknown = [s for s in scopes if s not in EXPLORER_SCOPES]
+                if unknown:
+                    raise ValueError(
+                        f"notebook workload '{name}' declares unknown scope(s) "
+                        f"{', '.join(repr(u) for u in unknown)}. The Explorer addresses "
+                        f"{', '.join(EXPLORER_SCOPES)}; a notebook under any other key is "
+                        f"never rendered."
                     )
         return self
 

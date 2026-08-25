@@ -30,14 +30,23 @@ Notebooks are plain Jupyter ``.ipynb`` files referenced from the
                config: analysis/analysis_config.ipynb
                campaign: analysis/analysis_campaign.ipynb
 
-There are three reserved scopes:
+There are four reserved scopes, and a notebook declared under any other key is refused --
+the renderer keeps only the scopes it can address, so a misspelled one used to leave the
+notebook staged and never rendered, with no tab and nothing said:
 
 - **run** -- executed once per individual run directory
   (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
 - **config** -- executed once per configuration directory
   (``<campaign-name>-<timestamp>/<config>/``).
+- **batch** -- executed once per proposing round of a *search* campaign. A batch has no
+  directory of its own, so the notebook receives the campaign root as ``DATA_DIR`` plus an
+  injected ``BATCH`` index; the tab appears only for a search campaign.
 - **campaign** -- executed once per campaign directory
   (``<campaign-name>-<timestamp>/``).
+
+Every declared path is relative to the ``.vast`` and must exist in the project that is
+pushed. ``vast config validate`` reports one that does not: staging skips it with a
+warning, and the campaign then runs to completion with a tab that cannot render.
 
 The workload name (``MyAnalysis`` above) becomes the label of its tab in the Explorer, and the
 way a link addresses that tab (``?tab=MyAnalysis``). One name is taken: a workload may not be

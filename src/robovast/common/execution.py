@@ -1669,7 +1669,20 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         src_path = os.path.join(vast_file_path, input_file)
         dst_path = os.path.join(campaign_config_dir, input_file)
         if not os.path.exists(src_path):
-            logger.warning(f"Input file not found, skipping: {src_path}")
+            # Skipped rather than fatal, deliberately: `retrigger.missing_run_files`
+            # tolerates the same absence so that re-running a campaign that was already
+            # short a notebook still works. `validate_project` is the gate that refuses a
+            # declared notebook before any compute is spent -- so what this line owes the
+            # reader is what BREAKS, since the campaign will otherwise finish looking fine
+            # and the Explorer tab will only fail when someone opens the results.
+            if input_file.endswith(".ipynb"):
+                logger.warning(
+                    "Analysis notebook not found, skipping: %s. It is declared under "
+                    "visualization.results.explorer.notebooks, so its Explorer tab will "
+                    "fail to render for this campaign. Run 'vast config validate' on the "
+                    "project to catch this before starting one.", src_path)
+            else:
+                logger.warning(f"Input file not found, skipping: {src_path}")
             continue
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         shutil.copy2(src_path, dst_path)
