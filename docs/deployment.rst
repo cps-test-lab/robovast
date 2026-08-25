@@ -237,7 +237,33 @@ returned a permissions error until it was set up again. An upgrade that skipped 
 would reintroduce exactly that, as a runtime 403 that reads like a bug rather than a
 missed migration.
 
-The three lifecycle verbs are deliberately distinct:
+Before rolling, it asks the service which campaigns are live and names them, because the
+pod being replaced is where their controller runs — the same reason ``--no-restart``
+exists. ``--yes`` skips the question; without it a non-interactive run aborts rather than
+rolling silently. A service that cannot be reached is reported and the roll proceeds, since
+a wedged service is a reason to upgrade rather than a reason to refuse, but it says so —
+a silent roll must never be read as "nothing was running".
+
+There is a smaller verb for the common case, and it needs no kubeconfig:
+
+.. code-block:: bash
+
+   vast exec cluster restart
+
+That asks the service to roll *itself* — the Deployment's restart annotation, and nothing
+else. It is the same thing the web UI's Admin page button does (:ref:`web-ui-admin`), and
+it exists because ``upgrade`` needs cluster access, so somebody who reached the deployment
+through ``vast login`` had a button in the browser and no command at all. It carries the
+same live-campaign guard and the same ``--yes``.
+
+**It reconciles nothing.** RBAC, the Kueue queues, the registry ingress route, the
+credential Secrets and the build daemon are all untouched, so a version needing a new
+permission will deploy and then 403 at runtime. Use it for "new bytes are published and
+nothing else changed"; use ``upgrade`` for a version bump, a missed RBAC migration, a
+rotated Secret, or a registry move. The Secrets cannot be done any other way: they are
+rebuilt from the operator's environment, which the pod does not have.
+
+The lifecycle verbs are deliberately distinct:
 
 .. list-table::
    :header-rows: 1
@@ -254,6 +280,9 @@ The three lifecycle verbs are deliberately distinct:
      - The same, plus it will re-mint the access token when asked
        (``--rotate-token``) — which does log everyone out, so it is not what you
        want for a version bump.
+   * - ``vast exec cluster restart``
+     - The image only, through the service's own API — no kubeconfig needed. Reconciles
+       nothing else, so it is for "new bytes are published" and not for a migration.
    * - ``vast exec cluster cleanup``
      - Removes the deployment entirely.
 

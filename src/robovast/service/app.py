@@ -262,6 +262,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     app = FastAPI(title="robovast-service", docs_url="/docs", lifespan=_lifespan)
 
+    # On app.state beside should_exit and auth_token: the ring is per-app on purpose, so
+    # this is how anything outside these closures reaches *this* app's recording rather
+    # than guessing at a module global that deliberately does not exist.
+    app.state.usage_ring = _usage_ring
+
     # Start recording this process's log. Here and not in ``setup_logging`` because that
     # runs in every ``vast`` invocation, and a ring is only worth filling where something
     # serves it.

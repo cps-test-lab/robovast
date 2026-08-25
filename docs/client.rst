@@ -56,6 +56,11 @@ What you can do with it
        pull, capacity) fails within a minute rather than being waited out.
    * - ``vast exec cluster download-cleanup``
      - Remove result buckets from the service's object store.
+   * - ``vast service-log``
+     - Print what the *service itself* has been doing. ``-f`` follows.
+   * - ``vast exec cluster restart``
+     - Roll the deployed service onto the newest image at its tag, through its own API —
+       no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
 
@@ -183,6 +188,23 @@ interpreter. A capability you have not installed is reported once, as advisory �
 ``cluster support: not installed``, and not the ``kubectl`` and ``helm`` that only
 ``vast exec cluster setup`` shells out to, because there is no ``setup`` here to run them.
 A client install lacking them is not a broken one, so they cannot fail the command.
+
+When the failure is the *service's* and not yours, its own log is now readable:
+
+.. code-block:: bash
+
+   vast service-log -f
+
+Not a campaign's log — this is the service process, and several failures in RoboVAST are
+diagnosable only from it (a build whose reason "lived only in the service log", a scene
+cache retrying forever). It reads whichever service the CLI resolves — a local
+``vast serve`` on the conventional port, else the ``vast login`` record — and prints which
+one answered, so it is never ambiguous which service you are reading.
+
+It covers the last few hundred kilobytes that process logged, kept in memory: enough for
+what it is doing now, not its whole life, and cleared by a restart. A container that has
+already died is only in ``kubectl logs -p deploy/robovast-service`` — a buffer inside a
+process cannot outlive the process.
 
 ``vast login`` symlinks ``vast`` into a directory already on your login shell's PATH, so a
 shell that activated no virtualenv — a new terminal, or an agent's — can run it. That is

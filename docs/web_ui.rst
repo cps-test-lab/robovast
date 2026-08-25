@@ -101,6 +101,64 @@ It provides four views:
   :ref:`web-ui-campaign-config`.
 * **Results** — browse a campaign's data: an Explorer over its analysis notebooks, a
   panel-based replay of one run, and read-only SQL with charts.
+* **Admin** — the *service* rather than the work: how loaded the lane has been, which
+  version is running, and what the service has been doing. Pinned to the foot of the
+  sidebar beside the usage meters, which report the same service. See `The Admin page`_.
+
+.. _web-ui-admin:
+
+The Admin page
+--------------
+
+Every other page is about a campaign. This one is about the service running them, and it
+answers three questions that previously had no answer from a browser at all.
+
+**How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
+question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
+24 hours of readings, plotted as CPU and memory against capacity over the last hour or day.
+
+The recording is **in memory only**, and the caption under the chart says what it actually
+covers: a service started ten minutes ago has ten minutes of history, and an empty 24-hour
+view is the beginning of the record rather than an idle cluster. A restart clears it —
+including the restart the Upgrade button below causes. Capacity is stored with every
+reading rather than once, so a node joining or being drained does not redraw the past
+against today's size.
+
+**What version is running, and is there a newer one.** The page reports the version, the
+git revision where the deployment can tell (blank means it cannot, which is not a
+mismatch), and the image digest the kubelet actually resolved — the only thing that
+distinguishes two builds of a floating tag. Against that it reports what the tag points at
+in the registry now. A registry that does not answer is reported as *unknown*, never as "up
+to date": that would tell you a fix you have just published is not there.
+
+**Upgrade rolls the pod, and reconciles nothing else.** It stamps the Deployment's restart
+annotation; with ``imagePullPolicy: Always`` the new pod pulls the tag afresh. RBAC, the
+Kueue queues, the registry ingress route, the credential Secrets and the build daemon are
+untouched, so a version needing a permission the last one did not will deploy and then fail
+at runtime with a 403. ``vast exec cluster upgrade`` is the command that reconciles all of
+it, and the credential Secrets in particular can *only* be done there — they are rebuilt
+from the operator's environment, which the pod does not have.
+
+So the button is for "new bytes are published and nothing else changed". It refuses while
+campaigns are live, naming them, because the controller driving them runs in the pod being
+replaced; confirming the dialog is what overrides that. Kubernetes starts the new pod
+before stopping the old, so the API stays up, and the page waits for the running digest to
+change rather than trusting the request it just made.
+
+Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
+cluster from outside it — there is no button, just the reason. The chart and the log work
+on both lanes unchanged.
+
+**What the service has been doing.** A service writes to stderr, and stderr is not readable
+back, which is why several failures in RoboVAST are diagnosable only from a log nobody
+could reach. The service now keeps its last few hundred kilobytes in memory and tails them
+here live, over the same stream the campaign logs use.
+
+Two limits, both stated on the page: it holds what *this process* logged, so a container
+that has already died is only in ``kubectl logs -p deploy/robovast-service``; and a busy
+multi-campaign run fills the buffer quickly, since every campaign's records are interleaved
+in it. ``vast service-log [-f]`` prints the same thing from a terminal, against whichever
+service the CLI resolves.
 
 .. _web-ui-freshness:
 

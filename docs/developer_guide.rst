@@ -1840,8 +1840,33 @@ request/response models (including :class:`~robovast.execution.control_server.St
 — **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
 update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
 the Monitor's live polling; mutations drive create/stop). Current pages:
-``frontend/ui/src/pages/Monitor.tsx`` and ``frontend/ui/src/pages/Launcher.tsx``, sharing
-``frontend/ui/src/components/StatusView.tsx`` for the live ``Status`` render.
+``pages/Monitor.tsx`` (the launch bar merged into it — there is no separate Launcher),
+``pages/config/ConfigPage.tsx``, ``pages/results/ResultsPage.tsx`` and
+``pages/admin/AdminPage.tsx``, sharing ``components/StatusView.tsx`` for the live
+``Status`` render.
+
+**Two things on the Admin page are worth knowing before changing them.**
+
+``NavTopic.footer`` renders a topic at the foot of the sidebar rather than in the main
+list, and Admin is the only user of it: it is about the *service*, so it belongs beside the
+usage meters reporting that same service, and listing it with Campaigns and Results would
+rank it as their peer. It is a field on the one ``TOPICS`` declaration in ``App.tsx``
+rather than a second prop, so navigation still resolves from one source and ``hashNav``
+needs no change — a leaf topic already falls out of the existing grammar.
+
+``components/LogPanel.tsx`` is the one live-log renderer, for the campaign log, the job log
+and the service log alike. It used to live inside ``StatusView.tsx``; reaching it through
+there dragged ``BatchObjectiveChart``, ``DetailsBox`` and the ETA maths into a lazily-loaded
+page that needs none of them. That the same component fits all three is not a coincidence:
+every live log here is a ``fetch(offset) -> LogChunk`` behind one SSE loop.
+
+The usage recording and the service-log ring both live in the **serving layer**
+(``service/app.py`` and ``service/service_log.py``), not on ``RobovastInterface``. The
+precedent is ``_sse_campaign_list`` and ``/healthz``: they describe the process that is
+serving rather than the campaigns it drives, and there is nothing a transport would
+implement differently. The usage ring is per-app (on ``app.state``) so two apps built in one
+process record separately; the log ring is process-global, because a logging handler cannot
+sensibly be otherwise.
 
 **The service serves the SPA.** :func:`robovast.service.app.build_app` mounts
 ``frontend/ui/dist`` at ``/`` (``_mount_ui`` / ``_ui_dist``) **after** registering the API
