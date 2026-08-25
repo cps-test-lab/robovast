@@ -362,8 +362,10 @@ def get_campaign_status(campaign_id: str) -> dict:
     happening. ``true``: nothing completed for longer than one run may take
     (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
     ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
-    "healthy"; ``stall_verdict`` says why (no declared timeout, or a phase that executes no
-    runs). Judge ``progress_age_s`` yourself. The local lane does not enforce it, so a
+    "healthy"; ``stall_verdict`` says why — no declared timeout, a phase that executes no
+    runs, or a batch whose every job is queued for cluster capacity (no run of this campaign
+    is running, so the per-run deadline is measuring a queue rather than a stalled run).
+    Judge ``progress_age_s`` yourself. The local lane does not enforce it, so a
     stalled local run stays alive to inspect.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
