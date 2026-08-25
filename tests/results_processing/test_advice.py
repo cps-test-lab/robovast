@@ -185,3 +185,45 @@ def test_cores_are_formatted_as_they_would_be_typed(cores, text):
 ])
 def test_memory_is_formatted_as_a_vast_would_write_it(num_bytes, text):
     assert A.format_memory(num_bytes) == text
+
+
+# -- the shared /dev/shm, which is charged to the pod --------------------------------------
+
+def _shm(size):
+    return [{"fullkey": "$.execution.shm_size", "value": size}]
+
+
+def test_the_memory_suggestion_covers_the_shared_shm_not_just_process_memory():
+    """``/dev/shm`` is one memory-backed tmpfs mounted into every container, so its pages
+    are charged to the POD. Sizing from RSS alone advised a total the tmpfs by itself could
+    fill -- and overrunning shared memory kills with SIGBUS (exit 135), not a clean OOM, so
+    the death arrives with nothing attached to explain it."""
+    gib = 1024 ** 3
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", mem_peak=gib)],
+        _declared("sut", cpu=1, memory="8Gi") + _shm("1Gi")))
+
+    item = items["memory_over_reserved"]
+    # 1 GiB peak x 1.25 headroom = 1.25 GiB, plus the 1 GiB tmpfs the pod must also hold.
+    assert item["evidence"]["suggested_pod"] == "2304Mi"
+    assert item["evidence"]["shm_size"] == "1Gi"
+    assert "shm_size" in item["detail"]
+    # The per-container figure stays process memory -- that is what a container limit sizes.
+    assert item["evidence"]["suggested_per_container"]["sut"] == "1280Mi"
+
+
+def test_cpu_advice_is_untouched_by_shm_size():
+    """There is no shared CPU allowance, so the tmpfs must not leak into the cpu figure."""
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=1.0)],
+        _declared("sut", cpu=8, memory="8Gi") + _shm("1Gi")))
+    assert items["cpu_over_reserved"]["evidence"]["suggested_pod"] == "1.25"
+    assert "shm_size" not in items["cpu_over_reserved"]["evidence"]
+
+
+def test_a_campaign_that_declares_no_shm_size_is_advised_exactly_as_before():
+    """The addition must be invisible to every campaign that does not set it."""
+    usage, declared = [_usage("sut", mem_peak=1024 ** 3)], _declared("sut", cpu=1, memory="8Gi")
+    with_key = _by_kind(A.resource_advice(usage, declared))["memory_over_reserved"]
+    assert with_key["evidence"]["suggested_pod"] == "1280Mi"
+    assert "shm_size" not in with_key["evidence"]

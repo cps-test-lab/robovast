@@ -101,6 +101,7 @@ DECLARED_SQL = """
            AND fullkey NOT LIKE '$.execution.containers.%.%')
        OR fullkey LIKE '$.execution.containers.%.resources.cpu'
        OR fullkey LIKE '$.execution.containers.%.resources.memory'
+       OR fullkey = '$.execution.shm_size'
 """
 
 
@@ -137,12 +138,20 @@ def _container_of(fullkey: str, suffix: str = "") -> Optional[str]:
     return rest if rest and "." not in rest else None
 
 
-def _declared(rows: list[dict]) -> tuple[set, dict, dict]:
-    """``(container names, cpu by name, memory-bytes by name)`` from the config rows."""
-    names, cpu, memory = set(), {}, {}
+def _declared(rows: list[dict]) -> tuple[set, dict, dict, Optional[float]]:
+    """``(container names, cpu by name, memory-bytes by name, shm bytes)`` from the config.
+
+    ``shm`` is ``execution.shm_size``, not a container's own reservation, because
+    ``/dev/shm`` is one tmpfs shared by every container of the pod -- see
+    :func:`resource_advice` for why a memory suggestion has to know about it.
+    """
+    names, cpu, memory, shm = set(), {}, {}, None
     for row in rows:
         key = row.get("fullkey")
         if not isinstance(key, str):
+            continue
+        if key == "$.execution.shm_size":
+            shm = to_bytes(row.get("value"))
             continue
         bare = _container_of(key)
         if bare:
@@ -161,7 +170,7 @@ def _declared(rows: list[dict]) -> tuple[set, dict, dict]:
             num_bytes = to_bytes(row.get("value"))
             if num_bytes is not None:
                 memory[name] = num_bytes
-    return names, cpu, memory
+    return names, cpu, memory, shm
 
 
 def _resolve_names(measured: list[str], declared_names: set) -> dict:
@@ -198,7 +207,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
         return []
-    names, declared_cpu, declared_mem = _declared(declared_rows)
+    names, declared_cpu, declared_mem, declared_shm = _declared(declared_rows)
     resolved = _resolve_names([r["container"] for r in usable], names)
 
     containers, thin = [], []
@@ -248,6 +257,19 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
         pod_suggested = sum(c[suggested_key] for c in sized)
         per_container = {c["container"]: fmt(c[suggested_key]) for c in sized}
 
+        # ``/dev/shm`` is a memory-backed emptyDir shared by every container, so its pages
+        # are charged to the POD. Sizing memory from process RSS alone would advise a total
+        # the tmpfs by itself could fill -- and overrunning shared memory kills a container
+        # with SIGBUS (exit 135) rather than a clean OOM, so the death arrives with no
+        # reason attached. Only memory is affected: there is no shared CPU allowance.
+        shm_note = ""
+        if what == "memory" and declared_shm:
+            pod_suggested += declared_shm
+            shm_note = (
+                f" The per-container figures are process memory only; execution.shm_size "
+                f"({format_memory(declared_shm)}) is a tmpfs charged to the pod, so the "
+                f"limits have to total {fmt(pod_suggested)} with it added on top.")
+
         if pod_declared is None:
             advice.append({
                 "kind": f"{what}_not_declared",
@@ -257,9 +279,11 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                 "detail": (
                     f"Set execution.containers.<name>.resources.{unit} from what this campaign "
                     f"used: {', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what)),
+                    + _basis(what) + shm_note),
                 "evidence": {"suggested_pod": fmt(pod_suggested),
-                             "suggested_per_container": per_container},
+                             "suggested_per_container": per_container,
+                             **({"shm_size": format_memory(declared_shm)}
+                                if shm_note else {})},
             })
             continue
 
@@ -274,11 +298,13 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                     f"Reducing it would fit {ratio:.1f}x as many jobs in the same quota, on "
                     f"every job of every sweep. Per container: "
                     f"{', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what)),
+                    + _basis(what) + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
-                             "throughput_factor": round(ratio, 2)},
+                             "throughput_factor": round(ratio, 2),
+                             **({"shm_size": format_memory(declared_shm)}
+                                if shm_note else {})},
             })
         elif pod_declared < pod_suggested * UNDER_RESERVED_RATIO:
             advice.append({
@@ -287,7 +313,8 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                 "title": (f"Reserves {fmt(pod_declared)} {unit} per pod but used up to "
                           f"{fmt(pod_suggested)}"),
                 "detail": (_UNDER_DETAIL[what] + " Per container: "
-                           + ", ".join(f"{k} {v}" for k, v in per_container.items())),
+                           + ", ".join(f"{k} {v}" for k, v in per_container.items())
+                           + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container},
