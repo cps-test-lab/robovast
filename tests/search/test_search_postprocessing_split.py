@@ -145,3 +145,35 @@ def test_an_unresolvable_command_is_left_local_rather_than_guessed(tmp_path):
     container, local = split_container_postprocessing(
         ['no_such_plugin'], config_dir=str(tmp_path))
     assert container == [] and local == ['no_such_plugin']
+
+
+# -- the shape the conversion Job expects ------------------------------------
+
+def test_container_commands_unwrap_to_what_the_conversion_job_takes():
+    """`run_conversion_job` takes the INNER dicts -- ``{plugins, bag_dir}`` -- not the
+    ``{'rosbags_process': {...}}`` wrapper the local runner takes.
+
+    The campaign-level path unwraps them (`rosbag_commands_for` ends in
+    ``out.append(cmd["rosbags_process"] or {})``); a search dispatching the wrapped form
+    instead created the Job with the right image and watched it fail, which reads as a
+    broken converter rather than a mismatched argument. The two halves of the split feed
+    two different callers and only one of them wants the wrapper.
+    """
+    from robovast.execution.controller import unwrap_conversion_commands
+
+    container, _ = split_container_postprocessing([
+        {'rosbags_tf_to_csv': {'frames': 'all'}},
+        {'rosbags_to_csv': {'topics': ['/clearance']}},
+    ])
+    unwrapped = unwrap_conversion_commands(container)
+    assert unwrapped, 'nothing to convert'
+    for cmd in unwrapped:
+        assert 'rosbags_process' not in cmd, 'still wrapped'
+        assert 'plugins' in cmd, f'expected {{plugins, bag_dir}}, got {sorted(cmd)}'
+
+
+def test_unwrapping_leaves_a_non_rosbag_container_command_alone():
+    """A plugin that declares needs_execution_image is not a rosbags_process batch and has
+    no wrapper to strip."""
+    from robovast.execution.controller import unwrap_conversion_commands
+    assert unwrap_conversion_commands(['some_plugin.py:Cls']) == ['some_plugin.py:Cls']

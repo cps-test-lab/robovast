@@ -918,7 +918,8 @@ class CampaignController:
             ok, message = run_conversion_job(
                 cluster_config, self.campaign_id,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
-                campaign_execution_image(self.campaign_root), rosbag_cmds,
+                campaign_execution_image(self.campaign_root),
+                unwrap_conversion_commands(rosbag_cmds),
                 kube_context=getattr(self.backend, "kube_context", None))
             logger.info("Batch bag conversion: %s", message)
             if not ok:
@@ -983,6 +984,27 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
     container += [c for c in commands if not _is_rosbag(c) and _needs_image(c)]
     local = [c for c in commands if not _is_rosbag(c) and not _needs_image(c)]
     return container, local
+
+
+def unwrap_conversion_commands(commands) -> list:
+    """The shape ``run_conversion_job`` takes: the inner ``{plugins, bag_dir}`` dicts.
+
+    The local runner takes ``{'rosbags_process': {...}}``; the Job takes what is inside it.
+    The campaign-level path has always unwrapped here (``rosbag_commands_for`` ends in
+    ``out.append(cmd["rosbags_process"] or {})``), and a search that dispatched the wrapped
+    form created the Job with the right image and then watched it fail -- which reads as a
+    broken converter rather than a mismatched argument.
+
+    Anything that is not a ``rosbags_process`` batch is passed through: a plugin declaring
+    ``needs_execution_image`` has no wrapper to strip.
+    """
+    out = []
+    for command in commands or []:
+        if isinstance(command, dict) and "rosbags_process" in command:
+            out.append(command["rosbags_process"] or {})
+        else:
+            out.append(command)
+    return out
 
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
