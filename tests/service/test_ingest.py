@@ -64,7 +64,7 @@ def test_an_old_config_migrates_and_the_archive_is_untouched(campaign):
     before = vast_path.read_bytes()
     stage = ingest_campaign(campaign)["stages"]["config"]
     assert stage["verdict"] == STAGE_MIGRATED
-    assert stage["steps"] == ["1_to_2"]
+    assert stage["steps"] == ["1_to_2", "2_to_3"]
     assert "not modified" in stage["detail"]
     assert vast_path.read_bytes() == before
 

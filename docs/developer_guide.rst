@@ -2312,7 +2312,7 @@ types are inferred per column and a JSONL file whose records have differing keys
 column for each (the column list is the union over rows, not the first row's keys).
 
 The one such producer today is ``behaviors.jsonl``, written by ``scenario_execution``'s
-``--bt-log`` (``execution.bt_log`` in the ``.vast``). It replaced a rosbag route — recording
+``--bt-log``, on for every run. It replaced a rosbag route — recording
 ``/scenario_execution/snapshots`` and converting it with a ``bt_to_csv`` handler — which could
 only work for ROS runs, and so left ``mode: base`` campaigns with no behaviour-tree data at all.
 Since the runner writes the file itself, both kinds of run now produce the ``behaviors`` table by

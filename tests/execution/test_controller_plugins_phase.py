@@ -41,7 +41,7 @@ def test_plugins_phase_installs_and_logs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_plugins, "ensure_workspace_plugins", fake_ensure)
     vast = tmp_path / "x.vast"
-    vast.write_text("version: 2\n")
+    vast.write_text("version: 3\n")
     campaign_root = tmp_path / "camp"
     state = _State()
 

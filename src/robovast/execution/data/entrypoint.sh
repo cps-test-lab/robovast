@@ -175,7 +175,7 @@ else
         --startas /usr/bin/python3 -- /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv"
     log "Started resource monitor (PID=$(cat /tmp/monitor.pid)) -> ${OUTPUT_DIR}/resource_usage_main.csv"
 
-    # The infrastructure recording (execution.log_topics in the .vast), deliberately
+    # The infrastructure recording (/rosout and /clock), deliberately
     # separate from the scenario's own bag_record: this one runs in WALL time for the
     # whole container's life, so it captures the stack coming up before any scenario
     # starts, and /clock recorded here is what relates the two clocks afterwards. Each
@@ -213,10 +213,10 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
-    # Behaviour tree status log (execution.bt_log in the .vast): scenario_execution writes
-    # <output-dir>/behaviors.jsonl itself, with or without ROS. On unless turned off, so a
-    # container started by hand records its tree too -- that is the run nobody can go back
-    # and re-instrument.
+    # Behaviour tree status log: scenario_execution writes <output-dir>/behaviors.jsonl
+    # itself, with or without ROS. Always on, and defaulted here as well, so a container
+    # started by hand records its tree too -- that is the run nobody can go back and
+    # re-instrument.
     BT_LOG="${BT_LOG:-true}"
     BT_LOG_PARAM=""
     if [ "${BT_LOG}" = "true" ]; then

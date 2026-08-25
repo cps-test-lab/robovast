@@ -18,7 +18,7 @@ from robovast.common.errors import CampaignConfigError
 
 def _campaign_data(tmp_path, *, scenario_exists=True, run_files=()):
     vast = tmp_path / "campaign.vast"
-    vast.write_text("version: 2\n")
+    vast.write_text("version: 3\n")
     scenario = tmp_path / "sub" / "scenario.osc"
     if scenario_exists:
         scenario.parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +74,7 @@ def test_generation_fails_before_staging(tmp_path):
     from robovast.common import generate_scenario_variations
     vast = tmp_path / "campaign.vast"
     vast.write_text(
-        "version: 2\n"
+        "version: 3\n"
         "execution:\n"
         "  containers: {scenario: {image: i}}\n"
         "  image: ghcr.io/cps-test-lab/robovast:latest\n"

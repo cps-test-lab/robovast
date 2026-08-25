@@ -47,7 +47,7 @@ def _search_project(tmp_path, *, low, high, per_batch=4):
     (tmp_path / "myvar.py").write_text(_INFEASIBLE_VARIATION)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 2
+        version: 3
         metadata: {{name: search-preflight}}
         execution:
           containers:

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 _VAST = """\
-version: 2
+version: 3
 metadata:
   name: tiers
 {plugins}configuration:

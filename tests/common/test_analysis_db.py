@@ -120,14 +120,17 @@ def test_a_missing_table_lists_what_is_there(tmp_path):
     assert "behaviors, runs" in str(excinfo.value)
 
 
-def test_a_missing_behaviours_table_names_both_causes(tmp_path):
-    """The two ways to get a passing run with no scenario tree are silent by construction."""
+def test_a_missing_behaviours_table_names_its_cause(tmp_path):
+    """How a passing run ends up with no scenario tree, which is silent by construction.
+
+    One cause rather than two since behaviour-tree logging stopped being optional: an
+    execution image whose scenario_execution predates --bt-log drops the flag instead of
+    refusing it, so the run passes and writes nothing.
+    """
     root = _campaign(tmp_path, behaviours=False)
     with pytest.raises(CampaignDataError) as excinfo:
         read_table(root, "behaviors")
-    message = str(excinfo.value)
-    assert "bt_log" in message
-    assert "--bt-log" in message
+    assert "--bt-log" in str(excinfo.value)
 
 
 def test_a_required_column_that_is_gone_raises_instead_of_returning_less(tmp_path):

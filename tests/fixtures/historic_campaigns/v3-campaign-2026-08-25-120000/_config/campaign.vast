@@ -1,0 +1,24 @@
+# A version-3 campaign: execution.timeout became the whole JOB's budget, bt_log and
+# log_topics left the schema, and shm_size gained a default.
+#
+# Declares the keys v3 CHANGED, so migrating a later campaign past this version meets a
+# fixture that actually exercises the step rather than one that happens to be silent about
+# everything it touched.
+version: 3
+metadata:
+  name: historic-v3
+  title: Nav2 controller comparison (archived, v3)
+execution:
+  containers:
+    scenario:
+      image: ghcr.io/cps-test-lab/robovast:latest
+      resources:
+        cpu: 1
+        memory: 2Gi
+  runs: 2
+  # Packed, so a future step that reasons about per-run versus per-job budgets has a
+  # fixture where the two genuinely differ.
+  runs_per_job: 2
+  timeout: 600
+  shm_size: 512Mi
+  scenario_file: scenario.osc

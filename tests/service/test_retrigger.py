@@ -32,7 +32,7 @@ DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 
 
 def _vast(containers=None):
-    return {"version": 2, "metadata": {"name": "pilot"},
+    return {"version": 3, "metadata": {"name": "pilot"},
             "configuration": [{"name": "config1"}],
             "execution": {"scenario_file": "scenario.osc", "runs": 3,
                           "containers": containers or {"scenario": {"image": "base:1"}}}}

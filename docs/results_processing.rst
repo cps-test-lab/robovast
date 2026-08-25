@@ -324,8 +324,7 @@ taken at the start is ~8 s out by the end of a 29 s run. Sim time can also pause
 
 Two producers, one format:
 
-* **ROS** — the *entrypoint's own* recorder (``execution.log_topics``, default
-  ``[/rosout, /clock]``) writes a bag in **wall** time for the whole container's life, so each
+* **ROS** — the *entrypoint's own* recorder (``/rosout`` and ``/clock``) writes a bag in **wall** time for the whole container's life, so each
   ``/clock`` message is an exact (wall receive, sim content) pair. Deliberately not the scenario's
   ``bag_record``: that one is sim-time on both axes, so it cannot carry the mapping, and it starts
   mid-run where the interesting failures are already over.

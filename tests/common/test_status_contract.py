@@ -93,12 +93,12 @@ def test_the_enforcement_backstop_is_never_substituted_for_a_verdict():
     """The cluster force-kills at a one-hour backstop when nothing is declared. Using
     that as the *reporting* reference would call a two-minute pilot healthy for
     fifty-nine minutes, which is the bug this separation exists to prevent."""
-    from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS, declared_per_run_seconds,
-                                        per_run_deadline_seconds)
-    assert declared_per_run_seconds({}) is None                       # reporting
-    assert per_run_deadline_seconds({}) == DEFAULT_RUN_DEADLINE_SECONDS  # enforcement
-    assert declared_per_run_seconds({"timeout": 90}) == 90
-    assert per_run_deadline_seconds({"timeout": 90}) == 90
+    from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS, declared_job_seconds,
+                                        job_deadline_seconds)
+    assert declared_job_seconds({}) is None                          # reporting
+    assert job_deadline_seconds({}) == DEFAULT_RUN_DEADLINE_SECONDS  # enforcement
+    assert declared_job_seconds({"timeout": 90}) == 90
+    assert job_deadline_seconds({"timeout": 90}) == 90
 
 
 def test_stalled_once_the_age_passes_the_declared_budget():

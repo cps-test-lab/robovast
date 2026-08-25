@@ -39,7 +39,7 @@ def _vast(tmp_path, packages=("shapely>=2.0",)):
     import json
     vast = tmp_path / "p.vast"
     vast.write_text(json.dumps({
-        "version": 2,
+        "version": 3,
         "execution": {"runs": 1, "containers": {
             "scenario": {"image": "base:1"},
             "sut": {"image": "base:1", "python_packages": list(packages)}}}}))
@@ -222,7 +222,7 @@ def _roqsim_vast(tmp_path):
     import json
     vast = tmp_path / "sim.vast"
     vast.write_text(json.dumps({
-        "version": 2,
+        "version": 3,
         "execution": {
             "runs": 1, "mode": "ros2",
             "containers": {
@@ -258,7 +258,7 @@ def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_pa
     import json
     vast = tmp_path / "stepped.vast"
     vast.write_text(json.dumps({
-        "version": 2,
+        "version": 3,
         "execution": {"runs": 1, "mode": "base",
                       "containers": {
                           "scenario": {},

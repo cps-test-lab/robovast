@@ -49,7 +49,7 @@ def _project(tmp_path, configuration, variation_source):
     (tmp_path / "myvar.py").write_text(variation_source)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 2
+        version: 3
         metadata: {{name: infeasible-test}}
         configuration:
         {configuration}

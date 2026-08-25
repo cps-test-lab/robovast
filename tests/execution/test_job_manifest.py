@@ -145,13 +145,18 @@ def test_the_pod_is_told_which_node_it_landed_on(monkeypatch):
     assert "value" not in env["NODE_NAME"]
 
 
-def test_bt_log_can_be_turned_off(monkeypatch):
-    """Stated as false rather than omitted: the pod spec says what the run did."""
-    r = _runner(monkeypatch, execution={"bt_log": False})
+def test_bt_log_is_always_on_and_always_stated(monkeypatch):
+    """Stated rather than omitted: the pod spec says what the run did, instead of deferring
+    to a container default that may differ between image versions.
+
+    There is no longer a way to turn it off -- a run whose tree state was not recorded
+    cannot be explained afterwards, and the file is small beside the rosbag.
+    """
+    r = _runner(monkeypatch)
     job = r._build_jobs()[0]
     m = r.create_job_manifest(job, total_jobs=1)
     main_env = _env_dict(m["spec"]["template"]["spec"]["containers"][0])
-    assert main_env["BT_LOG"] == "false"
+    assert main_env["BT_LOG"] == "true"
 
 
 def _sidecar(manifest, name):
@@ -488,10 +493,14 @@ def _dshm(manifest):
     return next(v for v in spec["volumes"] if v["name"] == "dshm")
 
 
-def test_dev_shm_is_unbounded_unless_the_campaign_says_otherwise(monkeypatch):
-    """The default is preserved deliberately: bounding it for every existing campaign would
-    change what they run, and a tmpfs that is suddenly too small kills a container with
-    SIGBUS rather than failing loudly."""
+def test_dev_shm_is_unbounded_when_the_execution_block_names_no_size(monkeypatch):
+    """The lane stays honest about an absent key rather than inventing a size of its own.
+
+    A *composed* campaign no longer reaches this state -- composition settles `shm_size`
+    for every campaign, declared or not (see
+    tests/execution/test_shm_size_reaches_both_lanes.py). This pins the lane's own
+    behaviour, which is what keeps the default in one place instead of two.
+    """
     r = _runner(monkeypatch)
     volume = _dshm(r.create_job_manifest(r._build_jobs()[0], total_jobs=1))
     assert volume["emptyDir"] == {"medium": "Memory"}
