@@ -37,7 +37,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        job_artifact_rel, local_parameter_overrides, read_job_links,
                                        resolve_robovast_image, sidecar_backend_env,
                                        write_job_links_manifest)
-from robovast.common.quantity import to_cores
+from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
 from robovast.execution.packer import build_jobs
 
@@ -559,13 +559,19 @@ def _build_packed_compose_yaml(
         lines.append("    runtime: nvidia")
     if has_secondaries:
         lines.append("    ipc: shareable")
-    shm_size = (execution or {}).get('shm_size')
     # The sidecars join this container's IPC namespace below, so they share its /dev/shm --
     # Docker's default 64 MB unless this says otherwise. Set on the main container only,
     # because that is the one whose namespace the others inherit. Same `execution.shm_size`
     # as the cluster lane, so one .vast means the same thing on both.
-    if shm_size:
-        lines.append(f"    shm_size: {shm_size}")
+    #
+    # Emitted in BYTES, because the two lanes do not speak the same quantity language:
+    # `512Mi` is a Kubernetes quantity and Compose rejects it outright ("invalid suffix:
+    # 'mi'"), while Compose's own `512m` means something else again. A plain integer is
+    # the one spelling both a human and every Compose version read the same way, so the
+    # translation happens here rather than asking the .vast to know which lane it is for.
+    shm_size_bytes = to_bytes((execution or {}).get('shm_size'))
+    if shm_size_bytes:
+        lines.append(f"    shm_size: {int(shm_size_bytes)}")
 
     lines.append("    volumes:")
     lines.append(f'      - "{quote(out_path)}:/out"')
