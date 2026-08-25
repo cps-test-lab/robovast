@@ -161,6 +161,34 @@ def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes
     return _read
 
 
+def layered_get_bytes(
+    *sources: Callable[[str], Optional[bytes]]
+) -> Callable[[str], Optional[bytes]]:
+    """A ``get_bytes`` serving each phase file from the first source that HAS it.
+
+    Phases are produced by different processes, which do not all write to the same
+    place: on the cluster the controller's phase files land in the service's scratch
+    while postprocessing runs against its own fetched campaign root and publishes to
+    the object store. Reading one location alone therefore drops whole phases —
+    silently, since a missing phase file is also the normal "has not run yet".
+
+    The fallback is on **absence only** (``None``), never on "this copy is shorter".
+    A live phase file still being appended to must keep winning over a frozen durable
+    copy: the streaming protocol rests on the assembled stream growing monotonically
+    (see :func:`assemble_log`), and a poll that returned fewer bytes than the last one
+    would leave the client's offset past the end. An existing but empty file is
+    *present* and wins for the same reason.
+    """
+    def _read(filename: str) -> Optional[bytes]:
+        for source in sources:
+            data = source(filename)
+            if data is not None:
+                return data
+        return None
+
+    return _read
+
+
 def assemble_log_from_dir(
     campaign_dir: "Path | str", offset: int = 0, eof: bool = False
 ) -> tuple[str, int, bool]:
