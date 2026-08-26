@@ -140,3 +140,48 @@ def test_out_of_window_ticks_are_kept_and_marked(tmp_path):
     marks = {r["wall_ts"]: r["in_window"] for r in
              system_usage.rows_for_slice(columns, samples, slice_)}
     assert marks == {"105.000000000": 0, "150.000000000": 1}
+
+
+# -- the sizing authority reads the kernel, not the sum of processes ---------------------
+
+def test_the_cgroup_peak_replaces_summed_rss_and_the_advice_says_which(monkeypatch):
+    """The bug this exists to prevent: summing per-process RSS counts a shared page once per
+    process, so a stack of many nodes sharing libraries and a Fast DDS segment reports several
+    times what the container holds -- and the limit is enforced against the container.
+
+    Measured on one basic_nav campaign: summed RSS peaked at 5147 MiB inside a 2944 MiB limit
+    that never OOM-killed anything.
+    """
+    from robovast.results_processing import advice
+
+    usage = [{"container": "simulation", "ticks": 100, "cpu_p95": 0.5, "cpu_peak": 1.0,
+              "core_seconds": 50.0, "mem_peak": 5147 * 1024 ** 2}]
+    declared = [{"fullkey": "$.execution.containers.simulation", "value": "{}"}]
+    cgroup = [{"container": "simulation", "mem_peak": 1000 * 1024 ** 2}]
+
+    with_cgroup = advice.resource_advice(usage, declared, cgroup)
+    mem = [a for a in with_cgroup if a["kind"].startswith("memory")]
+    assert mem, "expected memory advice"
+    # 1000Mi x 1.25 = 1250Mi, not 5147Mi x 1.25 -- the kernel's number won.
+    suggested = mem[0]["evidence"]["suggested_per_container"]["simulation"]
+    assert suggested.endswith("Mi") and 1200 <= int(suggested[:-2]) <= 1300, suggested
+    assert "kernel" in mem[0]["detail"]
+
+    # Without it the older figure is still used -- but the advice states that it is.
+    without = advice.resource_advice(usage, declared, [])
+    mem_without = [a for a in without if a["kind"].startswith("memory")][0]
+    assert "over-reports" in mem_without["detail"]
+    assert int(mem_without["evidence"]["suggested_per_container"]["simulation"][:-2]) > 5000
+
+
+def test_absent_system_usage_table_does_not_break_advice():
+    """A campaign recorded before the probe existed has no such table; the query raises and
+    the advice must fall back rather than propagate."""
+    from robovast.results_processing import advice
+
+    def query_rows(sql):
+        if "system_usage" in sql:
+            raise RuntimeError("no such table: system_usage")
+        return []
+
+    assert advice.campaign_advice(query_rows) == {"advice": []}

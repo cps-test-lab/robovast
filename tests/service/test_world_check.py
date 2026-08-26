@@ -17,8 +17,13 @@ Two rules the tests below pin down, because both are easy to lose:
 """
 
 
+import os
+import shutil
+import subprocess
+
 import pytest
 
+from robovast.service import world_query
 from robovast.service.world_query import ExecSlotContainerRunner
 
 
@@ -121,9 +126,85 @@ def test_a_document_is_written_as_data_not_as_shell():
     reach the simulator altered, which is worse than failing outright."""
     import inspect
 
-    from robovast.service import world_query
     source = inspect.getsource(world_query.ExecSlotContainerRunner._script)
     assert "<<'" in source, "the heredoc delimiter must be quoted"
+
+
+def test_the_staged_script_is_valid_shell(tmp_path, monkeypatch):
+    """The script this builds has to be a script. Nothing above ever checked that.
+
+    A heredoc ends only at a line holding *exactly* its delimiter. Joining the parts with
+    ``&&`` left the terminator sharing its line with the command that followed, so bash
+    never closed the document -- it swallowed the describe, the script still exited 0, and
+    every campaign carrying overrides came back "was NOT checked".
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash to check the script against")
+    monkeypatch.setattr(world_query, "_STAGE_DIR", str(tmp_path / "stage"))
+    document = tmp_path / "sim.overrides.yaml"
+    document.write_text("components:\n  robot:\n    pos: [1, 2]\n")
+    exec_call = _Exec()
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    runner.expose(str(document), "/aux/sim.overrides.yaml")
+    runner.run(["roqsim", "scenes", "describe", "w.yaml",
+                "--override", "/aux/sim.overrides.yaml"])
+    script = tmp_path / "staged.sh"
+    script.write_text(exec_call.requests[-1].command)
+    checked = subprocess.run([bash, "-n", str(script)], capture_output=True,
+                             text=True, check=False)
+    # stderr, not only the exit code: an unterminated heredoc is a *warning*, and bash
+    # exits 0 on it. Asserting the returncode alone is how this shipped.
+    assert checked.returncode == 0, checked.stderr
+    assert checked.stderr == "", checked.stderr
+
+
+def test_the_command_runs_after_the_document_is_staged(tmp_path, monkeypatch):
+    """Staging the document and asking the question are one script; both must happen.
+
+    Every substring assertion above passed while the command never ran at all -- it had
+    been absorbed into the heredoc. Only running the script tells those two apart, so this
+    runs it against a stub simulator and reads what the stub was actually given.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash to run the script in")
+    stage = tmp_path / "stage"
+    monkeypatch.setattr(world_query, "_STAGE_DIR", str(stage))
+    document = tmp_path / "sim.overrides.yaml"
+    # `$` and a backtick ride along: the quoted delimiter is what keeps an override tree
+    # from being expanded on its way in, and the fix must not cost that.
+    body = "components:\n  robot:\n    pos: [1, 2]\n  note: $HOME `id`\n"
+    document.write_text(body)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "roqsim"
+    stub.write_text('#!/bin/sh\necho "$@" > "$ROQSIM_STUB_ARGV"\n')
+    stub.chmod(0o755)
+
+    exec_call = _Exec()
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    runner.expose(str(document), "/aux/sim.overrides.yaml")
+    runner.run(["roqsim", "scenes", "describe", "w.yaml",
+                "--override", "/aux/sim.overrides.yaml"])
+
+    argv_file = tmp_path / "argv"
+    ran = subprocess.run(
+        [bash, "-c", exec_call.requests[-1].command],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+             "ROQSIM_STUB_ARGV": str(argv_file)})
+    assert ran.returncode == 0, ran.stderr
+
+    staged = stage / "sim.overrides.yaml"
+    assert staged.read_text() == body, (
+        "the document has to reach the container verbatim, `$` and backticks included")
+    assert argv_file.exists(), "the simulator was never asked: the heredoc ate the command"
+    assert argv_file.read_text().split() == [
+        "scenes", "describe", "w.yaml", "--override", str(staged)]
 
 
 def test_output_reaches_the_caller_even_when_the_command_failed():

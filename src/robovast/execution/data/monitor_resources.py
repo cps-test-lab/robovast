@@ -72,10 +72,41 @@ def cpu_stat_probe():
     return out
 
 
+#: cgroup v2's memory accounting for the whole container -- what the kernel actually enforces
+#: the limit against. The per-process rows cannot answer this: RSS counts a shared page once
+#: per process, so summing them over a stack of forty ROS nodes sharing libraries and a Fast
+#: DDS shared-memory segment over-reports badly. Measured on one campaign: summed RSS peaked at
+#: 5147 MiB in a container running comfortably under a 2944 MiB limit, while its largest single
+#: process held 1014 MiB. ``memory.peak`` is the high-water mark and needs kernel 5.19+.
+MEMORY_PATH = "/sys/fs/cgroup"
+MEMORY_FILES = ("memory.current", "memory.peak", "memory.max")
+
+
+def memory_probe():
+    """Container memory as the kernel accounts it, or ``{}`` where it cannot be read.
+
+    ``memory.max`` reads ``max`` when no limit is set; that is recorded as an absence rather
+    than as a number, because "unlimited" and "some very large limit" are different facts and
+    only one of them can be compared against usage.
+    """
+    out = {}
+    for name in MEMORY_FILES:
+        try:
+            with open(os.path.join(MEMORY_PATH, name), encoding="utf-8") as handle:
+                raw = handle.read().strip()
+        except OSError:
+            continue
+        try:
+            out[name.replace(".", "_")] = int(raw)
+        except ValueError:
+            pass  # "max" -- no limit in force
+    return out
+
+
 #: A probe is a callable returning ``{metric: value}``. Adding one is adding it here; nothing
 #: else in the chain needs to know, because the CSV -> ``data.db`` ingest types columns from
 #: what it finds.
-PROBES = (cpu_stat_probe,)
+PROBES = (cpu_stat_probe, memory_probe)
 
 
 def start_probes(probes=PROBES):
