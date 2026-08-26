@@ -80,10 +80,19 @@ class RegistryImageStore(ImageBuildStore):
         # lane's for the same spec, and why re-deriving it anywhere else would drift.
         base_ref = (spec.base_image or registry.base_experiment_image
                     or resolve_build_base_image())
+        # The DIGEST that ref points at, not the ref: `build_hash` asks for the base's identity
+        # for the same reason the local lane resolves it to an image ID. A tag names different
+        # bytes before and after the base is republished, so hashing the tag makes every rebuild
+        # of the base invisible here -- and on this lane that is the lane campaigns run on: a
+        # freshly published simulator or a refreshed apt snapshot would be silently ignored and
+        # the store would keep serving an experiment image built on the base of some earlier day.
+        # Falls back to the ref when the registry cannot answer, which is what this computed
+        # before, so an unreachable registry behaves as it did rather than forcing a rebuild.
+        base_identity = self.published_digest(base_ref) or base_ref
         # The resolution belongs in the key, exactly as on the local lane: without it a spec
         # naming a branch is cache-stable, so the first build's commit is served forever and
         # the record cannot say which one it was.
-        image_hash = build_hash(spec, project_dir, base_ref,
+        image_hash = build_hash(spec, project_dir, base_identity,
                                 resolved_vcs=self.resolve_vcs(spec))
         return ImageRef(
             ref=concrete_image_ref(registry.registry_prefix, spec.tag, image_hash),
