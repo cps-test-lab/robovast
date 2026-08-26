@@ -419,6 +419,12 @@ class AdmissionController:
             nodes, _ = self._effective_free_locked()
             return sorted(n.node_id for n in nodes if n.node_id)
 
+    def growable(self) -> bool:
+        """Whether the cluster can add nodes. See :attr:`Budget.growable`."""
+        with self._lock:
+            _, growable = self._effective_free_locked()
+            return growable
+
     def calibration(self, owner: str, factory=None):
         """This campaign's per-node calibration, created once and kept for its lifetime.
 

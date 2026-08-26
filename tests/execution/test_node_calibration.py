@@ -344,3 +344,97 @@ def test_the_probe_directory_is_the_reserved_one():
     from robovast.execution.cluster_execution.node_calibration import PROBE_DIR
 
     assert PROBE_DIR in RESERVED_CAMPAIGN_DIRS
+
+
+# -- the probe's manifest -----------------------------------------------------------------
+
+def _base_manifest():
+    env = lambda: [{"name": "OUTPUT_DIR", "value": "/out/_jobs/batch-0/job-0"},
+                   {"name": "SCENARIO_PARAMETER_FILE", "value": "/config/job-0.params.yaml"},
+                   {"name": "SCENARIO_FILE", "value": "scenario.osc"}]
+    return {"metadata": {"name": "camp-batch0-job-0"},
+            "spec": {"template": {"spec": {
+                "containers": [{"name": "robovast", "env": env()}],
+                "initContainers": [{"name": "sut", "env": env()},
+                                   {"name": "simulation", "env": env()}]}}}}
+
+
+def test_a_probe_runs_what_the_campaign_runs():
+    """Derived from a real job's manifest, because the measurement is worth nothing unless
+    the probe runs the same image, containers, scenario and declared resources."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    m = probe_manifest(_base_manifest(), job_name="probe-n1",
+                       params_file="/config/probe-n1.params.yaml",
+                       output_dir="/out/_calibration/node-a")
+    names = [c["name"] for c in m["spec"]["template"]["spec"]["initContainers"]]
+    assert names == ["sut", "simulation"], "the same containers, unchanged"
+    assert m["metadata"]["name"] == "probe-n1"
+
+
+def test_every_container_is_redirected_not_only_the_main_one():
+    """The sidecars are handed the same extra env, and they are where the simulator and the
+    system under test write the CSVs that matter most here. A sidecar left on the old
+    OUTPUT_DIR puts exactly those back into the run tree."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    m = probe_manifest(_base_manifest(), job_name="p", params_file="/config/p.yaml",
+                       output_dir="/out/_calibration/node-a")
+    spec = m["spec"]["template"]["spec"]
+    for container in spec["containers"] + spec["initContainers"]:
+        env = {e["name"]: e["value"] for e in container["env"]}
+        assert env["OUTPUT_DIR"] == "/out/_calibration/node-a", container["name"]
+        assert env["SCENARIO_PARAMETER_FILE"] == "/config/p.yaml", container["name"]
+        assert env["SCENARIO_FILE"] == "scenario.osc", "unrelated env is untouched"
+
+
+def test_the_real_jobs_manifest_is_not_mutated():
+    """It belongs to a job that is about to run with it."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    base = _base_manifest()
+    probe_manifest(base, job_name="p", params_file="/config/p.yaml", output_dir="/out/x")
+    assert base["metadata"]["name"] == "camp-batch0-job-0"
+    assert base["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] \
+        == "/out/_jobs/batch-0/job-0"
+
+
+# -- the manifest and the queue must agree ------------------------------------------------
+
+def test_the_sizing_the_queue_uses_is_the_sizing_the_manifest_asks_for():
+    """The drift that would be invisible and expensive.
+
+    Admission decides how many pods fit a node from JobSizing; Kubernetes reserves what the
+    manifest says. If calibration changed one and not the other, the queue would over- or
+    under-fill every calibrated node by exactly the difference -- and nothing would report
+    it, because both halves are individually self-consistent. They go through one function
+    for that reason, and this pins that they still do.
+    """
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+
+    figures = {"sut": {"sustained": 1.4, "peak": 2.0},
+               "simulation": {"sustained": 0.4, "peak": 5.0}}
+    r = kb.BatchJobRunner()
+
+    def _manifest(job, total, node_figures=None):
+        sut = kb.calibrated_resources({"cpu": 3, "memory": "640Mi"}, "sut", node_figures)
+        sim = kb.calibrated_resources({"cpu": 0.75, "cpu_limit": 6, "memory": "640Mi"},
+                                      "simulation", node_figures)
+        spec = {"containers": [{"resources": {"requests": {"cpu": "1", "memory": "512Mi"}}}],
+                "initContainers": []}
+        for res in (sut, sim):
+            container = {"restartPolicy": "Always", "resources": {}}
+            kb.stamp_resources(container, res)
+            spec["initContainers"].append(container)
+        return {"spec": {"template": {"spec": spec}}}
+
+    r.create_job_manifest = _manifest
+    r.manifest = {}
+
+    declared = r._job_sizing(object(), 1)
+    calibrated = r._job_sizing(object(), 1, node_figures=figures)
+
+    # 1 (main) + 3 (sut) + 0.75 (sim) declared; 1 + 2.0 (sut peak) + 0.4 (sim sustained).
+    assert declared.cpu == pytest.approx(4.75)
+    assert calibrated.cpu == pytest.approx(3.4)
+    assert calibrated.cpu < declared.cpu, "a calibrated node holds more of them"

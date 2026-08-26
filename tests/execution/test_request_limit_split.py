@@ -58,7 +58,7 @@ def test_admission_sizes_a_job_by_the_request_not_the_ceiling():
 
     r = kb.BatchJobRunner()
     r.manifest = {}
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"resources": {"requests": {"cpu": "3", "memory": "640Mi"},
                                       "limits": {"cpu": "3", "memory": "640Mi"}}}],
         "initContainers": [

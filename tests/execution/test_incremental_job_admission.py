@@ -136,7 +136,7 @@ def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
     r.manifest = {"spec": {"template": {"spec": {
         "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}]}}}}
     # The rendered per-job manifest: what Kubernetes is really asked to reserve.
-    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+    r.create_job_manifest = lambda job, total, node_figures=None: {"spec": {"template": {"spec": {
         "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
         "initContainers": [
             {"restartPolicy": "Always",
