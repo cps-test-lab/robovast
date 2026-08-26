@@ -234,6 +234,13 @@ def _attach_ro(conn: sqlite3.Connection, db_path: Path, alias: str) -> None:
 #: :func:`_campaign_view_sql`, which adapts to the tables that store actually has.
 _CAMPAIGN_VIEW_NAMES = ("run_view", "config_view", "container_failure_view")
 
+#: The same treatment for the metrics store (``data.db``, schema ``main``) rather than the
+#: campaign store. Separate because the two are attached independently -- a campaign that has
+#: not been postprocessed has ``campaign`` and no ``main`` tables, and one imported without its
+#: store has the reverse -- so a view over one must not fail to be created because the other
+#: is absent.
+_MAIN_VIEW_NAMES = ("run_validity_view",)
+
 
 def _tables_in(conn: sqlite3.Connection, schema: str) -> set:
     """Table names present in an attached *schema*."""
@@ -330,6 +337,60 @@ def _campaign_view_sql(schema: str, have: set) -> dict:
     return views
 
 
+def _main_view_sql(schema: str, have: set) -> dict:
+    """Flat views over the metrics store, keyed by view name.
+
+    One view so far: ``run_validity_view``, which turns the cgroup counters into the
+    question a reader of a campaign actually has -- *was this run a clean observation of
+    the system under test, or partly a measurement of its CPU quota?*
+
+    It exists because the raw form is a trap in three ways, and every consumer was
+    re-deriving it. ``nr_throttled`` and ``nr_periods`` are **monotonic counters**, so a
+    ``SUM`` over the tick rows is meaningless and a plain ``MAX`` counts whatever the
+    container did before the trial window; the honest reading is a delta within
+    ``in_window``. The *ratio* is what carries meaning, not the count -- ``nr_periods = 0``
+    means no quota was enforced at all, which is a different fact from a quota that was
+    never hit. And the threshold that separates "binding" from "noise" is calibrated
+    (:data:`~robovast.results_processing.advice.THROTTLE_WARN_RATIO`) rather than obvious:
+    a measured 0.79% cost six runs of fifty, so a reader guessing at 1% would have called
+    that campaign clean.
+
+    **It flags, and never filters.** A starved run stays in the results with ``starved =
+    1`` beside it, because a run silently dropped is worse than one labelled honestly --
+    and because throttling is a *screen*, not a verdict: it says a resource explanation is
+    available for a failure, not that the stack misbehaved. Pairing it with the stack's own
+    health signals is what makes it conclusive, and those are per-stack and not known here.
+
+    One row per (run, container), not per run: the SUT is the container whose starvation
+    invalidates a functional result, but the simulator and scenario are visible in the same
+    shape rather than hidden, since a reader comparing them is exactly how one learns that
+    a squeezed simulator cost nothing (its realtime factor held) while a squeezed SUT cost
+    runs.
+    """
+    from .advice import THROTTLE_WARN_RATIO  # noqa: PLC0415 - avoids an import cycle
+
+    views = {}
+    if "system_usage" in have:
+        views["run_validity_view"] = f"""
+            WITH per_run AS (
+                SELECT config_name, run_id, container,
+                       MAX(nr_periods) - MIN(nr_periods) AS periods,
+                       MAX(nr_throttled) - MIN(nr_throttled) AS throttled,
+                       MAX(throttled_usec) - MIN(throttled_usec) AS throttled_usec
+                FROM {schema}.system_usage
+                WHERE in_window = 1 AND nr_periods IS NOT NULL
+                GROUP BY config_name, run_id, container)
+            SELECT config_name, run_id, container, periods, throttled, throttled_usec,
+                   CASE WHEN periods > 0
+                        THEN CAST(throttled AS REAL) / periods END AS throttle_ratio,
+                   CASE WHEN periods > 0
+                             AND CAST(throttled AS REAL) / periods >= {THROTTLE_WARN_RATIO}
+                        THEN 1 ELSE 0 END AS starved
+            FROM per_run
+        """
+    return views
+
+
 def _create_campaign_views(conn: sqlite3.Connection, schema: str,
                            prefix: str = "") -> None:
     """Create the flat views over *schema* as ``TEMP`` views on this connection.
@@ -342,6 +403,22 @@ def _create_campaign_views(conn: sqlite3.Connection, schema: str,
     report that this store cannot answer that question.
     """
     for name, body in _campaign_view_sql(schema, _tables_in(conn, schema)).items():
+        try:
+            conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
+        except sqlite3.Error as e:
+            logger.debug("could not create view %s%s over %s: %s", prefix, name, schema, e)
+
+
+def _create_main_views(conn: sqlite3.Connection, schema: str, prefix: str = "") -> None:
+    """Create the flat views over the metrics store *schema*, same contract as above.
+
+    Split from :func:`_create_campaign_views` because the two stores are attached
+    independently: a campaign that has not been postprocessed has no ``main`` tables at all,
+    and one whose ``data.db`` is present but whose ``campaign.db`` is not has the reverse.
+    Creating both from one call would tie a view over either store to the presence of the
+    other, and the missing one is exactly when a reader most needs what is there.
+    """
+    for name, body in _main_view_sql(schema, _tables_in(conn, schema)).items():
         try:
             conn.execute(f"CREATE TEMP VIEW {prefix}{name} AS {body}")
         except sqlite3.Error as e:
@@ -384,11 +461,15 @@ def _open_db(campaign_dir, extra_dirs: dict | None = None) -> sqlite3.Connection
     if campaign_db.exists():
         _attach_ro(conn, campaign_db, "campaign")
         _create_campaign_views(conn, "campaign")
+    # Unconditional: `main` is either the real data.db or the empty in-memory stand-in above,
+    # and the view is simply not created when the store has no system_usage table.
+    _create_main_views(conn, "main")
     for alias, other in (extra_dirs or {}).items():
         other = Path(other)
         other_data = other / "_execution" / "data.db"
         if other_data.exists():
             _attach_ro(conn, other_data, alias)
+            _create_main_views(conn, alias, prefix=f"{alias}_")
         other_campaign = other / "campaign.db"
         if other_campaign.exists():
             _attach_ro(conn, other_campaign, f"{alias}_campaign")
@@ -455,6 +536,39 @@ _POSE_ORIENTATION = (
 )
 
 _TABLE_DESCRIPTIONS = {
+    ("temp", "run_validity_view"): (
+        "WAS THIS RUN A CLEAN OBSERVATION? One row per (run, container) saying whether the "
+        "kernel denied it CPU it asked for: config_name, run_id, container, periods, "
+        "throttled, throttled_usec, throttle_ratio, starved. Query unqualified: FROM "
+        "run_validity_view. Needs postprocessing (it reads system_usage). "
+        "Read this INSTEAD of computing deltas over system_usage yourself -- the counters "
+        "there are monotonic, so SUM is meaningless and a bare MAX includes whatever "
+        "happened before the trial window; this view already takes the in-window delta. "
+        "The container that decides validity is 'sut': it is the system under test, so a "
+        "run where it was starved cannot separate 'the stack failed' from 'the stack was "
+        "cut off mid-plan'. The simulator and scenario are expected to burst and be "
+        "clipped, and whether that cost anything is answered by runs.clock_map_* instead. "
+        "Clean functional runs: SELECT config_name, run_id FROM run_validity_view WHERE "
+        "container='sut' AND starved=0. "
+        "How bad, per config: SELECT config_name, MAX(throttle_ratio) FROM "
+        "run_validity_view WHERE container='sut' GROUP BY 1. "
+        "starved is a SCREEN, not a verdict: it marks runs where a resource explanation is "
+        "AVAILABLE for a failure, not runs that failed. Never drop a run because of it -- "
+        "report it alongside. Pair it with the stack's own health signals (control-loop "
+        "warnings in run_log, nav2_behaviors) to decide whether the clipping cost anything. "
+        "periods=0 means no CPU quota was enforced at all, which is not the same as a quota "
+        "that was never hit; throttle_ratio is NULL there rather than 0. "
+        "COVERAGE IS NOT UNIFORM, so check it before reading a clean result as campaign-wide. "
+        "A run appears here only if its node could answer; one that could not is ABSENT, not "
+        "starved=0. Absence tracks the NODE, and the node that cannot answer is not a random "
+        "one -- measured on this cluster, the single node running an older kernel was also the "
+        "largest, so it took the most pods and contributed none of the measurements. "
+        "What is missing: SELECT r.node_label, COUNT(*) FROM runs r LEFT JOIN "
+        "run_validity_view v ON v.config_name=r.config_name AND v.run_id=r.run_id AND "
+        "v.container='sut' WHERE v.run_id IS NULL GROUP BY 1. "
+        "Empty for a campaign recorded before the probe existed, or on a host exposing "
+        "neither cgroup layout -- which is silence, not a pass. "
+        "Join on (config_name, run_id)."),
     ("temp", "run_view"): (
         "START HERE for per-run and per-configuration questions. One row per run, joined: "
         "config_name, run_id, status, passed, duration_s, errors, failures, tests, "
@@ -757,7 +871,7 @@ def _list_campaign_views(conn: sqlite3.Connection) -> list[dict]:
         return views
     # Listing order: run_view before config_view, extra-campaign aliases after both.
     def _order(name: str) -> tuple:
-        for i, base in enumerate(_CAMPAIGN_VIEW_NAMES):
+        for i, base in enumerate(_CAMPAIGN_VIEW_NAMES + _MAIN_VIEW_NAMES):
             if name == base:
                 return (0, i, name)
             if name.endswith(f"_{base}"):
