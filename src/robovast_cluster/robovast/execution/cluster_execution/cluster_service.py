@@ -120,6 +120,11 @@ class ClusterService(LocalTransport):
             "--context" if kube_context
             else "ROBOVAST_KUBE_CONTEXT" if os.environ.get("ROBOVAST_KUBE_CONTEXT")
             else "active kubeconfig context")
+        # Built on first use rather than here: constructing it touches the Kubernetes client,
+        # and a service must come up to report that the cluster is unreachable rather than
+        # failing to start because it is.
+        self._admission = None
+        self._admission_lock = threading.Lock()
         self._config_name = cluster_config_name or os.environ.get(
             "ROBOVAST_CLUSTER_CONFIG_NAME")
         self._config_kwargs = cluster_config_kwargs
@@ -723,7 +728,47 @@ class ClusterService(LocalTransport):
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,
                                  kube_context=self.kube_context,
-                                 state=state)
+                                 state=state,
+                                 admission=self._admission_controller())
+
+    def _admission_controller(self):
+        """The process-wide admission queue, built once.
+
+        On the service because it is the one object with process lifetime that every campaign
+        thread reaches, and because the queue only orders correctly if there is exactly one of
+        it: a controller per campaign would order by whichever thread asked first, which is
+        the behaviour it exists to replace.
+
+        **Its own lock, never ``_usage_lock``.** That one is held across a resource reading
+        that talks to every kubelet in turn (see ``_DISK_BUDGET_SECONDS``), and sharing it
+        would let one unresponsive node block every campaign's job creation.
+
+        Returns ``None`` when the queue cannot be built -- an old kubeconfig, a missing
+        client -- so the lane falls back to creating jobs as it always did rather than
+        refusing to run. That is a deliberate exception to failing loudly: the fallback is the
+        previous behaviour, not a degraded result.
+        """
+        with self._admission_lock:
+            if self._admission is None:
+                try:
+                    from kubernetes import client
+
+                    from .cluster_capacity import ClusterBudgetProvider
+                    from .kube_client import load_kube_config
+                    from .node_admission import AdmissionController
+
+                    def _core():
+                        # Per call, not cached: the config load is idempotent and a client
+                        # held across a service's lifetime outlives token rotation.
+                        load_kube_config(self.kube_context)
+                        return client.CoreV1Api()
+
+                    self._admission = AdmissionController(ClusterBudgetProvider(_core))
+                except Exception:  # noqa: BLE001 - see docstring
+                    logger.warning("admission queue unavailable; jobs will be created "
+                                   "as before", exc_info=True)
+                    self._admission = False
+            return self._admission or None
 
     def _run_options(self, request):
         from robovast.execution.backends import RunOptions
