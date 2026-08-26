@@ -159,6 +159,7 @@ def test_the_refusal_happens_before_anything_is_installed(monkeypatch):
     from robovast.execution.cluster_execution import cluster_setup, service_deploy
 
     installed = []
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda *a, **k: installed.append("gpu-plugin"))
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",

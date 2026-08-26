@@ -70,6 +70,22 @@ CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "N
 #: the results store. One label for both because they are one decision: the disk meter
 #: reports the service's node, so splitting them would make the meter answer about a node
 #: that holds none of the data it is being read to reason about.
+#: This node's identity, as a **schedulable** selector.
+#:
+#: The value is :func:`~robovast.execution.data.collect_sysinfo.node_label` of the node's
+#: name -- the same sha256 prefix ``runs.node_label`` already records -- so the selector that
+#: placed a run and the sysinfo that describes the machine it ran on are provably the same
+#: node, with no mapping table to keep in step and no hostname in any manifest.
+#:
+#: ``kubernetes.io/hostname`` would already be a schedulable selector and is deliberately not
+#: used: keeping node names out of every sink is the point of the hash, and a nodeSelector is
+#: a sink -- it is recorded in the pod spec, which travels with the campaign.
+#:
+#: Unlike :data:`DATA_NODE_LABEL` this is **not exclusive**: every node carries its own
+#: distinct value, because it answers "which node is this" rather than "which node was
+#: chosen".
+NODE_ID_LABEL = "robovast.io/node-id"
+
 DATA_NODE_LABEL = "robovast.io/data-node"
 
 #: The node holding the shared build daemon's cache. Its own label because the cache is the
@@ -267,6 +283,49 @@ def ensure_labeled(core, node: str, label: str, dry_run: bool = False) -> list:
         core.patch_node(node, {"metadata": {"labels": {label: LABEL_VALUE}}})
     logger.info("node %s labelled %s=%s", node, label, LABEL_VALUE)
     return removed
+
+
+def ensure_node_id_labels(core, dry_run: bool = False) -> dict:
+    """Give every node its identity label; return ``{node_name: value}`` for those changed.
+
+    Idempotent by value, so a re-run of ``setup`` on an unchanged cluster patches nothing --
+    which is what makes it safe to call on every setup rather than only the first.
+
+    A node that joins later is simply unlabelled until the next setup. Callers must treat a
+    missing label as "cannot pin here" rather than as an error: refusing to admit anything to
+    a new node would turn adding capacity into an outage, and the pin is an optimisation
+    where the node identity is an accounting fact.
+    """
+    from robovast.execution.data.collect_sysinfo import node_label  # noqa: PLC0415
+
+    changed = {}
+    for node in core.list_node().items:
+        name = node.metadata.name
+        want = node_label(name)
+        if not want or (node.metadata.labels or {}).get(NODE_ID_LABEL) == want:
+            continue
+        logger.info("labelling node %s with its identity", name)
+        if not dry_run:
+            core.patch_node(name, {"metadata": {"labels": {NODE_ID_LABEL: want}}})
+        changed[name] = want
+    return changed
+
+
+def apply_node_id_labels(kube_context=None, dry_run: bool = False) -> dict:
+    """Load the kube config, then :func:`ensure_node_id_labels`. Returns what changed.
+
+    The client-building wrapper exists so ``setup`` calls ONE name, the same shape as
+    ``ensure_nvidia_device_plugin`` -- which is also what makes it stubbable. A version that
+    built ``CoreV1Api()`` inside ``setup_server`` dialled a real API server from every test
+    that stubs the rest of setup, turning a 40-second suite into eleven minutes of connection
+    timeouts.
+    """
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    return ensure_node_id_labels(client.CoreV1Api(), dry_run=dry_run)
 
 
 def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:

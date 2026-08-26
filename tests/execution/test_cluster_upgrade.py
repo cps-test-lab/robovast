@@ -162,6 +162,8 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
                         lambda *a, **k: "robovast.example.org")
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
@@ -192,6 +194,8 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", _unreachable)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",
@@ -222,6 +226,8 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", _must_not_be_called)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     monkeypatch.setattr(cluster_setup, "get_cluster_config",

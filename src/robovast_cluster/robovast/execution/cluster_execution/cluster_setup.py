@@ -24,6 +24,7 @@ from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
+from .node_placement import apply_node_id_labels
 from robovast.common.errors import CampaignConfigError
 
 logger = logging.getLogger(__name__)
@@ -433,6 +434,13 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     # RBAC for the in-cluster search controller pod (create/monitor jobs).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
+
+    # Every node's identity, as a schedulable selector, so admission can pin a job to a node
+    # without putting a hostname in the pod spec. Idempotent by value: an unchanged cluster
+    # patches nothing, which is what makes it safe on every setup rather than only the first.
+    labelled = apply_node_id_labels(kube_context=kube_context)
+    if labelled:
+        logger.info("Labelled %d node(s) with their identity", len(labelled))
 
     # Where this deployment's node-local state lives, decided ONCE, here, for every workload
     # that keeps something on a node -- and recorded as a node label so a later `cleanup` +
