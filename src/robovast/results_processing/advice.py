@@ -64,6 +64,12 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 #: a p95 over seven points is the maximum wearing a percentile's name.
 MIN_TICKS = 30
 
+#: Fraction of a container's CPU enforcement periods that may be throttled before it is worth
+#: reporting. Not zero: a handful of throttled periods during bring-up is normal and saying so
+#: every time would train a reader to ignore the finding. One percent of a two-minute run is
+#: about a second of withheld CPU, which is where it stops being noise.
+THROTTLE_WARN_RATIO = 0.01
+
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
 OVER_RESERVED_RATIO = 1.5
@@ -146,6 +152,31 @@ SYSTEM_MEM_SQL = """
     SELECT container, MAX(memory_peak) AS mem_peak
     FROM system_usage WHERE in_window = 1 AND memory_peak IS NOT NULL
     GROUP BY container
+"""
+
+#: How much of each container's CPU budget the kernel actually withheld, per run.
+#:
+#: The per-run grouping is load-bearing and easy to get wrong: these are monotonic counters on
+#: a cgroup, and every run is a fresh container, so a delta taken across runs is not a number
+#: at all. Take it inside the run, then pool.
+#:
+#: ``nr_periods`` is the denominator because a throttle count means nothing without it -- two
+#: throttled periods out of two thousand is noise from bring-up, and the same two out of twenty
+#: is a container being held back continuously.
+THROTTLE_SQL = """
+    WITH per_run AS (
+        SELECT config_name, run_id, container,
+               MAX(nr_periods) - MIN(nr_periods) AS periods,
+               MAX(nr_throttled) - MIN(nr_throttled) AS throttled
+        FROM system_usage
+        WHERE in_window = 1 AND nr_periods IS NOT NULL
+        GROUP BY config_name, run_id, container)
+    SELECT container,
+           SUM(periods) AS periods,
+           SUM(throttled) AS throttled,
+           COUNT(*) AS runs,
+           SUM(CASE WHEN throttled > 0 THEN 1 ELSE 0 END) AS runs_throttled
+    FROM per_run GROUP BY container
 """
 
 #: The containers the campaign declared, and what it reserved for each. The bare container
@@ -527,6 +558,91 @@ _SHM_BASIS = (f"Sized on the PEAK plus {round((SHM_HEADROOM - 1) * 100)}% headro
               "allocates its segments as it starts, and a SIGBUS there loses the run too.")
 
 
+def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+    """Whether the system under test was denied CPU it asked for. Empty when it was not.
+
+    **A screen, not a verdict, and the valuable half is the silence.** Throttling says the
+    allocation was *binding*; it does not say the stack misbehaved. A planner with slack can
+    lose spikes and still meet every deadline that matters. So:
+
+    * **Nothing reported** is a strong negative: no run in this campaign was starved, and a
+      failure can be attributed to the stack rather than to the cluster. That is the result
+      worth having, and it is why this stays quiet in the normal case.
+    * **Something reported** is inconclusive alone. It marks the runs where a resource
+      explanation is *available*, and hands the question to the stack's own health signals --
+      controller frequency, missed control loops, planning failures -- which are what actually
+      say whether it worked. This module cannot know those; they are per-stack.
+
+    **Only the SUT is reported.** A campaign asks whether the stack under test behaves as
+    expected, and nothing else in the results separates "nav2 failed" from "nav2 was cut off
+    mid-plan" -- the run simply fails, plausibly, and is counted against the software. Measured
+    on 2026-08-26: a nav2 container capped at 1.75 cores sat at its ceiling for 44% of ticks
+    and lost 11 runs of 50 to late transforms, while every other signal, realtime factor
+    included, looked healthy.
+
+    The simulator and scenario are deliberately NOT reported here even when throttled harder.
+    They are not under test, they are expected to burst and be clipped, and the question of
+    whether their squeezing hurt is already answered by the realtime factor recorded per run.
+    Reporting them would train a reader to skim past the one line that matters.
+
+    Args:
+        throttle_rows: rows of :data:`THROTTLE_SQL`. Empty for a campaign recorded before the
+            probe existed, or on a host without cgroup v2 -- which is silence, not a pass.
+        declared_rows: rows of :data:`DECLARED_SQL`, to name the container as its author does.
+    """
+    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415 - avoids a config import
+
+    for row in throttle_rows or []:
+        if row.get("container") != SUT_CONTAINER:
+            continue
+        periods = int(row.get("periods") or 0)
+        throttled = int(row.get("throttled") or 0)
+        if periods <= 0 or throttled <= 0:
+            return []
+        ratio = throttled / periods
+        if ratio < THROTTLE_WARN_RATIO:
+            return []
+        runs = int(row.get("runs") or 0)
+        runs_throttled = int(row.get("runs_throttled") or 0)
+        # No name resolution here, unlike resource_advice: the SUT is measured under the same
+        # name it is declared with. Only the MAIN container has the mismatch that needs
+        # translating (declared as its own name, measured as the role name 'robovast').
+        _, declared_cpu, _, _ = _declared(declared_rows)
+        label = SUT_CONTAINER
+        reserved = declared_cpu.get(label)
+        return [{
+            "kind": "sut_throttled",
+            "severity": "warning",
+            "title": (f"The system under test was denied CPU in {ratio * 100:.1f}% of "
+                      f"enforcement periods"),
+            "detail": (
+                f"{runs_throttled} of {runs} run(s) had their '{label}' container held at its "
+                f"CPU limit"
+                + (f" ({format_cores(reserved)})" if reserved is not None else "")
+                + ". This does not by itself mean the stack misbehaved -- it means a "
+                "resource explanation is available for anything that went wrong in those "
+                "runs, and nothing else in the results separates the two. Check the stack's "
+                "own health signals there (controller frequency, missed control loops, "
+                "planning failures); if they are clean, the throttling cost nothing and the "
+                "allocation can stay. If they are not, raise "
+                f"execution.containers.{label}.resources.cpu -- sizing on sustained use is not "
+                "enough, because the limit is a ceiling and a planner's peaks are the work. "
+                "Which runs: SELECT config_name, "
+                "run_id FROM system_usage WHERE container = '" + SUT_CONTAINER + "' AND "
+                "in_window = 1 GROUP BY 1, 2 HAVING MAX(nr_throttled) > MIN(nr_throttled)."),
+            "evidence": {
+                "container": label,
+                "throttled_periods": throttled,
+                "total_periods": periods,
+                "throttled_fraction": round(ratio, 4),
+                "runs_affected": runs_throttled,
+                "runs": runs,
+                **({"declared_cpu": format_cores(reserved)} if reserved is not None else {}),
+            },
+        }]
+    return []
+
+
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
@@ -538,5 +654,10 @@ def campaign_advice(query_rows) -> dict[str, Any]:
         system_mem = query_rows(SYSTEM_MEM_SQL)
     except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
         system_mem = []
-    return {"advice": (resource_advice(query_rows(USAGE_SQL), declared, system_mem)
+    try:
+        throttle = query_rows(THROTTLE_SQL)
+    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
+        throttle = []
+    return {"advice": (throttle_advice(throttle, declared)
+                       + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}
