@@ -65,10 +65,34 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 MIN_TICKS = 30
 
 #: Fraction of a container's CPU enforcement periods that may be throttled before it is worth
-#: reporting. Not zero: a handful of throttled periods during bring-up is normal and saying so
-#: every time would train a reader to ignore the finding. One percent of a two-minute run is
-#: about a second of withheld CPU, which is where it stops being noise.
-THROTTLE_WARN_RATIO = 0.01
+#: reporting. Not zero: a handful of throttled periods during bring-up is normal, and saying so
+#: every time would train a reader to ignore the finding.
+#:
+#: **Calibrated, not guessed** -- an earlier 1% was chosen by intuition and would have stayed
+#: silent on a configuration that lost 6 runs of 50. A CFS period is 100 ms and a nav2 control
+#: loop runs at 20 Hz, so ONE throttled period is two missed deadlines: the scale that matters
+#: is far below a percent. Measured across a five-point sweep of the same campaign, varying
+#: only the SUT's limit:
+#:
+#: ===============  ======  ========  =======
+#: throttled         misses  failures  verdict
+#: ===============  ======  ========  =======
+#: 0.018%                1         0  fine
+#: 0.385%                0         1  fine
+#: 0.580%                5         2  marginal
+#: 0.629%                2         0  marginal
+#: 0.790%               58         6  broken
+#: ===============  ======  ========  =======
+#:
+#: Note it is **not monotone**: throttling varies 1.4x across that range while the stack's own
+#: miss count varies 12x, and 0.580% did more damage than 0.629%. This counter is a blunt
+#: screen, not a predictor -- which is exactly why the finding it raises says "inconclusive,
+#: go and look at the stack's own health". 0.5% sits below the cliff and above the two
+#: configurations that were demonstrably fine.
+#:
+#: Calibrated for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
+#: more, so this is a default rather than a law.
+THROTTLE_WARN_RATIO = 0.005
 
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
