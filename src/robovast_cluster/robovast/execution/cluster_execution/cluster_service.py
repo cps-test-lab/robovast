@@ -762,7 +762,12 @@ class ClusterService(LocalTransport):
                         load_kube_config(self.kube_context)
                         return client.CoreV1Api()
 
-                    self._admission = AdmissionController(ClusterBudgetProvider(_core))
+                    # The cluster config comes along so an autoscaling deployment is sized
+                    # by what it can become rather than by the nodes it currently has --
+                    # see ClusterBudgetProvider._declared_total.
+                    self._admission = AdmissionController(ClusterBudgetProvider(
+                        _core, cluster_config=self._cluster_config(),
+                        kube_context=self.kube_context))
                 except Exception:  # noqa: BLE001 - see docstring
                     logger.warning("admission queue unavailable; jobs will be created "
                                    "as before", exc_info=True)
