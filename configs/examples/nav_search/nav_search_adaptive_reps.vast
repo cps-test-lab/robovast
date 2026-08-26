@@ -85,7 +85,7 @@ execution:
       image: family:robovast
       system_packages:
       - ros-jazzy-nav2-minimal-tb4-description
-      resources: {cpu: 1.75, memory: 640Mi}
+      resources: {cpu: 3, memory: 640Mi}
     scenario:
       resources: {cpu: 1, memory: 512Mi}
   mode: ros2
