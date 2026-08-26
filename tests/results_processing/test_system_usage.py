@@ -42,8 +42,61 @@ def test_a_probe_that_cannot_answer_contributes_no_columns_rather_than_zeros(mon
     """A runtime that cannot report and a container that was never throttled are different
     facts; zeros would make the first indistinguishable from the second in every aggregate."""
     monkeypatch.setattr(mon, "CPU_STAT_PATH", "/nonexistent/cpu.stat")
+    monkeypatch.setattr(mon, "CPU_STAT_PATH_V1", "/nonexistent/cpu/cpu.stat")
     assert mon.cpu_stat_probe() == {}
     assert mon.start_probes([mon.cpu_stat_probe]) == []
+
+
+def _cpu_stat(tmp_path, monkeypatch, *, v2=None, v1=None):
+    """Point the probe at written-out cpu.stat files; a version omitted is absent."""
+    for name, text, attr in (("v2.stat", v2, "CPU_STAT_PATH"),
+                             ("v1.stat", v1, "CPU_STAT_PATH_V1")):
+        if text is None:
+            monkeypatch.setattr(mon, attr, str(tmp_path / f"missing-{name}"))
+        else:
+            f = tmp_path / name
+            f.write_text(text, encoding="utf-8")
+            monkeypatch.setattr(mon, attr, str(f))
+
+
+def test_cgroup_v2_is_read_as_it_comes(tmp_path, monkeypatch):
+    _cpu_stat(tmp_path, monkeypatch,
+              v2="usage_usec 900\nnr_periods 1000\nnr_throttled 7\nthrottled_usec 4200\n")
+    assert mon.cpu_stat_probe() == {"nr_periods": 1000, "nr_throttled": 7,
+                                    "throttled_usec": 4200}
+
+
+def test_cgroup_v1_is_read_too_and_converted_to_the_same_unit(tmp_path, monkeypatch):
+    """v1 spells it ``throttled_time`` in NANOseconds; v2 uses ``throttled_usec``.
+
+    Converted on read so one column cannot mean nanoseconds on one node and microseconds on
+    another. That would be a silent 1000x error in exactly the comparison this data exists
+    for -- per-node -- where a missing column would at least have been visible.
+    """
+    _cpu_stat(tmp_path, monkeypatch,
+              v1="nr_periods 1000\nnr_throttled 7\nthrottled_time 4200000\n")
+    assert mon.cpu_stat_probe() == {"nr_periods": 1000, "nr_throttled": 7,
+                                    "throttled_usec": 4200}
+
+
+def test_v2_wins_when_both_are_present(tmp_path, monkeypatch):
+    """A host running v2 may still carry a v1 tree; the one the kernel enforces against is v2,
+    and reading both would double-report."""
+    _cpu_stat(tmp_path, monkeypatch,
+              v2="nr_periods 10\nnr_throttled 1\nthrottled_usec 5\n",
+              v1="nr_periods 999\nnr_throttled 99\nthrottled_time 999000\n")
+    assert mon.cpu_stat_probe()["nr_periods"] == 10
+
+
+def test_an_unrecognisable_v2_file_falls_through_to_v1(tmp_path, monkeypatch):
+    """The file existing is not the same as it answering. A cgroup v2 tree mounted without
+    CPU accounting has a cpu.stat with no nr_periods in it, and reporting a half-filled row
+    for that would hide a node that v1 could have measured."""
+    _cpu_stat(tmp_path, monkeypatch,
+              v2="usage_usec 900\n",
+              v1="nr_periods 1000\nnr_throttled 7\nthrottled_time 4200000\n")
+    assert mon.cpu_stat_probe() == {"nr_periods": 1000, "nr_throttled": 7,
+                                    "throttled_usec": 4200}
 
 
 def test_availability_is_decided_once_so_the_header_cannot_go_ragged():
