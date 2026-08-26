@@ -361,8 +361,13 @@ class BatchJobRunner:
     @classmethod
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
-                  built_images=None, image_digest_cache=None):
+                  built_images=None, image_digest_cache=None, admission=None):
         self = cls()
+        # The process-wide admission queue, or None. None means "create every job at once",
+        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
+        # and what the cluster lane did before the queue existed -- so this parameter arriving
+        # changes nothing until a caller actually passes one.
+        self.admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
         # Used only for resolve_resources() (per-cluster resource lists); the
@@ -1871,7 +1876,11 @@ class KubernetesBackend(ExecutionBackend):
     """
 
     def __init__(self, *, cluster_config, namespace="default", kube_context=None,
-                 log_tree=False, state=None):
+                 log_tree=False, state=None, admission=None):
+        # Owned by the service, not built here: one queue serves every campaign in the
+        # process, and a backend built per campaign would give each its own -- which is
+        # exactly the per-caller arbitration the queue exists to replace.
+        self._admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
         self.kube_context = kube_context
@@ -1965,6 +1974,7 @@ class KubernetesBackend(ExecutionBackend):
             state=self._state,
             built_images=options.images,
             image_digest_cache=self._image_digest_cache,
+            admission=self._admission,
         )
         runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
 
