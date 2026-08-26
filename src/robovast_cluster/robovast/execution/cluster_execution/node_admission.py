@@ -220,6 +220,8 @@ class WorkItem:
     def may_use(self, node_id) -> bool:
         if self.pin is not None:
             return node_id == self.pin
+        # An unlabelled node is allowed: it cannot be measured, so there is nothing for the
+        # gate to wait for, and refusing it would make an unlabelled cluster unusable.
         return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
@@ -340,14 +342,19 @@ class AdmissionController:
                 need = item.sizing
                 # Emptiest-first, so a batch spreads rather than filling one machine and then
                 # discovering the rest of the cluster cannot take the shape that is left.
-                # A node with no identity label can hold work but cannot be pinned to, so it
-                # is not a candidate -- its capacity still counts, via the reading.
                 #
                 # The fit is tested against what the job would need ON THAT NODE, which is
                 # what makes per-node sizing an admission fact rather than a manifest detail:
                 # a node calibrated smaller genuinely holds more of them.
+                #
+                # **An unlabelled node is a candidate.** It cannot be *pinned* to -- there is
+                # no selector for it -- but it can hold work, and excluding it was a hang
+                # waiting to happen: a cluster whose nodes predate the identity label has NO
+                # candidates at all, so nothing is ever admitted and every campaign waits
+                # forever reporting "queued for capacity" on an idle cluster. Observed exactly
+                # that way. A missing label now costs the pin, never the run.
                 fits = [n for n in by_id.values()
-                        if n.node_id and item.may_use(n.node_id)
+                        if item.may_use(n.node_id)
                         and n.holds(item.sizing_on(n.node_id))]
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
@@ -360,8 +367,11 @@ class AdmissionController:
                         f"that free (most free: {biggest:g} cpu)")
                     continue
                 try:
-                    # None means unpinned: only reachable on a growable cluster, where the
-                    # room is real but not on any node yet.
+                    # ``None`` means create unpinned, and there are two ways to get here: a
+                    # growable cluster whose room is not on any node yet, and a node that has
+                    # no identity label to select it by. Both are "we know there is room, we
+                    # cannot name where" -- and in both the scheduler places it, which is
+                    # exactly what happened before per-node admission existed.
                     item.create(chosen.node_id if chosen else None)
                 except Exception:
                     # The caller owns the failure; leave the item PLANNED so a later drain can

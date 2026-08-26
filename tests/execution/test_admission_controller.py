@@ -257,18 +257,35 @@ def test_the_ledger_charges_the_node_the_job_was_granted_on():
     assert c.drain() == 1 and len(made) == 1
 
 
-def test_a_node_without_an_identity_label_is_counted_but_not_pinned_to():
-    """A node that joined since the last setup. Its pods and capacity are real, so it must be
-    counted; but with no label there is no selector, and pinning to it is impossible. Refusing
-    to admit anything at all while it is the emptiest node would turn adding capacity into an
-    outage, so the job goes to a node that CAN be named."""
+def test_a_node_without_an_identity_label_takes_work_unpinned():
+    """A node that joined since the last setup, or a whole cluster upgraded without re-running
+    it. Its pods and capacity are real, so it is counted AND usable -- it simply cannot be
+    named in a selector, so the job is created unpinned and the scheduler places it.
+
+    This was the other way round once, and it was a hang waiting to happen: excluding
+    unlabelled nodes left a cluster whose nodes predate the label with NO candidates at all,
+    so nothing was ever admitted and every campaign waited forever reporting "queued for
+    capacity" on an idle cluster. Observed exactly that way on a real deployment. A missing
+    label costs the pin, never the run.
+    """
     p = FakeProvider(per_node=[(None, 100.0, 10240 * MiB, 0), ("named", 5.0, 10240 * MiB, 0)])
     c = _controller(p)
     seen = []
     c.submit("a", [("a-0", JobSizing(4.0, MiB), lambda n=None: seen.append(n))],
              started_at=0.0)
     assert c.drain() == 1
-    assert seen == ["named"], "the unlabelled node is emptiest but cannot be selected"
+    assert seen == [None], "placed on the emptiest node, unpinned because it has no name"
+
+
+def test_a_cluster_with_no_labels_at_all_still_runs():
+    """The regression that took a live deployment down to zero throughput: upgrading the
+    service does not re-run setup, so no node had the identity label, and per-node admission
+    silently had nothing it was willing to place on."""
+    p = FakeProvider(per_node=[(None, 96.0, 10240 * MiB, 0), (None, 32.0, 10240 * MiB, 0)])
+    c = _controller(p)
+    made = _items(c, "a", 5, cpu=4.0)
+    assert c.drain() == 5, "an unlabelled cluster must still admit work"
+    assert len(made) == 5
 
 
 def test_a_growable_cluster_may_create_unpinned_when_no_node_fits():
