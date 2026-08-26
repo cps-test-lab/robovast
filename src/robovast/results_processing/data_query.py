@@ -670,6 +670,23 @@ _TABLE_DESCRIPTIONS = {
         "across containers — MAX, never SUM. For the run's high-water mark read "
         "runs.shm_peak_bytes instead; these columns are for seeing when it grew. "
         "Join on (config_name, run_id)."),
+    ("main", "system_usage"): (
+        "What the CONTAINER as a whole reported, one row per container per ~1s tick — the "
+        "sibling of resource_usage, which is per PROCESS. Columns beyond the four keys are "
+        "whatever the sampler could read on that runtime, so a column may be absent "
+        "entirely rather than empty. "
+        "The one to know: nr_throttled / nr_periods / throttled_usec, cgroup v2's record of "
+        "the kernel STOPPING the container because it hit its CPU quota. This is the only "
+        "place a starved run says so — throttling does not fail a run, it just makes it "
+        "slower, so its results quietly become partly a measurement of the allocation "
+        "rather than of the system under test. "
+        "They are MONOTONIC COUNTERS, so read a delta (MAX-MIN) or the last value, never a "
+        "SUM. nr_periods=0 means no CPU quota was enforced at all, which is different from "
+        "a quota that was never hit — read the ratio nr_throttled/nr_periods, not the raw "
+        "count. Was this run starved: SELECT container, MAX(nr_throttled)-MIN(nr_throttled) "
+        "FROM system_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1. "
+        "timestamp, wall_ts, in_window and container mean exactly what they do in "
+        "resource_usage. Join on (config_name, run_id)."),
 }
 
 _DESCRIBE_NOTE = (

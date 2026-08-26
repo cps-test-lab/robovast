@@ -70,15 +70,20 @@ from robovast.common.log_tail import MAIN_CONTAINER
 
 from . import clock_map
 
-#: ``system.log`` / ``resource_usage_main.csv`` — the main container's artifacts are named
-#: for their role, not for the container, and the two producers disagree about the word
-#: (``main`` vs nothing). Both resolve to :data:`MAIN_CONTAINER` so that every derived table
-#: names the container the same way and can be joined on it.
-_MAIN_ARTIFACTS = ("system.log", "resource_usage_main.csv")
+#: ``system.log`` / ``resource_usage_main.csv`` / ``system_usage_main.csv`` — the main
+#: container's artifacts are named for their role, not for the container, and the producers
+#: disagree about the word (``main`` vs nothing). All resolve to :data:`MAIN_CONTAINER` so that
+#: every derived table names the container the same way and can be joined on it.
+_MAIN_ARTIFACTS = ("system.log", "resource_usage_main.csv", "system_usage_main.csv")
 
-#: ``system_<container>.log`` and ``resource_usage_<container>.csv``.
+#: ``system_<container>.log``, ``resource_usage_<container>.csv`` and its per-container sibling
+#: ``system_usage_<container>.csv``. The two CSVs are alternatives rather than one pattern with
+#: an optional prefix: ``system_usage_`` has to be tried before the bare ``system_`` log branch
+#: would ever see it, and spelling them out is what keeps that ordering visible.
 _SIDECAR_ARTIFACT_RE = re.compile(
-    r"^(?:system_(?P<log>.+)\.log|resource_usage_(?P<csv>.+)\.csv)$")
+    r"^(?:system_usage_(?P<sys>.+)\.csv"
+    r"|resource_usage_(?P<csv>.+)\.csv"
+    r"|system_(?P<log>.+)\.log)$")
 
 
 def container_of(filename: str) -> Optional[str]:
@@ -97,7 +102,7 @@ def container_of(filename: str) -> Optional[str]:
     m = _SIDECAR_ARTIFACT_RE.match(base)
     if not m:
         return None
-    return m.group("log") or m.group("csv") or None
+    return m.group("sys") or m.group("csv") or m.group("log") or None
 
 
 def write_csv(path: str, fieldnames: Sequence[str], rows: Sequence[dict]) -> None:
