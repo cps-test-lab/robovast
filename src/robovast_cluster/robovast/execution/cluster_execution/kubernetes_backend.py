@@ -257,7 +257,7 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     return manifest
 
 
-def calibrated_resources(declared: dict, container_name: str, node_figures) -> dict:
+def calibrated_resources(declared: dict, container_name: str, node_figures, roles=()) -> dict:
     """*declared* re-sized for one node, or unchanged when that node is not calibrated yet.
 
     **The statistic depends on the container's ROLE, and this is where the roles live.**
@@ -279,7 +279,14 @@ def calibrated_resources(declared: dict, container_name: str, node_figures) -> d
     if not figures:
         return declared
     out = dict(declared)
-    if container_name == SUT_CONTAINER:
+    # The declared ROLE decides, not the container's name. For the three known roles the two
+    # are the same string today, because the role name is the key in ``execution.containers``
+    # -- but that is a coincidence of the schema rather than a fact this rule should rest on,
+    # and it is already not true in one real case: a stack that bundles its own simulator
+    # serves the simulation role from its sut container, which must still be sized on peak
+    # because it is the thing under test.
+    is_sut = SUT_CONTAINER in (roles or ()) or container_name == SUT_CONTAINER
+    if is_sut:
         cpu = figures.get("peak")
         if cpu:
             out["cpu"] = cpu
@@ -679,7 +686,8 @@ class BatchJobRunner:
                 declared['memory_limit'] = limits['memory']
             if declared:
                 stamp_resources(spec['containers'][0],
-                                calibrated_resources(declared, main_name, node_figures))
+                                calibrated_resources(declared, main_name, node_figures,
+                                                     roles=getattr(main_role, "roles", ())))
 
         # Tolerate the taint a campaign node may carry, on the pod itself. Kueue's
         # ResourceFlavor used to inject this at admission, so nothing in the manifest needed
@@ -821,7 +829,8 @@ class BatchJobRunner:
         for sc in self.plan.sidecars:
             sc_name = sc.name
             sc_resources = calibrated_resources(
-                resolve_resources(sc.resources, self.kube_context), sc_name, node_figures)
+                resolve_resources(sc.resources, self.kube_context), sc_name, node_figures,
+                roles=getattr(sc, "roles", ()))
             secondary_env = [
                 {'name': 'CONTAINER_NAME', 'value': sc_name},
                 {'name': 'SCENARIO_FILE', 'value': scenario_file_name},
