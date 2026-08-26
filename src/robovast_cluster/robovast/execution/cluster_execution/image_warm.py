@@ -47,12 +47,11 @@ which is the only way Kubernetes expresses "on every node". It gives up the self
 below in exchange: a DaemonSet is meant to persist, so it is removed explicitly at teardown
 (:func:`delete_warm_daemonset`) rather than by a TTL.
 
-Deliberately **not** submitted to Kueue: a prewarm admitted behind a full sweep warms the
-node after the thing that needed it, which is worse than not warming at all. That follows
-the build Job, which carries no queue label either; campaign and postprocessing Jobs are
-the ones that do. Its footprint is :data:`WARM_CPU_REQUEST` / :data:`WARM_MEMORY_REQUEST`
-for at most the deadline, and it creates no Workload object, so Kueue's quotas are
-untouched.
+Deliberately **not** put through admission: a prewarm queued behind a full sweep warms the
+node after the thing that needed it, which is worse than not warming at all. A DaemonSet is
+also the wrong shape for a queue that admits one pod at a time against free capacity. Its
+footprint is :data:`WARM_CPU_REQUEST` / :data:`WARM_MEMORY_REQUEST` for at most the deadline,
+and admission counts it like any other pod once it is bound, so it is never double-counted.
 """
 
 import hashlib

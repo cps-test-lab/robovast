@@ -55,9 +55,11 @@ def test_a_blocked_job_is_counted_not_a_key_error():
     assert counts["camp-a"]["pending"] == 0
 
 
-def test_a_kueue_suspended_job_is_counted_too():
-    counts = _counts([(_job("j1", "camp-a", suspend=True), "waiting",
-                       "waiting for Kueue admission")])
+def test_a_waiting_job_is_counted_too():
+    """`waiting` reaches the counter like any other phase. Its *source* changed -- a
+    Kueue-suspended Job was a real object, a job queued for capacity now has none and is
+    contributed by the admission controller -- but the counter must handle it either way."""
+    counts = _counts([(_job("j1", "camp-a"), "waiting", "queued for cluster capacity")])
     assert counts["camp-a"]["waiting"] == 1
 
 

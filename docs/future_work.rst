@@ -269,19 +269,29 @@ go with it.
 
 .. _future-node-types:
 
-Node types: per-pool quota, and how a campaign should express what a run needs
-------------------------------------------------------------------------------
+Node types: per-pool capacity, and how a campaign should express what a run needs
+---------------------------------------------------------------------------------
 
-**Motivation.** A cluster is modeled as one homogeneous pool. ``apply_kueue_queues``
-renders a single ``default-flavor`` and a single ``ClusterQueue`` whose ``nominalQuota``
-comes from :func:`get_cluster_allocatable_resources` — the **sum** of every node's
-allocatable CPU and memory. On nodes of one shape that is correct. On a mixed cluster it is
-arithmetic fiction: two 48-core nodes plus three 8-core nodes report 120 cores, so a
-campaign reserving 8 cores per run has 15 runs admitted, of which only 11 fit the large
-nodes, while an 8-core request does not fit an 8-core node at all once ``kubelet`` and the
-DaemonSets have taken their cut. The remainder sit ``Pending`` and read as a scheduler
-fault. ``execution.kubernetes.jobs.node_labels`` is the only lever today, and it is
-all-or-nothing: it confines the whole cluster's jobs to one pool.
+.. note::
+
+   **Partly overtaken by events, and the Kueue half is obsolete.** Kueue has been retired;
+   admission is RoboVAST's own (see :ref:`future-own-scheduler` below, now implemented), and
+   ``execution.kubernetes.jobs.node_labels`` is refused rather than applied — its only
+   implementation was the ResourceFlavor this section proposed extending.
+
+   What survives is the **question**, and it is unchanged: a cluster-wide capacity figure
+   cannot see that a pod runs on one node, so a mixed cluster still produces the occasional
+   unplaceable pod. The answer is now per-node budgets in the admission controller rather
+   than per-flavor quota in Kueue. The measurement below stands and is what any such work
+   should be judged against.
+
+**Motivation.** A cluster is modeled as one homogeneous pool: capacity is the **sum** of
+every node's allocatable CPU and memory. On nodes of one shape that is correct. On a mixed
+cluster it is arithmetic fiction: two 48-core nodes plus three 8-core nodes report 120
+cores, so a campaign reserving 8 cores per run has 15 runs admitted, of which only 11 fit
+the large nodes, while an 8-core request does not fit an 8-core node at all once
+``kubelet`` and the DaemonSets have taken their cut. The remainder sit ``Pending`` and read
+as a scheduler fault.
 
 **The part that is clear.** Declaring the pools in the config the operator names with
 ``vast -V <file> exec cluster setup`` — one ``ResourceFlavor`` per node type, each with its
@@ -375,6 +385,20 @@ and the queue does not know that.
 Admission in RoboVAST rather than in Kueue
 -------------------------------------------
 
+.. note::
+
+   **Implemented.** RoboVAST owns admission: jobs are created one at a time as capacity
+   appears, ordered across concurrent campaigns by campaign start time, and Kueue has been
+   removed entirely — no Helm chart, no CRDs, no queue objects. See the *Job Queueing*
+   section of :doc:`cluster_execution`.
+
+   Two things this section treated as open were settled by measurement against the live
+   cluster, and both are worth keeping because they closed off alternatives: a suspended
+   Job's ``spec.template`` is **immutable**, and ``podSetUpdates`` carries no ``resources``
+   — so per-node sizing could never have been done by mutating an admitted job, which is
+   what forced create-on-admit. The 1.6x cost spread below is unaffected by the change and
+   is still the motivation for per-node budgets, which are **not** implemented.
+
 **Motivation.** :ref:`future-node-types` argues that one flat quota over unlike nodes is
 arithmetic fiction, and asks how a campaign should express what a run needs. Measurement has
 since answered part of that and recast the rest: on a mixed cluster the same trial costs
@@ -425,6 +449,14 @@ together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 
 Within-node spread was tight (eleven runs on one node spanned 1.13-1.20 cores for the system
 under test), which argues the difference is the machine rather than contention from an uneven
 share of the batch -- though equal-concurrency runs would settle that properly.
+
+.. note::
+
+   **Superseded.** The staged recommendation below was written while Kueue was still the
+   admission mechanism, and its second step is no longer available. Right-sizing was done
+   and is what the numbers here describe; multi-flavor Kueue was not, and cannot be. The
+   equivalent step now is per-node budgets inside the admission controller. Kept because
+   the reasoning about *why* right-sizing comes first survived the change intact.
 
 **Do the cheap thing first: right-size, then try multi-flavor Kueue.** Two steps come before
 any new component, and between them they may be the whole answer.

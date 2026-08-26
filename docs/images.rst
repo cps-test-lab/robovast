@@ -226,8 +226,8 @@ Moving a cluster's images
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
 configuration and ingress host *from the cluster*, then touches only the Deployment's
 image, RBAC and the credential Secrets, and always restarts the pod — which is the only way
-``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the Kueue install, the
-object store and the registry storage, and it takes its options as arguments, so a re-run
+``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the GPU device-plugin
+install, the object store and the registry storage, and it takes its options as arguments, so a re-run
 without the original flags re-provisions with different ones.
 
 

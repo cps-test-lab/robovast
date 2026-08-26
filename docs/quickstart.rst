@@ -100,8 +100,8 @@ Operator: deploy it for a team
    vast doctor            # add --flavor gcp for a GKE cluster
 
 Reads only, so it is safe at any time. It checks Python, ``kubectl``, ``helm``, the
-kubeconfig, whether you may create ClusterRoles (setup does), and whether a node is large
-enough for Kueue's controller. Every failure names its remedy.
+kubeconfig, whether you may create ClusterRoles (setup does), and whether the nodes report
+any capacity at all. Every failure names its remedy.
 
 **2. Pick a hostname and a certificate.**
 

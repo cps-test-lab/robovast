@@ -160,9 +160,7 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(service_deploy, "published_host",
                         lambda *a, **k: "robovast.example.org")
-    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues",
-                 "ensure_nvidia_device_plugin"):
+    for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
@@ -192,9 +190,7 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(service_deploy, "published_host", _unreachable)
-    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues",
-                 "ensure_nvidia_device_plugin"):
+    for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
@@ -224,9 +220,7 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
         raise AssertionError("published_host was called despite an explicit ingress_host")
 
     monkeypatch.setattr(service_deploy, "published_host", _must_not_be_called)
-    for name in ("install_kueue_helm", "verify_kueue_admission_ready",
-                 "apply_controller_rbac", "apply_kueue_queues",
-                 "ensure_nvidia_device_plugin"):
+    for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
@@ -240,24 +234,24 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     assert deploy.call_args.kwargs.get("registry_host") == "given.example.org"
 
 
-def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
-    """`upgrade` is the command operators use to move versions, and the ClusterQueue's
-    covered resources are coupled to what the deployed backend requests. Skipping the
-    reconcile meant a build that started asking for a new resource kind could be rolled
-    onto a queue that does not cover it -- which Kueue answers by suspending every job
-    forever rather than failing, so the campaign hangs. Reached through the command that
-    looks safe, which is what makes it worth a test.
+def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
+    """`upgrade` is the command operators use to move versions, and the RBAC a deployed
+    backend needs is coupled to what that version does. It is also the half of an upgrade
+    the RUNNING pod picks up with no roll, which is what makes `--no-restart` possible --
+    so skipping it would leave a service missing a permission it never regains without a
+    full redeploy. Reached through the command that looks safe, which makes it worth a test.
+
+    This used to reconcile the Kueue queues as well; there are none to reconcile now.
     """
     from unittest import mock
 
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution import cli as cluster_cli
-    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue
+    from robovast.execution.cluster_execution import cluster_setup
 
-    apply_queues = mock.Mock()
-    monkeypatch.setattr(kubernetes_kueue, "apply_kueue_queues", apply_queues)
-    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
+    apply_rbac = mock.Mock()
+    monkeypatch.setattr(cluster_setup, "apply_controller_rbac", apply_rbac)
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: ("rke2", {"namespace": "default"}))
     monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: "")
@@ -274,8 +268,8 @@ def test_upgrade_reconciles_the_kueue_queues(monkeypatch):
     result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default"])
 
     assert result.exit_code == 0, result.output
-    assert apply_queues.called, "upgrade left the Kueue queues unreconciled"
-    assert apply_queues.call_args.kwargs["namespace"] == "default"
+    assert apply_rbac.called, "upgrade left the controller RBAC unreconciled"
+    assert apply_rbac.call_args.kwargs["namespace"] == "default"
 
 
 def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
@@ -294,10 +288,9 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     from click.testing import CliRunner
 
     from robovast.execution.cluster_execution import cli as cluster_cli
-    from robovast.execution.cluster_execution import cluster_setup, kubernetes_kueue
+    from robovast.execution.cluster_execution import cluster_setup
 
     deploy = mock.Mock()
-    monkeypatch.setattr(kubernetes_kueue, "apply_kueue_queues", mock.Mock())
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: ("rke2", {"namespace": "default"}))

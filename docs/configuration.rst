@@ -1101,22 +1101,21 @@ Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
 kubernetes.jobs.node_labels
 ''''''''''''''''''''''''''''
 
-**Type:** Dictionary (label key-value pairs)
+**Removed.** ``vast execution cluster setup`` now **fails** when a config sets this,
+rather than accepting it and doing nothing.
 
-**Required:** No
+It was implemented by the ``nodeLabels`` of Kueue's ``ResourceFlavor``, and Kueue has
+been retired -- so there is nothing left to apply it to. This documentation also never
+matched the implementation: it described a ``nodeSelector`` on the Job pod spec, which
+is not where the value went.
 
-Node selector labels added to the ``Job`` pod spec via ``nodeSelector``.
-Only nodes whose labels match **all** specified key-value pairs will be
-eligible to run the job pods.  Use this to pin simulation workloads to a
-dedicated node pool (e.g. high-CPU nodes).
+To keep campaign jobs off particular machines, **taint the nodes that should not run
+them**. Job pods carry the campaign toleration (``dedicated=batch:NoSchedule``), so an
+untainted pool still takes them:
 
-.. code-block:: yaml
+.. code-block:: bash
 
-   execution:
-     kubernetes:
-       jobs:
-         node_labels:
-           node-pool: primary
+   kubectl taint nodes <node> dedicated=other:NoSchedule
 
 kubernetes.control
 """"""""""""""""""

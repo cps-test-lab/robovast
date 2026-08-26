@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The capacity reading behind admission, against fake Kubernetes objects.
 
-Follows tests/execution/test_kueue_quota_headroom.py: SimpleNamespace graphs shaped like the
-client's model objects, no cluster.
+SimpleNamespace graphs shaped like the client's model objects, no cluster.
 """
 
 import types
@@ -194,3 +193,39 @@ def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch)
 def test_no_cluster_config_is_the_ordinary_case(monkeypatch):
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
     assert p.budget().free_cpu == pytest.approx(8 - 1)
+
+
+# -- fail loudly rather than inventing capacity --------------------------------------
+# Inherited from the quota tests this replaced: the rule there was "never fall back to a
+# hard-coded default", and measuring rather than provisioning does not retire it. It moves
+# the failure from "a tiny default quota was provisioned" to "nothing can ever be admitted",
+# which has to be an error a caller sees rather than a queue that silently never drains.
+
+
+def test_a_cluster_with_no_allocatable_cpu_refuses_instead_of_admitting(monkeypatch):
+    """Zero allocatable CPU must make admission impossible, not merely tight."""
+    from robovast.execution.cluster_execution.node_admission import (AdmissionController,
+                                                                     AdmissionRefused,
+                                                                     JobSizing)
+
+    p, _ = _provider([_node("n1", cpu="0", memory="0")], [], monkeypatch)
+    assert p.budget().free_cpu == 0
+    # AdmissionRefused here, not CampaignConfigError: the controller states the fact and the
+    # backend seam is what turns a permanent refusal into the campaign-facing error.
+    with pytest.raises(AdmissionRefused, match="no node is that large"):
+        AdmissionController(p).preflight(JobSizing(cpu=1.0, memory=MiB, gpu=0))
+
+
+def test_a_failed_node_query_propagates_rather_than_reading_as_an_empty_cluster(monkeypatch):
+    """The two must never look alike. An empty cluster is "admit nothing"; an unreadable one
+    is "we do not know", and the run loop is what decides how long to keep asking -- so this
+    has to raise rather than return a budget of zero."""
+    def _boom(**_kw):
+        raise RuntimeError("api unreachable")
+
+    core = types.SimpleNamespace(list_node=_boom,
+                                 list_pod_for_all_namespaces=lambda **kw: None)
+    monkeypatch.delenv(cluster_capacity.HEADROOM_CPU_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.HEADROOM_MEMORY_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="api unreachable"):
+        ClusterBudgetProvider(lambda: core).budget()

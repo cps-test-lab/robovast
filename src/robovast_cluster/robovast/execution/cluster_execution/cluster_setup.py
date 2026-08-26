@@ -24,8 +24,7 @@ from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
-from .kubernetes_kueue import (apply_kueue_queues, install_kueue_helm, uninstall_kueue_helm,
-                               verify_kueue_admission_ready)
+from robovast.common.errors import CampaignConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +166,8 @@ def get_kubernetes_node_labels_from_config(config_path=None):
           kubernetes:
             jobs:
               node_labels:
-                <key>: <value>   # applied to ResourceFlavor (Kueue job scheduling)
+                <key>: <value>   # REFUSED by setup -- see setup_server; its only
+                                 # implementation was Kueue's ResourceFlavor
             control:
               node_labels:
                 <key>: <value>   # applied as nodeSelector to the robovast control pod
@@ -369,7 +369,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     if existing_config and not force:
         key_label = f" for context '{context_key}'" if context_key else ""
         # Point at `upgrade` first, because it is what almost everyone reaching this
-        # message actually wants. `setup` *provisions*: it re-runs the Kueue install, the
+        # message actually wants. `setup` *provisions*: it re-runs the device plugin, the
         # object store and the registry storage, and it takes its ingress/registry/storage
         # options as arguments -- so a re-run without the flags of the original run
         # re-provisions with different ones. `upgrade` reads those back from the live
@@ -386,9 +386,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
         )
 
     # Before anything is installed or deployed. A refused Ingress combination is a pure
-    # argument error, and it used to be raised inside deploy_service -- after Kueue was
-    # installed and the flavor's storage deployed, leaving a half-set-up cluster behind
-    # for a mistake that costs nothing to catch here.
+    # argument error, and it used to be raised inside deploy_service -- after the cluster's
+    # storage had been deployed, leaving a half-set-up cluster behind for a mistake that
+    # costs nothing to catch here.
     from .service_deploy import validate_ingress_options  # pylint: disable=import-outside-toplevel
     validate_ingress_options(**{k: v for k, v in (service_kwargs or {}).items()
                                 if k in ("ingress_host", "tls_secret", "issuer",
@@ -410,31 +410,26 @@ def setup_server(config_name=None, list_configs=False, force=False,
     jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
         get_vast_file_override())
     if jobs_node_labels:
-        logger.info("Job node labels (ResourceFlavor): %s", jobs_node_labels)
+        # Refused rather than ignored. Its only implementation was the Kueue
+        # ResourceFlavor's nodeLabels, so with Kueue retired there is nothing left to
+        # apply it to -- and accepting it silently would place campaign jobs on every
+        # node of the cluster while setup reported success, which is precisely the
+        # cluster-wide, lasting misconfiguration this function refuses elsewhere.
+        raise CampaignConfigError(
+            "execution.kubernetes.jobs.node_labels is no longer applied and this "
+            f"configuration sets it ({jobs_node_labels}). It was implemented by Kueue's "
+            "ResourceFlavor, which RoboVAST no longer installs. To keep campaign jobs off "
+            "particular machines, taint the nodes that should NOT run them -- job pods "
+            "carry the campaign toleration, so an untainted pool still takes them. Remove "
+            "the setting to continue.")
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
 
-    # BEFORE Kueue, and the order is load-bearing: `apply_kueue_queues` sizes the
-    # ClusterQueue's GPU quota from what the nodes advertise, and a node advertises nothing
-    # until this DaemonSet is running. Install it afterwards and the quota is sized from
-    # zero GPUs by construction -- which Kueue answers by suspending every GPU job forever
-    # rather than failing, so the campaign hangs and setup reported success.
-    #
-    # Going first rather than between the two also means Kueue's own install and its
-    # rollout wait overlap the plugin registering, so the capacity check below usually
-    # returns on its first poll.
+    # No longer ordered against a queue install, but still first: a node advertises no GPU
+    # until this DaemonSet runs, and admission sizes GPU capacity from what the nodes
+    # advertise. Installing it late meant measuring zero GPUs and refusing every GPU job.
     ensure_nvidia_device_plugin(kube_context=kube_context, gpu_replicas=gpu_replicas,
                                 skip=no_gpu)
-
-    # Install Kueue and queues first (always)
-    install_kueue_helm(kube_context=kube_context)
-    apply_kueue_queues(namespace=namespace, kube_context=kube_context,
-                       node_labels=jobs_node_labels, cluster_config=cluster_config)
-    # Post-condition: `kubectl apply` reporting success is not proof that the queues are
-    # usable — a ClusterQueue whose ResourceFlavor is missing stays Active=False, and
-    # setup would otherwise finish "successfully" while every future job hangs suspended.
-    verify_kueue_admission_ready(namespace=namespace, kube_context=kube_context,
-                                 settle_timeout=60)
 
     # RBAC for the in-cluster search controller pod (create/monitor jobs).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
@@ -535,11 +530,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Secret, and `deploy_service` is what creates both. Nothing can be built without it, so it
     # is part of setup rather than something a first campaign discovers is missing.
     #
-    # The ordering has one honest cost. `apply_kueue_queues` above sized the ClusterQueue from
-    # node allocatable minus the requests of pods Kueue does not manage, and the daemon was not
-    # one of them yet -- so a fresh setup grants marginally more quota than it should, until the
-    # next `apply_kueue_queues` (i.e. the next upgrade) counts it. Applying the daemon earlier
-    # would trade that for a worse bug: it would come up with no CA and no pull credential.
+    # The ordering used to have an honest cost: setup sized a fixed ClusterQueue quota before
+    # this daemon existed, so a fresh cluster granted marginally too much until the next
+    # upgrade re-sized it. Admission measures committed requests each cycle instead, so the
+    # daemon is counted as soon as it is running and the discrepancy is gone.
     from .buildkitd_deploy import apply_buildkitd  # pylint: disable=import-outside-toplevel
     apply_buildkitd(namespace, kube_context=kube_context, **buildkit_kwargs)
 
@@ -604,8 +598,7 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
         # Explicit config: use only CLI-provided kwargs (e.g. -n namespace)
         cluster_kwargs = dict(cluster_kwargs_override)
 
-    # Clean up scenario run jobs and pods first (before uninstalling Kueue,
-    # so the Kueue controller is still running to handle job finalizer removal)
+    # Clean up scenario run jobs and pods first.
     namespace = cluster_kwargs.get("namespace", "default")
     kube_context = cluster_kwargs.pop("kube_context", None)
     try:
@@ -634,11 +627,8 @@ def delete_server(config_name=None, forget_placement=False, **cluster_kwargs_ove
     # Remove the controller RBAC created at setup.
     delete_controller_rbac(namespace=namespace, kube_context=kube_context)
 
-    # Uninstall Kueue (always, since we always install it)
-    uninstall_kueue_helm(kube_context=kube_context)
-
-    # After Kueue, mirroring the setup order. The campaign jobs are already gone by this
-    # point, so no pod still holds a GPU allocation when its advertiser disappears. A no-op
+    # The campaign jobs are already gone by this point, so no pod still holds a GPU
+    # allocation when its advertiser disappears. A no-op
     # on every cluster that never had the plugin, which is what keeps teardown unchanged
     # for a CPU-only cluster.
     uninstall_nvidia_device_plugin(kube_context=kube_context)

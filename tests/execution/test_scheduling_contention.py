@@ -289,11 +289,13 @@ def test_unreadable_nodes_still_list_as_blocked():
     assert listed["run-7"][0] == "blocked"
 
 
-def test_a_contended_job_keeps_its_reason_over_kueues():
-    """A suspended Job has no pod and so cannot be contended, which makes this state
-    unreachable against a real cluster. It is pinned because the `waiting` branch assigns
-    `detail` unconditionally and is now reachable by a job that already has one: without
-    its guard, the scheduler's message would be replaced by Kueue's."""
-    job = _job("run-7", active=1, suspend=True)
-    listed = _listed(_Batch([job]), _Core([_pod("run-7")]))
+def test_a_contended_job_keeps_the_schedulers_own_reason():
+    """The scheduler's message is the diagnosis, so nothing may overwrite it.
+
+    This once guarded a specific way of losing it: a `waiting` branch that assigned
+    `detail` unconditionally would have replaced it with Kueue's wait message. That branch
+    is gone with Kueue, but the property it protected is the reason the message is carried
+    through verbatim at all, so it stays pinned.
+    """
+    listed = _listed(_Batch([_job("run-7", active=1)]), _Core([_pod("run-7")]))
     assert listed["run-7"] == ("pending", f"Unschedulable: {BUSY}")

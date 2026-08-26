@@ -133,7 +133,7 @@ def test_the_job_has_a_deadline_as_well_as_a_ttl():
     assert spec["template"]["spec"]["restartPolicy"] == "Never"
 
 
-def test_the_job_is_not_submitted_to_kueue():
+def test_the_job_carries_no_external_queue_label():
     """A prewarm admitted behind a full sweep warms the node after the thing that needed it.
 
     Bypassing the queue is what the build Job already does; campaign and postprocessing Jobs
@@ -495,12 +495,12 @@ def test_every_image_gets_a_sleeping_container_so_the_kubelet_cannot_collect_it(
 
 def test_the_warm_pods_tolerate_what_campaign_pods_tolerate(monkeypatch):
     """A warm pod that does not tolerate the campaign nodes' taint skips precisely the nodes
-    worth warming -- and reports success while doing it. Read from where the ResourceFlavor
-    granting it is written, so the two cannot drift."""
-    from robovast.execution.cluster_execution.kubernetes_kueue import KUEUE_JOB_TOLERATIONS
+    worth warming -- and reports success while doing it. Read from the one place the campaign
+    toleration is defined, so the two cannot drift."""
+    from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
     spec = warm_daemonset_manifest(image_refs=["r/a:t"], namespace="ns1")["spec"]["template"]["spec"]
 
-    assert spec["tolerations"] == [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    assert spec["tolerations"] == [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]
     # No nodeSelector: missing a node that runs a cell is the failure that matters, while an
     # extra warmed node costs one pull nobody reads.
     assert "nodeSelector" not in spec
