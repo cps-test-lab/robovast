@@ -428,3 +428,23 @@ def api_transport_errors(what: str):
                 "Check that the cluster is running and reachable (VPN, kubeconfig "
                 "context, 'kubectl cluster-info')."
             ) from exc
+
+def parse_resource(val):
+    """A Kubernetes resource quantity as a number; ``0`` for missing or unparseable.
+
+    Lives here rather than in the Kueue module it grew up in, because four other modules
+    import it and none of them is about Kueue -- capacity arithmetic outlives whatever is
+    admitting the jobs.
+
+    Zero for absent is deliberate and load-bearing in the fit tests: a resource a node does
+    not advertise at all (a GPU whose device plugin is down, say) must read as none available
+    rather than as unknown, so a pod asking for it is refused rather than placed.
+    """
+    from kubernetes.utils.quantity import parse_quantity  # noqa: PLC0415 - keeps import cost local
+
+    if val is None:
+        return 0
+    try:
+        return float(parse_quantity(val))
+    except (ValueError, TypeError):
+        return 0

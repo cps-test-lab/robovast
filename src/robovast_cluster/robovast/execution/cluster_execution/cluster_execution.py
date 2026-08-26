@@ -725,7 +725,7 @@ def pod_fits_any_node(pod, nodes) -> bool:
     a reservation larger than the biggest machine — is not contention and no amount of
     waiting produces it, so the caller must fail such a job rather than sit on it.
     """
-    from .kubernetes_kueue import _parse_resource  # noqa: PLC0415 - avoids a cycle
+    from .kube_client import parse_resource as _parse_resource  # noqa: PLC0415
     from .kube_client import pod_workload_containers  # noqa: PLC0415
 
     required = {}

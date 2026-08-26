@@ -28,8 +28,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import yaml
+from .kube_client import parse_resource as _parse_resource
 from kubernetes import client
-from kubernetes.utils.quantity import parse_quantity
 
 logger = logging.getLogger(__name__)
 
@@ -331,16 +331,6 @@ def cleanup_campaign_priority_classes(campaign=None, kube_context=None):
             # campaign's jobs are gone) and the next full cleanup removes it. Failing the
             # campaign's teardown over it would be worse than the litter.
             logger.warning("Could not delete Kueue priority classes (%s): %s", selector, e)
-
-
-def _parse_resource(val):
-    """Parse Kubernetes resource quantity to numeric value. Returns 0 for None/missing."""
-    if val is None:
-        return 0
-    try:
-        return float(parse_quantity(val))
-    except (ValueError, TypeError):
-        return 0
 
 
 def set_cluster_queue_stop_policy(stop_policy, kube_context=None):
