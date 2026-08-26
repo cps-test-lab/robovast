@@ -968,8 +968,12 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 **Available fields:**
 
 - ``cpu`` (Optional): Number of CPU cores — whole (``4``), fractional (``0.5``) or in the
-  millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list
-- ``memory`` (Optional): Memory limit (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
+  millicore spelling Kubernetes uses (``"500m"``) — or a per-cluster list. This is the
+  **reservation**: what the cluster packs by, and so what decides how many trials run at once
+- ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list
+- ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
+  reservation. Omitted — the default — the limit equals the request, which is what every
+  campaign meant before these existed. See *Splitting the reservation from the ceiling* below
 - ``gpu`` (Optional): Number of GPUs. **Rarely needed.** Omit it and the container running
   the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
   nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
@@ -985,6 +989,43 @@ paid on **every job of the sweep**. The Monitor's **Details** panel measures wha
 container actually used and suggests the number to type here (see :doc:`web_ui`). Both
 lanes take the fractional value — the local lane converts a millicore declaration to
 Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accepts.
+
+.. _config-request-limit-split:
+
+**Splitting the reservation from the ceiling** — and this is a decision about a container's
+**role**, not a tuning knob.
+
+The reservation is what the scheduler packs by, so lowering it is what buys concurrency. The
+limit only decides when the kernel starts throttling. Which means:
+
+- The **system under test** should keep them equal, sized so it does not throttle. Its budget
+  has to be identical in every run, or the allocation becomes a hidden independent variable
+  and the runs stop being comparable — a threat to the experiment rather than to throughput,
+  and worth over-reserving for. ``run_validity_view`` says per run whether that held.
+- The **simulator and scenario** are not under test and should split. Measured on the shipped
+  ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
+  the world's geometry compiles — a ratio of ~18, so there is no honest single number.
+  Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
+  clips a burst that changes nothing the robot experiences. What makes the soft limit safe is
+  already recorded: realtime pacing normalises what the simulated world looks like, and
+  ``runs.clock_map_*`` says per run whether the simulator kept pace.
+
+.. code-block:: yaml
+
+   execution:
+     containers:
+       simulation:                                   # not under test: split
+         resources: {cpu: 0.5, cpu_limit: 6, memory: 2944Mi}
+       sut:                                          # under test: do not split
+         resources: {cpu: 3, memory: 640Mi}
+
+The size of the win depends on the world: the same simulator peaks at 5.98 cores in
+``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
+different figures and gain differently from the split.
+
+**Memory is deliberately not split** in the shipped examples. Exceeding a CPU limit costs
+speed; exceeding a memory limit is an OOM kill, so a request below the limit trades a run for
+density on a node where several containers peak together.
 
 **Per-cluster resource values** are supported when multiple clusters need different
 allocations. See :ref:`cluster-execution` for the full syntax.
