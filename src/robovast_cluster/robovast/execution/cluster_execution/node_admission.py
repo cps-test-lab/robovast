@@ -53,6 +53,35 @@ CREATED = "created"
 BUDGET_TTL_S = 3.0
 
 
+def campaign_start_key(campaign_id: str) -> float:
+    """A sortable campaign start time, read out of the campaign id.
+
+    The id carries it already (``<name>-YYYY-MM-DD-HHMMSScc``), which is why nothing has to
+    be looked up: a batch runner deep in the cluster lane can order itself against campaigns
+    it has never heard of.
+
+    Parsed **naively**, never through an epoch conversion, for the reason
+    ``campaign_priority_value`` records: this only has to be monotone in the wall-clock label,
+    and going via epoch seconds folds the repeated hour of a DST fall-back onto itself and
+    inverts two campaigns' order.
+
+    An unparseable id sorts last rather than raising. Ordering is a preference, and refusing to
+    run a campaign because its name is unusual would be a much worse failure than running it
+    after its neighbours.
+    """
+    parts = campaign_id.rsplit("-", 4)
+    if len(parts) == 5:
+        try:
+            y, mo, d, hms = parts[1], parts[2], parts[3], parts[4]
+            if not (len(y) == 4 and len(mo) == 2 and len(d) == 2 and hms.isdigit()):
+                raise ValueError(campaign_id)
+            return float(f"{y}{mo}{d}{hms:0<8s}")
+        except (TypeError, ValueError):
+            pass
+    logger.debug("campaign id %r carries no timestamp; ordering it last", campaign_id)
+    return float("inf")
+
+
 @dataclass(frozen=True)
 class JobSizing:
     """What one job needs, summed over its containers.
