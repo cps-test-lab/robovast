@@ -583,13 +583,13 @@ _SHM_BASIS = (f"Sized on the PEAK plus {round((SHM_HEADROOM - 1) * 100)}% headro
 
 
 def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
-    """Whether the system under test was denied CPU it asked for. Empty when it was not.
+    """Whether the system under test was held at its own CPU limit. Empty when it was not.
 
     **A screen, not a verdict, and the valuable half is the silence.** Throttling says the
     allocation was *binding*; it does not say the stack misbehaved. A planner with slack can
     lose spikes and still meet every deadline that matters. So:
 
-    * **Nothing reported** is a strong negative: no run in this campaign was starved, and a
+    * **Nothing reported** is a strong negative: no run in this campaign was capped, and a
       failure can be attributed to the stack rather than to the cluster. That is the result
       worth having, and it is why this stays quiet in the normal case.
     * **Something reported** is inconclusive alone. It marks the runs where a resource
@@ -637,8 +637,8 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
         return [{
             "kind": "sut_throttled",
             "severity": "warning",
-            "title": (f"The system under test was denied CPU in {ratio * 100:.1f}% of "
-                      f"enforcement periods"),
+            "title": (f"The system under test was held at its CPU limit in "
+                      f"{ratio * 100:.1f}% of enforcement periods"),
             "detail": (
                 f"{runs_throttled} of {runs} run(s) had their '{label}' container held at its "
                 f"CPU limit"
@@ -651,9 +651,10 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict]) -> lis
                 "allocation can stay. If they are not, raise "
                 f"execution.containers.{label}.resources.cpu -- sizing on sustained use is not "
                 "enough, because the limit is a ceiling and a planner's peaks are the work. "
-                "Which runs: SELECT config_name, "
-                "run_id FROM system_usage WHERE container = '" + SUT_CONTAINER + "' AND "
-                "in_window = 1 GROUP BY 1, 2 HAVING MAX(nr_throttled) > MIN(nr_throttled)."),
+                "This is the container hitting its OWN ceiling, not other work crowding it "
+                "out: a busy neighbour causes scheduling latency rather than throttling. "
+                "Which runs: SELECT config_name, run_id FROM run_validity_view WHERE "
+                "container = '" + SUT_CONTAINER + "' AND quota_bound = 1."),
             "evidence": {
                 "container": label,
                 "throttled_periods": throttled,

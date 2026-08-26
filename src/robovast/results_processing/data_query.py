@@ -344,6 +344,14 @@ def _main_view_sql(schema: str, have: set) -> dict:
     question a reader of a campaign actually has -- *was this run a clean observation of
     the system under test, or partly a measurement of its CPU quota?*
 
+    **What it measures is a container hitting its OWN ceiling, not competition.** CFS
+    bandwidth control throttles a cgroup when it exhausts the quota its ``limits.cpu`` buys
+    inside one ~100ms period; a busy neighbour does not cause that. Neighbours show up as
+    scheduling *latency* instead, and the two point opposite ways -- on a contended node a
+    container may never reach its quota, so it throttles less while running worse. Hence
+    ``quota_bound`` rather than a name suggesting it was starved by other work: the remedy
+    is a larger limit, not a quieter cluster.
+
     It exists because the raw form is a trap in three ways, and every consumer was
     re-deriving it. ``nr_throttled`` and ``nr_periods`` are **monotonic counters**, so a
     ``SUM`` over the tick rows is meaningless and a plain ``MAX`` counts whatever the
@@ -355,7 +363,7 @@ def _main_view_sql(schema: str, have: set) -> dict:
     a measured 0.79% cost six runs of fifty, so a reader guessing at 1% would have called
     that campaign clean.
 
-    **It flags, and never filters.** A starved run stays in the results with ``starved =
+    **It flags, and never filters.** A capped run stays in the results with ``quota_bound =
     1`` beside it, because a run silently dropped is worse than one labelled honestly --
     and because throttling is a *screen*, not a verdict: it says a resource explanation is
     available for a failure, not that the stack misbehaved. Pairing it with the stack's own
@@ -385,7 +393,7 @@ def _main_view_sql(schema: str, have: set) -> dict:
                         THEN CAST(throttled AS REAL) / periods END AS throttle_ratio,
                    CASE WHEN periods > 0
                              AND CAST(throttled AS REAL) / periods >= {THROTTLE_WARN_RATIO}
-                        THEN 1 ELSE 0 END AS starved
+                        THEN 1 ELSE 0 END AS quota_bound
             FROM per_run
         """
     return views
@@ -538,29 +546,35 @@ _POSE_ORIENTATION = (
 _TABLE_DESCRIPTIONS = {
     ("temp", "run_validity_view"): (
         "WAS THIS RUN A CLEAN OBSERVATION? One row per (run, container) saying whether the "
-        "kernel denied it CPU it asked for: config_name, run_id, container, periods, "
-        "throttled, throttled_usec, throttle_ratio, starved. Query unqualified: FROM "
+        "kernel capped it at its OWN CPU limit: config_name, run_id, container, periods, "
+        "throttled, throttled_usec, throttle_ratio, quota_bound. Query unqualified: FROM "
         "run_validity_view. Needs postprocessing (it reads system_usage). "
+        "quota_bound=1 means the container exhausted the quota its limits.cpu buys, inside a "
+        "~100ms enforcement period. It does NOT mean other campaigns crowded it out: a busy "
+        "neighbour causes scheduling latency, not throttling, and the two point opposite "
+        "ways -- a container that cannot get CPU never reaches its quota, so it throttles "
+        "LESS while running worse. The remedy is a bigger limit, not a quieter cluster. "
         "Read this INSTEAD of computing deltas over system_usage yourself -- the counters "
         "there are monotonic, so SUM is meaningless and a bare MAX includes whatever "
         "happened before the trial window; this view already takes the in-window delta. "
         "The container that decides validity is 'sut': it is the system under test, so a "
-        "run where it was starved cannot separate 'the stack failed' from 'the stack was "
+        "run where it was capped cannot separate 'the stack failed' from 'the stack was "
         "cut off mid-plan'. The simulator and scenario are expected to burst and be "
         "clipped, and whether that cost anything is answered by runs.clock_map_* instead. "
         "Clean functional runs: SELECT config_name, run_id FROM run_validity_view WHERE "
-        "container='sut' AND starved=0. "
+        "container='sut' AND quota_bound=0. "
         "How bad, per config: SELECT config_name, MAX(throttle_ratio) FROM "
         "run_validity_view WHERE container='sut' GROUP BY 1. "
-        "starved is a SCREEN, not a verdict: it marks runs where a resource explanation is "
-        "AVAILABLE for a failure, not runs that failed. Never drop a run because of it -- "
+        "quota_bound is a SCREEN, not a verdict: it marks runs where a resource explanation "
+        "is AVAILABLE for a failure, not runs that failed. Never drop a run because of it -- "
         "report it alongside. Pair it with the stack's own health signals (control-loop "
         "warnings in run_log, nav2_behaviors) to decide whether the clipping cost anything. "
         "periods=0 means no CPU quota was enforced at all, which is not the same as a quota "
         "that was never hit; throttle_ratio is NULL there rather than 0. "
         "COVERAGE IS NOT UNIFORM, so check it before reading a clean result as campaign-wide. "
         "A run appears here only if its node could answer; one that could not is ABSENT, not "
-        "starved=0. Absence tracks the NODE, and the node that cannot answer is not a random "
+        "quota_bound=0. Absence tracks the NODE, and the node that cannot answer is not a "
+        "random "
         "one -- measured on this cluster, the single node running an older kernel was also the "
         "largest, so it took the most pods and contributed none of the measurements. "
         "What is missing: SELECT r.node_label, COUNT(*) FROM runs r LEFT JOIN "
@@ -791,13 +805,15 @@ _TABLE_DESCRIPTIONS = {
         "entirely rather than empty. "
         "The one to know: nr_throttled / nr_periods / throttled_usec, cgroup v2's record of "
         "the kernel STOPPING the container because it hit its CPU quota. This is the only "
-        "place a starved run says so — throttling does not fail a run, it just makes it "
+        "place a capped run says so — throttling does not fail a run, it just makes it "
         "slower, so its results quietly become partly a measurement of the allocation "
         "rather than of the system under test. "
         "They are MONOTONIC COUNTERS, so read a delta (MAX-MIN) or the last value, never a "
         "SUM. nr_periods=0 means no CPU quota was enforced at all, which is different from "
         "a quota that was never hit — read the ratio nr_throttled/nr_periods, not the raw "
-        "count. Was this run starved: SELECT container, MAX(nr_throttled)-MIN(nr_throttled) "
+        "count. Prefer run_validity_view, which already takes the in-window delta and "
+        "applies the calibrated threshold. Raw: SELECT container, "
+        "MAX(nr_throttled)-MIN(nr_throttled) "
         "FROM system_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1. "
         "timestamp, wall_ts, in_window and container mean exactly what they do in "
         "resource_usage. Join on (config_name, run_id)."),
