@@ -303,6 +303,8 @@ def test_a_batch_spreads_rather_than_filling_one_node_first():
                    for i in range(4)], started_at=0.0)
     assert c.drain() == 4
     assert sorted(seen) == ["a", "a", "b", "b"], f"expected an even spread, got {seen}"
+
+
 def test_a_zero_cpu_sizing_is_refused_by_preflight():
     """The controller must not accept a sizing of nothing, whoever built it.
 
@@ -314,3 +316,73 @@ def test_a_zero_cpu_sizing_is_refused_by_preflight():
     with pytest.raises(AdmissionRefused) as err:
         c.preflight(JobSizing(cpu=0, memory=0))
     assert "resources.cpu" in str(err.value)
+
+
+def test_a_node_can_be_refused_without_the_queue_learning_why():
+    """The gate calibration uses, expressed so the scheduler stays a scheduler.
+
+    A node being measured must take no work until its figures are in, or the runs placed
+    meanwhile are sized differently from every run that follows them. The queue is told only
+    the answer: put the reason in here and calibration policy lives inside the scheduler.
+    """
+    p = FakeProvider(per_node=[("busy", 100.0, 10240 * MIB, 0),
+                               ("open", 8.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0, accepts_node=lambda node: node != "busy")
+    assert c.drain() == 1
+    assert seen == ["open"], "the emptiest node was refused, so the other one took it"
+
+
+def test_work_waits_when_every_node_is_refused():
+    """Not an error and not a permanent refusal: the measurement finishes and the next drain
+    places the work."""
+    p = FakeProvider(per_node=[("n1", 100.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    allowed = {"ok": False}
+    made = []
+    c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: made.append(n))],
+             started_at=0.0, accepts_node=lambda node: allowed["ok"])
+    assert c.drain() == 0 and made == []
+    allowed["ok"] = True
+    assert c.drain() == 1 and made == ["n1"]
+
+
+def test_a_job_is_sized_for_the_node_it_lands_on():
+    """Per-node sizing has to be an admission fact, not a manifest detail: a node calibrated
+    smaller genuinely holds more of them, and the arithmetic must agree with the manifest or
+    the queue over- or under-admits."""
+    p = FakeProvider(per_node=[("fast", 5.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    made = []
+    # Declared 4 cores, but this node was measured at 2 -- so two fit where one would.
+    c.submit("a", [(f"a-{i}", JobSizing(4.0, MIB), lambda n=None, i=i: made.append(i))
+                   for i in range(2)],
+             started_at=0.0,
+             sizing_for_node=lambda node: JobSizing(2.0, MIB) if node == "fast" else None)
+    assert c.drain() == 2, "both fit at the calibrated size"
+    assert made == [0, 1]
+
+
+def test_calibration_outlives_a_batch_because_a_search_has_many():
+    """A search runs batch after batch through a NEW BatchJobRunner each time. Calibration
+    owned there would be discarded and re-measured every round -- four times the probe cost
+    for the same answer on a four-batch search."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = _controller()
+    first = c.calibration("camp", NodeCalibration)
+    assert c.calibration("camp", NodeCalibration) is first, "a later batch reuses it"
+    assert c.calibration("other-camp") is None, "and it is per campaign"
+
+
+def test_a_cancelled_campaign_takes_its_calibration_with_it():
+    """Measured under this campaign's contention, for its containers. Handing it to the next
+    campaign is the transferable factor this cluster's own data refuted."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = _controller()
+    c.calibration("camp", NodeCalibration)
+    c.cancel("camp")
+    assert c.calibration("camp") is None

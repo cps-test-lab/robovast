@@ -204,6 +204,14 @@ class WorkItem:
     state: str = PLANNED
     #: ``(node_id) -> JobSizing | None``. See :meth:`AdmissionController.submit`.
     sizing_for_node: "Callable | None" = None
+    #: ``(node_id) -> bool``: may this owner's work go there *yet*. Symmetric with
+    #: ``sizing_for_node`` and for the same reason -- the queue asks, and never learns why the
+    #: answer is no. Today it is "that node is still being measured"; the queue knowing that
+    #: would put calibration policy inside the scheduler.
+    accepts_node: "Callable | None" = None
+
+    def may_use(self, node_id) -> bool:
+        return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
         """What this job needs *on that node*, falling back to what it declared."""
@@ -252,6 +260,7 @@ class AdmissionController:
         self._lock = threading.Lock()
         self._items: "Dict[str, WorkItem]" = {}
         self._held: "Dict[str, _Held]" = {}
+        self._calibrations: dict = {}
         self._seq = itertools.count()
         self._budget: Optional[Budget] = None
         self._budget_at = 0.0
@@ -260,12 +269,18 @@ class AdmissionController:
     # -- queue -------------------------------------------------------------------------
 
     def submit(self, owner: str, items: "Iterable[Tuple[str, JobSizing, Callable[[], None]]]",
-               *, started_at: float, priority: int = 0, sizing_for_node=None) -> int:
+               *, started_at: float, priority: int = 0, sizing_for_node=None,
+               accepts_node=None) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
         batch, and ordering by submission would let a newer campaign overtake an older one
         between its rounds.
+
+        *accepts_node* is ``(node_id) -> bool``: whether this owner's work may go there yet.
+        A node being measured for this campaign answers ``False`` until its figures are in, so
+        that every run on it is sized the same way -- but the queue is told only the answer,
+        never the reason.
 
         *sizing_for_node* is how per-node sizing stays out of here. It is
         ``(node_id) -> JobSizing | None``, asked once per placement attempt, and ``None`` means
@@ -282,7 +297,8 @@ class AdmissionController:
                 self._items[key] = WorkItem(key=key, sizing=sizing, create=create, owner=owner,
                                             priority=priority, started_at=started_at,
                                             seq=next(self._seq),
-                                            sizing_for_node=sizing_for_node)
+                                            sizing_for_node=sizing_for_node,
+                                            accepts_node=accepts_node)
                 added += 1
             return added
 
@@ -316,7 +332,8 @@ class AdmissionController:
                 # what makes per-node sizing an admission fact rather than a manifest detail:
                 # a node calibrated smaller genuinely holds more of them.
                 fits = [n for n in by_id.values()
-                        if n.node_id and n.holds(item.sizing_on(n.node_id))]
+                        if n.node_id and item.may_use(n.node_id)
+                        and n.holds(item.sizing_on(n.node_id))]
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
@@ -370,7 +387,28 @@ class AdmissionController:
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
+            # Its calibration goes too: measured under this campaign's contention, for this
+            # campaign's containers, and deliberately never reused by the next one.
+            self._calibrations.pop(owner, None)
             return len(keys)
+
+    def calibration(self, owner: str, factory=None):
+        """This campaign's per-node calibration, created once and kept for its lifetime.
+
+        Held here because this is the only object whose lifetime is the campaign's rather
+        than the batch's. A search runs batch after batch through a NEW ``BatchJobRunner``
+        each time, so calibration owned there would be thrown away and re-measured every
+        round -- paying the probe cost per batch instead of once, which for a four-batch
+        search is four times the price for the same answer.
+
+        Opaque on purpose: the queue stores it and never reads it. What a calibration means is
+        the caller's business, and the two callbacks on :meth:`submit` are the whole of what
+        the queue is told about it.
+        """
+        with self._lock:
+            if owner not in self._calibrations and factory is not None:
+                self._calibrations[owner] = factory()
+            return self._calibrations.get(owner)
 
     def states(self, owner: str) -> "Dict[str, str]":
         """``key -> PLANNED | CREATED`` for one owner, for its own progress reporting.
