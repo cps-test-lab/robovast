@@ -953,7 +953,21 @@ class CampaignController:
                 logger.warning("Batch bag conversion failed; this batch's metrics will be "
                                "missing and the extractor will say so: %s", message)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("Batch bag conversion could not run: %s", exc, exc_info=True)
+            # RAISED, not warned. A conversion that could not START is a different failure
+            # from one that ran and produced nothing, and they were reported as the same
+            # thing. The second is the extractor's business -- it refuses the batch and names
+            # what was missing. The first is a broken campaign: every batch will hit it,
+            # nothing will ever score, and the reason is not in the world.
+            #
+            # Measured: an unresolvable execution image left this a warning, and the campaign
+            # then died on "no run recorded a clearance value ... the likeliest is the
+            # rosbag->CSV plugins listed in search.postprocessing" -- sending the reader to
+            # the one thing that was correct, while the real cause sat in a warning above.
+            raise RuntimeError(
+                f"batch bag conversion could not run at all, so no batch of this search can "
+                f"be scored: {exc}. This is not a missing measurement -- the conversion was "
+                f"never attempted, and the extractor's own error would name the world "
+                f"instead of this.") from exc
 
 
 
