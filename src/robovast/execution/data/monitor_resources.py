@@ -33,6 +33,22 @@ SHM_PATH = "/dev/shm"
 CPU_STAT_PATH = "/sys/fs/cgroup/cpu.stat"
 CPU_STAT_FIELDS = ("nr_periods", "nr_throttled", "throttled_usec")
 
+#: The same counters under cgroup **v1**, which is not a legacy concern: one node of the
+#: cluster this was written against runs an older distribution and is the largest machine in
+#: it, so skipping v1 left ~48% of a campaign's runs unmeasured -- and, because the scheduler
+#: packs by core count, they were the runs on the node that attracted the most work and
+#: produced every observed control-loop miss. A blind spot that tracks node size is worse than
+#: a uniform one: the aggregate looks fine and is drawn from the machines under least
+#: pressure.
+CPU_STAT_PATH_V1 = "/sys/fs/cgroup/cpu/cpu.stat"
+
+#: v1 spells the third counter ``throttled_time`` and reports it in **nanoseconds**, where v2
+#: uses ``throttled_usec`` in microseconds. Converted on read rather than stored as it comes,
+#: because one column that silently means nanoseconds on some nodes and microseconds on others
+#: is worse than the column being absent -- absence is visible, a 1000x unit error is not.
+CPU_STAT_V1_USEC_FIELD = "throttled_time"
+_NSEC_PER_USEC = 1000
+
 #: Filename prefixes. The sibling is derived from the process file's own name (see
 #: :func:`system_usage_path`) so that the launch contract -- which entrypoint passes which
 #: path, pinned by ``tests/execution/test_resource_monitor_lanes.py`` -- needs no change, and
@@ -49,27 +65,44 @@ def _handle_signal(signum, frame):  # pylint: disable=unused-argument
 
 
 def cpu_stat_probe():
-    """``{nr_periods, nr_throttled, throttled_usec}``, or ``{}`` where cgroup v2 is not there.
+    """``{nr_periods, nr_throttled, throttled_usec}``, or ``{}`` where neither cgroup has them.
 
     Returns an empty mapping rather than raising or zero-filling: a runtime that cannot answer
     and a container that was never throttled are different facts, and zeros would make the
-    first indistinguishable from the second in every aggregate. cgroup v1 exposes these under a
-    different path and is deliberately not handled -- it contributes no columns instead.
+    first indistinguishable from the second in every aggregate.
+
+    **Both cgroup versions**, v2 first. v1 was skipped when this was written, on the reasoning
+    that it is old; the cost turned out to be node-shaped rather than small (see
+    :data:`CPU_STAT_PATH_V1`). The two are read into the *same* column names and the same
+    units, so a campaign spanning both kinds of node stays comparable -- which is the whole
+    point, since the interesting question is per-node.
     """
-    try:
-        with open(CPU_STAT_PATH, encoding="utf-8") as handle:
-            raw = handle.read()
-    except OSError:
-        return {}
-    out = {}
-    for line in raw.splitlines():
-        key, _, value = line.partition(" ")
-        if key in CPU_STAT_FIELDS:
+    for path, usec_field in ((CPU_STAT_PATH, "throttled_usec"),
+                             (CPU_STAT_PATH_V1, CPU_STAT_V1_USEC_FIELD)):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        out = {}
+        for line in raw.splitlines():
+            key, _, value = line.partition(" ")
+            if key not in ("nr_periods", "nr_throttled", usec_field):
+                continue
             try:
-                out[key] = int(value)
+                parsed = int(value)
             except ValueError:
-                pass
-    return out
+                continue
+            if key == usec_field:
+                out["throttled_usec"] = (parsed // _NSEC_PER_USEC
+                                         if usec_field == CPU_STAT_V1_USEC_FIELD else parsed)
+            else:
+                out[key] = parsed
+        # A file that exists but yields nothing recognisable is not an answer; fall through to
+        # the other layout rather than reporting a half-filled row for it.
+        if out:
+            return out
+    return {}
 
 
 #: cgroup v2's memory accounting for the whole container -- what the kernel actually enforces
