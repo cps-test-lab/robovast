@@ -324,7 +324,7 @@ class ClusterService(LocalTransport):
         """
         from .kube_client import pod_workload_containers  # pylint: disable=import-outside-toplevel
         from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
-        from .kubernetes_kueue import _parse_resource  # pylint: disable=import-outside-toplevel
+        from .kube_client import parse_resource as _parse_resource  # pylint: disable=import-outside-toplevel
         v1 = self._k8s()
 
         cpu_capacity = 0.0
