@@ -262,12 +262,35 @@ def test_a_node_without_an_identity_label_is_counted_but_not_pinned_to():
     to admit anything at all while it is the emptiest node would turn adding capacity into an
     outage, so the job goes to a node that CAN be named."""
     p = FakeProvider(per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)])
+def test_a_node_without_an_identity_label_takes_work_unpinned():
+    """A node that joined since the last setup, or a whole cluster upgraded without re-running
+    it. Its pods and capacity are real, so it is counted AND usable -- it simply cannot be
+    named in a selector, so the job is created unpinned and the scheduler places it.
+
+    This was the other way round once, and it was a hang waiting to happen: excluding
+    unlabelled nodes left a cluster whose nodes predate the label with NO candidates at all,
+    so nothing was ever admitted and every campaign waited forever reporting "queued for
+    capacity" on an idle cluster. Observed exactly that way on a real deployment. A missing
+    label costs the pin, never the run.
+    """
+    p = FakeProvider(per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)])
     c = _controller(p)
     seen = []
     c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
              started_at=0.0)
     assert c.drain() == 1
-    assert seen == ["named"], "the unlabelled node is emptiest but cannot be selected"
+    assert seen == [None], "placed on the emptiest node, unpinned because it has no name"
+
+
+def test_a_cluster_with_no_labels_at_all_still_runs():
+    """The regression that took a live deployment down to zero throughput: upgrading the
+    service does not re-run setup, so no node had the identity label, and per-node admission
+    silently had nothing it was willing to place on."""
+    p = FakeProvider(per_node=[(None, 96.0, 10240 * MIB, 0), (None, 32.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    made = _items(c, "a", 5, cpu=4.0)
+    assert c.drain() == 5, "an unlabelled cluster must still admit work"
+    assert len(made) == 5
 
 
 def test_a_growable_cluster_may_create_unpinned_when_no_node_fits():
@@ -392,15 +415,15 @@ def test_a_pinned_item_goes_to_its_node_or_waits_for_it():
     """A calibration probe measures a particular machine. Placed elsewhere it answers a
     question about the wrong node, so it waits rather than settling for another -- the
     opposite of how ordinary work is placed."""
-    p = FakeProvider(per_node=[("busy", 1.0, 10240 * MiB, 0), ("idle", 99.0, 10240 * MiB, 0)])
+    p = FakeProvider(per_node=[("busy", 1.0, 10240 * MIB, 0), ("idle", 99.0, 10240 * MIB, 0)])
     c = _controller(p)
     seen = []
-    c.submit("a", [("probe-busy", JobSizing(4.0, MiB), lambda n=None: seen.append(n))],
+    c.submit("a", [("probe-busy", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
              started_at=0.0, pin="busy")
     assert c.drain() == 0, "its node is full; the idle one is not a substitute"
     assert seen == []
 
-    p._per_node = [("busy", 8.0, 10240 * MiB, 0), ("idle", 99.0, 10240 * MiB, 0)]
+    p._per_node = [("busy", 8.0, 10240 * MIB, 0), ("idle", 99.0, 10240 * MIB, 0)]
     p.free = p._budget(frozenset())
     assert c.drain() == 1 and seen == ["busy"]
 
@@ -408,10 +431,10 @@ def test_a_pinned_item_goes_to_its_node_or_waits_for_it():
 def test_a_pin_overrides_the_accepts_node_gate():
     """The gate exists to keep campaign work off a node until its probe reports. The probe
     itself must be exempt, or it would be waiting for its own measurement."""
-    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MiB, 0)])
+    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MIB, 0)])
     c = _controller(p)
     seen = []
-    c.submit("a", [("probe", JobSizing(2.0, MiB), lambda n=None: seen.append(n))],
+    c.submit("a", [("probe", JobSizing(2.0, MIB), lambda n=None: seen.append(n))],
              started_at=0.0, pin="n1", accepts_node=lambda node: False)
     assert c.drain() == 1 and seen == ["n1"]
 
@@ -419,6 +442,6 @@ def test_a_pin_overrides_the_accepts_node_gate():
 def test_node_ids_lists_only_what_can_be_pinned_to():
     """An unlabelled node holds work but cannot be selected, so probing it would produce a
     figure nothing could ever be pinned to."""
-    p = FakeProvider(per_node=[("named", 8.0, 10240 * MiB, 0),
-                               (None, 8.0, 10240 * MiB, 0)])
+    p = FakeProvider(per_node=[("named", 8.0, 10240 * MIB, 0),
+                               (None, 8.0, 10240 * MIB, 0)])
     assert _controller(p).node_ids() == ["named"]
