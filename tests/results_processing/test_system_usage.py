@@ -185,3 +185,48 @@ def test_absent_system_usage_table_does_not_break_advice():
         return []
 
     assert advice.campaign_advice(query_rows) == {"advice": []}
+
+
+# -- the SUT validity screen ------------------------------------------------------------
+
+def _throttle_row(container, periods, throttled, runs=10, runs_throttled=3):
+    return {"container": container, "periods": periods, "throttled": throttled,
+            "runs": runs, "runs_throttled": runs_throttled}
+
+
+def test_silence_is_the_result_worth_having():
+    """No report means no run was starved, so a failure is attributable to the stack. That is
+    the normal case and it must not be noisy."""
+    from robovast.results_processing import advice
+    assert advice.throttle_advice([_throttle_row("sut", 2054, 0)], []) == []
+    # 2 periods of 2054 is bring-up noise, measured on a healthy campaign.
+    assert advice.throttle_advice([_throttle_row("sut", 2054, 2)], []) == []
+
+
+def test_only_the_system_under_test_is_reported():
+    """The simulator is expected to burst and be clipped, and the realtime factor already
+    answers whether that hurt. Reporting it would bury the one line that matters."""
+    from robovast.results_processing import advice
+    assert advice.throttle_advice([_throttle_row("simulation", 2052, 174)], []) == []
+    assert advice.throttle_advice([_throttle_row("robovast", 2057, 56)], []) == []
+
+
+def test_a_throttled_sut_is_flagged_as_inconclusive_not_as_a_fault():
+    """It marks where a resource explanation is available; the stack's own health decides."""
+    from robovast.results_processing import advice
+    out = advice.throttle_advice([_throttle_row("sut", 2000, 880, runs=50, runs_throttled=44)],
+                                 [])
+    assert len(out) == 1 and out[0]["kind"] == "sut_throttled"
+    assert out[0]["severity"] == "warning"
+    assert out[0]["evidence"]["throttled_fraction"] == 0.44
+    assert out[0]["evidence"]["runs_affected"] == 44
+    detail = out[0]["detail"]
+    assert "does not by itself mean the stack misbehaved" in detail
+    assert "controller frequency" in detail
+
+
+def test_no_recorded_counters_is_silence_not_a_pass():
+    """A campaign predating the probe, or a host without cgroup v2, knows nothing -- and must
+    not be mistaken for one that was checked."""
+    from robovast.results_processing import advice
+    assert advice.throttle_advice([], []) == []
