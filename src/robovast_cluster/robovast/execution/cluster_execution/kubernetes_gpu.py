@@ -41,7 +41,7 @@ import time
 from kubernetes import client
 
 from .kube_client import parse_resource as _parse_resource
-from .kubernetes_kueue import _run_helm, helm_release_exists
+from .helm import helm_release_exists, run_helm as _run_helm
 
 logger = logging.getLogger(__name__)
 

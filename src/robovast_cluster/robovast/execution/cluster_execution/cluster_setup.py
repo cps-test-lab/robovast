@@ -447,7 +447,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         BUILD_NODE_LABEL, DATA_NODE_LABEL, labeled_nodes, resolve_placement)
-    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS  # pylint: disable=import-outside-toplevel
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS  # pylint: disable=import-outside-toplevel
 
     core = client.CoreV1Api()
     service_kwargs = dict(service_kwargs or {})

@@ -223,7 +223,7 @@ def _tolerations() -> list:
     Read from where the ResourceFlavor granting it is defined rather than restated, so there is
     one place to change if the taint moves -- the same reasoning the warm DaemonSet gives.
     """
-    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS
     return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
 
 
