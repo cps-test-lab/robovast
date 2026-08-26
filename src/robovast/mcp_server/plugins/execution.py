@@ -362,11 +362,9 @@ def get_campaign_status(campaign_id: str) -> dict:
     happening. ``true``: nothing completed for longer than one run may take
     (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
     ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
-    "healthy"; ``stall_verdict`` says why — no declared timeout, a phase that executes no
-    runs, or a batch whose every job is queued for cluster capacity (no run of this campaign
-    is running, so the per-run deadline is measuring a queue rather than a stalled run).
-    Judge ``progress_age_s`` yourself. The local lane does not enforce it, so a
-    stalled local run stays alive to inspect.
+    "healthy"; ``stall_verdict`` says why (no declared timeout, a phase that executes no
+    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself. The local
+    lane does not enforce it, so a stalled local run stays alive to inspect.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
     itself; what ends a ``vast wait`` (exit 5), and it needs no declared timeout.
@@ -378,14 +376,14 @@ def get_campaign_status(campaign_id: str) -> dict:
     without re-running anything.
 
     **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
-    which ``best_objective`` alone cannot, since one number cannot say whether it moved.
+    which ``best_objective`` alone cannot, one number not saying whether it moved.
     ``objective_history`` is one row per batch (the most recent 20) carrying that round's
     ``min``/``max``/``mean`` and the ``best_so_far`` after it, and ``batches_since_improvement``
     counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
     best-so-far with a wide range means the search is still exploring, while a range that has
     collapsed onto the best value means it is re-sampling one region and further batches will buy
-    little. This is live during the run — the only route that is on the cluster lane, where a SQL
-    query reads a snapshot published only when the campaign ends.
+    little. Live during the run — the only route on the cluster lane, where SQL reads a
+    snapshot published only when the campaign ends.
 
     Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
     criterion may already be about to stop the search, and pre-empting a criterion the campaign
@@ -599,8 +597,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
         say) — ``detail`` carries the reason, and a non-zero count is the one here that
-        asks you to do something. ``waiting`` is queued for cluster capacity by Kueue:
-        healthy, not stuck. ``pending`` has a pod that has not started; it too may carry
+        asks you to do something. ``waiting`` is planned, awaiting capacity, with no pod
+        yet: healthy, not stuck. ``pending`` has a pod that has not started; it may carry
         a ``detail`` when the cluster has said why — a node another campaign is holding,
         or a rate-limited pull — which is a reason, not a fault: it starts on its own.
     """

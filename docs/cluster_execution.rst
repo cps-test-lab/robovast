@@ -59,8 +59,9 @@ them. Internally:
    config files from storage and a main ``robovast`` container that executes the
    scenario. (Variations that declare an auxiliary container get a per-campaign
    aux pod the driver execs into during composition.)
-3. **Queueing (Kueue)** — Jobs are admitted only when sufficient CPU/memory is
-   available, so a campaign cannot oversubscribe the cluster.
+3. **Queueing** — a Job is created only when sufficient CPU/memory is available,
+   so a campaign cannot oversubscribe the cluster. Step 2 therefore paces itself
+   against this rather than creating the whole plan up front.
 4. **Result collection** — Jobs upload result files back to the storage bucket,
    and the driver publishes the **canonical campaign** (``campaign.db`` +
    ``_execution`` + results) there. The **object store is the durable home and
@@ -903,29 +904,29 @@ appended when the client produced none.
    avoids this.
 
 
-Job Queueing with Kueue
------------------------
+Job Queueing
+------------
 
-Cluster jobs are queued by `Kueue <https://kueue.sigs.k8s.io/>`_, which ``vast
-execution cluster setup`` installs and sizes to the cluster. It admits jobs only
-when there is CPU and memory for them — and GPUs, on a cluster that has them — so a
-large campaign cannot oversubscribe the nodes, and several campaigns launched at once
-share the cluster instead of fighting over it. There is nothing to configure: every job
-RoboVAST creates is submitted to the queue automatically, and the queue is sized from
-what the nodes advertise.
+Cluster jobs are queued by RoboVAST itself. A job is **created only once the cluster
+has room for it** — CPU and memory, and GPUs on a cluster that has them — so a large
+campaign cannot oversubscribe the nodes, and several campaigns launched at once share
+the cluster instead of fighting over it. There is nothing to configure and nothing to
+install: the queue lives in the RoboVAST service and is sized from what the nodes
+advertise, each cycle rather than once at setup.
 
-One consequence is worth knowing, because Kueue's answer to it is silence. A job that
-asks for a resource the ClusterQueue does not cover is not rejected — it is **suspended,
-indefinitely**, and a suspended job still counts as active, so a campaign would report
-"still running" forever with nothing to show. RoboVAST therefore checks coverage before
-creating any job and fails with the remedy instead. If you see that error, re-run
-``vast execution cluster setup`` (or ``upgrade``, which reconciles the queues too).
+Creating jobs as capacity appears, rather than creating them all and letting them wait,
+also means a campaign never asks one kubelet for a thousand image pulls at once.
 
-**Older campaigns finish first.** When several campaigns run at once, Kueue admits the
-one that started earliest first. Every job carries a priority derived from its campaign's
-start time, so each slot that frees up goes to the oldest campaign that still has work
-queued — a campaign is no longer overtaken by one launched after it. There is nothing to
-configure and no way to get it wrong: the priority comes from the campaign id.
+A request no node could **ever** satisfy — more CPU than the largest machine has, or a
+GPU on a cluster with none — is refused at launch, with the request and each node's
+allocatable named. That is a different thing from a cluster that is merely full, which
+is not an error and is simply waited out.
+
+**Older campaigns finish first.** When several campaigns run at once, the one that
+started earliest is admitted first: each slot that frees up goes to the oldest campaign
+that still has work queued, so a campaign is not overtaken by one launched after it.
+There is nothing to configure and no way to get it wrong — the order comes from the
+campaign id, which carries its start time.
 
 Two properties are worth stating, because they are what make this safe to leave on:
 
@@ -947,18 +948,19 @@ the cluster to hold capacity for a campaign that is not yet asking for it.
 is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
 and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,
 distinct from ``pending`` (a pod exists and is being scheduled) and from ``blocked``
-(the job cannot start and needs a human). Kueue's own reason rides along as the
-job's ``detail``.
+(the job cannot start and needs a human). The reason capacity was refused rides along
+as the job's ``detail``.
 
-A ``waiting`` job has no pod, so it appears in the web UI only as the ``waiting N``
-counter, never as a row: the per-job list mirrors the jobs that actually exist on the
-cluster (what ``k9s`` shows), and those are the ones with a pod and a log to read.
-``list_campaign_jobs`` still returns every one of them with its reason.
+A campaign that is *entirely* queued is also not reported as stalled. The no-progress
+deadline measures how long a **run** has gone without completing, and while nothing of
+the campaign is running it is timing a queue rather than a run — so the verdict is
+withheld and ``stall_verdict`` says why, instead of accusing a healthy campaign that is
+simply behind an older one.
 
-If the queue is genuinely unusable — setup was never run, or the campaign targets
-a namespace that was never set up — the campaign fails at launch with a message
-naming what is missing, rather than hanging. ``setup`` checks the same thing
-before reporting success.
+A ``waiting`` job has not been created on the cluster yet, so it appears in the web UI
+only as the ``waiting N`` counter, never as a row: the per-job list mirrors the jobs that
+actually exist there (what ``k9s`` shows), and those are the ones with a pod and a log to
+read. ``list_campaign_jobs`` still returns every one of them with its reason.
 
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
@@ -974,8 +976,9 @@ campaign — the campaign stays ``finished`` with the reason on
 
 .. note::
 
-   Without Kueue installed, jobs are still created but never queued: they all
-   start at once and can overload the cluster.
+   Admission does not depend on anything being installed in the cluster. If the service
+   cannot measure the cluster it refuses to submit rather than falling back to creating
+   every job at once, which is the one way a campaign could still overload the nodes.
 
 
 How the quota is sized, and why it is not the whole cluster
@@ -1064,10 +1067,11 @@ Three things a job that has not started can be doing, and the run loop treats th
 differently:
 
 ``waiting``
-   Kueue has not admitted it. Normal, and unbounded — see above.
+   Planned, but not created yet: the cluster has no room for it. Normal, and unbounded
+   — see above.
 
 busy
-   Admitted, but waiting its turn — for a node or for a pull. Either the resource exists
+   Created, but waiting its turn — for a node or for a pull. Either the resource exists
    on a node and something else is holding it, usually another campaign's run; or the
    image exists and the credential works, and the pull is rate-limited behind the other
    pulls a whole batch of jobs asked for at the same instant (the kubelet's own

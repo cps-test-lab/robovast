@@ -45,9 +45,7 @@ import time
 
 from robovast.common.execution import resolve_sidecar_image
 
-from .kubernetes_kueue import (KUEUE_PRIORITY_LABEL, KUEUE_QUEUE_NAME,
-                               campaign_priority_class_name,
-                               ensure_campaign_priority_class)
+from .kube_client import api_transport_errors
 
 logger = logging.getLogger(__name__)
 
@@ -489,13 +487,6 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
             "labels": {
                 "jobgroup": "postprocessing",
                 "campaign-id": safe,
-                # Kueue keys queue membership off the label, not an annotation.
-                "kueue.x-k8s.io/queue-name": KUEUE_QUEUE_NAME,
-                # Carries the campaign's own priority, like its scenario jobs. A search
-                # postprocesses between batches, so leaving this job at the default
-                # priority would park the oldest campaign behind a younger one's
-                # scenario jobs at exactly the point where it has nothing else pending.
-                KUEUE_PRIORITY_LABEL: campaign_priority_class_name(campaign_id),
             },
         },
         "spec": {
@@ -590,40 +581,19 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     access_key, secret_key = cluster_config.get_s3_credentials()
     s3 = (cluster_config.get_s3_endpoint(), access_key, secret_key, bucket, campaign_prefix)
 
-    # This Job carries the Kueue queue label too, so a broken admission path suspends it
-    # and the wait below would report a misleading "timed out" after _DEFAULT_TIMEOUT
-    # instead of the actual cause.
-    from robovast.common.errors import CampaignConfigError  # noqa: PLC0415
-    from robovast.common.errors import ClusterUnreachableError
-
-    from .kubernetes_kueue import KueueCheckUnavailable  # noqa: PLC0415
-    from .kubernetes_kueue import verify_kueue_admission_ready
-    try:
-        # The service's --context, not the ambient kubeconfig one. Omitting it made this
-        # check dial whatever kubectl happened to point at while the campaign's Jobs went
-        # to the configured cluster -- so postprocessing failed against a cluster the
-        # campaign never used, reporting the configured API server as unreachable while
-        # naming a completely different address as the connection that timed out.
-        verify_kueue_admission_ready(namespace=namespace, kube_context=kube_context)
-    except (CampaignConfigError, ClusterUnreachableError) as e:
-        # An unreachable cluster ends postprocessing the same way a broken queue does:
-        # a reported reason on the campaign's postprocessing_error, re-runnable once the
-        # cluster is back. The runs themselves are already published.
-        return False, f"postprocessing cannot be scheduled: {e}"
-    except KueueCheckUnavailable as e:
-        logger.warning("Cannot verify the Kueue admission path (%s); submitting "
-                       "postprocessing anyway.", e)
-
-    # The job below names this campaign's priority class and Kueue rejects a job whose
-    # class is missing. Usually the campaign's scenario jobs already created it, but a
-    # postprocessing re-run after cleanup is exactly the case where they have not.
-    try:
-        ensure_campaign_priority_class(campaign_id, kube_context=kube_context)
-    except Exception as e:  # noqa: BLE001 - reported, like every other failure here
-        return False, f"postprocessing cannot be scheduled: {e}"
+    from robovast.common.errors import ClusterUnreachableError  # noqa: PLC0415
 
     from .cluster_execution import resolve_pull_secret  # noqa: PLC0415
+    from .kube_client import load_kube_config  # noqa: PLC0415
 
+    # Explicitly, and it must stay explicit: these clients read whatever context is loaded
+    # when they are constructed. This used to be a side effect of the Kueue admission check
+    # that ran above, and when that check was called without a context postprocessing dialled
+    # the ambient kubeconfig while the campaign's Jobs had gone to the service's --context
+    # cluster -- failing against a cluster the campaign never used, and naming the configured
+    # API server as unreachable while quoting a timeout to a different address. Retiring Kueue
+    # removed the check; the load it was incidentally doing is a real requirement and stays.
+    load_kube_config(kube_context)
     core = client.CoreV1Api()
     batch = client.BatchV1Api()
     manifest = build_manifest(
@@ -638,13 +608,22 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
     # it once the Job is done.
     cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
     cm_name = cm["metadata"]["name"]
+    # First call that actually touches the API server, so it is where an unreachable
+    # cluster surfaces. Reported as a reason on the campaign's postprocessing_error and
+    # re-runnable once the cluster is back -- the runs themselves are already published --
+    # rather than reaching the caller as a urllib3 traceback.
     try:
-        core.create_namespaced_config_map(namespace=namespace, body=cm)
-    except ApiException as e:
-        if e.status == 409:  # a stale copy from a prior run — replace it
-            core.replace_namespaced_config_map(name=cm_name, namespace=namespace, body=cm)
-        else:
-            return False, f"could not create postprocessing scripts ConfigMap: {e}"
+        with api_transport_errors("submitting the postprocessing job"):
+            try:
+                core.create_namespaced_config_map(namespace=namespace, body=cm)
+            except ApiException as e:
+                if e.status == 409:  # a stale copy from a prior run — replace it
+                    core.replace_namespaced_config_map(name=cm_name, namespace=namespace,
+                                                       body=cm)
+                else:
+                    return False, f"could not create postprocessing scripts ConfigMap: {e}"
+    except ClusterUnreachableError as e:
+        return False, f"postprocessing cannot be scheduled: {e}"
 
     try:
         try:
