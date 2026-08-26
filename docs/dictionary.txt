@@ -11,6 +11,7 @@ authorizer
 autosaves
 backend
 backends
+backfill
 backfilled
 backgrounded
 backgrounding
@@ -22,6 +23,7 @@ boto
 boxplot
 bt
 buildx
+Burstable
 callables
 centroids
 classmethods
@@ -73,6 +75,7 @@ extractors
 favicon
 fieldname
 filesystem
+finalizer
 findable
 floorplan
 framebuffer
@@ -109,6 +112,7 @@ jupyter
 keepalives
 Keychain
 KiB
+kube
 kubeconfig
 kubectl
 kubelet
@@ -240,6 +244,7 @@ retriggered
 retriggers
 revolute
 rjsf
+rke
 robovast
 rollout
 rollups
@@ -252,6 +257,7 @@ rosout
 runnable
 RViz
 rviz
+Ryzen
 schedulable
 schema
 schemas
@@ -261,6 +267,7 @@ semver
 sendfile
 serviceless
 severities
+Skylake
 SNI
 sqlite
 stderr
@@ -284,6 +291,7 @@ timezone
 TLS
 tmpfs
 tokenless
+tolerations
 TPE
 tracebacks
 trigger
@@ -325,6 +333,7 @@ webm
 webui
 workspaces
 xacro
+Xeon
 yaml
 zlib
 µs
