@@ -142,3 +142,55 @@ def test_an_unparseable_headroom_raises_rather_than_meaning_none(monkeypatch):
                      env={cluster_capacity.HEADROOM_CPU_ENV: "lots"})
     with pytest.raises(ValueError, match="not resource quantities"):
         p.budget()
+
+
+# -- autoscaling ---------------------------------------------------------------------------
+
+class _Autoscaler:
+    """A cluster_config that knows a size the cluster is not currently at."""
+
+    def __init__(self, cpu="64", memory="256Gi", boom=False):
+        self.cpu, self.memory, self.boom = cpu, memory, boom
+
+    def get_cluster_allocatable_resources(self, kube_context=None):
+        if self.boom:
+            raise RuntimeError("gcloud not installed")
+        return self.cpu, self.memory
+
+
+def _with_config(nodes, pods, monkeypatch, config):
+    monkeypatch.delenv(cluster_capacity.HEADROOM_CPU_ENV, raising=False)
+    monkeypatch.delenv(cluster_capacity.HEADROOM_MEMORY_ENV, raising=False)
+    core = types.SimpleNamespace(
+        list_node=lambda **kw: types.SimpleNamespace(items=nodes),
+        list_pod_for_all_namespaces=lambda **kw: types.SimpleNamespace(items=pods))
+    return ClusterBudgetProvider(lambda: core, cluster_config=config)
+
+
+def test_an_autoscaling_cluster_is_sized_by_what_it_can_become(monkeypatch):
+    """Otherwise admission is self-defeating: pods that cannot be placed are exactly what
+    makes an autoscaler add a node, so only ever creating what currently fits keeps the
+    cluster at whatever size it happens to be. Kueue sized its quota from this same override.
+    """
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, _Autoscaler())
+    assert p.budget().free_cpu == pytest.approx(64 - 1), "should use the autoscaler max, not 8"
+
+
+def test_an_override_never_shrinks_a_cluster_below_its_real_nodes(monkeypatch):
+    """An override that under-reports must not take away capacity that demonstrably exists."""
+    p = _with_config([_node("n1", cpu="32", memory="64Gi")], [], monkeypatch,
+                     _Autoscaler(cpu="8", memory="16Gi"))
+    assert p.budget().free_cpu == pytest.approx(32 - 1)
+
+
+def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch):
+    """It shells out to gcloud. A cluster that cannot answer should keep admitting against
+    the nodes it has, not stop."""
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     _Autoscaler(boom=True))
+    assert p.budget().free_cpu == pytest.approx(8 - 1)
+
+
+def test_no_cluster_config_is_the_ordinary_case(monkeypatch):
+    p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, None)
+    assert p.budget().free_cpu == pytest.approx(8 - 1)

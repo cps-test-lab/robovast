@@ -67,9 +67,13 @@ def _headroom() -> "Tuple[float, int]":
 class ClusterBudgetProvider:
     """Reads the live cluster. The only implementation today; see ``BudgetProvider``."""
 
-    def __init__(self, core_api_factory, *, node_selector: "Optional[dict]" = None):
+    def __init__(self, core_api_factory, *, node_selector: "Optional[dict]" = None,
+                 cluster_config=None, kube_context=None):
         self._core_api_factory = core_api_factory
         self._node_selector = node_selector or {}
+        # An autoscaling cluster knows a size it is not currently at. See _declared_total.
+        self._cluster_config = cluster_config
+        self._kube_context = kube_context
 
     # -- the two questions -------------------------------------------------------------
 
@@ -78,6 +82,36 @@ class ClusterBudgetProvider:
                          memory=int(parse_resource(a.get("memory"))),
                          gpu=int(parse_resource(a.get("nvidia.com/gpu"))))
                 for a in self._allocatables().values()]
+
+    def _declared_total(self):
+        """The cluster's own idea of how big it can get, or ``None``.
+
+        **This is what keeps an autoscaling cluster able to grow.** A provider such as GKE
+        reports its autoscaler's *max*, which is larger than the nodes that exist right now.
+        Sizing admission to the current nodes instead would be quietly self-defeating: pods
+        that cannot be placed are exactly what makes an autoscaler add a node, so a scheduler
+        that never creates them keeps the cluster at whatever size it happens to be. Kueue got
+        this right by sizing its quota from the same override, and losing it would have been a
+        regression visible only on a cluster nobody here runs.
+
+        It qualifies the "never create what cannot be placed" rule rather than breaking it:
+        the rule is about what can *never* be placed, and on an autoscaler "not yet" is not
+        never.
+
+        Failure is an absence, not an error -- the override shells out to ``gcloud`` and a
+        cluster that cannot answer should fall back to counting its nodes, not stop admitting.
+        """
+        config = self._cluster_config
+        if config is None or not hasattr(config, "get_cluster_allocatable_resources"):
+            return None
+        try:
+            cpu, memory = config.get_cluster_allocatable_resources(self._kube_context)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.debug("cluster_config could not report its maximum size", exc_info=True)
+            return None
+        if not cpu or not memory:
+            return None
+        return parse_resource(cpu), int(parse_resource(memory))
 
     def budget(self) -> Budget:
         """Free capacity across the cluster, and the Jobs this reading already accounts for.
@@ -92,6 +126,12 @@ class ClusterBudgetProvider:
         head_cpu, head_mem = _headroom()
         total_cpu = sum(parse_resource(a.get("cpu")) for a in alloc.values())
         total_mem = sum(int(parse_resource(a.get("memory"))) for a in alloc.values())
+        declared = self._declared_total()
+        if declared is not None:
+            # Never smaller than what is actually there: an override that under-reports must
+            # not shrink a cluster below the nodes it already has.
+            total_cpu = max(total_cpu, declared[0])
+            total_mem = max(total_mem, declared[1])
         total_gpu = sum(int(parse_resource(a.get("nvidia.com/gpu"))) for a in alloc.values())
         return Budget(
             free_cpu=max(0.0, total_cpu - used_cpu - head_cpu),
