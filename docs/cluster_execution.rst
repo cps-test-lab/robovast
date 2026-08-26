@@ -910,6 +910,25 @@ appended when the client produced none.
 Job Queueing
 ------------
 
+.. note::
+
+   **Upgrading a cluster that ran an older RoboVAST: remove Kueue by hand, once.**
+   Admission used to be Kueue's, and ``setup`` installed it. Neither ``setup`` nor
+   ``cleanup`` touches it any more, so an existing deployment keeps a controller pod and
+   its CRDs indefinitely — inert, since no job carries a queue label, but running.
+
+   .. code-block:: bash
+
+      helm uninstall kueue -n kueue-system
+      kubectl delete crd -l app.kubernetes.io/name=kueue
+
+   Delete RoboVAST's own ``ClusterQueue`` and ``ResourceFlavor`` first if the CRD delete
+   hangs — an orphaned custom resource is what holds its CRD open. Check for a leftover
+   ``kueue`` mutating/validating webhook afterwards: that is the one leftover that would
+   actually break Job creation, rather than merely idling.
+
+   A cluster set up fresh needs none of this.
+
 Cluster jobs are queued by RoboVAST itself. A job is **created only once the cluster
 has room for it** — CPU and memory, and GPUs on a cluster that has them — so a large
 campaign cannot oversubscribe the nodes, and several campaigns launched at once share
