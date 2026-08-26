@@ -46,9 +46,9 @@ search:
     params: {aggregate: worst, timeout: 120.0}
   objectives:
   - {name: robustness, direction: minimize}
-  per_batch: 50
+  per_batch: 15
   budget:
-  - runs: 200
+  - runs: 150
   seed: 1
 
 visualization:
