@@ -100,6 +100,18 @@ class ConfigurationConfig(BaseModel):
 class ResourcesConfig(BaseModel):
     """Resource limits for a container.
 
+    **Unknown keys are refused.** Pydantic's default is to ignore them, and for this block
+    that is the worst of the options: a resource a deployment does not understand is dropped
+    in silence, and the campaign runs with a different allocation than its file asks for.
+    That is not hypothetical -- ``cpu_limit`` was added to a tree whose deployed service did
+    not have it yet, and the effect there was a container capped BELOW the figure it had been
+    running at, which no error and no log would have mentioned. A typo (``cpu_limits``) has
+    the same shape and is more likely.
+
+    The cost is that a ``.vast`` using a field a deployment predates now fails to launch
+    instead of quietly running differently -- which is the correct trade for a block whose
+    whole purpose is to say how much of the machine a run may have.
+
     Each field accepts either a plain scalar (the default, works for all
     clusters) or a per-cluster list when different clusters need different
     allocations::
@@ -128,6 +140,8 @@ class ResourcesConfig(BaseModel):
     # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
     # "4" to "4.0" for no reason.
+    model_config = ConfigDict(extra='forbid')
+
     cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
     memory: Optional[Union[str, list[dict[str, str]]]] = None
     #: The ceiling, when it should differ from the reservation above. Omitted -- the default,
