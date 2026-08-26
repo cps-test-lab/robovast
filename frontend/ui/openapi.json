@@ -2811,6 +2811,11 @@
           "updated_at": {
             "title": "Updated At",
             "type": "number"
+          },
+          "waiting_for_capacity": {
+            "default": false,
+            "title": "Waiting For Capacity",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2835,7 +2840,8 @@
           "share_error",
           "stage",
           "stop",
-          "updated_at"
+          "updated_at",
+          "waiting_for_capacity"
         ],
         "title": "Status",
         "type": "object"
