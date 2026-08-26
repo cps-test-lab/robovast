@@ -54,6 +54,18 @@ from typing import NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
+#: The taint a campaign node may carry, and so what anything running *where campaigns run*
+#: must tolerate. It lived in the Kueue module because Kueue's ResourceFlavor was what granted
+#: it -- which is exactly why it had to move: the taint is a property of the cluster's nodes and
+#: outlives whatever admits the jobs. ``image_warm`` reads it so its DaemonSet cannot drift from
+#: the job pods and skip precisely the nodes worth warming.
+#:
+#: **A job pod must carry this itself.** While Kueue admitted the jobs its flavor injected the
+#: toleration; nothing else would, so a deployment that taints its campaign nodes would have
+#: stopped scheduling entirely the moment Kueue was removed -- silently, as an unschedulable
+#: pod rather than an error.
+CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "NoSchedule"},)
+
 #: The node holding the service pod (workspaces + registry) and, where it is node-local,
 #: the results store. One label for both because they are one decision: the disk meter
 #: reports the service's node, so splitting them would make the meter answer about a node
