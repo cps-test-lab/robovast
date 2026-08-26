@@ -84,7 +84,7 @@ execution:
     simulation:
       backend: roqsim
       config: world/empty_room.yaml
-      resources: {cpu: 0.75, memory: 640Mi}
+      resources: {cpu: 0.6, cpu_limit: 2, memory: 640Mi}
     # The system under test, kept vanilla: a nav2 image plus the TB4 description. That is
     # the claim this shape makes -- point it at any nav2 image and it works.
     sut:
@@ -93,7 +93,7 @@ execution:
       - ros-jazzy-nav2-minimal-tb4-description
       resources: {cpu: 3, memory: 640Mi}
     scenario:
-      resources: {cpu: 1, memory: 512Mi}
+      resources: {cpu: 0.85, cpu_limit: 2, memory: 512Mi}
   mode: ros2
   runs: 3
   # Declared, unlike every other example in this repo. Without it `stalled` is null, no
