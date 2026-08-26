@@ -202,6 +202,14 @@ class WorkItem:
     started_at: float = 0.0
     seq: int = 0
     state: str = PLANNED
+    #: ``(node_id) -> JobSizing | None``. See :meth:`AdmissionController.submit`.
+    sizing_for_node: "Callable | None" = None
+
+    def sizing_on(self, node_id) -> "JobSizing":
+        """What this job needs *on that node*, falling back to what it declared."""
+        if self.sizing_for_node is None or node_id is None:
+            return self.sizing
+        return self.sizing_for_node(node_id) or self.sizing
 
 
 @dataclass
@@ -252,12 +260,19 @@ class AdmissionController:
     # -- queue -------------------------------------------------------------------------
 
     def submit(self, owner: str, items: "Iterable[Tuple[str, JobSizing, Callable[[], None]]]",
-               *, started_at: float, priority: int = 0) -> int:
+               *, started_at: float, priority: int = 0, sizing_for_node=None) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
         batch, and ordering by submission would let a newer campaign overtake an older one
         between its rounds.
+
+        *sizing_for_node* is how per-node sizing stays out of here. It is
+        ``(node_id) -> JobSizing | None``, asked once per placement attempt, and ``None`` means
+        "no figure for that node, use the declared one". The controller does arithmetic on
+        sizes and must not learn what a container is: the moment it knows the difference
+        between a simulator and a system under test, the per-node *policy* lives in the queue
+        rather than beside the thing it is a policy about.
         """
         with self._lock:
             added = 0
@@ -266,7 +281,8 @@ class AdmissionController:
                     continue  # re-submitting a plan must not double it
                 self._items[key] = WorkItem(key=key, sizing=sizing, create=create, owner=owner,
                                             priority=priority, started_at=started_at,
-                                            seq=next(self._seq))
+                                            seq=next(self._seq),
+                                            sizing_for_node=sizing_for_node)
                 added += 1
             return added
 
@@ -295,8 +311,15 @@ class AdmissionController:
                 # discovering the rest of the cluster cannot take the shape that is left.
                 # A node with no identity label can hold work but cannot be pinned to, so it
                 # is not a candidate -- its capacity still counts, via the reading.
-                fits = [n for n in by_id.values() if n.node_id and n.holds(need)]
+                #
+                # The fit is tested against what the job would need ON THAT NODE, which is
+                # what makes per-node sizing an admission fact rather than a manifest detail:
+                # a node calibrated smaller genuinely holds more of them.
+                fits = [n for n in by_id.values()
+                        if n.node_id and n.holds(item.sizing_on(n.node_id))]
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
+                if chosen is not None:
+                    need = item.sizing_on(chosen.node_id)
                 if chosen is None and not growable:
                     biggest = max((n.free_cpu for n in by_id.values()), default=0.0)
                     self._last_refusal = (
