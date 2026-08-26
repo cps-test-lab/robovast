@@ -743,37 +743,36 @@ class ClusterService(LocalTransport):
         that talks to every kubelet in turn (see ``_DISK_BUDGET_SECONDS``), and sharing it
         would let one unresponsive node block every campaign's job creation.
 
-        Returns ``None`` when the queue cannot be built -- an old kubeconfig, a missing
-        client -- so the lane falls back to creating jobs as it always did rather than
-        refusing to run. That is a deliberate exception to failing loudly: the fallback is the
-        previous behaviour, not a degraded result.
+        **Raises rather than falling back, and that changed when Kueue was retired.** While
+        Kueue was still in the path a failure here could return ``None`` and let the lane
+        create jobs as it always had, because Kueue then gated them -- the fallback was the
+        previous behaviour, not a degraded result. With no queue label on the Job there is
+        nothing behind it: ``None`` would mean creating a campaign's entire plan, which for a
+        one-run-per-job sweep is upwards of a thousand Jobs, in one unthrottled loop against
+        a cluster sized for a few dozen. A service that cannot measure the cluster must
+        refuse to submit to it.
         """
         with self._admission_lock:
             if self._admission is None:
-                try:
-                    from kubernetes import client
+                from kubernetes import client
 
-                    from .cluster_capacity import ClusterBudgetProvider
-                    from .kube_client import load_kube_config
-                    from .node_admission import AdmissionController
+                from .cluster_capacity import ClusterBudgetProvider
+                from .kube_client import load_kube_config
+                from .node_admission import AdmissionController
 
-                    def _core():
-                        # Per call, not cached: the config load is idempotent and a client
-                        # held across a service's lifetime outlives token rotation.
-                        load_kube_config(self.kube_context)
-                        return client.CoreV1Api()
+                def _core():
+                    # Per call, not cached: the config load is idempotent and a client
+                    # held across a service's lifetime outlives token rotation.
+                    load_kube_config(self.kube_context)
+                    return client.CoreV1Api()
 
-                    # The cluster config comes along so an autoscaling deployment is sized
-                    # by what it can become rather than by the nodes it currently has --
-                    # see ClusterBudgetProvider._declared_total.
-                    self._admission = AdmissionController(ClusterBudgetProvider(
-                        _core, cluster_config=self._cluster_config(),
-                        kube_context=self.kube_context))
-                except Exception:  # noqa: BLE001 - see docstring
-                    logger.warning("admission queue unavailable; jobs will be created "
-                                   "as before", exc_info=True)
-                    self._admission = False
-            return self._admission or None
+                # The cluster config comes along so an autoscaling deployment is sized
+                # by what it can become rather than by the nodes it currently has --
+                # see ClusterBudgetProvider._declared_total.
+                self._admission = AdmissionController(ClusterBudgetProvider(
+                    _core, cluster_config=self._cluster_config(),
+                    kube_context=self.kube_context))
+            return self._admission
 
     def _run_options(self, request):
         from robovast.execution.backends import RunOptions

@@ -87,9 +87,6 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
                                 previous_container_log, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .kubernetes_kueue import (KUEUE_PRIORITY_LABEL, KUEUE_QUEUE_NAME,
-                               campaign_priority_class_name,
-                               ensure_campaign_priority_class)
 from .manifests import JOB_TEMPLATE
 
 logger = logging.getLogger(__name__)
@@ -350,11 +347,6 @@ class BatchJobRunner:
     #: The longer tolerance for a job that only waits for a busy cluster -- see
     #: :data:`~.cluster_execution.CONTENDED_GRACE_SECONDS`.
     _CONTENDED_GRACE_SECONDS = CONTENDED_GRACE_SECONDS
-
-    #: How often the wait loop re-checks the Kueue admission path and reports why jobs
-    #: are still suspended. Much slower than the 2s poll: a queue does not break every
-    #: two seconds, and a normal quota wait must not spam the campaign log.
-    _SUSPEND_CHECK_INTERVAL_SECONDS = 30.0
 
     #: Jobs already dropped by :meth:`_drop_job` -- a restarted container or a pod that
     #: never started. Either keeps being reported on every poll until its pod is gone, and
@@ -1084,16 +1076,11 @@ class BatchJobRunner:
                                        min_compat_version=MIN_IMAGE_COMPAT)
         manifest = yaml.safe_load(yaml_str)
 
-        # Kueue keys queue membership off the label (not an annotation); an
-        # annotation is not honored by Kueue 0.16.x, so the job would never be
-        # suspended/admitted and would run unmanaged.
-        job_labels = manifest.setdefault("metadata", {}).setdefault("labels", {})
-        job_labels["kueue.x-k8s.io/queue-name"] = KUEUE_QUEUE_NAME
-        # Read off a label for the same reason. Orders this campaign's pending jobs
-        # against every other campaign's by campaign start time, so the oldest campaign
-        # takes each slot that frees; it never preempts, so a younger campaign's runs
-        # finish undisturbed. See kubernetes_kueue.campaign_priority_value.
-        job_labels[KUEUE_PRIORITY_LABEL] = campaign_priority_class_name(self.campaign)
+        # No queue-membership label, deliberately: this Job is admitted by RoboVAST's own
+        # controller (node_admission.AdmissionController), which creates it only once the
+        # cluster has room for it, so there is nothing left for an external queue to gate.
+        # Ordering across concurrent campaigns is the controller's too, by campaign start
+        # time, which is why the priority-class label that used to carry it is gone as well.
 
         main_container = manifest['spec']['template']['spec']['containers'][0]
         main_container.setdefault('securityContext', {})['runAsUser'] = run_as_user
@@ -1348,9 +1335,10 @@ class BatchJobRunner:
     def gpu_resources_requested(self) -> bool:
         """Whether any container of this campaign requests a GPU.
 
-        Used to tell the Kueue pre-flight which resources the ClusterQueue must cover: an
-        uncovered request is suspended forever rather than rejected, so it has to be caught
-        before any job is created.
+        No longer feeds an admission pre-flight: the GPU count now travels in the
+        ``JobSizing`` the controller admits against, so a request no node can satisfy is
+        caught by ``preflight`` alongside cpu and memory rather than by a separate check
+        that a queue's quota covered the resource at all.
         """
         plan = getattr(self, "plan", None)
         if plan is None:
@@ -1413,75 +1401,6 @@ class BatchJobRunner:
             logger.info("Pinned SUT image for %s to %s", self.campaign, digest)
 
     # -- in-pod execution ---------------------------------------------------
-
-    def _verify_admission_path(self):
-        """Fail the batch if Kueue cannot admit its jobs; warn if it cannot be checked.
-
-        A missing read permission must not stop a campaign that would otherwise run —
-        that would trade a rare hang for a common outage — so
-        :class:`KueueCheckUnavailable` is downgraded to a warning naming what could not
-        be read. Only a queue that is provably broken raises.
-        """
-        from .kubernetes_kueue import KueueCheckUnavailable, verify_kueue_admission_ready
-
-        # A GPU request the ClusterQueue does not cover is not rejected by Kueue -- it is
-        # suspended, permanently, while the Job reports active. Checked here so it costs one
-        # error before any job exists rather than a whole sweep's worth of hung ones.
-        required = (GPU_RESOURCE,) if self.gpu_resources_requested() else ()
-        try:
-            verify_kueue_admission_ready(namespace=self.namespace,
-                                         kube_context=self.kube_context,
-                                         required_resources=required)
-        except KueueCheckUnavailable as exc:
-            logger.warning("Batch %s: cannot verify the Kueue admission path (%s); "
-                           "proceeding. If jobs never start, check that ClusterQueue "
-                           "and LocalQueue exist.", self._batch_tag, exc)
-
-    def _ensure_priority_class(self):
-        """Create this campaign's Kueue priority class, so its jobs can name it.
-
-        A method rather than a bare call for the same reason :meth:`_verify_admission_path`
-        is one: it is a side-effecting cluster step in the middle of batch submission, and
-        the callers that build a runner without one -- manifest emit, tests -- stub it out.
-
-        Unlike that check this one does not tolerate failure. Kueue rejects a Job whose
-        priority-class label names a class that does not exist, so a batch submitted
-        without it fails job-by-job with a webhook error instead of once, here, with the
-        reason.
-        """
-        ensure_campaign_priority_class(self.campaign, kube_context=self.kube_context)
-
-    def _report_suspended_jobs(self, remaining):
-        """Log why still-suspended jobs are waiting, and re-check the admission path.
-
-        Kueue holds a Job suspended both for the normal reason (the queue is busy) and
-        for terminal ones (no ClusterQueue, queue held, flavor missing). The two are
-        indistinguishable from the Job alone, and Kueue's own wait message is not a
-        stable enough API to tell them apart, so the structural re-check makes the
-        fail-or-wait decision and the message is only ever logged.
-        """
-        suspended = []
-        for job_name in remaining:
-            try:
-                job = self.k8s_batch_client.read_namespaced_job(name=job_name,
-                                                                namespace=self.namespace)
-            except client.exceptions.ApiException as exc:
-                if exc.status == 404:
-                    continue
-                logger.debug("Could not read job %s for suspend check: %s", job_name, exc)
-                continue
-            if getattr(getattr(job, "spec", None), "suspend", False):
-                suspended.append(job_name)
-        if not suspended:
-            return
-        from .kubernetes_kueue import workload_wait_reasons
-        reasons = workload_wait_reasons(self.namespace, job_names=suspended)
-        detail = ("; ".join(sorted(set(reasons.values()))) if reasons
-                  else "Kueue has not reported a reason")
-        logger.warning("Batch %s: %d/%d job(s) suspended by Kueue, not yet admitted — "
-                       "%s", self._batch_tag, len(suspended), len(remaining), detail)
-        # Raises when the queue is structurally broken; a busy queue keeps waiting.
-        self._verify_admission_path()
 
     def _invalidate_restarted_jobs(self, job_label, job_names, jobs_by_name,
                                    campaign_root, storage, bucket_name,
@@ -1666,16 +1585,10 @@ class BatchJobRunner:
                         self._batch_tag, n, bucket_name, campaign_prefix)
 
         # 3. Build and submit one Job per packed job, then wait.
-        # Every job is labeled into the Kueue LocalQueue, so a broken admission path
-        # does not fail the submit — it silently suspends all of them forever. Check
-        # before creating anything, so the campaign dies here with the reason instead
-        # of in the wait loop with none.
-        self._verify_admission_path()
-        # Same reasoning one step further: every job also names this campaign's priority
-        # class, and Kueue rejects a job whose class does not exist. Creating it here
-        # (idempotent, so every batch may call it) keeps that a single up-front failure
-        # rather than one per job.
-        self._ensure_priority_class()
+        # The up-front "can these jobs ever be admitted?" check is admission.preflight()
+        # below: it asks whether the request fits any node's allocatable, which is the
+        # question that used to be asked of the Kueue queue and is now asked of the
+        # cluster directly.
         jobs = self._build_jobs()
         total_jobs = len(jobs)
         # Derived rather than read back off a rendered manifest: under admission a job's
@@ -1739,7 +1652,6 @@ class BatchJobRunner:
         # timer answered for all of them and so had to pick the shortest.
         blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
-        last_suspend_check = time.monotonic()
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
@@ -1888,13 +1800,10 @@ class BatchJobRunner:
                 job_label, job_names, jobs_by_name, campaign_root,
                 storage, bucket_name, campaign_prefix)
             # blocked is None (probe failed) => leave blocked_since unchanged.
-            # A Kueue-suspended Job has no pod at all, so the probe above cannot see it
-            # and activeDeadlineSeconds never fires (its timer does not run while
-            # suspended). Report it separately, and re-check the admission path so a
-            # queue deleted or held *mid-campaign* fails the batch instead of hanging it.
-            if time.monotonic() - last_suspend_check >= self._SUSPEND_CHECK_INTERVAL_SECONDS:
-                last_suspend_check = time.monotonic()
-                self._report_suspended_jobs(remaining)
+            # Nothing suspends a Job any more, so the pod-based probe above is no longer
+            # blind to a waiting job: a job that has not been created yet is PLANNED in the
+            # controller, which _publish_capacity_wait reads directly rather than inferring
+            # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             time.sleep(2)

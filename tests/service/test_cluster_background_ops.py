@@ -60,43 +60,46 @@ def test_run_share_dispatches_in_the_sharing_phase(svc, monkeypatch):
     assert callable(seen["work"])
 
 
-def test_admission_check_uses_the_given_context(monkeypatch):
-    """The Kueue admission check must dial the context the Jobs were submitted with.
+def test_postprocess_job_loads_the_given_context(monkeypatch):
+    """Postprocessing must dial the context the campaign's Jobs were submitted with.
 
-    It used to be called with no context at all, so it dialled the ambient kubeconfig
-    context while the campaign's Jobs had gone to the service's ``--context`` cluster.
-    With the two pointing at different clusters, postprocessing failed against a cluster
-    the campaign never used — and said so in a self-contradictory way, naming the
-    configured API server as unreachable while the timeout it quoted was to a different
-    address entirely.
+    The Kubernetes clients this path builds read whatever context is loaded at the moment
+    they are constructed, so loading it is the whole of the requirement. It used to happen
+    only as a side effect of the Kueue admission check that ran first, and when that check
+    was called with no context at all it dialled the ambient kubeconfig while the campaign's
+    Jobs had gone to the service's ``--context`` cluster. Postprocessing then failed against
+    a cluster the campaign never used, and said so self-contradictorily: naming the
+    configured API server as unreachable while quoting a timeout to a different address.
 
-    The stub raises ``ClusterUnreachableError``, a case this path already handles by
-    returning a reason, so the test stops right where the context has been consumed and
-    needs no cluster.
+    Retiring Kueue deleted that check, and with it the incidental load — so this pins the
+    load itself rather than the probe that used to imply it. The stub raises after recording,
+    which stops the test where the context has been consumed and needs no cluster.
     """
-    from robovast.common.errors import ClusterUnreachableError
-    from robovast.execution.cluster_execution import (in_pod_storage, kubernetes_kueue,
+    from robovast.execution.cluster_execution import (in_pod_storage, kube_client,
                                                       postprocess_job)
 
     seen = {}
 
-    def _check(**kwargs):
-        seen.update(kwargs)
-        raise ClusterUnreachableError("api server unreachable")
+    class _Stop(Exception):
+        pass
 
-    monkeypatch.setattr(kubernetes_kueue, "verify_kueue_admission_ready", _check)
+    def _load(context=None, *args, **kwargs):
+        seen["context"] = context
+        raise _Stop
+
+    monkeypatch.setattr(kube_client, "load_kube_config", _load)
     monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
                         lambda cfg, cid: ("bucket", "prefix"))
     cfg = MagicMock()
     cfg.get_s3_credentials.return_value = ("key", "secret")
     cfg.get_s3_endpoint.return_value = "http://localhost:9000"
 
-    ok, message = postprocess_job.run_conversion_job(
-        cfg, "camp-1", "ns", "img", ["echo"], kube_context="local")
+    with pytest.raises(_Stop):
+        postprocess_job.run_conversion_job(
+            cfg, "camp-1", "ns", "img", ["echo"], kube_context="local")
 
-    assert seen.get("kube_context") == "local", (
-        f"admission check did not receive the caller's context: {seen}")
-    assert not ok and "cannot be scheduled" in message
+    assert seen.get("context") == "local", (
+        f"postprocessing did not load the caller's context: {seen}")
 
 
 def test_postprocess_campaign_forwards_the_context(monkeypatch):

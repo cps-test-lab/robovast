@@ -1751,71 +1751,69 @@ mappings documented under *Per-Cluster Resource Limits* in
 
 .. _kueue-internals:
 
-Job admission (Kueue) internals
--------------------------------
+Job admission internals
+-----------------------
 
 User-facing behaviour is in :doc:`cluster_execution`; this is the machinery
-behind it. RoboVAST targets Kueue |kueue_version|.
+behind it.
 
-.. |kueue_version| replace:: 0.16.1
+**RoboVAST admits its own jobs.** A campaign's Jobs are created by
+:class:`~robovast.execution.cluster_execution.node_admission.AdmissionController`,
+one at a time, each only once the cluster has room for it — so nothing is ever
+submitted to a queue and left to wait. ``runs_per_job`` defaults to 1, so a
+typical campaign's plan is upwards of a thousand Jobs; creating them all at once
+and letting something else sort it out is what this replaced.
 
-**Objects.** A single ``ResourceFlavor`` (``default-flavor``) represents the
-homogeneous node pool; a ``ClusterQueue`` (``robovast-cluster-queue``) holds the
-combined CPU/memory quota, sized from ``allocatable − requested`` at setup time;
-a ``LocalQueue`` named ``robovast`` in the execution namespace is the submission
-target; and one ``WorkloadPriorityClass`` per campaign carries its admission
-priority (see *Campaign priority* below). Each generated Job carries the **label**
-``kueue.x-k8s.io/queue-name: robovast`` — Kueue 0.16 keys queue membership off
-the label, not an annotation.
+**Why creation is the admission point.** Two facts, verified against Kueue 0.16.1
+on a live cluster, decide the shape: ``podSetUpdates`` carries only
+``annotations``/``labels``/``name``/``nodeSelector``/``tolerations`` and **no**
+``resources``, and patching ``spec.template`` on a suspended Job is rejected as
+immutable. The request a Job is created with is therefore permanent, so anything
+that wants to size a Job per node has to decide before it exists. Holding the
+plan in RoboVAST's own store and creating on admit makes that immutability
+irrelevant rather than something to work around.
 
-**Why there is an admission preflight.** Because every Job is labeled into the
-LocalQueue, Kueue creates it **suspended** and starts it only once the queue
-admits it. A broken admission path therefore does not fail the submit — the jobs
-simply never start, with no pod, no event and no error. Nothing about that state
-looks like a failure: the Job counts as active, the campaign log says "still
-running", and the ``activeDeadlineSeconds`` backstop cannot fire because its
-timer does not run while a Job is suspended.
+**Ordering is a property of the queue, not of thread scheduling.** One global
+queue drains in ``(priority, campaign start)`` order, and any campaign thread that
+wakes drains it — so an older campaign's *later* batch still outranks a younger
+campaign's first, which submission order alone would get backwards. A search
+submits its batches one after another, so ordering by submission time makes an
+older campaign look younger with every batch and the two take turns instead of
+the older one finishing.
 
-``verify_kueue_admission_ready()`` therefore runs before any Job is created (and
-again every 30 s while a batch waits, so a queue broken *mid*-campaign is caught
-too). It fails the campaign with an actionable message when:
+**Capacity, and the double-counting hazard.** Free capacity is
+``allocatable − committed requests − headroom``, cluster-wide. A Job created
+moments ago has no pod bound yet, so the next measurement cannot see its requests;
+handing the same cores out twice is exactly the over-admission this has to avoid.
+The controller keeps an in-flight ledger and stops subtracting a reservation the
+instant the measurement starts counting the real pod, which needs no timer and
+leaves no window where the same cores are counted twice or not at all.
 
-* the ``LocalQueue`` does not exist in the execution namespace — setup was never
-  run, or the campaign targets a different namespace;
-* the ``ClusterQueue`` it points at does not exist;
-* the ``ClusterQueue`` is stopped (``stopPolicy: Hold``);
-* the ``ClusterQueue`` reports ``Active=False`` — most often a missing
-  ``ResourceFlavor``, which leaves every object present but unusable.
+**Waiting for capacity is not a failure, and is not a stall.** A job that has not
+been created yet is ``PLANNED`` in the controller — a fact it holds, not something
+inferred from a pod. ``list_campaign_jobs`` reports it ``waiting``; the no-progress
+deadline is suppressed while a batch is entirely queued, because that deadline is a
+per-*run* budget and no run of the campaign is running. Getting this wrong is what
+made a healthy third campaign report as wedged behind two others.
 
-The same check runs as a post-condition of ``vast execution cluster setup``, so
-setup cannot report success while leaving the queues unusable.
+**Kueue is no longer in the path.** Campaign and postprocessing Jobs carry no
+``kueue.x-k8s.io/*`` label, so Kueue neither suspends nor admits them, and the
+per-campaign ``WorkloadPriorityClass`` that used to order them is gone with the
+label that named it. ``vast execution cluster setup`` still installs Kueue and its
+queues; they are inert with respect to campaign jobs and are removed separately.
 
-**Quota exhaustion is not a failure.** A queue whose capacity is currently used
-up is healthy, and the correct response is to wait — that is Kueue's normal
-operating state. The preflight only ever looks at the *structure* of the
-admission path. While jobs wait, the batch logs Kueue's own reason (read from
-each Workload's ``QuotaReserved`` condition) instead of a bare "still running",
-and ``list_campaign_jobs`` reports them ``waiting`` with that reason as
-``detail`` — not ``blocked``, which is reserved for a job that cannot start on its
-own (image pull / config error) and therefore needs a human.
-
-The preflight reads ``localqueues`` (namespaced) and ``clusterqueues``
-(cluster-scoped); both grants are on the service's Role and ClusterRole. An
-**existing** deployment must be redeployed to pick them up — until then the check
-reports "cannot verify" and the campaign proceeds, since a missing read
-permission should never block a run that would otherwise work.
-
-**Campaign priority (oldest first).** Kueue orders a ClusterQueue's pending workloads
+**Campaign priority (oldest first) — historical.** The paragraphs below describe the
+Kueue mechanism this replaced. Kueue orders a ClusterQueue's pending workloads
 by priority, then by Workload ``creationTimestamp``. That second key is the wrong one for
 a search campaign, whose batches are submitted one after another: campaign A's batch *n+1*
 Jobs are only created once batch *n* has finished, so their Workloads are *younger* than
 those of a campaign B that started later. With equal priorities A then queues behind B's
 whole batch, B behind A's next one, and the two take turns instead of A finishing first.
 
-Every scenario and postprocess Job therefore also carries the **label**
+Every scenario and postprocess Job therefore *used to* also carry the **label**
 ``kueue.x-k8s.io/priority-class``, naming a per-campaign ``WorkloadPriorityClass`` whose
-value is ``_PRIORITY_BASE − seconds since _PRIORITY_REF`` — so an earlier start time is a
-higher value. Points worth knowing:
+value was ``_PRIORITY_BASE − seconds since _PRIORITY_REF`` — so an earlier start time was a
+higher value. Points worth knowing, since the ordering requirement outlived the mechanism:
 
 * **The value is derived, never stored.** It is computed from the timestamp already in the
   campaign id (``<name>-YYYY-MM-DD-HHMMSS``) by ``campaign_priority_value()``. Because it
