@@ -1094,6 +1094,19 @@ class BatchJobRunner:
             if exc.status != 409:
                 raise
 
+    def _node_figures(self, node_id):
+        """This campaign's calibrated figures for *node_id*, or ``None``.
+
+        One lookup used by BOTH the manifest and the queue's arithmetic, so the two cannot
+        disagree about what a job on that node costs.
+        """
+        from .node_calibration import NodeCalibration  # noqa: PLC0415
+
+        admission = self.admission
+        if admission is None or not node_id:
+            return None
+        return admission.calibration(self.campaign, NodeCalibration).calibrated(node_id)
+
     def _sizing_for_node(self, job, total_jobs, calibration):
         """``(node_id) -> JobSizing | None`` matching what the manifest will ask for.
 
@@ -1105,7 +1118,7 @@ class BatchJobRunner:
             return None
 
         def _sizing(node_id):
-            figures = calibration.calibrated(node_id)
+            figures = self._node_figures(node_id)
             if not figures:
                 return None
             return self._job_sizing(job, total_jobs, node_figures=figures)
@@ -1913,7 +1926,14 @@ class BatchJobRunner:
                      for job in jobs]
 
         def _create_job(job, name, node_id=None):
-            manifest = self.create_job_manifest(job, total_jobs)
+            # The node's figures, or None while it is uncalibrated. **This is the same lookup
+            # the queue made when it decided the job fits**, and it has to be: the queue
+            # admits against JobSizing while Kubernetes reserves what the manifest says, so a
+            # manifest built without them asks for the declared size on a node the queue
+            # already counted as holding the smaller one -- over-admission, silently, on
+            # exactly the nodes calibration was supposed to help.
+            manifest = self.create_job_manifest(
+                job, total_jobs, node_figures=self._node_figures(node_id))
             if node_id:
                 # Pinned to the node admission reserved room on, so the placement and the
                 # reservation are one decision. ANDed with whatever the spec already carries

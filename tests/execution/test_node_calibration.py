@@ -460,3 +460,37 @@ def test_a_container_with_no_role_is_treated_as_infrastructure():
 def _calibrated_with_roles(declared, name, figures, roles):
     from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
     return calibrated_resources(declared, name, figures, roles=roles)
+
+
+def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against():
+    """The seam where this actually broke, which an earlier test missed by one function.
+
+    That test compared _job_sizing against calibrated_resources and passed -- while the job
+    CREATION path built its manifest without the node's figures at all. So the queue counted
+    a calibrated node as holding the smaller job and Kubernetes was asked to reserve the
+    declared one: over-admission, silently, on exactly the nodes calibration was meant to
+    help. Seen on a live cluster, where every job on a calibrated node still asked for the
+    declared 3 cores.
+
+    Both paths now go through one lookup, and this pins the CREATION half.
+    """
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    class _Admission:
+        def __init__(self):
+            self._cal = NodeCalibration()
+            self._cal.claim_probe("fast", "p")
+            self._cal.record("fast", "p", {"sut": {"sustained": 1.0, "peak": 2.0,
+                                                   "samples": 200}})
+
+        def calibration(self, owner, factory=None):
+            return self._cal
+
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-2026-07-17-120000"
+    r.admission = _Admission()
+
+    assert r._node_figures("fast"), "the calibrated node has figures"
+    assert r._node_figures("other") is None, "an uncalibrated one has none"
+    assert r._node_figures(None) is None, "and an unpinned job has no node to look up"

@@ -649,13 +649,29 @@ _POD_PHASE_RANK = {"Pending": 0, "Failed": 1, "Succeeded": 2, "Running": 3}
 _UNAVAILABLE_CLAUSE = re.compile(r"^\s*\d+\s+(?P<cause>.+?)\s*$")
 
 
+#: How the scheduler words a node the pod's own selector ruled out. Matched as a substring
+#: because the count prefixes it ("3 node(s) didn't match ...").
+_SELECTOR_MISMATCH = "didn't match Pod's node affinity/selector"
+
+
 def unschedulable_is_contention(message: str) -> bool:
     """Is *message* an Unschedulable reason that could clear with no intervention?
 
-    True only when **every** cause the scheduler lists is ``Insufficient <resource>`` —
-    the node has the resource and something else is holding it. Anything else (an
-    untolerated taint, an unmatched node selector, a missing volume) describes a cluster
-    that will look identical in an hour, and gets no extra patience.
+    True only when every cause the scheduler lists is ``Insufficient <resource>`` -- the node
+    has the resource and something else is holding it -- or says the node did not match the
+    pod's own selector. Anything else (an untolerated taint, a missing volume) describes a
+    cluster that will look identical in an hour, and gets no extra patience.
+
+    **The selector clause is discounted because RoboVAST now writes that selector itself.**
+    Admission pins a job to the node it reserved room on, so "3 node(s) didn't match Pod's
+    node affinity/selector" is the pin working, not a misconfiguration -- the question is
+    only what the ONE matching node said. Reading it as a permanent fault destroyed six runs
+    of a fifty-run campaign on 2026-08-27: each was invalidated after 63 seconds for being
+    "unable to start", when it was waiting for its own node exactly as intended.
+
+    A selector that matches *nothing* still reads as blocked, and must: with no matching node
+    there is no ``Insufficient`` cause to find, so every clause is a mismatch and there is
+    nothing to wait for.
 
     Kubernetes does not distinguish "busy" from "too big to ever fit": both read
     ``Insufficient cpu``. So this is only half the test — the caller must also check the
@@ -673,12 +689,19 @@ def unschedulable_is_contention(message: str) -> bool:
     causes = [c.strip() for c in detail.split(",") if c.strip()]
     if not causes:
         return False
+    insufficient = False
     for cause in causes:
         match = _UNAVAILABLE_CLAUSE.match(cause)
         text = match.group("cause") if match else cause
-        if not text.startswith("Insufficient "):
-            return False
-    return True
+        if text.startswith("Insufficient "):
+            insufficient = True
+            continue
+        if _SELECTOR_MISMATCH in text:
+            continue  # a node we deliberately excluded; it says nothing about waiting
+        return False
+    # At least one node had to be a candidate. All-mismatch means the selector matches
+    # nothing at all, which no amount of waiting fixes.
+    return insufficient
 
 
 #: Kubelet / registry phrasings for "this pull is rate-limited", lowercased. Deliberately

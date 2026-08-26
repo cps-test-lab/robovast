@@ -44,7 +44,7 @@ def _runner(jobs, admission, *, remaining_script):
     r.admission = admission
     r.created = []
     r._build_jobs = lambda: jobs
-    r.create_job_manifest = lambda job, total: {"metadata": {"name": f"j-{job.index}"}}
+    r.create_job_manifest = lambda job, total, node_figures=None: {"metadata": {"name": f"j-{job.index}"}}
     r.k8s_batch_client = types.SimpleNamespace(
         create_namespaced_job=lambda namespace, body: r.created.append(
             body["metadata"]["name"]))
@@ -274,7 +274,7 @@ def test_the_chosen_node_reaches_the_manifest_as_a_nodeSelector():
 
     c = AdmissionController(_Provider(cpu=8.0), clock=lambda: 0.0)
     r = _runner([_job(0)], c, remaining_script=lambda names: [])
-    r.create_job_manifest = lambda job, total: {
+    r.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": "j-0"},
         "spec": {"template": {"spec": {"nodeSelector": {"pool": "batch"}}}}}
     bodies = []
