@@ -218,6 +218,43 @@ def _run_output_dir_env(job) -> tuple:
     return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
 
 
+def calibrated_resources(declared: dict, container_name: str, node_figures) -> dict:
+    """*declared* re-sized for one node, or unchanged when that node is not calibrated yet.
+
+    **The statistic depends on the container's ROLE, and this is where the roles live.**
+
+    * The **system under test** takes the measured *peak*, as request AND limit. Its budget
+      has to be one it never throttles against, because a run clipped mid-plan is a failure
+      that looks like the stack's rather than the allocation's.
+    * Everything else takes the *sustained* figure as its request and keeps its declared
+      ceiling. The simulator's peak-to-mean ratio is ~18, so reserving its peak per node
+      would cost more than the un-calibrated campaign did -- the opposite of the point.
+
+    Memory is never re-sized. It does not vary with how fast a machine is, and exceeding a
+    memory limit is an OOM kill rather than a slowdown, so there is nothing to win and a run
+    to lose.
+    """
+    from robovast.common.config import SUT_CONTAINER  # noqa: PLC0415
+
+    figures = (node_figures or {}).get(container_name)
+    if not figures:
+        return declared
+    out = dict(declared)
+    if container_name == SUT_CONTAINER:
+        cpu = figures.get("peak")
+        if cpu:
+            out["cpu"] = cpu
+            out["cpu_limit"] = cpu
+    else:
+        cpu = figures.get("sustained")
+        if cpu:
+            out["cpu"] = cpu
+            # The ceiling stays where the author put it: a soft limit is what lets a burst
+            # through, and calibration is about the reservation.
+            out.setdefault("cpu_limit", declared.get("cpu_limit") or declared.get("cpu"))
+    return out
+
+
 def stamp_resources(spec: dict, resources: dict) -> None:
     """Put *resources* on one container spec as separate requests and limits.
 

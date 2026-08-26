@@ -66,7 +66,7 @@ class NodeCalibration:
     benchmark suite.
     """
 
-    #: node_id -> {container_name: cpu_cores}
+    #: node_id -> {container_name: {"sustained": cores, "peak": cores}}, headroom applied
     _by_node: dict = field(default_factory=dict)
     #: node_id -> the job key whose run is paying for that node's figures
     _probes: dict = field(default_factory=dict)
@@ -95,17 +95,27 @@ class NodeCalibration:
         return True
 
     def record(self, node_id, job_key, measured: dict) -> bool:
-        """Take a finished probe's per-container cores as that node's figures.
+        """Take a finished probe's per-container measurement as that node's figures.
 
-        *measured* is ``{container: peak_cores}``. Returns whether anything was stored: a
-        probe that produced no measurement leaves the node uncalibrated, so the next job there
-        becomes the probe instead. Silence is not a measurement of zero.
+        *measured* is ``{container: {"sustained": cores, "peak": cores}}`` -- both, because
+        the right statistic depends on what the container is FOR and this module must not
+        know that. A system under test is sized on its peak so it never throttles; a
+        simulator is sized on what it sustains and allowed to burst past it. Keeping both
+        here leaves that choice with the caller that knows the roles.
+
+        Returns whether anything was stored: a probe that produced no measurement leaves the
+        node uncalibrated, so the next job there becomes the probe instead. Silence is not a
+        measurement of zero.
         """
         if self._probes.get(node_id) != job_key:
             return False
         self._probes.pop(node_id, None)
-        figures = {name: max(MIN_CPU, round(cores * CALIBRATION_HEADROOM, 3))
-                   for name, cores in (measured or {}).items() if cores}
+        figures = {}
+        for name, stats in (measured or {}).items():
+            kept = {k: max(MIN_CPU, round(v * CALIBRATION_HEADROOM, 3))
+                    for k, v in (stats or {}).items() if v}
+            if kept:
+                figures[name] = kept
         if not figures:
             logger.warning("calibration run %s produced no usable measurement; node %s stays "
                            "on the declared sizing", job_key, node_id)
@@ -113,7 +123,8 @@ class NodeCalibration:
             return False
         self._by_node[node_id] = figures
         logger.info("node %s calibrated from %s: %s", node_id, job_key,
-                    ", ".join(f"{k}={v:g}" for k, v in sorted(figures.items())))
+                    ", ".join(f"{k}={v.get('peak', 0):g}peak/{v.get('sustained', 0):g}sust"
+                              for k, v in sorted(figures.items())))
         return True
 
     def abandon(self, node_id, job_key) -> None:
@@ -141,3 +152,33 @@ def calibration_applies(total_jobs: int, node_count: int) -> bool:
     campaign behaves exactly as it did before any of this existed.
     """
     return node_count > 0 and total_jobs > node_count
+
+
+def container_cpu_profile(rows) -> dict:
+    """``{"sustained": cores, "peak": cores}`` from one ``resource_usage_<container>.csv``.
+
+    *rows* are the CSV's dict rows. Summed **per tick before aggregating**, because a row is
+    one process name and a container is the whole stack of them: taking the max of the rows
+    would report the busiest single process and size the container for a fraction of itself.
+
+    ``sustained`` is the 95th percentile of the per-tick totals and ``peak`` the largest. The
+    pair exists because one number cannot serve both roles -- measured on the shipped
+    example, a simulator sustains 0.34 cores and peaks at 5.98, so sizing it at either figure
+    alone is wrong by about 18x in one direction or the other.
+
+    Returns ``{}`` when there is nothing to read, which the caller must treat as "not
+    measured" rather than as zero.
+    """
+    per_tick = {}
+    for row in rows or []:
+        try:
+            ts = row["timestamp"]
+            cpu = float(row["cpu_percent"] or 0.0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        per_tick[ts] = per_tick.get(ts, 0.0) + cpu
+    if not per_tick:
+        return {}
+    totals = sorted(v / 100.0 for v in per_tick.values())
+    idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
+    return {"sustained": totals[idx], "peak": totals[-1]}
