@@ -17,13 +17,25 @@ conditions -- which is the thing a uniform number was supposed to prevent. Sizin
 so the stack meets its deadlines everywhere equalises the behaviour instead of the
 accounting.
 
-**How the figure is found: one run per node, discarded.**
+**How the figure is found: one probe per node, which is never a campaign run.**
 
-The first job placed on a node runs at the **declared** size and is a *calibration run*. What
-it measured becomes that node's figures for the rest of the campaign, and the run itself is
-dropped from the results -- it was executed under a different allocation from every other run
-on that node, so keeping it would put exactly the inconsistency this exists to remove into
-the data.
+Before a node takes any of the campaign's work, one *probe* runs there at the declared size.
+What it measured becomes that node's figures, and every campaign run on that node then uses
+them -- so all of them share one environment, which is the property the whole exercise is
+for.
+
+**The probe is not a run that gets removed; it is a run that is never added.** It writes to
+``_calibration/`` (see ``RESERVED_CAMPAIGN_DIRS``), which nothing walks looking for runs, so
+it cannot enter the results in the first place. Taking one of the campaign's own runs and
+deleting it afterwards would be the more dangerous design by some distance -- a mistake there
+costs results that cannot be recovered -- and it would also hand back a campaign of 46 runs
+where 50 were asked for. This costs the same wall-clock and delivers all 50.
+
+**A node with an outstanding probe takes no campaign work.** Without that, jobs land there at
+the declared size while the probe is still running, and those runs are then the odd ones out
+on a node whose later runs are calibrated -- reintroducing the very inconsistency the probe
+exists to remove. The cost is one run's worth of ramp-up at campaign start, in parallel
+across the nodes.
 
 Frozen once set. Continuing to adapt would mean run 5 and run 40 on the same node ran in
 different environments, which is the same defect in a slower form.
@@ -68,31 +80,41 @@ class NodeCalibration:
 
     #: node_id -> {container_name: {"sustained": cores, "peak": cores}}, headroom applied
     _by_node: dict = field(default_factory=dict)
-    #: node_id -> the job key whose run is paying for that node's figures
+    #: node_id -> the probe key currently measuring that node
     _probes: dict = field(default_factory=dict)
-    #: job keys whose results must not be kept
-    _discard: set = field(default_factory=set)
     enabled: bool = True
 
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
         return self._by_node.get(node_id)
 
-    def claim_probe(self, node_id, job_key) -> bool:
-        """Mark *job_key* as the calibration run for *node_id*, if one is not already out.
+    def claim_probe(self, node_id, probe_key) -> bool:
+        """Start measuring *node_id*, unless it is measured or being measured already.
 
         **At most one outstanding per node**, which is the whole reason this is a claim rather
-        than a flag. Without it the first wave of a batch lands several jobs on a node before
-        any of them has finished, every one of them is a probe, and every one is discarded --
-        the campaign pays for its calibration several times over and loses the runs.
+        than a flag: without it every job of the first wave becomes a probe and the campaign
+        pays for its calibration once per job instead of once per node.
         """
         if not self.enabled or node_id is None or node_id in self._by_node:
             return False
         if node_id in self._probes:
             return False
-        self._probes[node_id] = job_key
-        self._discard.add(job_key)
+        self._probes[node_id] = probe_key
         return True
+
+    def accepts_work(self, node_id) -> bool:
+        """Whether a campaign job may be placed on *node_id* yet.
+
+        ``False`` only while a probe is out. Every campaign run on a node must use that
+        node's figures, so work placed before the probe reports would be sized differently
+        from everything that follows it -- the inconsistency the probe exists to remove,
+        reintroduced by the act of measuring.
+
+        A node needing a probe it has not been given yet DOES accept work, and that is not a
+        contradiction: calibration is disabled for such a campaign (a pilot), or the node is
+        unlabelled and cannot be sized per node anyway.
+        """
+        return node_id not in self._probes
 
     def record(self, node_id, job_key, measured: dict) -> bool:
         """Take a finished probe's per-container measurement as that node's figures.
@@ -117,9 +139,8 @@ class NodeCalibration:
             if kept:
                 figures[name] = kept
         if not figures:
-            logger.warning("calibration run %s produced no usable measurement; node %s stays "
-                           "on the declared sizing", job_key, node_id)
-            self._discard.discard(job_key)
+            logger.warning("calibration probe %s produced no usable measurement; node %s "
+                           "stays on the declared sizing", job_key, node_id)
             return False
         self._by_node[node_id] = figures
         logger.info("node %s calibrated from %s: %s", node_id, job_key,
@@ -127,31 +148,34 @@ class NodeCalibration:
                               for k, v in sorted(figures.items())))
         return True
 
-    def abandon(self, node_id, job_key) -> None:
-        """A probe that will never report. Frees the node for the next job to calibrate it.
+    def abandon(self, node_id, probe_key) -> None:
+        """A probe that will never report -- it died, or the campaign is shutting down.
 
-        Its results are *kept*: the run happened at the declared sizing, which is what every
-        other run on an uncalibrated node also used, so it is as comparable as they are. Only
-        a probe whose figures were actually adopted has to be dropped.
+        Frees the node so it can accept work again. The node stays uncalibrated and its runs
+        use the declared sizing, which is the same thing that happens on a cluster where
+        calibration is off entirely: a worse allocation, never a wrong result.
         """
-        if self._probes.get(node_id) == job_key:
+        if self._probes.get(node_id) == probe_key:
             self._probes.pop(node_id, None)
-            self._discard.discard(job_key)
-
-    def should_discard(self, job_key) -> bool:
-        """Whether this job's results must be dropped from the campaign."""
-        return job_key in self._discard
 
 
-def calibration_applies(total_jobs: int, node_count: int) -> bool:
+def calibration_applies(total_jobs: int, node_count: int, growable: bool = False) -> bool:
     """Whether a campaign is worth calibrating at all.
 
-    No tuned constant, because none is needed: calibration costs one run per node and only
-    pays where a node runs a *second* job. With no more jobs than nodes, no node gets one --
-    so a pilot would spend its entire result set on measurement. Skipped there, and the
-    campaign behaves exactly as it did before any of this existed.
+    **Never on a cluster that can grow.** There, a job that fits no current node is created
+    *unpinned* and the scheduler places it -- possibly on a node that is already calibrated,
+    at the declared size, which is precisely the mixed-sizing this exists to prevent and is
+    invisible after the fact. An autoscaler's node set is fluid anyway: a figure measured on
+    a node that is about to be scaled away is a probe run spent on nothing. Declared sizing
+    everywhere is the honest behaviour there.
+
+    No tuned constant, because none is needed: calibration costs one probe run per node and
+    only pays where a node then runs several jobs at the better size. With no more jobs than
+    nodes, no node runs more than one, so the probe would cost as much as the work it was
+    meant to improve. Skipped there, and the campaign behaves exactly as it did before any of
+    this existed.
     """
-    return node_count > 0 and total_jobs > node_count
+    return not growable and node_count > 0 and total_jobs > node_count
 
 
 def container_cpu_profile(rows) -> dict:

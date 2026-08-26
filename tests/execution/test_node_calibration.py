@@ -19,18 +19,21 @@ def test_a_pilot_calibrates_nothing():
     assert calibration_applies(10, 0) is False, "no nodes, nothing to calibrate against"
 
 
-def test_one_probe_per_node_at_a_time():
-    """The trap that would cost a campaign several runs instead of one.
+def test_an_autoscaling_cluster_is_not_calibrated():
+    """There a job that fits no current node is created UNPINNED, so it can land on an
+    already-calibrated node at the declared size -- the mixed sizing this exists to prevent,
+    and invisible afterwards. The node set is fluid anyway, so a probe may measure a machine
+    that is about to be scaled away."""
+    assert calibration_applies(50, 4, growable=True) is False
+    assert calibration_applies(50, 4, growable=False) is True
 
-    A batch lands several jobs on a node before any has finished. Without the claim every one
-    of them is a probe and every one is discarded, so the campaign pays for its calibration
-    over and over and loses the runs it paid with.
-    """
+
+def test_one_probe_per_node_at_a_time():
+    """The trap that would cost a campaign a probe per job instead of a probe per node."""
     c = NodeCalibration()
     assert c.claim_probe("n1", "j0") is True
     assert c.claim_probe("n1", "j1") is False
     assert c.claim_probe("n2", "j2") is True, "a different node is a different probe"
-    assert c.should_discard("j0") and not c.should_discard("j1")
 
 
 def test_a_calibrated_node_never_probes_again():
@@ -73,19 +76,21 @@ def test_a_probe_that_measured_nothing_leaves_the_node_uncalibrated():
     c.claim_probe("n1", "j0")
     assert c.record("n1", "j0", {}) is False
     assert c.calibrated("n1") is None
-    assert not c.should_discard("j0"), "a run whose data was unusable is still a real run"
+    assert c.accepts_work("n1") is True, "the node must not be left blocked"
     assert c.claim_probe("n1", "j1") is True, "the node is free to be probed again"
 
 
-def test_an_abandoned_probe_keeps_its_results_and_frees_the_node():
-    """A probe that dies, or is dropped for a restart, never reports. Its run happened at the
-    declared sizing -- the same one every other run on an uncalibrated node used -- so it is
-    exactly as comparable as they are and there is no reason to throw it away. Only a probe
-    whose figures were ADOPTED has to be dropped."""
+def test_an_abandoned_probe_frees_the_node_rather_than_blocking_it():
+    """A probe that dies must not leave its node refusing work for the rest of the campaign.
+
+    The node stays uncalibrated and its runs use the declared sizing -- the same thing that
+    happens where calibration is off entirely. A worse allocation, never a wrong result.
+    """
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
+    assert c.accepts_work("n1") is False
     c.abandon("n1", "j0")
-    assert not c.should_discard("j0")
+    assert c.accepts_work("n1") is True
     assert c.claim_probe("n1", "j1") is True
 
 
@@ -98,10 +103,11 @@ def test_recording_against_the_wrong_job_is_refused():
     assert c.calibrated("n1") is None
 
 
-def test_disabled_calibration_claims_nothing():
+def test_disabled_calibration_claims_nothing_and_blocks_nothing():
+    """A pilot must behave exactly as it did before any of this existed."""
     c = NodeCalibration(enabled=False)
     assert c.claim_probe("n1", "j0") is False
-    assert not c.should_discard("j0")
+    assert c.accepts_work("n1") is True
 
 
 # -- the measurement ----------------------------------------------------------------------
@@ -170,3 +176,23 @@ def test_an_uncalibrated_node_changes_nothing():
     assert _calibrated(declared, "sut", None) == declared
     assert _calibrated(declared, "sut", {}) == declared
     assert _calibrated(declared, "sut", {"other": {"peak": 9}}) == declared
+
+
+def test_a_node_takes_no_campaign_work_while_its_probe_is_out():
+    """Otherwise jobs land at the declared size while the probe is still measuring, and those
+    runs are the odd ones out on a node whose later runs are calibrated -- the inconsistency
+    the probe exists to remove, reintroduced by the act of measuring."""
+    c = NodeCalibration()
+    assert c.accepts_work("n1") is True
+    c.claim_probe("n1", "probe-1")
+    assert c.accepts_work("n1") is False
+    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0}})
+    assert c.accepts_work("n1") is True
+
+
+def test_the_probe_directory_is_not_a_configuration():
+    """The whole mechanism by which a probe is never a campaign run: it writes somewhere
+    nothing walks looking for runs, so it is never ADDED rather than added and removed."""
+    from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS
+
+    assert "_calibration" in RESERVED_CAMPAIGN_DIRS
