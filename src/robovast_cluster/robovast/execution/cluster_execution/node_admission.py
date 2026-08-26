@@ -12,9 +12,9 @@ nothing ever reaches the scheduler that the scheduler cannot place.
 
 **It is a queue, not a per-caller reservation service, and that is the load-bearing decision.**
 Every campaign runs on its own thread, so if each asked "may I go?" for itself the order would
-be decided by which thread won the lock. That is precisely the failure
-:func:`~robovast.execution.cluster_execution.kubernetes_kueue.campaign_priority_value` was
-written to fix: a search campaign submits its batches one after another, so ordering by
+be decided by which thread won the lock. That is precisely the failure the per-campaign
+Kueue priority class was written to fix, back when Kueue ordered admission: a search
+campaign submits its batches one after another, so ordering by
 submission makes an older campaign's later batches look younger than a newer campaign, and
 "the two end up taking turns instead of the older one finishing first". Here the order is a
 property of the queue -- ``(priority, campaign start)`` -- and no thread can change it by
@@ -174,8 +174,8 @@ class AdmissionRefused(Exception):
 
     Distinct from "no room now", which is an ordinary answer (``drain`` simply creates
     nothing). Conflating the two is how a campaign ends up waiting forever for capacity that
-    cannot exist, with no error anywhere -- the failure
-    ``verify_kueue_admission_ready`` exists to prevent.
+    cannot exist, with no error anywhere -- the failure the Kueue admission preflight
+    existed to prevent, and which this inherited when Kueue was retired.
     """
 
 

@@ -67,11 +67,19 @@ def _node(cpu, memory):
 
 @pytest.mark.parametrize("cpu,memory,ok", [
     pytest.param("8", "32Gi", True, id="comfortable"),
-    pytest.param("4", "16Gi", True, id="exactly-enough"),
-    pytest.param("2", "4Gi", False, id="too-small"),
+    pytest.param("2", "4Gi", True, id="small-but-usable"),
     pytest.param("8000m", "32Gi", True, id="millicores"),
+    pytest.param("0", "0", False, id="schedules-nothing"),
 ])
-def test_capacity_is_measured_against_what_kueue_asks_for(monkeypatch, cpu, memory, ok):
+def test_capacity_fails_only_on_a_cluster_that_can_run_nothing(monkeypatch, cpu, memory, ok):
+    """No fixed threshold, deliberately.
+
+    This asserted 4 CPU / 16 GiB when Kueue's controller had to fit on one node. Nothing
+    is deployed with a fixed size now, and a campaign pod is whatever its ``.vast`` asks
+    for -- so a number here would be invented, and admission already refuses an oversized
+    request at launch while naming both the request and each node's allocatable. A small
+    cluster is small, not broken; one advertising nothing is broken.
+    """
     core = mock.Mock()
     core.list_node.return_value = SimpleNamespace(items=[_node(cpu, memory)])
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
@@ -79,22 +87,19 @@ def test_capacity_is_measured_against_what_kueue_asks_for(monkeypatch, cpu, memo
     check = doctor._check_capacity()
     assert check.ok is ok
     if not ok:
-        # The consequence, not just the numbers: a Pending controller admits nothing.
-        assert "Pending" in check.fix
+        assert "nothing can be scheduled" in check.fix
 
 
-def test_capacity_uses_the_largest_node_not_the_total(monkeypatch):
-    """The Kueue controller is one pod: it has to fit on one node.
-
-    A cluster with plenty of total capacity and no node big enough leaves it Pending
-    forever, which is precisely the failure this catches.
-    """
+def test_capacity_reports_the_largest_node_not_the_total(monkeypatch):
+    """A pod runs on one node, so the largest node is the number that decides what fits --
+    and it is what an operator needs when admission refuses a request as too large. Summing
+    would describe a cluster that can take a big pod when no single node can."""
     core = mock.Mock()
     core.list_node.return_value = SimpleNamespace(
-        items=[_node("2", "8Gi"), _node("2", "8Gi"), _node("2", "8Gi")])
+        items=[_node("2", "8Gi"), _node("4", "8Gi"), _node("2", "8Gi")])
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
 
-    assert not doctor._check_capacity().ok
+    assert "largest node: 4.0 CPU" in doctor._check_capacity().detail
 
 
 def test_a_namespaced_kubeconfig_is_reported_before_setup_dies_on_it(monkeypatch):

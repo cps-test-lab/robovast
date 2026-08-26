@@ -106,8 +106,8 @@ cluster execution:
        wait for pods)
      - `kubectl install guide <https://kubernetes.io/docs/tasks/tools/>`_
    * - ``helm``
-     - Install and upgrade Kueue (the job-queueing controller) and, on a GPU
-       cluster, the NVIDIA device plugin, via the Helm chart registry
+     - Install and upgrade the NVIDIA device plugin on a GPU cluster, via the
+       Helm chart registry
      - `helm install guide <https://helm.sh/docs/intro/install/>`_
    * - ``k9s`` *(recommended)*
      - Terminal UI for monitoring pods, jobs, and logs in real time — not
@@ -128,7 +128,7 @@ Everything above the host is provisioned by setup; see :ref:`cluster-gpu` below.
 Cluster Setup
 -------------
 
-Before the first run, deploy the MinIO S3 server and Kueue into the cluster:
+Before the first run, deploy the MinIO S3 server into the cluster:
 
 .. code-block:: bash
 
@@ -142,16 +142,14 @@ Available cluster configs (``--list``):
 
 Setup acts on the *cluster*, not on a project: it neither needs nor reads a ``vast
 init`` / ``.robovast_project``, and runs from any directory. Its one optional input
-from a ``.vast`` is the node labels, taken only from a config you name explicitly
-(:ref:`below <cluster-node-labels>`).
+from a ``.vast`` is the control-pod node labels, taken only from a config you name
+explicitly (:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
 * Deploys a ``robovast`` pod containing the MinIO S3 server (embedded-storage
   configs such as ``rke2``). External-storage configs (e.g. GCS) deploy no
   helper pod — the bucket is used directly.
-* Installs `Kueue <https://kueue.sigs.k8s.io/>`_ via Helm and sizes its job
-  queue to the cluster's available CPU/memory — and to its GPUs, where it has any.
 * Makes GPUs schedulable where the cluster has them, so a simulation container renders in
   hardware instead of in software (:ref:`below <cluster-gpu>`). A cluster without GPUs is
   left exactly as it was.
@@ -161,10 +159,15 @@ The setup command:
 Pinning pods to a node pool
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Node selectors for the job pods and the control pod come from
-``execution.kubernetes.jobs.node_labels`` / ``execution.kubernetes.control.node_labels``
-(see :doc:`configuration`) and are baked into the cluster at setup. Name that ``.vast``
-explicitly — it is the only config setup will read:
+The control pod's node selector comes from
+``execution.kubernetes.control.node_labels`` (see :doc:`configuration`) and is baked into
+the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
+read:
+
+``execution.kubernetes.jobs.node_labels`` no longer exists and setup **fails** on a config
+that sets it: it was implemented by Kueue's ResourceFlavor. To keep campaign jobs off
+particular machines, taint those machines — job pods carry the campaign toleration, so an
+untainted pool still takes them.
 
 .. code-block:: bash
 
@@ -313,7 +316,7 @@ in software on a CPU one.
 
 What that does, when a GPU is found: installs the `NVIDIA device plugin
 <https://github.com/NVIDIA/k8s-device-plugin>`_ with time-slicing so several pods can share
-one card, adds ``nvidia.com/gpu`` to the Kueue quota, and puts ``runtimeClassName: nvidia``
+one card, and puts ``runtimeClassName: nvidia``
 plus ``NVIDIA_DRIVER_CAPABILITIES=all`` on the pods that ask for one. That capability is the
 load-bearing part: the container runtime's default (``compute,utility``) hands over the
 device *without* the GL half of the driver, so the container gets a GPU it cannot render on
@@ -983,31 +986,35 @@ campaign — the campaign stays ``finished`` with the reason on
    every job at once, which is the one way a campaign could still overload the nodes.
 
 
-How the quota is sized, and why it is not the whole cluster
------------------------------------------------------------
+How free capacity is measured, and why it is not the whole cluster
+------------------------------------------------------------------
 
-The ClusterQueue may only promise capacity the scheduler can actually hand out. Kueue
-accounts for the workloads it admits and for nothing else, so everything sharing the
-nodes — its own controller, the CNI and ingress DaemonSets, MinIO, the RoboVAST service
-— holds CPU and memory that the scheduler has already subtracted and the queue knows
-nothing about. ``setup`` therefore sizes the quota as **allocatable minus what pods
-outside the queue reserve**, and logs all three numbers:
+Admission may only hand out capacity the scheduler can actually place against, so free
+capacity is **allocatable minus the requests of every pod already bound to a node**, minus
+a small headroom. Everything sharing the nodes counts: the CNI and ingress DaemonSets,
+MinIO, the RoboVAST service, the build daemon, and the campaign pods themselves.
 
-.. code-block:: text
+Counting at 100 % of allocatable instead admits one job more than the nodes can hold as
+soon as anything else runs — the extra pod is created, the scheduler has nowhere to put
+it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the failure a single
+campaign rarely reaches and several concurrent ones reach reliably, which is what makes it
+look like a concurrency bug rather than an arithmetic one.
 
-   Cluster allocatable: 96.0 CPU(s), 125 GiB across 1 node(s); reserved by pods Kueue
-   does not manage: 2.2 CPU(s), 6 GiB; quota: 93 CPU(s), 119Gi
+**It is measured every cycle, not snapshotted at setup.** This replaced a fixed quota
+sized once when the cluster was set up, which had to be re-sized by hand after anything
+long-lived was added to or removed from the nodes, and was silently wrong until someone
+did. Nothing needs re-running now.
 
-Sized at 100 % of allocatable instead, the queue admits one job more than the nodes can
-hold as soon as anything else runs — the extra pod is admitted, the scheduler has
-nowhere to put it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the
-failure a single campaign rarely reaches and several concurrent ones reach reliably,
-which is what makes it look like a concurrency bug rather than an arithmetic one.
+**Headroom** protects the shared tenants no campaign owns, and is set on the service
+deployment: ``ROBOVAST_NODE_HEADROOM_CPU`` (default ``1``) and
+``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``). Deliberately not a ``.vast`` setting —
+a per-campaign override would let one campaign shrink the margin every other one depends on.
 
-Campaign pods are deliberately *not* subtracted: those are Kueue's to account for, and
-taking off the ones that happen to be running would shrink the quota permanently to fit
-one moment's load. Re-run ``vast execution cluster setup`` (or ``upgrade``) after adding
-or removing anything long-lived on the nodes — the quota is a snapshot, not a watch.
+**One thing this cannot see is fragmentation.** The figure is cluster-wide, while a pod runs
+on one node, so a cluster with enough total capacity and no single node big enough will
+still produce an occasional ``Unschedulable`` pod. It is transient and recovers on its own:
+such a pod fits an empty node, so it is treated as contention rather than a fault, and it is
+placed as soon as a neighbour finishes.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
 ``capacity`` minus what the kubelet was told to hold back for the OS, the kubelet and
@@ -1024,11 +1031,11 @@ it can do reaches the setting that fixes it. On RKE2/k3s, reserve it in
      - "kube-reserved=cpu=1,memory=2Gi"
 
 Applying it restarts the kubelet, which restarts every pod on the node: do it in a
-maintenance window, not while campaigns are running. Afterwards re-run ``vast execution
-cluster setup`` so the quota follows the new ``allocatable`` (``kubectl get node <name>
--o jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of
-the subtraction above and complements it: the kubelet reservation protects the machine,
-the subtraction protects the schedule.
+maintenance window, not while campaigns are running. The new ``allocatable`` is picked up
+by the next measurement with nothing to re-run (``kubectl get node <name> -o
+jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of the
+subtraction above and complements it: the kubelet reservation protects the machine, the
+subtraction protects the schedule.
 
 
 Which image bytes a run uses

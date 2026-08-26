@@ -22,7 +22,7 @@ slower -- so on a GPU cluster this is the difference between a sweep that finish
 that does not. Three things have to line up, and this module owns the first:
 
 1. the node must *advertise* ``nvidia.com/gpu``, which needs a device plugin (here);
-2. Kueue's ClusterQueue must cover that resource (:mod:`.kubernetes_kueue`);
+2. admission must see the resource advertised (:mod:`.cluster_capacity`);
 3. the pod must request it and ask the container runtime for the ``graphics`` driver
    capability (:mod:`.kubernetes_backend`).
 
@@ -59,7 +59,7 @@ NVIDIA_PLUGIN_CHART = "nvidia-device-plugin"
 #: Located with ``--repo`` rather than ``helm repo add``: setup runs on an operator's own
 #: machine, and adding a repo to their global helm config is a side effect nobody asked for.
 NVIDIA_PLUGIN_REPO = "https://nvidia.github.io/k8s-device-plugin"
-#: Pinned, like Kueue's chart. A floating version would change what a re-run installs.
+#: Pinned. A floating version would change what a re-run installs.
 NVIDIA_PLUGIN_VERSION = "0.17.1"
 
 #: Time-slicing replicas advertised per physical GPU when the operator did not say.

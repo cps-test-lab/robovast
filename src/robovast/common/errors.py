@@ -45,7 +45,7 @@ class ClusterUnreachableError(Exception):
     A stopped cluster, a down VPN, a kubeconfig pointing at an endpoint that no
     longer answers: the request never gets a reply, so there is no API answer to
     interpret. Distinct from :class:`CampaignConfigError` (the cluster answered and
-    the configuration is wrong) and from ``KueueCheckUnavailable`` (the cluster
+    the configuration is wrong) and from a check that could not be run (the cluster
     answered "forbidden").
 
     Like a config error it is self-contained and actionable — the stack through

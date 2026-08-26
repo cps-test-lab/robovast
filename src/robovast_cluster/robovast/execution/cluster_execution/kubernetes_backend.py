@@ -549,8 +549,7 @@ class BatchJobRunner:
         # ResourceFlavor used to inject this at admission, so nothing in the manifest needed
         # it -- and a deployment that taints its campaign nodes would have stopped scheduling
         # the moment Kueue was removed, silently, as pods that simply never place. Additive
-        # and idempotent: while Kueue is still in the path it appends the same toleration and
-        # a duplicate is harmless.
+        # and idempotent, so it is safe to apply to a spec that already carries it.
         from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
         existing = list(spec.get('tolerations') or [])
         for toleration in CAMPAIGN_NODE_TOLERATIONS:
@@ -1301,9 +1300,9 @@ class BatchJobRunner:
         if not count:
             return
         # Both requests and limits. Kubernetes defaults one from the other when a *Pod* is
-        # created, but Kueue computes a workload's quota from the Job's pod *template*,
-        # which no pod has been created from yet -- so a request left empty is accounted as
-        # zero GPUs and admitted straight past the quota.
+        # created, but admission sizes a job from the Job's pod *template*, which no pod has
+        # been created from yet -- so a request left empty is measured as zero GPUs and the
+        # job is admitted onto a node with none.
         spec['resources'].setdefault('requests', {})[GPU_RESOURCE] = str(count)
         spec['resources'].setdefault('limits', {})[GPU_RESOURCE] = str(count)
         # NVIDIA_VISIBLE_DEVICES is deliberately NOT set, and the asymmetry with the

@@ -404,7 +404,7 @@ def api_transport_errors(what: str):
 
     Args:
         what: What was being attempted, phrased to follow "while" — e.g.
-            ``"checking the Kueue admission path"``.
+            ``"submitting the postprocessing job"``.
 
     Raises:
         ClusterUnreachableError: naming the API host, the attempted operation, and

@@ -28,7 +28,6 @@ _ENGINE_MODULES = [
     "robovast.execution.cluster_execution.cluster_execution",
     "robovast.execution.cluster_execution.cluster_image_build",
     "robovast.execution.cluster_execution.container_runner",
-    "robovast.execution.cluster_execution.kubernetes_kueue",
 ]
 
 

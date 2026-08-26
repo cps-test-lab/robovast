@@ -670,9 +670,8 @@ def run_conversion_job(cluster_config, campaign_id: str, namespace: str, image: 
                     return False, job_failed_message(name)
             # A pod that CANNOT start leaves the Job `active` forever, so the polling above
             # never sees a verdict and this returns "timed out" -- naming a duration where the
-            # cause was an unpullable image or an unschedulable pod. Same reasoning as the
-            # Kueue admission check before submission, and the same signal the run loop and the
-            # image build already act on.
+            # cause was an unpullable image or an unschedulable pod. The same signal the run
+            # loop and the image build already act on.
             blocked = _blocked_reason(core, namespace, name)
             if blocked:
                 return False, (
