@@ -29,6 +29,7 @@ from datetime import datetime
 
 import yaml
 from .kube_client import parse_resource as _parse_resource
+from .helm import helm_release_exists, run_helm as _run_helm
 from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 from kubernetes import client
 
@@ -1175,25 +1176,6 @@ def _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120):
             )
 
 
-def _run_helm(args, check=True):
-    """Run helm command. Returns (success, stderr)."""
-    cmd = ["helm"] + args
-    logger.debug("Running: %s", " ".join(cmd))
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    if result.returncode != 0:
-        logger.warning("Helm command failed: %s", result.stderr)
-        if check:
-            raise RuntimeError(
-                f"Helm command failed: {result.stderr or result.stdout}"
-            )
-        return False, result.stderr or ""
-    return True, ""
 
 
 def _run_kubectl_apply(yaml_content, check=True, kube_context=None):
@@ -1219,24 +1201,6 @@ def _run_kubectl_apply(yaml_content, check=True, kube_context=None):
     return True
 
 
-def helm_release_exists(release, namespace, ctx_helm):
-    """Whether *release* is installed in *namespace*.
-
-    Shared with the device-plugin installer so both take the same install-or-upgrade
-    branch: a copy of this would be one place for the two to drift, and the whole point of
-    the branch is that re-running setup must not fail on an already-installed chart.
-
-    A helm that cannot answer reads as "not installed", which sends the caller down the
-    ``install`` path -- and ``helm install`` on an existing release fails loudly instead of
-    doing something surprising.
-    """
-    result = subprocess.run(
-        ["helm", "list", "-n", namespace, "-q", "-f", release] + list(ctx_helm),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def install_kueue_helm(kube_context=None):

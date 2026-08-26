@@ -233,7 +233,7 @@ def _warm_tolerations() -> list:
     while doing it. Read from where the ResourceFlavor granting it is written rather than
     restated here, so there is one place to change if the taint ever does.
     """
-    from .kubernetes_kueue import KUEUE_JOB_TOLERATIONS
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS
     return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
 
 
