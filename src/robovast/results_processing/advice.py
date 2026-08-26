@@ -128,6 +128,26 @@ SHM_SQL = """
     FROM runs
 """
 
+#: Container memory as the KERNEL accounts it, which is what the limit is enforced against.
+#:
+#: :data:`USAGE_SQL`'s ``mem_peak`` cannot answer this and is not a close-enough approximation.
+#: One ``resource_usage`` row is a process, and RSS counts a shared page once per process, so
+#: summing a tick over a stack of forty ROS nodes -- sharing libraries, and a Fast DDS
+#: shared-memory segment mapped into each of them -- multiplies what the container actually
+#: holds. Measured on one basic_nav campaign: summed RSS peaked at 5147 MiB in a container
+#: running comfortably inside a 2944 MiB limit, whose largest single process held 1014 MiB.
+#: Sizing from that would have told its author to reserve 2.3x what the run needed, on every
+#: job of every sweep.
+#:
+#: Absent for a campaign recorded before the probe existed, and on any runtime without cgroup
+#: v2 -- hence a missing table or an empty result, both of which the caller falls back from
+#: rather than treating as zero.
+SYSTEM_MEM_SQL = """
+    SELECT container, MAX(memory_peak) AS mem_peak
+    FROM system_usage WHERE in_window = 1 AND memory_peak IS NOT NULL
+    GROUP BY container
+"""
+
 #: The containers the campaign declared, and what it reserved for each. The bare container
 #: rows matter most when there is no reservation row: a ``.vast`` need not declare
 #: ``resources`` at all, and that is the campaign whose author most needs this -- but the
@@ -235,18 +255,29 @@ def _resolve_names(measured: list[str], declared_names: set) -> dict:
     return out
 
 
-def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
+def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
+                    system_mem_rows: "list[dict] | None" = None) -> list[dict]:
     """Advice items for one campaign's reservations. Empty when there is nothing to say.
 
     Args:
         usage_rows: rows of :data:`USAGE_SQL`.
         declared_rows: rows of :data:`DECLARED_SQL`.
+        system_mem_rows: rows of :data:`SYSTEM_MEM_SQL`, when the campaign recorded them.
+            Where a container appears here its kernel-accounted peak REPLACES the summed-RSS
+            figure, which over-reports (see :data:`SYSTEM_MEM_SQL`). Falling back rather than
+            refusing keeps this useful on campaigns recorded before the probe existed, but the
+            two are not interchangeable and the advice says which one it used.
     """
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
         return []
     names, declared_cpu, declared_mem, declared_shm = _declared(declared_rows)
     resolved = _resolve_names([r["container"] for r in usable], names)
+    system_mem = {r["container"]: r["mem_peak"]
+                  for r in (system_mem_rows or []) if r.get("mem_peak") is not None}
+    mem_source = "the kernel's own accounting for the container" if system_mem else (
+        "the sum of its processes' RSS, which over-reports shared pages -- no cgroup "
+        "memory figures were recorded for this campaign")
 
     containers, thin = [], []
     for row in usable:
@@ -256,7 +287,9 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
             thin.append(label)
             continue
         cpu_p95 = float(row.get("cpu_p95") or 0.0)
-        mem_peak = float(row.get("mem_peak") or 0.0)
+        cgroup_peak = system_mem.get(row["container"])
+        mem_peak = float(cgroup_peak if cgroup_peak is not None
+                         else (row.get("mem_peak") or 0.0))
         containers.append({
             "container": label,
             "cpu_p95": cpu_p95,
@@ -317,7 +350,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                 "detail": (
                     f"Set execution.containers.<name>.resources.{unit} from what this campaign "
                     f"used: {', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what) + shm_note),
+                    + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
                              **({"shm_size": format_memory(declared_shm)}
@@ -336,7 +369,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict]) -> list[d
                     f"Reducing it would fit {ratio:.1f}x as many jobs in the same quota, on "
                     f"every job of every sweep. Per container: "
                     f"{', '.join(f'{k} {v}' for k, v in per_container.items())}. "
-                    + _basis(what) + shm_note),
+                    + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
@@ -380,13 +413,22 @@ _UNDER_DETAIL = {
 }
 
 
-def _basis(what: str) -> str:
+def _basis(what: str, mem_source: str = "") -> str:
+    """The one sentence saying how a suggestion was arrived at.
+
+    *mem_source* names WHICH measurement the memory peak came from. It is stated rather than
+    assumed because the two available answers differ by more than a rounding: the kernel's own
+    accounting is what the limit is enforced against, while a sum of per-process RSS counts
+    shared pages once per process and can over-report several-fold on a stack of many nodes.
+    A reader deciding whether to trust a number needs to know which one they were handed.
+    """
     if what == "cpu":
         return (f"Sized on sustained use (p95) plus {round((CPU_HEADROOM - 1) * 100)}% "
                 "headroom, rounded up to a quarter core.")
-    return (f"Sized on the PEAK plus {round((MEM_HEADROOM - 1) * 100)}% headroom, rounded up "
-            "to 128Mi -- the peak and not a percentile, because exceeding a memory limit is "
-            "an OOM kill rather than throttling.")
+    basis = (f"Sized on the PEAK plus {round((MEM_HEADROOM - 1) * 100)}% headroom, rounded up "
+             "to 128Mi -- the peak and not a percentile, because exceeding a memory limit is "
+             "an OOM kill rather than throttling.")
+    return f"{basis} Measured from {mem_source}." if mem_source else basis
 
 
 def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
@@ -492,5 +534,9 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     into a larger summary, and so a future non-resource advice source has somewhere to land.
     """
     declared = query_rows(DECLARED_SQL)
-    return {"advice": (resource_advice(query_rows(USAGE_SQL), declared)
+    try:
+        system_mem = query_rows(SYSTEM_MEM_SQL)
+    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
+        system_mem = []
+    return {"advice": (resource_advice(query_rows(USAGE_SQL), declared, system_mem)
                        + shm_advice(query_rows(SHM_SQL), declared))}
