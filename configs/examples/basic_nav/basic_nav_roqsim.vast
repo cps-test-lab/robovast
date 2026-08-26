@@ -189,7 +189,7 @@ execution:
       resources:
         cpu: 1.25
   mode: ros2
-  runs: 5
+  runs: 10
   scenario_file: scenario_roqsim.osc
   run_files:
   # Per-extension rather than "files/*": that glob crosses '/', so it also swept

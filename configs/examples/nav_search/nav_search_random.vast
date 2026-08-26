@@ -43,12 +43,12 @@ search:
     params: {aggregate: worst, timeout: 120.0}
   objectives:
   - {name: robustness, direction: minimize}
-  per_batch: 8
+  per_batch: 50
   # Bounded by RUNS, not batches: that is what makes this and nav_search_halton a fair
   # contest. Two strategies given the same number of batches are not given the same
   # amount of simulator, once repetitions stop being constant.
   budget:
-  - runs: 144
+  - runs: 200
   seed: 1
 
 visualization:
