@@ -199,8 +199,20 @@ def test_silence_is_the_result_worth_having():
     the normal case and it must not be noisy."""
     from robovast.results_processing import advice
     assert advice.throttle_advice([_throttle_row("sut", 2054, 0)], []) == []
-    # 2 periods of 2054 is bring-up noise, measured on a healthy campaign.
+    # 2 periods of 2054 (0.10%) is bring-up noise, measured on a healthy campaign.
     assert advice.throttle_advice([_throttle_row("sut", 2054, 2)], []) == []
+    # 0.385% cost 0 control-loop misses in the sweep -- still silence.
+    assert advice.throttle_advice([_throttle_row("sut", 100000, 385)], []) == []
+
+
+def test_the_threshold_catches_the_configuration_that_lost_runs():
+    """The regression this exists for: an earlier 1% threshold was silent at 0.79%, where the
+    campaign missed 58 control loops and lost 6 runs of 50."""
+    from robovast.results_processing import advice
+    assert advice.throttle_advice([_throttle_row("sut", 100000, 790)], []) != []
+    # And the marginal configurations either side of it, since the screen is deliberately
+    # sensitive -- a false positive costs a glance, a false negative cost 11 runs.
+    assert advice.throttle_advice([_throttle_row("sut", 100000, 580)], []) != []
 
 
 def test_only_the_system_under_test_is_reported():
