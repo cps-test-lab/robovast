@@ -157,6 +157,9 @@ def test_the_loop_clears_the_flag_when_the_batch_is_done():
     from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
 
     source = inspect.getsource(BatchJobRunner.run_batch_in_pod)
-    exit_block = source[source.index("if not remaining:"):]
+    # Prefix match: the condition gained "and not planned_count" when admission arrived, so a
+    # job that is queued but not yet created also holds the loop open. The property under test
+    # is unchanged -- whatever ends the loop must clear the flag first.
+    exit_block = source[source.index("if not remaining"):]
     assert "_publish_capacity_wait(False)" in exit_block.split("break", maxsplit=1)[0], (
         "the batch loop exits without clearing the capacity-wait flag")

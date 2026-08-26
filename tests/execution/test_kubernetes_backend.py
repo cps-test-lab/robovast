@@ -229,6 +229,12 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend"
         ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
+    # The wait loop derives a job's name rather than reading it back off a rendered manifest
+    # (under admission the manifest does not exist until there is room). Patch the derivation
+    # so these fixtures keep their short synthetic names.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     runner.namespace = "ns"
@@ -402,6 +408,10 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
         "robovast.execution.cluster_execution.kubernetes_backend"
         ".blocked_and_contended_reasons",
         lambda core, ns, label: (dict(blocked), dict(contended or {})))
+    # See the note in _restart_runner: names are derived, not read off the manifest.
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
 
     runner = _runner_for_download_test([{"name": "cfgA"}])
     runner.namespace = "ns"
