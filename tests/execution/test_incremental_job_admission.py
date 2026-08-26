@@ -117,17 +117,33 @@ def test_job_names_are_derived_the_same_way_the_manifest_names_it():
     assert derived == kb._short_job_name(r.campaign, r._job_tag(3), 3), "must be stable"
 
 
-def test_the_sizing_admission_charges_is_the_one_the_manifest_reserves():
-    """Read off the manifest that will be created, so admission cannot charge a different
-    number than Kubernetes reserves. Native sidecars count, as they do for the scheduler."""
+def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
+    """The regression this test exists for, and it cost a live run.
+
+    ``self.manifest`` is the BASE manifest: main container only. The sidecars -- the
+    simulator and the system under test, i.e. nearly the whole request -- are appended per
+    job in ``_build_job_manifest``. Sizing from the base counted 1 core of a 4.75-core pod,
+    so the queue admitted a whole batch at once and gated nothing.
+
+    An earlier version of this test hand-built a manifest that already had sidecars, which
+    verified the arithmetic and never touched the source. It passed while the bug shipped.
+    """
     r = kb.BatchJobRunner()
+    # The base: what self.manifest actually looks like -- one container, no sidecars.
     r.manifest = {"spec": {"template": {"spec": {
-        "containers": [{"resources": {"requests": {"cpu": "2", "memory": "1Gi"}}}],
+        "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}]}}}}
+    # The rendered per-job manifest: what Kubernetes is really asked to reserve.
+    r.create_job_manifest = lambda job, total: {"spec": {"template": {"spec": {
+        "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
         "initContainers": [
             {"restartPolicy": "Always",
-             "resources": {"requests": {"cpu": "0.5", "memory": "512Mi"}}},
-            {"resources": {"requests": {"cpu": "9", "memory": "9Gi"}}},   # ordinary init
+             "resources": {"requests": {"cpu": "3", "memory": "640Mi"}}},      # sut
+            {"restartPolicy": "Always",
+             "resources": {"requests": {"cpu": "0.75", "memory": "2944Mi"}}},  # simulation
+            {"resources": {"requests": {"cpu": "9", "memory": "9Gi"}}},        # ordinary init
         ]}}}}
-    sizing = r._job_sizing()
-    assert sizing.cpu == pytest.approx(2.5), "sidecar counted, ordinary init container not"
-    assert sizing.memory == (1024 + 512) * MiB
+    sizing = r._job_sizing(_job(0), 1)
+    assert sizing.cpu == pytest.approx(4.75), (
+        "must size from the rendered manifest; the base one is missing the sidecars")
+    assert sizing.memory == (1024 + 640 + 2944) * MiB
+    assert sizing.cpu != pytest.approx(1.0), "sizing from self.manifest is the shipped bug"
