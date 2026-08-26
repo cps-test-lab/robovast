@@ -71,10 +71,10 @@ def test_no_quota_enforced_is_not_a_clean_run(tmp_path):
     row, = _rows(d, "SELECT * FROM run_validity_view")
     assert row["periods"] == 0
     assert row["throttle_ratio"] is None
-    assert row["starved"] == 0
+    assert row["quota_bound"] == 0
 
 
-def test_starved_uses_the_calibrated_threshold_not_a_round_number(tmp_path):
+def test_quota_bound_uses_the_calibrated_threshold_not_a_round_number(tmp_path):
     """Just under and just over :data:`THROTTLE_WARN_RATIO`.
 
     The number is measured, not obvious: a campaign throttled 0.79% of periods lost six
@@ -89,8 +89,29 @@ def test_starved_uses_the_calibrated_threshold_not_a_round_number(tmp_path):
         ("cfg-a", 1, "sut", 1, 0, 0, 0),
         ("cfg-a", 1, "sut", 1, 10_000, over, 0),
     ])
-    got = {r["run_id"]: r["starved"] for r in _rows(d, "SELECT * FROM run_validity_view")}
+    got = {r["run_id"]: r["quota_bound"] for r in _rows(d, "SELECT * FROM run_validity_view")}
     assert got == {0: 0, 1: 1}
+
+
+def test_the_flag_is_about_the_containers_own_limit_not_about_neighbours(tmp_path):
+    """``quota_bound``, deliberately not ``starved``.
+
+    CFS bandwidth control throttles a cgroup when it exhausts the quota its own
+    ``limits.cpu`` buys inside one enforcement period. A busy neighbour does not cause that
+    -- it causes scheduling latency -- and the two point OPPOSITE ways: a container that
+    cannot get CPU never reaches its quota, so a contended node throttles LESS while running
+    worse. Naming it for competition would send a reader to look at what else was on the
+    node, when the remedy is a larger limit.
+
+    Pinned as documentation rather than behaviour, because the wrong name is the kind of
+    mistake that survives review and then misroutes every diagnosis made from the column.
+    """
+    from robovast.results_processing.data_query import _TABLE_DESCRIPTIONS
+
+    desc = _TABLE_DESCRIPTIONS[("temp", "run_validity_view")]
+    assert "quota_bound" in desc
+    assert "does NOT mean other campaigns crowded it out" in desc
+    assert "scheduling latency" in desc
 
 
 def test_every_container_is_reported_so_the_sut_can_be_compared_against_them(tmp_path):
@@ -109,16 +130,16 @@ def test_every_container_is_reported_so_the_sut_can_be_compared_against_them(tmp
     ])
     by = {r["container"]: r for r in _rows(d, "SELECT * FROM run_validity_view")}
     assert set(by) == {"sut", "simulation"}
-    assert by["simulation"]["starved"] == 1 and by["sut"]["starved"] == 0
+    assert by["simulation"]["quota_bound"] == 1 and by["sut"]["quota_bound"] == 0
     clean = _rows(d, "SELECT run_id FROM run_validity_view "
-                     "WHERE container='sut' AND starved=0")
+                     "WHERE container='sut' AND quota_bound=0")
     assert [r["run_id"] for r in clean] == [0]
 
 
 def test_a_store_without_the_probe_has_no_view_rather_than_an_empty_one(tmp_path):
     """Silence is not a pass, so the view must not exist at all on a campaign recorded
     before the probe (or on a host with no cgroup v2). An empty view would read as "nothing
-    was starved"; a missing one says the question cannot be answered here."""
+    was capped"; a missing one says the question cannot be answered here."""
     exec_dir = tmp_path / "_execution"
     exec_dir.mkdir(parents=True)
     conn = sqlite3.connect(exec_dir / "data.db")
