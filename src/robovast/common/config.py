@@ -642,6 +642,13 @@ class ResultsConfig(BaseModel):
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
     publication: Optional[list[str | dict[str, Any]]] = None
+    #: Extra per-run health checks, as local ``./path.py:Class`` refs. Installed
+    #: ``robovast.health_checks`` plugins run WITHOUT being listed here -- they read tables
+    #: that already exist and contribute nothing when they do not apply to this stack, so
+    #: requiring a declaration would leave the campaigns nobody thought about ungraded, and
+    #: an absent row is indistinguishable from a clean one by design. This is the escape
+    #: hatch for a system under test that ships a check without packaging it.
+    health_checks: Optional[list[str | dict[str, Any]]] = None
 
 
 class PlotSpec(BaseModel):
