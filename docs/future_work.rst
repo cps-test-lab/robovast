@@ -355,11 +355,215 @@ keeping per-pool quota alone. Either way the measured factor belongs in a run's 
 beside ``instance_type``, since a campaign whose runs were placed by fit has runs on
 different hardware and any comparison has to group by it.
 
+**Since measured.** The question above — which software to derive the factor from — has been
+answered by running the substrate's own example campaign on each node of a mixed cluster, and
+the answer changed the framing: the difference between machines shows up in **CPU consumed
+per simulated second**, not in wall time, because a realtime-paced simulator caps its own
+realtime factor at 1.0. :ref:`future-own-scheduler` records the figures, and shows that
+per-node *density* can be had from per-flavor quota without per-node *requests* — which
+removes the objection that opens the paragraph above it.
+
 **Adjacent, and worth stating because it now cuts the other way.** RoboVAST's own
 infrastructure pods are pinned to one node (:ref:`cluster-node-local-storage`), which makes
 the single summed quota *more* misleading rather than less: the node holding the service, the
 registry and the build cache has materially less left for campaign work than the sum implies,
 and the queue does not know that.
+
+
+.. _future-own-scheduler:
+
+Admission in RoboVAST rather than in Kueue
+-------------------------------------------
+
+**Motivation.** :ref:`future-node-types` argues that one flat quota over unlike nodes is
+arithmetic fiction, and asks how a campaign should express what a run needs. Measurement has
+since answered part of that and recast the rest: on a mixed cluster the same trial costs
+**1.6x more CPU on one node than on another**, and *wall time does not show it*. A
+realtime-paced simulator sleeps to hold one simulated second per wall second, so its realtime
+factor is capped at 1.0 by construction and every machine finishes at roughly the same time.
+The difference lands entirely in CPU consumed, which is what decides how many trials fit.
+
+That has an uncomfortable consequence for a campaign's reservation: there is no single
+correct number. Sized for the cheap node it oversubscribes the expensive one; sized for the
+expensive node it wastes the cheap one. And because kube-scheduler packs by *capacity*, the
+node with the most cores attracts the most work — which, on the cluster this was measured on,
+was also the most expensive per unit of work.
+
+**What was measured, and how.** Two campaigns of one configuration times twenty runs, so the
+machine was the only variable; forty trials, all passed. Per-container CPU comes from the
+``resource_usage`` table, **summed per tick before averaging** (a row is one process name,
+not a container) and then divided by the run's realtime factor, because ``cpu_percent`` is
+per *wall* second and a node that meets fewer step deadlines otherwise reads as cheaper than
+it is:
+
+.. list-table::
+   :header-rows: 1
+
+   * - CPU
+     - pod cores per wall-second
+     - realtime factor
+     - pod cores per **simulated** second
+   * - Xeon Gold 5220R @ 2.20GHz
+     - 2.10
+     - 0.947
+     - 2.22
+   * - Core i7-8700K @ 3.70GHz
+     - 1.78
+     - 0.809
+     - 2.19
+   * - Ryzen 9 5950X
+     - 1.38
+     - 0.807
+     - 1.71
+   * - Core i7-14700K
+     - 1.33
+     - 0.966
+     - 1.37
+
+The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
+together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+Within-node spread was tight (eleven runs on one node spanned 1.13-1.20 cores for the system
+under test), which argues the difference is the machine rather than contention from an uneven
+share of the batch -- though equal-concurrency runs would settle that properly.
+
+**Do the cheap thing first: right-size, then try multi-flavor Kueue.** Two steps come before
+any new component, and between them they may be the whole answer.
+
+The first is not a scheduling change at all. The campaign measured above reserved 6.25 cores
+per pod and used about 2.1 -- ``advice.py`` already reports this for every campaign -- so
+right-sizing alone is worth roughly **2.4x** more concurrent trials, in the ``.vast`` and
+nowhere else.
+
+The second is that **Kueue can express per-node density, and RoboVAST has never asked it
+to**. The obstacle is usually stated as "a pod's requests are fixed before a flavor is
+assigned", which is true and which rules out per-node *requests*. But per-node *density* does
+not need them. With one ResourceFlavor per node type (which :func:`_queue_manifests` already
+accepts ``node_labels`` for), a uniform request ``r`` equal to the cheapest node's cost, and
+
+.. code-block:: text
+
+   nominalQuota(n) = allocatable(n) / cost(n) * r
+
+Kueue admits exactly as many pods to each pool as that pool can really run, while
+kube-scheduler's own arithmetic does the packing. On the figures above that yields the full
+per-node capacity -- the same number a bespoke scheduler would reach. Flavors are tried in
+declaration order, so listing the cheap nodes first gives preference for free. This is quota
+arithmetic in one function plus the per-node factors below; it should be measured against the
+current setup before anything larger is designed.
+
+Its cost is that ``r`` (request) and the limit (the expensive node's cost) differ, so pods
+become Burstable rather than Guaranteed and lose eligibility for exclusive CPU pinning. That
+is only a real cost where the kubelet runs ``cpuManagerPolicy: static`` **and** every
+container declares both ``cpu`` and ``memory`` -- a campaign declaring ``cpu`` alone is
+already Burstable and already pins nothing, which is worth checking before treating pinning
+as a constraint (see :func:`_check_static_cpu_manager`).
+
+**The design space, stated plainly.** Every option trades among three things, and no option
+gets all of them:
+
+.. list-table::
+   :header-rows: 1
+
+   * - approach
+     - per-node density
+     - can pin CPUs
+     - needs a Job mutated after creation
+   * - uniform request == limit (today)
+     - no
+     - yes
+     - no
+   * - uniform request + per-flavor quota
+     - yes
+     - no (Burstable)
+     - no
+   * - per-node requests
+     - yes
+     - no (non-integer)
+     - yes
+
+The middle row is the one Kueue can already do. The bottom row is the one that motivates a
+RoboVAST scheduler -- and note it does **not** buy pinning either, because a scaled
+reservation is not an integer number of cores.
+
+**If a scheduler is still wanted, this is its shape.**
+
+*The queue is the set of suspended Jobs.* ``Job.spec.suspend`` is core ``batch/v1``, not a
+Kueue feature: a Job created suspended has no pods, so nothing reaches kube-scheduler. That
+is the property that matters, because the failure this whole area exists to prevent is
+creating thousands of pods at once and letting the scheduler cope -- which is why Kueue was
+adopted in the first place, and which any replacement re-owns. Jobs carry a normalized
+request and a priority; the scheduler reads them from the cluster and talks to no RoboVAST
+component, so the service may restart, and several drivers may submit, without it caring.
+
+*Measure, never bookkeep.* Free capacity is re-read each cycle -- node ``allocatable`` minus
+the requests of pods actually bound to it -- rather than tracked in memory. Completion,
+eviction, node drain and workloads that are not ours are then all handled without
+reconciliation, and the loop is restart-safe with nothing persisted.
+:func:`pod_fits_any_node` and :meth:`_compute_resource_usage` already do both halves for
+other callers.
+
+*Priorities, deliberately minimal.* Sort pending Jobs by ``(priority, campaign start)`` and
+admit greedily, skipping what does not fit rather than blocking behind it. That yields
+oldest-campaign-first, backfill when the leading campaign has nothing left pending, and a
+user-settable priority as a label the web UI patches -- labels are mutable on a suspended
+Job. No preemption, borrowing or fair-share; none of it is foreclosed.
+
+*Room for RoboVAST's own transient work.* Aux pods, ``exec_in_container`` sessions and the
+build daemon need CPU too. Reserve headroom rather than giving them priority: without
+preemption, priority cannot reclaim a cluster already full of running trials.
+
+*Cleanup* is ``ttlSecondsAfterFinished``, which the job template already sets. Because
+capacity is measured rather than tracked, a finished job frees it as its pods go. The one
+case Kubernetes cannot express is a campaign stopped mid-flight, whose *suspended* Jobs must
+be deleted -- a label selector and a delete.
+
+**What has to be true, in the order that decides whether to bother.**
+
+#. *Is the factor stable across campaigns?* It is measured from one reference workload, and
+   the data already hints it may not generalize: the simulation container varied little
+   across nodes (0.23-0.41 cores) while the system under test varied a lot (0.53-1.24). If
+   factors derived from two unlike campaigns disagree, the honest model is **per-container**,
+   not per-pod, and a single node-level factor is the wrong shape.
+#. *Is it the machine or the contention?* Re-measure with equal concurrency per node.
+#. *Does per-node density actually pay?* Compare multi-flavor Kueue against the current setup
+   on the same cluster before designing anything bespoke.
+#. *Can a suspended Job's resources be patched?* Almost certainly not -- Kubernetes makes an
+   explicit list of scheduling directives mutable on a suspended Job (node selector,
+   affinity, tolerations, labels, annotations, scheduling gates) and ``resources`` is not on
+   it. So per-node sizing at admission means deleting and recreating the suspended Job, which
+   is the design's least clean mechanism: it must not break exactly-once, and anything keying
+   off a Job's *name* (suspended-job reporting, log collection) has to key off a label
+   instead. **Prove this path before building on it.**
+#. *GPU.* Kueue carries ``nvidia.com/gpu`` quota today and
+   :meth:`_compute_resource_usage` does not; time-slicing means an advertised GPU count is
+   not a count of idle cards (:ref:`cluster-gpu`). This is the largest single piece of
+   unbuilt work and the strongest argument for staying.
+
+**Where the factors should come from.** Not a ``.vast``: a campaign file describes an
+experiment, and how fast a deployment's machines are is a property of the deployment. Measure
+at ``setup`` -- a short reference campaign pinned to each node, recording CPU-seconds per
+simulated second -- and store the result **as a node label**, the way
+:ref:`cluster-node-local-storage` already stores a placement decision. A label is
+cluster-scoped, survives ``cleanup``, needs no configuration file, and is recorded in every
+campaign's provenance for free, since :func:`_get_cluster_info` already captures node labels.
+A campaign then declares one reservation against a reference machine and the cluster supplies
+the rest.
+
+**What such a scheduler would not buy, stated so it is not double-counted.** Retiring
+``kubernetes_kueue.py`` retires the code, not the obligations: a normalized request larger
+than any node still pends forever, so the check :func:`verify_kueue_admission_ready` performs
+has to be rewritten rather than deleted. Migration also has a dangerous middle: two admission
+controllers must never see the same Job, so ownership has to be decided per campaign by the presence of
+the Kueue queue label, and "migrate CPU-only campaigns first" means living in that state
+until GPU support lands.
+
+**The argument that does not shrink** is neither packing nor priorities: it is that Kueue
+must be installed into every cluster. A pinned chart version, CRD establishment waits, a
+force-apply path for partial installs, CRD self-healing, and finalizer cleanup that can block
+an uninstall -- all of it recurs on rke2, GKE and EKS alike, while a scheduler inside
+RoboVAST needs only the core API. If portability is what hurts, that is the case to make, and
+it should be made on its own terms rather than on a packing gain that right-sizing and
+multi-flavor quota may already deliver.
 
 
 .. _future-gpu-usage:
