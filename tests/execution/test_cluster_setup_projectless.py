@@ -70,6 +70,8 @@ def _deploy_stubs(monkeypatch):
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
         monkeypatch.setattr(cluster_setup, name, mock.Mock())
+    # Returns a dict of what it changed, and setup logs its size -- a bare Mock has no len().
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
     # Placement now resolves against the live node list before anything is applied.
@@ -211,6 +213,7 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda **k: order.append("gpu-plugin"))
     monkeypatch.setattr(service_deploy, "deploy_service",
@@ -236,6 +239,7 @@ def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkey
     touched = []
     monkeypatch.setattr(service_deploy, "read_service_config_from_cluster",
                         lambda *a, **k: (None, None))
+    monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     monkeypatch.setattr(cluster_setup, "ensure_nvidia_device_plugin",
                         lambda **k: touched.append("gpu"))
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac",
