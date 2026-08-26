@@ -212,7 +212,14 @@ class WorkItem:
     #: would put calibration policy inside the scheduler.
     accepts_node: "Callable | None" = None
 
+    #: When set, the ONLY node this item may go to. A calibration probe measures one machine,
+    #: so placing it anywhere else answers a question about the wrong node. Everything else
+    #: leaves it unset and is placed wherever it fits.
+    pin: "str | None" = None
+
     def may_use(self, node_id) -> bool:
+        if self.pin is not None:
+            return node_id == self.pin
         return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
@@ -273,12 +280,17 @@ class AdmissionController:
 
     def submit(self, owner: str, items: "Iterable[Tuple[str, JobSizing, Callable[[], None]]]",
                *, started_at: float, priority: int = 0, sizing_for_node=None,
-               accepts_node=None) -> int:
+               accepts_node=None, pin=None) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
         batch, and ordering by submission would let a newer campaign overtake an older one
         between its rounds.
+
+        *pin* restricts these items to one node. A calibration probe measures a particular
+        machine, so placing it elsewhere answers a question about the wrong one -- and it
+        waits for that node rather than settling for another, which is the opposite of how
+        ordinary work is placed.
 
         *accepts_node* is ``(node_id) -> bool``: whether this owner's work may go there yet.
         A node being measured for this campaign answers ``False`` until its figures are in, so
@@ -301,7 +313,7 @@ class AdmissionController:
                                             priority=priority, started_at=started_at,
                                             seq=next(self._seq),
                                             sizing_for_node=sizing_for_node,
-                                            accepts_node=accepts_node)
+                                            accepts_node=accepts_node, pin=pin)
                 added += 1
             return added
 
@@ -394,6 +406,18 @@ class AdmissionController:
             # campaign's containers, and deliberately never reused by the next one.
             self._calibrations.pop(owner, None)
             return len(keys)
+
+    def node_ids(self) -> list:
+        """The identity of every node that can currently be pinned to.
+
+        Whoever starts calibration probes needs to know which machines exist, and this is
+        already measuring them every cycle. Excludes a node with no identity label: it can
+        hold work but cannot be selected, so probing it would produce a figure nothing could
+        ever be pinned to.
+        """
+        with self._lock:
+            nodes, _ = self._effective_free_locked()
+            return sorted(n.node_id for n in nodes if n.node_id)
 
     def calibration(self, owner: str, factory=None):
         """This campaign's per-node calibration, created once and kept for its lifetime.

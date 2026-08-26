@@ -374,3 +374,39 @@ def test_a_cancelled_campaign_takes_its_calibration_with_it():
     c.calibration("camp", NodeCalibration)
     c.cancel("camp")
     assert c.calibration("camp") is None
+
+
+def test_a_pinned_item_goes_to_its_node_or_waits_for_it():
+    """A calibration probe measures a particular machine. Placed elsewhere it answers a
+    question about the wrong node, so it waits rather than settling for another -- the
+    opposite of how ordinary work is placed."""
+    p = FakeProvider(per_node=[("busy", 1.0, 10240 * MiB, 0), ("idle", 99.0, 10240 * MiB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("probe-busy", JobSizing(4.0, MiB), lambda n=None: seen.append(n))],
+             started_at=0.0, pin="busy")
+    assert c.drain() == 0, "its node is full; the idle one is not a substitute"
+    assert seen == []
+
+    p._per_node = [("busy", 8.0, 10240 * MiB, 0), ("idle", 99.0, 10240 * MiB, 0)]
+    p.free = p._budget(frozenset())
+    assert c.drain() == 1 and seen == ["busy"]
+
+
+def test_a_pin_overrides_the_accepts_node_gate():
+    """The gate exists to keep campaign work off a node until its probe reports. The probe
+    itself must be exempt, or it would be waiting for its own measurement."""
+    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MiB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("probe", JobSizing(2.0, MiB), lambda n=None: seen.append(n))],
+             started_at=0.0, pin="n1", accepts_node=lambda node: False)
+    assert c.drain() == 1 and seen == ["n1"]
+
+
+def test_node_ids_lists_only_what_can_be_pinned_to():
+    """An unlabelled node holds work but cannot be selected, so probing it would produce a
+    figure nothing could ever be pinned to."""
+    p = FakeProvider(per_node=[("named", 8.0, 10240 * MiB, 0),
+                               (None, 8.0, 10240 * MiB, 0)])
+    assert _controller(p).node_ids() == ["named"]
