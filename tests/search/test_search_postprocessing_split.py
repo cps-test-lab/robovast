@@ -300,3 +300,64 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch):
                         lambda *a, **kw: None)
     obj._run_postprocessing('batch-2/reps-3')
     assert passed == ['batch-2/reps-3']
+
+
+# -- a conversion that could not run is not a conversion that found nothing ---
+
+def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
+    """These are different failures and were reported as the same one.
+
+    A conversion that RAN and produced nothing is the extractor's business -- it refuses the
+    batch and says what was missing. A conversion that could not START is a broken campaign:
+    every batch will hit it, nothing will ever score, and the reason is not in the world.
+
+    Logging it as a warning and carrying on meant the campaign died on "no run recorded a
+    clearance value ... the likeliest is the last: the rosbag->CSV plugins listed in
+    search.postprocessing", while the actual cause -- no execution image recorded in
+    execution.yaml -- sat in a warning line above it. Measured on a real campaign; the
+    misdirection cost the diagnosis, not the compute.
+    """
+    from robovast.execution import controller as ctrl
+
+    def _boom():
+        raise ValueError("no execution image recorded in execution.yaml")
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner', _boom)
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+
+    with pytest.raises(RuntimeError) as excinfo:
+        obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')
+    message = str(excinfo.value)
+    assert "execution image" in message, "the original cause must survive in the message"
+    assert "could not" in message.lower() or "cannot" in message.lower()
+
+
+def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeypatch):
+    """Unchanged: the Job started, so this batch's inputs may be partly there and the
+    extractor is the thing that decides whether a batch is scorable."""
+    from robovast.execution import controller as ctrl
+
+    monkeypatch.setattr(
+        ctrl, '_conversion_job_runner',
+        lambda: (lambda *a, **kw: (False, 'conversion exited 1'),
+                 lambda *a, **kw: None, lambda root: 'img'))
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = '/tmp/does-not-matter'
+    obj.vast_dir = '/tmp'
+    obj._convert_bags_in_cluster([{'rosbags_process': {'plugins': []}}], 'batch-0')  # no raise
