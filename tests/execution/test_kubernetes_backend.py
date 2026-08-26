@@ -239,7 +239,7 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
     runner.k8s_client = object()
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
-    runner.create_job_manifest = lambda job, total: {
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
@@ -415,7 +415,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
     runner.k8s_client = object()
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
-    runner.create_job_manifest = lambda job, total: {
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     runner._BLOCKED_GRACE_SECONDS = blocked_grace
     runner._CONTENDED_GRACE_SECONDS = contended_grace
