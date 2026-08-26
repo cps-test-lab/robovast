@@ -147,3 +147,73 @@ def test_the_sizing_comes_from_the_rendered_manifest_not_the_base_one():
         "must size from the rendered manifest; the base one is missing the sidecars")
     assert sizing.memory == (1024 + 640 + 2944) * MiB
     assert sizing.cpu != pytest.approx(1.0), "sizing from self.manifest is the shipped bug"
+
+
+# -- the false-stall fix ------------------------------------------------------------------
+
+class _Recorder:
+    """Stands in for the campaign's control state, capturing what the loop publishes."""
+
+    def __init__(self):
+        self.capacity_waits = []
+
+    def update(self, **fields):
+        if "waiting_for_capacity" in fields:
+            self.capacity_waits.append(fields["waiting_for_capacity"])
+
+
+def test_a_queued_batch_publishes_waiting_for_capacity():
+    """The defect this phase exists to fix, pinned deterministically.
+
+    A campaign whose jobs are all still PLANNED has no pods, so the pod-based probe could see
+    nothing and concluded "not waiting" -- and the per-run deadline then declared a perfectly
+    healthy queued campaign stalled. Measured on 2026-08-26: the third of three concurrent
+    campaigns reported as wedged while waiting its turn.
+
+    ``waiting_for_capacity`` suppresses the stall verdict (``client/status.py``), so the fix is
+    that the loop publishes it from a fact the QUEUE holds rather than from absent pods. A live
+    test of this is awkward -- it needs the queue wait to exceed the deadline while the run
+    duration does not -- so the property is pinned here instead.
+    """
+    r = kb.BatchJobRunner()
+    r._state = _Recorder()
+    r._batch_tag = "batch-0"
+
+    # Nothing running, work still queued: the exact shape the old probe was blind to.
+    remaining, planned_count, admission = [], 7, object()
+    waiting = kb.all_jobs_waiting_for_capacity(remaining, {})
+    assert waiting is False, "the pod-based probe alone still cannot see a queued batch"
+    if admission is not None and planned_count and not remaining:
+        waiting = True
+    r._publish_capacity_wait(waiting)
+
+    assert r._state.capacity_waits == [True], (
+        "a batch with planned work and nothing running must report as queued, not stalled")
+
+
+def test_a_batch_with_nothing_left_does_not_claim_to_be_queued():
+    """The other direction, and the reason the flag is written every cycle: a marker left true
+    outlives the wait that set it and suppresses a verdict for a batch that is not queued."""
+    r = kb.BatchJobRunner()
+    r._state = _Recorder()
+    r._batch_tag = "batch-0"
+    remaining, planned_count, admission = [], 0, object()
+    waiting = kb.all_jobs_waiting_for_capacity(remaining, {})
+    if admission is not None and planned_count and not remaining:
+        waiting = True
+    r._publish_capacity_wait(waiting)
+    assert r._state.capacity_waits == [False]
+
+
+def test_a_running_batch_is_not_reported_as_queued():
+    """Jobs are running, so a deadline overrun is a real stall and must not be suppressed."""
+    r = kb.BatchJobRunner()
+    r._state = _Recorder()
+    r._batch_tag = "batch-0"
+    remaining, planned_count, admission = ["j-0"], 5, object()
+    waiting = kb.all_jobs_waiting_for_capacity(remaining, {})
+    if admission is not None and planned_count and not remaining:
+        waiting = True
+    r._publish_capacity_wait(waiting)
+    assert r._state.capacity_waits == [False], (
+        "suppressing the verdict while jobs run would hide a genuine stall")
