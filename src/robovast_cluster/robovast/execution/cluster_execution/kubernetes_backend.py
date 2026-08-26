@@ -539,6 +539,19 @@ class BatchJobRunner:
 
         spec = job_manifest['spec']['template']['spec']
 
+        # Tolerate the taint a campaign node may carry, on the pod itself. Kueue's
+        # ResourceFlavor used to inject this at admission, so nothing in the manifest needed
+        # it -- and a deployment that taints its campaign nodes would have stopped scheduling
+        # the moment Kueue was removed, silently, as pods that simply never place. Additive
+        # and idempotent: while Kueue is still in the path it appends the same toleration and
+        # a duplicate is harmless.
+        from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
+        existing = list(spec.get('tolerations') or [])
+        for toleration in CAMPAIGN_NODE_TOLERATIONS:
+            if dict(toleration) not in existing:
+                existing.append(dict(toleration))
+        spec['tolerations'] = existing
+
         # Pull secret for an agent-built experiment image pushed to a private
         # registry (see RegistryConfig). Only present when a registry with auth was
         # configured at setup; a public/insecure registry needs none. Falls back to the

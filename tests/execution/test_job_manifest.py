@@ -558,3 +558,23 @@ def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
     assert [c["name"] for c in spec["containers"]] == [MAIN_CONTAINER_NAME]
+
+def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
+    """Kueue's ResourceFlavor used to inject this at admission, so nothing in the manifest
+    carried it. A deployment that taints its campaign nodes would therefore have stopped
+    scheduling the moment Kueue was removed -- silently, as pods that never place rather than
+    as an error. The pod carries it now, so the toleration outlives the admitter."""
+    from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
+
+    m = _job_manifest(_runner(monkeypatch))
+    tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
+    for expected in CAMPAIGN_NODE_TOLERATIONS:
+        assert dict(expected) in tolerations, f"job pod must tolerate {expected}"
+
+
+def test_the_toleration_is_not_duplicated(monkeypatch):
+    """Additive and idempotent: while Kueue is still in the path it appends the same
+    toleration, and rendering twice must not accumulate copies."""
+    m = _job_manifest(_runner(monkeypatch))
+    tolerations = m["spec"]["template"]["spec"].get("tolerations") or []
+    assert len(tolerations) == len({tuple(sorted(t.items())) for t in tolerations})

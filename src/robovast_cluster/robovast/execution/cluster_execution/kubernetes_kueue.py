@@ -29,6 +29,7 @@ from datetime import datetime
 
 import yaml
 from .kube_client import parse_resource as _parse_resource
+from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 from kubernetes import client
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,9 @@ _PRIORITY_BASE = 2_000_000_000
 #: run* must tolerate. Named here because this is where the ResourceFlavor granting it is
 #: written; ``image_warm`` reads it so its DaemonSet cannot drift from the flavor and skip
 #: precisely the nodes worth warming.
-KUEUE_JOB_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "NoSchedule"},)
+#: Moved to :data:`node_placement.CAMPAIGN_NODE_TOLERATIONS`; re-exported under the old name
+#: until this module goes, so the migration is one change per landing rather than one commit.
+KUEUE_JOB_TOLERATIONS = CAMPAIGN_NODE_TOLERATIONS
 
 #: Duplicated from :mod:`.kubernetes_gpu` rather than imported, to keep the dependency
 #: one-way (that module imports this one for the helm and quantity helpers).
