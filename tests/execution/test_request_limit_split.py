@@ -86,3 +86,18 @@ def test_a_per_cluster_list_is_not_compared_here():
     """Resolved per context much later; guessing which entry pairs with which would report a
     conflict the active cluster may not have."""
     assert ResourcesConfig(cpu=[{"ctx-a": 4}], cpu_limit=1).cpu_limit == 1
+
+
+def test_an_unknown_resource_key_is_refused_rather_than_ignored():
+    """The failure mode this whole pair could have shipped with.
+
+    Pydantic ignores unknown keys by default, so a deployment predating a field drops it in
+    SILENCE and runs a different allocation than the file asks for. That happened here:
+    ``cpu_limit`` landed while the deployed service still lacked it, and the effect would
+    have been a simulator capped at 0.5 -- BELOW the 0.75 it had been running at -- with no
+    error and nothing in a log to say so. A typo has the identical shape and is likelier.
+    """
+    with pytest.raises(Exception, match="[Ee]xtra"):
+        ResourcesConfig(cpu=1, cpu_limits=6)
+    with pytest.raises(Exception, match="[Ee]xtra"):
+        ResourcesConfig(cpu=1, memroy="1Gi")
