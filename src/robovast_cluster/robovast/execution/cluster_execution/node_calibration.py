@@ -59,10 +59,21 @@ logger = logging.getLogger(__name__)
 #: sample of a distribution, and sizing exactly at it guarantees the next run is clipped.
 CALIBRATION_HEADROOM = 1.25
 
-#: Never size a container below this, whatever it measured. A container that happened to do
-#: very little in its calibration run -- a trial that failed early, a simulator that never got
-#: past bring-up -- would otherwise pin the node to a figure the next run cannot live in.
+#: Never size a container below this, whatever it measured. A last-resort floor, not the
+#: defence against a short probe -- that is :data:`MIN_PROBE_SAMPLES` below, because a floor
+#: cannot tell "this container genuinely idles" from "this run stopped before it started".
 MIN_CPU = 0.25
+
+#: Ticks a probe must have produced before its measurement is believed. The monitor samples
+#: about once a second, so this is roughly half a minute of the trial actually running.
+#:
+#: **This is a correctness gate, not a refinement.** The monitor writes its CSV whether or not
+#: the scenario succeeds, so a probe that died ten seconds in still produces a file -- one
+#: whose peak is near nothing. Believed, it would floor the whole node to :data:`MIN_CPU` and
+#: then *every* campaign run placed there would be starved by an allocation derived from a
+#: run that never happened. A measurement failure would have become silently degraded results
+#: on one node, which is the failure class this whole area exists to remove.
+MIN_PROBE_SAMPLES = 30
 
 
 @dataclass
@@ -116,7 +127,7 @@ class NodeCalibration:
         """
         return node_id not in self._probes
 
-    def record(self, node_id, job_key, measured: dict) -> bool:
+    def record(self, node_id, job_key, measured: dict, *, completed: bool = True) -> bool:
         """Take a finished probe's per-container measurement as that node's figures.
 
         *measured* is ``{container: {"sustained": cores, "peak": cores}}`` -- both, because
@@ -132,10 +143,24 @@ class NodeCalibration:
         if self._probes.get(node_id) != job_key:
             return False
         self._probes.pop(node_id, None)
+        if not completed:
+            # A probe whose scenario never reached a verdict measured a fragment of a run.
+            # The node stays on the declared sizing, which is merely un-optimised, rather
+            # than on a figure derived from a run that did not happen.
+            logger.warning("calibration probe %s did not complete; node %s stays on the "
+                           "declared sizing", job_key, node_id)
+            return False
+        thin = [name for name, stats in (measured or {}).items()
+                if (stats or {}).get("samples", 0) < MIN_PROBE_SAMPLES]
+        if thin:
+            logger.warning("calibration probe %s produced too few samples for %s "
+                           "(< %d ticks); node %s stays on the declared sizing",
+                           job_key, ", ".join(sorted(thin)), MIN_PROBE_SAMPLES, node_id)
+            return False
         figures = {}
         for name, stats in (measured or {}).items():
             kept = {k: max(MIN_CPU, round(v * CALIBRATION_HEADROOM, 3))
-                    for k, v in (stats or {}).items() if v}
+                    for k, v in (stats or {}).items() if v and k != "samples"}
             if kept:
                 figures[name] = kept
         if not figures:
@@ -205,4 +230,46 @@ def container_cpu_profile(rows) -> dict:
         return {}
     totals = sorted(v / 100.0 for v in per_tick.values())
     idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
-    return {"sustained": totals[idx], "peak": totals[-1]}
+    # ``samples`` travels with the figures so the caller can refuse a measurement drawn from
+    # too little of a run -- see MIN_PROBE_SAMPLES. A short probe is not a small container.
+    return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
+
+
+def read_probe_measurement(read, prefix: str, containers) -> dict:
+    """``{container: profile}`` from a finished probe's own CSVs.
+
+    *read* is ``(key) -> bytes | None``, so this needs no storage client and can be tested
+    without one. *containers* maps a container name to the file the monitor wrote for it
+    (``main`` for the pod's main container, the role name for each sidecar).
+
+    **Read directly, never through postprocessing.** The file the monitor writes IS the
+    measurement -- postprocessing only lifts it into ``data.db``, and does so at the end of a
+    campaign or a batch, which is far too late to size the job that comes next. It is also
+    why the probe's directory being skipped by postprocessing costs nothing: there was never
+    anything to gain from it going through.
+
+    A container whose file is missing or unreadable is simply absent from the result, which
+    the caller must read as "not measured" -- and, because a partial pod cannot be sized
+    coherently, that is what makes the whole probe unusable rather than most of it.
+    """
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    out = {}
+    for name, filename in (containers or {}).items():
+        try:
+            raw = read(f"{prefix}{filename}")
+        except Exception as exc:  # noqa: BLE001 - an unreadable probe is a missed
+            logger.debug("probe file %s unreadable: %s", filename, exc)
+            continue
+        if not raw:
+            continue
+        try:
+            rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8", "replace"))))
+        except Exception as exc:  # noqa: BLE001 - see above
+            logger.debug("probe file %s unparseable: %s", filename, exc)
+            continue
+        profile = container_cpu_profile(rows)
+        if profile:
+            out[name] = profile
+    return out

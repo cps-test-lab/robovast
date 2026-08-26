@@ -41,7 +41,7 @@ def test_a_calibrated_node_never_probes_again():
     different environments -- the same inconsistency this removes, in a slower form."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0}})
+    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200}})
     assert c.claim_probe("n1", "j9") is False
     assert c.calibrated("n1")["sut"]["peak"] == pytest.approx(2.0 * CALIBRATION_HEADROOM)
 
@@ -50,8 +50,8 @@ def test_headroom_is_applied_because_a_peak_is_one_sample():
     """Sizing exactly at what one run measured guarantees the next run is clipped."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0},
-                          "simulation": {"sustained": 0.4, "peak": 4.8}})
+    c.record("n1", "j0", {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200},
+                          "simulation": {"sustained": 0.4, "peak": 4.8, "samples": 200}})
     got = c.calibrated("n1")
     assert got["sut"]["peak"] == pytest.approx(2.5)
     assert got["simulation"]["sustained"] == pytest.approx(0.5)
@@ -65,7 +65,7 @@ def test_a_container_that_did_almost_nothing_still_gets_a_floor():
     pin the node to a figure the next run cannot live in."""
     c = NodeCalibration()
     c.claim_probe("n1", "j0")
-    c.record("n1", "j0", {"sut": {"sustained": 0.001, "peak": 0.001}})
+    c.record("n1", "j0", {"sut": {"sustained": 0.001, "peak": 0.001, "samples": 200}})
     assert c.calibrated("n1")["sut"]["peak"] == MIN_CPU
 
 
@@ -186,7 +186,7 @@ def test_a_node_takes_no_campaign_work_while_its_probe_is_out():
     assert c.accepts_work("n1") is True
     c.claim_probe("n1", "probe-1")
     assert c.accepts_work("n1") is False
-    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0}})
+    c.record("n1", "probe-1", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 200}})
     assert c.accepts_work("n1") is True
 
 
@@ -196,3 +196,101 @@ def test_the_probe_directory_is_not_a_configuration():
     from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS
 
     assert "_calibration" in RESERVED_CAMPAIGN_DIRS
+
+
+# -- the probe validity gate --------------------------------------------------------------
+
+_GOOD = {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200}}
+
+
+def test_a_probe_whose_scenario_never_finished_does_not_calibrate():
+    """The sharp edge, and a correctness requirement rather than a refinement.
+
+    The monitor writes its CSV whether or not the scenario succeeds, so a probe that died ten
+    seconds in still produces a file -- with a peak near nothing. Believed, it floors the node
+    to MIN_CPU and then EVERY campaign run placed there is starved by an allocation derived
+    from a run that never happened: a measurement failure silently become degraded results.
+    """
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    assert c.record("n1", "p1", _GOOD, completed=False) is False
+    assert c.calibrated("n1") is None
+    assert c.accepts_work("n1") is True, "the node falls back to declared sizing, not to a stall"
+
+
+def test_a_probe_with_too_few_samples_does_not_calibrate():
+    """A short probe is not a small container, and MIN_CPU cannot tell the two apart -- a
+    floor is a floor whether the container idles or the run stopped before it started."""
+    from robovast.execution.cluster_execution.node_calibration import MIN_PROBE_SAMPLES
+
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    thin = {"sut": {"sustained": 0.01, "peak": 0.02, "samples": MIN_PROBE_SAMPLES - 1}}
+    assert c.record("n1", "p1", thin) is False
+    assert c.calibrated("n1") is None
+
+
+def test_one_thin_container_refuses_the_whole_measurement():
+    """Sizing a pod from a mix of a real measurement and a fragment is worse than not sizing
+    it: the containers would be scaled against different amounts of the same run."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    mixed = {"sut": {"sustained": 1.4, "peak": 2.0, "samples": 200},
+             "simulation": {"sustained": 0.3, "peak": 5.0, "samples": 4}}
+    assert c.record("n1", "p1", mixed) is False
+
+
+def test_sample_count_never_becomes_a_cpu_figure():
+    """It travels with the measurement to be judged on, not to be sized from."""
+    c = NodeCalibration()
+    c.claim_probe("n1", "p1")
+    c.record("n1", "p1", _GOOD)
+    assert set(c.calibrated("n1")["sut"]) == {"sustained", "peak"}
+
+
+# -- reading a finished probe -------------------------------------------------------------
+
+def _csv(ticks, cpu_percent=100):
+    head = "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
+    return (head + "".join(f"{i},1,proc,{cpu_percent},10\n"
+                           for i in range(ticks))).encode()
+
+
+def test_a_probe_is_read_from_its_own_files_not_from_postprocessing():
+    """The monitor's CSV IS the measurement. Postprocessing only lifts it into data.db, and
+    does so at the end of a campaign or batch -- far too late to size the job that comes
+    next, which is why the probe's directory being skipped by postprocessing costs nothing.
+    """
+    from robovast.execution.cluster_execution.node_calibration import read_probe_measurement
+
+    store = {"_calibration/node-a/resource_usage_sut.csv": _csv(50),
+             "_calibration/node-a/resource_usage_simulation.csv": _csv(50, cpu_percent=40)}
+    got = read_probe_measurement(
+        store.get, "_calibration/node-a/",
+        {"sut": "resource_usage_sut.csv", "simulation": "resource_usage_simulation.csv"})
+    assert got["sut"]["peak"] == pytest.approx(1.0)
+    assert got["simulation"]["peak"] == pytest.approx(0.4)
+    assert got["sut"]["samples"] == 50
+
+
+def test_a_missing_container_file_is_absent_rather_than_zero():
+    """Which is what makes the whole probe unusable rather than most of it: a pod sized from
+    a real measurement for one container and a guess for another is worse than one not sized
+    at all."""
+    from robovast.execution.cluster_execution.node_calibration import read_probe_measurement
+
+    store = {"p/resource_usage_sut.csv": _csv(50)}
+    got = read_probe_measurement(store.get, "p/",
+                                 {"sut": "resource_usage_sut.csv",
+                                  "simulation": "resource_usage_simulation.csv"})
+    assert "simulation" not in got and "sut" in got
+
+
+def test_an_unreadable_probe_file_does_not_raise():
+    """A storage blip during calibration must cost an optimisation, never the campaign."""
+    from robovast.execution.cluster_execution.node_calibration import read_probe_measurement
+
+    def _boom(_key):
+        raise OSError("object store said no")
+
+    assert read_probe_measurement(_boom, "p/", {"sut": "resource_usage_sut.csv"}) == {}
