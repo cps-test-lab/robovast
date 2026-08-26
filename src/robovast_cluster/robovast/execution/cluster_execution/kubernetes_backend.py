@@ -893,12 +893,16 @@ class BatchJobRunner:
             logger.debug("Could not publish capacity wait for batch %s",
                          self._batch_tag, exc_info=True)
 
-    def _job_sizing(self):
+    def _job_sizing(self, job, total_jobs):
         """What one of this batch's pods asks the scheduler for, summed over its containers.
 
-        Read off the manifest that will actually be created rather than recomputed from the
-        config, so admission can never charge for a different number than Kubernetes reserves.
-        Every job of a batch is the same shape, which is why one sizing serves the batch.
+        Takes a *rendered* job manifest, not ``self.manifest``. That distinction cost a live
+        run: the base manifest carries only the main container, because the sidecars -- where
+        the simulator and the system under test live, and so nearly all of the request -- are
+        appended per job in :meth:`_build_job_manifest`. Sizing from the base counted 1 core
+        of a 4.75-core pod, and the queue admitted a whole batch at once.
+
+        Every job of a batch is the same shape, so one rendering serves the batch.
 
         Native sidecars are included: Kubernetes adds a ``restartPolicy: Always`` init
         container's requests to the pod's effective total, and so does the scheduler.
@@ -906,7 +910,7 @@ class BatchJobRunner:
         from .kube_client import parse_resource  # noqa: PLC0415
         from .node_admission import JobSizing  # noqa: PLC0415
 
-        spec = self.manifest["spec"]["template"]["spec"]
+        spec = self.create_job_manifest(job, total_jobs)["spec"]["template"]["spec"]
         cpu = 0.0
         memory = 0
         gpu = 0
@@ -1667,7 +1671,7 @@ class BatchJobRunner:
 
             from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
 
-            sizing = self._job_sizing()
+            sizing = self._job_sizing(jobs[0], total_jobs)
             try:
                 admission.preflight(sizing)
             except AdmissionRefused as exc:
