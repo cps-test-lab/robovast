@@ -438,3 +438,25 @@ def test_the_sizing_the_queue_uses_is_the_sizing_the_manifest_asks_for():
     assert declared.cpu == pytest.approx(4.75)
     assert calibrated.cpu == pytest.approx(3.4)
     assert calibrated.cpu < declared.cpu, "a calibrated node holds more of them"
+
+
+def test_the_declared_role_decides_not_the_container_name():
+    """A stack that bundles its own simulator serves the simulation role from its sut
+    container. It is still the thing under test, so it is still sized on peak -- and that is
+    a case where role and name already differ, which is why the rule rests on the role."""
+    figures = {"my_stack": {"sustained": 1.4, "peak": 2.5}}
+    got = _calibrated_with_roles({"cpu": 3}, "my_stack", figures, roles=("sut", "simulation"))
+    assert got["cpu"] == 2.5 and got["cpu_limit"] == 2.5, "peak, and pinned"
+
+
+def test_a_container_with_no_role_is_treated_as_infrastructure():
+    """An ad-hoc container is not under test, so it reserves what it sustains."""
+    figures = {"helper": {"sustained": 0.3, "peak": 4.0}}
+    got = _calibrated_with_roles({"cpu": 1, "cpu_limit": 4}, "helper", figures, roles=())
+    assert got["cpu"] == pytest.approx(0.3)
+    assert got["cpu_limit"] == 4
+
+
+def _calibrated_with_roles(declared, name, figures, roles):
+    from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
+    return calibrated_resources(declared, name, figures, roles=roles)
