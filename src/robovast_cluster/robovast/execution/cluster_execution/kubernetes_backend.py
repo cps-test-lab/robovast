@@ -93,6 +93,7 @@ from .manifests import JOB_TEMPLATE
 # so there is no cycle to route around by importing late.
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_admission import PLANNED as _ADMIT_PLANNED
+from .node_placement import NODE_ID_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -1610,8 +1611,16 @@ class BatchJobRunner:
         job_names = [_short_job_name(self.campaign, self._job_tag(job.index), job.index)
                      for job in jobs]
 
-        def _create_job(job, name):
+        def _create_job(job, name, node_id=None):
             manifest = self.create_job_manifest(job, total_jobs)
+            if node_id:
+                # Pinned to the node admission reserved room on, so the placement and the
+                # reservation are one decision. ANDed with whatever the spec already carries
+                # (an operator's node pool), never replacing it: a pin that widened the set of
+                # acceptable nodes would defeat the pool it was placed inside.
+                spec = manifest['spec']['template']['spec']
+                spec['nodeSelector'] = {**(spec.get('nodeSelector') or {}),
+                                        NODE_ID_LABEL: node_id}
             try:
                 self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
                                                             body=manifest)
@@ -1626,6 +1635,8 @@ class BatchJobRunner:
             # No queue: create everything at once, exactly as before. This is the path every
             # offline caller and every existing test takes.
             for job, name in zip(jobs, job_names):
+                # Unpinned: without a queue nothing has reserved a node, so choosing one here
+                # would be a guess the scheduler is better placed to make.
                 _create_job(job, name)
             created_names = list(job_names)
             planned_count = 0

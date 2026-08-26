@@ -15,12 +15,21 @@ from robovast.execution.cluster_execution.cluster_capacity import ClusterBudgetP
 MIB = 1024 ** 2
 
 
-def _node(name, cpu="8", memory="16Gi", gpu=None):
+def _node(name, cpu="8", memory="16Gi", gpu=None, node_id=True):
+    """A node, carrying its identity label unless *node_id* is False.
+
+    ``node_id=False`` is a node that joined since the last ``setup``: still counted, because
+    its pods and capacity are real, but nothing can be pinned to it.
+    """
+    from robovast.execution.cluster_execution.node_placement import NODE_ID_LABEL
+
     alloc = {"cpu": cpu, "memory": memory}
     if gpu:
         alloc["nvidia.com/gpu"] = gpu
-    return types.SimpleNamespace(metadata=types.SimpleNamespace(name=name),
-                                 status=types.SimpleNamespace(allocatable=alloc))
+    labels = {NODE_ID_LABEL: f"node-{name}"} if node_id else {}
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=name, labels=labels),
+        status=types.SimpleNamespace(allocatable=alloc))
 
 
 def _c(cpu=None, memory=None, gpu=None):
@@ -166,20 +175,29 @@ def _with_config(nodes, pods, monkeypatch, config):
     return ClusterBudgetProvider(lambda: core, cluster_config=config)
 
 
-def test_an_autoscaling_cluster_is_sized_by_what_it_can_become(monkeypatch):
-    """Otherwise admission is self-defeating: pods that cannot be placed are exactly what
-    makes an autoscaler add a node, so only ever creating what currently fits keeps the
-    cluster at whatever size it happens to be.
+def test_an_autoscaling_cluster_is_reported_as_growable_not_as_bigger_nodes(monkeypatch):
+    """The override says the CLUSTER can grow, not that a node has room it does not have.
+
+    Admission is otherwise self-defeating: pods that cannot be placed are exactly what makes
+    an autoscaler add a node, so only ever creating what currently fits keeps the cluster at
+    whatever size it happens to be. But per-node budgets cannot express that by inflating a
+    node -- there is no node yet, and a pod pinned to a machine that does not exist is worse
+    than one left pending. So the extra capacity is a flag, and the controller answers it by
+    creating the job UNPINNED and letting kube-scheduler and the autoscaler settle it.
     """
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch, _Autoscaler())
-    assert p.budget().free_cpu == pytest.approx(64 - 1), "should use the autoscaler max, not 8"
+    b = p.budget()
+    assert b.growable is True
+    assert b.free_cpu == pytest.approx(8 - 1), "the real node is reported at its real size"
 
 
 def test_an_override_never_shrinks_a_cluster_below_its_real_nodes(monkeypatch):
     """An override that under-reports must not take away capacity that demonstrably exists."""
     p = _with_config([_node("n1", cpu="32", memory="64Gi")], [], monkeypatch,
                      _Autoscaler(cpu="8", memory="16Gi"))
-    assert p.budget().free_cpu == pytest.approx(32 - 1)
+    b = p.budget()
+    assert b.free_cpu == pytest.approx(32 - 1)
+    assert b.growable is False, "an override below the real size does not make it growable"
 
 
 def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch):
@@ -187,7 +205,9 @@ def test_a_provider_that_cannot_answer_falls_back_to_counting_nodes(monkeypatch)
     the nodes it has, not stop."""
     p = _with_config([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
                      _Autoscaler(boom=True))
-    assert p.budget().free_cpu == pytest.approx(8 - 1)
+    b = p.budget()
+    assert b.free_cpu == pytest.approx(8 - 1)
+    assert b.growable is False
 
 
 def test_no_cluster_config_is_the_ordinary_case(monkeypatch):

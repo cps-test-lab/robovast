@@ -107,8 +107,34 @@ class Capacity:
 
 
 @dataclass(frozen=True)
+class NodeBudget:
+    """What is free on ONE node right now.
+
+    Per node rather than cluster-wide because a pod runs on one machine: a cluster with room
+    in total and none on any single node is the state where jobs are admitted and then sit
+    ``Unschedulable``. Measured on 2026-08-26: 11.31 cores free across the cluster and no node
+    holding the 4.75 a pod needed.
+
+    *node_id* is the value of ``robovast.io/node-id`` -- the same hash ``runs.node_label``
+    records -- so it can be used directly as a ``nodeSelector`` and appears in no manifest as
+    a hostname. ``None`` for a node that has not been labelled yet (one that joined after the
+    last ``setup``): such a node is still *counted*, because its pods are real and its
+    capacity is real, but nothing can be pinned to it.
+    """
+    node_id: "str | None"
+    free_cpu: float
+    free_memory: int
+    free_gpu: int = 0
+
+    def holds(self, sizing: "JobSizing") -> bool:
+        return (self.free_cpu >= sizing.cpu
+                and self.free_memory >= sizing.memory
+                and self.free_gpu >= sizing.gpu)
+
+
+@dataclass(frozen=True)
 class Budget:
-    """What is free right now, and which jobs the reading already accounts for.
+    """What is free right now, per node, and which jobs the reading already accounts for.
 
     ``counted_jobs`` is the whole of the double-counting fix and the reason this is not just a
     pair of numbers. A Job created a moment ago has no pod bound to a node yet, so the next
@@ -116,11 +142,31 @@ class Budget:
     over-admission a stale quota produces. The provider reports which Jobs it *did* see, and a
     reservation stops being subtracted the instant the measurement starts subtracting the real
     pod -- with no timer, and no window where the cores are counted twice or not at all.
+
+    ``growable`` is the autoscaler's exception, and it is narrow on purpose. A cluster that
+    can add nodes has room that exists on no node yet, so a strict per-node test would refuse
+    exactly the pods whose pending state is what makes an autoscaler grow -- self-defeating,
+    and invisible except on a cluster nobody here runs. When it is set, a job that fits no
+    current node may still be created **unpinned**, leaving the placement to kube-scheduler.
+    A static cluster leaves it ``False`` and per-node is authoritative.
     """
-    free_cpu: float
-    free_memory: int
-    free_gpu: int = 0
+    nodes: tuple = ()
     counted_jobs: frozenset = frozenset()
+    growable: bool = False
+
+    @property
+    def free_cpu(self) -> float:
+        """Cluster-wide free cores. For reporting only -- never for deciding placement,
+        which is the confusion this whole type exists to prevent."""
+        return sum(n.free_cpu for n in self.nodes)
+
+    @property
+    def free_memory(self) -> int:
+        return sum(n.free_memory for n in self.nodes)
+
+    @property
+    def free_gpu(self) -> int:
+        return sum(n.free_gpu for n in self.nodes)
 
 
 class BudgetProvider(Protocol):
@@ -160,11 +206,18 @@ class WorkItem:
 
 @dataclass
 class _Held:
-    """A granted reservation: charged against free capacity until its pod is observed."""
+    """A granted reservation: charged against free capacity until its pod is observed.
+
+    *node_id* is where it was granted, so the charge lands on the node that will carry it.
+    ``None`` for a job created unpinned on a growable cluster: it is charged nowhere, because
+    it is going to a node that does not exist yet and charging an existing one would refuse
+    work that node could still take.
+    """
     owner: str
     cpu: float
     memory: int
     gpu: int
+    node_id: "str | None" = None
 
 
 class AdmissionRefused(Exception):
@@ -232,19 +285,29 @@ class AdmissionController:
             pending = self._pending_in_order()
             if not pending:
                 return 0
-            free = self._effective_free_locked(force=True)
+            nodes, growable = self._effective_free_locked(force=True)
+            by_id = {n.node_id: n for n in nodes}
             for item in pending:
                 if limit is not None and created >= limit:
                     break
                 need = item.sizing
-                if not (free[0] >= need.cpu and free[1] >= need.memory and free[2] >= need.gpu):
+                # Emptiest-first, so a batch spreads rather than filling one machine and then
+                # discovering the rest of the cluster cannot take the shape that is left.
+                # A node with no identity label can hold work but cannot be pinned to, so it
+                # is not a candidate -- its capacity still counts, via the reading.
+                fits = [n for n in by_id.values() if n.node_id and n.holds(need)]
+                chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
+                if chosen is None and not growable:
+                    biggest = max((n.free_cpu for n in by_id.values()), default=0.0)
                     self._last_refusal = (
                         f"{len(pending) - created} job(s) waiting: next needs "
-                        f"{need.cpu:g} cpu / {need.memory // (1024 ** 2)}Mi, "
-                        f"{free[0]:g} cpu / {free[1] // (1024 ** 2)}Mi free")
+                        f"{need.cpu:g} cpu / {need.memory // (1024 ** 2)}Mi and no node has "
+                        f"that free (most free: {biggest:g} cpu)")
                     continue
                 try:
-                    item.create()
+                    # None means unpinned: only reachable on a growable cluster, where the
+                    # room is real but not on any node yet.
+                    item.create(chosen.node_id if chosen else None)
                 except Exception:
                     # The caller owns the failure; leave the item PLANNED so a later drain can
                     # retry, and never hold a reservation for a job that was not created.
@@ -252,8 +315,15 @@ class AdmissionController:
                                    item.key, exc_info=True)
                     continue
                 item.state = CREATED
-                self._held[item.key] = _Held(item.owner, need.cpu, need.memory, need.gpu)
-                free = (free[0] - need.cpu, free[1] - need.memory, free[2] - need.gpu)
+                node_id = chosen.node_id if chosen else None
+                self._held[item.key] = _Held(item.owner, need.cpu, need.memory, need.gpu,
+                                             node_id)
+                if chosen is not None:
+                    by_id[node_id] = NodeBudget(
+                        node_id=node_id,
+                        free_cpu=chosen.free_cpu - need.cpu,
+                        free_memory=chosen.free_memory - need.memory,
+                        free_gpu=chosen.free_gpu - need.gpu)
                 created += 1
         return created
 
@@ -338,16 +408,24 @@ class AdmissionController:
                       key=lambda i: (-i.priority, i.started_at, i.seq))
 
     def _effective_free_locked(self, *, force: bool = False):
+        """``([NodeBudget], growable)`` with in-flight reservations already subtracted.
+
+        The ledger is applied **per node**, to the node each reservation was granted on: a
+        job promised room on one machine must not appear to free capacity on another.
+        """
         now = self._clock()
         if force or self._budget is None or (now - self._budget_at) >= self._budget_ttl:
             self._budget = self._provider.budget()
             self._budget_at = now
         budget = self._budget
-        cpu, mem, gpu = budget.free_cpu, budget.free_memory, budget.free_gpu
+        free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu] for n in budget.nodes}
         for key, held in self._held.items():
             if key in budget.counted_jobs:
                 continue  # the reading already subtracted its real pod
-            cpu -= held.cpu
-            mem -= held.memory
-            gpu -= held.gpu
-        return (cpu, mem, gpu)
+            if held.node_id not in free:
+                continue  # unpinned, or a node that has since gone away
+            free[held.node_id][0] -= held.cpu
+            free[held.node_id][1] -= held.memory
+            free[held.node_id][2] -= held.gpu
+        return ([NodeBudget(node_id=k, free_cpu=v[0], free_memory=v[1], free_gpu=v[2])
+                 for k, v in free.items()], budget.growable)

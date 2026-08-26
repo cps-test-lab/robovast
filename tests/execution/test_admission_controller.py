@@ -13,18 +13,34 @@ import pytest
 
 from robovast.execution.cluster_execution.node_admission import (AdmissionController,
                                                                  AdmissionRefused, Budget,
-                                                                 Capacity, JobSizing)
+                                                                 Capacity, JobSizing,
+                                                                 NodeBudget)
 
 MIB = 1024 ** 2
 
 
 class FakeProvider:
-    """A budget that only changes when a test says so."""
+    """A budget that only changes when a test says so.
 
-    def __init__(self, cpu=10.0, memory=10240 * MIB, gpu=0, nodes=None):
-        self.free = Budget(free_cpu=cpu, free_memory=memory, free_gpu=gpu)
+    ``cpu``/``memory`` describe ONE node by default, which is what most of these tests want:
+    they are about the ledger and the ordering, not about placement. Pass ``per_node`` for a
+    cluster of several.
+    """
+
+    def __init__(self, cpu=10.0, memory=10240 * MIB, gpu=0, nodes=None, per_node=None,
+                 growable=False):
+        if per_node is None:
+            per_node = [("n1", cpu, memory, gpu)]
+        self._per_node = per_node
+        self.growable = growable
+        self.free = self._budget(frozenset())
         self.nodes = nodes if nodes is not None else [Capacity(8.0, 8192 * MIB)]
         self.reads = 0
+
+    def _budget(self, counted):
+        return Budget(nodes=tuple(NodeBudget(node_id=i, free_cpu=c, free_memory=m, free_gpu=g)
+                                  for i, c, m, g in self._per_node),
+                      counted_jobs=counted, growable=self.growable)
 
     def budget(self):
         self.reads += 1
@@ -35,15 +51,14 @@ class FakeProvider:
 
     def observe(self, *keys):
         """The pod pass now sees these Jobs -- i.e. their requests are in the reading."""
-        self.free = Budget(self.free.free_cpu, self.free.free_memory, self.free.free_gpu,
-                           frozenset(keys))
+        self.free = Budget(self.free.nodes, frozenset(keys), self.growable)
 
 
 def _items(controller, owner, n, cpu=2.0, memory=1024 * MIB, started_at=0.0, priority=0,
            created=None):
     made = created if created is not None else []
     controller.submit(owner, [(f"{owner}-{i}", JobSizing(cpu, memory),
-                               (lambda k=f"{owner}-{i}": made.append(k)))
+                               (lambda _node=None, k=f"{owner}-{i}": made.append(k)))
                               for i in range(n)],
                       started_at=started_at, priority=priority)
     return made
@@ -75,7 +90,7 @@ def test_a_reservation_stops_being_charged_once_its_pod_is_observed():
     _items(c, "a", 3, cpu=2.0)
     c.drain()
     p.observe("a-0", "a-1")            # the pod pass now subtracts them itself
-    p.free = Budget(free_cpu=1.0, free_memory=10240 * MIB,
+    p.free = Budget(nodes=(NodeBudget("n1", 1.0, 10240 * MIB),),
                     counted_jobs=frozenset({"a-0", "a-1"}))
     assert c.drain() == 0, "1 core free is still not 2 -- no double credit"
 
@@ -108,10 +123,10 @@ def test_an_older_campaigns_second_batch_still_beats_a_younger_campaigns_first()
     p = FakeProvider(cpu=2.0)
     c = _controller(p)
     made = []
-    c.submit("young", [("young-0", JobSizing(2.0, MIB), lambda: made.append("young-0"))],
+    c.submit("young", [("young-0", JobSizing(2.0, MIB), lambda _n=None: made.append("young-0"))],
              started_at=200.0)
     # The older campaign's SECOND batch, enqueued after the younger campaign's first.
-    c.submit("old", [("old-1", JobSizing(2.0, MIB), lambda: made.append("old-1"))],
+    c.submit("old", [("old-1", JobSizing(2.0, MIB), lambda _n=None: made.append("old-1"))],
              started_at=100.0)
     c.drain()
     assert made == ["old-1"]
@@ -132,8 +147,8 @@ def test_a_job_that_does_not_fit_is_skipped_not_blocked_behind():
     p = FakeProvider(cpu=3.0)
     c = _controller(p)
     made = []
-    c.submit("a", [("big", JobSizing(8.0, MIB), lambda: made.append("big")),
-                   ("small", JobSizing(2.0, MIB), lambda: made.append("small"))],
+    c.submit("a", [("big", JobSizing(8.0, MIB), lambda _n=None: made.append("big")),
+                   ("small", JobSizing(2.0, MIB), lambda _n=None: made.append("small"))],
              started_at=0.0)
     assert c.drain() == 1 and made == ["small"]
 
@@ -188,7 +203,7 @@ def test_a_create_that_raises_leaves_the_job_planned_and_holds_no_reservation():
     assert c.drain() == 0
     assert c.states("a") == {"a-0": "planned"}
     ok = []
-    c.submit("a", [("a-1", JobSizing(2.0, MIB), lambda: ok.append(1))], started_at=0.0)
+    c.submit("a", [("a-1", JobSizing(2.0, MIB), lambda _n=None: ok.append(1))], started_at=0.0)
     assert c.drain() == 1, "the failure must not have consumed capacity"
 
 
@@ -196,11 +211,98 @@ def test_resubmitting_a_plan_does_not_double_it():
     c = _controller(FakeProvider(cpu=100.0))
     made = []
     for _ in range(2):
-        c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda: made.append("a-0"))],
+        c.submit("a", [("a-0", JobSizing(1.0, MIB), lambda _n=None: made.append("a-0"))],
                  started_at=0.0)
     assert c.drain() == 1 and made == ["a-0"]
 
 
+# -- per-node placement -------------------------------------------------------------------
+
+def test_a_job_is_pinned_to_a_node_that_can_hold_it():
+    """The reservation and the placement are one decision. Admitting against a cluster total
+    and letting the scheduler choose is what allows a job to be created and then sit
+    Unschedulable, which is exactly what a per-node budget removes."""
+    p = FakeProvider(per_node=[("small", 2.0, 10240 * MIB, 0),
+                               ("big", 8.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0)
+    assert c.drain() == 1
+    assert seen == ["big"], "only one node could hold it"
+
+
+def test_fragmentation_is_refused_rather_than_admitted_and_left_pending():
+    """The measured failure this exists for: 11.31 cores free across the cluster and no node
+    holding the 4.75 a pod needed. A cluster-wide figure says yes and the scheduler then
+    cannot place it."""
+    p = FakeProvider(per_node=[("a", 3.0, 10240 * MIB, 0), ("b", 3.0, 10240 * MIB, 0),
+                               ("c", 3.0, 10240 * MIB, 0), ("d", 3.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    made = _items(c, "a", 1, cpu=4.0)
+    assert p.budget().free_cpu == 12.0, "cluster-wide there is plenty"
+    assert c.drain() == 0 and made == []
+    assert "no node has that free" in c.refusal()
+
+
+def test_the_ledger_charges_the_node_the_job_was_granted_on():
+    """A job promised room on one machine must not appear to free capacity on another --
+    otherwise two jobs are handed the same cores whenever the cluster has more than one node.
+    """
+    p = FakeProvider(per_node=[("a", 5.0, 10240 * MIB, 0), ("b", 1.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    made = _items(c, "a", 3, cpu=3.0)
+    # Only node "a" can hold a 3-core job, and only once: 5 - 3 = 2.
+    assert c.drain() == 1 and len(made) == 1
+
+
+def test_a_node_without_an_identity_label_is_counted_but_not_pinned_to():
+    """A node that joined since the last setup. Its pods and capacity are real, so it must be
+    counted; but with no label there is no selector, and pinning to it is impossible. Refusing
+    to admit anything at all while it is the emptiest node would turn adding capacity into an
+    outage, so the job goes to a node that CAN be named."""
+    p = FakeProvider(per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0)
+    assert c.drain() == 1
+    assert seen == ["named"], "the unlabelled node is emptiest but cannot be selected"
+
+
+def test_a_growable_cluster_may_create_unpinned_when_no_node_fits():
+    """The autoscaler's exception, and the reason it is narrow. Room that exists on no node
+    yet cannot be pinned to, and refusing is self-defeating -- a pending pod is what makes an
+    autoscaler grow. So the job is created without a selector and kube-scheduler settles it.
+    """
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MIB, 0)], growable=True)
+    c = _controller(p)
+    seen = []
+    c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
+             started_at=0.0)
+    assert c.drain() == 1
+    assert seen == [None], "unpinned, because the room is not on any node yet"
+
+
+def test_a_static_cluster_never_creates_unpinned():
+    """The same shape without the flag must refuse. Creating unpinned on a full static cluster
+    is precisely the over-admission per-node budgets exist to prevent."""
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MIB, 0)], growable=False)
+    c = _controller(p)
+    made = _items(c, "a", 1, cpu=4.0)
+    assert c.drain() == 0 and made == []
+
+
+def test_a_batch_spreads_rather_than_filling_one_node_first():
+    """Emptiest-first. Packing one machine full and then discovering the rest of the cluster
+    cannot take the shape that is left is how fragmentation is manufactured."""
+    p = FakeProvider(per_node=[("a", 6.0, 10240 * MIB, 0), ("b", 6.0, 10240 * MIB, 0)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [(f"a-{i}", JobSizing(3.0, MIB), lambda n=None: seen.append(n))
+                   for i in range(4)], started_at=0.0)
+    assert c.drain() == 4
+    assert sorted(seen) == ["a", "a", "b", "b"], f"expected an even spread, got {seen}"
 def test_a_zero_cpu_sizing_is_refused_by_preflight():
     """The controller must not accept a sizing of nothing, whoever built it.
 
