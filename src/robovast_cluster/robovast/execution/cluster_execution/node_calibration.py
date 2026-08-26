@@ -273,3 +273,44 @@ def read_probe_measurement(read, prefix: str, containers) -> dict:
         if profile:
             out[name] = profile
     return out
+
+
+#: Where a probe's output goes, under the campaign root. Reserved (see
+#: ``RESERVED_CAMPAIGN_DIRS``), so nothing walks it looking for runs.
+PROBE_DIR = "_calibration"
+
+
+def probe_output_dir(node_id: str) -> str:
+    """The campaign-relative directory a probe of *node_id* writes into."""
+    return f"{PROBE_DIR}/{node_id}"
+
+
+def probe_parameter_documents(documents, node_id: str) -> list:
+    """A job's parameter documents, redirected so a probe writes outside the run tree.
+
+    **This is the half that is easy to miss, and missing it is the whole hazard.** A job's
+    output arrives in two places by two different mechanisms:
+
+    * its *job artifacts* -- the monitor's CSVs, the logs -- go where ``OUTPUT_DIR`` says;
+    * its *scenario results* -- rosbags, ``test.xml``, poses -- go where the parameter
+      document's ``_output_dir`` says, which is normally ``<config_name>/<run_number>``.
+
+    Overriding only ``OUTPUT_DIR`` therefore leaves a probe writing its results into a REAL
+    campaign run directory: colliding with that run, or manufacturing one that looks real.
+    Both have to point at :data:`PROBE_DIR`, and this is the second one.
+
+    The rest of the document is left exactly as it was. A probe has to run the same
+    configuration a real job would -- including recording its bags, which is not free and is
+    therefore part of what has to be measured. A probe that skipped recording would measure a
+    lighter workload than the runs it is sizing, and would under-size the node.
+    """
+    import copy  # noqa: PLC0415
+
+    out = []
+    for document in documents or []:
+        doc = copy.deepcopy(document)
+        for params in doc.values():
+            if isinstance(params, dict):
+                params["_output_dir"] = probe_output_dir(node_id)
+        out.append(doc)
+    return out

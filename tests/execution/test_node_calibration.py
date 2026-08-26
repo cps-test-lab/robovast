@@ -294,3 +294,53 @@ def test_an_unreadable_probe_file_does_not_raise():
         raise OSError("object store said no")
 
     assert read_probe_measurement(_boom, "p/", {"sut": "resource_usage_sut.csv"}) == {}
+
+
+# -- keeping a probe out of the run tree --------------------------------------------------
+
+def test_the_scenario_results_are_redirected_too_not_only_the_job_artifacts():
+    """The half that is easy to miss, and missing it is the whole hazard.
+
+    A job's output arrives in two places by two mechanisms: job artifacts (the monitor's
+    CSVs) follow OUTPUT_DIR, while scenario results (rosbags, test.xml, poses) follow the
+    parameter document's _output_dir, normally "<config>/<run>". Override only the first and
+    a probe writes its results into a REAL campaign run directory -- colliding with that run
+    or manufacturing one that looks real, which is exactly the contamination this design
+    exists to avoid.
+    """
+    from robovast.execution.cluster_execution.node_calibration import (
+        probe_output_dir, probe_parameter_documents)
+
+    docs = [{"test_scenario": {"_output_dir": "goal-1/0", "speed": 3}}]
+    got = probe_parameter_documents(docs, "node-abc")
+    assert got[0]["test_scenario"]["_output_dir"] == probe_output_dir("node-abc")
+    assert probe_output_dir("node-abc").startswith("_calibration/")
+
+
+def test_everything_else_about_the_configuration_is_left_alone():
+    """A probe must run the same configuration a real job would, bags and all. Recording is
+    not free, so a probe that skipped it would measure a lighter workload than the runs it is
+    sizing and under-size the node."""
+    from robovast.execution.cluster_execution.node_calibration import probe_parameter_documents
+
+    docs = [{"test_scenario": {"_output_dir": "goal-1/0", "speed": 3, "map": "depot.yaml"}}]
+    got = probe_parameter_documents(docs, "node-abc")
+    assert got[0]["test_scenario"]["speed"] == 3
+    assert got[0]["test_scenario"]["map"] == "depot.yaml"
+
+
+def test_the_original_documents_are_not_mutated():
+    """They belong to the real job that is about to run with them."""
+    from robovast.execution.cluster_execution.node_calibration import probe_parameter_documents
+
+    docs = [{"test_scenario": {"_output_dir": "goal-1/0"}}]
+    probe_parameter_documents(docs, "node-abc")
+    assert docs[0]["test_scenario"]["_output_dir"] == "goal-1/0"
+
+
+def test_the_probe_directory_is_the_reserved_one():
+    """Both halves must point at a name nothing walks looking for runs."""
+    from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS
+    from robovast.execution.cluster_execution.node_calibration import PROBE_DIR
+
+    assert PROBE_DIR in RESERVED_CAMPAIGN_DIRS
