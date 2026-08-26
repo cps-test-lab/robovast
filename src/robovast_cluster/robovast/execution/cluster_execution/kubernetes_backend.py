@@ -1814,12 +1814,11 @@ class BatchJobRunner:
         # a digest ref cannot resolve to different bytes, so there is nothing to read back.
         # Taking it here is what up-front pinning promised ("execution.yaml records what ran
         # rather than what was asked for") and what this method did not do -- it read the
-        # digest off the batch's pods instead, which is a race a SHORT batch loses. Measured:
-        # an adaptive-repetitions campaign whose first group was 8 one-rep runs had its pods
-        # reaped before the read, `image_revision` was written "unknown", and the search
-        # loop's per-batch bag conversion could then resolve no execution image at all --
-        # so every batch failed to score and the campaign blamed the world. The pod read
-        # below still runs: it is the only source of a PER-CONTAINER digest.
+        # digest off the batch's pods instead, which is a race a SHORT batch loses: its pods
+        # are reaped before the read, `image_revision` is written "unknown", and the search
+        # loop's per-batch bag conversion can then resolve no execution image at all -- so
+        # every batch fails to score and the campaign blames the world. The pod read below
+        # still runs: it is the only source of a PER-CONTAINER digest.
         if self.image and "@sha256:" in self.image:
             self._resolved_image_digest = self.image
         try:

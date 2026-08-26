@@ -10,11 +10,10 @@ plugin and cannot work for a rosbag converter: deserializing a bag needs the cam
 ROS 2 image, which is why campaign-level postprocessing dispatches an in-cluster conversion
 Job instead of importing anything.
 
-Measured consequence, on a real campaign: the converter tried to launch its aux container
-from the controller, resolved the image against the *default* project rather than the
-deployment's, and exited 1 -- while the campaign's own three containers in the same log
-resolved correctly. Every downstream plugin then read files that did not exist, and the
-extractor refused the batch for a reason that pointed at the world.
+Launching the aux container from the controller resolves its image against the *default*
+project rather than the deployment's and exits 1 -- while the campaign's own containers in
+the same log resolve correctly. Every downstream plugin then reads files that do not exist,
+and the extractor refuses the batch for a reason that points at the world.
 
 So a search's commands have to be split the same way the campaign-level path splits them.
 This is that split, and it is the part worth testing: the dispatch itself needs a cluster,
@@ -311,11 +310,10 @@ def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch):
     batch and says what was missing. A conversion that could not START is a broken campaign:
     every batch will hit it, nothing will ever score, and the reason is not in the world.
 
-    Logging it as a warning and carrying on meant the campaign died on "no run recorded a
-    clearance value ... the likeliest is the last: the rosbag->CSV plugins listed in
-    search.postprocessing", while the actual cause -- no execution image recorded in
-    execution.yaml -- sat in a warning line above it. Measured on a real campaign; the
-    misdirection cost the diagnosis, not the compute.
+    Logging it as a warning and carrying on lets the campaign die reporting that no run
+    recorded a value and pointing at the postprocessing plugins, while the actual cause --
+    no execution image recorded in execution.yaml -- sits in a warning line above it. The
+    cost is the diagnosis, not the compute.
     """
     from robovast.execution import controller as ctrl
 

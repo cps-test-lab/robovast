@@ -9,12 +9,11 @@ Image refs are resolved to digests *before* a batch's pods are written, so the k
 records the digest into ``execution.yaml`` did not use that: it read the digest back off the
 batch's pods afterwards, which is a race, and a short batch loses it.
 
-Measured: an adaptive-repetitions campaign whose first group was 8 one-rep runs had its pods
-reaped before the read. ``image_revision`` was written as ``unknown``, and the search loop's
-per-batch bag conversion -- which resolves the campaign's execution image from that file --
-could then pick no image at all. Every batch failed to score, and the campaign died reporting
-"no run recorded a clearance value", pointing at the world. The five campaigns in the same
-wave whose first batch was 24 runs all won the race and were fine.
+A batch short enough to be reaped before the read loses it: ``image_revision`` is written
+as ``unknown``, the search loop's per-batch bag conversion -- which resolves the campaign's
+execution image from that file -- can then pick no image at all, and every batch fails to
+score. The campaign reports that no run recorded a value, pointing at the world. A long
+batch wins the race and is fine, which is what makes this intermittent by run count.
 
 A digest ref cannot resolve to different bytes, so when the ref is already pinned there is
 nothing to read back and no race to lose.

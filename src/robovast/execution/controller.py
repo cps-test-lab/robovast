@@ -954,15 +954,15 @@ class CampaignController:
                                "missing and the extractor will say so: %s", message)
         except Exception as exc:  # pylint: disable=broad-except
             # RAISED, not warned. A conversion that could not START is a different failure
-            # from one that ran and produced nothing, and they were reported as the same
-            # thing. The second is the extractor's business -- it refuses the batch and names
+            # from one that ran and produced nothing, and reporting them the same way
+            # loses that distinction. The second is the extractor's business -- it refuses the batch and names
             # what was missing. The first is a broken campaign: every batch will hit it,
             # nothing will ever score, and the reason is not in the world.
             #
-            # Measured: an unresolvable execution image left this a warning, and the campaign
-            # then died on "no run recorded a clearance value ... the likeliest is the
-            # rosbag->CSV plugins listed in search.postprocessing" -- sending the reader to
-            # the one thing that was correct, while the real cause sat in a warning above.
+            # Warning here instead sends the reader somewhere correct and useless: the
+            # extractor then reports that no run recorded a value and points at the
+            # postprocessing plugins, which are fine, while the cause sits in a warning
+            # further up the log.
             raise RuntimeError(
                 f"batch bag conversion could not run at all, so no batch of this search can "
                 f"be scored: {exc}. This is not a missing measurement -- the conversion was "

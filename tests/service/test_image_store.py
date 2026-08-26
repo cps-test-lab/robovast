@@ -17,6 +17,7 @@ import subprocess
 import pytest
 
 from robovast.common.errors import ImageStoreUnavailable
+from robovast.service import image_store
 from robovast.service.image_build import BuildSpec
 from robovast.service.image_store import (ImageBuildStore, ImageRef, LocalDockerImageStore,
                                           build_identity, local_build_id)
@@ -203,6 +204,47 @@ def test_every_store_folds_the_vcs_resolution_into_its_hash(tmp_path, monkeypatc
         assert before != after, (
             f"{type(store).__name__}.ref_for ignores the resolution: a moved branch is a "
             f"cache hit, so the first build is served for ever")
+
+
+def test_every_store_folds_the_base_it_would_build_on_into_its_hash(tmp_path, monkeypatch):
+    """A republished base must change the key on EVERY lane, not just the one that remembered.
+
+    Same shape as the vcs omission above and the same lane: the cluster store hashed the base
+    *ref*, so republishing what a floating tag points at was invisible to it -- a new simulator
+    image, or a refreshed apt snapshot, and every derived experiment image stayed a cache hit,
+    built on the base of whichever day it was first built. On the lane campaigns actually run on,
+    that is the silent substitution :func:`build_hash` exists to prevent, and it looks exactly
+    like a run that did use the new base.
+    """
+    ris = pytest.importorskip(
+        "robovast.execution.cluster_execution.registry_image_store")
+
+    def _hash_when_the_base_is(store, identity):
+        if isinstance(store, ris.RegistryImageStore):
+            monkeypatch.setattr(type(store), "published_digest",
+                                lambda _self, _ref: identity)
+        else:
+            monkeypatch.setattr(image_store, "local_image_id", lambda _ref: identity)
+        return store.ref_for(SPEC, tmp_path).image_hash
+
+    for store in _stores(tmp_path):
+        before = _hash_when_the_base_is(store, "sha256:" + "a" * 64)
+        after = _hash_when_the_base_is(store, "sha256:" + "b" * 64)
+        assert before != after, (
+            f"{type(store).__name__}.ref_for hashes the base REF: a republished base is a cache "
+            f"hit, so the image keeps the base it was first built on"
+        )
+
+
+def test_a_base_the_registry_cannot_resolve_still_answers(tmp_path, monkeypatch):
+    """An unreachable registry must not become a forced rebuild on every call: the ref is what
+    the key held before the digest was folded in, so falling back to it keeps that behaviour."""
+    ris = pytest.importorskip(
+        "robovast.execution.cluster_execution.registry_image_store")
+    store = [s for s in _stores(tmp_path) if isinstance(s, ris.RegistryImageStore)][0]
+    monkeypatch.setattr(type(store), "published_digest", lambda _self, _ref: "")
+    first = store.ref_for(SPEC, tmp_path).image_hash
+    assert first and store.ref_for(SPEC, tmp_path).image_hash == first
 
 
 def test_the_resolution_is_shared_rather_than_reimplemented_per_lane():
