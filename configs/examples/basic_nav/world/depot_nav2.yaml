@@ -20,6 +20,13 @@ extends: roqsim_scenes:depot
 
 sim:
   pacing: realtime
+  # MuJoCo's default 0.002 s means the runner's realtime pacer sleeps ~500x a second, and each
+  # of those sleeps is a chance for the core to idle. On a node that is otherwise quiet, the
+  # wake-from-idle cost turns into sim time never delivered: a lone run measured 0.34x realtime
+  # and was killed by its job deadline, while five concurrent runs on the SAME node held 0.81x,
+  # because busy cores do not sleep. 0.01 cuts the sleeps 5x while leaving 5 physics steps per
+  # nav2 control period (20 Hz), which is where the fidelity that matters here lives.
+  timestep: 0.01
   view:
     lookat: [-2.697, 3.724, -0.639]
     distance: 9.947
