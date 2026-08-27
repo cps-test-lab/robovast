@@ -122,7 +122,11 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
 @click.option('--allow-opaque', is_flag=True,
               help='Publish even when an input cannot be identified. The exemption is recorded '
                    'in the dataset, so it is visible to whoever reads it rather than untraceable.')
-def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque):
+@click.option('--override', '-o', default=None, metavar='VAST_FILE',
+              help='Override the .vast file read for publication metadata instead of the one '
+                   'found in <campaign-name>-<timestamp>/_config/')
+def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, allow_opaque,
+                override):
     """Publish run results using configured publication plugins.
 
     Executes postprocessing plugins (unless ``--skip-postprocessing`` is used)
@@ -130,9 +134,8 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
     Publication plugins handle packaging and distribution of results.
 
-    Use ``vast -V <file> results publish`` to read metadata from the source
-    .vast file instead of the campaign copy (e.g. after updating description
-    or license).
+    Use ``--override <file>`` to read metadata from a source .vast file instead
+    of the campaign copy (e.g. after updating description or license).
     Use --force to overwrite existing output files without prompting.
     Use --skip-postprocessing to only run publication without postprocessing.
     Use --skip-upload to only run packaging plugins and skip upload plugins.

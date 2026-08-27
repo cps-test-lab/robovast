@@ -21,6 +21,7 @@ thing a campaign can be created from, named after its source exactly as ``worksp
 is.
 """
 
+import os
 import sys
 
 import click
@@ -198,6 +199,16 @@ def log(campaign, follow, namespace, context):
         raise
     except Exception as e:
         handle_cli_exception(e)
+
+
+#: How a verdict is shown. The symbols exist so a five-line report can be scanned at a glance;
+#: the words stay because a symbol alone is not something anyone can act on or search for.
+_VERDICT_MARKS = {
+    "ok": ("ok", "green"),
+    "upgradable": ("upgradable", "yellow"),
+    "unknown": ("unknown", "yellow"),
+    "blocked": ("BLOCKED", "red"),
+}
 
 
 def _report_rerunnable(client, label, campaign_id, *, exit_when_blocked):
@@ -534,8 +545,6 @@ def download_cmd(campaign, dest, namespace, context):  # pylint: disable=redefin
     streams it straight from where the results live, so no external share is involved.
     """
     try:
-        import os  # pylint: disable=import-outside-toplevel
-
         from robovast.service.project_push import \
             download_campaign_archive  # pylint: disable=import-outside-toplevel
 

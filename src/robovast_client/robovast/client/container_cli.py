@@ -90,16 +90,6 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
         sys.exit(result.exit_code or 1)
 
 
-#: How a verdict is shown. The symbols exist so a five-line report can be scanned at a glance;
-#: the words stay because a symbol alone is not something anyone can act on or search for.
-_VERDICT_MARKS = {
-    "ok": ("ok", "green"),
-    "upgradable": ("upgradable", "yellow"),
-    "unknown": ("unknown", "yellow"),
-    "blocked": ("BLOCKED", "red"),
-}
-
-
 @container.command('stop')
 @target_options
 def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
