@@ -13,9 +13,8 @@ from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_H
 def _calibration_on(monkeypatch):
     """These tests are about the calibration RULES, so the switch is on for all of them.
 
-    It is off in production -- see CALIBRATION_ENV -- because a probe measures an idle node
-    and the campaign runs under load. That is a question about the INPUTS; the rules below
-    are what should happen once the inputs are trustworthy.
+    It is on in production -- see CALIBRATION_ENV -- but remains switchable, so setting it
+    explicitly here keeps these tests about the RULES rather than about the default.
     """
     from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
 
@@ -598,3 +597,101 @@ def test_an_unreadable_verdict_is_not_completed():
         raise OSError("object store said no")
 
     assert probe_completed(_boom, "p/") is False
+
+
+# -- a probe that never reports -------------------------------------------------------------
+
+def test_abandoning_an_outstanding_probe_frees_its_node_for_later_batches():
+    """The leak that excluded a node from a campaign for the rest of its life.
+
+    A batch's loop exits when the CAMPAIGN's jobs are done. A probe pinned to a node another
+    campaign has filled may still be queued at that moment -- nothing is wrong, it simply
+    never got its turn. Without a hand-off the calibration still listed it as outstanding, so
+    `accepts_work` answered False for that node in every later batch, and `claim_probe`
+    refused to re-issue it. The node was measured by nothing and used by nothing.
+    """
+    cal = NodeCalibration()
+    assert cal.claim_probe("n1", "probe-n1") is True
+    assert cal.accepts_work("n1") is False
+
+    cal.abandon("n1", "probe-n1")
+
+    assert cal.accepts_work("n1") is True, "the node takes work again"
+    assert cal.claim_probe("n1", "probe-n1-retry") is True, "and can be measured next batch"
+
+
+def test_a_batch_releases_both_of_its_owners():
+    """Probes queue under a second owner, and `cancel` matches an owner exactly.
+
+    So cancelling only the campaign left every uncreated probe in the GLOBAL queue for the
+    life of the process -- at priority 1, to be created later by another campaign's drain
+    through a callback bound to a runner whose batch was over.
+    """
+    from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
+    from robovast.execution.cluster_execution.node_admission import (AdmissionController,
+                                                                     Budget, JobSizing,
+                                                                     NodeBudget)
+
+    class _Provider:
+        def budget(self):
+            return Budget(nodes=(NodeBudget(node_id="n1", free_cpu=0.0, free_memory=0),))
+
+        def capacities(self):
+            return []
+
+    queue = AdmissionController(_Provider())
+    campaign = "camp-2026-08-27-12000000"
+    probes = f"{campaign}{BatchJobRunner._PROBE_OWNER_SUFFIX}"
+    sizing = JobSizing(cpu=4.0, memory=1024)
+
+    queue.submit(campaign, [("job-0", sizing, lambda n=None: None)], started_at=0.0)
+    queue.submit(probes, [("probe-n1", sizing, lambda n=None: None)],
+                 started_at=0.0, priority=1, pin="n1")
+    assert queue.drain() == 0, "the node is full; neither can be created"
+
+    queue.cancel(campaign)
+    assert queue.states(probes), "the campaign's own owner does not cover its probes"
+
+    queue.cancel(probes)
+    assert not queue.states(probes), "and cancelling both leaves nothing behind"
+
+
+def test_calibration_never_asks_for_more_than_the_author_declared():
+    """A measured peak times the 1.25 headroom can exceed the ceiling it was capped at.
+
+    Nothing downstream catches it: `preflight` runs once, on the DECLARED sizing, and is never
+    re-asked per node -- so a calibrated figure no node can hold is not an error but an
+    ordinary "no room now", forever, with the campaign reporting itself queued for capacity.
+    Calibration exists to size a node's jobs DOWN to what they need; raising a ceiling the
+    author set is not something it is for.
+    """
+    from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
+    from robovast.common.config import SUT_CONTAINER
+
+    declared = {"cpu": 3.0}
+    # A container that genuinely ran at its ceiling: peak 3.0 * 1.25 headroom = 3.75.
+    figures = {SUT_CONTAINER: {"peak": 3.75, "sustained": 2.0}}
+
+    out = calibrated_resources(declared, SUT_CONTAINER, figures, roles=(SUT_CONTAINER,))
+
+    assert out["cpu"] == 3.0, "clamped to the declared ceiling"
+    assert out["cpu_limit"] == 3.0, "and the SUT keeps request == limit"
+
+
+def test_a_measured_figure_below_the_ceiling_is_still_used():
+    """The clamp must not become a floor: the reduction is the whole point of calibrating."""
+    from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
+    from robovast.common.config import SUT_CONTAINER
+
+    out = calibrated_resources({"cpu": 3.0}, SUT_CONTAINER,
+                               {SUT_CONTAINER: {"peak": 1.1}}, roles=(SUT_CONTAINER,))
+    assert out["cpu"] == 1.1 and out["cpu_limit"] == 1.1
+
+
+def test_the_clamp_reads_the_split_limit_when_there_is_one():
+    """With request and limit split, the ceiling is the limit -- not the reservation."""
+    from robovast.execution.cluster_execution.kubernetes_backend import calibrated_resources
+
+    out = calibrated_resources({"cpu": 0.5, "cpu_limit": 6}, "simulation",
+                               {"simulation": {"sustained": 9.0}})
+    assert out["cpu"] == 6, "clamped at the ceiling, not at the 0.5 reservation"

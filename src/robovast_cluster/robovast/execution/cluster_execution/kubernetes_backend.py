@@ -289,16 +289,49 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     if is_sut:
         cpu = figures.get("peak")
         if cpu:
-            out["cpu"] = cpu
-            out["cpu_limit"] = cpu
+            # **Never above what the author declared.** The measured peak is already capped at
+            # the container's own quota, but ``record`` then multiplies it by
+            # CALIBRATION_HEADROOM -- so a container that genuinely ran at its ceiling comes
+            # back asking for 1.25x it. Nothing downstream would catch that: ``preflight``
+            # runs once, on the DECLARED sizing, and is never re-asked per node, so a
+            # calibrated figure no node can hold is not an error but an ordinary "no room
+            # now" -- forever, with the campaign reporting that it is queued for capacity.
+            #
+            # Calibration exists to size a node's jobs to what they need, which is a
+            # reduction. It has no business raising a ceiling the author set.
+            ceiling = _declared_cores(declared)
+            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
+            out["cpu_limit"] = out["cpu"]
     else:
         cpu = figures.get("sustained")
         if cpu:
-            out["cpu"] = cpu
+            # Same clamp, same reason. The sustained figure is a p95 and so is normally well
+            # under the ceiling, but nothing in the arithmetic guarantees it.
+            ceiling = _declared_cores(declared)
+            out["cpu"] = min(cpu, ceiling) if ceiling else cpu
             # The ceiling stays where the author put it: a soft limit is what lets a burst
             # through, and calibration is about the reservation.
             out.setdefault("cpu_limit", declared.get("cpu_limit") or declared.get("cpu"))
     return out
+
+
+def _declared_cores(declared: dict):
+    """The container's declared CPU ceiling in cores, or ``None`` when it has none.
+
+    ``cpu_limit`` when the author split request from limit, otherwise ``cpu`` -- which is what
+    the limit equals when they did not. Unreadable returns ``None``, so an exotic per-cluster
+    form leaves calibration exactly as it was rather than clamping against a number that is
+    not one.
+    """
+    from robovast.common.quantity import to_cores  # noqa: PLC0415
+
+    raw = declared.get("cpu_limit") or declared.get("cpu")
+    if not raw:
+        return None
+    try:
+        return to_cores(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def stamp_resources(spec: dict, resources: dict) -> None:
@@ -1219,6 +1252,30 @@ class BatchJobRunner:
             if not calibration.record(node_id, key, measured, completed=completed):
                 calibration.abandon(node_id, key)
 
+    def abandon_outstanding_probes(self) -> int:
+        """Free every node this batch was still measuring. Returns how many.
+
+        A probe that will never report -- because the batch is over, stopped, or failed -- has
+        to release its node, or ``accepts_work`` answers False for that node for the rest of
+        the campaign and the node is excluded from work it could have taken. Losing the
+        measurement costs the declared sizing on that node, which is what a cluster with
+        calibration switched off does anyway: a worse allocation, never a wrong result.
+
+        Idempotent, and safe to call when there is no calibration at all.
+        """
+        calibration = self._calibration
+        if calibration is None:
+            self._probes.clear()
+            return 0
+        outstanding = list(self._probes.items())
+        for key, node_id in outstanding:
+            calibration.abandon(node_id, key)
+        self._probes.clear()
+        if outstanding:
+            logger.info("Batch %s: abandoned %d calibration probe(s); their nodes stay on "
+                        "the declared sizing", self._batch_tag, len(outstanding))
+        return len(outstanding)
+
     def _probe_container_limits(self) -> dict:
         """``{container: declared cpu ceiling}`` -- what each container could at most use.
 
@@ -2064,6 +2121,7 @@ class BatchJobRunner:
         # timer answered for all of them and so had to pick the shortest.
         blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
+        last_refusal_log = 0.0
         while True:
             if self._state is not None and self._state.stop_requested:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
@@ -2219,6 +2277,18 @@ class BatchJobRunner:
             # from a pod that does not exist.
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
+            if admission is not None and planned_count:
+                # WHY nothing was created, not just that nothing was. The queue computes this
+                # on every drain and it used to be thrown away, so the one line explaining a
+                # campaign sitting at "queued for capacity" reached no log at all -- an
+                # operator could see that it was waiting and never what for. Rate-limited to
+                # the blocked-log interval, because at 2s per iteration it would otherwise
+                # repeat 450 times in a fifteen-minute wait.
+                reason = admission.refusal(self.campaign)
+                if reason and time.monotonic() - last_refusal_log >= \
+                        self._BLOCKED_LOG_INTERVAL_SECONDS:
+                    last_refusal_log = time.monotonic()
+                    logger.info("Batch %s: %s", self._batch_tag, reason)
             time.sleep(2)
         # A stop that landed while the last jobs were being torn down leaves the loop
         # via the empty-remaining path; catch it here too before the result download.
@@ -2458,6 +2528,26 @@ class KubernetesBackend(ExecutionBackend):
             # because the backend owns the queue, and a search builds a fresh runner per batch.
             if self._admission is not None:
                 dropped = self._admission.cancel(campaign_id)
+                # **The probes are a second owner and were cancelled by nothing.** They queue
+                # under `<campaign>#probes` so they stay out of the campaign's own progress
+                # counts, and `cancel` matches an owner exactly -- so a probe still PLANNED
+                # when this batch ended stayed in the GLOBAL queue for the life of the
+                # process, at priority 1, to be created later by some other campaign's drain
+                # through a partial bound to this dead runner. One that had reached CREATED
+                # held its node's capacity just as permanently. And because the runner's
+                # calibration still listed it as outstanding, `accepts_work` answered False
+                # for that node for every later batch of this campaign -- so the node was
+                # excluded from the campaign entirely, which is the opposite of what
+                # measuring it was for.
+                #
+                # The batch loop can reach here with a probe outstanding without anything
+                # going wrong: the loop exits on the CAMPAIGN's jobs being done, and a probe
+                # pinned to a node another campaign has filled may never have been created at
+                # all. A created probe at least dies on its activeDeadlineSeconds; one that
+                # was never created has no timer of any kind.
+                dropped += self._admission.cancel(
+                    f"{campaign_id}{BatchJobRunner._PROBE_OWNER_SUFFIX}")
+                runner.abandon_outstanding_probes()
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
