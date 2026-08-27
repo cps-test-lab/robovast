@@ -23,10 +23,17 @@ timeout where a full sweep is comfortable. And any measurement taken while a nod
 describes a state ordinary runs never meet -- which is why an idle calibration probe reads
 low, and why on the slowest node it could not finish inside its deadline at all.
 
-**Opt-in, and off by default.** Advertising a GPU reports a fact about a host; setting its
-power policy overrides the operator's own decision about power, heat and cost on a machine
-RoboVAST is a guest on. So it happens only when someone asks for it by name, and then it
-must either work or say why -- see :func:`ensure_cpu_governor`.
+**On by default, and skippable by name.** It was opt-in first, on the argument that setting a
+host's power policy overrides the operator's own decision about power, heat and cost on a
+machine RoboVAST is a guest on -- unlike advertising a GPU, which only reports a fact. What
+overrode that is what the measurement showed: a cluster used for measurement whose clock moves
+with load produces numbers that are wrong in a way nothing downstream can detect or correct,
+so the default that yields trustworthy results is the one that fixes the clock.
+
+The cost of the default is bounded by the failure policy: a cluster that refuses the DaemonSet
+gets a warning and carries on, exactly as a GPU-less cluster does with the device plugin. Only
+an explicit ``--performance-governor`` turns that refusal into an error -- see
+:func:`ensure_cpu_governor`.
 """
 
 import logging
@@ -162,7 +169,7 @@ def refusal_message(governor: str, detail: str, *, forbidden: bool) -> str:
     )
 
 
-def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *,
+def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *, explicit: bool = False,
                         node_selector: Optional[dict] = None,
                         dry_run: bool = False) -> bool:
     """Apply the governor DaemonSet, or remove it when *enabled* is false.
@@ -174,11 +181,21 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *,
 
     Returns whether the DaemonSet is now installed.
 
-    **An explicit request that cannot be honoured raises**, following
-    :func:`~.kubernetes_gpu.ensure_nvidia_device_plugin`'s rule and for the same reason:
-    someone who asked for a fixed clock and silently did not get one is worse off than
-    someone who never asked, because they would now trust measurements taken on a scaling
-    clock. There is no implicit path here at all -- this runs only when named.
+    *explicit* is whether the operator named ``--performance-governor``, and it sets the
+    failure policy -- the same split :func:`~.kubernetes_gpu.ensure_nvidia_device_plugin`
+    makes, for the same reason:
+
+    * **Implicit** (the default). A cluster that refuses the DaemonSet gets a warning and
+      setup carries on. Managed Kubernetes forbids privileged pods, and a default that
+      failed there would make ``setup`` impossible on those clusters over an improvement
+      nobody asked for.
+    * **Explicit.** The same refusal raises. Someone who asked for a fixed clock and
+      silently did not get one is worse off than someone who never asked, because they
+      would now trust measurements taken on a scaling clock.
+
+    Either way the outcome is visible: the return value says whether it is installed, and a
+    campaign whose nodes still scale is reported by the ``cpu_governor_scaling`` advice, so
+    the warning path never becomes a silent one.
 
     Removal is likewise explicit and total. Setup writes the cluster's configuration on
     every run, so omitting the flag takes the DaemonSet away rather than leaving a previous
@@ -213,8 +230,11 @@ def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *,
             detail = str(getattr(exc, "body", None) or exc)
             forbidden = (exc.status in (401, 403)
                          or any(h in detail.lower() for h in FORBIDDEN_HINTS))
-            raise RuntimeError(refusal_message(governor, detail,
-                                               forbidden=forbidden)) from exc
+            message = refusal_message(governor, detail, forbidden=forbidden)
+            if explicit:
+                raise RuntimeError(message) from exc
+            logger.warning("%s", message)
+            return False
     logger.info("CPU governor DaemonSet applied: every%s node will be set to '%s'.",
                 " selected" if node_selector else "", governor)
     return True
