@@ -266,7 +266,15 @@ class AdmissionController:
         self._provider = provider
         self._clock = clock or (lambda: __import__("time").monotonic())
         self._budget_ttl = budget_ttl
-        self._lock = threading.Lock()
+        # Reentrant, deliberately. ``drain`` calls the caller's ``sizing_for_node`` and
+        # ``accepts_node`` callbacks WHILE HOLDING this lock, and a callback that asks the
+        # queue anything -- the campaign's calibration, the node list -- would otherwise
+        # block on a lock its own thread already owns. That deadlock hung a live campaign
+        # with no error and no log line: the batch loop never finished its first iteration,
+        # so nothing was created and nothing was said until the no-progress deadline called
+        # it stalled. Making the lock reentrant removes the whole class rather than the one
+        # callback that happened to do it.
+        self._lock = threading.RLock()
         self._items: "Dict[str, WorkItem]" = {}
         self._held: "Dict[str, _Held]" = {}
         self._calibrations: dict = {}

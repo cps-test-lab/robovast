@@ -511,6 +511,10 @@ class BatchJobRunner:
         #: Outstanding calibration probes, ``{job key: node id}``. Kept apart from the
         #: batch's own jobs so a probe never reaches ``get_remaining_jobs`` alongside them.
         self._probes: "dict[str, str]" = {}
+        #: This campaign's calibration, fetched once per batch. Held here rather than asked
+        #: of the queue on each lookup, because the queue serves it under the lock it holds
+        #: while draining -- see :meth:`_node_figures`.
+        self._calibration = None
         self._resolved_image_digests = {}
         # Set for real by _pin_image_refs; the plain ref until then, so an offline caller
         # (manifest emit, tests) that never reaches a cluster still renders a valid pod.
@@ -1057,6 +1061,7 @@ class BatchJobRunner:
         if admission is None:
             return None
         calibration = admission.calibration(self.campaign, NodeCalibration)
+        self._calibration = calibration
         node_ids = self._probe_node_ids(total_jobs)
         if not node_ids or not jobs:
             return calibration
@@ -1099,13 +1104,18 @@ class BatchJobRunner:
 
         One lookup used by BOTH the manifest and the queue's arithmetic, so the two cannot
         disagree about what a job on that node costs.
-        """
-        from .node_calibration import NodeCalibration  # noqa: PLC0415
 
-        admission = self.admission
-        if admission is None or not node_id:
+        **Reads the calibration this runner already holds, and must never ask the queue for
+        it.** The queue hands this out under its own lock, and one caller of this is the
+        ``sizing_for_node`` callback -- which the queue invokes from inside ``drain``, with
+        that lock held. Going back through the queue therefore deadlocks a non-reentrant
+        lock, and the symptom is the worst kind: the batch loop never completes its first
+        iteration, so nothing is created, nothing is logged, and the campaign simply sits
+        there until its no-progress deadline calls it stalled. Observed exactly that way.
+        """
+        if not node_id or self._calibration is None:
             return None
-        return admission.calibration(self.campaign, NodeCalibration).calibrated(node_id)
+        return self._calibration.calibrated(node_id)
 
     def _sizing_for_node(self, job, total_jobs, calibration):
         """``(node_id) -> JobSizing | None`` matching what the manifest will ask for.
@@ -1138,7 +1148,9 @@ class BatchJobRunner:
         admission = self.admission
         if admission is None or not self._probes:
             return
-        calibration = admission.calibration(self.campaign, NodeCalibration)
+        calibration = self._calibration
+        if calibration is None:
+            return
         try:
             done = set(self._probes) - set(self.get_remaining_jobs(list(self._probes)))
         except Exception as exc:  # noqa: BLE001 - retried next cycle
