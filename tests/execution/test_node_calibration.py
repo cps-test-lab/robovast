@@ -9,6 +9,19 @@ from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_H
                                                                    calibration_applies)
 
 
+@pytest.fixture(autouse=True)
+def _calibration_on(monkeypatch):
+    """These tests are about the calibration RULES, so the switch is on for all of them.
+
+    It is off in production -- see CALIBRATION_ENV -- because a probe measures an idle node
+    and the campaign runs under load. That is a question about the INPUTS; the rules below
+    are what should happen once the inputs are trustworthy.
+    """
+    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
+
+    monkeypatch.setenv(CALIBRATION_ENV, "1")
+
+
 def test_a_pilot_calibrates_nothing():
     """Calibration costs one run per node and pays only where a node runs a SECOND job. With
     no more jobs than nodes, a pilot would spend its entire result set on measurement."""
@@ -492,3 +505,17 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
     assert r._node_figures(None) is None, "and an unpinned job has no node to look up"
     r._calibration = None
     assert r._node_figures("fast") is None, "no calibration yet means declared sizing"
+
+
+def test_per_node_sizing_is_off_unless_switched_on(monkeypatch):
+    """The default, and the reason for it: a probe runs before the campaign places work, so
+    it measures an idle node. Measured on 2026-08-27 that read the system under test 2x LOW
+    and the infrastructure 3x HIGH -- starving nav2 below its floor while giving back the
+    packing gain. Placement stands without it; sizing waits for inputs it can trust."""
+    from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_ENV,
+                                                                       calibration_applies)
+
+    monkeypatch.delenv(CALIBRATION_ENV, raising=False)
+    assert calibration_applies(50, 4) is False, "a big campaign still calibrates nothing"
+    monkeypatch.setenv(CALIBRATION_ENV, "1")
+    assert calibration_applies(50, 4) is True
