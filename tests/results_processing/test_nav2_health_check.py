@@ -124,16 +124,59 @@ def test_the_rows_land_in_run_health(tmp_path):
     assert got == {0: "ok", 1: "warn"}
 
 
-def test_it_is_registered_as_an_entry_point():
-    """Discovered, never imported by name from run_health -- that indirection is what keeps a
-    MoveIt 2 campaign from being graded by nav2's idea of healthy."""
+def test_it_is_resolvable_by_name_when_declared():
+    """Discovered through the entry point, never imported by name from run_health -- that
+    indirection is what keeps a MoveIt 2 campaign from being graded by nav2's idea of
+    healthy."""
     from robovast.results_processing.run_health import HEALTH_GROUP, load_health_checks
 
     assert HEALTH_GROUP == "robovast.health_checks"
-    checks = load_health_checks()
+    checks = load_health_checks([CHECK_NAME])
     assert CHECK_NAME in checks, (
         "not discoverable; the entry point in pyproject.toml may need a reinstall")
     assert isinstance(checks[CHECK_NAME], ControlLoopRate)
+
+
+def test_nothing_runs_undeclared():
+    """The rule this check must not escape. A check that ran everywhere would grade campaigns
+    it knows nothing about: this one finds no misses in a MoveIt 2 campaign and would write
+    ``ok`` for every run of it -- a clean bill for a stack that was never there, which is the
+    confusion rule 2 exists to prevent arriving through the mechanism meant to serve it."""
+    from robovast.results_processing.run_health import load_health_checks
+
+    assert load_health_checks() == {}
+    assert load_health_checks([]) == {}
+
+
+def test_a_declared_check_that_is_not_installed_is_reported(caplog):
+    """Loud, and it must stay loud: a declared check that silently did not run leaves no
+    rows, and no rows means "not checked" -- so the campaign reads as ungraded rather than as
+    misconfigured."""
+    import logging
+
+    from robovast.results_processing.run_health import load_health_checks
+
+    with caplog.at_level(logging.WARNING):
+        assert load_health_checks(["no_such_check"]) == {}
+    assert "no_such_check" in caplog.text
+
+
+def test_every_shipped_nav2_example_declares_it():
+    """The examples are documentation. One that ships without the declaration teaches the
+    reader that grading happens by itself, which is exactly what stopped being true."""
+    import glob
+
+    import yaml
+
+    examples = sorted(glob.glob("configs/examples/*/*.vast"))
+    nav2 = [f for f in examples if "nav2" in open(f, encoding="utf-8").read()]
+    assert nav2, "no nav2 examples found; the glob or the layout changed"
+    missing = [f for f in nav2
+               if CHECK_NAME not in ((yaml.safe_load(open(f, encoding="utf-8"))
+                                      .get("results_processing") or {}).get("health_checks")
+                                     or [])]
+    assert not missing, f"nav2 examples not declaring {CHECK_NAME}: {missing}"
+
 
 
 # -- the rule it must never break -----------------------------------------------------------
