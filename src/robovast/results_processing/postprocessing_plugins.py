@@ -55,6 +55,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 
 from robovast.common import log_summary, scenario_markers
+from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS
 from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
                                        is_campaign_dir)
 from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr,
@@ -389,7 +390,6 @@ class RosbagsProcess(BasePostprocessingPlugin):
         # that is deliberately not a run -- and converting it cost a bag's work per node and
         # failed the whole step outright when a probe had been interrupted, because its bag
         # was never finalized.
-        from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS  # noqa: PLC0415
         for name in sorted(RESERVED_CAMPAIGN_DIRS):
             cmd.extend(["--skip-dir", name])
         # A job stopped by an operator, or invalidated by the runner after a container
