@@ -47,6 +47,7 @@ from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import resolve_sidecar_image
 
 from .kube_client import api_transport_errors
+from .node_placement import CAMPAIGN_NODE_TOLERATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,32 @@ logger = logging.getLogger(__name__)
 POSTPROC_PREFIX = "_postproc"
 _POLL_SECONDS = 5
 _DEFAULT_TIMEOUT = 3 * 60 * 60
+
+#: What the conversion container reserves.
+#:
+#: **A request, not a tuning knob: without one this pod was invisible to admission.** The
+#: budget provider counts the *requests* of every bound pod, so a container that declares none
+#: contributes zero -- and this one runs on the same nodes as the trials, deserializing every
+#: rosbag of a campaign, while admission believed those cores were free. That is the same
+#: class of error the CPU governor work exists to remove: a run's figures becoming a function
+#: of what else happened to be on the machine, with nothing downstream able to detect it.
+#:
+#: The limit is well above the request because the work is bursty and nothing is under test
+#: here -- the split is what buys the density, exactly as it does for the simulator.
+POSTPROCESS_RESOURCES = {
+    "requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "20Gi"},
+    "limits": {"cpu": "4", "memory": "8Gi", "ephemeral-storage": "200Gi"},
+}
+
+#: The mirror step's own reservation. It is I/O rather than CPU, but it is what writes the
+#: bags into the pod's ``emptyDir`` -- so the ephemeral-storage request is the load-bearing
+#: half. Without one, a campaign's worth of bags lands on whichever node the scheduler picked
+#: with nothing having reserved the disk for it, and the node hits disk pressure and evicts
+#: the campaign pods running beside it.
+POSTPROCESS_INIT_RESOURCES = {
+    "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "20Gi"},
+    "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "200Gi"},
+}
 
 
 def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
@@ -521,6 +548,13 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                 },
                 "spec": {
                     "restartPolicy": "Never",
+                    # Campaign nodes are where the bags already are and where this is
+                    # allowed to run; without the toleration a deployment that dedicates
+                    # its nodes to campaigns has nowhere to put this at all, and the Job
+                    # sits Pending until its three-hour timeout. The job pods learned to
+                    # carry it when Kueue's flavor stopped injecting it; this one was
+                    # missed, because it is created outside the admission path entirely.
+                    "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
                     **({"imagePullSecrets": [{"name": pull_secret_name}]}
                        if pull_secret_name else {}),
                     "volumes": [
@@ -553,6 +587,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                                 {"name": "tools", "mountPath": "/tools"},
                                 {"name": "bags", "mountPath": "/bags"},
                             ],
+                            "resources": POSTPROCESS_INIT_RESOURCES,
                         },
                     ],
                     "containers": [{
@@ -569,6 +604,7 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                             {"name": "out", "mountPath": "/out"},
                             {"name": "tmp", "mountPath": "/tmp"},
                         ],
+                        "resources": POSTPROCESS_RESOURCES,
                     }],
                 },
             },
