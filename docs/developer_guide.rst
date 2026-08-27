@@ -1782,7 +1782,9 @@ older campaign look younger with every batch and the two take turns instead of
 the older one finishing.
 
 **Capacity, and the double-counting hazard.** Free capacity is
-``allocatable − committed requests − headroom``, cluster-wide. A Job created
+``allocatable − committed requests − headroom``, **per node** — a pod runs on one
+machine, so a cluster-wide figure cannot see fragmentation and admitting against it
+is how jobs end up ``Unschedulable`` while the cluster reports room. A Job created
 moments ago has no pod bound yet, so the next measurement cannot see its requests;
 handing the same cores out twice is exactly the over-admission this has to avoid.
 The controller keeps an in-flight ledger and stops subtracting a reservation the
@@ -1796,11 +1798,11 @@ deadline is suppressed while a batch is entirely queued, because that deadline i
 per-*run* budget and no run of the campaign is running. Getting this wrong is what
 made a healthy third campaign report as wedged behind two others.
 
-**Kueue is no longer in the path.** Campaign and postprocessing Jobs carry no
-``kueue.x-k8s.io/*`` label, so Kueue neither suspends nor admits them, and the
-per-campaign ``WorkloadPriorityClass`` that used to order them is gone with the
-label that named it. ``vast execution cluster setup`` still installs Kueue and its
-queues; they are inert with respect to campaign jobs and are removed separately.
+**Kueue is gone.** Campaign and postprocessing Jobs carry no ``kueue.x-k8s.io/*``
+label, the per-campaign ``WorkloadPriorityClass`` that used to order them is gone with
+the label that named it, and neither ``setup`` nor ``cleanup`` touches Kueue any more.
+A cluster that already has it installed keeps it until it is removed by hand — see
+the removal note under :ref:`cluster-admission` in the cluster guide.
 
 **Campaign priority (oldest first) — historical.** The paragraphs below describe the
 Kueue mechanism this replaced. Kueue orders a ClusterQueue's pending workloads
@@ -1846,27 +1848,25 @@ higher value. Points worth knowing, since the ordering requirement outlived the 
   already created (the resolved value is copied onto each at creation), but removing it
   while the campaign still submits would break that campaign.
 
-The class is cluster-scoped, so ``create``/``delete`` on ``workloadpriorityclasses`` is on
-the service's **ClusterRole** — the first write that role grants. An existing deployment
-must be redeployed to pick it up.
+The class was cluster-scoped, so ``create``/``delete`` on ``workloadpriorityclasses`` sat
+on the service's **ClusterRole** — the only write that role ever granted. Both the calls
+and the grant are gone, and the ClusterRole is read-only again. A service deployment older
+than that removal still attempts the create against current RBAC and fails with
+``workloadpriorityclasses.kueue.x-k8s.io is forbidden ... at the cluster scope``; the fix
+is ``vast exec cluster upgrade``, not re-granting the verb.
 
-**Holding the queue during cleanup.** ``stopPolicy`` lives on the single,
-cluster-scoped ``ClusterQueue`` that every campaign shares. Holding it stops
-*all* admissions — ``Hold`` versus ``HoldAndDrain`` decides only whether
-already-running workloads are preempted, not whose workloads are affected.
+**Holding the queue during cleanup — historical.** While Kueue admitted the jobs,
+``stopPolicy`` on the single cluster-scoped ``ClusterQueue`` was the only way to pause
+admission, and it paused it for *everyone*. Cleaning up one campaign therefore
+deliberately did not touch it — that would have stalled every other campaign for the
+length of the cleanup, and a cleanup that died in between left the queue held
+permanently, suspending every later campaign forever and looking exactly like a missing
+ClusterQueue. A cluster-wide cleanup did hold it, restoring the previous value in a
+``finally`` so a concurrent teardown's hold survived.
 
-Cleaning up **one** campaign therefore does not touch it: doing so would stall
-every other campaign's pending jobs for the length of the cleanup, and a cleanup
-that died in between used to leave the queue held permanently — suspending every
-later campaign forever, indistinguishable from a missing ClusterQueue.
-Per-campaign quota safety does not need the hold: the deletions are label-scoped
-and ordered Workloads-before-Jobs, which is what lets Kueue release that
-campaign's quota cleanly.
-
-A **cluster-wide** cleanup (no campaign given) does hold the queue, since pausing
-everything is the intent. It restores the *previous* ``stopPolicy`` in a
-``finally``, so a concurrent teardown's hold survives and an error can never
-leave the queue stopped.
+Nothing is paused for the duration any more: a campaign's jobs are created by
+RoboVAST's own admission queue and deleted label-scoped, so removing one campaign
+cannot affect another's and there is no shared switch to leave in the wrong position.
 
 
 .. _web-ui-internals:
@@ -2064,16 +2064,17 @@ returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory
 capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
 in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
 ``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
-``kubernetes_kueue._parse_resource``) and the requests of the non-terminal pods *bound to
+``kube_client.parse_resource``) and the requests of the non-terminal pods *bound to
 those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
 never branch on backend. Summing both sides over one node set is what keeps ``used <=
 capacity``: a pod still queued for a node requests cores nothing has granted, and counting
 it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage.
 
 That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
-both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Kueue-suspended Job
-has no pod at all — the state every cluster batch *starts* in — so the original pod-based count
-reported a freshly launched sweep as ``0/0`` with its whole queue waiting for quota.
+both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Job waiting its
+turn has no pod at all — the state every cluster batch *starts* in, once as a Kueue-suspended
+Job and now as one the admission queue has not created yet — so the original pod-based count
+reported a freshly launched sweep as ``0/0`` with its whole queue waiting for capacity.
 ``ClusterService._scenario_job_tally`` therefore delegates to
 ``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
 consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-

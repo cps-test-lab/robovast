@@ -359,11 +359,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
 
-    # Opt-in, and it raises rather than warning when it cannot be applied -- someone who
-    # asked for a fixed clock and silently did not get one would now trust measurements
-    # taken on a scaling one. Confined to the campaign node pool when there is one, so a
-    # cluster that runs campaigns on a subset does not have its other machines
-    # reconfigured as a side effect of a RoboVAST setup. See node_governor.
+    # Confined to the campaign node pool when there is one, so a cluster that runs campaigns
+    # on a subset does not have its other machines reconfigured as a side effect of a
+    # RoboVAST setup. See node_governor for the default and the failure policy.
     from kubernetes import client as _k8s_client  # noqa: PLC0415
 
     from .node_governor import ensure_cpu_governor  # noqa: PLC0415
