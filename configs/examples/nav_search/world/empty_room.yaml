@@ -13,6 +13,15 @@ sim:
   # unlike Depot, where map = world + (8, 0) and every analysis has to remember the offset.
   world: empty_room
   pacing: realtime
+  # MuJoCo's default 0.002 s means the runner's realtime pacer sleeps ~500x a second, and each
+  # of those sleeps is a chance for the core to idle. On a node that is otherwise quiet -- which
+  # in a SEARCH is the normal state during a scoring gap -- the wake-from-idle cost turns into
+  # sim time never delivered: a lone run measured 0.34x realtime and was killed by its job
+  # deadline, while five concurrent runs on the SAME node held 0.81x. 0.01 cuts the sleeps 5x
+  # while leaving 5 physics steps per nav2 control period (20 Hz). Validated on the depot world
+  # over 50 runs: no change in pass rate or control-loop misses, realtime factor up on all four
+  # nodes.
+  timestep: 0.01
   # Sensor degradation is PRESENT but not searched. It is part of the problem -- and part of why
   # outcomes are stochastic -- without spending a search dimension on a variable whose effect is
   # monotonic and unsurprising. `robot.lidar.range_stddev` is addressable if a campaign wants it.
