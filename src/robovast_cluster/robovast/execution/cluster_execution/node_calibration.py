@@ -52,6 +52,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from robovast.common.campaign_data import PROBE_DIR as _PROBE_DIR
+
 logger = logging.getLogger(__name__)
 
 #: Headroom over what a calibration run was measured using. The same figure ``advice.py``
@@ -325,7 +327,9 @@ def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
 
 #: Where a probe's output goes, under the campaign root. Reserved (see
 #: ``RESERVED_CAMPAIGN_DIRS``), so nothing walks it looking for runs.
-PROBE_DIR = "_calibration"
+#: Re-exported: the name lives in ``campaign_data`` because both postprocessing
+#: lanes must exclude it and neither may import this package.
+PROBE_DIR = _PROBE_DIR
 
 
 def probe_output_dir(node_id: str) -> str:
