@@ -310,6 +310,33 @@ def report_skipped(skipped: list[tuple], echo) -> None:
              "pass --include-results to upload them anyway")
 
 
+def require_not_in_use(client, workspace_id: str) -> None:
+    """Refuse a bulk sync into a workspace a campaign is currently reading.
+
+    A campaign reads its project out of the workspace for its whole life -- a search
+    campaign re-composes from it every generation -- so overwriting one mid-run changes an
+    experiment underneath itself. ``WorkspaceInfo.running_campaigns`` is what answers this:
+    live state held by the service driving the run, never a stored campaign->workspace
+    binding, because a *finished* campaign is workspace-independent.
+
+    Not the caller's to wave through, so this is a refusal rather than a prompt -- unlike
+    the overwrite question, which only risks the caller's own files.
+
+    Asked of ``list_workspaces`` rather than of a dedicated endpoint so it works
+    identically for an in-process transport and an HTTP client.
+    """
+    match = next((w for w in client.list_workspaces().workspaces
+                  if w.workspace_id == workspace_id), None)
+    if match is None:
+        return
+    running = list(getattr(match, "running_campaigns", None) or [])
+    if running:
+        raise ValueError(
+            f"workspace {match.name!r} ({workspace_id}) is being read by "
+            f"{', '.join(running)} — pushing to it now would change a running "
+            "campaign's project. Wait for it, stop it, or push to another workspace")
+
+
 def sync_directory_to_workspace(client, workspace_id: str, directory, *,
                                 skip_dirs=frozenset(), prune: bool = False,
                                 include_results: bool = False, echo=None) -> dict:
@@ -341,6 +368,8 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     store = getattr(client, "store", None)
     if store is not None and hasattr(store, "registry"):
         store.registry.require_syncable(workspace_id)
+
+    require_not_in_use(client, workspace_id)
 
     root = Path(directory).resolve()
     if not root.is_dir():

@@ -77,6 +77,39 @@ def _wid(client, name="demo"):
     return client.create_workspace(CreateWorkspaceRequest(name=name)).workspace_id
 
 
+def _live_campaign(campaign_id, workspace_id, done=False):
+    """A campaign entry as the service holds one while it drives the run."""
+    from robovast.client.status import Phase
+    from robovast.execution.control_server import ControllerState
+    from robovast.service.local_transport import _LocalCampaign
+
+    state = ControllerState(campaign_id=campaign_id)
+    state.set_phase(Phase.FINISHED if done else Phase.RUNNING)
+    return _LocalCampaign(campaign_id, "results", state, workspace_id=workspace_id)
+
+
+# -- sync: refused while a campaign is reading the workspace ----------------
+
+
+def test_sync_refuses_a_workspace_a_campaign_is_reading(client, project):
+    # A campaign reads its project out of the workspace for its whole life, so a sync now
+    # would change an experiment that is still running. Not the caller's to accept, so it
+    # is a refusal and not a prompt.
+    wid = _wid(client)
+    client._campaigns["camp-live"] = _live_campaign("camp-live", wid)
+
+    with pytest.raises(ValueError, match="camp-live"):
+        sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+
+
+def test_sync_allows_a_workspace_whose_campaign_has_finished(client, project):
+    wid = _wid(client)
+    client._campaigns["camp-done"] = _live_campaign("camp-done", wid, done=True)
+
+    stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
+    assert stats["written"] + stats["uploaded"] == 3
+
+
 # -- sync: additive upload --------------------------------------------------
 
 
@@ -314,17 +347,6 @@ def test_push_project_creates_workspace_and_uploads_inputs(client, project):
 
 def _names(client):
     return sorted(w.name for w in client.list_workspaces().workspaces)
-
-
-def _live_campaign(campaign_id, workspace_id, done=False):
-    """A campaign entry as the service holds one while it drives the run."""
-    from robovast.client.status import Phase
-    from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
-
-    state = ControllerState(campaign_id=campaign_id)
-    state.set_phase(Phase.FINISHED if done else Phase.RUNNING)
-    return _LocalCampaign(campaign_id, "results", state, workspace_id=workspace_id)
 
 
 def test_workspace_for_project_creates_then_reuses(client, project):
