@@ -12,7 +12,7 @@ skill exists to prevent: it tells the user a campaign finished when it has barel
 ## Wait for it, in the background
 
 ```text
-Bash(command="vast wait <campaign_id>", run_in_background=true)
+Bash(command="vast campaign wait <campaign_id>", run_in_background=true)
 ```
 
 Run it as the **whole** command — nothing chained after it. The exit code is the entire
@@ -40,7 +40,7 @@ whole life and would otherwise never end the wait.
 The message names the diagnosis and the next call. Work through it cheapest-first —
 `get_job_state`, then `get_job_log(summarize=True)`, then reproduce in a copy with
 `exec_in_container`, and only then `exec_in_job`, which is recorded against the run. Then
-**settle the campaign again**: background `vast wait <campaign_id>` (it will not exit on the
+**settle the campaign again**: background `vast campaign wait <campaign_id>` (it will not exit on the
 same thing twice, so resuming works), or `stop_campaign`.
 
 ## Or say you are not waiting

@@ -234,11 +234,16 @@ def get_campaign_download(campaign_id: str) -> dict:
     # id already filled in. Nothing is said about the share copy -- whether one exists is
     # not a fact this service records (only `share_error`, a failure, travels with a
     # campaign), and `vast share download` is documented where commands are looked up.
+    #
+    # `campaign download`, not the identical `results download`: this runs on the
+    # *caller's* machine, and `vast results` ships only with the full distribution, so an
+    # agent driving a remote service over this MCP -- the case the tool exists for -- may
+    # not have it. The campaign group is the client's, so this one always resolves.
     return {
         "campaign_id": campaign_id,
         **({"url": url} if url else {}),
         "path": path,
-        "next_step": f"vast results download {campaign_id}",
+        "next_step": f"vast campaign download {campaign_id}",
     }
 
 

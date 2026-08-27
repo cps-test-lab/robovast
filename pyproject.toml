@@ -146,11 +146,11 @@ results = "robovast.results_processing.cli:results"
 # the core. `export`/`import` only drive the service and could live in the client, but
 # one group split across two distributions is worse than the asymmetry.
 share = "robovast.execution.share_cli:share"
-# No `execution` here: `vast exec` is the client's group, and nothing the core provides
+# No `execution` here: `vast container` is the client's group, and nothing the core provides
 # attaches to it any more. `vast exec local` used to -- an in-process Docker lane with no
 # service, no workspace and no CampaignOrigin. It is gone: a campaign runs a workspace's
 # project through a service, and a local `vast serve` is that service on a Docker lane.
-# So the core contributes nothing to `robovast.exec_plugins`; `vast exec cluster` is
+# So the core contributes nothing to `robovast.exec_plugins`; `vast cluster` is
 # the client's and remains its only member.
 
 # Execution lanes `vast serve` can run. Resolved by name so the core never has to

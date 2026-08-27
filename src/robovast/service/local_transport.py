@@ -588,10 +588,7 @@ class LocalTransport(RobovastInterface):
                 "workspace_id is required: the service runs a workspace's project. "
                 "List them with 'vast workspace list' / list_workspaces(); pin a "
                 "directory in place with 'vast serve --workspace-dir <dir>', or "
-                "upload one with 'vast workspace init <dir>'. "
-                "('.robovast_project' / 'vast init' binds the "
-                "CLI's project, not the service's -- it never selected what the "
-                "service runs.)")
+                "upload one with 'vast workspace init <dir>'.")
         return self._project_for_workspace(workspace_id, vast_path)
 
     def _campaigns_root(self) -> Path:

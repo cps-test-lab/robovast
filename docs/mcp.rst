@@ -527,7 +527,7 @@ one that stops being read.
 Results live
 wherever the service keeps them — local disk for a local ``vast serve``, the
 object store for a cluster service (retrieve via the web UI or
-``get_campaign_download``, which hands back the route, the ``vast results download``
+``get_campaign_download``, which hands back the route, the ``vast campaign download``
 command with the id filled in, and a URL when this deployment declares an origin to build
 one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
 a copy there is not a fact the service records, so claiming one would be advertising what
