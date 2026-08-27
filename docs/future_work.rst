@@ -267,107 +267,88 @@ and deletes code, so it is worth an afternoon's trial before deciding.
 If it holds, the port-forward path in ``bucket_ops`` and the reconnect machinery above can
 go with it.
 
-.. _future-node-types:
+.. _future-scheduling:
 
-Per-node budgets: admitting against the node a pod will actually run on
-------------------------------------------------------------------------
+Scheduling: what admission still does not do
+---------------------------------------------
 
-**Motivation.** Admission measures one cluster-wide figure — allocatable minus committed
-requests minus headroom — while a pod runs on **one node**. The two come apart in two ways,
-and both are measured rather than supposed.
+Per-node budgets and in-campaign calibration were the open items here and both now ship --
+:ref:`cluster-admission` and :ref:`cluster-node-calibration` describe what they do and
+the measurements behind them. What follows is what is still open, and why each was left.
 
-*Fragmentation.* A cluster can have room in total and nowhere to put a pod. Observed on the
-trio of 2026-08-26: **11.31 cores free cluster-wide, and no single node holding the 4.75 a
-pod needed**, so two pods were correctly admitted against the total and could not be placed.
-It is benign — such a pod fits an empty node, so it is classified as contention rather than a
-fault, and it was placed as soon as a neighbour finished — but only per-node budgets can
-prevent it.
+**The drain loop is O(pending x nodes) under a global lock.** ``AdmissionController.drain``
+forces a fresh cluster reading (``BUDGET_TTL_S`` is bypassed on this path), then asks
+``sizing_for_node`` for every pending item against every candidate node -- and that callback
+renders a full Job manifest each time, uncached -- and then creates Jobs, all while holding the
+one lock every campaign needs. Every campaign thread does this every two seconds. At the ~1435
+jobs a large campaign submits, on four nodes, that is roughly 5700 manifest renders per drain.
+It is invisible on a small bare-metal cluster and will not be on a large or managed one, where
+listing every pod in every namespace at that cadence also meets the client's own QPS throttle
+and reads as a campaign stalling. In order of value: memoise the per-node sizing for the life
+of a calibration; let ``drain`` honour the budget TTL, or share one reading across the drains
+in a tick; move ``create()`` outside the lock, recording the reservation under it.
 
-*Unlike machines.* The same trial costs **1.6x more CPU on one node than on another**, and
-*wall time does not show it*. A realtime-paced simulator sleeps to hold one simulated second
-per wall second, so its realtime factor is capped at 1.0 by construction and every machine
-finishes at roughly the same time. The difference lands entirely in CPU consumed, which is
-what decides how many trials fit. Because kube-scheduler packs by *capacity*, the node with
-the most cores attracts the most work — which here was also the most expensive per unit of
-work.
+**The two callbacks are why the lock has to be reentrant.** ``submit`` takes
+``sizing_for_node`` and ``accepts_node``, and ``drain`` calls them with the lock held. That
+breaks the module's own "values in, values out" contract, and it has already cost a live
+campaign: a callback that asked the queue anything deadlocked it, silently, until the
+no-progress deadline called the campaign stalled. Making the lock reentrant removed the
+deadlock; the coupling is still there, and ``_node_figures`` carries a "must never ask the
+queue" warning that only code review enforces.
 
-**What was measured, and how.** Two campaigns of one configuration times twenty runs, so the
-machine was the only variable; forty trials, all passed. Per-container CPU comes from the
-``resource_usage`` table, **summed per tick before averaging** (a row is one process name,
-not a container) and then divided by the run's realtime factor, because ``cpu_percent`` is
-per *wall* second and a node that meets fewer step deadlines otherwise reads as cheaper than
-it is:
+The shape that removes it is a **``NodeView`` value** -- ``{node_id: JobSizing}`` plus the set
+of nodes this owner may use -- computed by the caller and handed in before each drain. Then no
+foreign code runs under the lock, a plain ``Lock`` suffices, the deadlock class is
+structurally impossible rather than tolerated, and the per-node sizing is computed once per
+tick instead of once per (item, node), which is also the fix above. Separately,
+``calibration()`` / ``forget_calibration()`` are lifetime management smuggled into a
+scheduler: the queue stores an object it never reads, purely because it is the only thing
+whose lifetime is the campaign's rather than the batch's. An owner-scoped registry outside the
+queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
+one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
 
-.. list-table::
-   :header-rows: 1
+**There is no priority knob.** Ordering is ``(priority, campaign start)``, and ``priority`` is
+non-zero only for calibration probes: no ``.vast`` key, no CLI flag, no environment variable
+sets it. So admission is strict global FIFO by campaign start, with no aging. For one team
+sharing one cluster in sequence that is the intended trade -- an older campaign finishing
+rather than two taking turns. For several users it is head-of-line blocking with no remedy: a
+multi-day search started at 09:00 takes every freed slot ahead of a five-run pilot started at
+09:05, across all of its batches, because ``started_at`` is the campaign's rather than the
+batch's. What is *not* obvious is which knob is right -- a priority class re-invites the
+question Kueue's answered badly, and aging trades the finishing property away -- which is why
+this is recorded rather than guessed at.
 
-   * - CPU
-     - pod cores per wall-second
-     - realtime factor
-     - pod cores per **simulated** second
-   * - Xeon Gold 5220R @ 2.20GHz
-     - 2.10
-     - 0.947
-     - 2.22
-   * - Core i7-8700K @ 3.70GHz
-     - 1.78
-     - 0.809
-     - 2.19
-   * - Ryzen 9 5950X
-     - 1.38
-     - 0.807
-     - 1.71
-   * - Core i7-14700K
-     - 1.33
-     - 0.966
-     - 1.37
+**Three constants are a nav2 trial's dimensions, and should be derived.**
 
-The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
-together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
-Within-node spread was tight (eleven runs on one node spanned 1.13-1.20 cores for the system
-under test), which argues the difference is the machine rather than contention from an uneven
-share of the batch — though equal-concurrency runs would settle that properly.
+* ``CONTENDED_GRACE_SECONDS = 900`` (``cluster_execution.py``) is documented as "fifteen
+  minutes outlasts a typical trial", which is true of a 150 s trial. A campaign whose trials
+  run 30-60 minutes has legitimately-waiting pods dropped as interventions and **its runs
+  discarded**. It should come from ``execution.timeout``.
+* ``MIN_PROBE_SAMPLES = 30`` against the monitor's 1 Hz tick means a campaign whose trials run
+  under 30 s can never be calibrated: every probe is rejected as thin and every node silently
+  stays on the declared sizing. A fraction of the trial is the right floor, not an absolute
+  tick count.
+* ``container_cpu_profile`` takes its percentiles over the container's **whole lifetime**, not
+  over the trial: it is the one reader of ``resource_usage_<container>.csv`` that meets the
+  raw artifact, and ``in_window`` is added later by postprocessing. With nav2's short bring-up
+  against a 150 s trial this is roughly right. For a stack with a five-minute bring-up and a
+  60 s trial, the p95 measures bring-up and the node is calibrated for the wrong thing.
 
-**A cached per-node factor is refuted, and that is the most useful result here.** Every
-design that stores a number and reuses it — a scalar per node, a
-``robovast.io/cpu-factor`` label written at setup, a reference campaign run once — assumes a
-figure that transfers between campaigns. Measured against two unlike campaigns on the same
-cluster, it does not:
+**Cloud.** :ref:`cluster-cloud-limits` records what does not hold on managed Kubernetes. What
+would make GKE honest: read the autoscaler's maximum **from the API server** rather than by
+shelling out to ``gcloud`` -- the service pod has no CLI tools, which is why the existing hatch
+never fires there -- re-apply node identity labels continuously rather than at ``setup``, teach
+``preflight`` that a scale-to-zero pool is a temporary condition rather than a permanent
+refusal, and make the governor DaemonSet report a runtime failure instead of returning
+"applied". An ``eks`` provider needs S3 results storage plus the same API-server-side autoscaler
+read (Karpenter ``NodePool`` / ASG annotations); deliberately not another subprocess.
 
-* Container rankings **invert between nodes**. One machine was the cheapest for the system
-  under test and among the dearest for the simulator, while another was the reverse. No
-  single per-node scalar can be both greater and less than one at the same time, so the
-  per-node factor is wrong at the level of its shape rather than its calibration.
-* Even per ``(node, container)`` it does not transfer. Between two campaigns one node's
-  simulation cost moved +42% while another's moved +1%, flipping their order. The campaigns
-  differed in world *and* in contention, and those cannot be separated from this data — but
-  both causes argue the same way.
-
-So the surviving model is **in-campaign calibration**: measure this campaign, on this node,
-for this container, under the contention this campaign actually meets. The probe already
-reads one ``resource_usage_<container>.csv`` per container, so this is the cheaper model as
-well as the correct one.
-
-**Two cautions that would otherwise be learnt expensively.**
-
-* **p95 is the wrong statistic for a hard limit.** Sizing a limit at p95 x 1.25 looks safe
-  and is not: a container clipped at its limit does not lose the clipped work, it queues it,
-  so it stays pegged working the backlog off and the next spike arrives into a full budget.
-  A configuration whose static clip rate was **0.5%** produced **44% saturation and lost 22%
-  of the runs**. Size a hard limit on the peak, or split request from limit.
-* **The system under test is a control variable, not something to optimise.** Its budget must
-  be identical in every run or the allocation becomes a hidden independent variable and the
-  runs stop being comparable. Per-node sizing of the *infrastructure* containers is free of
-  that objection; per-node sizing of the SUT is not, and the two must not be conflated. On
-  measured figures the SUT is ~63% of the pod, so the scalable remainder is the smaller half.
-
-**What would settle the open question.** Equal-concurrency runs pinned per node, to separate
-the machine from the contention. It changes the explanation rather than the design.
-
-**Adjacent, and worth stating.** RoboVAST's own infrastructure pods are pinned to one node
-(:ref:`cluster-node-local-storage`), so that node has materially less left for campaign work
-than an even split implies — another way a single cluster-wide figure misleads.
-
+**A naming clash worth resolving if either area is touched again.** ``runs.probed`` (a campaign
+run somebody read into) and a *calibration probe* (an extra run that measures a node) share a
+word and nothing else. The artifacts already differ -- ``_calibration/`` versus a ``runs``
+column -- so today this is a documentation problem, handled with a cross-reference in
+:ref:`stopping-one-job`. A rename would touch thirteen identifiers across five
+modules, and ``runs.probed`` is a published data column, so it is not worth doing on its own.
 
 .. _future-gpu-usage:
 

@@ -98,7 +98,9 @@ def manifest(namespace: str, governor: str, node_selector: Optional[dict] = None
 
     Writing ``/sys/devices/system/cpu/*/cpufreq`` needs the host's sysfs mounted writable,
     which needs privilege; there is no narrower capability that grants it. That is a real
-    cost, and the reason this is opt-in rather than part of every setup.
+    cost, and the reason ``--no-performance-governor`` exists -- but not a reason to default
+    to it, because a cluster whose clock moves with load produces numbers nothing downstream
+    can detect or correct. See the module docstring.
 
     *node_selector* confines it to the campaign node pool when one is configured, so a
     cluster that runs campaigns on a subset of its machines does not have the others
