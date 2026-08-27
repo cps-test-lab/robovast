@@ -538,7 +538,7 @@ somebody else produced and registers it, so it lists, displays and can be re-run
 one that ran here. It has two sources and **neither carries bytes, for the same reason
 the download is link-only** — a campaign archive is routinely gigabytes.
 ``archive_path`` is a path on the *service host*; an archive on your own machine goes
-through ``vast results import`` or the web UI's campaign view, both of which upload it
+through ``vast campaign import`` or the web UI's campaign view, both of which upload it
 over a side channel (:doc:`http_api`) and then call this same operation.
 ``share_archive`` names one on the configured share, which the **service** downloads
 itself — so a campaign moving between two servers never travels through anybody's
@@ -555,6 +555,13 @@ There is no MCP tool for listing or downloading from the share. That is delibera
 it is the same rule as the wait tools: a share listing is a CLI call
 (``vast share list``), and a transfer that can outlive a turn is a shell command
 (``vast share download``, ``vast share import``), which costs this surface nothing.
+
+``vast share`` is the one command group that does **not** go through the service: it
+speaks to Nextcloud, GCS or Zenodo directly, with the caller's own credentials, which is
+why it ships with the full ``robovast`` distribution rather than with ``robovast-client``.
+An agent holding only the client can therefore have its campaigns *uploaded* to a share
+(that path runs in the service, as a launch flag) but cannot list or fetch from one. Say
+so rather than suggesting the command, if that is the install you are on.
 
 Pass a ``description`` (≤ 200 characters) saying what the run is *for*. It is
 recorded on the campaign row in its ``campaign.db``, so it travels with the

@@ -121,7 +121,7 @@ A good practice is, to first run a single configuration to verify that everythin
     vast workspace run --config config1 --runs 1
 
     # 2. fetch the campaign's archive (or publish it to the share for someone else)
-    vast results download <campaign-id>       # -> ./<campaign-id>.tar.gz
+    vast campaign download <campaign-id>       # -> ./<campaign-id>.tar.gz
     vast share export -i <campaign-id>        # -> the configured share
     # Inside the archive: <campaign-name>-<timestamp>/<config-name>/<run_number>/
 
@@ -1443,7 +1443,7 @@ Who writes it
   (mtime-guarded; ``force=True`` to rebuild). Controller-written stores are left
   untouched. It has **no CLI entry point**: ``vast eval index`` was the only caller and
   went with the desktop tools, so a tree that has no store keeps none. The function
-  itself is the register step of ``vast results import``: an archive somebody else produced
+  itself is the register step of ``vast campaign import``: an archive somebody else produced
   usually has no store, and extraction alone leaves the campaign invisible to every
   store-driven view. (This paragraph previously said it stayed because ``import-results``
   and the tests used it -- stale on both counts: that command did not call it, and it had
@@ -1460,7 +1460,7 @@ can independently be older, newer, absent or corrupt. Neither re-implements a mi
 the config ladder is applied in memory and the store migrates on open, so this module observes
 and reports.
 
-Three entry points, one implementation: ``vast results import`` (locally, or streamed to a
+Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
 reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the
 ``import_campaign`` MCP tool. Only the first two ever move bytes; both do it through the
 archive side channel documented in :doc:`http_api`, and the import itself always takes a path

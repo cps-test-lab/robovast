@@ -18,7 +18,6 @@
 """CLI for results processing and management."""
 
 import sys
-import time
 from pathlib import Path
 
 import click
@@ -26,7 +25,6 @@ import yaml
 
 from robovast.client.errors import handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
-from robovast.common import make_transfer_progress_callback
 from robovast.common.execution import is_campaign_dir
 from robovast.results_processing import run_postprocessing
 from robovast.results_processing.merge_results import merge_results
@@ -145,55 +143,6 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
         click.echo(f"\u2717 {message}", err=True)
         sys.exit(1)
     click.echo(f"\u2713 {message}")
-
-
-@results.command(name='import')
-@click.argument('archive', type=click.Path(exists=True, dir_okay=False))
-@click.option('--force', is_flag=True, help='Replace a campaign of the same id already there.')
-@click.option('--rebuild-store', is_flag=True,
-              help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
-def import_cmd(archive, force, rebuild_store):
-    """Take a campaign archive into the service, and postprocess it if it needs it.
-
-    ARCHIVE is a ``.tar.gz`` on *this* machine -- one ``vast results download`` or ``vast
-    share download`` produced, or a colleague sent. It is uploaded to the service and
-    imported there, so the campaign lands where the web UI and every other client can see
-    it; the file itself is never deleted, it is yours.
-
-    Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
-    not from the results tree, so a campaign that is only unpacked is invisible. And when
-    the archive is a **raw** one -- no ``_execution/data.db``, which is what the share holds
-    -- postprocessing is chained automatically, because a campaign without its metric tables
-    is not one you can ask anything.
-
-    Long-running, so it returns once the import is under way: the campaign appears
-    immediately at phase ``importing``. Watch it with ``vast campaign wait <campaign-id>``, or in the
-    campaign view.
-
-    There is no local-only mode. Import means "into a service" -- that is where the tracked
-    phase, the log and the chained postprocessing are, and since postprocessing is itself a
-    service operation (``vast campaign postprocess``) there is nothing a results directory
-    outside one could be postprocessed *by*.
-    """
-    from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
-        echo_target, service_client)
-    from robovast.service.interface import \
-        ImportCampaignRequest  # pylint: disable=import-outside-toplevel
-    from robovast.service.project_push import \
-        push_campaign_archive  # pylint: disable=import-outside-toplevel
-
-    path = Path(archive)
-    with service_client() as (client, label):
-        echo_target(label)
-        click.echo(f"uploading {path.name} ({_fmt_size(path.stat().st_size)}) ...")
-        staged = push_campaign_archive(client, path)
-        ref = client.import_campaign(ImportCampaignRequest(
-            archive_path=staged, force=force, rebuild_store=rebuild_store))
-
-    click.echo(f"\u2713 importing {ref.campaign_id}")
-    if ref.note:
-        click.echo(f"  {ref.note}")
-    click.echo(f"  watch it with: vast campaign wait {ref.campaign_id}")
 
 
 @results.command(name='backfill-provenance')
@@ -465,104 +414,3 @@ def list_publication_plugins():
     click.echo("        - '*.pyc'")
     click.echo("\nPlugins without parameters can be simple strings.")
     click.echo("Plugins with parameters use plugin name as key with parameters as dict.")
-
-
-@results.command(name='download')
-@click.argument('campaigns', nargs=-1, required=True)
-@click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
-              help='Directory to write the archives into [default: the current directory]')
-@click.option('--force', '-f', is_flag=True,
-              help='Overwrite an archive of the same name that is already here')
-def download_cmd(campaigns, output, force):
-    """Download campaign archives from the service, one ``.tar.gz`` each.
-
-    That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing
-    is extracted, no results directory is written into, and no state is kept about what
-    you already have -- the archive is yours, to keep, copy, unpack, or hand back with
-    ``vast results import``.
-
-    The archive is the campaign as the service holds it, postprocessing and all. The
-    share's raw, pre-postprocess snapshot is a different system with different
-    credentials: ``vast share download``.
-
-    Writes into the current directory unless ``-o`` says otherwise -- an archive is a
-    file, not a results tree, so the project's results directory is the wrong home
-    for it.
-    """
-    from robovast.client.service_target import \
-        service_client  # pylint: disable=import-outside-toplevel
-    from robovast.service.project_push import \
-        download_campaign_archive  # pylint: disable=import-outside-toplevel
-
-    out_dir = Path(output) if output else Path.cwd()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    with service_client() as (client, label):
-        click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
-        written = skipped = 0
-        for campaign_id in campaigns:
-            dest = out_dir / f"{campaign_id}.tar.gz"
-            if dest.exists() and not force:
-                click.echo(f"  {dest.name}  already here, skipping "
-                           "(use --force to re-download)")
-                skipped += 1
-                continue
-            start = time.monotonic()
-            try:
-                download_campaign_archive(
-                    client, campaign_id, str(dest),
-                    progress_callback=make_transfer_progress_callback(campaign_id, start))
-            # Ahead of the broad handler below, which would otherwise swallow click's own
-            # control flow and report a usage error as an unexpected failure.
-            except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
-                raise
-            except Exception as exc:  # noqa: BLE001
-                sys.stdout.write("\n")
-                handle_cli_exception(exc)
-                continue
-            finally:
-                sys.stdout.write("\n")
-                sys.stdout.flush()
-            click.echo(f"  {campaign_id}  \u2713  {_fmt_size(dest.stat().st_size)} "
-                       f"in {time.monotonic() - start:.0f}s  ->  {dest}")
-            written += 1
-
-    click.echo()
-    parts = [f"\u2713 Downloaded {written} archive(s)"]
-    if skipped:
-        parts.append(f"{skipped} skipped")
-    click.echo("  ".join(parts))
-
-
-@results.command(name='delete')
-@click.argument('campaign', metavar='CAMPAIGN')
-@click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
-def delete_campaign_cmd(campaign, yes):
-    """Permanently delete one CAMPAIGN wholesale via the robovast-service.
-
-    Removes the campaign's durable home — its directory under the results root on a
-    local service, or its object-store data (plus any leftover Kubernetes Jobs and
-    the service's cache) on a cluster service. This is the full "forget this
-    campaign" action; ``vast cluster store-cleanup`` only frees
-    object-store buckets, and ``vast share remove`` only touches the
-    external share (which this command leaves untouched).
-
-    The service refuses a campaign that is still running — stop it first. This is
-    irreversible.
-    """
-    if not yes and not click.confirm(
-            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
-        click.echo("Aborted.")
-        return
-    from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
-        echo_target, service_client)
-    try:
-        with service_client() as (client, label):
-            echo_target(label)
-            res = client.delete_campaign(campaign)
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-    if not res.ok:
-        raise click.ClickException(res.message or "delete failed")
-    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")

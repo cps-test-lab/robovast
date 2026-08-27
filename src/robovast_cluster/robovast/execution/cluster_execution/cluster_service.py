@@ -3341,7 +3341,7 @@ class ClusterService(LocalTransport):
         a large campaign must not spend a full upload explaining itself. The scratch copy is
         dropped either way — the pod's disk is not a place to leave an unusable tree.
 
-        The campaign is indexed, so it survives a restart and ``vast results delete`` finds
+        The campaign is indexed, so it survives a restart and ``vast campaign delete`` finds
         it. That also makes :meth:`_campaign_is_here` true for the id, so a retry needs
         ``force`` — which is what the failure already tells the reader to use, and
         :meth:`_release_durable_campaign` already clears.

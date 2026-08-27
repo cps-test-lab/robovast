@@ -211,7 +211,7 @@ def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, mo
     deleting the directory afterwards did not unlist anything; it only removed the
     ``import.log`` and ``import.json`` that said what went wrong, leaving a campaign listed
     as ``failed`` with nothing behind it. Keeping it makes it an ordinary failed campaign:
-    inspectable, and removable with ``vast results delete``.
+    inspectable, and removable with ``vast campaign delete``.
     """
     def _boom(*_a, **_k):
         raise OSError("disk went away mid-extraction")

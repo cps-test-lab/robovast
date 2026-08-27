@@ -21,7 +21,6 @@ thing a campaign can be created from, named after its source exactly as ``worksp
 is.
 """
 
-import os
 import sys
 
 import click
@@ -507,6 +506,61 @@ def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer
                    f" / {status.total_runs}")
 
 
+@campaign.command('import')
+@click.argument('archive', type=click.Path(exists=True, dir_okay=False))
+@click.option('--force', is_flag=True, help='Replace a campaign of the same id already there.')
+@click.option('--rebuild-store', is_flag=True,
+              help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
+@target_options
+def import_cmd(archive, force, rebuild_store, namespace, context):
+    """Take a campaign archive into the service, and postprocess it if it needs it.
+
+    ARCHIVE is a ``.tar.gz`` on *this* machine -- one ``vast campaign download`` or ``vast
+    share download`` produced, or a colleague sent. It is uploaded to the service and
+    imported there, so the campaign lands where the web UI and every other client can see
+    it; the file itself is never deleted, it is yours.
+
+    Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
+    not from the results tree, so a campaign that is only unpacked is invisible. And when
+    the archive is a **raw** one -- no ``_execution/data.db``, which is what the share holds
+    -- postprocessing is chained automatically, because a campaign without its metric tables
+    is not one you can ask anything.
+
+    Long-running, so it returns once the import is under way: the campaign appears
+    immediately at phase ``importing``. Watch it with ``vast campaign wait <campaign-id>``,
+    or in the campaign view.
+
+    It creates a campaign, which is why it is here and not in ``vast results``: an upload
+    and one HTTP call, needing nothing of the local half of the tool. It sat in the group
+    that ships only with the full distribution, so the install most likely to be talking to
+    a remote service was the one that could not import into it.
+    """
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+    from robovast.client.progress import fmt_size  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import \
+        ImportCampaignRequest  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import \
+        push_campaign_archive  # pylint: disable=import-outside-toplevel
+
+    path = Path(archive)
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            click.echo(f"uploading {path.name} ({fmt_size(path.stat().st_size)}) ...")
+            staged = push_campaign_archive(client, path)
+            ref = client.import_campaign(ImportCampaignRequest(
+                archive_path=staged, force=force, rebuild_store=rebuild_store))
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+
+    click.echo(f"✓ importing {ref.campaign_id}")
+    if ref.note:
+        click.echo(f"  {ref.note}")
+    click.echo(f"  next: vast campaign wait {ref.campaign_id}")
+
+
 @campaign.command('postprocess')
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @click.option('--force', '-f', is_flag=True,
@@ -551,27 +605,116 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
     click.echo(f"  next: vast campaign wait {campaign_id}")
 
 
-@campaign.command('download')
+@campaign.command('delete')
 @click.argument('campaign', metavar='CAMPAIGN')
-@click.option('--output', '-o', 'dest', default=None, metavar='PATH',
-              help='Where to write the archive (default: ./<campaign-id>.tar.gz).')
+@click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
 @target_options
-def download_cmd(campaign, dest, namespace, context):  # pylint: disable=redefined-outer-name
-    """Download a campaign's archive into the current directory.
+def delete_cmd(campaign, yes, namespace, context):
+    """Permanently delete one CAMPAIGN wholesale.
 
-    An archive, not an unpacked tree: what to do with it is the caller's. The service
-    streams it straight from where the results live, so no external share is involved.
+    Removes the campaign's durable home -- its directory under the results root on a local
+    service, or its object-store data (plus any leftover Kubernetes Jobs and the service's
+    cache) on a cluster service. This is the full "forget this campaign" action; ``vast
+    cluster store-cleanup`` only frees object-store buckets, and ``vast share remove`` only
+    touches the external share, which this command leaves untouched.
+
+    The service refuses a campaign that is still running -- stop it first. This is
+    irreversible.
     """
+    if not yes and not click.confirm(
+            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
+        click.echo("Aborted.")
+        return
     try:
-        from robovast.service.project_push import \
-            download_campaign_archive  # pylint: disable=import-outside-toplevel
-
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            target = dest or os.path.join(os.getcwd(), f"{campaign}.tar.gz")
-            written = download_campaign_archive(client, campaign, target)
+            res = client.delete_campaign(campaign)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
+    if not res.ok:
+        raise click.ClickException(res.message or "delete failed")
+    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")
 
-    click.echo(f"Wrote {written}")
+
+@campaign.command('download')
+@click.argument('campaigns', metavar='CAMPAIGN...', nargs=-1, required=True)
+@click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
+              help='Directory to write the archives into [default: the current directory]')
+@click.option('--force', '-f', is_flag=True,
+              help='Overwrite an archive of the same name that is already here')
+@target_options
+def download_cmd(campaigns, output, force, namespace, context):
+    """Download campaign archives from the service, one ``.tar.gz`` each.
+
+    That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing is
+    extracted, no results directory is written into, and no state is kept about what you
+    already have -- the archive is yours, to keep, copy, unpack, or hand back with ``vast
+    campaign import``.
+
+    The archive is the campaign as the service holds it, postprocessing and all. The
+    share's raw, pre-postprocess snapshot is a different system with different
+    credentials: ``vast share download``.
+
+    Writes into the current directory unless ``-o`` says otherwise -- an archive is a
+    file, not a results tree, so a results directory is the wrong home for it.
+
+    One campaign that fails does not stop the others: each is reported on its own line and
+    the exit summary counts what landed. This is the implementation that used to be ``vast
+    results download``; the thin single-archive copy that lived here could not do several,
+    resume past a failure, or show progress on a multi-gigabyte transfer.
+    """
+    import time  # pylint: disable=import-outside-toplevel
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+    from robovast.client.progress import (  # pylint: disable=import-outside-toplevel
+        fmt_size, make_transfer_progress_callback)
+    from robovast.service.project_push import \
+        download_campaign_archive  # pylint: disable=import-outside-toplevel
+
+    out_dir = Path(output) if output else Path.cwd()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = skipped = 0
+    try:
+        with service_client(namespace, context) as (client, label):
+            click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
+            for campaign_id in campaigns:
+                dest = out_dir / f"{campaign_id}.tar.gz"
+                if dest.exists() and not force:
+                    click.echo(f"  {dest.name}  already here, skipping "
+                               "(use --force to re-download)")
+                    skipped += 1
+                    continue
+                start = time.monotonic()
+                try:
+                    download_campaign_archive(
+                        client, campaign_id, str(dest),
+                        progress_callback=make_transfer_progress_callback(
+                            campaign_id, start))
+                # Ahead of the broad handler below, which would otherwise swallow click's
+                # own control flow and report a usage error as an unexpected failure.
+                except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    sys.stdout.write("\n")
+                    handle_cli_exception(exc)
+                    continue
+                finally:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                click.echo(f"  {campaign_id}  ✓  {fmt_size(dest.stat().st_size)} "
+                           f"in {time.monotonic() - start:.0f}s  ->  {dest}")
+                written += 1
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+        return
+
+    click.echo()
+    parts = [f"✓ Downloaded {written} archive(s)"]
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    click.echo("  ".join(parts))

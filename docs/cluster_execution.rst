@@ -64,7 +64,7 @@ them. Internally:
    and the driver publishes the **canonical campaign** (``campaign.db`` +
    ``_execution`` + results) there. The **object store is the durable home and
    the delivery mechanism**: the service streams downloads straight from it
-   (``vast results download`` / ``--wait-and-download``), so no external share is
+   (``vast campaign download`` / ``--wait-and-download``), so no external share is
    required. Pushing a copy to an external ``tar.gz`` **share** is opt-in **at
    launch** — enable *Upload to share when done* in the web UI launcher (or
    ``--upload-to-share`` / the MCP ``upload_to_share`` flag). When set, the driver
@@ -461,12 +461,12 @@ Check the status of a running (or recently completed) run:
    vast cluster monitor
 
 The service publishes the finished campaign to the object store automatically, and
-``vast results download`` (or ``run --wait-and-download``) streams it from there — no
+``vast campaign download`` (or ``run --wait-and-download``) streams it from there — no
 external share needed:
 
 .. code-block:: bash
 
-   vast results download campaign-2025-06-01-120000
+   vast campaign download campaign-2025-06-01-120000
    # -> ./campaign-2025-06-01-120000.tar.gz
 
 That is the whole command. It fetches the campaign as this service holds it —
@@ -474,7 +474,7 @@ postprocessing and all — writes one ``.tar.gz``, and stops: nothing is extract
 results directory is written into, and no state is kept about what you already have.
 The stream is end-to-end, so a ~1TB campaign is never buffered on the service or in
 memory. What you do with the archive afterwards is yours; to put it back into a
-service, ``vast results import <archive>``.
+service, ``vast campaign import <archive>``.
 
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
@@ -725,7 +725,7 @@ service pod's disk is scratch, so after a restart a scan of that disk finds noth
 is no bucket listing to fall back on — and a per-campaign bucket name is the campaign id
 lowercased with underscores replaced, which cannot be reversed. Unlike a staged build
 context this is **not** scratch: it is retired only when the campaign's data is deleted
-(``vast results delete``, or the bucket cleanup below). See :ref:`campaign-discovery`.
+(``vast campaign delete``, or the bucket cleanup below). See :ref:`campaign-discovery`.
 
 What is *not* copied
 ^^^^^^^^^^^^^^^^^^^^
@@ -1309,7 +1309,7 @@ volume — data persists as long as the pod is alive.
 **Notes:**
 
 * ``emptyDir`` is ephemeral: if the ``robovast`` pod is restarted, all data is
-  lost.  Download results with ``vast results download`` (or launch with *Upload
+  lost.  Download results with ``vast campaign download`` (or launch with *Upload
   to share when done*) before modifying or restarting the pod.
 
 .. _cluster-config-minikube:
@@ -1351,7 +1351,7 @@ Sharing Results
 ---------------
 
 The object store is the campaign's durable home and the default delivery path —
-``vast results download`` streams the campaign straight from it, so **no external
+``vast campaign download`` streams the campaign straight from it, so **no external
 share is required**. An external share (Nextcloud, GCS, …) is for getting a campaign
 somewhere the object store does not reach: another deployment, or a colleague.
 
@@ -1556,6 +1556,6 @@ Grant the ``Storage Object Viewer`` role to the special principal
 
    gsutil iam ch allUsers:objectViewer gs://my-robovast-results
 
-Once the bucket is public, ``vast results download`` works without
+Once the bucket is public, ``vast campaign download`` works without
 any credentials — only ``ROBOVAST_SHARE_TYPE`` and ``ROBOVAST_GCS_BUCKET``
 need to be set.

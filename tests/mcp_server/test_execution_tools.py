@@ -404,7 +404,7 @@ def _fake_download_client(backend, base_url="http://127.0.0.1:8800"):
 def test_get_campaign_download_cluster_returns_url(monkeypatch):
     """The next_step names the *client's* download verb.
 
-    `vast results download` is byte-for-byte the same operation, but it ships with the
+    `vast campaign download` is byte-for-byte the same operation, but it ships with the
     full distribution while this command runs on the caller's machine -- which, for an
     agent driving a remote service over MCP, is exactly the machine most likely to have
     robovast-client and nothing else.

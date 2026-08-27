@@ -424,7 +424,7 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
 
     File by file over the existing calls rather than as one archive: a workspace is a source
     project, where that is adequate. A campaign is the case that needs an archive, because it
-    holds rosbags -- see ``vast results download``.
+    holds rosbags -- see ``vast campaign download``.
 
     \b
       vast workspace download growth-sim ./growth-sim
@@ -724,7 +724,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
             click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
             # The service streams the campaign from the object store — no external
             # share needed for delivery. An archive, not an unpacked tree: what to do
-            # with it is the caller's, exactly as for `vast results download`.
+            # with it is the caller's, exactly as for `vast campaign download`.
             dest = download_campaign_archive(
                 client, cid, os.path.join(os.getcwd(), f"{cid}.tar.gz"))
             click.echo(f"Wrote {dest}")

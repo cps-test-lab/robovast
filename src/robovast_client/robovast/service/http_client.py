@@ -478,7 +478,7 @@ class HTTPTransport(RobovastInterface):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
-        may hold it. ``vast results download`` writes these chunks to a file;
+        may hold it. ``vast campaign download`` writes these chunks to a file;
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """

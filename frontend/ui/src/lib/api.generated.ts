@@ -244,7 +244,7 @@ export interface paths {
          * Download Campaign Archive
          * @description Stream a ``tar.gz`` of the campaign, on either lane.
          *
-         *     Backs ``vast results download`` and the web UI's download button. What comes
+         *     Backs ``vast campaign download`` and the web UI's download button. What comes
          *     out is the campaign as this service holds it -- postprocessed, if it has been.
          *     Internal ``_postproc/`` staging is excluded so the archive is the clean
          *     campaign layout.
@@ -2311,7 +2311,7 @@ export interface components {
          *
          *     ``level`` decides what happens, and only these two mean anything here:
          *
-         *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast wait``
+         *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
          *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
          *       still holds ``running`` for its whole life.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
@@ -3388,7 +3388,7 @@ export interface components {
          *     **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
          *     and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
          *     Secrets and the build daemon are untouched, so a version needing a permission the last
-         *     one did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the
+         *     one did not will deploy and then 403 at runtime. ``vast service upgrade`` is the
          *     command that reconciles all of it, and the one a consumer must name. The Secrets in
          *     particular can *never* be done from in here: they are rebuilt from the operator's
          *     environment, which the pod does not have.

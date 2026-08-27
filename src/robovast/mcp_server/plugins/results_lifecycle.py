@@ -179,7 +179,7 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
     listed at phase ``importing``.
 
     Give exactly one source. Neither carries bytes through this tool — an archive is
-    routinely gigabytes. For one on *your own* machine use ``vast results import`` or the
+    routinely gigabytes. For one on *your own* machine use ``vast campaign import`` or the
     web UI, which upload over a side channel and then call this.
 
     Args:

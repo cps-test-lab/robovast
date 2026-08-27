@@ -172,7 +172,7 @@ Ask the service for the campaign's archive:
 
 .. code-block:: bash
 
-   vast results download <campaign-id>
+   vast campaign download <campaign-id>
 
 That writes ``<campaign-id>.tar.gz`` into the current directory and stops there — the
 archive is yours to unpack, keep, or hand to a colleague.

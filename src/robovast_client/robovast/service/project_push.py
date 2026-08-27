@@ -408,7 +408,7 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     A file lands, and that is all that happens. This used to stream-*extract* off the
     socket, which made "download" also decide where a results tree goes and what it is
     called -- two jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and
-    putting a campaign back into a service is ``vast results import``.
+    putting a campaign back into a service is ``vast campaign import``.
 
     Written through a ``.part`` sibling and renamed on success, so an interrupted
     transfer cannot leave a truncated archive sitting under the real name looking

@@ -163,7 +163,7 @@ def _campaign_dir(root, name):
     """A directory that looks like campaign output because it CONTAINS the markers.
 
     Named after a campaign id rather than "results", which is the case the name-based
-    default cannot catch: `vast results download` and `exec cluster run
+    default cannot catch: `vast campaign download` and `exec cluster run
     --wait-and-download` both land a campaign under its own id.
     """
     d = root / name

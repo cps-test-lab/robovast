@@ -1174,7 +1174,7 @@ class LocalTransport(RobovastInterface):
 
         So the evidence stays where the evidence goes: in the campaign, next to the log
         that explains it. It behaves like any other failed campaign, including being
-        removed by ``vast results delete``, and the archive is untouched, so a retry with
+        removed by ``vast campaign delete``, and the archive is untouched, so a retry with
         force costs only the transfer.
 
         "In the campaign" has to mean *where clients read the campaign*, which is the half
@@ -1239,7 +1239,7 @@ class LocalTransport(RobovastInterface):
             detail = failure_detail(e)
             logger.error("\u2717 import of %s failed: %s", campaign_id, e)
             logger.error("The campaign is kept as failed so this log survives; remove it "
-                         "with 'vast results delete %s', or retry with force.", campaign_id)
+                         "with 'vast campaign delete %s', or retry with force.", campaign_id)
             remove_campaign_log_handler(handler)
             handler = None
             # Durable, so the failure still reads as a failure after a service restart --

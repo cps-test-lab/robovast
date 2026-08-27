@@ -210,7 +210,7 @@ The **import menu** at the right-hand end of the campaign list offers the two wa
 campaign gets here. *Import archive…* takes a campaign archive (``.tar.gz``) off your
 machine — a colleague's results, a published dataset, or a campaign from a service you have
 since torn down. It is the other direction of a campaign card's **Download**, and it is the
-same operation as ``vast results import`` and the ``import_campaign`` MCP tool: the browser
+same operation as ``vast campaign import`` and the ``import_campaign`` MCP tool: the browser
 is only how the bytes get there (:doc:`http_api`). The other entry, *Import from Share*,
 takes one off the configured share instead and is described under
 :ref:`web-ui-share-import`; there the service does the fetching and no bytes pass through

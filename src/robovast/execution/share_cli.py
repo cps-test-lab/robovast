@@ -269,7 +269,7 @@ def download_cmd(campaigns, output, force):
     """Download campaign archives from the share to this machine.
 
     Writes ``<campaign-id>.<variant>.tar.gz`` and stops there -- the archive is yours,
-    to keep, copy, or hand to ``vast results import``. Nothing is extracted and no
+    to keep, copy, or hand to ``vast campaign import``. Nothing is extracted and no
     results directory is touched.
 
     An interrupted transfer leaves a ``.part`` file and the next run resumes from it;
@@ -342,7 +342,7 @@ def download_cmd(campaigns, output, force):
 def upload_cmd(archives, force):
     """Upload campaign archive files from this machine to the share.
 
-    ARCHIVES are ``.tar.gz`` files as ``vast results download`` or ``vast share
+    ARCHIVES are ``.tar.gz`` files as ``vast campaign download`` or ``vast share
     download`` produce them. The campaign id is read from the archive's single
     top-level directory and the variant from whether ``_execution/data.db`` is in it,
     so the object is named the way everything else on the share is named -- whatever

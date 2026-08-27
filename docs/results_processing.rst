@@ -739,7 +739,7 @@ change. Workspace *inputs* live in the writable half of the same address space,
 and per run, so a recursive listing of the root is thousands of entries; it
 reports ``total`` when it truncates. ``cat`` pages text and refuses binary;
 ``get`` writes raw bytes, which is how you fetch one artifact without downloading
-the whole campaign archive (that is ``vast results download <campaign-id>``, which
+the whole campaign archive (that is ``vast campaign download <campaign-id>``, which
 writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
@@ -977,7 +977,7 @@ command line and the MCP tools ``run_postprocessing`` and ``run_share``.
 
 A third operation shares their shape without being a *re*-run: **importing** a
 campaign this deployment never ran, from an archive
-(``vast results import <archive>``) or from the share (``vast share import
+(``vast campaign import <archive>``) or from the share (``vast share import
 <campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
 — when what arrived is a raw archive with no ``_execution/data.db`` — rolls straight
 on into ``postprocessing``, because a campaign without its metric tables is not one
@@ -992,7 +992,7 @@ so the entry outlives the failure either way and removing the directory only too
 the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
 an object store the campaign's ``_execution/`` is published so the account is readable
 where the campaign is read, not left on a pod's scratch. Remove it with
-``vast results delete``, or import again with ``--force``.
+``vast campaign delete``, or import again with ``--force``.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest

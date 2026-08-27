@@ -1200,7 +1200,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def download_campaign_archive(campaign_id: str):
         """Stream a ``tar.gz`` of the campaign, on either lane.
 
-        Backs ``vast results download`` and the web UI's download button. What comes
+        Backs ``vast campaign download`` and the web UI's download button. What comes
         out is the campaign as this service holds it -- postprocessed, if it has been.
         Internal ``_postproc/`` staging is excluded so the archive is the clean
         campaign layout.
