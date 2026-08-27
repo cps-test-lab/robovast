@@ -184,6 +184,31 @@ class NodeCalibration:
             self._probes.pop(node_id, None)
 
 
+#: Turns per-node *sizing* on. **Off by default, and the default is the honest one.**
+#:
+#: A probe runs before the campaign places any work, which is what lets every run on a node
+#: share one environment -- and is also why its figures are not the campaign's. Measured on
+#: 2026-08-27, same node, same campaign: the probe read the system under test at 0.82 peak
+#: where its real runs peaked at 1.64, and read the simulator's sustained use at 1.13 where
+#: the real runs sat at 0.35. Under by 2x on the container that must never be starved, over
+#: by 3x on the ones the density was supposed to come from -- so applying it would starve
+#: nav2 below its measured floor AND give back the packing gain.
+#:
+#: The two goals are simply exclusive: "measured before any load" and "measured under the
+#: load it will meet" cannot both hold of one probe. Until a probe measures under
+#: representative contention, declared sizing everywhere is the correct behaviour, and
+#: per-node PLACEMENT -- budgets and pinning, which are verified and fix fragmentation --
+#: stands on its own without it.
+CALIBRATION_ENV = "ROBOVAST_NODE_CALIBRATION"
+
+
+def calibration_enabled() -> bool:
+    """Whether per-node sizing is switched on. See :data:`CALIBRATION_ENV`."""
+    import os  # noqa: PLC0415
+
+    return (os.environ.get(CALIBRATION_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def calibration_applies(total_jobs: int, node_count: int, growable: bool = False) -> bool:
     """Whether a campaign is worth calibrating at all.
 
@@ -200,7 +225,8 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
     meant to improve. Skipped there, and the campaign behaves exactly as it did before any of
     this existed.
     """
-    return not growable and node_count > 0 and total_jobs > node_count
+    return (calibration_enabled() and not growable
+            and node_count > 0 and total_jobs > node_count)
 
 
 def container_cpu_profile(rows) -> dict:
