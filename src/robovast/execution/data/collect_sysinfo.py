@@ -33,7 +33,44 @@ def get_cpu_info() -> Dict[str, Any]:
     except OSError:
         cpu_name = None
 
-    return {"cpu_name": cpu_name}
+    return {"cpu_name": cpu_name, "cpu_governor": get_cpu_governor()}
+
+
+def get_cpu_governor() -> Optional[str]:
+    """The host's CPU frequency governor, or ``None`` when it cannot be read.
+
+    **Recorded because a node whose clock depends on how busy it is confounds every per-node
+    measurement this repository takes.** Measured on 2026-08-27, one node, one scenario,
+    varying only how many jobs shared the machine:
+
+    ====  =====  ================
+    jobs  RTF    run duration
+    ====  =====  ================
+    1     0.28   never finished
+    2     0.38   252s
+    5     0.81   117s
+    ====  =====  ================
+
+    More load made each run FASTER, because an idle node downclocks -- the governor there was
+    ``powersave``, with an 800 MHz floor against a 4.5 GHz ceiling. A calibration probe, which
+    by design runs alone before any campaign work, therefore measures the machine in the one
+    state no campaign run will meet, and on that node could not finish inside its deadline at
+    all. Small pilots are affected too: two concurrent runs took 252s against a 300s timeout.
+
+    Read from cpu0: the governor is per-policy and could in principle differ across cores, but
+    a mixed setting is not a configuration anyone chooses, and reporting one value that is
+    usually right beats reporting nothing. Absent in most containers unless ``/sys`` is
+    mounted through, hence ``None`` rather than a guess -- and ``None`` means NOT READ, never
+    "fine", which is why the campaign-level check states which it saw.
+    """
+    text = _read_first_existing(
+        ["/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"])
+    return text.strip() if text else None
+
+
+#: The governor a measurement cluster should be on. Anything else makes a node's speed a
+#: function of its load, which is a variable no experiment here declares or records.
+WANTED_CPU_GOVERNOR = "performance"
 
 
 #: Prefix on a hashed node identity, so a reader can tell one from a hostname at a glance.
