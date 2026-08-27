@@ -78,8 +78,25 @@ class ClusterBudgetProvider:
     # -- the two questions -------------------------------------------------------------
 
     def capacities(self) -> "List[Capacity]":
-        return [Capacity(cpu=parse_resource(a.get("cpu")),
-                         memory=int(parse_resource(a.get("memory"))),
+        """What each node could hold if it were empty -- **headroom already taken off**.
+
+        Subtracted here for the same reason it is subtracted from ``budget()``: the reserve is
+        never spendable by a campaign, so a node's usable size is ``allocatable - headroom``
+        in both answers. Reporting the raw figure made the two disagree, and the gap between
+        them was a silent hang. A sizing above ``allocatable - headroom`` but at or below
+        ``allocatable`` passed :meth:`~.node_admission.AdmissionController.preflight` -- which
+        exists precisely to tell "wait" from "impossible" -- and then no drain could ever place
+        it. The campaign sat in the admit loop having created ZERO jobs, and every diagnosis
+        path downstream reads pods, so none of them could see it. The calibration probe cannot
+        rescue it either: it runs at the declared sizing and is pinned, so it is unadmittable
+        for the same reason.
+
+        Never below zero: a node smaller than the reserve reports as holding nothing, which is
+        the truth, rather than a negative that would read as room.
+        """
+        head_cpu, head_mem = _headroom()
+        return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
+                         memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
                          gpu=int(parse_resource(a.get("nvidia.com/gpu"))))
                 for a in self._allocatables().values()]
 
@@ -125,7 +142,7 @@ class ClusterBudgetProvider:
         shared tenants no campaign owns, and those run on each machine; taking it off the sum
         would leave every node but one unprotected.
         """
-        alloc = self._allocatables()
+        alloc = self._allocatables(schedulable_only=True)
         ids = self._node_ids()
         per_node, seen = self._committed(set(alloc))
         head_cpu, head_mem = _headroom()
@@ -137,12 +154,31 @@ class ClusterBudgetProvider:
                 free_cpu=max(0.0, parse_resource(a.get("cpu")) - used[0] - head_cpu),
                 free_memory=max(0, int(parse_resource(a.get("memory"))) - used[1] - head_mem),
                 free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2])))
-        # A cluster that can grow has room on no node yet. Only then may a job be created
-        # unpinned; a static cluster leaves this False and per-node stays authoritative.
+        return Budget(nodes=tuple(nodes), counted_jobs=seen, growable=self._growable())
+
+    def _growable(self) -> bool:
+        """Whether the cluster can add nodes -- the autoscaler's exception.
+
+        **Compared against the WHOLE cluster, never against the job pool.** The declared
+        maximum an autoscaler reports covers every node it may create; ``_allocatables`` is
+        filtered to the pool and to what is schedulable right now. Comparing the two measured
+        different sets: configure a job node pool and the declared max exceeds the pool's
+        current total by construction, so ``growable`` was permanently true -- every job then
+        created unpinned, per-node accounting bypassed, and ``calibration_applies`` switching
+        per-node sizing off without saying so. Cordoning one node had a milder version of the
+        same effect.
+
+        A node that is down still counts towards the current total here, for the same reason
+        it counts in ``capacities()``: it is coming back, and treating its absence as room the
+        autoscaler must supply would ask for a machine to replace one that already exists.
+        """
         declared = self._declared_total()
-        total_cpu = sum(parse_resource(a.get("cpu")) for a in alloc.values())
-        growable = declared is not None and declared[0] > total_cpu
-        return Budget(nodes=tuple(nodes), counted_jobs=seen, growable=growable)
+        if declared is None:
+            return False
+        core = self._core_api_factory()
+        total_cpu = sum(parse_resource((n.status.allocatable or {}).get("cpu"))
+                        for n in core.list_node().items)
+        return declared[0] > total_cpu
 
     def _node_ids(self) -> dict:
         """``node name -> robovast.io/node-id``, for the nodes that carry one.
@@ -163,14 +199,41 @@ class ClusterBudgetProvider:
 
     # -- readings ----------------------------------------------------------------------
 
-    def _allocatables(self) -> dict:
+    def _allocatables(self, schedulable_only: bool = False) -> dict:
+        """``{node name: allocatable}`` for the nodes in the job pool.
+
+        *schedulable_only* is the difference between the module's two questions, and it has to
+        be a parameter rather than a filter applied to both.
+
+        **"Free now" must exclude an unusable node.** One that is cordoned, not ``Ready``, or
+        carrying a taint a job pod does not tolerate cannot receive work, so counting its cores
+        promises room that cannot be spent. Worse, a node that dies mid-campaign loses its pods
+        once the eviction timeout passes and then reads as fully *free* -- so admission pinned
+        job after job to it, each was refused by the scheduler for an untolerated ``not-ready``
+        taint, and each was dropped as a fault rather than as contention. Runs were discarded
+        in a loop for as long as the node stayed down, and a cordon for maintenance did the
+        same.
+
+        **"Could ever" must include it.** A cordoned or rebooting node is coming back, and
+        :meth:`~.node_admission.AdmissionController.preflight` raises a *permanent* error --
+        so filtering here would turn a maintenance window into a campaign that refuses to
+        start rather than one that waits.
+
+        The tolerations are the job pods' own (:data:`~.node_placement.CAMPAIGN_NODE_TOLERATIONS`),
+        not an empty set: a deployment that taints its campaign nodes must still count them.
+        """
+        from .node_placement import (  # noqa: PLC0415 - avoids an import cycle
+            CAMPAIGN_NODE_TOLERATIONS, node_is_schedulable)
+
         core = self._core_api_factory()
         kwargs = {}
         if self._node_selector:
             kwargs["label_selector"] = ",".join(f"{k}={v}"
                                                 for k, v in self._node_selector.items())
         nodes = core.list_node(**kwargs)
-        return {n.metadata.name: (n.status.allocatable or {}) for n in nodes.items}
+        return {n.metadata.name: (n.status.allocatable or {}) for n in nodes.items
+                if not schedulable_only
+                or node_is_schedulable(n, CAMPAIGN_NODE_TOLERATIONS)}
 
     def _committed(self, node_names: set):
         """``{node: (cpu, memory, gpu)}`` requested on each, and the Job names among them.

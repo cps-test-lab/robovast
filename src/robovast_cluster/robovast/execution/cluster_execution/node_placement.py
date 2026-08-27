@@ -211,6 +211,29 @@ def _tolerates(taint, tolerations) -> bool:
     return False
 
 
+def node_is_schedulable(node, tolerations=_NO_TOLERATIONS) -> bool:
+    """Whether a pod carrying *tolerations* could actually be placed on this node object.
+
+    **One predicate, because two answers to "is this node usable" is one answer too many.**
+    Placement asked it here while the budget provider did not ask it at all, and the
+    disagreement had a cost: a node that dies mid-campaign loses its pods after the eviction
+    timeout and then reads as *fully free*, so admission keeps reserving room on a machine
+    Kubernetes will not schedule to. The pods report an untolerated ``not-ready`` taint, which
+    is correctly classified as a fault rather than contention, so they are dropped on the
+    short grace window -- and the next drain does it again, discarding runs for as long as the
+    node is down. A cordon for maintenance produces the same loop.
+
+    The three tests are the ones the scheduler itself applies before anything else: cordoned,
+    not ``Ready``, or carrying a taint this workload does not tolerate.
+    """
+    if getattr(node.spec, "unschedulable", False):
+        return False
+    conditions = {c.type: c.status for c in (node.status.conditions or [])}
+    if conditions.get("Ready") != "True":
+        return False
+    return not any(not _tolerates(t, tolerations) for t in (node.spec.taints or []))
+
+
 def eligible_nodes(core, tolerations=_NO_TOLERATIONS, extra_labels=None) -> list:
     """Nodes a workload could actually be scheduled onto, by name, sorted.
 
@@ -225,17 +248,9 @@ def eligible_nodes(core, tolerations=_NO_TOLERATIONS, extra_labels=None) -> list
     allowed rather than beside it.
     """
     selector = ",".join(f"{k}={v}" for k, v in (extra_labels or {}).items()) or None
-    out = []
-    for node in core.list_node(label_selector=selector).items:
-        if getattr(node.spec, "unschedulable", False):
-            continue
-        conditions = {c.type: c.status for c in (node.status.conditions or [])}
-        if conditions.get("Ready") != "True":
-            continue
-        if any(not _tolerates(t, tolerations) for t in (node.spec.taints or [])):
-            continue
-        out.append(node.metadata.name)
-    return sorted(out)
+    return sorted(node.metadata.name
+                  for node in core.list_node(label_selector=selector).items
+                  if node_is_schedulable(node, tolerations))
 
 
 def rank_by_free_space(core, names, read_summary=None, timeout_s: float = 2.0) -> list:
