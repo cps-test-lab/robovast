@@ -394,7 +394,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         BUILD_NODE_LABEL, DATA_NODE_LABEL, labeled_nodes, resolve_placement)
-    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS  # pylint: disable=import-outside-toplevel
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # pylint: disable=import-outside-toplevel
 
     core = client.CoreV1Api()
     service_kwargs = dict(service_kwargs or {})
@@ -426,7 +426,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
                     "keep it on a different disk")
     build_placement = resolve_placement(
         core, BUILD_NODE_LABEL, node_local=not buildkit_kwargs.get("storage_class"),
-        requested=buildkit_node, tolerations=KUEUE_JOB_TOLERATIONS)
+        requested=buildkit_node, tolerations=CAMPAIGN_NODE_TOLERATIONS)
     buildkit_kwargs["node_selector"] = build_placement.selector if build_placement else {}
 
     # The store is a pod like any other, so it takes the data node's selector -- ANDed with
