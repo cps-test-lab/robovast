@@ -28,10 +28,10 @@ cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several
-``.vast`` files in that workspace. There is no server-side "current project" —
-``.robovast_project`` / ``vast init`` bind the *CLI's* project (for
-``vast exec local run``, ``vast results``) and never select what
-the service runs. Get a ``workspace_id`` either by pinning a directory in place
+``.vast`` files in that workspace. There is no "current project" anywhere — not
+server-side, and no longer CLI-side either: every command names its own input, and
+``vast workspace run`` takes the same workspace-and-path pair this tool does.
+Get a ``workspace_id`` either by pinning a directory in place
 with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
 only for a service running on that host), or by uploading one from the machine
 that holds the project: ``vast workspace init <dir>``. That is the only route for
@@ -492,8 +492,9 @@ or the deployed one recorded by ``vast login``. The service is
 the single execution authority and owns run-state tracking; there is **no local
 subprocess path**. When no service is reachable the control tools fail loudly
 (``{"error": "no robovast-service reachable — start a 'vast serve' …"}``) rather
-than silently running a divergent local lane. (For a serviceless local run, use
-the ``vast exec local run`` CLI directly.)
+than silently running a divergent local lane. There is no serviceless run at all: a
+local service on its Docker lane is the same path as a remote one, differing only in
+which service answers.
 
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with

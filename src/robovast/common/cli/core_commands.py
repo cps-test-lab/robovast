@@ -27,110 +27,17 @@ is complete rather than truncated: the verbs it cannot run are not registered, s
 are absent instead of present-and-failing.
 """
 
-import logging
 import os
 import shutil
-import sys
 
 import click
 
 from robovast.client.logging_config import get_logger
-from robovast.client.project_config import ProjectConfig
 from robovast.client.service_target import _service_alive
-from robovast.client.service_target import echo_target as _echo_target
 from robovast.service.interface import DEFAULT_PORT
 
-from .checks import check_docker_access
 
 logger = get_logger(__name__)
-
-
-@click.command()
-@click.argument('config', type=click.Path(exists=True))
-@click.option('--results-dir', '-r', default="results", type=click.Path(),
-              help='Directory for storing results')
-@click.option('--project-log-level', default="INFO",
-              type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
-              help='Default logging level for the project (saved to project config)')
-@click.option('--force', '-f', is_flag=True,
-              help='Skip Docker and Kubernetes accessibility checks')
-def init(config, results_dir, project_log_level, force):
-    """Initialize a VAST project.
-
-    Creates a `.vast_project` file in the current directory that stores
-    the configuration file path, results directory, and default logging level.
-    These settings will be used by other VAST commands automatically.
-
-    The default log level can be overridden for any command using the global
-    ``--log-level`` flag (e.g., ``vast --log-level DEBUG <command>``).
-
-    By default, performs the following checks before initialization:
-
-    * Docker daemon accessibility and version
-    * Kubernetes cluster connectivity and version
-    * robovast pod is running in the default namespace
-
-    Use the ``--force`` flag to skip all these checks if needed.
-    """
-    # Check Docker and Kubernetes access unless --force is used
-    # Check Docker access
-    if force:
-        click.echo("⚠ Warning: Skipping checks (--force enabled)")
-
-    # check integrity of config file
-    try:
-        from ..common import load_config  # pylint: disable=import-outside-toplevel
-        load_config(config)
-    except Exception as e:
-        click.echo(f"✗ Error: Failed to load configuration file: {e}", err=True)
-        if not force:
-            sys.exit(1)
-
-    logger.debug("Checking Docker daemon access...")
-    docker_ok, docker_msg = check_docker_access()
-    if not docker_ok and not force:
-        click.echo(f"✗ Error: {docker_msg}", err=True)
-        click.echo("  Docker is required for RoboVAST execution.", err=True)
-        sys.exit(1)
-
-    # Convert to absolute paths
-    project_file_dir = os.path.abspath(os.getcwd())
-    if not os.path.isabs(config):
-        config_path = os.path.abspath(os.path.join(project_file_dir, config))
-    else:
-        config_path = config
-    if not os.path.isabs(results_dir):
-        results_path = os.path.abspath(os.path.join(project_file_dir, results_dir))
-    else:
-        results_path = results_dir
-
-    # Validate config file exists
-    if not os.path.isfile(config_path):
-        click.echo(f"✗ Error: Configuration file not found: {config_path}", err=True)
-        sys.exit(1)
-
-    # Create ProjectConfig and save it
-    project_config = ProjectConfig(config_path=config_path, results_dir=results_path, log_level=project_log_level)
-
-    # Validate the configuration
-    is_valid, error = project_config.validate()
-    if not is_valid:
-        click.echo(f"✗ Error: {error}", err=True)
-        sys.exit(1)
-
-    # Check if .vast_project already exists
-    existing_file = ProjectConfig.find_project_file()
-    if existing_file:
-        click.echo(f"⚠ Warning: Overwriting existing project file: {existing_file}")
-
-    # Save the project file
-    project_file = project_config.save()
-
-    click.echo(f"✓ Project initialized successfully!")
-    logging.debug(f"Configuration: {config_path}")
-    logging.debug(f"Results directory: {results_path}")
-    logging.debug(f"Log level: {project_log_level}")
-    logging.debug(f"Project file: {project_file}")
 
 
 def _ensure_ui_built(rebuild: bool = False) -> None:

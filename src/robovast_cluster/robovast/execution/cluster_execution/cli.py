@@ -28,7 +28,6 @@ import time
 import click
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import get_vast_file_override
 from robovast.client.service_target import detected_service_url
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
@@ -270,7 +269,11 @@ def _monitor_via_service(namespace, kube_context, interval, once):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--namespace', '-n', default='default', show_default=True,
               help='Kubernetes namespace the scenario Jobs run in.')
-def monitor(interval, once, kube_context, namespace):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='Watch every context this .vast names, instead of only the active '
+                   'one. Ignored when --context is given, which names one directly.')
+def monitor(interval, once, kube_context, namespace, vast):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
@@ -297,14 +300,11 @@ def monitor(interval, once, kube_context, namespace):
 
         # Build list of (label, kube_context_name) to monitor
         if not kube_context:
-            # Use contexts referenced in the .vast config file
-            # --vast-file, else the project's .vast if run inside one; monitoring a
-            # cluster works without either (it then watches the active context).
-            from robovast.client.project_config import \
-                resolve_vast_file  # pylint: disable=import-outside-toplevel
-            config_path = resolve_vast_file()
-
-            config_names = get_config_context_names(config_path) if config_path else set()
+            # Only a .vast the caller named: monitoring a cluster works without one, and
+            # then watches the active context. There is deliberately no ambient project
+            # to fall back on -- a file in some parent directory of the CWD deciding
+            # which clusters to watch is a surprise, not a convenience.
+            config_names = get_config_context_names(vast) if vast else set()
             if config_names:
                 contexts_to_monitor = sorted((n, n) for n in config_names)
             else:
@@ -625,7 +625,13 @@ def _echo_placement(placement):
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')
 @click.argument('cluster_config', required=False)
-def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='Read node-label selectors for job and control pods from this .vast '
+                   '(execution.kubernetes.{jobs,control}.node_labels), and refuse if it '
+                   'declares per-cluster resource lists for several contexts while '
+                   '--context is unset. Omitted, no node labels are applied.')
+def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context, vast,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
@@ -647,19 +653,14 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 
     Cluster-specific options can be passed using ``--option key=value``.
 
-    Ignores projects entirely: this deploys into a cluster and runs from any
-    directory, so a ``.robovast_project`` is neither required nor read here — it is
-    found by walking up to the filesystem root, and a project above an unrelated CWD
-    has no business deciding where a cluster's pods may run.
-
-    Node label selectors for job and control pods are therefore read only from a
-    ``.vast`` you name explicitly, under
-    ``execution.kubernetes.jobs.node_labels`` and
+    Reads no project: this deploys into a cluster and runs from any directory. Node
+    label selectors for job and control pods therefore come only from a ``.vast`` you
+    name explicitly, under ``execution.kubernetes.jobs.node_labels`` and
     ``execution.kubernetes.control.node_labels``::
 
-        vast -V my_campaign.vast exec cluster setup rke2
+        vast cluster setup rke2 --vast my_campaign.vast
 
-    Without ``-V`` no node labels are applied (logged at INFO) and pods schedule
+    Without ``--vast`` no node labels are applied (logged at INFO) and pods schedule
     wherever Kubernetes puts them. A named ``.vast`` that cannot be read is an error
     rather than a silent "no labels".
 
@@ -688,7 +689,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 
     try:
         # Only an explicitly named config, never an ambient project — see setup_server.
-        require_context_for_multi_cluster(kube_context, get_vast_file_override())
+        require_context_for_multi_cluster(kube_context, vast)
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -731,6 +732,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
+                                 vast_path=vast,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -756,7 +758,13 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.option('--force', is_flag=True,
               help='With --data: delete a named campaign even if the service still considers it live.')
 @target_options
-def run_cleanup(campaign, data, force, namespace, context):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='A .vast to pre-flight against this cluster. Its only use here is to '
+                   'refuse when it declares per-cluster resource lists for several '
+                   'contexts and --context was not given -- which would otherwise pick '
+                   'a cluster by accident. Optional, and read only for that check.')
+def run_cleanup(campaign, data, force, namespace, context, vast):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
@@ -782,7 +790,7 @@ def run_cleanup(campaign, data, force, namespace, context):
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
     from .kubernetes import get_kubernetes_client
     try:
-        require_context_for_multi_cluster(context, get_vast_file_override())
+        require_context_for_multi_cluster(context, vast)
         k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
@@ -1179,7 +1187,13 @@ def cluster_token(namespace, kube_context, quiet):
                    'data. Without this the labels stay, so a later setup lands on the same '
                    'node with no flags -- which is the point of them. The on-disk data is '
                    'not removed either way.')
-def cleanup(config_name, namespace, options, kube_context, forget_placement):
+@click.option('--vast', 'vast', default=None, metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False),
+              help='A .vast to pre-flight against this cluster. Its only use here is to '
+                   'refuse when it declares per-cluster resource lists for several '
+                   'contexts and --context was not given -- which would otherwise pick '
+                   'a cluster by accident. Optional, and read only for that check.')
+def cleanup(config_name, namespace, options, kube_context, forget_placement, vast):
     """Clean up the Kubernetes cluster setup.
 
     Removes the NFS server pod and service from the Kubernetes cluster
@@ -1202,7 +1216,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement):
         require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
-        require_context_for_multi_cluster(kube_context, get_vast_file_override())
+        require_context_for_multi_cluster(kube_context, vast)
         cluster_kwargs = {}
         if namespace is not None:
             cluster_kwargs["namespace"] = namespace

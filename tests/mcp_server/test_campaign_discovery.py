@@ -21,9 +21,6 @@ from robovast.mcp_server import results_resolver, service_access
 @pytest.fixture
 def no_project(monkeypatch, tmp_path):
     """No ``.robovast_project`` anywhere; workspaces store rooted under tmp_path."""
-    monkeypatch.setattr(
-        "robovast.client.project_config.ProjectConfig.load",
-        staticmethod(lambda *a, **k: None))
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
     return tmp_path / "results"
 

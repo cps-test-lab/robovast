@@ -201,16 +201,12 @@ def log(campaign, follow, namespace, context):
                 raise ValueError(
                     "No robovast-service reachable; pass --campaign (name or path) "
                     "to read a campaign on disk.")
-            if os.path.isabs(campaign):
-                campaign_dir = campaign
-            else:
-                from robovast.client.project_config import ProjectConfig
-                cfg = ProjectConfig.load()
-                if cfg is None or not cfg.results_dir:
-                    raise ValueError(
-                        "Project not initialized; run 'vast init' or pass an "
-                        "absolute campaign path.")
-                campaign_dir = os.path.join(cfg.results_dir, campaign)
+            if not os.path.isabs(campaign):
+                raise ValueError(
+                    "No robovast-service reachable, so this reads the campaign off disk "
+                    f"-- pass an absolute path to it rather than the name {campaign!r}. "
+                    "Nothing here knows which results directory a bare name belongs to.")
+            campaign_dir = campaign
             text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
             click.echo(text, nl=False)
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing

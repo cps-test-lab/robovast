@@ -32,17 +32,14 @@ logger = logging.getLogger(__name__)
 def local_results_root(workspaces_root: Path | None = None) -> Path:
     """The directory local campaigns are written to and read from.
 
-    Precedence:
+A service-owned ``results`` directory beside the workspaces store: one stable location,
+    the same for every campaign this service runs.
 
-    1. an initialized CWD project's ``results_dir`` (``.robovast_project``), so a
-       ``vast serve`` started inside a project and the ``vast results``
-       CLI look in the same place;
-    2. otherwise a service-owned ``results`` directory beside the workspaces store, so a
-       headless service still has one stable location.
-
-    This is the **last** thing ``.robovast_project`` decides. It no longer selects what the
-    service *runs* — that is ``workspace_id`` — only where results land; the file otherwise
-    remains a CLI concept (see :class:`robovast.client.project_config.ProjectConfig`).
+    There used to be a first branch here reading an initialized CWD project's
+    ``results_dir``. It was the last thing ``.robovast_project`` decided, and it went with
+    it -- a file discovered by walking up to the filesystem root deciding where a service
+    writes is a surprise, not a convenience. A caller who wants to choose says so:
+    ``vast serve --results-dir DIR``, which the transport honours ahead of this.
 
     Pure path resolution: the directory need not exist, and asking never creates it, so a
     caller whose campaigns live in an object store (the cluster lane) does not leave a
@@ -52,10 +49,6 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
         workspaces_root: The workspaces store root, when the caller already knows it.
             Omitted, the default location is used.
     """
-    from robovast.client.project_config import ProjectConfig
-    project = ProjectConfig.load()
-    if project is not None and project.results_dir:
-        return Path(project.results_dir)
     if workspaces_root is None:
         from robovast.service.workspaces import default_workspaces_root
         workspaces_root = default_workspaces_root()

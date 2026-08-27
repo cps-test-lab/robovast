@@ -25,7 +25,6 @@ import click
 import yaml
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.project_config import ProjectConfig, get_project_config
 from robovast.common import fmt_size as _fmt_size
 from robovast.common import make_transfer_progress_callback
 from robovast.common.execution import is_campaign_dir
@@ -46,8 +45,8 @@ def results():
 
 
 @results.command(name='postprocess')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(),
+              help='Directory containing run results.')
 @click.option('--force', '-f', is_flag=True,
               help='Force postprocessing even if results directory is unchanged (bypasses caching)')
 @click.option('--override', '-o', default=None, metavar='VAST_FILE',
@@ -78,20 +77,7 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
 
     Use --override to supply a .vast file explicitly instead of the campaign copy.
 
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Resolve results_dir from project config when not explicitly provided.
-    # postprocess never uses config_path from the project file (it always reads
-    # the .vast from <campaign-name>-<timestamp>/_config/ or --override), so only results_dir
-    # is needed and config_path validation is intentionally skipped.
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
-
     click.echo("Starting postprocessing...")
     click.echo(f"Results directory: {results_dir}")
     if override:
@@ -121,8 +107,8 @@ def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugi
 
 
 @results.command(name='publish')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(),
+              help='Directory containing run results.')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite existing output files without prompting.')
 @click.option('--skip-postprocessing', is_flag=True,
@@ -152,22 +138,10 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     Use --skip-upload to only run packaging plugins and skip upload plugins.
     Use --campaign / -i to restrict publication to a single campaign directory.
 
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    # Pick up the .vast file from the global -V / --vast-file option if given
-    vast_file = None
-    _ctx = click.get_current_context(silent=True)
-    if _ctx and _ctx.obj:
-        vast_file = _ctx.obj.get('vast_file')
-
-    # Resolve results_dir from project config when not explicitly provided.
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
+    # `--override` is the one way to name a .vast here; there is no ambient project and
+    # no second channel that could disagree with it.
+    vast_file = override
 
     # Validate --campaign when provided
     if campaign is not None:
@@ -273,7 +247,7 @@ def import_cmd(archive, force, rebuild_store):
 
 
 @results.command(name='backfill-provenance')
-@click.argument('results_dir', required=False, type=click.Path(exists=True))
+@click.argument('results_dir', type=click.Path(exists=True))
 @click.option('--write', is_flag=True,
               help='Actually write. Without this, report what would change and touch nothing.')
 @click.option('--force', is_flag=True,
@@ -296,13 +270,6 @@ def backfill_provenance_cmd(results_dir, write, force):
     """
     from robovast.common.backfill import (  # pylint: disable=import-outside-toplevel
         apply_backfill, plan_backfill)
-
-    if results_dir is None:
-        try:
-            results_dir = get_project_config().results_dir
-        except Exception as e:  # noqa: BLE001
-            handle_cli_exception(e)
-            return
 
     root = Path(results_dir)
     campaigns = sorted(d for d in root.iterdir() if d.is_dir() and is_campaign_dir(d.name))
@@ -358,13 +325,8 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
     Run folders (0, 1, 2, ...) from all campaigns are renumbered and copied.
     Original campaign directories are not modified.
 
-    Requires project initialization with ``vast init`` first (unless ``--results-dir`` is specified).
     """
-    if results_dir is not None:
-        source_dir = results_dir
-    else:
-        project_config = get_project_config()
-        source_dir = project_config.results_dir
+    source_dir = results_dir
 
     click.echo(f"Merging from {source_dir} into {merged_campaign_dir}...")
     try:
@@ -379,8 +341,8 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
 
 
 @results.command(name='generate-metadata')
-@click.option('--results-dir', '-r', default=None,
-              help='Directory containing run results (uses project results dir if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(),
+              help='Directory containing run results.')
 @click.option('--dot-pdf', is_flag=True, default=False,
               help='Also generate Graphviz DOT and PDF visualizations of the FAIR metadata graph.')
 def generate_metadata_cmd(results_dir, dot_pdf):
@@ -392,17 +354,7 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     ``metadata.dot`` and renders ``metadata.pdf`` via Graphviz
     (requires ``dot`` on PATH).
 
-    Requires project initialization with ``vast init`` first (unless
-    ``--results-dir`` is specified).
     """
-    if results_dir is None:
-        raw_config = ProjectConfig.load()
-        if not raw_config or not raw_config.results_dir:
-            raise click.ClickException(
-                "Project not initialized. Run 'vast init <config-file>' first."
-            )
-        results_dir = raw_config.results_dir
-
     results_path = Path(results_dir)
     if not results_path.is_dir():
         raise click.ClickException(f"Results directory does not exist: {results_dir}")

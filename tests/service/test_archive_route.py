@@ -43,8 +43,6 @@ def _local_transport(tmp_path) -> LocalTransport:
 
 @pytest.fixture(name="env")
 def _env(monkeypatch, tmp_path):
-    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
-                        staticmethod(lambda *a, **k: None))
     transport = _local_transport(tmp_path)
     root = tmp_path / "results" / _CAMPAIGN
     (root / "_config").mkdir(parents=True)
@@ -105,8 +103,6 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     workspace: a service with no workspaces configured answers 501 for project routes, and an
     archive download must not be dragged into that.
     """
-    monkeypatch.setattr("robovast.client.project_config.ProjectConfig.load",
-                        staticmethod(lambda *a, **k: None))
     lt = LocalTransport.__new__(LocalTransport)
     lt._campaigns = {}
     lt._lock = threading.Lock()

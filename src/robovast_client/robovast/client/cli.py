@@ -36,8 +36,8 @@ from importlib.metadata import entry_points
 import click
 
 from robovast.client.errors import handle_cli_exception
-from robovast.client.logging_config import (get_logger, setup_logging,
-                                            setup_logging_from_project_config)
+from robovast.client.logging_config import (get_logger, setup_default_logging,
+                                            setup_logging)
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_chunks
@@ -54,8 +54,7 @@ def configure_logging(ctx, param, value):
         ctx.ensure_object(dict)
         ctx.obj['log_level'] = value
     else:
-        # No log level specified, use project config
-        setup_logging_from_project_config()
+        setup_default_logging()
     return value
 
 
@@ -83,33 +82,31 @@ def _print_version(ctx, param, value):  # pylint: disable=unused-argument
               callback=configure_logging,
               is_eager=True,
               expose_value=False)
-@click.option('--vast-file', '-V', type=click.Path(exists=True), default=None,
-              help='Override the .vast configuration file (instead of project default)')
 @click.option('--version', is_flag=True, is_eager=True, expose_value=False,
               callback=_print_version,
               help='Show the version and exit.')
 @click.pass_context
-def cli(ctx, vast_file):
+def cli(ctx):
     """VAST - RoboVAST Command-Line Interface.
 
     Main command for managing variations, executing scenarios,
     and analyzing results in the RoboVAST framework.
 
-    The global ``--log-level`` option can be used to control logging verbosity
-    for any command, overriding the project configuration.
+    The global ``--log-level`` option controls logging verbosity for any command.
 
-    Use ``--vast-file`` / ``-V`` to temporarily use a different ``.vast``
-    configuration file instead of the one stored in the project.
+    Every command names its own input: there is no ambient project, so nothing in a
+    parent directory of your CWD decides which ``.vast`` a command reads or where its
+    results go. A campaign runs a *workspace's* project (``vast workspace run``); the
+    local verbs take the file as an argument (``vast config list my.vast``).
 
     Every command reads ``./.env`` first, so anything RoboVAST takes from the
     environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
     be kept there instead of exported by hand.
 
     Examples:
-      vast --log-level DEBUG execution cluster cleanup
-      vast --log-level INFO init config.yaml
-      vast -V other.vast config list
-      vast -V other.vast exec cluster run
+      vast --log-level DEBUG cluster cleanup
+      vast config list my.vast
+      vast workspace run my-experiment my.vast --description "pilot"
 
     See ``vast --help`` for a list of available commands.
     """
@@ -124,10 +121,7 @@ def cli(ctx, vast_file):
     # python-dotenv into a distribution whose whole point is three dependencies.
     run_startup_hooks()
 
-    # Ensure context object exists
     ctx.ensure_object(dict)
-    if vast_file:
-        ctx.obj['vast_file'] = os.path.abspath(vast_file)
 
 
 @cli.command()

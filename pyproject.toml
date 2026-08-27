@@ -138,7 +138,6 @@ env-file = "robovast.common.env_file:load_env_file"
 # The verbs that need the core -- a service implementation, Docker, the UI build, the
 # results reader. They attach to the client's root group like any other plugin, so a
 # client-only install simply does not have them rather than having them and failing.
-init = "robovast.common.cli.core_commands:init"
 serve = "robovast.common.cli.core_commands:serve"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"

@@ -20,7 +20,6 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
@@ -300,6 +299,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
+                 vast_path=None,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -402,13 +402,11 @@ def setup_server(config_name=None, list_configs=False, force=False,
     cluster_config = get_cluster_config(config_name)
 
     # Node labels are the only thing this deploy reads from a .vast, and it reads them
-    # ONLY from a config the operator named with 'vast -V <file>'. Never from an ambient
-    # project: a .robovast_project is discovered by walking up to the filesystem root,
-    # so a project one directory — or ten — above a CWD that has nothing to do with
-    # this cluster would otherwise decide which nodes its pods may run on, or (via a
-    # stale pointer) fail the deploy over a file the operator never mentioned.
+    # ONLY from a config the operator named with '--vast <file>'. There is no ambient
+    # project to fall back on and there must not be one: which nodes a cluster's pods
+    # may run on is not a thing a file in some parent directory of the CWD gets to decide.
     jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
-        get_vast_file_override())
+        vast_path)
     if jobs_node_labels:
         logger.info("Job node labels (ResourceFlavor): %s", jobs_node_labels)
     if control_node_labels:
