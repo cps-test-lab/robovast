@@ -19,13 +19,25 @@ def test_a_probes_bags_are_not_converted(tmp_path):
     was ever going to read. Seen on a live campaign: 54 bags for a 50-run campaign, one
     error, and the error was the dead probe's.
     """
-    from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS
+    from robovast.common.campaign_data import PROBE_DIR
 
     root = _tree(tmp_path, "goal-1/0/rosbag2", "goal-1/1/rosbag2",
-                 "_calibration/node-a/rosbag2", "_jobs/job-0/rosbag2")
-    found = find_rosbags(str(root), skip_names=RESERVED_CAMPAIGN_DIRS)
+                 "_calibration/node-a/rosbag2", "_jobs/batch-0/job-0/logs/rosout_bag")
+    found = find_rosbags(str(root), skip_names=[PROBE_DIR])
     assert len(found) == 2, found
-    assert all("_calibration" not in f and "_jobs" not in f for f in found)
+    assert all("_calibration" not in f for f in found)
+
+
+def test_the_jobs_directory_is_not_a_thing_to_prune(tmp_path):
+    """``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's REAL log bag. Pruning the
+    reserved set wholesale would drop every /rosout record in the campaign while the
+    conversion still exited zero -- worse than the failure the prune was added to fix."""
+    from robovast.common.campaign_data import PROBE_DIR
+
+    root = _tree(tmp_path, "_jobs/batch-0/job-0/logs/rosout_bag",
+                 "_calibration/node-a/logs/rosout_bag")
+    found = find_rosbags(str(root), bag_dir_name="logs/rosout_bag", skip_names=[PROBE_DIR])
+    assert len(found) == 1 and "_jobs" in found[0]
 
 
 def test_without_a_skip_list_nothing_is_pruned(tmp_path):
@@ -38,5 +50,5 @@ def test_without_a_skip_list_nothing_is_pruned(tmp_path):
 def test_ordinary_run_directories_are_untouched(tmp_path):
     """The prune must not reach anything a campaign actually produced."""
     root = _tree(tmp_path, "goal-1/0/rosbag2", "goal-2/0/rosbag2", "_config/x")
-    found = find_rosbags(str(root), skip_names=("_config", "_calibration"))
+    found = find_rosbags(str(root), skip_names=("_calibration",))
     assert len(found) == 2

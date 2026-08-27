@@ -43,6 +43,7 @@ import logging
 import re
 import time
 
+from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import resolve_sidecar_image
 
 from .kube_client import api_transport_errors
@@ -286,7 +287,29 @@ _POSTPROC_LOG = "/out/_execution/postprocessing.log"
 _ROSBAG_PROVENANCE = "/out/_execution/rosbags_provenance.json"
 
 
-def _conversion_script(rosbag_cmds: list, force: bool) -> str:
+def _mirror_excludes() -> str:
+    """Keep the calibration probes out of the Job's copy of the campaign tree.
+
+    The alternative -- mirror everything and tell the scanner to skip -- was the first fix
+    and it is the weaker one. What the Job never receives it cannot convert, cannot fail
+    on, and does not pay to download; and the rule lives in the one place that decides what
+    this Job is given, rather than in a flag a second lane can forget to pass. That
+    forgetting is not hypothetical: ``--tolerate-under`` had exactly this shape and held
+    off-cluster only, and the skip list repeated the omission here.
+
+    A probe is deliberately not a run, so its bag is not campaign data. Converting it cost
+    a bag's work per node, and an interrupted probe's unfinalized bag failed the whole step
+    on something nothing was ever going to read.
+
+    **Only ``_calibration``, not every reserved directory.** The others hold data this Job
+    needs: ``_jobs/<batch>/<job>/logs/rosout_bag`` is each job's real log bag, so excluding
+    the set wholesale would silently drop every ``/rosout`` record in the campaign. The two
+    look interchangeable from their names alone and are not.
+    """
+    return f"--exclude {_shquote(PROBE_DIR + '/*')} "
+
+
+def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=()) -> str:
     """The main container's shell: convert each batch, then mirror /out up.
 
     All conversion stdout/stderr is teed into ``_POSTPROC_LOG`` so it becomes the
@@ -381,7 +404,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     generated the conversion command, so the driver/script version skew that produced
     the ``--output-root`` failure cannot occur on any exec variant. The scripts are
     self-contained (stdlib + ROS2 libs + one sibling, no ``robovast`` import) and small
-    (well under the 1 MiB ConfigMap limit), so a plain text ConfigMap suffices.
+    (well under the 1 MIB ConfigMap limit), so a plain text ConfigMap suffices.
     """
     from importlib.resources import files  # noqa: PLC0415
 
@@ -523,7 +546,8 @@ def build_manifest(campaign_id: str, image: str, rosbag_cmds: list, s3: tuple,
                                         'chmod +x /tools/mc; '
                                         'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" '
                                         '"$S3_SECRET_KEY" && '
-                                        'mc mirror "mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
+                                        'mc mirror ' + _mirror_excludes() +
+                                        '"mystore/$S3_BUCKET/$S3_CAMPAIGN_PREFIX" /bags/'],
                             "env": s3_env,
                             "volumeMounts": [
                                 {"name": "tools", "mountPath": "/tools"},
