@@ -190,6 +190,9 @@ resource_usage = "robovast.results_processing.postprocessing_plugins:ResourceUsa
 rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
 run_log = "robovast.results_processing.postprocessing_plugins:RunLog"
 
+[tool.poetry.plugins."robovast.health_checks"]
+nav2_control_loop_rate = "robovast.results_processing.health_checks.nav2:ControlLoopRate"
+
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
 zenodo = "robovast.results_processing.publication_plugins.zenodo:Zenodo"
