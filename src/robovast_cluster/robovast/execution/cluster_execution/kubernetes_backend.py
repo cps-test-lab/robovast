@@ -1142,8 +1142,8 @@ class BatchJobRunner:
         sizing, which is what a cluster with calibration off does anyway. Losing an
         optimisation must never cost the campaign.
         """
-        from .node_calibration import (NodeCalibration, probe_output_dir,  # noqa: PLC0415
-                                       read_probe_measurement)
+        from .node_calibration import (NodeCalibration, probe_completed,  # noqa: PLC0415
+                                       probe_output_dir, read_probe_measurement)
 
         admission = self.admission
         if admission is None or not self._probes:
@@ -1170,7 +1170,11 @@ class BatchJobRunner:
                 logger.warning("Batch %s: could not read probe for node %s: %s",
                                self._batch_tag, node_id, exc)
                 measured = {}
-            if not calibration.record(node_id, key, measured, completed=bool(measured)):
+            # The scenario's own verdict, not "did we read a file". The gate was handed
+            # bool(measured) -- true of any probe that produced a CSV at all, which the
+            # monitor writes whether or not the run got anywhere -- so it caught nothing.
+            completed = probe_completed(lambda k: storage.read_object(bucket_name, k), prefix)
+            if not calibration.record(node_id, key, measured, completed=completed):
                 calibration.abandon(node_id, key)
 
     def _probe_container_limits(self) -> dict:

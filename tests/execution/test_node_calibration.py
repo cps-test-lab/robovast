@@ -563,3 +563,32 @@ def test_without_a_limit_nothing_is_discarded():
 
     rows = [{"timestamp": str(i), "cpu_percent": "150"} for i in range(40)]
     assert container_cpu_profile(rows)["samples"] == 40
+
+
+def test_the_completion_gate_reads_the_scenarios_verdict_not_its_own_output():
+    """The gate was wired to a tautology and so caught nothing.
+
+    ``record`` took ``completed`` and was handed ``bool(measured)`` -- "completed if we
+    measured something" -- which is true of every probe that produced a CSV at all. The
+    monitor writes that CSV whether or not the run got anywhere, so a probe whose scenario
+    died ten seconds in passed the check it was built to fail.
+
+    test.xml is the honest signal: a run writes it when its scenario reaches a verdict, and
+    only then. Pass or fail is not the question -- a run that failed after doing its work
+    still measured the resources that work needed.
+    """
+    from robovast.execution.cluster_execution.node_calibration import probe_completed
+
+    store = {"_calibration/node-a/test.xml": b"<testsuite/>"}
+    assert probe_completed(store.get, "_calibration/node-a/") is True
+    assert probe_completed(store.get, "_calibration/node-b/") is False
+
+
+def test_an_unreadable_verdict_is_not_completed():
+    """A storage blip must cost the optimisation, never let a fragment size a node."""
+    from robovast.execution.cluster_execution.node_calibration import probe_completed
+
+    def _boom(_key):
+        raise OSError("object store said no")
+
+    assert probe_completed(_boom, "p/") is False
