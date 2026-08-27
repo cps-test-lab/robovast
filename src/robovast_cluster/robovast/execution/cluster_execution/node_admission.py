@@ -409,6 +409,15 @@ class AdmissionController:
         Called from a ``finally``, because a campaign that raises on its way out would
         otherwise leak its reservations for the life of the process -- shrinking every other
         campaign's usable capacity, invisibly and cumulatively.
+
+        **The calibration survives, and that is the point.** This runs at the end of every
+        BATCH -- a search builds a fresh runner per batch -- so dropping the calibration here
+        made every batch re-probe every node. Measured on a live search: four probe runs per
+        batch instead of per campaign, and the figures moved between batches (one node's
+        system-under-test went 1.820 to 1.106 cores), so runs in different batches of the same
+        campaign were sized differently. That defeats the property calibration exists to
+        provide, which is that every run of a campaign meets the same allocation.
+        :meth:`forget_calibration` is what ends it, at the end of the campaign.
         """
         with self._lock:
             keys = [k for k, i in self._items.items() if i.owner == owner]
@@ -417,10 +426,19 @@ class AdmissionController:
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
-            # Its calibration goes too: measured under this campaign's contention, for this
-            # campaign's containers, and deliberately never reused by the next one.
-            self._calibrations.pop(owner, None)
             return len(keys)
+
+    def forget_calibration(self, owner: str) -> bool:
+        """Drop an owner's calibration, once its campaign is over. Returns whether there was one.
+
+        Separate from :meth:`cancel` because their lifetimes differ: reservations are a
+        batch's, calibration is a campaign's. Kept rather than left to leak because the
+        figures are deliberately not reusable -- measured under THIS campaign's contention,
+        for THIS campaign's containers -- so a later campaign must measure afresh rather than
+        inherit numbers taken under a load it never met.
+        """
+        with self._lock:
+            return self._calibrations.pop(owner, None) is not None
 
     def node_ids(self) -> list:
         """The identity of every node that can currently be pinned to.
