@@ -47,6 +47,19 @@ def test_the_pool_is_written_even_when_there_is_none():
         assert name in env
 
 
+def test_per_node_calibration_is_written_explicitly():
+    """On by default, and STATED rather than left to the absence of a variable, so a reader of
+    the Deployment can see what the cluster is set up to do. Turning it off writes "0" for the
+    same reason a cleared node pool writes "": the command is the whole truth about the
+    cluster, so a setting that was changed must be visible as changed."""
+    from robovast.execution.cluster_execution.node_calibration import CALIBRATION_ENV
+
+    assert _env()[CALIBRATION_ENV] == "1"
+    assert _env(node_calibration=False)[CALIBRATION_ENV] == "0"
+    for name in REQUIRED:
+        assert name in _env(node_calibration=False)
+
+
 def test_the_pool_round_trips():
     import json
 

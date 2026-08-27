@@ -241,7 +241,8 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
-                 jobs_node_labels=None, control_node_labels=None, cpu_governor=False,
+                 jobs_node_labels=None, control_node_labels=None, cpu_governor=None,
+                 node_calibration=True,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -367,7 +368,14 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     from .node_governor import ensure_cpu_governor  # noqa: PLC0415
 
-    ensure_cpu_governor(_k8s_client.AppsV1Api(), namespace, cpu_governor,
+    # None means "nobody said": on by default, and a cluster that refuses it is warned
+    # about rather than failed, so setup stays possible on managed Kubernetes. Naming the
+    # flag either way is explicit and is obeyed exactly -- including the refusal becoming an
+    # error, because someone who asked for a fixed clock and silently did not get one would
+    # go on to trust measurements taken on a scaling one.
+    ensure_cpu_governor(_k8s_client.AppsV1Api(), namespace,
+                        True if cpu_governor is None else cpu_governor,
+                        explicit=cpu_governor is not None,
                         node_selector=jobs_node_labels)
 
     # No longer ordered against a queue install, but still first: a node advertises no GPU
@@ -481,7 +489,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # failed with "the service must be deployed by 'vast exec cluster setup'".
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   job_node_labels=jobs_node_labels, **service_kwargs)
+                   job_node_labels=jobs_node_labels,
+                   node_calibration=node_calibration, **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull

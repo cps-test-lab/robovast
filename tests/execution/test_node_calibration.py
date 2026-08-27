@@ -507,18 +507,24 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
     assert r._node_figures("fast") is None, "no calibration yet means declared sizing"
 
 
-def test_per_node_sizing_is_off_unless_switched_on(monkeypatch):
-    """The default, and the reason for it: a probe runs before the campaign places work, so
-    it measures an idle node. Measured on 2026-08-27 that read the system under test 2x LOW
-    and the infrastructure 3x HIGH -- starving nav2 below its floor while giving back the
-    packing gain. Placement stands without it; sizing waits for inputs it can trust."""
+def test_per_node_sizing_is_on_unless_switched_off(monkeypatch):
+    """The default, and the evidence that flipped it.
+
+    It was OFF first, because a probe runs before the campaign places work and so measures an
+    idle node -- every probe read low, and on one node the probe could not finish at all,
+    costing that node the whole campaign. Both causes turned out to be wake-from-idle latency
+    on a quiet machine rather than anything about calibration; with those fixed, a matched
+    pair of 200-run campaigns measured ~8% faster with ZERO control-loop misses in EITHER arm.
+    The zero misses are what settles it: the calibrated ceilings -- as low as 0.53 cores
+    against a declared 3.0 -- did not starve the stack, which is the failure this default was
+    protecting against."""
     from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_ENV,
                                                                        calibration_applies)
 
     monkeypatch.delenv(CALIBRATION_ENV, raising=False)
-    assert calibration_applies(50, 4) is False, "a big campaign still calibrates nothing"
-    monkeypatch.setenv(CALIBRATION_ENV, "1")
-    assert calibration_applies(50, 4) is True
+    assert calibration_applies(50, 4) is True, "unset means the configured default: on"
+    monkeypatch.setenv(CALIBRATION_ENV, "0")
+    assert calibration_applies(50, 4) is False, "and it must remain switchable off"
 
 
 # -- readings a container could not have produced ------------------------------------------

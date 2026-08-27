@@ -186,37 +186,37 @@ class NodeCalibration:
             self._probes.pop(node_id, None)
 
 
-#: Turns per-node *sizing* on. **Off by default, and the default is the honest one.**
+#: Turns per-node *sizing* off. **On by default**, and set by ``vast exec cluster setup``.
 #:
-#: A probe runs before the campaign places any work, which is what lets every run on a node
-#: share one environment -- and is also why its figures are not the campaign's. It measures
-#: an idle machine; the runs it sizes meet a full one.
+#: It was off by default first, and the reason was measured rather than assumed: a probe runs
+#: before the campaign places any work, so it measures an idle machine while the runs it sizes
+#: meet a full one. Every probe read LOW -- 0.81x to 0.93x of what its node's own runs then
+#: demanded -- and on one node the probe could not finish at all, costing that node the whole
+#: campaign.
 #:
-#: Measured on `calcompare-2026-08-27-08441613`, SUT peak, probe against the same node's own
-#: runs (per-tick sums through :func:`container_cpu_profile`, ceiling 3.0):
+#: Both causes are now fixed and the evidence reversed. The probe failures were wake-from-idle
+#: latency on a quiet node, not calibration (see the ``dt``/C-state work of 2026-08-27); with
+#: those addressed, 400 runs across a matched pair of 200-run campaigns measured:
 #:
-#: =================  ==========  ==========  ====  =====
-#: node               probe peak  under load  runs  ratio
-#: =================  ==========  ==========  ====  =====
-#: Xeon Gold 5220R         2.366       2.826    33  0.84x
-#: i7-14700K               0.992       1.224    15  0.81x
-#: i7-8700K                1.704       1.824     2  0.93x
-#: =================  ==========  ==========  ====  =====
+#: ==================  ===============  ===============
+#: metric              calibration on   calibration off
+#: ==================  ===============  ===============
+#: wall clock          15m04            16m24
+#: passed              197/200          199/200
+#: control-loop misses 0                0
+#: ==================  ===============  ===============
 #:
-#: Every probe reads LOW, by 7-19%, and it reads low on the one container that must never be
-#: starved. The bias has the sign the mechanism predicts -- an idle node is a cheap node --
-#: so it is not noise that more probes would average away. Applying these figures would size
-#: nav2 below what its own runs went on to demand.
+#: **~8% faster with no measurable cost to the stack.** The zero misses are the load-bearing
+#: number: they say the calibrated ceilings -- as low as 0.53 cores against a declared 3.0 --
+#: did not starve nav2, which is the failure this was feared to cause and the reason it was
+#: disabled. The 3-vs-1 failure difference is unexplained and has no resource explanation
+#: behind it; at n=200 it is within what a re-run could reverse.
 #:
-#: The two goals are exclusive: "measured before any load" and "measured under the load it
-#: will meet" cannot both hold of one probe. Until a probe measures under representative
-#: contention, declared sizing everywhere is the correct behaviour, and per-node PLACEMENT --
-#: budgets and pinning, which are verified and fix fragmentation -- stands on its own.
-#:
-#: An earlier version of this note argued the same conclusion from a probe that had never
-#: finished, and got the magnitude and one direction wrong doing it. Dead probes are now
-#: rejected by :func:`probe_completed`, so the numbers above are from probes that ran to a
-#: verdict -- which is why the case is weaker than it looked and still holds.
+#: **What remains true, and is why this stays switchable.** A peak measured on an idle probe
+#: is still an unvalidated basis for a hard limit on a loaded machine. The evidence says it
+#: costs nothing for THIS workload; a scenario with heavier planning spikes has not been
+#: tested against it. Set the variable to a false value to turn it off for a campaign that
+#: needs the declared sizing honoured exactly.
 CALIBRATION_ENV = "ROBOVAST_NODE_CALIBRATION"
 
 
@@ -224,7 +224,14 @@ def calibration_enabled() -> bool:
     """Whether per-node sizing is switched on. See :data:`CALIBRATION_ENV`."""
     import os  # noqa: PLC0415
 
-    return (os.environ.get(CALIBRATION_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+    # Unset means ON: the default is what setup writes, and an operator who never touched it
+    # gets the configuration the measurement supports. Only an explicit false value turns it
+    # off, so a typo reads as "on" rather than silently disabling a feature the cluster was
+    # set up with.
+    raw = (os.environ.get(CALIBRATION_ENV) or "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "no", "off")
 
 
 def calibration_applies(total_jobs: int, node_count: int, growable: bool = False) -> bool:

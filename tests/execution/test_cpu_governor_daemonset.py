@@ -107,7 +107,21 @@ def test_an_explicit_request_that_cannot_be_honoured_raises():
     operator would then trust measurements taken on a scaling one."""
     apps = _Apps(create_error=_ApiException(403, "privileged containers are not allowed"))
     with pytest.raises(RuntimeError, match="could not set the CPU governor"):
-        ensure_cpu_governor(apps, "default", True)
+        ensure_cpu_governor(apps, "default", True, explicit=True)
+
+
+def test_the_default_warns_and_carries_on_where_the_cluster_refuses(caplog):
+    """It is ON by default, so a refusal must not fail setup: managed Kubernetes forbids
+    privileged pods, and a default that failed there would make `setup` impossible on those
+    clusters over an improvement nobody asked for. The refusal is still reported, and a
+    campaign whose nodes still scale is caught by the `cpu_governor_scaling` advice -- so
+    warning is not the same as silence."""
+    import logging
+
+    apps = _Apps(create_error=_ApiException(403, "privileged containers are not allowed"))
+    with caplog.at_level(logging.WARNING):
+        assert ensure_cpu_governor(apps, "default", True) is False
+    assert "could not set the CPU governor" in caplog.text
 
 
 def test_asking_for_nothing_removes_a_previously_configured_daemonset():
@@ -148,3 +162,30 @@ def test_a_plain_setup_installs_nothing():
     apps = _Apps()
     assert ensure_cpu_governor(apps, "default", False) is False
     assert apps.created == []
+
+
+# -- per-node calibration default ----------------------------------------------------------
+
+def test_calibration_is_on_unless_explicitly_disabled(monkeypatch):
+    """Flipped to on after a matched pair of 200-run campaigns: ~8% faster with ZERO
+    control-loop misses in either arm, so the calibrated ceilings -- as low as 0.53 cores
+    against a declared 3.0 -- did not starve the stack, which is the failure that had kept it
+    off. See node_calibration's module docstring for the table.
+
+    Unset reads as ON so an operator who never touched it gets what setup configured, and a
+    typo reads as ON rather than silently disabling a feature the cluster was set up with --
+    the same direction of safety the rest of this file follows.
+    """
+    from robovast.execution.cluster_execution.node_calibration import (CALIBRATION_ENV,
+                                                                       calibration_enabled)
+
+    monkeypatch.delenv(CALIBRATION_ENV, raising=False)
+    assert calibration_enabled() is True
+
+    for off in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv(CALIBRATION_ENV, off)
+        assert calibration_enabled() is False, off
+
+    for on in ("1", "true", "on", "", "garbage"):
+        monkeypatch.setenv(CALIBRATION_ENV, on)
+        assert calibration_enabled() is True, on
