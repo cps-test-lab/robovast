@@ -362,3 +362,27 @@ def probe_parameter_documents(documents, node_id: str) -> list:
                 params["_output_dir"] = probe_output_dir(node_id)
         out.append(doc)
     return out
+
+
+#: What a run writes when its scenario reaches a verdict, whatever that verdict is.
+PROBE_VERDICT_FILE = "test.xml"
+
+
+def probe_completed(read, prefix: str) -> bool:
+    """Did the probe's scenario actually reach a verdict?
+
+    **The gate this exists for was wired to a tautology.** ``record`` took ``completed`` and
+    was handed ``bool(measured)`` -- "completed if we measured something" -- which is true of
+    every probe that produced a CSV at all, including one whose scenario died ten seconds in.
+    The monitor writes that CSV regardless of the outcome, so the check that was supposed to
+    catch a fragment of a run caught nothing.
+
+    ``test.xml`` is the honest signal: a run writes it when its scenario reaches a verdict,
+    and only then. Pass or fail is not the question -- a run that failed after doing its work
+    still measured the resources that work needed -- but a run that never got there did not.
+    """
+    try:
+        return bool(read(f"{prefix}{PROBE_VERDICT_FILE}"))
+    except Exception as exc:  # noqa: BLE001 - unreadable is not completed
+        logger.debug("probe verdict at %s unreadable: %s", prefix, exc)
+        return False
