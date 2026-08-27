@@ -229,12 +229,16 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
             and node_count > 0 and total_jobs > node_count)
 
 
-def container_cpu_profile(rows) -> dict:
+def container_cpu_profile(rows, limit_cores=None) -> dict:
     """``{"sustained": cores, "peak": cores}`` from one ``resource_usage_<container>.csv``.
 
     *rows* are the CSV's dict rows. Summed **per tick before aggregating**, because a row is
     one process name and a container is the whole stack of them: taking the max of the rows
     would report the busiest single process and size the container for a fraction of itself.
+
+    *limit_cores* is the container's declared ceiling. Samples above it are discarded as
+    impossible -- see below; pass it whenever it is known, because the peak is unusable
+    without it.
 
     ``sustained`` is the 95th percentile of the per-tick totals and ``peak`` the largest. The
     pair exists because one number cannot serve both roles -- measured on the shipped
@@ -255,13 +259,30 @@ def container_cpu_profile(rows) -> dict:
     if not per_tick:
         return {}
     totals = sorted(v / 100.0 for v in per_tick.values())
+    if limit_cores:
+        # **A container cannot exceed its own quota, so a sample that says it did is
+        # measurement error -- not a peak.** CFS enforces the quota per ~100ms period, and
+        # these are one-second samples, so the average over one cannot exceed the limit.
+        #
+        # They are there, and they are large. The monitor's CSV covers the container's whole
+        # life including bring-up, where psutil reports a newly-seen process's average since
+        # it started rather than since the last sample -- and a ROS stack spawns dozens of
+        # processes at once. Measured on a 3-core container: 10.4 "cores" outside the trial
+        # window against 2.82 inside it. Every other consumer of this data filters on
+        # ``in_window``, which postprocessing adds later and the raw file does not carry, so
+        # calibration is the one reader that meets the artifact -- and it takes the MAX,
+        # which is the worst possible statistic to hand it. Sizing a node from that reserved
+        # 14.4 cores for a 3-core container, and 35 on another.
+        totals = [t for t in totals if t <= limit_cores]
+        if not totals:
+            return {}
     idx = max(0, min(len(totals) - 1, int(round(0.95 * (len(totals) - 1)))))
     # ``samples`` travels with the figures so the caller can refuse a measurement drawn from
     # too little of a run -- see MIN_PROBE_SAMPLES. A short probe is not a small container.
     return {"sustained": totals[idx], "peak": totals[-1], "samples": len(totals)}
 
 
-def read_probe_measurement(read, prefix: str, containers) -> dict:
+def read_probe_measurement(read, prefix: str, containers, limits=None) -> dict:
     """``{container: profile}`` from a finished probe's own CSVs.
 
     *read* is ``(key) -> bytes | None``, so this needs no storage client and can be tested
@@ -283,6 +304,7 @@ def read_probe_measurement(read, prefix: str, containers) -> dict:
 
     out = {}
     for name, filename in (containers or {}).items():
+        limit = (limits or {}).get(name)
         try:
             raw = read(f"{prefix}{filename}")
         except Exception as exc:  # noqa: BLE001 - an unreadable probe is a missed
@@ -295,7 +317,7 @@ def read_probe_measurement(read, prefix: str, containers) -> dict:
         except Exception as exc:  # noqa: BLE001 - see above
             logger.debug("probe file %s unparseable: %s", filename, exc)
             continue
-        profile = container_cpu_profile(rows)
+        profile = container_cpu_profile(rows, limit_cores=limit)
         if profile:
             out[name] = profile
     return out

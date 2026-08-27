@@ -519,3 +519,47 @@ def test_per_node_sizing_is_off_unless_switched_on(monkeypatch):
     assert calibration_applies(50, 4) is False, "a big campaign still calibrates nothing"
     monkeypatch.setenv(CALIBRATION_ENV, "1")
     assert calibration_applies(50, 4) is True
+
+
+# -- readings a container could not have produced ------------------------------------------
+
+def test_a_sample_above_the_containers_own_quota_is_discarded():
+    """A cgroup cannot exceed its quota: CFS enforces it per ~100ms period and these are
+    one-second samples, so a sample above the limit is measurement error, not a peak.
+
+    They are real and they are large. The monitor's CSV covers the container's whole life
+    including bring-up, where psutil reports a newly-seen process's average since it STARTED
+    rather than since the last sample -- and a ROS stack spawns dozens at once. Measured on a
+    3-core container: 10.4 "cores" outside the trial window against 2.82 inside it.
+
+    Every other consumer filters on in_window, which postprocessing adds and the raw file does
+    not carry, so calibration is the one reader that meets the artifact -- and it takes the
+    MAX. Unclamped it sized a node at 14.4 cores for a 3-core container, and 35 on another.
+    """
+    from robovast.execution.cluster_execution.node_calibration import container_cpu_profile
+
+    rows = [{"timestamp": "boot", "cpu_percent": "1040"}]
+    rows += [{"timestamp": str(i), "cpu_percent": "150"} for i in range(150)]
+
+    assert container_cpu_profile(rows)["peak"] == pytest.approx(10.4), "unfiltered, as found"
+    clamped = container_cpu_profile(rows, limit_cores=3.0)
+    assert clamped["peak"] == pytest.approx(1.5), "the impossible sample is gone"
+    assert clamped["samples"] == 150, "and it is not counted as a sample either"
+
+
+def test_a_probe_that_is_nothing_but_impossible_samples_measures_nothing():
+    """Better no figure than one drawn entirely from artifacts: the node stays on declared
+    sizing, which is merely un-optimised."""
+    from robovast.execution.cluster_execution.node_calibration import container_cpu_profile
+
+    rows = [{"timestamp": str(i), "cpu_percent": "900"} for i in range(50)]
+    assert container_cpu_profile(rows, limit_cores=3.0) == {}
+
+
+def test_without_a_limit_nothing_is_discarded():
+    """The limit is what makes the peak usable, so it is passed wherever it is known -- but
+    an unknown limit must not silently drop real data."""
+    from robovast.execution.cluster_execution.node_calibration import container_cpu_profile
+
+    rows = [{"timestamp": str(i), "cpu_percent": "150"} for i in range(40)]
+    assert container_cpu_profile(rows)["samples"] == 40

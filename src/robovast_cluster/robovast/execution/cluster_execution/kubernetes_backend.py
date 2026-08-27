@@ -1182,13 +1182,34 @@ class BatchJobRunner:
             try:
                 measured = read_probe_measurement(
                     lambda k: storage.read_object(bucket_name, k), prefix,
-                    self._probe_container_files())
+                    self._probe_container_files(), limits=self._probe_container_limits())
             except Exception as exc:  # noqa: BLE001 - see docstring
                 logger.warning("Batch %s: could not read probe for node %s: %s",
                                self._batch_tag, node_id, exc)
                 measured = {}
             if not calibration.record(node_id, key, measured, completed=bool(measured)):
                 calibration.abandon(node_id, key)
+
+    def _probe_container_limits(self) -> dict:
+        """``{container: declared cpu ceiling}`` -- what each container could at most use.
+
+        Handed to the measurement so a reading above a container's own quota is discarded as
+        impossible rather than believed as a peak. Without it the probe's bring-up samples
+        size a node from numbers no cgroup could produce.
+        """
+        from robovast.common.quantity import to_cores  # noqa: PLC0415
+
+        limits = {}
+        plan = getattr(self, "plan", None)
+        for container in (getattr(plan, "containers", None) or ()):
+            declared = resolve_resources(container.resources or {}, self.kube_context)
+            ceiling = declared.get("cpu_limit") or declared.get("cpu")
+            cores = to_cores(ceiling) if ceiling else None
+            if cores:
+                limits[container.name] = cores
+                if container is getattr(plan, "main", None):
+                    limits[MAIN_CONTAINER_NAME] = cores
+        return limits
 
     def _probe_container_files(self) -> dict:
         """``{container: resource_usage file}`` for every container a job runs.
