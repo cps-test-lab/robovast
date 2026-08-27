@@ -477,20 +477,18 @@ def test_the_created_manifest_uses_the_same_figures_the_queue_admitted_against()
     from robovast.execution.cluster_execution import kubernetes_backend as kb
     from robovast.execution.cluster_execution.node_calibration import NodeCalibration
 
-    class _Admission:
-        def __init__(self):
-            self._cal = NodeCalibration()
-            self._cal.claim_probe("fast", "p")
-            self._cal.record("fast", "p", {"sut": {"sustained": 1.0, "peak": 2.0,
-                                                   "samples": 200}})
-
-        def calibration(self, owner, factory=None):
-            return self._cal
+    cal = NodeCalibration()
+    cal.claim_probe("fast", "p")
+    cal.record("fast", "p", {"sut": {"sustained": 1.0, "peak": 2.0, "samples": 200}})
 
     r = kb.BatchJobRunner()
     r.campaign = "camp-2026-07-17-120000"
-    r.admission = _Admission()
+    # Held on the runner, NOT fetched from the queue per lookup: one caller of this is the
+    # sizing callback, which the queue invokes while holding its own lock.
+    r._calibration = cal
 
     assert r._node_figures("fast"), "the calibrated node has figures"
     assert r._node_figures("other") is None, "an uncalibrated one has none"
     assert r._node_figures(None) is None, "and an unpinned job has no node to look up"
+    r._calibration = None
+    assert r._node_figures("fast") is None, "no calibration yet means declared sizing"

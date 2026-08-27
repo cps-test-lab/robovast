@@ -427,3 +427,45 @@ def test_node_ids_lists_only_what_can_be_pinned_to():
     p = FakeProvider(per_node=[("named", 8.0, 10240 * MiB, 0),
                                (None, 8.0, 10240 * MiB, 0)])
     assert _controller(p).node_ids() == ["named"]
+
+
+def test_the_sizing_callback_may_not_reenter_the_queue():
+    """A callback that asks the queue something must not deadlock it.
+
+    ``drain`` calls ``sizing_for_node`` and ``accepts_node`` WHILE HOLDING the queue's lock,
+    so with a plain Lock any callback that touches the queue blocks on a lock its own thread
+    already owns. That hung a live campaign with nothing to go on: the batch loop never
+    finished its first iteration, so nothing was created, nothing was logged, and it sat
+    there until the no-progress deadline called it stalled.
+
+    The caller that did it has been changed not to, but the lock is reentrant now so the
+    whole class is gone rather than the one instance. Pinned with a callback that does
+    exactly what the broken one did; without the fix this hangs rather than fails, hence the
+    watchdog.
+    """
+    import threading
+
+    p = FakeProvider(per_node=[("n1", 8.0, 10240 * MiB, 0)])
+    c = _controller(p)
+
+    def _reenters(node_id):
+        c.node_ids()          # any public method: they all take the lock
+        return None
+
+    c.submit("a", [("a-0", JobSizing(2.0, MiB), lambda n=None: None)],
+             started_at=0.0, sizing_for_node=_reenters)
+
+    done = threading.Event()
+    err = []
+
+    def _run():
+        try:
+            c.drain()
+        except Exception as exc:  # noqa: BLE001
+            err.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    assert done.wait(timeout=5), (
+        "drain() did not return: the sizing callback re-entered the queue's lock")
