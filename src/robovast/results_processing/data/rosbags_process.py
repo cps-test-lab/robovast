@@ -1267,6 +1267,13 @@ def main() -> int:
         help="Name of the rosbag subdirectory within each run directory (default: rosbag2)",
     )
     parser.add_argument(
+        "--skip-dir",
+        action="append",
+        default=[],
+        help="Directory name never to descend into; repeatable. The campaign's reserved "
+             "directories are passed here because they hold no runs.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=cpu_count(),
@@ -1328,7 +1335,8 @@ def main() -> int:
 
     print(f"Scanning for rosbags ({args.bag_dir})...", end="", flush=True)
     _t_scan = time.time()
-    rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir)
+    rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir,
+                                skip_names=args.skip_dir)
     print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
     if not rosbag_paths:
         return 0

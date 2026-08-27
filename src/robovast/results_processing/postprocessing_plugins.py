@@ -384,6 +384,14 @@ class RosbagsProcess(BasePostprocessingPlugin):
             cmd.extend(["--workers", str(workers)])
         if bag_dir is not None:
             cmd.extend(["--bag-dir", bag_dir])
+        # The campaign's reserved directories hold no runs, so nothing under them is a bag
+        # worth converting. One of them, ``_calibration``, holds a probe's output -- work
+        # that is deliberately not a run -- and converting it cost a bag's work per node and
+        # failed the whole step outright when a probe had been interrupted, because its bag
+        # was never finalized.
+        from robovast.common.campaign_data import RESERVED_CAMPAIGN_DIRS  # noqa: PLC0415
+        for name in sorted(RESERVED_CAMPAIGN_DIRS):
+            cmd.extend(["--skip-dir", name])
         # A job stopped by an operator, or invalidated by the runner after a container
         # crashed under it, was SIGKILLed mid-write — so its rosbag is unfinalized and
         # cannot be opened, ever. Without this the campaign's whole postprocessing step

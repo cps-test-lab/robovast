@@ -193,7 +193,7 @@ def gen_msg_values(msg, prefix=""):
         yield prefix, msg
 
 
-def find_rosbags(directory, bag_dir_name="rosbag2"):
+def find_rosbags(directory, bag_dir_name="rosbag2", skip_names=()):
     """Find all rosbag directories using parallel directory scanning (IO-bound).
 
     Uses a BFS with a ThreadPoolExecutor so that large result trees (e.g. 50k
@@ -209,6 +209,14 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
         directory: Root directory to search under.
         bag_dir_name: Subdirectory name to look for (default: "rosbag2").
                       May contain a path separator, e.g. "logs/rosout_bag".
+        skip_names: Directory names never to descend into. The campaign's reserved
+                    directories are passed here, because they hold no runs -- and one of
+                    them, ``_calibration``, holds bags belonging to work that is not a run
+                    at all. Converting those wastes a bag's work per node and, when a probe
+                    was interrupted, fails the whole postprocessing step on a bag nothing
+                    was ever going to read. Passed in rather than hardcoded: this module is
+                    copied into the container standalone and can import no definition of
+                    what "reserved" means.
 
     Returns:
         Sorted list of found rosbag directory paths.
@@ -226,6 +234,7 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
     # rather than any "<prefix>_*" keeps a rosbag2_backup or results_old out of the results.
     timestamped = re.compile(re.escape(prune_top) + r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
     found: List[str] = []
+    skip = set(skip_names or ())
 
     def _scan(path: str):
         """Return (bag_paths, subdirs_to_recurse) for one directory."""
@@ -235,6 +244,8 @@ def find_rosbags(directory, bag_dir_name="rosbag2"):
             with os.scandir(path) as it:
                 for entry in it:
                     if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if entry.name in skip:
                         continue
                     if entry.name == prune_top or timestamped.fullmatch(entry.name):
                         if not prune_rest:
