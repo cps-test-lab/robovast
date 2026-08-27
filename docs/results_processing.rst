@@ -922,34 +922,43 @@ analysis-friendly formats (e.g. CSV).  Commands are defined in the
 ``results_processing.postprocessing`` section of the ``.vast`` file and executed by plugins
 (see :ref:`extending-postprocessing` for how to write your own).
 
+It runs automatically when a campaign's runs finish. To run it again — after editing a
+postprocessing script, or on a campaign imported raw — name the campaign:
+
 .. code-block:: bash
 
-   vast results postprocess [OPTIONS]
+   vast campaign postprocess CAMPAIGN
 
 **Options**
 
-.. option:: -r, --results-dir PATH
-
-   Directory containing the run results (parent of campaign directories).
-   Required: there is no project file to take it from.
-
 .. option:: -f, --force
 
-   Bypass the postprocessing cache and re-run all commands even if the
-   results directory has not changed since the last postprocessing run.
+   Bypass the per-rosbag caches and reprocess all bags, for example after updating a
+   postprocessing script.
 
-.. option:: -o, --override VAST_FILE
+.. option:: --skip PLUGIN
 
-   Use the given ``.vast`` file instead of the one stored in
-   ``<campaign-name>-<timestamp>/_config/``.  See :ref:`results-override` for details.
+   Skip a postprocessing plugin (repeatable), e.g. ``--skip rosbags_to_webm``.
 
-Postprocessing is **cached** by a hash of the results directory.  When the
-directory is unchanged the step is skipped automatically.  Use ``--force`` (or
-``-f``) to bypass the cache, for example after updating a postprocessing script:
+The campaign is the address and the service is the lane, so the rosbag→CSV step runs
+wherever that campaign's runs ran — in-cluster for a cluster campaign — and ``data.db``
+is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
+so the campaign re-enters its ``postprocessing`` phase and the command returns. Follow it
+exactly as after a launch:
 
 .. code-block:: bash
 
-   vast results postprocess --force
+   vast campaign postprocess my-campaign-2026-03-20-153630
+   vast campaign wait my-campaign-2026-03-20-153630
+
+Postprocessing is **cached** by a hash of the results directory; when nothing changed the
+step is skipped automatically, which is what ``--force`` bypasses.
+
+.. note::
+
+   This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
+   same work in-process against a local results directory. The second could only ever see
+   a local campaign, so there is now one postprocessing path, reached one way.
 
 
 .. _results-retrigger:
@@ -994,9 +1003,9 @@ immediately** — postprocessing can take minutes to hours, so the campaign simp
 re-enters the ``postprocessing`` (or ``sharing``) phase and you follow its progress and
 log in the campaign view, exactly like the original run; it returns to ``finished`` when
 done. The web *Retrigger postprocessing* dialog therefore closes as soon as you click
-*Run*. A second re-trigger is refused while one is already running. (The
-``vast results postprocess`` CLI is the exception: it runs postprocessing locally and
-synchronously, streaming to the console.)
+*Run*. A second re-trigger is refused while one is already running. ``vast campaign
+postprocess`` is the same dispatch from the CLI, so all three surfaces behave alike --
+there is no longer a local, synchronous path that behaves differently from the rest.
 
 Because a post-run step is separate from the runs themselves, a **failure of one of
 these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
@@ -1135,7 +1144,7 @@ parameters.  Useful for discovering which commands can be used in the
 Using ``--override`` to Supply a Local ``.vast`` File
 ------------------------------------------------------
 
-By default ``vast results postprocess`` reads the ``.vast`` configuration from the
+By default ``vast results publish`` reads the ``.vast`` configuration from the
 **campaign snapshot** stored in
 ``<results-dir>/<campaign-name>-<timestamp>/_config/<name>.vast``.  This snapshot is copied
 at execution time and may be out of date.
@@ -1146,7 +1155,7 @@ for example your current working copy:
 .. code-block:: bash
 
    # Use a local/updated .vast file
-   vast results postprocess --override my_project.vast
+   vast results publish --override my_project.vast
 
 **When to use ``--override``**
 

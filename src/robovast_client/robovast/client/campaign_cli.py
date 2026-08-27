@@ -533,6 +533,51 @@ def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer
                    f" / {status.total_runs}")
 
 
+@campaign.command('postprocess')
+@click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@click.option('--force', '-f', is_flag=True,
+              help='Bypass per-rosbag caches and reprocess all bags.')
+@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
+              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
+@target_options
+def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
+    """(Re)run analysis postprocessing for CAMPAIGN.
+
+    The campaign is the address, and the service is the lane: the rosbag->CSV step runs
+    wherever that campaign's runs ran -- in-cluster for a cluster campaign -- and
+    ``data.db`` is rebuilt. Mirrors the web "Retrigger postprocessing" action and the MCP
+    ``run_postprocessing`` tool, so all three drive one implementation.
+
+    This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
+    same job in-process against a results directory on this machine. Two postprocessing
+    paths is the same split ``vast exec local run`` was: one of them could only ever see a
+    local campaign, and it was the one the documentation reached for first.
+
+    **Dispatched, not awaited.** Postprocessing takes minutes to hours, so the campaign
+    re-enters its ``postprocessing`` phase and this returns -- follow it with ``vast
+    campaign wait CAMPAIGN``, exactly as after ``vast workspace run``. A second run is
+    refused while one is in flight.
+    """
+    from robovast.service.interface import \
+        RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
+    try:
+        with service_client(namespace, context,
+                            require_service=True) as (client, label):
+            _echo_target(label)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if not campaign_id:
+                raise ValueError("no campaign is running; pass CAMPAIGN.")
+            res = client.run_postprocessing(RunPostprocessingRequest(
+                campaign_id=campaign_id, force=force, skip=list(skip_plugins)))
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+    if not res.ok:
+        raise click.ClickException(res.message or "postprocessing failed")
+    click.echo(f"✓ {res.message or 'postprocessing started'}")
+    click.echo(f"  next: vast campaign wait {campaign_id}")
+
+
 @campaign.command('download')
 @click.argument('campaign', metavar='CAMPAIGN')
 @click.option('--output', '-o', 'dest', default=None, metavar='PATH',

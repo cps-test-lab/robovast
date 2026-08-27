@@ -167,8 +167,9 @@ def _require_data_db(root: Path) -> None:
         f"yet.\n\n"
         f"If the campaign has finished, postprocessing did not run or did not succeed "
         f"(check `postprocessed` and `postprocessing_error` in its status). Build it with "
-        f"`run_postprocessing`, or `vast results postprocess {root}` -- this re-runs no "
-        f"trial, it rebuilds the tables from the run directories and _jobs/, which are kept.\n"
+        f"`run_postprocessing`, or `vast campaign postprocess {root.name}` -- this re-runs "
+        f"no trial, it rebuilds the tables from the run directories and _jobs/, which are "
+        f"kept.\n"
         f"If it is still running, data.db is written when it finishes.")
 
 

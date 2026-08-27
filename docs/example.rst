@@ -200,13 +200,14 @@ First, the results can optionally be postprocessed to simplify later evaluation.
 
 .. code-block:: bash
 
-   vast results postprocess
+   vast campaign postprocess <campaign-id>
 
+It runs automatically when the campaign's runs finish, so this is for running it *again*.
 Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
 
 .. code-block:: bash
 
-   vast results postprocess --force
+   vast campaign postprocess <campaign-id> --force
 
 After postprocessing, the actual evaluation can be performed. Open the web UI and use the
 Results **Explorer**: it executes the campaign's analysis notebooks server-side, one per

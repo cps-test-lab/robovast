@@ -461,6 +461,6 @@ def _check_analysis_db(campaign_dir: Path) -> dict:
     if not candidates:
         return _stage(STAGE_ABSENT,
                       "no analysis database. Expected for a raw, pre-postprocess archive; "
-                      "regenerate it with 'vast results postprocess'.")
+                      "regenerate it with 'vast campaign postprocess <campaign-id>'.")
     return _stage(STAGE_OK, f"{len(candidates)} analysis database(s) present "
                             f"(current schema v{DATA_DB_SCHEMA_VERSION})")

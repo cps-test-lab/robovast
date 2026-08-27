@@ -460,18 +460,30 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                 return False
             print("✓ campaign finished")
 
-        # The service is down from here: postprocessing reads the results tree directly.
+            # Step 5: re-run postprocessing through the service. Inside the service
+            # block, because postprocessing acts on a campaign, on whichever lane its runs
+            # executed -- it used to be `vast results postprocess` against the results
+            # tree, which is why this step used to sit after the shutdown.
+            #
+            # Dispatched, not awaited, exactly like a launch: the campaign re-enters its
+            # postprocessing phase, so the wait is what says it worked.
+            print("\n--- Step 5: vast campaign postprocess ---")
+            code = run_command(f"vast campaign postprocess {campaign_id}",
+                               repo_root, cwd=test_directory)
+            if code != 0:
+                print("✗ vast campaign postprocess failed")
+                return False
+            code = run_command(f"vast campaign wait {campaign_id}", repo_root,
+                               cwd=test_directory, check=False, stream_output=True)
+            if code != 0:
+                print(f"✗ wait after postprocess exited {code}")
+                return False
+            print("✓ postprocessing re-ran through the service")
+
+        # The service is down from here: this reads the results tree directly.
         if not check_results_dir_structure(results_dir):
             return False
         print("✓ Output structure is valid")
-
-        print("\n--- Step 5: vast results postprocess ---")
-        code = run_command(f"vast results postprocess --results-dir {results_dir}",
-                           repo_root, cwd=test_directory)
-        if code != 0:
-            print("\u2717 vast results postprocess failed")
-            return False
-        print("\u2713 vast results postprocess executed successfully")
 
         print("\n✓ Complete workflow succeeded!")
         return True

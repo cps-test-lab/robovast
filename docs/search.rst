@@ -581,7 +581,7 @@ wherever they appear — by entry-point name **or** a local ``./path.py:Class`` 
 reference — via one shared resolver/runner. They are configured in two places:
 
 * ``results_processing.postprocessing`` — runs at analysis time
-  (``vast results postprocess``, then the web UI's Results views).
+  (``vast campaign postprocess``, then the web UI's Results views).
 * ``search.postprocessing`` — runs over each batch's results during a search,
   before ``extract``.
 

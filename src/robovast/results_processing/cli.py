@@ -37,73 +37,19 @@ from robovast.results_processing.publication import load_publication_plugins, ru
 
 @click.group()
 def results():
-    """Manage run results.
+    """Work on a results directory on THIS machine.
 
-    Tools for postprocessing scenario execution results,
-    including data conversion, merging, and metadata generation.
+    Every verb here names a path and none of them needs a login: this is the local half
+    of the tool, for someone holding a results tree -- publishing it, generating its
+    metadata and provenance, merging campaigns. It ships with the full ``robovast``
+    distribution, so a client-only install does not have this group at all, which is the
+    honest signal that none of it is a service operation.
+
+    What acts on a *campaign* is ``vast campaign`` -- including postprocessing, which
+    lives there because the service owns the lane the runs executed on. This group used
+    to carry a second, in-process ``postprocess`` beside it; it could only ever see a
+    local campaign, and one postprocessing path is the point.
     """
-
-
-@results.command(name='postprocess')
-@click.option('--results-dir', '-r', required=True, type=click.Path(),
-              help='Directory containing run results.')
-@click.option('--force', '-f', is_flag=True,
-              help='Force postprocessing even if results directory is unchanged (bypasses caching)')
-@click.option('--override', '-o', default=None, metavar='VAST_FILE',
-              help='Override the .vast file used for postprocessing instead of the one '
-                   'found in <campaign-name>-<timestamp>/_config/')
-@click.option('--debug', is_flag=True,
-              help='Show full plugin output (stdout) for each postprocessing step.')
-@click.option('--skip-rosout', is_flag=True,
-              help='Skip rosout bag processing.')
-@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
-              help='Skip a postprocessing plugin defined in the .vast file '
-                   '(e.g. --skip rosbags_to_webm). Can be specified multiple times.')
-@click.option('--skip-db', is_flag=True,
-              help='Skip data.db creation.')
-@click.option('--skip-metadata', is_flag=True,
-              help='Skip metadata.yaml generation.')
-@click.option('--campaign', '-i', default=None, metavar='CAMPAIGN',
-              help='Only (re)process a single campaign directory '
-                   '(e.g. navigation-2026-03-20-153630) instead of the most recent.')
-def postprocess_cmd(results_dir, force, override, debug, skip_rosout, skip_plugins,
-                    skip_db, skip_metadata, campaign):
-    """Run postprocessing commands on run results.
-
-    Executes postprocessing commands defined in the .vast file found in the
-    most recent ``<campaign-name>-<timestamp>/_config/`` directory of the results directory.
-    Postprocessing is skipped if the result-directory is unchanged,
-    unless --force is specified.
-
-    Use --override to supply a .vast file explicitly instead of the campaign copy.
-
-    """
-    click.echo("Starting postprocessing...")
-    click.echo(f"Results directory: {results_dir}")
-    if override:
-        click.echo(f"Override .vast file: {override}")
-    if force:
-        click.echo("Force mode enabled: bypassing cache")
-    click.echo("-" * 60)
-
-    # Run postprocessing
-    success, message = run_postprocessing(
-        results_dir=results_dir,
-        output_callback=click.echo,
-        force=force,
-        vast_file=override,
-        debug=debug,
-        skip_rosout=skip_rosout,
-        skip=list(skip_plugins),
-        skip_db=skip_db,
-        skip_metadata=skip_metadata,
-        campaign=campaign,
-    )
-
-    click.echo("\n" + "=" * 60)
-    if not success:
-        click.echo(f"\u2717 {message}", err=True)
-        sys.exit(1)
 
 
 @results.command(name='publish')
@@ -603,35 +549,6 @@ def _require_service_client():
             "or tunnel to a cluster service first.")
     from robovast.service.client import RobovastClient  # pylint: disable=import-outside-toplevel
     return RobovastClient(url)
-
-
-@results.command(name='reprocess')
-@click.argument('campaign', metavar='CAMPAIGN')
-@click.option('--force', '-f', is_flag=True,
-              help='Bypass per-rosbag caches and reprocess all bags.')
-@click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
-              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
-def reprocess_cmd(campaign, force, skip_plugins):
-    """(Re)run analysis postprocessing for one CAMPAIGN via the robovast-service.
-
-    The backend-neutral counterpart of ``vast results postprocess`` (which runs
-    in-process against a local results dir): this is campaign-scoped and routes
-    through the service, so it also drives a **cluster** campaign — the rosbag→CSV
-    step runs in-cluster and ``data.db`` is rebuilt. Mirrors the web "Retrigger
-    postprocessing" action and the MCP ``run_postprocessing`` tool.
-    """
-    from robovast.service.interface import \
-        RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
-    client = _require_service_client()
-    try:
-        res = client.run_postprocessing(RunPostprocessingRequest(
-            campaign_id=campaign, force=force, skip=list(skip_plugins)))
-    except Exception as exc:
-        handle_cli_exception(exc)
-        return
-    if not res.ok:
-        raise click.ClickException(res.message or "postprocessing failed")
-    click.echo(f"✓ {res.message or 'postprocessing complete'}")
 
 
 @results.command(name='delete')

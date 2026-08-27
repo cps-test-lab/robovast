@@ -974,7 +974,7 @@ alongside the query itself.
    builds ``data.db`` from the raw rosbags. Launching with **Postprocess when done**
    (the default) runs it automatically on both backends; otherwise the Results tab
    offers a **Run postprocessing** button, and the CLI equivalent is
-   ``vast results postprocess --campaign <id>``. To *change* the postprocessing
+   ``vast campaign postprocess <id>``. To *change* the postprocessing
    parameters and re-run, use **Retrigger postprocessing** in the Monitor view's
    campaign actions menu (see above). The rosbag→CSV step always runs in
    the campaign's own execution image (locally in a container, in a cluster as a Job),

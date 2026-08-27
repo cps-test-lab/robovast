@@ -182,9 +182,9 @@ Afterwards, read the results in the browser (``vast ui``, against a running serv
 
 .. code-block:: bash
 
-    vast results postprocess
+    vast campaign postprocess <campaign-id>
     # or, to force postprocessing even if results are unchanged:
-    vast results postprocess --force
+    vast campaign postprocess <campaign-id> --force
 
 .. note::
 
