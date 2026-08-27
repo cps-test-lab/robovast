@@ -20,7 +20,6 @@
 import logging
 from importlib.metadata import entry_points
 
-from robovast.client.project_config import get_vast_file_override
 from robovast.common.common import load_config
 
 from .kubernetes_gpu import ensure_nvidia_device_plugin, uninstall_nvidia_device_plugin
@@ -158,65 +157,6 @@ def delete_controller_rbac(namespace="default", kube_context=None):
             logger.warning("Failed to delete controller %s: %s", kind, exc)
 
 
-def get_kubernetes_node_labels_from_config(config_path=None):
-    """Read job and control pod node labels from the vast config.
-
-    Reads from::
-
-        execution:
-          kubernetes:
-            jobs:
-              node_labels:
-                <key>: <value>   # REFUSED by setup -- see setup_server; its only
-                                 # implementation was Kueue's ResourceFlavor
-            control:
-              node_labels:
-                <key>: <value>   # applied as nodeSelector to the robovast control pod
-
-    Args:
-        config_path: Path to the ``.vast`` config file, or ``None`` when nothing named
-            one — then no labels apply. This function never *discovers* a config: which
-            one to read is the caller's decision, because for a cluster-wide deploy the
-            answer is "only one that was named explicitly" (see :func:`setup_server`).
-
-    Returns:
-        tuple: ``(jobs_node_labels, control_node_labels)`` — each is a ``dict``
-            or ``None`` when not configured.
-
-    Raises:
-        ValueError: If the named config cannot be read. Falling back to "no labels"
-            would schedule pods on arbitrary nodes while the command reported success.
-    """
-    if config_path is None:
-        logger.info(
-            "No .vast config named ('vast -V <file>') — no node labels applied. Pass "
-            "'vast -V <file>' to pin pods to a node pool via "
-            "execution.kubernetes.{jobs,control}.node_labels.")
-        return None, None
-    try:
-        execution = load_config(config_path, subsection="execution", allow_missing=True)
-    except Exception as exc:
-        # Deploying with "no labels" because the config was unreadable would put job
-        # and control pods on arbitrary nodes for the cluster's whole lifetime, while
-        # setup reported success — the failure has to surface here.
-        raise ValueError(
-            f"could not read node labels from '{config_path}': {exc}\n"
-            "Fix that .vast, or name another one with 'vast -V <file>'. Cluster setup "
-            "needs no config at all — drop the '-V' to deploy with no node selectors."
-        ) from exc
-    k8s = (execution or {}).get("kubernetes") or {}
-    jobs_labels = (k8s.get("jobs") or {}).get("node_labels") or None
-    control_labels = (k8s.get("control") or {}).get("node_labels") or None
-    # Normalise: must be a plain dict or None
-    if jobs_labels and not isinstance(jobs_labels, dict):
-        logger.warning("execution.kubernetes.jobs.node_labels is not a mapping — ignoring")
-        jobs_labels = None
-    if control_labels and not isinstance(control_labels, dict):
-        logger.warning("execution.kubernetes.control.node_labels is not a mapping — ignoring")
-        control_labels = None
-    return jobs_labels, control_labels
-
-
 def load_cluster_config_plugins():
     """Load all available cluster config plugins from entry points.
 
@@ -301,6 +241,7 @@ def get_cluster_config_for_context(context_key=None, namespace="default"):
 def setup_server(config_name=None, list_configs=False, force=False,
                  service_kwargs=None, gpu_replicas=None, no_gpu=False,
                  buildkit_kwargs=None, data_node="", buildkit_node="",
+                 jobs_node_labels=None, control_node_labels=None, cpu_governor=False,
                  **cluster_kwargs):
     """Set up transfer mechanism for cluster execution.
 
@@ -402,26 +343,32 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     cluster_config = get_cluster_config(config_name)
 
-    # Node labels are the only thing this deploy reads from a .vast, and it reads them
-    # ONLY from a config the operator named with 'vast -V <file>'. Never from an ambient
-    # project: a .robovast_project is discovered by walking up to the filesystem root,
-    # so a project one directory — or ten — above a CWD that has nothing to do with
-    # this cluster would otherwise decide which nodes its pods may run on, or (via a
-    # stale pointer) fail the deploy over a file the operator never mentioned.
-    jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
-        get_vast_file_override())
+    # Both come from the SETUP COMMAND, never from a .vast. A .vast describes a campaign;
+    # which machines a cluster's pods may run on is a property of the cluster, and mixing
+    # the two put a deploy's lasting, cluster-wide decisions in a file that travels with an
+    # experiment. It also forced an awkward rule -- read only from a config named with
+    # `vast -V`, never an ambient project -- to stop a `.robovast_project` ten directories
+    # above an unrelated CWD from deciding a cluster's node pools. With no file read at all,
+    # that whole class of accident is gone rather than guarded against.
     if jobs_node_labels:
-        # Repointed at the admission controller, which is what finally makes this key mean
-        # what `docs/configuration.rst` always said it meant: a pod nodeSelector. Its only
-        # previous implementation was Kueue's ResourceFlavor nodeLabels, and for one release
-        # after Kueue was retired it was refused outright rather than silently ignored.
-        #
-        # It reaches the running service as an env var, the same path the headroom figures
-        # take, because the pool is a property of the CLUSTER: carrying it in a campaign's
-        # .vast would let one campaign widen the pool every other campaign is confined to.
+        # The campaign job pool: counted by the admission controller and stamped on every
+        # job pod. This is what `docs/configuration.rst` always claimed the setting did;
+        # its previous implementation was Kueue's ResourceFlavor nodeLabels.
         logger.info("Campaign job node pool (nodeSelector): %s", jobs_node_labels)
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
+
+    # Opt-in, and it raises rather than warning when it cannot be applied -- someone who
+    # asked for a fixed clock and silently did not get one would now trust measurements
+    # taken on a scaling one. Confined to the campaign node pool when there is one, so a
+    # cluster that runs campaigns on a subset does not have its other machines
+    # reconfigured as a side effect of a RoboVAST setup. See node_governor.
+    from kubernetes import client as _k8s_client  # noqa: PLC0415
+
+    from .node_governor import ensure_cpu_governor  # noqa: PLC0415
+
+    ensure_cpu_governor(_k8s_client.AppsV1Api(), namespace, cpu_governor,
+                        node_selector=jobs_node_labels)
 
     # No longer ordered against a queue install, but still first: a node advertises no GPU
     # until this DaemonSet runs, and admission sizes GPU capacity from what the nodes
@@ -526,22 +473,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
                 host = ""
         if host:
             service_kwargs["registry_host"] = host
-    # The job node pool travels in the service's env, because the admission controller is
-    # what enforces it and the controller runs there. Written on every setup, including as
-    # an empty string when the setting was removed -- otherwise dropping it from the .vast
-    # would leave the previous pool in force, and the operator's file would stop describing
-    # the cluster it configures.
-    import json  # noqa: PLC0415
-
-    from .node_placement import JOB_NODE_POOL_ENV  # noqa: PLC0415
-
-    env = [e for e in (service_kwargs.pop("env", None) or [])
-           if e.get("name") != JOB_NODE_POOL_ENV]
-    env.append({"name": JOB_NODE_POOL_ENV,
-                "value": json.dumps(jobs_node_labels) if jobs_node_labels else ""})
+    # The job node pool travels in the service's env because the admission controller is
+    # what enforces it and the controller runs there. Passed as its own argument, NOT as
+    # `env`: that parameter is the WHOLE environment rather than an addition to it, so a
+    # one-element list replaced the cluster env and deployed a service with no
+    # ROBOVAST_CLUSTER_CONFIG_NAME -- setup reported success and every campaign afterwards
+    # failed with "the service must be deployed by 'vast exec cluster setup'".
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   env=env, **service_kwargs)
+                   job_node_labels=jobs_node_labels, **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull

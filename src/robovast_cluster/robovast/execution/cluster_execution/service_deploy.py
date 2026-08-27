@@ -1380,7 +1380,8 @@ def published_host(namespace="default", kube_context=None):
     return url.split("://", 1)[-1] if url else ""
 
 
-def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
+def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
+                 job_node_labels=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
     The service (mode 3) reconstructs the same cluster config the controller
@@ -1398,6 +1399,17 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
                     "value": json.dumps(config_kwargs or {})})
     if kube_context:
         env.append({"name": "ROBOVAST_KUBE_CONTEXT", "value": kube_context})
+    # Written on every deploy, empty included, so dropping the option CLEARS a previously
+    # configured pool instead of leaving it silently in force.
+    #
+    # Threaded in here rather than handed to `deploy_service(env=...)`, which is the whole
+    # environment and not an addition to it -- passing a one-element list there replaced
+    # this function's output wholesale and left a deployed service with no
+    # ROBOVAST_CLUSTER_CONFIG_NAME, so setup reported success and every campaign then failed
+    # with "the service must be deployed by 'vast exec cluster setup'".
+    from .node_placement import JOB_NODE_POOL_ENV  # noqa: PLC0415
+    env.append({"name": JOB_NODE_POOL_ENV,
+                "value": json.dumps(job_node_labels) if job_node_labels else ""})
     return env
 
 
@@ -1455,6 +1467,7 @@ def _host_timezone():
 
 
 def service_manifests(namespace="default", image=None, env=None,
+                      job_node_labels=None,
                       config_name=None, config_kwargs=None, git_token=None,
                       share_env=None, kube_context=None, pull_secret="",
                       auth_token="", ingress_host="", ingress_class="",
@@ -1488,7 +1501,8 @@ def service_manifests(namespace="default", image=None, env=None,
     from robovast.common.execution import resolve_controller_image
     image = image or resolve_controller_image()
     if env is None:
-        env = _cluster_env(namespace, config_name, config_kwargs, kube_context)
+        env = _cluster_env(namespace, config_name, config_kwargs, kube_context,
+                           job_node_labels=job_node_labels)
     # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately. It was carried in for the
     # postprocessing Job, whose initContainer used to copy robovast out of the controller
     # image -- but the conversion scripts come from a per-campaign ConfigMap built in the
@@ -1747,6 +1761,7 @@ def service_storage_from_cluster(namespace="default", kube_context=None) -> dict
 
 
 def deploy_service(namespace="default", kube_context=None, image=None, env=None,
+                   job_node_labels=None,
                    config_name=None, config_kwargs=None, dry_run=False,
                    rotate_token=False, ingress_host="", ingress_class="",
                    tls_secret="", issuer="", insecure_http=False,
@@ -1813,7 +1828,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     auth_token = auth_token or generate_token()
 
     manifests = service_manifests(
-        namespace=namespace, image=image, env=env,
+        namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
         config_name=config_name, config_kwargs=config_kwargs,
         kube_context=kube_context, pull_secret=pull_secret,
         auth_token=auth_token, ingress_host=ingress_host,

@@ -1,12 +1,18 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``cluster setup`` takes its node labels only from an explicitly named ``.vast``.
+"""``cluster setup`` reads no ``.vast`` at all.
 
-Setup deploys into a cluster and runs from any directory, so a ``.robovast_project``
-must neither be a precondition nor an input: it is found by walking *up* to the
-filesystem root, so a project one directory — or ten — above an unrelated CWD would
-otherwise decide which nodes a cluster's pods may run on. Only ``vast -V <file>``
-names the config; a named config that cannot be read still fails loudly.
+A ``.vast`` describes a campaign. Which machines a cluster's pods may run on is a property
+of the CLUSTER, and carrying it in a campaign file put a deploy's lasting, cluster-wide
+decisions somewhere that travels with an experiment. It also forced an awkward guard --
+read only from a config named with ``vast -V``, never an ambient project -- because a
+``.robovast_project`` is found by walking *up* to the filesystem root, so one ten
+directories above an unrelated CWD could otherwise decide a cluster's node pools.
+
+Both are now settled by construction: the labels are command-line options, so there is no
+file to consult and no ambient project to guard against. These tests pin that the
+configuration reaches what enforces it, and that omitting an option CLEARS rather than
+preserves -- which is what keeps the command the whole truth about the cluster.
 """
 
 import json
@@ -16,8 +22,7 @@ import pytest
 
 from robovast.execution.cluster_execution import buildkitd_deploy
 from robovast.execution.cluster_execution import cluster_setup
-from robovast.execution.cluster_execution.cluster_setup import (
-    get_kubernetes_node_labels_from_config, setup_server)
+from robovast.execution.cluster_execution.cluster_setup import setup_server
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +81,13 @@ def _deploy_stubs(monkeypatch):
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for, removed when not, so that omitting the flag clears a previous one. An
+    # unstubbed call therefore reaches a real API server even though no test here
+    # asks for a governor.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     # Placement now resolves against the live node list before anything is applied.
     _stub_placement(monkeypatch)
     config = mock.Mock()
@@ -110,125 +122,48 @@ def _write_project(directory, config_name, write_config=True):
 # -- what setup reads --------------------------------------------------------
 
 
-def test_ambient_project_contributes_no_labels(tmp_path, monkeypatch, deploy_stubs):
-    """A project above the CWD must not reach a cluster deploy, even when valid."""
-    config = deploy_stubs
-    _write_project(tmp_path, "campaign.vast")
-    deep = tmp_path / "some" / "other" / "workdir"
-    deep.mkdir(parents=True)
-    monkeypatch.chdir(deep)
-
-    setup_server(config_name="rke2", namespace="default")
-
-    # The ambient project sets jobs.node_labels; the deploy must carry an EMPTY pool, not
-    # that project's. Asserted on the env the service is given, which is where the pool is
-    # enforced from -- a project ten directories above an unrelated CWD must not decide
-    # which machines this cluster's campaigns may run on.
-    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
-    from robovast.execution.cluster_execution import service_deploy
-    env = {e["name"]: e["value"]
-           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
-    assert env.get(JOB_NODE_POOL_ENV) == ""
-
-    # The store pod is still pinned -- that decision comes from the cluster, not from a
-    # .vast -- but nothing the ambient project said reached it.
-    assert config.setup_cluster.call_args.kwargs["control_node_labels"] == {
-        "robovast.io/data-node": "true"}
 
 
-def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
-                                                        deploy_stubs):
-    """The reported failure: a project naming a .vast that no longer exists.
+def test_the_job_node_pool_reaches_the_service_that_enforces_them(deploy_stubs):
+    """The pool travels in the service's env because the admission controller enforces it and
+    the controller runs there.
 
-    Not consulted at all now, so a moved/renamed/deleted ``.vast`` cannot abort a
-    deploy that never mentioned it.
+    Asserted on ``job_node_labels``, NOT on ``env``. That distinction is the bug this once
+    shipped: ``env`` is the WHOLE environment rather than an addition to it, so writing the
+    pool through it replaced ROBOVAST_CLUSTER_CONFIG_NAME and deployed a service that could
+    run nothing while setup reported success. See test_service_env_is_complete.
     """
-    _write_project(tmp_path, "RoboVAST Examples/example.vast", write_config=False)
-    monkeypatch.chdir(tmp_path)
-
-    setup_server(config_name="rke2", namespace="default")
-
-
-def test_jobs_node_labels_reach_the_service_that_enforces_them(monkeypatch, tmp_path,
-                                                               deploy_stubs):
-    """The setting is applied again, by the admission controller rather than by Kueue.
-
-    It travels in the service's env because the controller runs there and the pool is a
-    property of the cluster: a campaign-level override would let one campaign widen the pool
-    every other campaign is confined to. Its previous implementation was Kueue's
-    ResourceFlavor, and for one release after Kueue was retired setup refused it outright.
-    """
-    import json
-
-    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
-
-    config = deploy_stubs
-    vast = tmp_path / "campaign.vast"
-    vast.write_text(_VAST, encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: str(vast))
-
-    setup_server(config_name="rke2", namespace="default")
-
     from robovast.execution.cluster_execution import service_deploy
-    env = {e["name"]: e["value"]
-           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
-    assert json.loads(env[JOB_NODE_POOL_ENV]) == _JOBS
+
+    setup_server(config_name="rke2", namespace="default", jobs_node_labels=_JOBS)
+
+    kwargs = service_deploy.deploy_service.call_args.kwargs
+    assert kwargs["job_node_labels"] == _JOBS
+    assert kwargs.get("env") is None, (
+        "the pool must not be written through `env`, which would replace the cluster env")
 
 
-def test_removing_the_setting_clears_the_previous_pool(monkeypatch, tmp_path, deploy_stubs):
-    """Written on every setup, empty included. Without that, deleting it from the .vast would
-    leave the old pool in force and the operator's file would stop describing the cluster."""
-    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
-
-    config = deploy_stubs
-    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: None)
-
-    setup_server(config_name="rke2", namespace="default")
-
+def test_omitting_the_option_clears_a_previously_configured_pool(deploy_stubs):
+    """Written on every setup, empty included -- otherwise dropping the option would leave the
+    old pool in force and the command would stop being the whole truth about the cluster."""
     from robovast.execution.cluster_execution import service_deploy
-    env = {e["name"]: e["value"]
-           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
-    assert env[JOB_NODE_POOL_ENV] == ""
-
-
-def test_named_config_supplies_control_labels(tmp_path, monkeypatch, deploy_stubs):
-    """``vast -V <file>`` is the one way control-pod node labels reach the deploy."""
-    config = deploy_stubs
-    vast = tmp_path / "campaign.vast"
-    vast.write_text(_VAST.replace("""    jobs:
-      node_labels:
-        node-pool: primary
-""", ""), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: str(vast))
 
     setup_server(config_name="rke2", namespace="default")
 
-    # ANDed with the placement label, not replaced by it: a node pool alone still lets the
-    # store pod float within the pool, which is the same bug at a smaller scale.
-    assert config.setup_cluster.call_args.kwargs["control_node_labels"] == {
-        **_CONTROL, "robovast.io/data-node": "true"}
+    assert service_deploy.deploy_service.call_args.kwargs["job_node_labels"] is None
+
+
+def test_control_node_labels_reach_the_placement_resolver(deploy_stubs):
+    """They narrow rather than decide: ANDed with the node-local data placement setup picks."""
+    setup_server(config_name="rke2", namespace="default", control_node_labels=_CONTROL)
+    passed = deploy_stubs.setup_cluster.call_args.kwargs["control_node_labels"]
+    assert passed["node-pool"] == "extra"
 
 
 # -- the reader itself -------------------------------------------------------
 
 
-def test_no_config_named_yields_no_labels():
-    """Nothing named a config: legal, and it means no node selectors."""
-    assert get_kubernetes_node_labels_from_config(None) == (None, None)
 
-
-def test_named_config_is_read(tmp_path):
-    vast = tmp_path / "campaign.vast"
-    vast.write_text(_VAST, encoding="utf-8")
-    assert get_kubernetes_node_labels_from_config(str(vast)) == (_JOBS, _CONTROL)
-
-
-def test_unreadable_named_config_raises(tmp_path):
-    """A named config that cannot be read must abort setup, not mean "no labels"."""
-    with pytest.raises(ValueError, match="could not read node labels"):
-        get_kubernetes_node_labels_from_config(str(tmp_path / "missing.vast"))
 
 
 def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch):
@@ -262,6 +197,13 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
                         lambda **k: order.append("rbac"))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for, removed when not, so that omitting the flag clears a previous one. An
+    # unstubbed call therefore reaches a real API server even though no test here
+    # asks for a governor.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     cluster_setup.setup_server(config_name="rke2", namespace="default")
@@ -286,6 +228,13 @@ def test_contradictory_gpu_flags_are_refused_before_anything_is_installed(monkey
                         lambda **k: touched.append("rbac"))
     # Setup applies the shared build daemon too; without this the test reaches a cluster.
     monkeypatch.setattr(buildkitd_deploy, "apply_buildkitd", mock.Mock())
+    # The governor DaemonSet is reconciled on EVERY setup -- installed when asked
+    # for, removed when not, so that omitting the flag clears a previous one. An
+    # unstubbed call therefore reaches a real API server even though no test here
+    # asks for a governor.
+    from robovast.execution.cluster_execution import node_governor
+    monkeypatch.setattr(node_governor, "ensure_cpu_governor",
+                        mock.Mock(return_value=False))
     monkeypatch.setattr(cluster_setup, "get_cluster_config", lambda name: mock.Mock())
 
     with pytest.raises(ValueError, match="contradictory"):
