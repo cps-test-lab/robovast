@@ -50,6 +50,36 @@ CREATED = "created"
 #: number on a screen.
 BUDGET_TTL_S = 3.0
 
+#: How many jobs may be outstanding **unpinned** at once on a cluster that can grow.
+#:
+#: An unpinned job is one admitted against capacity that exists on no node yet, so nothing
+#: subtracts it from anything -- it is charged to the node it lands on only once the autoscaler
+#: has produced that node and the pod is bound. Between those two moments the queue has no
+#: figure to spend against, and without a cap that is not a gap but the whole batch: every
+#: pending item "fits" a growable cluster, so one ``drain`` created all of them, unaccounted,
+#: which is precisely the flood this module was written to end.
+#:
+#: A cap restores the property without giving up the autoscaler. Growth is driven by pods the
+#: scheduler cannot place, and a handful of them says "add nodes" exactly as loudly as a
+#: thousand do; what the extra thousand add is unaccounted reservations, not signal. As each
+#: lands on a new node it becomes counted and another may go, so this bounds the work in
+#: flight rather than the size the cluster reaches.
+GROWTH_UNPINNED_LIMIT = 16
+
+#: How many times a create may fail before the item is given up on, with its cause.
+#:
+#: A create that raises is left PLANNED, because the common causes are transient -- an API
+#: blip, a node going away between the reading and the call. The causes that are *not*
+#: transient look identical from here and are at least as likely: an RBAC change, a validating
+#: webhook, a ``ResourceQuota``, a node-pool label the deployment cannot parse. Retrying those
+#: forever gave the campaign no error and no cause; it simply never created anything and ended
+#: when the no-progress deadline eventually called it stalled -- a failure reported as a
+#: symptom, hours from the thing that caused it.
+#:
+#: Deliberately generous. At the batch loop's two-second cadence this is under a minute of
+#: retrying, which covers an API restart while still ending long before a stall deadline.
+CREATE_ATTEMPT_LIMIT = 20
+
 
 def campaign_start_key(campaign_id: str) -> float:
     """A sortable campaign start time, read out of the campaign id.
@@ -192,11 +222,15 @@ class WorkItem:
 
     *key* is the Job's name: unique cluster-wide, stable, and the same string the pod pass
     reports back in :attr:`Budget.counted_jobs`, so the ledger needs no mapping table.
-    *create* is called at most once, and only when there is room.
+
+    *create* is called with the node the item was granted -- ``(node_id: str | None) -> None``,
+    where ``None`` means "create unpinned". It is called only when there is room, and at most
+    once per successful create; a call that raises leaves the item PLANNED to be retried, up
+    to :data:`CREATE_ATTEMPT_LIMIT`.
     """
     key: str
     sizing: JobSizing
-    create: Callable[[], None]
+    create: "Callable[[Optional[str]], None]"
     owner: str = ""
     priority: int = 0
     started_at: float = 0.0
@@ -209,6 +243,11 @@ class WorkItem:
     #: answer is no. Today it is "that node is still being measured"; the queue knowing that
     #: would put calibration policy inside the scheduler.
     accepts_node: "Callable | None" = None
+
+    #: Consecutive failed ``create`` calls, and the last one's message. See
+    #: :data:`CREATE_ATTEMPT_LIMIT`.
+    attempts: int = 0
+    last_error: str = ""
 
     #: When set, the ONLY node this item may go to. A calibration probe measures one machine,
     #: so placing it anywhere else answers a question about the wrong node. Everything else
@@ -255,7 +294,10 @@ class AdmissionRefused(Exception):
 
 
 class AdmissionController:
-    """The queue. Thread-safe; every public method takes the lock.
+    """The queue. Thread-safe: every public method that touches the queue's state takes the
+    lock. :meth:`preflight` is the exception and needs no lock -- it reads the provider and
+    nothing of this object's, and taking one would hold every campaign's job creation behind
+    a cluster read that answers a question about none of them.
 
     Its own lock, never the service's ``_usage_lock``: that one is held across a resource
     reading that talks to every kubelet in turn, and sharing it would let one slow node block
@@ -281,11 +323,16 @@ class AdmissionController:
         self._seq = itertools.count()
         self._budget: Optional[Budget] = None
         self._budget_at = 0.0
-        self._last_refusal = ""
+        #: ``owner -> why nothing was created for it last time``. Per owner, not one string:
+        #: ``drain`` works the global queue, so a single slot was overwritten by whichever
+        #: campaign's item happened to be next -- and campaign B would have read campaign A's
+        #: job sizes as the reason for its own wait.
+        self._refusals: "Dict[str, str]" = {}
 
     # -- queue -------------------------------------------------------------------------
 
-    def submit(self, owner: str, items: "Iterable[Tuple[str, JobSizing, Callable[[], None]]]",
+    def submit(self, owner: str,
+               items: "Iterable[Tuple[str, JobSizing, Callable[[Optional[str]], None]]]",
                *, started_at: float, priority: int = 0, sizing_for_node=None,
                accepts_node=None, pin=None) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
@@ -333,6 +380,10 @@ class AdmissionController:
         A job that does not fit is **skipped, not blocked behind** -- with mixed sizes a large
         job must not hold the cluster idle while smaller ones could run. Within a campaign the
         jobs are the same shape, so this costs nothing there.
+
+        On a growable cluster a job that fits no node may still be created unpinned, but only
+        up to :data:`GROWTH_UNPINNED_LIMIT` of them at a time -- see there for why the cap is
+        what keeps the autoscaler exception from being a hole.
         """
         created = 0
         with self._lock:
@@ -341,6 +392,8 @@ class AdmissionController:
                 return 0
             nodes, growable = self._effective_free_locked(force=True)
             by_id = {n.node_id: n for n in nodes}
+            unpinned = self._unpinned_outstanding_locked()
+            failed: "List[WorkItem]" = []
             for item in pending:
                 if limit is not None and created >= limit:
                     break
@@ -364,12 +417,19 @@ class AdmissionController:
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
-                if chosen is None and not growable:
+                if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
                     biggest = max((n.free_cpu for n in by_id.values()), default=0.0)
-                    self._last_refusal = (
-                        f"{len(pending) - created} job(s) waiting: next needs "
-                        f"{need.cpu:g} cpu / {need.memory // (1024 ** 2)}Mi and no node has "
-                        f"that free (most free: {biggest:g} cpu)")
+                    waiting = f"{len(pending) - created} job(s) waiting"
+                    if chosen is None and growable:
+                        self._refusals[item.owner] = (
+                            f"{waiting}: {unpinned} already created for a node the "
+                            f"autoscaler has not produced yet (limit "
+                            f"{GROWTH_UNPINNED_LIMIT})")
+                    else:
+                        self._refusals[item.owner] = (
+                            f"{waiting}: next needs {need.cpu:g} cpu / "
+                            f"{need.memory // (1024 ** 2)}Mi and no node has that free "
+                            f"(most free: {biggest:g} cpu)")
                     continue
                 try:
                     # ``None`` means create unpinned, and there are two ways to get here: a
@@ -378,23 +438,49 @@ class AdmissionController:
                     # cannot name where" -- and in both the scheduler places it, which is
                     # exactly what happened before per-node admission existed.
                     item.create(chosen.node_id if chosen else None)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - see CREATE_ATTEMPT_LIMIT
                     # The caller owns the failure; leave the item PLANNED so a later drain can
-                    # retry, and never hold a reservation for a job that was not created.
-                    logger.warning("admission: creating %s failed; left planned",
-                                   item.key, exc_info=True)
+                    # retry, and never hold a reservation for a job that was not created --
+                    # but not forever. A cause that is not transient looks exactly like one
+                    # that is, and retrying it silently is how a campaign creates nothing for
+                    # hours and is then reported as stalled rather than as refused.
+                    item.attempts += 1
+                    item.last_error = f"{exc.__class__.__name__}: {exc}"
+                    if item.attempts >= CREATE_ATTEMPT_LIMIT:
+                        failed.append(item)
+                        self._refusals[item.owner] = (
+                            f"could not create {item.key} after {item.attempts} attempts: "
+                            f"{item.last_error}")
+                        logger.error("admission: giving up on %s after %d attempts: %s",
+                                     item.key, item.attempts, item.last_error)
+                    else:
+                        logger.warning("admission: creating %s failed (attempt %d/%d); "
+                                       "left planned", item.key, item.attempts,
+                                       CREATE_ATTEMPT_LIMIT, exc_info=True)
                     continue
                 item.state = CREATED
                 node_id = chosen.node_id if chosen else None
                 self._held[item.key] = _Held(item.owner, need.cpu, need.memory, need.gpu,
                                              node_id)
+                if node_id is None:
+                    unpinned += 1
                 if chosen is not None:
                     by_id[node_id] = NodeBudget(
                         node_id=node_id,
                         free_cpu=chosen.free_cpu - need.cpu,
                         free_memory=chosen.free_memory - need.memory,
                         free_gpu=chosen.free_gpu - need.gpu)
+                # A create clears the owner's stale reason: a refusal that outlived the wait
+                # it described is the same defect as the capacity-wait flag that outlived
+                # its own, and it reads to an operator as a campaign still stuck.
+                self._refusals.pop(item.owner, None)
+                item.attempts = 0
                 created += 1
+            for item in failed:
+                # Dropped from the queue, not left to be retried by every later drain of every
+                # other campaign. The owner learns why through ``refusal``; its progress count
+                # then falls, which is what ends its wait.
+                self._items.pop(item.key, None)
         return created
 
     def finished(self, key: str) -> None:
@@ -426,6 +512,7 @@ class AdmissionController:
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
+            self._refusals.pop(owner, None)
             return len(keys)
 
     def forget_calibration(self, owner: str) -> bool:
@@ -517,12 +604,28 @@ class AdmissionController:
             f"{biggest.memory // (1024 ** 2)}Mi. Reduce execution.containers.*.resources, or "
             "run where a node can hold it.")
 
-    def refusal(self) -> str:
-        """Why nothing was created last time, for the campaign's log."""
+    def refusal(self, owner: str) -> str:
+        """Why nothing was created for *owner* last time, for its campaign's log.
+
+        ``""`` when the last drain had nothing to refuse it. The caller decides how often to
+        say it; this only records the most recent answer.
+        """
         with self._lock:
-            return self._last_refusal
+            return self._refusals.get(owner, "")
 
     # -- internals ---------------------------------------------------------------------
+
+    def _unpinned_outstanding_locked(self) -> int:
+        """How many created-but-unplaced unpinned jobs the queue is carrying.
+
+        An unpinned hold stops counting the moment the reading sees its pod: it is charged to
+        a real node from then on, exactly as a pinned one is. So this measures work in flight
+        towards nodes that do not exist yet -- which is what :data:`GROWTH_UNPINNED_LIMIT`
+        bounds.
+        """
+        counted = self._budget.counted_jobs if self._budget else frozenset()
+        return sum(1 for key, held in self._held.items()
+                   if held.node_id is None and key not in counted)
 
     def _pending_in_order(self) -> "List[WorkItem]":
         """Highest priority first, then oldest campaign, then submission order.
