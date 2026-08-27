@@ -44,14 +44,14 @@ def _progress_bar(done, total, width=20):
 
 
 def _fmt_size(n):
-    """Format a byte count as MiB (matches the upload progress display)."""
-    return f"{n / 1024 / 1024:.1f} MiB"
+    """Format a byte count as MIB (matches the upload progress display)."""
+    return f"{n / 1024 / 1024:.1f} MIB"
 
 
 def _fmt_rate(bps):
     """Format a transfer rate (bytes/s) with an adaptive unit."""
     if bps >= 1024 * 1024:
-        return f"{bps / 1024 / 1024:.1f} MiB/s"
+        return f"{bps / 1024 / 1024:.1f} MIB/s"
     if bps >= 1024:
         return f"{bps / 1024:.1f} KiB/s"
     return f"{bps:.0f} B/s"
@@ -540,6 +540,25 @@ def _echo_placement(placement):
                "without any flag")
 
 
+def _node_labels(pairs, flag):
+    """``KEY=VALUE`` occurrences as a dict, or ``None`` for none given.
+
+    ``None`` and ``{}`` mean the same thing to setup -- no pool -- but the distinction is
+    kept out of the CLI entirely: setup writes the resulting configuration on every run,
+    so omitting the flag CLEARS a pool a previous setup configured rather than preserving
+    it. That is the property that keeps the command the whole truth about the cluster.
+    """
+    labels = {}
+    for pair in pairs or ():
+        if "=" not in pair:
+            raise click.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint=flag)
+        key, value = pair.split("=", 1)
+        if not key or not value:
+            raise click.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint=flag)
+        labels[key] = value
+    return labels or None
+
+
 @click.command()
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
@@ -624,6 +643,28 @@ def _echo_placement(placement):
 @click.option('--buildkit-cache-reserved', default='', metavar='SIZE',
               help='Cache kept even when old, e.g. 100GB. A floor, not a target: it is what '
                    'stops a quiet week from evicting the base image the cache exists to hold.')
+@click.option('--performance-governor', is_flag=True, default=False,
+              help="Set the nodes' CPU governor to 'performance'. OFF by default, because "
+                   'this reconfigures the host rather than reporting something about it. '
+                   'Worth setting on a cluster used for measurement: a node on a scaling '
+                   'governor runs faster the busier it is, so a quiet campaign is the SLOW '
+                   'case -- measured at 0.28 realtime alone against 0.81 with five '
+                   'concurrent runs on one node, with the idle case missing its deadline '
+                   'entirely. Needs a privileged pod with the host /sys writable, so managed '
+                   'clusters (GKE, EKS, AKS) refuse it and say so. Omit on a later setup to '
+                   'remove it again.')
+@click.option('--jobs-node-label', 'jobs_node_label', multiple=True, metavar='KEY=VALUE',
+              help='Confine campaign job pods to nodes carrying this label; repeatable. '
+                   'The admission controller counts free capacity only on matching nodes '
+                   'and stamps the labels on every job pod, so accounting and placement '
+                   'agree. Cluster-wide and lasting: it is recorded in the service and '
+                   'applies to every campaign until the next setup changes it. Pass none '
+                   'to clear a previously configured pool.')
+@click.option('--control-node-label', 'control_node_label', multiple=True,
+              metavar='KEY=VALUE',
+              help="Run RoboVAST's own infrastructure pods on nodes carrying this label; "
+                   'repeatable. Narrows rather than decides: these are ANDed with the '
+                   "node-local data placement setup chooses. Pass none to clear.")
 @click.argument('cluster_config', required=False)
 @click.option('--vast', 'vast', default=None, metavar='FILE',
               type=click.Path(exists=True, dir_okay=False),
@@ -636,7 +677,9 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, buildkit_cache_max, buildkit_cache_min_free,
-          buildkit_cache_reserved, cluster_config):
+          buildkit_cache_reserved, performance_governor, jobs_node_label,
+          control_node_label,
+          cluster_config):
     """Set up the Kubernetes cluster for execution.
 
     Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
@@ -672,9 +715,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
-    from .cluster_context import \
-        require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
+    # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_setup import setup_server  # pylint: disable=import-outside-toplevel
     if list_configs:
         try:
@@ -685,13 +726,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 
     if not cluster_config:
         click.echo("Error: CLUSTER_CONFIG argument is required when not using --list", err=True)
-        sys.exit(1)
-
-    try:
-        # Only an explicitly named config, never an ambient project — see setup_server.
-        require_context_for_multi_cluster(kube_context, vast)
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
     # Parse cluster-specific options
@@ -732,7 +766,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                                  service_kwargs=service_kwargs, gpu_replicas=gpu_replicas,
                                  no_gpu=no_gpu, buildkit_kwargs=buildkit_kwargs,
                                  data_node=data_node, buildkit_node=buildkit_node,
-                                 vast_path=vast,
+                                 jobs_node_labels=_node_labels(jobs_node_label,
+                                                               '--jobs-node-label'),
+                                 control_node_labels=_node_labels(control_node_label,
+                                                                  '--control-node-label'),
+                                 cpu_governor=performance_governor,
                                  **cluster_kwargs)
         click.echo("✓ Cluster setup completed successfully!")
         # Stated rather than only logged. No flag is the normal way to run this, so the
@@ -783,15 +821,12 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
-    from .cluster_context import \
-        require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
+    # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
     from .kubernetes import get_kubernetes_client
     try:
-        require_context_for_multi_cluster(context, vast)
         k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
@@ -1200,12 +1235,9 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement, vas
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
-    from .cluster_context import \
-        require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
+    # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
-        require_context_for_multi_cluster(kube_context, vast)
         cluster_kwargs = {}
         if namespace is not None:
             cluster_kwargs["namespace"] = namespace
