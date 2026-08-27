@@ -95,42 +95,52 @@ class HealthRow:
 
 
 def load_health_checks(declared=None, config_dir=None) -> dict:
-    """Every health check that should run, by name.
+    """The health checks a campaign asked for, by name. Nothing runs undeclared.
 
-    Entry-point plugins are discovered and run **without being declared**, unlike
-    postprocessing commands. A postprocessing command produces data and costs time, so asking
-    for it is right; a health check reads tables that already exist and contributes nothing
-    when it does not apply to the campaign's stack. Requiring a ``.vast`` edit would mean the
-    campaigns most in need of grading -- the ones nobody thought about -- are the ones without
-    it, and rule 2 makes a silent absence indistinguishable from a clean bill.
+    *declared* is ``results_processing.health_checks`` from the campaign's ``.vast``. A name
+    resolves against the installed :data:`HEALTH_GROUP` entry points; a local
+    ``./path.py:Class`` ref is loaded from beside the config, which is how a system under
+    test ships a check for itself without packaging one.
 
-    *declared* adds local ``./path.py:Class`` refs from the campaign's config, which is how a
-    system under test ships a check for itself without packaging one.
+    **An earlier version ran every installed check automatically**, on the reasoning that a
+    check only reads tables that already exist, so the campaigns most in need of grading --
+    the ones nobody thought about -- would otherwise be the ones without it. That is recorded
+    rather than quietly dropped, because it is a real argument and it lost to a better one:
+    a check that runs everywhere grades campaigns it knows nothing about. ``nav2``'s
+    control-loop check finds no misses in a MoveIt 2 campaign and would write ``ok`` for every
+    run of it -- a clean bill for a stack that was never there, which is exactly the
+    confusion rule 2 exists to prevent, arriving through the mechanism meant to serve it.
+
+    Declaring is also the only way the campaign record says which checks were *meant* to run.
+    Without it, a missing row could mean the check was not installed on the machine that
+    postprocessed, and nothing afterwards could tell that from a stack with nothing to say.
     """
     from robovast.common.plugin_ref import is_file_ref, load_ref  # noqa: PLC0415
 
-    checks = {}
+    installed = {}
     try:
-        for ep in entry_points(group=HEALTH_GROUP):
-            try:
-                obj = ep.load()
-                checks[ep.name] = obj() if inspect.isclass(obj) else obj
-            except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop the rest
-                logger.warning("health check %r could not be loaded: %s", ep.name, exc)
+        installed = {ep.name: ep for ep in entry_points(group=HEALTH_GROUP)}
     except Exception:  # noqa: BLE001 - no entry points at all is not an error
         pass
 
+    checks = {}
     for ref in declared or []:
         name = ref if isinstance(ref, str) else next(iter(ref))
-        if not is_file_ref(name):
-            if name not in checks:
-                logger.warning("health check %r is not installed and is not a file "
-                               "reference; skipping", name)
-            continue
         try:
-            obj = load_ref(name, config_dir)
+            if is_file_ref(name):
+                obj = load_ref(name, config_dir)
+            elif name in installed:
+                obj = installed[name].load()
+            else:
+                # Loud, and it must stay loud: a declared check that silently did not run
+                # leaves no rows, and no rows means "not checked" -- so the campaign would
+                # read as ungraded rather than as misconfigured.
+                logger.warning("health check %r is not installed and is not a file "
+                               "reference; skipping. Installed: %s",
+                               name, ", ".join(sorted(installed)) or "none")
+                continue
             checks[name] = obj() if inspect.isclass(obj) else obj
-        except Exception as exc:  # noqa: BLE001 - see above
+        except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop the rest
             logger.warning("health check %r could not be loaded: %s", name, exc)
     return checks
 
