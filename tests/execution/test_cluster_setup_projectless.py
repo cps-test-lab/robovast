@@ -116,9 +116,17 @@ def test_ambient_project_contributes_no_labels(tmp_path, monkeypatch, deploy_stu
     deep.mkdir(parents=True)
     monkeypatch.chdir(deep)
 
-    # It would RAISE if the ambient project's jobs.node_labels had been read, which is a
-    # sharper assertion than the old one: that setting is refused outright now.
     setup_server(config_name="rke2", namespace="default")
+
+    # The ambient project sets jobs.node_labels; the deploy must carry an EMPTY pool, not
+    # that project's. Asserted on the env the service is given, which is where the pool is
+    # enforced from -- a project ten directories above an unrelated CWD must not decide
+    # which machines this cluster's campaigns may run on.
+    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
+    from robovast.execution.cluster_execution import service_deploy
+    env = {e["name"]: e["value"]
+           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
+    assert env.get(JOB_NODE_POOL_ENV) == ""
 
     # The store pod is still pinned -- that decision comes from the cluster, not from a
     # .vast -- but nothing the ambient project said reached it.
@@ -142,19 +150,46 @@ def test_stale_ambient_project_does_not_fail_the_deploy(tmp_path, monkeypatch,
 def test_jobs_node_labels_are_refused_rather_than_silently_ignored(monkeypatch, tmp_path,
                                                                    deploy_stubs):
     """Nothing applies it, so setup refuses it rather than accepting it silently.
+def test_jobs_node_labels_reach_the_service_that_enforces_them(monkeypatch, tmp_path,
+                                                               deploy_stubs):
+    """The setting is applied again, by the admission controller rather than by Kueue.
 
-    Accepting it silently would place campaign jobs on every node of the cluster while
-    setup reported success -- a lasting, cluster-wide misconfiguration from a setting the
-    operator had every reason to think was applied.
+    It travels in the service's env because the controller runs there and the pool is a
+    property of the cluster: a campaign-level override would let one campaign widen the pool
+    every other campaign is confined to. Its previous implementation was Kueue's
+    ResourceFlavor, and for one release after Kueue was retired setup refused it outright.
     """
-    from robovast.common.errors import CampaignConfigError
+    import json
 
+    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
+
+    config = deploy_stubs
     vast = tmp_path / "campaign.vast"
     vast.write_text(_VAST, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(CampaignConfigError, match="jobs.node_labels"):
-        setup_server(config_name="rke2", namespace="default", vast_path=str(vast))
+    setup_server(config_name="rke2", namespace="default")
+
+    from robovast.execution.cluster_execution import service_deploy
+    env = {e["name"]: e["value"]
+           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
+    assert json.loads(env[JOB_NODE_POOL_ENV]) == _JOBS
+
+
+def test_removing_the_setting_clears_the_previous_pool(monkeypatch, tmp_path, deploy_stubs):
+    """Written on every setup, empty included. Without that, deleting it from the .vast would
+    leave the old pool in force and the operator's file would stop describing the cluster."""
+    from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
+
+    config = deploy_stubs
+    monkeypatch.setattr(cluster_setup, "get_vast_file_override", lambda: None)
+
+    setup_server(config_name="rke2", namespace="default")
+
+    from robovast.execution.cluster_execution import service_deploy
+    env = {e["name"]: e["value"]
+           for e in (service_deploy.deploy_service.call_args.kwargs.get("env") or [])}
+    assert env[JOB_NODE_POOL_ENV] == ""
 
 
 def test_named_config_supplies_control_labels(tmp_path, monkeypatch, deploy_stubs):

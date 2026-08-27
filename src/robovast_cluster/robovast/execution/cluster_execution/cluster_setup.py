@@ -408,16 +408,15 @@ def setup_server(config_name=None, list_configs=False, force=False,
     jobs_node_labels, control_node_labels = get_kubernetes_node_labels_from_config(
         vast_path)
     if jobs_node_labels:
-        # Refused rather than ignored: nothing applies it, and accepting it silently would
-        # place campaign jobs on every node of the cluster while setup reported success --
-        # precisely the cluster-wide, lasting misconfiguration this function refuses
-        # elsewhere.
-        raise CampaignConfigError(
-            "execution.kubernetes.jobs.node_labels is not applied and this "
-            f"configuration sets it ({jobs_node_labels}). To keep campaign jobs off "
-            "particular machines, taint the nodes that should NOT run them -- job pods "
-            "carry the campaign toleration, so an untainted pool still takes them. Remove "
-            "the setting to continue.")
+        # Repointed at the admission controller, which is what finally makes this key mean
+        # what `docs/configuration.rst` always said it meant: a pod nodeSelector. Its only
+        # previous implementation was Kueue's ResourceFlavor nodeLabels, and for one release
+        # after Kueue was retired it was refused outright rather than silently ignored.
+        #
+        # It reaches the running service as an env var, the same path the headroom figures
+        # take, because the pool is a property of the CLUSTER: carrying it in a campaign's
+        # .vast would let one campaign widen the pool every other campaign is confined to.
+        logger.info("Campaign job node pool (nodeSelector): %s", jobs_node_labels)
     if control_node_labels:
         logger.info("Control pod node labels (nodeSelector): %s", control_node_labels)
 
@@ -524,9 +523,22 @@ def setup_server(config_name=None, list_configs=False, force=False,
                 host = ""
         if host:
             service_kwargs["registry_host"] = host
+    # The job node pool travels in the service's env, because the admission controller is
+    # what enforces it and the controller runs there. Written on every setup, including as
+    # an empty string when the setting was removed -- otherwise dropping it from the .vast
+    # would leave the previous pool in force, and the operator's file would stop describing
+    # the cluster it configures.
+    import json  # noqa: PLC0415
+
+    from .node_placement import JOB_NODE_POOL_ENV  # noqa: PLC0415
+
+    env = [e for e in (service_kwargs.pop("env", None) or [])
+           if e.get("name") != JOB_NODE_POOL_ENV]
+    env.append({"name": JOB_NODE_POOL_ENV,
+                "value": json.dumps(jobs_node_labels) if jobs_node_labels else ""})
     deploy_service(namespace=namespace, kube_context=kube_context,
                    config_name=config_name, config_kwargs=cluster_kwargs,
-                   **service_kwargs)
+                   env=env, **service_kwargs)
     logger.debug("Cluster config '%s' recorded in the robovast-service Deployment.",
                  config_name)
     # The shared build daemon, AFTER the service: it mounts the registry CA and uses the pull
