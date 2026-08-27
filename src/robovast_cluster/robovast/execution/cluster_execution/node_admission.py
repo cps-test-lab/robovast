@@ -418,18 +418,31 @@ class AdmissionController:
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
                 if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
-                    biggest = max((n.free_cpu for n in by_id.values()), default=0.0)
                     waiting = f"{len(pending) - created} job(s) waiting"
+                    # Which of the two filters emptied the list, because they need opposite
+                    # responses and the message is the only thing an operator sees. A node
+                    # excluded by `may_use` is being measured, or is outside the configured
+                    # pool -- reporting "no node has that free" over an idle cluster sent the
+                    # reader to look for capacity that was never the problem. Observed saying
+                    # "no node has that free (most free: 89 cpu)" for a job needing 4.25,
+                    # while all four nodes were simply out for calibration.
+                    usable = [n for n in by_id.values() if item.may_use(n.node_id)]
                     if chosen is None and growable:
                         self._refusals[item.owner] = (
                             f"{waiting}: {unpinned} already created for a node the "
                             f"autoscaler has not produced yet (limit "
                             f"{GROWTH_UNPINNED_LIMIT})")
+                    elif not usable:
+                        self._refusals[item.owner] = (
+                            f"{waiting}: no node is accepting work yet "
+                            f"({len(by_id)} node(s) held: being measured before work is "
+                            f"placed on them, or outside this campaign's node pool)")
                     else:
+                        biggest = max((n.free_cpu for n in usable), default=0.0)
                         self._refusals[item.owner] = (
                             f"{waiting}: next needs {need.cpu:g} cpu / "
                             f"{need.memory // (1024 ** 2)}Mi and no node has that free "
-                            f"(most free: {biggest:g} cpu)")
+                            f"(most free of {len(usable)} usable: {biggest:g} cpu)")
                     continue
                 try:
                     # ``None`` means create unpinned, and there are two ways to get here: a

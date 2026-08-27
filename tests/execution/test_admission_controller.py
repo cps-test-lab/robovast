@@ -679,3 +679,37 @@ def test_a_callback_may_ask_the_queue_from_another_thread_while_a_drain_holds_it
 
     assert not drainer.is_alive() and not asker.is_alive(), "neither thread is stuck"
     assert answers == [{}]
+
+
+def test_the_refusal_names_the_filter_that_actually_blocked_it():
+    """Two filters empty the candidate list and they need opposite responses.
+
+    Observed on a live campaign: "no node has that free (most free: 89.025 cpu)" for a job
+    needing 4.25 cpu -- because all four nodes were out for calibration, and `may_use` was
+    what excluded them. The message blamed capacity over an idle cluster, sending the reader
+    to look for room that was never the problem. `biggest` was also computed over every node
+    including the excluded ones, which is where the contradictory 89 came from.
+    """
+    from robovast.execution.cluster_execution.node_admission import JobSizing
+
+    c = _controller(FakeProvider(cpu=64.0))
+    # Every node held: the calibration gate, or a node pool this campaign is outside.
+    c.submit("camp", [("j-0", JobSizing(4.25, MiB), lambda _n=None: None)],
+             started_at=0.0, accepts_node=lambda node_id: False)
+    assert c.drain() == 0
+    message = c.refusal("camp")
+    assert "no node is accepting work yet" in message, message
+    assert "being measured" in message
+    assert "free" not in message, "capacity is not the reason and must not be offered as one"
+
+
+def test_a_genuine_capacity_refusal_still_says_so():
+    """The other branch, and it must count only nodes this campaign could actually use --
+    reporting the free cores of a node it is excluded from is the same lie in reverse."""
+    from robovast.execution.cluster_execution.node_admission import JobSizing
+
+    c = _controller(FakeProvider(cpu=2.0))
+    c.submit("camp", [("j-0", JobSizing(99.0, MiB), lambda _n=None: None)], started_at=0.0)
+    assert c.drain() == 0
+    message = c.refusal("camp")
+    assert "needs 99 cpu" in message and "usable" in message, message
