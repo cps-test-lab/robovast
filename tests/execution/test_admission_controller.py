@@ -382,15 +382,35 @@ def test_calibration_outlives_a_batch_because_a_search_has_many():
     assert c.calibration("other-camp") is None, "and it is per campaign"
 
 
-def test_a_cancelled_campaign_takes_its_calibration_with_it():
+def test_cancelling_a_batch_keeps_the_campaign_calibration():
+    """The bug this pins, and it shipped. ``cancel`` runs in the ``finally`` at the end of
+    every BATCH -- a search builds a fresh runner per batch -- so dropping the calibration
+    there made every batch re-probe every node.
+
+    Measured on a live search: four probe runs per batch instead of per campaign, and the
+    figures moved between batches (one node's system under test went 1.820 to 1.106 cores),
+    so runs in different batches of the SAME campaign were sized differently. That defeats
+    the property calibration exists to provide.
+    """
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    c = _controller()
+    first = c.calibration("camp", NodeCalibration)
+    c.cancel("camp")
+    assert c.calibration("camp") is first, "the next batch must reuse it, not re-measure"
+
+
+def test_a_finished_campaign_takes_its_calibration_with_it():
     """Measured under this campaign's contention, for its containers. Handing it to the next
-    campaign is the transferable factor this cluster's own data refuted."""
+    campaign is the transferable factor this cluster's own data refuted -- so the campaign's
+    end, not its batch's, is what ends it."""
     from robovast.execution.cluster_execution.node_calibration import NodeCalibration
 
     c = _controller()
     c.calibration("camp", NodeCalibration)
-    c.cancel("camp")
+    assert c.forget_calibration("camp") is True
     assert c.calibration("camp") is None
+    assert c.forget_calibration("camp") is False, "and forgetting twice is not an error"
 
 
 def test_a_pinned_item_goes_to_its_node_or_waits_for_it():

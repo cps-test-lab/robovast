@@ -2489,6 +2489,13 @@ class KubernetesBackend(ExecutionBackend):
         raw files is idempotent.
         """
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        # The campaign is over, so its per-node figures are too. Deliberately not reused by
+        # the next campaign -- they were measured under this one's contention, for this one's
+        # containers -- and this is the only campaign-level hook the backend has; the batch's
+        # `finally` releases reservations but must NOT touch calibration, or a search re-probes
+        # every node every batch.
+        if self._admission is not None:
+            self._admission.forget_calibration(campaign_id)
         bucket, prefix = in_pod_storage.campaign_storage_location(
             self.cluster_config, campaign_id)
         storage = in_pod_storage.storage_client_for(self.cluster_config)
