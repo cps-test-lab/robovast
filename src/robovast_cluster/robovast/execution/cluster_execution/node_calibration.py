@@ -189,18 +189,34 @@ class NodeCalibration:
 #: Turns per-node *sizing* on. **Off by default, and the default is the honest one.**
 #:
 #: A probe runs before the campaign places any work, which is what lets every run on a node
-#: share one environment -- and is also why its figures are not the campaign's. Measured on
-#: 2026-08-27, same node, same campaign: the probe read the system under test at 0.82 peak
-#: where its real runs peaked at 1.64, and read the simulator's sustained use at 1.13 where
-#: the real runs sat at 0.35. Under by 2x on the container that must never be starved, over
-#: by 3x on the ones the density was supposed to come from -- so applying it would starve
-#: nav2 below its measured floor AND give back the packing gain.
+#: share one environment -- and is also why its figures are not the campaign's. It measures
+#: an idle machine; the runs it sizes meet a full one.
 #:
-#: The two goals are simply exclusive: "measured before any load" and "measured under the
-#: load it will meet" cannot both hold of one probe. Until a probe measures under
-#: representative contention, declared sizing everywhere is the correct behaviour, and
-#: per-node PLACEMENT -- budgets and pinning, which are verified and fix fragmentation --
-#: stands on its own without it.
+#: Measured on `calcompare-2026-08-27-08441613`, SUT peak, probe against the same node's own
+#: runs (per-tick sums through :func:`container_cpu_profile`, ceiling 3.0):
+#:
+#: =================  ==========  ==========  ====  =====
+#: node               probe peak  under load  runs  ratio
+#: =================  ==========  ==========  ====  =====
+#: Xeon Gold 5220R         2.366       2.826    33  0.84x
+#: i7-14700K               0.992       1.224    15  0.81x
+#: i7-8700K                1.704       1.824     2  0.93x
+#: =================  ==========  ==========  ====  =====
+#:
+#: Every probe reads LOW, by 7-19%, and it reads low on the one container that must never be
+#: starved. The bias has the sign the mechanism predicts -- an idle node is a cheap node --
+#: so it is not noise that more probes would average away. Applying these figures would size
+#: nav2 below what its own runs went on to demand.
+#:
+#: The two goals are exclusive: "measured before any load" and "measured under the load it
+#: will meet" cannot both hold of one probe. Until a probe measures under representative
+#: contention, declared sizing everywhere is the correct behaviour, and per-node PLACEMENT --
+#: budgets and pinning, which are verified and fix fragmentation -- stands on its own.
+#:
+#: An earlier version of this note argued the same conclusion from a probe that had never
+#: finished, and got the magnitude and one direction wrong doing it. Dead probes are now
+#: rejected by :func:`probe_completed`, so the numbers above are from probes that ran to a
+#: verdict -- which is why the case is weaker than it looked and still holds.
 CALIBRATION_ENV = "ROBOVAST_NODE_CALIBRATION"
 
 
