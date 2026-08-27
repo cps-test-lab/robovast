@@ -99,8 +99,26 @@ class ControllerState:
 
     def update(self, **fields) -> None:
         with self._lock:
+            was_queued = self._status.waiting_for_capacity
             for key, value in fields.items():
                 setattr(self._status, key, value)
+            # Leaving a capacity queue is forward movement, and by exactly the rule
+            # ``set_phase`` states for a phase change: a campaign that queued for longer than
+            # one run's budget would otherwise enter its first run already carrying a
+            # progress clock older than the deadline, and be called stalled before that run
+            # could possibly finish. ``waiting_for_capacity`` suppresses the verdict only
+            # WHILE the wait lasts, so without this the accusation simply lands the moment
+            # the wait ends -- which is the worst moment, because the campaign has just
+            # started doing the thing it was waiting to do.
+            #
+            # Measured on 2026-08-27: a campaign held 300s behind its own calibration probe
+            # reported ``stalled: true`` with both of its runs healthy and seconds old. It
+            # is not calibration-specific -- any campaign queued behind another one for
+            # longer than the per-run budget is accused the same way, which is the
+            # multi-campaign case admission exists to serve.
+            if was_queued and not self._status.waiting_for_capacity:
+                self._status.progress_since = time.time()
+                self._progress_mark = self._progress_signal()
             self._stamp_progress()
             self._status.updated_at = time.time()
 
