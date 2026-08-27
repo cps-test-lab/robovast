@@ -1112,12 +1112,19 @@ class BatchJobRunner:
         reserved. The pin then narrows the pool rather than widening it -- a selector that
         replaced the pool would defeat the very confinement it was placed inside.
         """
-        spec = manifest['spec']['template']['spec']
-        selector = {**(spec.get('nodeSelector') or {}), **job_node_pool()}
+        pool = job_node_pool()
+        if not pool and not node_id:
+            # Nothing to confine. Returned untouched rather than reaching into the manifest,
+            # because this is now called unconditionally where the pin used to be guarded by
+            # `if node_id` -- and a caller with a minimal manifest (an offline emit, a test)
+            # would otherwise die on a key it never needed.
+            return manifest
+        spec = manifest.setdefault('spec', {}).setdefault(
+            'template', {}).setdefault('spec', {})
+        selector = {**(spec.get('nodeSelector') or {}), **pool}
         if node_id:
             selector[NODE_ID_LABEL] = node_id
-        if selector:
-            spec['nodeSelector'] = selector
+        spec['nodeSelector'] = selector
         return manifest
 
     def _create_probe(self, base, key, output_dir, node_id=None):
