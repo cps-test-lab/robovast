@@ -12,6 +12,7 @@ campaign, so the two take turns instead of the older one finishing.
 
 import pytest
 
+from robovast.execution.cluster_execution import node_admission
 from robovast.execution.cluster_execution.node_admission import (AdmissionController,
                                                                  AdmissionRefused, Budget,
                                                                  Capacity, JobSizing,
@@ -160,7 +161,7 @@ def test_no_room_now_is_an_ordinary_answer():
     c = _controller(FakeProvider(cpu=0.5))
     _items(c, "a", 1, cpu=2.0)
     assert c.drain() == 0
-    assert "waiting" in c.refusal()
+    assert "waiting" in c.refusal("a")
 
 
 def test_a_job_no_node_could_ever_run_raises_instead():
@@ -243,7 +244,7 @@ def test_fragmentation_is_refused_rather_than_admitted_and_left_pending():
     made = _items(c, "a", 1, cpu=4.0)
     assert p.budget().free_cpu == 12.0, "cluster-wide there is plenty"
     assert c.drain() == 0 and made == []
-    assert "no node has that free" in c.refusal()
+    assert "no node has that free" in c.refusal("a")
 
 
 def test_the_ledger_charges_the_node_the_job_was_granted_on():
@@ -300,6 +301,42 @@ def test_a_growable_cluster_may_create_unpinned_when_no_node_fits():
              started_at=0.0)
     assert c.drain() == 1
     assert seen == [None], "unpinned, because the room is not on any node yet"
+
+
+def test_a_growable_cluster_does_not_create_the_whole_batch_at_once():
+    """The autoscaler exception was a hole, and this is the size of it.
+
+    Every pending item "fits" a growable cluster, and an unpinned hold is charged to no node
+    -- so one drain created all 1435 of a batch, unaccounted. That is exactly the flood this
+    module was written to end, reintroduced by the one branch that skips the per-node test.
+
+    A handful of unplaceable pods says "add nodes" as loudly as a thousand do; the thousand
+    add unaccounted reservations, not signal.
+    """
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MiB, 0)], growable=True)
+    c = _controller(p)
+    made = _items(c, "a", node_admission.GROWTH_UNPINNED_LIMIT * 3, cpu=4.0)
+    assert c.drain() == node_admission.GROWTH_UNPINNED_LIMIT
+    assert len(made) == node_admission.GROWTH_UNPINNED_LIMIT
+    # And it stays capped while nothing has been placed: draining again buys nothing.
+    assert c.drain() == 0
+    assert "autoscaler has not produced" in c.refusal("a")
+
+
+def test_growth_resumes_as_the_new_nodes_take_the_work():
+    """The cap bounds work in flight, not the size the cluster reaches.
+
+    Once a pod is bound its requests are in the reading, so it is charged to a real node like
+    any other and its slot frees. A cap that did not release would stall a campaign at
+    GROWTH_UNPINNED_LIMIT jobs forever on a cluster that grew for it.
+    """
+    p = FakeProvider(per_node=[("a", 1.0, 10240 * MiB, 0)], growable=True)
+    c = _controller(p)
+    made = _items(c, "a", node_admission.GROWTH_UNPINNED_LIMIT + 3, cpu=4.0)
+    assert c.drain() == node_admission.GROWTH_UNPINNED_LIMIT
+
+    p.observe(*made)            # the autoscaler produced nodes; the pods are bound
+    assert c.drain() == 3, "the rest go once the earlier ones stopped being in flight"
 
 
 def test_a_static_cluster_never_creates_unpinned():
@@ -489,3 +526,138 @@ def test_the_sizing_callback_may_not_reenter_the_queue():
     threading.Thread(target=_run, daemon=True).start()
     assert done.wait(timeout=5), (
         "drain() did not return: the sizing callback re-entered the queue's lock")
+
+
+# -- a create that will never work ----------------------------------------------------------
+
+def test_a_create_that_keeps_failing_is_eventually_given_up_on():
+    """Retrying forever reported the symptom hours from the cause.
+
+    A create that raises is left PLANNED because the common causes are transient. The ones
+    that are not -- an RBAC change, a validating webhook, a ResourceQuota, an unparseable node
+    pool -- look identical from here, and were retried every two seconds with nothing said.
+    The campaign created nothing and was eventually called *stalled*, which describes what an
+    observer saw rather than what happened.
+    """
+    c = _controller()
+
+    def _boom(_node=None):
+        raise RuntimeError("admission webhook denied the request")
+
+    c.submit("a", [("a-0", JobSizing(1.0, MiB), _boom)], started_at=0.0)
+    for _ in range(node_admission.CREATE_ATTEMPT_LIMIT):
+        assert c.drain() == 0
+
+    assert c.states("a") == {}, "given up on, not retried by every later drain"
+    reason = c.refusal("a")
+    assert "admission webhook denied" in reason, "and the cause travels with the verdict"
+    assert str(node_admission.CREATE_ATTEMPT_LIMIT) in reason
+
+
+def test_a_transient_failure_does_not_count_against_a_later_success():
+    """The counter is consecutive failures, not lifetime ones.
+
+    An API blip on one drain must not bring an item closer to being abandoned on a drain
+    weeks of trials later.
+    """
+    c = _controller()
+    calls = []
+
+    def _flaky(_node=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("connection reset")
+
+    c.submit("a", [("a-0", JobSizing(1.0, MiB), _flaky)], started_at=0.0)
+    assert c.drain() == 0
+    assert c.drain() == 1
+    assert c.states("a") == {"a-0": "created"}
+
+
+def test_the_refusal_is_per_owner():
+    """One global slot meant campaign B read campaign A's job sizes as its own reason."""
+    p = FakeProvider(per_node=[("n1", 4.0, 4096 * MiB, 0)])
+    c = _controller(p)
+    _items(c, "big", 1, cpu=99.0, started_at=1.0)
+    _items(c, "small", 1, cpu=1.0, started_at=2.0)
+
+    assert c.drain() == 1, "the small one fits"
+    assert "99 cpu" in c.refusal("big")
+    assert c.refusal("small") == "", "a campaign that was served has nothing to explain"
+
+
+# -- several campaign threads at once --------------------------------------------------------
+
+def test_concurrent_drains_never_over_admit():
+    """The central claim of the design, and nothing exercised it.
+
+    Every campaign runs on its own thread and they all work the GLOBAL queue -- that is what
+    makes the ordering cluster-wide without giving the controller a thread of its own. So the
+    property that matters is that N threads draining at once hand out the same capacity ONE
+    thread would: a node's cores can be granted once, however many callers ask.
+    """
+    import threading
+
+    capacity = 40
+    p = FakeProvider(per_node=[("n1", float(capacity), 1_000_000 * MiB, 0)])
+    c = _controller(p)
+
+    created = []
+    guard = threading.Lock()
+
+    def _record(_node=None, key=None):
+        with guard:
+            created.append(key)
+
+    for owner in range(4):
+        c.submit(f"c{owner}",
+                 [(f"c{owner}-{i}", JobSizing(1.0, MiB),
+                   (lambda n=None, k=f"c{owner}-{i}": _record(n, k)))
+                  for i in range(25)],
+                 started_at=float(owner))
+
+    threads = [threading.Thread(target=c.drain) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(created) == len(set(created)), "no job was created twice"
+    assert len(created) == capacity, (
+        "exactly the node's cores were spent -- not more by racing, not fewer by blocking")
+
+
+def test_a_callback_may_ask_the_queue_from_another_thread_while_a_drain_holds_it():
+    """The reentrant lock removes a deadlock class; it must not have introduced a livelock.
+
+    `sizing_for_node` runs inside `drain`, under the lock, on the draining thread. A DIFFERENT
+    campaign's thread asking the queue anything at that moment must simply wait its turn --
+    not deadlock, and not be served stale state mid-drain.
+    """
+    import threading
+
+    p = FakeProvider(per_node=[("n1", 8.0, 8192 * MiB, 0)])
+    c = _controller(p)
+    entered = threading.Event()
+    release = threading.Event()
+    answers = []
+
+    def _sizing(_node_id):
+        entered.set()
+        release.wait(timeout=5)
+        return None
+
+    c.submit("a", [("a-0", JobSizing(1.0, MiB), lambda n=None: None)],
+             started_at=0.0, sizing_for_node=_sizing)
+
+    asker = threading.Thread(target=lambda: answers.append(c.states("b")))
+    drainer = threading.Thread(target=c.drain)
+    drainer.start()
+    assert entered.wait(timeout=5), "the callback runs inside the drain"
+    asker.start()
+    release.set()
+    drainer.join(timeout=5)
+    asker.join(timeout=5)
+
+    assert not drainer.is_alive() and not asker.is_alive(), "neither thread is stuck"
+    assert answers == [{}]
