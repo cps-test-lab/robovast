@@ -4,12 +4,16 @@
 """``vast exec cluster`` -- the group shell, and the verbs that only drive a service.
 
 Every cluster campaign is driven by the **robovast-service**, which runs it in-process and
-creates the scenario Jobs itself. Launching one is therefore four HTTP verbs against that
+creates the scenario Jobs itself. Acting on one is therefore an HTTP verb against that
 service and nothing else: no kubeconfig, no Kubernetes client, no Docker. That is why
-``run``, ``stop``, ``stop-job``, ``log`` and ``download-cleanup`` live in the client -- the
+``stop``, ``stop-job``, ``log`` and ``download-cleanup`` live in the client -- the
 audience that *drives* a cluster is not the audience that *owns* one, and making them
-install ``robovast-cluster`` (which depends on the full core) to start a campaign meant
+install ``robovast-cluster`` (which depends on the full core) to stop a campaign meant
 installing 290 MB to send an HTTP POST.
+
+Launching is **not** here: a campaign runs a workspace's project, which is not a property
+of the cluster and never was. ``vast workspace run`` is the one way to start one, and it is
+addressed the way the service accepts it -- a workspace and a path.
 
 What stays in ``robovast-cluster`` is the half that genuinely needs a cluster: ``setup``,
 ``cleanup``, ``upgrade``, ``token``, ``run-cleanup``, and ``monitor``. They attach here
@@ -29,13 +33,11 @@ contract built for scripts; ``monitor`` is job-level, every campaign, and a live
 """
 
 import os
-import sys
 
 import click
 
 from robovast.client.errors import handle_cli_exception
 from robovast.client.lazy_group import LazyPluginGroup
-from robovast.client.project_config import get_project_config
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_chunks
@@ -46,16 +48,11 @@ CLUSTER_PLUGIN_GROUP = "robovast.cluster_plugins"
 
 @click.group(cls=LazyPluginGroup, plugin_group=CLUSTER_PLUGIN_GROUP)
 def cluster():
-    """Execute scenarios on a Kubernetes cluster.
+    """Act on a Kubernetes cluster and the campaigns running on it.
 
-    Run scenario configurations as Kubernetes jobs with bind mounts
-    for configuration and output data.
-
-    The command that executes a *campaign* (``run``) needs a project
-    (``vast init``, or ``-V <file>``) to know which ``.vast`` to run. The ones that
-    act on the *cluster* — ``setup``, ``cleanup``, ``monitor``, ``stop``,
-    ``run-cleanup``, ``download-cleanup`` — do not: they read what they need from the
-    cluster itself and work from any directory.
+    These verbs read what they need from the cluster or the service, so they work from
+    any directory. To *start* a campaign, use ``vast workspace run``: a campaign runs a
+    workspace's project, which is not a property of the cluster.
 
     The verbs that only drive the service ship with ``robovast-client``; the ones that
     need a kubeconfig arrive with ``robovast-cluster``, so what this lists depends on
@@ -80,163 +77,6 @@ def _sole_running_campaign(client):
         raise ValueError(
             f"{len(live)} campaigns are running ({names}); pass --campaign to choose one.")
     return live[0].campaign_id
-
-
-def _confirm_overwrite(name, workspace_id):
-    """Ask before a launch overwrites the workspace the project already has.
-
-    Same shape as ``vast workspace init``'s collision prompt: the default is yes, so
-    Enter is enough for the common case of re-launching the project you just edited.
-    Off a TTY there is nobody to ask and blocking would hang a scripted launch, so it
-    proceeds with that default — announced, never silent.
-
-    It says *what* the overwrite can disturb because nothing else can: a campaign is
-    workspace-independent by design (``_execution/launch.yaml`` deliberately does not
-    record which workspace it came from), so neither this command nor the service can
-    tell whether one is still reading these files.
-    """
-    question = (f"workspace {name!r} ({workspace_id}) already holds this project — "
-                "overwrite its files (a campaign still running from them would see "
-                "the change)?")
-    if not sys.stdin.isatty():
-        click.echo(f"note: {question} yes (not a terminal)")
-        return True
-    return click.confirm(question, default=True)
-
-
-@cluster.command()
-@click.option('--config', '-c', default=None,
-              help='Run only configurations matching this name or glob pattern (e.g. hall*)')
-@click.option('--runs', '-r', type=int, default=None,
-              help='Override execution.runs (default: the value in the .vast).')
-@click.option('--log-tree', '-t', is_flag=True,
-              help='Log scenario execution live tree')
-@target_options
-@click.option('--wait-and-download', 'wait_and_download', is_flag=True,
-              help='Block until the campaign finishes and its results are uploaded, '
-                   'then download its archive into the current directory — making a '
-                   'cluster run as transparent as a local run.')
-@click.option('--poll-interval', type=float, default=5.0, show_default=True,
-              help='Seconds between status polls when --wait-and-download is set.')
-@click.option('--campaign-name', default=None,
-              help='Override the campaign name; the id becomes <name>-<timestamp>.')
-@click.option('--upload-to-share', 'upload_to_share', is_flag=True,
-              help='Stream a raw (pre-postprocess) archive to the configured share '
-                   'when the campaign finishes.')
-@click.option('--description', default=None, metavar='TEXT',
-              help='One line saying what this run is for. It is what tells two '
-                   'same-day <name>-<timestamp> campaigns apart in the monitor and '
-                   'the web UI.')
-@click.option('--workspace', 'workspace_name', default=None, metavar='NAME',
-              help="Workspace to push the project into (default: the .vast's "
-                   'directory name). Reused when it already exists.')
-@click.option('--image-project', 'image_project', default=None, metavar='PROJECT',
-              help='Registry/namespace to take the RoboVAST images from for this run '
-                   '(e.g. ghcr.io/cps-test-lab), overriding ROBOVAST_PROJECT. Affects only images '
-                   'RoboVAST publishes — a container image your .vast names is run as '
-                   'written. Per campaign: no cluster redeploy.')
-@click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',
-              help='Tag to take those images at (default: ROBOVAST_PROJECT_TAG, else '
-                   'latest).')
-@click.option('--allow-opaque-image', is_flag=True,
-              help='Launch even though a container names an image that declares no '
-                   "provenance:. Refused by default because nothing in the results "
-                   'could then say what ran; the exemption is recorded on the campaign.')
-def run(config, runs, log_tree, namespace, context, wait_and_download,
-        allow_opaque_image,
-        poll_interval, campaign_name, upload_to_share,
-        description, workspace_name, image_project,
-        image_project_tag):  # pylint: disable=function-redefined,redefined-outer-name
-    """Execute a campaign (batch or search) on a Kubernetes cluster.
-
-    \b
-    There is no ``--campaign-id`` here: the service names the campaign and
-    ``CreateCampaignRequest`` carries no id, so nothing could honour one. The id it
-    chose is returned by the launch. ``vast exec local run`` drives the controller
-    directly and does take one.
-
-    Runs through the robovast-service, which drives the campaign in-process and
-    creates the per-batch scenario Jobs. The service is the one answering on the
-    conventional local port, or the deployed one ``vast login`` recorded — either
-    way this needs **no flags**. By default the command is fire-and-forget: it returns
-    once the campaign is launched. Track it with ``vast wait <campaign-id>``, or the
-    web UI (``vast exec cluster monitor`` needs ``robovast-cluster``).
-
-    Pass ``--wait-and-download`` to instead block until the campaign finishes and
-    its results have been uploaded, then download them into the project results
-    directory automatically — one command, results on local disk, like a local run.
-
-    Use --config to run only matching configurations (batch campaigns).
-
-    Names a project with ``vast init``, or directly: ``vast -V my.vast exec cluster
-    run``. The project is pushed into a workspace named after its directory, which is
-    **reused** on later launches (overwritten, after asking) rather than accumulating
-    one workspace per run — ``--workspace`` picks a different name.
-    """
-    try:
-        from robovast.execution.campaign_wait import \
-            wait_for_campaign_outcome  # pylint: disable=import-outside-toplevel
-        from robovast.service.interface import \
-            DESCRIPTION_MAX_LEN  # pylint: disable=import-outside-toplevel
-        from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
-            download_campaign_archive, run_project_via_service)
-
-        # Checked here rather than left to the request model: this says what to do
-        # instead of surfacing a pydantic validation string, and it refuses before the
-        # project is pushed.
-        if description and len(description) > DESCRIPTION_MAX_LEN:
-            raise click.ClickException(
-                f"--description is {len(description)} characters; the limit is "
-                f"{DESCRIPTION_MAX_LEN} — shorten it to one line.")
-
-        project = get_project_config()
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
-            _echo_target(target)
-            cid = run_project_via_service(
-                client, project.config_path, config_filter=config or "",
-                # 0, not 1: the service reads a non-positive count as "use the .vast's
-                # execution.runs", and a substitute for "unset" would shrink the
-                # campaign without failing anything.
-                runs=runs or 0, feedback=click.echo, upload_to_share=upload_to_share,
-                campaign_name=campaign_name or "", description=description or "",
-                workspace_name=workspace_name or "", on_exists=_confirm_overwrite,
-                allow_opaque_image=allow_opaque_image,
-                # The flag beats ROBOVAST_PROJECT; unset here means "whatever the .env
-                # said", which project_push reads. Resolved client-side into the request
-                # because the images are resolved *service*-side — a client that could
-                # only set its own env var could not reach them at all.
-                image_project=image_project, image_project_tag=image_project_tag)
-            if not wait_and_download:
-                click.echo(f"Launched cluster campaign '{cid}' via robovast-service. "
-                           f"Track it with 'vast wait {cid}' or the web UI.")
-                return
-
-            click.echo(f"Launched cluster campaign '{cid}'. Waiting for it to finish...")
-            outcome = wait_for_campaign_outcome(
-                cid, client=client, interval=poll_interval, feedback=click.echo)
-            if outcome == "failed":
-                raise click.ClickException(
-                    f"Campaign '{cid}' failed. Its status carries the failure reason: "
-                    f"see 'vast exec cluster log {cid}' or the web UI.")
-
-            click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
-            # The service streams the campaign from the object store — no external
-            # share needed for delivery. An archive, not an unpacked tree: what to do
-            # with it is the caller's, exactly as for `vast results download`.
-            dest = download_campaign_archive(
-                client, cid, os.path.join(os.getcwd(), f"{cid}.tar.gz"))
-            click.echo(f"Wrote {dest}")
-    # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
-    # usage and setting the exit code, so they must pass the broad handler below rather than be
-    # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
-    # with none of the project's dependencies installed, leaving click's types unresolvable --
-    # the same reason .pylintrc already disables import-error.
-    # pylint: disable-next=try-except-raise
-    except (click.UsageError, click.ClickException):
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
 
 
 @cluster.command()

@@ -14,12 +14,18 @@ keeps the listing free; only the chosen subcommand is loaded. ``LazyPluginGroup`
 for ``exec`` (group ``robovast.exec_plugins``) and again for ``exec cluster`` (group
 ``robovast.cluster_plugins``).
 
-The other half is degradation, and the boundary moved when the launch verbs became the
-client's. Blocking the cluster package used to take ``vast exec cluster`` with it, because
-the group itself lived there. Now the group and ``run``/``stop``/``stop-job``/``log``/
-``download-cleanup`` are in ``robovast-client``, so an install without the cluster package
-is short the *operator* verbs and keeps the ones a driver actually uses -- which is the
-whole point of the split, and therefore the thing worth asserting.
+The other half is degradation, and the boundary moved when the service-driven verbs became
+the client's. Blocking the cluster package used to take ``vast exec cluster`` with it,
+because the group itself lived there. Now the group and
+``stop``/``stop-job``/``log``/``download-cleanup`` are in ``robovast-client``, so an install
+without the cluster package is short the *operator* verbs and keeps the ones a driver
+actually uses -- which is the whole point of the split, and therefore the thing worth
+asserting.
+
+Launching is no longer one of them: a campaign runs a workspace's project, so ``vast
+workspace run`` is the client's own verb with no entry point in between. What that means
+here is that the client audience's most important command does not depend on this machinery
+at all -- covered in ``tests/service/test_client_needs_no_core.py``.
 """
 
 import sys
@@ -81,10 +87,17 @@ def test_the_cluster_group_survives_the_cluster_package_being_absent(cluster_abs
     assert result.exit_code == 0, result.output
 
 
-def test_the_launch_verb_survives_the_cluster_package_being_absent(cluster_absent):
-    """``run`` is the verb the client audience installs for; it must not need the lane."""
+def test_the_service_driven_verbs_survive_the_cluster_package_being_absent(cluster_absent):
+    """``stop``/``log`` only drive the service; they must not need the lane."""
+    for verb in ("stop", "stop-job", "log", "download-cleanup"):
+        result = CliRunner().invoke(exec_cli.execution, ["cluster", verb, "--help"])
+        assert result.exit_code == 0, f"{verb}: {result.output}"
+
+
+def test_launching_is_not_under_exec_at_all(cluster_absent):
+    """``run`` moved to ``vast workspace run``; nothing may answer to the old path."""
     result = CliRunner().invoke(exec_cli.execution, ["cluster", "run", "--help"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0
 
 
 def test_an_unloadable_operator_verb_warns_rather_than_crashing(cluster_absent):
