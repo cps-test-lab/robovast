@@ -545,6 +545,177 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
                 click.echo(f"  {namespace_name} {row.get('name')}: {values}")
 
 
+@workspace.command('run')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--push', 'push_dir', default=None, metavar='DIR',
+              type=click.Path(exists=True, file_okay=False),
+              help='Sync DIR into WORKSPACE before launching, creating the workspace if '
+                   'it does not exist. The two-step form (workspace init/update, then '
+                   'run) is the same thing spelled out.')
+@click.option('--filter', 'config_filter', default='', metavar='GLOB',
+              help='Run only configurations matching this name or glob (e.g. hall*).')
+@click.option('--runs', '-r', type=int, default=None,
+              help="Override execution.runs (default: the value in the .vast).")
+@click.option('--campaign-name', default=None,
+              help='Override the campaign name; the id becomes <name>-<timestamp>.')
+@click.option('--description', default=None, metavar='TEXT',
+              help='One line saying what this run is for. It is what tells two '
+                   'same-day <name>-<timestamp> campaigns apart in the web UI.')
+@click.option('--upload-to-share', 'upload_to_share', is_flag=True,
+              help='Stream a raw (pre-postprocess) archive to the configured share '
+                   'when the campaign finishes.')
+@click.option('--show-gui', 'show_gui', is_flag=True,
+              help="Watch ONE run in the simulator's window (never a sweep). Honoured "
+                   'only by a service on a local Docker lane, which is the only '
+                   'deployment whose docker process sits at a screen; every other lane '
+                   'refuses rather than running windowless.')
+@click.option('--allow-opaque-image', is_flag=True,
+              help='Launch even though a container names an image that declares no '
+                   "provenance:. Refused by default because nothing in the results "
+                   'could then say what ran; the exemption is recorded on the campaign.')
+@click.option('--image-project', 'image_project', default=None, metavar='PROJECT',
+              help='Registry/namespace to take the RoboVAST images from for this run, '
+                   'overriding ROBOVAST_PROJECT. Affects only images RoboVAST '
+                   'publishes — a container image your .vast names is run as written.')
+@click.option('--image-project-tag', 'image_project_tag', default=None, metavar='TAG',
+              help='Tag to take those images at (default: ROBOVAST_PROJECT_TAG, else '
+                   'latest).')
+@click.option('--wait-and-download', 'wait_and_download', is_flag=True,
+              help='Block until the campaign finishes and its results are uploaded, '
+                   'then download its archive into the current directory.')
+@click.option('--poll-interval', type=float, default=5.0, show_default=True,
+              help='Seconds between status polls when --wait-and-download is set.')
+@target_options
+def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
+                  campaign_name, description, upload_to_share, show_gui,
+                  allow_opaque_image, image_project, image_project_tag,
+                  wait_and_download, poll_interval, namespace, context):
+    """Run a ``.vast`` — the one way to start a campaign from a project.
+
+    WORKSPACE is a ``ws-…`` id or a workspace name. VAST is the path to the ``.vast``
+    *within* that workspace; omit it when the workspace holds exactly one and the
+    service will resolve it, naming the candidates if there are several.
+
+    A workspace is a directory holding files and possibly several ``.vast`` files; a
+    project is one ``.vast`` and the files it references. So the pair (workspace, path)
+    names the project to run, which is exactly what the service accepts —
+    ``workspace_id`` is the only project binding it takes.
+
+    Fire-and-forget by default: it returns once the campaign is launched. Track it with
+    ``vast wait <campaign-id>`` or the web UI. ``--wait-and-download`` instead blocks
+    until it finishes and pulls the archive down.
+
+    \b
+      vast workspace init .                      # push a workspace
+      vast workspace run my-experiment my.vast --description "pilot"
+      vast workspace run my-experiment --push .  # push and launch in one step
+    """
+    try:
+        from robovast.execution.campaign_wait import \
+            wait_for_campaign_outcome  # pylint: disable=import-outside-toplevel
+        from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+            DESCRIPTION_MAX_LEN, CreateCampaignRequest, CreateWorkspaceRequest)
+        from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
+            _resolve_workspace_id, download_campaign_archive,
+            sync_directory_to_workspace)
+
+        # Checked here rather than left to the request model: this says what to do
+        # instead of surfacing a pydantic validation string, and it refuses before
+        # anything is pushed or launched.
+        if description and len(description) > DESCRIPTION_MAX_LEN:
+            raise click.ClickException(
+                f"--description is {len(description)} characters; the limit is "
+                f"{DESCRIPTION_MAX_LEN} — shorten it to one line.")
+
+        # The flag beats ROBOVAST_PROJECT; unset means "whatever the .env said".
+        # Resolved client-side because the service cannot see the client's .env, and
+        # echoed because an override leaves no trace in the .vast.
+        project = image_project if image_project is not None else os.environ.get(
+            'ROBOVAST_PROJECT', '')
+        project_tag = image_project_tag if image_project_tag is not None else os.environ.get(
+            'ROBOVAST_PROJECT_TAG', '')
+
+        with service_client(namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+
+            if push_dir is not None:
+                workspace_id = _resolve_or_create_workspace(
+                    client, workspace, CreateWorkspaceRequest)
+                click.echo(f"Pushing {push_dir} into workspace {workspace_id} ...")
+                sync_directory_to_workspace(
+                    client, workspace_id, push_dir,
+                    skip_dirs=_INIT_EXCLUDE_DIRS, echo=click.echo)
+            else:
+                workspace_id = _resolve_workspace_id(client, workspace)
+
+            if project:
+                click.echo(f"Images from {project} at "
+                           f"{project_tag or 'latest'} (this run only).")
+
+            ref = client.create_campaign(CreateCampaignRequest(
+                workspace_id=workspace_id, config_path=vast_path,
+                config_filter=config_filter,
+                # 0, not 1: the service reads a non-positive count as "use the .vast's
+                # execution.runs", and a substitute for "unset" would shrink the
+                # campaign without failing anything.
+                runs=runs or 0,
+                campaign_name=campaign_name or "", description=description or "",
+                upload_to_share=upload_to_share, show_gui=show_gui,
+                allow_opaque_image=allow_opaque_image,
+                image_project=project, image_project_tag=project_tag))
+            cid = ref.campaign_id
+
+            if not wait_and_download:
+                click.echo(f"Launched campaign '{cid}'. "
+                           f"Track it with 'vast wait {cid}' or the web UI.")
+                return
+
+            click.echo(f"Launched campaign '{cid}'. Waiting for it to finish...")
+            outcome = wait_for_campaign_outcome(
+                cid, client=client, interval=poll_interval, feedback=click.echo)
+            if outcome == "failed":
+                raise click.ClickException(
+                    f"Campaign '{cid}' failed. Its status carries the failure reason: "
+                    f"see 'vast exec cluster log {cid}' or the web UI.")
+
+            click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
+            # The service streams the campaign from the object store — no external
+            # share needed for delivery. An archive, not an unpacked tree: what to do
+            # with it is the caller's, exactly as for `vast results download`.
+            dest = download_campaign_archive(
+                client, cid, os.path.join(os.getcwd(), f"{cid}.tar.gz"))
+            click.echo(f"Wrote {dest}")
+    # The bare re-raise is deliberate: click handles UsageError/ClickException itself,
+    # printing usage and setting the exit code, so they must pass the broad handler below.
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+def _resolve_or_create_workspace(client, workspace, create_request_cls):
+    """The id for *workspace*, creating it if the name is not taken yet.
+
+    Only for ``--push``: pushing into a name that does not exist yet is the
+    one-command form of ``workspace init``, so refusing would make the flag useless for
+    a first launch. A ``ws-…`` id that does not exist is still an error — that is a typo,
+    not a name to claim.
+    """
+    from robovast.service.project_push import \
+        _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+    try:
+        return _resolve_workspace_id(client, workspace)
+    except ValueError:
+        if workspace.startswith("ws-"):
+            raise
+        created = client.create_workspace(create_request_cls(name=workspace))
+        click.echo(f"Created workspace {created.workspace_id} ({created.name}).")
+        return created.workspace_id
+
+
 @workspace.command('delete')
 @click.argument('workspace', metavar='WORKSPACE')
 @target_options
