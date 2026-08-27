@@ -229,11 +229,12 @@ WARM_SLEEP_SECONDS = 2147483647
 def _warm_tolerations() -> list:
     """What the warm pod must tolerate, and it is not optional: a pod that does not tolerate
     what campaign pods tolerate skips exactly the nodes worth warming -- and reports success
-    while doing it. Read from where the ResourceFlavor granting it is written rather than
-    restated here, so there is one place to change if the taint ever does.
+    while doing it. Read from where the campaign job pods get it rather than restated here,
+    so there is one place to change if the taint ever does. It used to be Kueue's
+    ResourceFlavor that injected this; a job pod carries it itself now.
     """
-    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS
-    return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+    return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]
 
 
 def family_refs_to_warm() -> list:

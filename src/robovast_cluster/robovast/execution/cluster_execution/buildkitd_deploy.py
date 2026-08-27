@@ -220,11 +220,12 @@ def buildkitd_pvc_manifest(namespace: str, storage_class: str,
 def _tolerations() -> list:
     """What the daemon must tolerate to be schedulable where the work is.
 
-    Read from where the ResourceFlavor granting it is defined rather than restated, so there is
-    one place to change if the taint moves -- the same reasoning the warm DaemonSet gives.
+    Read from where the campaign job pods get it rather than restated, so there is one place
+    to change if the taint moves -- the same reasoning the warm DaemonSet gives. It used to
+    be Kueue's ResourceFlavor that injected this; a job pod carries it itself now.
     """
-    from .node_placement import CAMPAIGN_NODE_TOLERATIONS as KUEUE_JOB_TOLERATIONS
-    return [dict(t) for t in KUEUE_JOB_TOLERATIONS]
+    from .node_placement import CAMPAIGN_NODE_TOLERATIONS
+    return [dict(t) for t in CAMPAIGN_NODE_TOLERATIONS]
 
 
 def buildkitd_deployment_manifest(*, namespace: str, storage_path: str = "",
