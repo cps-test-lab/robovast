@@ -1052,11 +1052,40 @@ deployment: ``ROBOVAST_NODE_HEADROOM_CPU`` (default ``1``) and
 ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``). Deliberately not a ``.vast`` setting —
 a per-campaign override would let one campaign shrink the margin every other one depends on.
 
-**One thing this cannot see is fragmentation.** The figure is cluster-wide, while a pod runs
-on one node, so a cluster with enough total capacity and no single node big enough will
-still produce an occasional ``Unschedulable`` pod. It is transient and recovers on its own:
-such a pod fits an empty node, so it is treated as contention rather than a fault, and it is
-placed as soon as a neighbour finishes.
+**Capacity is counted per node, and each job is pinned to the node it was counted against.**
+A pod runs on one machine, so a cluster-wide figure cannot see fragmentation: it says there
+is room while no single node has enough, and the job is created and then cannot be placed.
+Measured here on 2026-08-26 with 11.31 cores free across the cluster and no node holding the
+4.75 a pod needed.
+
+The pin is the label ``robovast.io/node-id``, whose value is the same hash a run records as
+``runs.node_label`` — so the selector that placed a run and the record of the machine it ran
+on are provably the same node, and no hostname appears in any pod spec. ``setup`` applies
+it, and an **unlabelled node still takes work**: it simply cannot be named, so its jobs are
+created without a selector and the scheduler places them. A cluster upgraded without
+re-running ``setup``, or a node that joined since, therefore behaves exactly as it did
+before per-node placement existed rather than refusing to run anything.
+
+A pinned pod whose node is momentarily full is **contention, not a fault**. It waits for
+that node — the fifteen-minute window, not the sixty-second one — because it is waiting for
+capacity that is coming back, and the alternative is destroying a run for being patient.
+
+.. note::
+
+   **Per-node container sizing is a separate, switched-off feature.** ``setup`` measures
+   nothing, and every job reserves what its ``.vast`` declares.
+
+   The idea is to measure each node once and size that node's jobs from what it measured,
+   since the same trial costs about 1.6x more CPU on the slowest machine of a mixed cluster
+   than on the fastest. What blocks it is the measurement, not the mechanism: a probe has to
+   run **before** the campaign places work — that is what lets every run on a node share one
+   environment — and a node measured while idle is not the node the campaign will meet.
+   Measured on 2026-08-27, same node and same campaign, the probe read the system under test
+   2x *low* and the infrastructure containers 3x *high*: applied, it would have starved the
+   stack below its measured floor and given back the packing gain at the same time.
+
+   ``ROBOVAST_NODE_CALIBRATION=1`` on the service enables it for experimentation. Leave it
+   off unless you are working on that problem.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
 ``capacity`` minus what the kubelet was told to hold back for the OS, the kubelet and
