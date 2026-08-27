@@ -1,0 +1,220 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""Set the CPU frequency governor on the nodes that run campaigns.
+
+**Why this exists at all**, since reconfiguring someone's hosts is not obviously a test
+framework's business. A node on a scaling governor runs faster the busier it is, so every
+per-node figure a campaign records -- CPU usage, realtime factor, run duration -- becomes a
+function of how much else happened to be running. Measured on 2026-08-27, one node, one
+scenario, varying only how many jobs shared the machine:
+
+====  =====  ================
+jobs  RTF    run duration
+====  =====  ================
+1     0.28   never finished
+2     0.38   252s
+5     0.81   117s
+====  =====  ================
+
+More load made each run *faster*: the governor was ``powersave``, with an 800 MHz floor
+against a 4.5 GHz ceiling. Two consequences, neither guessable from a campaign's own
+numbers. A lightly loaded campaign is the SLOW case, so a small pilot can sit near its
+timeout where a full sweep is comfortable. And any measurement taken while a node was quiet
+describes a state ordinary runs never meet -- which is why an idle calibration probe reads
+low, and why on the slowest node it could not finish inside its deadline at all.
+
+**Opt-in, and off by default.** Advertising a GPU reports a fact about a host; setting its
+power policy overrides the operator's own decision about power, heat and cost on a machine
+RoboVAST is a guest on. So it happens only when someone asks for it by name, and then it
+must either work or say why -- see :func:`ensure_cpu_governor`.
+"""
+
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+#: The governor a cluster used for measurement should be on.
+PERFORMANCE = "performance"
+
+DAEMONSET_NAME = "robovast-cpu-governor"
+
+#: Where the kernel exposes the per-policy governor. Written for every policy, because a
+#: setting applied to cpu0 alone leaves the rest of the machine scaling and the result looks
+#: like a partial success rather than the no-op it is.
+GOVERNOR_GLOB = "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
+
+#: Busybox: the work is one shell loop over sysfs, and pulling a larger image onto every
+#: node to run ``echo`` would cost more than the thing it configures.
+IMAGE = "busybox:1.36"
+
+#: Re-asserted rather than written once. A node that reboots comes back on its configured
+#: default, and a governor silently reverting is worse than one never set -- the campaign
+#: would keep reporting figures from a machine nobody knew had changed underneath it.
+REASSERT_SECONDS = 60
+
+
+def _script(governor: str) -> str:
+    """Write *governor* to every policy, then keep re-asserting it.
+
+    Exits non-zero when no policy accepted the value, so the pod CrashLoopBackOffs instead
+    of sitting Ready over a cluster that never changed. A DaemonSet reporting Ready while
+    having done nothing is the failure this module exists to make impossible: it would leave
+    the operator believing their measurements were taken on a fixed clock.
+    """
+    return (
+        'set -e\n'
+        'wrote=0\n'
+        f'for f in {GOVERNOR_GLOB}; do\n'
+        '  [ -w "$f" ] || continue\n'
+        f'  echo {governor} > "$f" 2>/dev/null && wrote=1\n'
+        'done\n'
+        'if [ "$wrote" = 0 ]; then\n'
+        f'  echo "no cpufreq policy accepted {governor}" >&2\n'
+        '  echo "cpufreq may be absent (a VM, or a cloud node whose host owns the clock),"'
+        ' >&2\n'
+        '  echo "or the governor may be unavailable on this driver" >&2\n'
+        '  exit 1\n'
+        'fi\n'
+        f'echo "set {governor} on $(ls -d {GOVERNOR_GLOB} 2>/dev/null | wc -l) policies"\n'
+        'while true; do\n'
+        f'  sleep {REASSERT_SECONDS}\n'
+        f'  for f in {GOVERNOR_GLOB}; do\n'
+        f'    [ -w "$f" ] && echo {governor} > "$f" 2>/dev/null || true\n'
+        '  done\n'
+        'done\n'
+    )
+
+
+def manifest(namespace: str, governor: str, node_selector: Optional[dict] = None) -> dict:
+    """The DaemonSet. Privileged, and deliberately the only privileged thing RoboVAST runs.
+
+    Writing ``/sys/devices/system/cpu/*/cpufreq`` needs the host's sysfs mounted writable,
+    which needs privilege; there is no narrower capability that grants it. That is a real
+    cost, and the reason this is opt-in rather than part of every setup.
+
+    *node_selector* confines it to the campaign node pool when one is configured, so a
+    cluster that runs campaigns on a subset of its machines does not have the others
+    reconfigured as a side effect of a RoboVAST setup.
+    """
+    pod_spec = {
+        "tolerations": [{"operator": "Exists"}],
+        "containers": [{
+            "name": "governor",
+            "image": IMAGE,
+            "command": ["sh", "-c", _script(governor)],
+            "securityContext": {"privileged": True},
+            "volumeMounts": [{"name": "sys", "mountPath": "/sys"}],
+            "resources": {"requests": {"cpu": "10m", "memory": "16Mi"},
+                          "limits": {"cpu": "50m", "memory": "32Mi"}},
+        }],
+        "volumes": [{"name": "sys", "hostPath": {"path": "/sys"}}],
+    }
+    if node_selector:
+        pod_spec["nodeSelector"] = dict(node_selector)
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "DaemonSet",
+        "metadata": {"name": DAEMONSET_NAME, "namespace": namespace,
+                     "labels": {"app": DAEMONSET_NAME}},
+        "spec": {
+            "selector": {"matchLabels": {"app": DAEMONSET_NAME}},
+            "template": {"metadata": {"labels": {"app": DAEMONSET_NAME}},
+                         "spec": pod_spec},
+        },
+    }
+
+
+#: Told apart from any other failure because the remedy is completely different: a cluster
+#: that forbids privileged pods will never run this, and retrying does not help.
+FORBIDDEN_HINTS = ("privileged", "podsecurity", "psp", "forbidden", "security context",
+                   "securitycontext", "admission webhook", "violates")
+
+
+def refusal_message(governor: str, detail: str, *, forbidden: bool) -> str:
+    """What to tell an operator whose cluster will not take this.
+
+    The two cases need different remedies, so they are not merged. *forbidden* is a cluster
+    that refuses privileged pods -- the managed-Kubernetes case, where nothing RoboVAST can
+    do will change it and the honest answer is "configure the node image instead". Anything
+    else is a cluster that accepted the DaemonSet but errored, which is worth reporting
+    verbatim rather than explaining away.
+    """
+    if forbidden:
+        why = (
+            "This needs a privileged pod with the host's /sys mounted writable, and this "
+            "cluster refuses it. Managed Kubernetes (GKE, EKS, AKS) generally does, and "
+            "there node auto-repair also replaces machines, so a governor applied to a node "
+            "would not survive its replacement. Set it through the node image or the node's "
+            "startup configuration instead."
+        )
+    else:
+        why = (
+            "The cluster accepted the request but the API call failed. Nothing about the "
+            "governor is implied either way -- this is the deploy failing, not the setting "
+            "being unavailable."
+        )
+    return (
+        f"could not set the CPU governor to '{governor}': {detail}\n{why}\n"
+        "Leaving it unset is supported: RoboVAST reports a 'cpu_governor_scaling' warning "
+        "per campaign so the effect is visible in the results rather than silent. Re-run "
+        "setup without --performance-governor to continue without it."
+    )
+
+
+def ensure_cpu_governor(apps_api, namespace: str, enabled: bool, *,
+                        node_selector: Optional[dict] = None,
+                        dry_run: bool = False) -> bool:
+    """Apply the governor DaemonSet, or remove it when *enabled* is false.
+
+    A boolean, not a governor name. :data:`PERFORMANCE` is the only setting that serves the
+    purpose -- a cluster used for measurement wants a clock that does not move -- and
+    offering the choice would invite ``powersave`` (the thing being fixed) or a typo that
+    lands as an unavailable governor on some drivers and a silent no-op on others.
+
+    Returns whether the DaemonSet is now installed.
+
+    **An explicit request that cannot be honoured raises**, following
+    :func:`~.kubernetes_gpu.ensure_nvidia_device_plugin`'s rule and for the same reason:
+    someone who asked for a fixed clock and silently did not get one is worse off than
+    someone who never asked, because they would now trust measurements taken on a scaling
+    clock. There is no implicit path here at all -- this runs only when named.
+
+    Removal is likewise explicit and total. Setup writes the cluster's configuration on
+    every run, so omitting the flag takes the DaemonSet away rather than leaving a previous
+    one in force; a governor still being held by a deployment nobody remembers configuring
+    is the same class of surprise as one silently reverting.
+    """
+    from kubernetes.client.exceptions import ApiException  # noqa: PLC0415
+
+    governor = PERFORMANCE
+    if not enabled:
+        try:
+            apps_api.delete_namespaced_daemon_set(name=DAEMONSET_NAME, namespace=namespace)
+            logger.info("Removed the CPU governor DaemonSet. Nodes keep the governor they "
+                        "were last set to until something changes it -- a reboot returns "
+                        "them to their own default.")
+        except ApiException as exc:
+            if exc.status != 404:
+                logger.warning("Could not remove %s: %s", DAEMONSET_NAME, exc)
+        return False
+
+    body = manifest(namespace, governor, node_selector=node_selector)
+    if dry_run:
+        logger.info("[dry-run] would apply %s (%s)", DAEMONSET_NAME, governor)
+        return True
+    try:
+        apps_api.create_namespaced_daemon_set(namespace=namespace, body=body)
+    except ApiException as exc:
+        if exc.status == 409:
+            apps_api.replace_namespaced_daemon_set(
+                name=DAEMONSET_NAME, namespace=namespace, body=body)
+        else:
+            detail = str(getattr(exc, "body", None) or exc)
+            forbidden = (exc.status in (401, 403)
+                         or any(h in detail.lower() for h in FORBIDDEN_HINTS))
+            raise RuntimeError(refusal_message(governor, detail,
+                                               forbidden=forbidden)) from exc
+    logger.info("CPU governor DaemonSet applied: every%s node will be set to '%s'.",
+                " selected" if node_selector else "", governor)
+    return True
