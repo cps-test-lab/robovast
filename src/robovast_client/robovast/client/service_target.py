@@ -16,7 +16,7 @@
 
 """Shared "which robovast-service, and how to reach it" resolution.
 
-Every service-touching command — ``ui``, ``workspace …``, the ``exec cluster`` verbs,
+Every service-touching command — ``ui``, ``workspace …``, the ``campaign``/``cluster`` verbs,
 ``results download`` — answers one question: which service? This module holds the single
 resolver they all use, so the answer (and the way it is printed) is identical everywhere.
 

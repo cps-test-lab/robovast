@@ -39,7 +39,7 @@ def is_campaign_results_dir(path) -> bool:
 
     **By content and not by name, deliberately.** A name-based rule can only know the
     names we happen to use: ``results/`` is skipped, but ``vast results download`` and
-    ``exec cluster run --wait-and-download`` land a campaign under its *campaign id*
+    ``workspace run --wait-and-download`` land a campaign under its *campaign id*
     (``<name>-<timestamp>``), and those were uploaded as project input -- hundreds of
     megabytes of a past campaign's bags pushed back at the service as though someone had
     authored them. Extending the name list would not fix it either: the next naming

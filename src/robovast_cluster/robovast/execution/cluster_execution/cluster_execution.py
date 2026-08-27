@@ -177,7 +177,7 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
     ``ImagePullBackOff`` and the Job ``active``, so a waiter polling ``status.failed`` learns
     nothing and reports a timeout.
 
-    Falls back to the push Secret when no pull Secret is named, because ``vast exec cluster
+    Falls back to the push Secret when no pull Secret is named, because ``vast cluster
     setup`` writes one dockerconfigjson that serves both directions; the lookup is what proves
     it exists, since naming an absent Secret keeps the pod from starting.
 

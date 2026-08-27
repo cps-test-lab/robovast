@@ -117,16 +117,23 @@ def test_every_client_module_imports_without_the_core(without_core, module):
 
 @pytest.mark.parametrize("argv", [
     ["--help"], ["login", "--help"], ["logout", "--help"], ["doctor", "--help"],
-    ["workspace", "--help"], ["files", "--help"], ["wait", "--help"],
+    ["workspace", "--help"], ["files", "--help"], ["campaign", "wait", "--help"],
     ["--version"],
     # The launch path: `workspace run` is the verb this whole distribution exists to
     # make reachable, and it is the client's own -- no entry point in between.
     ["workspace", "run", "--help"],
-    # `exec` is the client's group; `cluster` is reached through `robovast.exec_plugins`.
-    ["exec", "--help"], ["exec", "cluster", "--help"],
-    ["exec", "cluster", "stop", "--help"],
-    ["exec", "cluster", "stop-job", "--help"], ["exec", "cluster", "log", "--help"],
-    ["exec", "cluster", "download-cleanup", "--help"],
+    # The groups are named after what they act on; all four are the client's, and the
+    # ones that span distributions still list their client half without the other.
+    ["campaign", "--help"], ["campaign", "stop", "--help"],
+    ["campaign", "stop-job", "--help"], ["campaign", "log", "--help"],
+    ["campaign", "list", "--help"], ["campaign", "status", "--help"],
+    ["campaign", "rerun", "--help"], ["campaign", "download", "--help"],
+    ["service", "--help"], ["service", "log", "--help"],
+    ["service", "info", "--help"], ["service", "resources", "--help"],
+    ["service", "restart", "--help"],
+    ["cluster", "--help"], ["cluster", "store-cleanup", "--help"],
+    ["container", "--help"], ["container", "exec", "--help"],
+    ["container", "stop", "--help"],
 ])
 def test_the_cli_runs_without_the_core(without_core, argv):
     """`--help` still builds the command and its options, which is where a module-level

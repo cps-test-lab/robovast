@@ -534,7 +534,7 @@ def export_cmd(campaign_id):
     follows, which is why the two can never disagree.
 
     Long-running: it returns as soon as the upload is under way. Watch it with
-    ``vast wait <campaign-id>``, or in the campaign view.
+    ``vast campaign wait <campaign-id>``, or in the campaign view.
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
@@ -572,7 +572,7 @@ def import_cmd(campaigns, force, rebuild_store):
 
     Long-running: it returns as soon as the import is under way, and the campaign
     appears immediately in the campaign view at phase ``importing``. Watch it with
-    ``vast wait <campaign-id>``.
+    ``vast campaign wait <campaign-id>``.
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
@@ -603,6 +603,6 @@ def import_cmd(campaigns, force, rebuild_store):
             started.append(ref.campaign_id)
 
     if started:
-        click.echo("\nWatch them with: " + "  ".join(f"vast wait {c}" for c in started))
+        click.echo("\nWatch them with: " + "  ".join(f"vast campaign wait {c}" for c in started))
     if failed:
         raise SystemExit(1)

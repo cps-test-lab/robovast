@@ -48,7 +48,7 @@ it can run needs a simulator, Docker or a kubeconfig.
 
 Adding ``pip install -e .`` gives you a service that can run **local Docker
 campaigns**, with no Kubernetes client anywhere in the environment. That is the point of the split,
-so declining the cluster package is a supported setup rather than a broken one: ``vast exec`` simply
+so declining the cluster package is a supported setup rather than a broken one: ``vast cluster`` simply
 lists ``local`` and not ``cluster``, and ``vast doctor`` reports ``cluster support: not installed``
 as a warning. Add ``robovast-cluster`` when you need the Kubernetes lane, and ``vast serve
 --backend cluster`` starts working.
@@ -81,10 +81,10 @@ To be able to execute tests in a kubernetes cluster, execute the following comma
 .. code-block:: bash
 
    # get available cluster configs
-   vast execution cluster setup --list 
+   vast cluster setup --list 
    
    # setup cluster with given config
-   vast execution cluster setup <cluster-config>
+   vast cluster setup <cluster-config>
 
 Dependencies
 ------------
@@ -159,7 +159,7 @@ register a ``nvidia`` RuntimeClass once it is present, which is what RoboVAST lo
    kubectl get runtimeclass          # a 'nvidia' entry means the node is ready
 
 Everything above the host — making the GPU schedulable and requesting it per job — is done by
-``vast execution cluster setup``. See :ref:`cluster-gpu`.
+``vast cluster setup``. See :ref:`cluster-gpu`.
 
 
 Docker

@@ -19,7 +19,7 @@
 Mounted by ``vast serve`` at ``/mcp`` on the service's own port, so one port (and one
 token) reaches the web UI, the REST API and the MCP tools together. There is no separate
 process to start: a client registers the URL, which ``vast serve``, ``vast login`` and
-``vast exec cluster token`` each print.
+``vast service token`` each print.
 
 All tools are provided by plugins registered under the ``robovast.mcp_plugins``
 entry-point group.
@@ -199,7 +199,7 @@ The loop:
 5. `get_resource_usage` — does this lane have room, and is it reachable?
 6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
    then the full sweep. Always pass `description`.
-7. **Wait for it** — background `vast wait <campaign_id>`, the shell command
+7. **Wait for it** — background `vast campaign wait <campaign_id>`, the shell command
    `start_campaign` hands back in `next_step`. It exits when the campaign is genuinely
    over (past postprocessing), so you stay free meanwhile instead of holding a tool call
    open for a run that may take days. `get_campaign_status` is the single-read version.

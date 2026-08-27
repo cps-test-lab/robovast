@@ -40,7 +40,7 @@ class ClusterServeBackend:
             for_ctx = f" in context {context!r}" if context else ""
             raise click.ClickException(
                 f"no robovast-service found{for_ctx} (namespace {namespace!r}) to read "
-                f"the cluster config from — deploy one with 'vast exec cluster setup "
+                f"the cluster config from — deploy one with 'vast cluster setup "
                 f"<cluster-config>{f' -x {context}' if context else ''}', or check "
                 "--context/--namespace.")
         # Off-cluster the driver reaches the cluster's object store through a kubectl

@@ -13,8 +13,8 @@ using the ``vast results`` command group.
 Output Structure
 ----------------
 
-The results directory path is configured during ``vast init`` and stored in
-the ``.robovast_project`` file.
+The results directory is named with ``--results-dir``: on the serve command for where
+campaigns land, and on each ``vast results`` verb for which tree to read.
 
 Top-Level Layout
 ^^^^^^^^^^^^^^^^
@@ -43,12 +43,12 @@ campaign actions menu, ``start_campaign(from_campaign=<id>)`` over MCP, or
 ``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image recorded in
 ``_execution/`` and start a new campaign, leaving this one untouched.
 
-Doing it by hand instead re-points a project at the snapshot:
+Doing it by hand instead pushes the snapshot as a workspace and runs that:
 
 .. code-block:: text
 
-   vast init <campaign-dir>/_config/<config-name>.vast
-   vast execution cluster run
+   vast workspace init <campaign-dir>/_config --name replay
+   vast workspace run replay <config-name>.vast
 
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
 sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
@@ -545,7 +545,7 @@ A run somebody stopped: ``killed``
 
 ``run_view.status`` is ``passed``, ``failed``, ``error``, ``unknown`` — or ``killed``,
 which means an operator ended that run's job by hand while the campaign was running (the
-web UI's per-job **Stop**, the ``stop_job`` MCP tool, or ``vast exec cluster stop-job``).
+web UI's per-job **Stop**, the ``stop_job`` MCP tool, or ``vast campaign stop-job``).
 
 **A killed run is not a trial failure.** Nothing was learned from it about the system
 under test, so it is a *missing measurement*: RoboVAST counts it apart from the failures
@@ -931,7 +931,7 @@ analysis-friendly formats (e.g. CSV).  Commands are defined in the
 .. option:: -r, --results-dir PATH
 
    Directory containing the run results (parent of campaign directories).
-   When omitted the value configured with ``vast init`` is used.
+   Required: there is no project file to take it from.
 
 .. option:: -f, --force
 
@@ -1047,7 +1047,7 @@ creating zip archives for upload or hand-off.
 .. option:: -r, --results-dir PATH
 
    Directory containing the run results (parent of campaign directories).
-   When omitted the value configured with ``vast init`` is used.
+   Required: there is no project file to take it from.
 
 .. option:: -o, --override VAST_FILE
 
@@ -1113,7 +1113,7 @@ Original campaign-directories are not modified.
 .. option:: -r, --results-dir PATH
 
    Source directory containing campaign directories.  When omitted the value
-   configured with ``vast init`` is used.
+   required: there is no project file to take it from.
 
 
 .. _results-postprocess-commands:

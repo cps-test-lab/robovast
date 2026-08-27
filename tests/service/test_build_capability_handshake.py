@@ -118,9 +118,9 @@ def test_a_cluster_without_one_says_why_and_how_to_fix_it():
     assert v.build_unavailable
     # Both remedies, because the in-pod service cannot tell the two states apart.
     # pylint: disable-next=unsupported-membership-test  -- build_unavailable is asserted truthy three lines up
-    assert "vast exec cluster upgrade" in v.build_unavailable
+    assert "vast service upgrade" in v.build_unavailable
     # pylint: disable-next=unsupported-membership-test  -- as above
-    assert "vast exec cluster setup" in v.build_unavailable
+    assert "vast cluster setup" in v.build_unavailable
 
 
 def test_the_reason_carries_no_registry_detail():

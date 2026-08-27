@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Why in-cluster builds are unavailable, said once and said completely.
 
-The refusal reached a user naming **one** remedy: re-run ``vast exec cluster setup`` with
+The refusal reached a user naming **one** remedy: re-run ``vast cluster setup`` with
 ``--ingress-host``. That is the fix for "never published". It is the wrong fix for the state
 that actually happened -- a *published* deployment whose registry prefix a ``setup`` re-run
-had dropped -- where ``vast exec cluster upgrade`` recovers the host from the live Ingress.
+had dropped -- where ``vast service upgrade`` recovers the host from the live Ingress.
 An operator following the message re-ran setup on a deployment that was already published.
 
 The in-pod service cannot tell the two apart: the prefix is baked at setup/upgrade time and
@@ -34,8 +34,8 @@ def test_it_names_both_remedies():
     """The whole point. One remedy is a wrong answer half the time."""
     why = RegistryConfig().why_disabled()
 
-    assert "vast exec cluster upgrade" in why, "the published-but-prefix-dropped fix"
-    assert "vast exec cluster setup" in why, "the never-published fix"
+    assert "vast service upgrade" in why, "the published-but-prefix-dropped fix"
+    assert "vast cluster setup" in why, "the never-published fix"
     assert "--ingress-host" in why
     assert "vast doctor" in why, "must point at what distinguishes the two states"
 

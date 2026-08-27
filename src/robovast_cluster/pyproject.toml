@@ -40,9 +40,13 @@ cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBacken
 monitor = "robovast.execution.cluster_execution.cli:monitor"
 setup = "robovast.execution.cluster_execution.cli:setup"
 cleanup = "robovast.execution.cluster_execution.cli:cleanup"
+"jobs-cleanup" = "robovast.execution.cluster_execution.cli:run_cleanup"
+
+# `vast service upgrade` / `token` act on the deployed SERVICE, not on the cluster, so they
+# attach to that group -- and need an API server, so they attach from here.
+[tool.poetry.plugins."robovast.service_plugins"]
 upgrade = "robovast.execution.cluster_execution.cli:upgrade"
 token = "robovast.execution.cluster_execution.cli:cluster_token"
-"run-cleanup" = "robovast.execution.cluster_execution.cli:run_cleanup"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"

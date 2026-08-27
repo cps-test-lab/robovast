@@ -284,7 +284,7 @@ fault. ``execution.kubernetes.jobs.node_labels`` is the only lever today, and it
 all-or-nothing: it confines the whole cluster's jobs to one pool.
 
 **The part that is clear.** Declaring the pools in the config the operator names with
-``vast -V <file> exec cluster setup`` — one ``ResourceFlavor`` per node type, each with its
+``vast cluster setup --vast <file>`` — one ``ResourceFlavor`` per node type, each with its
 own ``nominalQuota``, listed in one ``ClusterQueue`` in preference order — is a
 straightforward extension of what is already there, and Kueue then places by fit and copies
 the assigned flavor's ``nodeLabels`` onto the admitted pod. Quota per type would default to

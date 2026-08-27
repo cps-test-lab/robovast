@@ -144,7 +144,7 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
     runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
-    and campaigns survive client exit (unlike ``vast exec local run``). The
+    and campaigns survive client exit (unlike ``vast workspace run run``). The
     service serves the web UI at the same URL — from a source checkout this
     (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
     ``--rebuild-ui`` forces it). Ways it makes the port live:
@@ -163,7 +163,7 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
     can click — there is no unauthenticated mode. It still binds ``127.0.0.1`` by
-    default; publishing it is ``vast exec cluster setup --ingress-host``, which
+    default; publishing it is ``vast cluster setup --ingress-host``, which
     also insists on TLS. Web UI + OpenAPI docs at ``/`` and ``/docs``; MCP tools at
     ``/mcp`` (see ``--no-mcp``) — one URL reaches all three.
     """

@@ -10,10 +10,10 @@ All variants share one scenario, sim and `extract` module; only the `search`
 
 | File | Mode | Run with |
 |---|---|---|
-| [quadrotor_landing.vast](quadrotor_landing.vast) | **batch** grid (`ParameterVariationList`) | `vast execution local run` |
-| [quadrotor_landing_search.vast](quadrotor_landing_search.vast) | **random** search — coverage baseline | `vast execution local run` |
-| [quadrotor_landing_qd.vast](quadrotor_landing_qd.vast) | **quality-diversity** (pyribs) — archive of *distinct* failures | `vast execution local run` (`pip install 'robovast[qd]'`) |
-| [quadrotor_landing_optuna.vast](quadrotor_landing_optuna.vast) | **Optuna TPE** — efficient single worst-case | `vast execution local run` (`pip install 'robovast[optuna]'`) |
+| [quadrotor_landing.vast](quadrotor_landing.vast) | **batch** grid (`ParameterVariationList`) | `vast workspace run` |
+| [quadrotor_landing_search.vast](quadrotor_landing_search.vast) | **random** search — coverage baseline | `vast workspace run` |
+| [quadrotor_landing_qd.vast](quadrotor_landing_qd.vast) | **quality-diversity** (pyribs) — archive of *distinct* failures | `vast workspace run` (`pip install 'robovast[qd]'`) |
+| [quadrotor_landing_optuna.vast](quadrotor_landing_optuna.vast) | **Optuna TPE** — efficient single worst-case | `vast workspace run` (`pip install 'robovast[optuna]'`) |
 
 ## Variation points (search space)
 

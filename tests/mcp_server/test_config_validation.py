@@ -316,7 +316,7 @@ def test_an_advisory_never_makes_a_project_invalid(tmp_path):
 # A campaign without `execution.timeout` runs perfectly well. What it cannot do is be
 # judged: `stalled` is asserted only against a *declared* budget, so the verdict stays
 # null forever and a wedged run and a slow one are the same picture -- with nothing for
-# `vast wait` to exit 4 on. Said once here, before compute, rather than shown on every
+# `vast campaign wait` to exit 4 on. Said once here, before compute, rather than shown on every
 # poll for the life of the campaign, by when the fix costs a re-run.
 
 def test_a_missing_execution_timeout_is_advised(tmp_path):
@@ -327,7 +327,7 @@ def test_a_missing_execution_timeout_is_advised(tmp_path):
     advisory, = _liveness_advisories(str(path))
     assert advisory["stage"] == "liveness"
     assert advisory["field"] == "execution.timeout"
-    assert "vast wait" in advisory["message"]
+    assert "vast campaign wait" in advisory["message"]
 
 
 def test_a_declared_timeout_is_not_advised(tmp_path):

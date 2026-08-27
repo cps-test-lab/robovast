@@ -66,7 +66,7 @@ def gui_by_default(no_gui: bool, *, notify) -> bool:
 
     The counterpart to :func:`require_host_display`, and the asymmetry is the point: an
     explicit request (``show_gui=True``) is *refused* when it cannot be honoured, while a
-    default is *downgraded* — otherwise ``vast execution local run`` would stop working
+    default is *downgraded* — otherwise a local campaign would stop working
     unattended on a build machine because of a flag nobody set.
 
     Never silently, though: *notify* is called with the reason. The decision also selects

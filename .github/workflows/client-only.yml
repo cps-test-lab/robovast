@@ -80,15 +80,22 @@ jobs:
           EOF
 
       # `--help` builds the command and every option, which is where a module-level import
-      # of something absent surfaces. `exec cluster run` is the verb the whole distribution
-      # exists to make reachable, so it is not left to a smoke test of the root group.
+      # of something absent surfaces. `workspace run` is the verb the whole distribution
+      # exists to make reachable, so it is not left to a smoke test of the root group --
+      # and neither are the steps around it: validate and preview come before a launch,
+      # campaign wait after it, and a client-only install must reach all four.
       - name: The CLI runs
         run: |
           set -e
           "$CLIENT_VENV/bin/vast" --version
           for argv in "--help" "login --help" "logout --help" "doctor --help" \
-                      "workspace --help" "files --help" "wait --help" \
-                      "exec --help" "exec cluster --help" "exec cluster run --help"; do
+                      "workspace --help" "files --help" \
+                      "workspace validate --help" "workspace preview --help" \
+                      "workspace run --help" \
+                      "campaign --help" "campaign wait --help" "campaign list --help" \
+                      "campaign status --help" "campaign download --help" \
+                      "service --help" "service info --help" "service resources --help" \
+                      "cluster --help" "container --help" "container exec --help"; do
             echo "vast $argv"
             # shellcheck disable=SC2086
             "$CLIENT_VENV/bin/vast" $argv > /dev/null

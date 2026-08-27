@@ -31,19 +31,20 @@ requests = "^2.31"
 [tool.poetry.scripts]
 vast = "robovast.client.cli:main"
 
-# `vast exec`. The group shell is the client's because the verb this audience actually
-# wants -- `exec cluster run` -- is four HTTP verbs against a service and needs nothing
-# else. `exec local` (Docker) and the operator half of `exec cluster` (kubeconfig) attach
-# from their own distributions, so what `vast exec` lists equals what is installed.
+# The groups are named after what they act on, and each ships wherever its verbs can run.
+# `campaign` and `container` only ever drive a service, so they are wholly the client's.
+# `service` and `cluster` span two distributions on purpose: the group is defined by its
+# object, not by what you installed, so `service restart` (a URL and a token) is here while
+# `service upgrade` (an API server) attaches from robovast-cluster.
+#
+# Verbs defined in the same module as their group stay ordinary `@group.command()`s rather
+# than entry points: metadata is for crossing distributions, and a distribution's own verbs
+# must not vanish on a pyproject edit that was not followed by a reinstall.
 [tool.poetry.plugins."robovast.cli_plugins"]
-execution = "robovast.client.exec_cli:execution"
-
-# `vast exec cluster`. Its service-driven verbs are defined in the same module as the
-# group, so they are ordinary `@cluster.command()`s rather than entry points -- metadata
-# is for crossing distributions, and a distribution's own verbs must not vanish on a
-# pyproject edit that was not followed by a reinstall.
-[tool.poetry.plugins."robovast.exec_plugins"]
+campaign = "robovast.client.campaign_cli:campaign"
+service = "robovast.client.service_cli:service"
 cluster = "robovast.client.cluster_cli:cluster"
+container = "robovast.client.container_cli:container"
 
 [build-system]
 requires = ["poetry-core"]

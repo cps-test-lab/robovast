@@ -286,7 +286,7 @@ def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
     ``work_dir/run.sh`` docker-compose runner whose baked default results dir is
     ``results_dir/<campaign-id>``. Returns the ``run.sh`` path. Shared by
     :class:`DockerBackend` (staging into a temp dir, then running) and
-    ``vast exec local prepare-run`` (staging into a persistent, inspectable
+    ``vast workspace run prepare-run`` (staging into a persistent, inspectable
     directory).
     """
     execution = campaign_data.get("execution", {})

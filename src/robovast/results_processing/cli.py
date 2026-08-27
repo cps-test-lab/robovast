@@ -218,7 +218,7 @@ def import_cmd(archive, force, rebuild_store):
     is not one you can ask anything.
 
     Long-running, so it returns once the import is under way: the campaign appears
-    immediately at phase ``importing``. Watch it with ``vast wait <campaign-id>``, or in the
+    immediately at phase ``importing``. Watch it with ``vast campaign wait <campaign-id>``, or in the
     campaign view.
 
     There is no local-only mode. Import means "into a service" -- that is where the tracked
@@ -243,7 +243,7 @@ def import_cmd(archive, force, rebuild_store):
     click.echo(f"\u2713 importing {ref.campaign_id}")
     if ref.note:
         click.echo(f"  {ref.note}")
-    click.echo(f"  watch it with: vast wait {ref.campaign_id}")
+    click.echo(f"  watch it with: vast campaign wait {ref.campaign_id}")
 
 
 @results.command(name='backfill-provenance')
@@ -640,7 +640,7 @@ def delete_campaign_cmd(campaign, yes):
     Removes the campaign's durable home — its directory under the results root on a
     local service, or its object-store data (plus any leftover Kubernetes Jobs and
     the service's cache) on a cluster service. This is the full "forget this
-    campaign" action; ``vast execution cluster download-cleanup`` only frees
+    campaign" action; ``vast cluster store-cleanup`` only frees
     object-store buckets, and ``vast share remove`` only touches the
     external share (which this command leaves untouched).
 

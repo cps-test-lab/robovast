@@ -127,7 +127,7 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    Only then the full sweep. A sweep that fails in its last cell has cost everything.
 5. **Describe every run.** `description` is what tells two same-day
    `campaign-<timestamp>` ids apart a week later. Say what the run is *for*.
-6. **Wait for it.** Background `vast wait <campaign_id>` (exit 0 finished, 1
+6. **Wait for it.** Background `vast campaign wait <campaign_id>` (exit 0 finished, 1
    failed/stopped, **4 stalled**, **5 its simulator reported a fault**) — it exits when the
    campaign is genuinely over, past postprocessing, and leaves you free meanwhile. **4 and 5
    mean the campaign is still running and nothing is waiting on it**, so they are a hand-off

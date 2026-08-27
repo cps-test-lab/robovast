@@ -233,7 +233,7 @@ class ClusterService(LocalTransport):
             # does not need a roll -- which is what makes it available mid-campaign.
             info.unsupported_reason = (
                 "this deployment's service account may not read its own Deployment. Run "
-                "'vast exec cluster upgrade --no-restart' once, from somewhere with "
+                "'vast service upgrade --no-restart' once, from somewhere with "
                 "cluster access, to grant it -- that reconciles RBAC without rolling the "
                 "pod, so it is safe while a campaign is in flight.")
             return info
@@ -279,7 +279,7 @@ class ClusterService(LocalTransport):
             f"pod before stopping this one, so the API stays up; watch the running digest "
             f"for the handover. RBAC, the Kueue queues, the registry route, the env "
             f"Secrets and the build daemon are NOT reconciled -- "
-            f"'vast exec cluster upgrade' is what does that."))
+            f"'vast service upgrade' is what does that."))
 
     def _api_server_url(self) -> "str | None":
         """The API server this lane targets, read from config only — never dialled.
@@ -475,7 +475,7 @@ class ClusterService(LocalTransport):
         """Why a kubelet Summary read failed, in words that cross to a UI.
 
         Only 403 is an RBAC verdict. This used to answer "the service needs `nodes/proxy`
-        get; run `vast exec cluster upgrade` to reconcile RBAC" for EVERY exception -- a
+        get; run `vast service upgrade` to reconcile RBAC" for EVERY exception -- a
         timeout, a TLS refusal, a summary missing a key -- with the real one going no
         further than a logger.debug. Reconciling RBAC then returned the identical message,
         which is the failure mode that makes a guess worse than no reason at all: a reader
@@ -484,7 +484,7 @@ class ClusterService(LocalTransport):
         status = getattr(e, "status", None)
         if status == 403:
             return ("the service may not read `nodes/proxy` (403) — run "
-                    "`vast exec cluster upgrade --no-restart` to reconcile RBAC")
+                    "`vast service upgrade --no-restart` to reconcile RBAC")
         detail = str(getattr(e, "reason", None) or e).strip().splitlines()
         detail = (detail[0] if detail else e.__class__.__name__)[:120]
         prefix = f"HTTP {status}: " if status else f"{e.__class__.__name__}: "
@@ -542,7 +542,7 @@ class ClusterService(LocalTransport):
         if not self._config_name:
             raise ValueError(
                 "cluster config not configured (ROBOVAST_CLUSTER_CONFIG_NAME); "
-                "the service must be deployed by 'vast exec cluster setup'")
+                "the service must be deployed by 'vast cluster setup'")
         cfg = get_cluster_config(self._config_name)
         if self._config_kwargs:
             cfg.restore_from_setup_kwargs(self._config_kwargs)
@@ -1283,7 +1283,7 @@ class ClusterService(LocalTransport):
                 f"long-lived BuildKit daemon rather than per build, so this is a cluster fault "
                 f"and not a problem with this project. Check it with "
                 f"`kubectl -n {self.namespace} get deploy/{BUILDKITD_NAME}`; "
-                f"`vast exec cluster upgrade` re-applies it if it is missing.")
+                f"`vast service upgrade` re-applies it if it is missing.")
 
         # Registered *before* staging so a concurrent build's context sweep can see
         # this build is in flight — its context exists in the object store for the
@@ -1897,7 +1897,7 @@ class ClusterService(LocalTransport):
         write. That flag alone only ends a *search* between generations, though — a
         batch campaign's wait loop blocks until its Jobs finish on their own, so the
         flag would appear to do nothing. We therefore also tear down the campaign's
-        cluster workloads (the same Kueue-aware cleanup ``vast exec cluster
+        cluster workloads (the same Kueue-aware cleanup ``vast cluster
         run-cleanup`` performs): the running pods terminate now, the batch wait loop
         unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
         driver winds the campaign down.
@@ -2183,7 +2183,7 @@ class ClusterService(LocalTransport):
     def _teardown_campaign_jobs(self, campaign_id: str) -> None:
         """Delete one campaign's in-flight cluster workloads (Kueue-aware, scoped).
 
-        Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast exec cluster
+        Reuses ``cleanup_cluster_campaign`` — the same teardown ``vast cluster
         run-cleanup`` performs — so the running pods terminate now and the driver's
         batch wait loop unblocks. Label-scoped to this campaign's Jobs/Workloads/pods,
         and it leaves the shared ClusterQueue alone, so a concurrent campaign keeps

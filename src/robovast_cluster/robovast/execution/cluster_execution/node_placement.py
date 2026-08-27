@@ -339,7 +339,7 @@ def resolve_placement(core, label: str, *, node_local: bool = True, requested: s
     if not allow_auto_pick:
         logger.warning(
             "no node carries %s, so this deployment's node-local data is not pinned and "
-            "the scheduler may place it anywhere. Run `vast exec cluster setup` to decide "
+            "the scheduler may place it anywhere. Run `vast cluster setup` to decide "
             "a placement; an upgrade deliberately does not, because picking here would "
             "move the data it was asked to leave alone.", label)
         return None

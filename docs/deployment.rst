@@ -19,11 +19,11 @@ shortcut that opens a browser at that port; it starts nothing.
 default, so a single tunnel to ``8800`` reaches the web UI, the REST API, *and*
 MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`).
 
-* **Local-only, no service** — ``vast exec local run``. One-shot local Docker
+* **Local-only, no service** — ``vast workspace run``. One-shot local Docker
   run, no persistent service (mode 1). CLI only.
 * **Local service** — ``vast serve``. Persistent local service; web UI + CLI +
   MCP share its state (mode 2). ``vast ui`` opens it.
-* **Cluster service** — ``vast exec cluster setup --ingress-host …`` deploys and
+* **Cluster service** — ``vast cluster setup --ingress-host …`` deploys and
   publishes it (mode 3); users then reach it in a browser, or with ``vast login
   <url>`` for the CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.**
   In-pod, the Deployment runs ``vast serve --backend cluster``; run ``vast serve
@@ -39,7 +39,7 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
 
    **Every request needs the shared token.** There is no unauthenticated mode: when
    ``ROBOVAST_AUTH_TOKEN`` is unset, ``vast serve`` mints one and prints a login URL
-   carrying it, and ``vast exec cluster setup`` generates one and preserves it across
+   carrying it, and ``vast cluster setup`` generates one and preserves it across
    re-runs (``--rotate-token`` issues a new one, logging everyone out).
 
    Browsers authenticate with a cookie obtained at ``/login``; the CLI and MCP send
@@ -53,7 +53,7 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
 The three modes
 ---------------
 
-**Mode 1 — in-process** (``vast exec local run``)
+**Mode 1 — in-process** (``vast workspace run``)
     No service process; the CLI/MCP call the interface directly over
     ``LocalTransport``. Local Docker, local filesystem, sequential. Zero-config;
     the campaign dies with the client. This is the default for one-shot runs.
@@ -69,7 +69,7 @@ The three modes
        vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
 
 **Mode 3 — cluster service** (in-cluster Deployment)
-    ``vast exec cluster setup`` deploys ``robovast-service`` as a Deployment +
+    ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
     ClusterIP Service. It **drives each campaign in-process** (one worker thread
     per campaign) over the Kubernetes backend, creating the scenario Jobs itself,
     and stores results in the **object store**. There is no per-campaign controller
@@ -103,7 +103,7 @@ Access matrix
    * - Cluster service
      - ``HTTPTransport``
      - ``https://robovast.<domain>`` directly, over the Ingress that
-       ``vast exec cluster setup --ingress-host`` created. A browser logs in at
+       ``vast cluster setup --ingress-host`` created. A browser logs in at
        ``/login``; the CLI and MCP use ``vast login <url>``. Nothing is held open and
        no kubeconfig is involved.
 
@@ -129,7 +129,7 @@ auto-detects it — nothing to export:
    ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel to :8800
 
    # the CLI and the web UI follow the tunnel on :8800:
-   vast exec cluster run                             # no flags — auto-detected
+   vast workspace run                             # no flags — auto-detected
    # ...author, run, and query campaigns on the VM.
 
 That one tunnel also reaches MCP, since ``vast serve`` mounts it at ``/mcp`` on
@@ -144,7 +144,7 @@ The operator, once, with a kubeconfig:
 .. code-block:: bash
 
    python tools/setup_ingress_tls.py                # hostname + certificate
-   vast exec cluster setup rke2 \
+   vast cluster setup rke2 \
        --ingress-host robovast.example.org \
        --ingress-class nginx --issuer robovast-ca   # deploys and publishes it
 
@@ -152,7 +152,7 @@ Setup prints the access token once, and waits for the pod to be Ready before
 reporting success — so an image that cannot be pulled is reported *here*, with the
 pod's own reason, rather than as a connection failure from the next command.
 
-To read it back later, ``vast exec cluster token`` prints the URL, the token and the
+To read it back later, ``vast service token`` prints the URL, the token and the
 three ways to connect (``-q`` for the token alone). Each cluster mints its own token, so
 the URL it names is the only one that token opens.
 
@@ -203,7 +203,7 @@ updated deliberately.
 
 .. code-block:: bash
 
-   vast exec cluster upgrade
+   vast service upgrade
 
 That rolls the Deployment onto the resolved image, reconciles RBAC, and waits for
 the pod to be Ready before saying anything. **The access token is preserved**, so
@@ -213,12 +213,12 @@ It reads the environment like every ``vast`` command — ``./.env`` from the cur
 directory, then ``~/.config/robovast/env`` — and that is also how the image is chosen:
 ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG`` (:doc:`images`). There is no ``--image``
 flag, because a one-shot override is just
-``ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast exec cluster upgrade`` (a real environment variable
+``ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast service upgrade`` (a real environment variable
 beats both files), and a setting that should last belongs in a file.
 
 **This is the command that moves a cluster's images**, not ``setup --force``. Both values
 are baked into the service pod as the *site default*; a single campaign can still override
-them per launch with ``vast exec cluster run --image-project``, which needs no upgrade.
+them per launch with ``vast workspace run --image-project``, which needs no upgrade.
 
 **It always restarts the pod**, even when nothing looks different, and that is
 deliberate. An image ref that is a floating tag, or a change confined to the Secrets,
@@ -248,7 +248,7 @@ There is a smaller verb for the common case, and it needs no kubeconfig:
 
 .. code-block:: bash
 
-   vast exec cluster restart
+   vast service restart
 
 That asks the service to roll *itself* — the Deployment's restart annotation, and nothing
 else. It is the same thing the web UI's Admin page button does (:ref:`web-ui-admin`), and
@@ -271,19 +271,19 @@ The lifecycle verbs are deliberately distinct:
 
    * - Command
      - What it changes
-   * - ``vast exec cluster upgrade``
+   * - ``vast service upgrade``
      - The image, RBAC, and the credential Secrets it can rebuild from ``.env``
        (git, share, ntfy, registry) — which is how a registry move or a rotated
        password reaches the cluster. The **access token is preserved**, so nobody is
        logged out.
-   * - ``vast exec cluster setup --force``
+   * - ``vast cluster setup --force``
      - The same, plus it will re-mint the access token when asked
        (``--rotate-token``) — which does log everyone out, so it is not what you
        want for a version bump.
-   * - ``vast exec cluster restart``
+   * - ``vast service restart``
      - The image only, through the service's own API — no kubeconfig needed. Reconciles
        nothing else, so it is for "new bytes are published" and not for a migration.
-   * - ``vast exec cluster cleanup``
+   * - ``vast cluster cleanup``
      - Removes the deployment entirely.
 
 Campaign data lives in the object store and survives all three. Plain ``setup`` over
@@ -318,7 +318,7 @@ prerequisite that used to surface only when a campaign was submitted and refused
      - Says
    * - ``build registry``
      - Whether a push target is configured. A published service with no prefix wants
-       ``vast exec cluster upgrade``; one that was never published wants ``setup`` with
+       ``vast service upgrade``; one that was never published wants ``setup`` with
        ``--ingress-host``. Reading the Ingress is what lets it name *which* — the in-pod
        service cannot tell those apart and has to offer both.
    * - ``registry route``

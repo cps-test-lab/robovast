@@ -19,7 +19,7 @@
 
 The root group lives in the client distribution because every audience has one. A
 service user installs ``robovast-client`` and gets ``vast login``, ``vast workspace``,
-``vast files`` and ``vast wait``; the core, the execution lanes and the operator
+``vast files`` and ``vast campaign wait``; the core, the execution lanes and the operator
 commands each attach their own verbs to this same group through the
 ``robovast.cli_plugins`` entry point. One command name for everybody, and the surface
 grows with what is installed rather than listing verbs that cannot run.
@@ -183,38 +183,6 @@ def _login_remedy(exc):
     if "401" in text or "Unauthorized" in text:
         return "The service answered, but rejected the token. Ask the operator for the current one."
     return "Check the URL and the token the operator gave you."
-
-
-@cli.command('service-log')
-@click.option('--follow', '-f', is_flag=True,
-              help='Keep printing new output until interrupted.')
-@target_options
-def service_log(follow, namespace, context):
-    """Print what the robovast-service itself has been doing.
-
-    Not a campaign's log -- this is the service process: what it decided, what it refused,
-    and the reason behind a failure whose visible half was one terse line. Several failures
-    say so in as many words ("the real reason is only in the service log"), and until now
-    there was no way to read it short of ``kubectl logs``.
-
-    The service keeps the last few hundred kilobytes in memory, so this covers what it has
-    been doing recently, not its whole life, and a restart clears it. A container that has
-    already died is only in ``kubectl logs -p deploy/robovast-service``: a buffer inside a
-    process cannot outlive the process.
-    """
-    try:
-        # require_service, because there is no such thing as the log of a service that is
-        # not running: with no URL this layer yields an in-process transport, which has no
-        # serving process whose stderr this would be.
-        with service_client(namespace, context, require_service=True) as (client, target):
-            _echo_target(target)
-            tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
-                        lambda text: click.echo(text, nl=False), follow=follow)
-    # pylint: disable-next=try-except-raise
-    except (click.UsageError, click.ClickException):
-        raise
-    except Exception as e:
-        handle_cli_exception(e)
 
 
 @cli.command()
@@ -679,7 +647,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
     ``workspace_id`` is the only project binding it takes.
 
     Fire-and-forget by default: it returns once the campaign is launched. Track it with
-    ``vast wait <campaign-id>`` or the web UI. ``--wait-and-download`` instead blocks
+    ``vast campaign wait <campaign-id>`` or the web UI. ``--wait-and-download`` instead blocks
     until it finishes and pulls the archive down.
 
     \b
@@ -745,7 +713,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
 
             if not wait_and_download:
                 click.echo(f"Launched campaign '{cid}'. "
-                           f"Track it with 'vast wait {cid}' or the web UI.")
+                           f"Track it with 'vast campaign wait {cid}' or the web UI.")
                 return
 
             click.echo(f"Launched campaign '{cid}'. Waiting for it to finish...")
@@ -754,7 +722,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
             if outcome == "failed":
                 raise click.ClickException(
                     f"Campaign '{cid}' failed. Its status carries the failure reason: "
-                    f"see 'vast exec cluster log {cid}' or the web UI.")
+                    f"see 'vast campaign log {cid}' or the web UI.")
 
             click.echo(f"Campaign '{cid}' finished. Downloading its archive...")
             # The service streams the campaign from the object store — no external
@@ -1018,153 +986,6 @@ def install_completion():
         raise click.ClickException(f"Failed to install completion: {e}") from e
 
 
-@cli.command()
-@click.argument('campaign')
-@click.option('--interval', default=10.0, show_default=True,
-              help='Seconds between status polls.')
-@click.option('--timeout', type=float, default=None,
-              help='Give up after this many seconds (default: wait indefinitely).')
-@target_options
-def wait(campaign, interval, timeout, namespace, context):
-    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
-    waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
-    still running, but no longer being waited on), 5 (a running job's simulator reported
-    something wrong -- likewise still running).
-
-    The lane-agnostic wait: the service drives every campaign, so its phase *is* the
-    campaign's whichever backend the runs execute on. Prints each phase change as it
-    happens and exits when the campaign reaches a terminal one — which now means past
-    postprocessing, not merely past the last run.
-
-    Exists so a *caller* can wait without holding a request open, and is why the MCP
-    offers no campaign-wait tool: an agent harness can background this command and be
-    notified when it exits, hours or days later, where a blocking tool call would occupy
-    the conversation for as long as the campaign ran — and still not outlive the session.
-    The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
-    shared with every other surface that waits.
-
-    **A stall ends the wait too** (exit 4), because a stalled campaign never reaches a
-    terminal phase: it holds ``running`` for its whole life, so a waiter that stopped only
-    on terminality would never return and nobody would be told. The verdict is
-    :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
-
-    **An ``error``-level health finding ends it too** (exit 5), and earlier: a stall is only
-    visible once a run is past its declared budget, and needs one to have been declared at
-    all, while a simulator saying "sim time is not advancing" is true within a minute and
-    needs no budget. Whatever a finding means is the simulator's business -- this reads one
-    word, ``level``, and passes the rest through.
-
-    Only a **new** stall or a **new** finding exits. A campaign already stalled when this
-    command starts is not news -- whoever ran it has just been told -- and exiting on the
-    first poll would make ``vast wait`` unusable for exactly the state it reports: the message
-    says to re-run it after diagnosing, and a fresh waiter would exit immediately, forever. So
-    the first observation is recorded and only a rising edge stops the wait; for findings the
-    edge is per ``check``, so one check firing repeatedly is one exit and not a stream.
-    """
-    from robovast.client.status import (HEALTH_NEXT_STEP, Phase, error_findings,
-                                        finding_summary, is_terminal, stall_report)
-    from robovast.execution.campaign_wait import wait_for_campaign_status
-    from robovast.execution.poll_health import PollsStopped
-
-    seen = {"stalled": None, "checks": None}
-    fired: dict = {}
-
-    def stop_when(current):
-        # Both edges are taken every poll, whichever ends up firing: a baseline that moved only on
-        # the branch that was reached would let the other one exit on a condition it inherited.
-        stalled = stall_report(current).get("stalled") is True
-        previous, seen["stalled"] = seen["stalled"], stalled
-        findings = error_findings(current)
-        baseline = seen["checks"]
-        if baseline is None:
-            # The baseline poll. Whatever a simulator is already complaining about is the state the
-            # caller was just told to come back from, so it cannot be what sends them away again.
-            seen["checks"] = {f.check for f in findings}
-        else:
-            # A finding first when both are true, matching `_campaign_next_step`: it names a fault
-            # class ("sim time is not advancing") where a stall says only "nothing finished in
-            # time".
-            fresh = [f for f in findings if f.check not in baseline]
-            if fresh:
-                fired["finding"] = fresh[0]
-                return True
-        return stalled and previous is False
-
-    try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            status = wait_for_campaign_status(
-                campaign, client=client, interval=interval, timeout=timeout,
-                feedback=click.echo, stop_when=stop_when)
-    except TimeoutError as e:
-        # Not a failure of the campaign, which is still running: the caller asked to stop
-        # waiting. A distinct exit code keeps the two apart for a script branching on it.
-        click.echo(str(e), err=True)
-        raise SystemExit(2) from e
-    except PollsStopped as e:
-        # Same category -- the wait ended, the campaign did not -- so the same code, but
-        # the message must not read as a campaign problem: nothing is known about the
-        # campaign here, because nothing answered.
-        click.echo(str(e), err=True)
-        raise SystemExit(2) from e
-    except Exception as e:  # noqa: BLE001
-        handle_cli_exception(e)
-        return
-    if not is_terminal(status.phase):
-        # stop_when fired: the campaign is alive, and something about it is worth stopping a
-        # wait for. Distinct from every other exit here, all of which mean the campaign is over
-        # or unreachable -- and the message has to say so, or "the waiter returned" reads as
-        # "the run ended".
-        finding = fired.get("finding")
-        if finding is not None:
-            click.echo(f"{campaign}: {finding_summary(finding)}", err=True)
-            # Said before anything else about what to do: a waiter stopping must never read as
-            # a run stopping, and this exit is reached by *reading* a run, with a fixed
-            # read-only command the service chose. Nothing touched the job.
-            click.echo(f"{campaign}: the run was NOT touched — this is what the run's own "
-                       f"simulator reported about itself.", err=True)
-        else:
-            click.echo(f"{campaign}: {stall_report(status).get('stall_reason', 'no progress')}",
-                       err=True)
-        click.echo(
-            f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
-            f"When you are done diagnosing, background `vast wait {campaign}` again, or "
-            f"end it with stop_campaign.", err=True)
-        if finding is not None:
-            # A check the simulator says it did NOT run, reported here and only here in the wait:
-            # this exit means one check fired, and a reader is entitled to know which others
-            # reached no verdict before concluding that the rest of the run is fine.
-            for note in status.health_skipped or []:
-                click.echo(f"{campaign}: check did not run — {note}", err=True)
-            # The stall message carries its ladder inside `stall_reason`; a finding has no such
-            # sentence of its own. Deliberately NOT the stall's step, which reused to send a
-            # reader off to ask what the job was doing -- the question this finding just answered.
-            click.echo(f"{campaign}: next: {HEALTH_NEXT_STEP}", err=True)
-            raise SystemExit(5)
-        raise SystemExit(4)
-    click.echo(f"{campaign}: {status.phase}")
-    if status.phase == Phase.UNKNOWN:
-        # `unknown` is terminal, so the wait ends -- but it does not mean the campaign
-        # failed. The service has no phase for this id at all: either it is a typo, or the
-        # campaign died before it ever wrote to the store. Exiting 1 made both read as "the
-        # campaign ran and failed", sending the caller to look for a failure that never
-        # happened. A distinct code, because 0/1/2 are taken and a script branches on it.
-        click.echo(
-            f"{campaign}: the service knows no phase for this campaign — check the id, "
-            f"or see 'vast exec cluster log {campaign}' if it died before recording one.",
-            err=True)
-        raise SystemExit(3)
-    if status.error:
-        click.echo(f"{campaign}: {status.error}", err=True)
-    if status.postprocessing_error:
-        # A campaign whose runs passed but whose postprocessing failed still *finished*;
-        # saying only "finished" here would send the caller looking for CSVs that a
-        # successful exit code promised and nothing produced.
-        click.echo(f"{campaign}: postprocessing failed: {status.postprocessing_error}",
-                   err=True)
-    raise SystemExit(0 if status.phase == Phase.FINISHED else 1)
-
-
 @cli.group()
 def image():
     """Build the derived images a project's containers declare.
@@ -1240,7 +1061,7 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         done = wait_for_image_builds(build_ids, client=client, interval=interval,
                                      timeout=timeout, feedback=click.echo)
     except TimeoutError as e:
-        # As `vast wait`: the caller stopped waiting, the builds did not stop building.
+        # As `vast campaign wait`: the caller stopped waiting, the builds did not stop building.
         # A distinct code keeps that apart from a build that actually failed.
         click.echo(str(e), err=True)
         raise SystemExit(2) from e
@@ -1344,7 +1165,7 @@ def run_startup_hooks():
     distribution's installed metadata, so adding one to `pyproject.toml` does nothing
     until the package is reinstalled -- and an editable checkout looks completely normal
     in the meantime. That silence cost real damage once: with the core installed but its
-    hook unregistered, no `.env` was read, and `vast exec cluster upgrade` concluded the
+    hook unregistered, no `.env` was read, and `vast service upgrade` concluded the
     registry and git credentials "configuration is gone" and deleted both Secrets. So if
     the core is installed and contributed nothing, say so instead of running on.
     """
@@ -1375,10 +1196,11 @@ def _core_installed() -> bool:
 
 def load_plugins():
     """Dynamically load all VAST CLI plugins from entry points."""
-    # Map of long plugin names to their short aliases
+    # Map of long plugin names to their short aliases. `execution`/`exec` is gone with the
+    # group: every group is now named after what it acts on, and none of those names is
+    # long enough to want a short form.
     aliases = {
         'configuration': 'config',
-        'execution': 'exec',
     }
     try:
         eps = entry_points(group='robovast.cli_plugins')

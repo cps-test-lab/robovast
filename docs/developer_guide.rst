@@ -36,20 +36,22 @@ To test your scenario locally, you can run:
 Create a RoboVAST configuration file, based on the existing examples in the `configs/` directory.
 Do not set any configuration, as this will be done in the next step.
 
+Point a service at the directory **in place** — no upload, and edits on disk are live — and
+run one configuration through it. This is the local development loop: the same path a remote
+campaign takes, differing only in which service answers.
 
 .. code-block:: bash
 
-    vast exec local prepare-run --config config1 ./test_run
+    # in one shell: a local service, pinning this directory as a workspace
+    vast serve --workspace-dir . --results-dir ./test_run
 
-Afterwards you can verify the scenario, the RoboVAST-configuration and the docker image.
+    # in another: check it, then run a single configuration once
+    vast workspace validate <pinned-workspace> my.vast
+    vast workspace run <pinned-workspace> my.vast --filter config1 --runs 1
 
-.. code-block:: bash
-
-    # execute a basic run
-    ./test_run/run.sh
-
-    # use different container image
-    ./test_run/run.sh --image <your-container-image>
+``vast workspace list`` names the pinned workspace. Afterwards you can verify the scenario,
+the RoboVAST configuration and the container image from what the run wrote under
+``./test_run``.
 
     # analyze issues by using an interactive shell
     ./test_run/run.sh --start-only
@@ -62,7 +64,7 @@ Afterwards you can verify the scenario, the RoboVAST-configuration and the docke
 
 To enable GUI visualization (RViz, a simulator window) for local runs while keeping cluster
 runs headless, add ``execution.local.gui.parameter_overrides`` to your ``.vast`` (see
-:doc:`configuration`). ``vast execution local run`` opts in by default; through a service
+:doc:`configuration`). ``vast workspace run`` opts in by default; through a service
 the equivalent is ``start_campaign(show_gui=True)`` or ``exec_in_container(show_gui=True)``.
 
 Either way the window opens on the host running the **service** (or, for the CLI, on the
@@ -74,7 +76,7 @@ The two entry points differ on purpose when there is no display:
   desktop session or reached over an SSH tunnel has no screen to draw on, and a cluster
   backend refuses it outright. Accepting it would produce a run that looks fine and shows
   nothing.
-* ``vast execution local run`` has GUI as its **default**, so it prints a notice and
+* ``vast workspace run`` has GUI as its **default**, so it prints a notice and
   continues headless. A build machine must keep running it unattended without passing
   ``--no-gui``.
 
@@ -82,7 +84,7 @@ Next, it is important to verify that the output (e.g. ROS bag) is stored correct
 
 .. code-block:: bash
 
-    vast exec local run --config config1 ./test_out
+    vast workspace run --config config1 ./test_out
 
     # check that output is created in ./test_out/<campaign-name>-<timestamp>/<config-name>/<run_number>
     ls -l ./test_out/*-*/config1/0/
@@ -103,7 +105,7 @@ A good procedure is to add configurations one-by-one and analyze the result.
     vast config list
 
     # 3. try local execution with one of the created configurations
-    vast exec local run --config <config-name> --runs 1 ./test_out
+    vast workspace run --config <config-name> --runs 1 ./test_out
 
 5. Execute in Cluster
 ^^^^^^^^^^^^^^^^^^^^^
@@ -116,28 +118,28 @@ A good practice is, to first run a single configuration to verify that everythin
 .. code-block:: bash
 
     # 1. run single configuration in cluster, once
-    vast exec cluster run --config config1 --runs 1
+    vast workspace run --config config1 --runs 1
 
     # 2. fetch the campaign's archive (or publish it to the share for someone else)
     vast results download <campaign-id>       # -> ./<campaign-id>.tar.gz
     vast share export -i <campaign-id>        # -> the configured share
     # Inside the archive: <campaign-name>-<timestamp>/<config-name>/<run_number>/
 
-``vast exec cluster run`` is fire-and-forget: it starts the campaign on the
+``vast workspace run`` is fire-and-forget: it starts the campaign on the
 ``robovast-service``, which drives it in-process, and returns immediately. The
 campaign runs in the background in the cluster:
 
 .. code-block:: bash
 
     # Monitor job status (shows progress per run when multiple runs are active)
-    vast exec cluster monitor
+    vast cluster monitor
 
     # Clean up after jobs complete (all campaigns, or use --campaign for a specific campaign)
-    vast exec cluster run-cleanup
+    vast cluster jobs-cleanup
 
 By default, a new run does not clean up previous runs, so you can run multiple
 runs in parallel. Use ``--cleanup`` to remove previous runs before starting
-(e.g. ``vast exec cluster run --cleanup``).
+(e.g. ``vast workspace run --cleanup``).
 
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""
@@ -230,7 +232,7 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
   ``Warning: Failed to load plugin '<name>'`` and carries on.
 * ``robovast.cli_startup`` used to degrade **silently**, and cost real damage: with the
   core installed but its ``.env`` hook unregistered, no ``./.env`` was read, and
-  ``vast exec cluster upgrade`` — which reconciles Secrets from the environment —
+  ``vast service upgrade`` — which reconciles Secrets from the environment —
   concluded the registry and git credentials were gone and deleted both. It now refuses
   rather than running on, naming the reinstall.
 
@@ -397,7 +399,7 @@ the quadrotor search vasts.
    be importable everywhere scenario variations get **composed** — not just where
    scenarios *run*. Composition happens in the process that expands the
    ``variations:`` cross-product: the ``vast`` CLI on your host for
-   ``vast exec local run``; and the ``robovast-service`` for every service/cluster
+   ``vast workspace run``; and the ``robovast-service`` for every service/cluster
    campaign — the service drives the campaign in-process, so composition (which for
    search runs once per generation) happens in the service, not in a separate pod.
 
@@ -475,7 +477,7 @@ the quadrotor search vasts.
 
    **Sources.** An index pin needs no source access. A git URL works when the
    install environment can reach it — for a **private** repo in the service, provide
-   a GitHub token at ``vast exec cluster setup`` (below). A **workspace-relative
+   a GitHub token at ``vast cluster setup`` (below). A **workspace-relative
    wheel** you ``create_upload``\ ed is the fully offline path (no git, no
    credentials) for a private or unpublished plugin. On a failed install the error
    is raised synchronously from the service call (create/validate/preview), so an
@@ -487,7 +489,7 @@ the quadrotor search vasts.
    workspace) cannot be swapped; ``ensure_workspace_plugins`` **logs a warning** in
    that case (the already-loaded version wins until the service restarts).
 
-   **Private-repo credentials (``vast exec cluster setup``).** When a ``git+https``
+   **Private-repo credentials (``vast cluster setup``).** When a ``git+https``
    plugin points at a private repo, provide a token via ``ROBOVAST_GIT_TOKEN`` (or
    ``GITHUB_TOKEN`` / ``GH_TOKEN``) — either exported in the environment or, more
    conveniently, set in the project's ``.env`` file (every ``vast`` command loads
@@ -547,7 +549,7 @@ the quadrotor search vasts.
      ``robovast-nav = {path = "src/robovast_nav", optional = true}`` for an
      in-repo sibling package) — ``poetry check`` catches the mismatch if not.
    * For a cluster run, the built-in ``robovast`` / ``robovast-nav`` code comes
-     from the **service image** (``vast exec cluster setup`` deploys it), so dev
+     from the **service image** (``vast cluster setup`` deploys it), so dev
      changes to those sources reach a run by rebuilding/redeploying that image —
      publish your own set (``make release-images PROJECT=docker.io/<you> PUSH=1``)
      and point ``ROBOVAST_PROJECT`` at it to iterate. This applies
@@ -1023,7 +1025,7 @@ To test your cluster configuration, you can use:
 
 .. code-block:: bash
 
-    vast exec cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
+    vast cluster prepare-setup --cluster-config YourClusterConfig ./setup_output
 
 The output directory will contain all necessary files and instructions to manually execute the setup steps for your cluster configuration and execution.
 
@@ -1786,7 +1788,7 @@ too). It fails the campaign with an actionable message when:
 * the ``ClusterQueue`` reports ``Active=False`` — most often a missing
   ``ResourceFlavor``, which leaves every object present but unusable.
 
-The same check runs as a post-condition of ``vast execution cluster setup``, so
+The same check runs as a post-condition of ``vast cluster setup``, so
 setup cannot report success while leaving the queues unusable.
 
 **Quota exhaustion is not a failure.** A queue whose capacity is currently used
@@ -2090,7 +2092,7 @@ TTL-cached path on the base class (``LocalTransport.resource_usage`` memoizes fo
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
 service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
 (``service_deploy._service_rbac_manifests``), so **upgrading an already-deployed service to
-this version requires setting it up again** (``vast exec cluster cleanup`` then ``setup``,
+this version requires setting it up again** (``vast cluster cleanup`` then ``setup``,
 or ``setup --force``) to add the grant.
 
 **Config editor** (``frontend/ui/src/pages/config/``) is where a ``.vast`` is authored:

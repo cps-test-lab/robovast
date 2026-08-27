@@ -508,7 +508,7 @@ def _diagnose_pip_failure(specs, stderr: str) -> str:
         else:
             lines.append("The source needs credentials (private repository).")
         lines.append(
-            "Provide a GitHub token at 'vast exec cluster setup' so the service can "
+            "Provide a GitHub token at 'vast cluster setup' so the service can "
             "authenticate, or upload a pre-built wheel into the workspace and reference "
             "it by a workspace-relative path in 'plugins:'. A token only reaches what it "
             "is scoped to: one issued for a different organisation authenticates and then "

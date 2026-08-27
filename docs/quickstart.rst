@@ -77,7 +77,7 @@ The web UI, the REST API and the MCP server are all on that one port.
 ``127.0.0.1:8800`` over plain HTTP, and every part of RoboVAST that would demand
 otherwise is confined to the cluster half: the session cookie sets ``Secure`` only when
 the request arrived over HTTPS, so a browser login works on ``http://127.0.0.1``, and the
-refusals that reject an unencrypted or tokenless deployment live in ``vast exec cluster
+refusals that reject an unencrypted or tokenless deployment live in ``vast cluster
 setup``, which a local service never runs. There is nothing to register, nothing to put in
 ``/etc/hosts``, and no certificate to trust — a DNS name and TLS become necessary only
 when you publish the service to other machines, which is :ref:`the operator's step
@@ -126,7 +126,7 @@ is a recurring support cost.
 
 .. code-block:: bash
 
-   vast exec cluster setup rke2 \
+   vast cluster setup rke2 \
        --ingress-host robovast.example.org \
        --ingress-class nginx --issuer robovast-ca
 
@@ -140,13 +140,13 @@ image, so reaching the URL is enough to run containers in your cluster), and an 
 over plain HTTP (the token would cross the network in clear text, and the session cookie
 is ``Secure``, so the login would not work at all).
 
-Then hand out the URL and the token. ``vast exec cluster token`` prints both, together
+Then hand out the URL and the token. ``vast service token`` prints both, together
 with the three ways to connect, so onboarding someone is one copy-paste:
 
 .. code-block:: bash
 
-   vast exec cluster token          # URL + token + how to connect
-   vast exec cluster token -q       # the token alone, for a script
+   vast service token          # URL + token + how to connect
+   vast service token -q       # the token alone, for a script
 
 The token is **per cluster** — each instance mints its own. One instance's token at
 another's URL fails with "That token was not accepted", which looks exactly like a typo,
@@ -203,9 +203,9 @@ Keeping it running
 
 .. code-block:: bash
 
-   vast exec cluster upgrade          # new version: image + RBAC, nobody logged out
-   vast exec cluster setup --force    # rotate credentials from .env (logs everyone out)
-   vast exec cluster cleanup          # remove it; campaign data survives in the object store
+   vast service upgrade          # new version: image + RBAC, nobody logged out
+   vast cluster setup --force    # rotate credentials from .env (logs everyone out)
+   vast cluster cleanup          # remove it; campaign data survives in the object store
 
 If the Ingress itself breaks, ``kubectl port-forward svc/robovast-service 8800:8800`` puts
 the service back on the conventional local port and every client finds it there.

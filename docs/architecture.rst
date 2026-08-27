@@ -100,7 +100,7 @@ Because the driver's batch wait loop blocks on the running Jobs and the
 cooperative-stop flag is only checked *between* batches (or search generations),
 ``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
 Kueue-aware, campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
-``vast exec cluster run-cleanup`` performs). Deleting the Jobs unblocks the wait
+``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
 loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly; the ``"Hold"`` (never ``"HoldAndDrain"``) queue policy means other
 queued/running campaigns are not preempted. **Service shutdown** (Ctrl+C on
@@ -259,9 +259,9 @@ answers "where did this come from?", which is a fact about the past; it does not
 **One project binding.** ``workspace_id`` is the only project binding the service
 accepts, on every backend: a campaign always runs a **workspace's** ``.vast``, and
 ``config_path`` selects among several ``.vast`` files in that workspace. There is no
-server-side "current project" — ``.robovast_project`` / ``vast init`` bind the *CLI's*
-project (``vast exec local run``, ``vast results``) and never select
-what the service runs. Omitting ``workspace_id`` is refused rather than resolved from
+"current project" anywhere — not on the server, and not in the CLI either: every command names
+its own input, and ``vast workspace run`` takes the same workspace-and-path pair the API
+does. Omitting ``workspace_id`` is refused rather than resolved from
 somewhere else, because the fallback that used to exist ignored ``config_path`` and so
 could run a different ``.vast`` than the caller named.
 
@@ -1080,7 +1080,7 @@ concurrent with the build itself — at submit. A campaign that builds inherits 
 those fire points are on the build and not on the caller.
 
 The **family** images are warmed from a different place and for a different reason:
-``vast exec cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
+``vast cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
 whole family — a tag bump or a moved project means the next campaign pays a full pull of
 ``robovast-roqsim``, the largest image there is — and the moment it is free, since the pod is
 being restarted anyway so nothing is mid-campaign. It resolves from the caller's own
@@ -1174,7 +1174,7 @@ warming — and report success doing it.
 **The pod env is the site default; the request overrides it.** That ordering is the whole
 reason a dev run needs no redeploy. It is also a bug fixed: of the five per-image variables
 that used to exist, only two were ever carried into the service pod, so
-``vast exec cluster setup --force`` appeared to move the images and moved only the
+``vast cluster setup --force`` appeared to move the images and moved only the
 controller — three of the five were read in-pod and set nowhere.
 
 **Reproducibility lives in the recorded digest.** ``resolve_robovast_image`` used to refuse

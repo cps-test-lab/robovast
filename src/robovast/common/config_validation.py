@@ -194,7 +194,7 @@ def _liveness_advisories(config_path):
     cannot do is be *judged*. ``stalled`` is asserted only against a declared per-run
     budget (see :func:`~robovast.common.config.declared_per_run_seconds`), so with none
     the verdict is ``null`` forever -- a wedged run and a slow one stay the same picture,
-    and ``vast wait`` has nothing to exit 4 on.
+    and ``vast campaign wait`` has nothing to exit 4 on.
 
     Said here rather than shown in a reader, because a reader can only repeat it on every
     poll for the life of the campaign, and by then the fix costs a re-run. Here it costs a
@@ -208,7 +208,7 @@ def _liveness_advisories(config_path):
     return [_problem(
         "liveness",
         "execution.timeout is not declared, so a wedged run is never reported: stalled "
-        "stays null and `vast wait` cannot exit 4 on it. The enforcement backstop is "
+        "stays null and `vast campaign wait` cannot exit 4 on it. The enforcement backstop is "
         "deliberately not used to judge -- it would call a dead run healthy for an hour. "
         "Set execution.timeout to the longest a single run should legitimately take; "
         "get_campaign_summary on a comparable finished campaign reports what its runs "

@@ -15,17 +15,16 @@ Overview
 Every cluster run — batch **and** search — is driven by the
 **robovast-service**, which runs the campaign *in-process* (one worker thread per
 campaign) and creates the scenario Jobs itself. So cluster runs require a deployed
-service (``vast execution cluster setup`` installs it); ``vast execution cluster
-run`` finds it — a service answering on the conventional local port, or the deployed
+service (``vast cluster setup`` installs it); ``vast workspace run`` finds it — a service answering on the conventional local port, or the deployed
 one ``vast login`` recorded — pushes the local project into a server-side
 workspace, and starts the campaign there. It is *fire-and-forget*
 — it returns immediately with the campaign id, and the campaign continues in the
 cluster.
 
-The project it runs comes from ``vast init``, or straight from a file, which needs no
-project at all::
+A campaign runs a *workspace's* project, named by the pair (workspace, path). Push the
+directory once, then launch by name::
 
-   vast -V configs/examples/growth_sim/growth_sim.vast exec cluster run \
+   vast workspace run growth_sim growth_sim.vast \
         --description "pilot: new inflation radius"
 
 ``--description`` is one line saying what the run is *for*. Set it: it is what tells
@@ -71,8 +70,7 @@ them. Internally:
    ``--upload-to-share`` / the MCP ``upload_to_share`` flag). When set, the driver
    streams a **raw, pre-postprocessing** archive to the configured share the moment
    the runs finish, *before* analysis postprocessing adds derived data — so the
-   shared copy stays minimal and untouched. Track progress with ``vast execution
-   cluster monitor``; ``vast execution cluster download-cleanup`` removes the
+   shared copy stays minimal and untouched. Track progress with ``vast cluster monitor``; ``vast cluster store-cleanup`` removes the
    buckets once results have been handled.
 
 .. note::
@@ -129,18 +127,17 @@ Before the first run, deploy the MinIO S3 server and Kueue into the cluster:
 
 .. code-block:: bash
 
-   vast execution cluster setup <cluster-config>
+   vast cluster setup <cluster-config>
 
 Available cluster configs (``--list``):
 
 .. code-block:: bash
 
-   vast execution cluster setup --list
+   vast cluster setup --list
 
-Setup acts on the *cluster*, not on a project: it neither needs nor reads a ``vast
-init`` / ``.robovast_project``, and runs from any directory. Its one optional input
-from a ``.vast`` is the node labels, taken only from a config you name explicitly
-(:ref:`below <cluster-node-labels>`).
+Setup acts on the *cluster*, not on a project: it reads nothing ambient and runs from any
+directory. Its one optional input from a ``.vast`` is the node labels, taken only from a
+config you name explicitly with ``--vast`` (:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
@@ -165,13 +162,12 @@ explicitly — it is the only config setup will read:
 
 .. code-block:: bash
 
-   vast -V my_campaign.vast execution cluster setup rke2
+   vast cluster setup rke2 --vast my_campaign.vast
 
-Without ``-V`` no node selectors are deployed (logged at INFO) and pods schedule
-wherever Kubernetes puts them. A project's ``.vast`` is deliberately *not* consulted: a
-``.robovast_project`` is found by walking up to the filesystem root, so one several
-directories above the CWD would otherwise pin a cluster's pods — or, if it names a
-``.vast`` that has since moved, fail the deploy over a file nobody mentioned.
+Without ``--vast`` no node selectors are deployed (logged at INFO) and pods schedule
+wherever Kubernetes puts them. Nothing is consulted implicitly, and there is nothing that
+could be: which nodes a cluster's pods may run on is not a decision for a file in some
+parent directory of the CWD.
 
 A named ``.vast`` that cannot be read is an error rather than a silent "no labels" — a
 config that fails to load cannot be asked whether labels were intended, and guessing
@@ -192,7 +188,7 @@ label:
 
 .. code-block:: bash
 
-   vast execution cluster setup rke2
+   vast cluster setup rke2
 
 .. code-block:: text
 
@@ -205,7 +201,7 @@ label:
      build cache alongside it on node-a (--buildkit-node puts it on another disk)
      recorded as a node label, so a later cleanup + setup returns here without any flag
 
-Because a node label is **cluster-scoped**, it outlives ``vast execution cluster cleanup``.
+Because a node label is **cluster-scoped**, it outlives ``vast cluster cleanup``.
 A later ``setup`` reads it back and lands on the same node with no flags at all:
 
 .. code-block:: text
@@ -268,8 +264,8 @@ Moving it, and forgetting it
 .. code-block:: bash
 
    kubectl get nodes -L robovast.io/data-node -L robovast.io/build-node   # where is it?
-   vast execution cluster setup rke2 --data-node node-b                   # move it
-   vast execution cluster cleanup --forget-placement                      # forget it
+   vast cluster setup rke2 --data-node node-b                   # move it
+   vast cluster cleanup --forget-placement                      # forget it
 
 The move says what it abandoned, which is the only place that node is ever named again:
 
@@ -306,7 +302,7 @@ in software on a CPU one.
 
 .. code-block:: bash
 
-   vast execution cluster setup rke2 -x local     # provisions GPUs if the cluster has them
+   vast cluster setup rke2 -x local     # provisions GPUs if the cluster has them
 
 What that does, when a GPU is found: installs the `NVIDIA device plugin
 <https://github.com/NVIDIA/k8s-device-plugin>`_ with time-slicing so several pods can share
@@ -325,8 +321,8 @@ up — unless GPUs were asked for explicitly, which turns those into errors.
 
 .. code-block:: bash
 
-   vast execution cluster setup rke2 -x local --force --gpu-replicas 24
-   vast execution cluster setup rke2 -x local --no-gpu       # opt out entirely
+   vast cluster setup rke2 -x local --force --gpu-replicas 24
+   vast cluster setup rke2 -x local --no-gpu       # opt out entirely
 
 ``N`` caps concurrency; it does **not** partition device memory. Nothing in Kubernetes, in
 the plugin, or in the driver gives each pod a share of VRAM — all ``N`` renderers allocate
@@ -428,7 +424,7 @@ To tear everything down after use:
 
 .. code-block:: bash
 
-   vast execution cluster cleanup
+   vast cluster cleanup
 
 Cleanup removes the device plugin too, but never the ``nvidia`` RuntimeClass or the host's
 driver and toolkit: those belong to the cluster and its node administrator.
@@ -440,19 +436,19 @@ Running Scenarios
 .. code-block:: bash
 
    # Run all configs defined in the project's .vast file
-   vast execution cluster run
+   vast workspace run
 
    # Override the number of runs from the CLI
-   vast execution cluster run --runs 5
+   vast workspace run --runs 5
 
    # Run only one specific config by name (batch campaigns)
-   vast execution cluster run --config my-config
+   vast workspace run --config my-config
 
 ``run`` is fire-and-forget: it starts the campaign on the service and returns
 immediately, printing the campaign id. The campaign continues in the cluster —
-watch it with ``vast execution cluster monitor``. (It needs a reachable service:
+watch it with ``vast cluster monitor``. (It needs a reachable service:
 auto-detected on the conventional local port, or the one ``vast login`` stored; run
-``vast execution cluster setup`` first if you have none.)
+``vast cluster setup`` first if you have none.)
 
 
 Monitoring and Results
@@ -462,7 +458,7 @@ Check the status of a running (or recently completed) run:
 
 .. code-block:: bash
 
-   vast execution cluster monitor
+   vast cluster monitor
 
 The service publishes the finished campaign to the object store automatically, and
 ``vast results download`` (or ``run --wait-and-download``) streams it from there — no
@@ -483,15 +479,15 @@ service, ``vast results import <archive>``.
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
 **at launch** (*Upload to share when done* in the web UI, ``--upload-to-share`` on
-``vast execution cluster run``, or the MCP ``upload_to_share`` flag) or export a
+``vast workspace run``, or the MCP ``upload_to_share`` flag) or export a
 finished campaign with ``vast share export -i <campaign-id>``.
 
 Clean up only the job objects (without touching the result storage):
 
 .. code-block:: bash
 
-   vast execution cluster run-cleanup
-   vast execution cluster run-cleanup --campaign campaign-2025-06-01-120000
+   vast cluster jobs-cleanup
+   vast cluster jobs-cleanup --campaign campaign-2025-06-01-120000
 
 Remove result buckets from the object store (after uploading or when no longer
 needed). This runs **through the robovast-service** — it holds the object-store
@@ -500,8 +496,8 @@ campaign that is still running:
 
 .. code-block:: bash
 
-   vast execution cluster download-cleanup
-   vast execution cluster download-cleanup --campaign campaign-2025-06-01-120000
+   vast cluster store-cleanup
+   vast cluster store-cleanup --campaign campaign-2025-06-01-120000
 
 The service is auto-detected on the conventional local port, or named by ``vast login``
 (``-x`` context, ``-n`` namespace) to tunnel to the in-cluster service for the call.
@@ -589,7 +585,7 @@ apart: it reads the prefix out of its environment and has no RBAC to look at its
 
 * **Published, but the prefix is unset.** A ``setup`` re-run *without* ``--ingress-host``
   used to drop it while leaving the Ingress alone, so nothing looked wrong until a campaign
-  was submitted. ``vast exec cluster upgrade`` re-bakes the prefix from the live Ingress.
+  was submitted. ``vast service upgrade`` re-bakes the prefix from the live Ingress.
   (Setup no longer drops it; deployments set up before that fix still need the upgrade.)
 * **Never published.** Re-run ``setup`` with ``--ingress-host``.
 
@@ -605,7 +601,7 @@ must not silently follow it.
 **An ``upgrade`` re-bakes it too, and needs no arguments to do it.** The origin carries a
 scheme as well as a host, and an upgrade holds none of the TLS arguments the Ingress was
 created with -- so it reads the whole URL back from the live Ingress, where the TLS block
-decides the scheme, and states that. Which means a single ``vast exec cluster upgrade`` is
+decides the scheme, and states that. Which means a single ``vast service upgrade`` is
 enough to publish the origin of a deployment that predates it, and enough to *clear* it
 again for one that has been unpublished: reading the Ingress is what tells those two apart
 from "nobody told me".
@@ -742,7 +738,7 @@ equivalent ``.dockerignore``.
 It also skips **campaign output directories**, and those are recognised by *structure*
 rather than by name: a directory holding an ``_execution/`` child. There is no name to
 list, because a campaign directory is named after its campaign id. ``results/`` was
-already excluded, but ``exec cluster run --wait-and-download`` extracts a campaign
+already excluded, but ``workspace run --wait-and-download`` extracts a campaign
 *beside* the sources rather than into ``results/`` — so a project that had used it a few
 times was staging several hundred megabytes of rosbags around a fifteen-megabyte tree,
 uploaded and mirrored back down once per container on every build, with nothing reporting
@@ -837,8 +833,8 @@ The build daemon
 
 .. code-block:: bash
 
-   vast exec cluster setup rke2 --buildkit-storage-path /data/robovast-buildkit
-   vast exec cluster setup gcp  --buildkit-storage-class premium-rwo --buildkit-storage-size 200Gi
+   vast cluster setup rke2 --buildkit-storage-path /data/robovast-buildkit
+   vast cluster setup gcp  --buildkit-storage-class premium-rwo --buildkit-storage-size 200Gi
 
 A **hostPath** by default, because a stock RKE2 cluster ships no StorageClass and a PVC there
 stays ``Pending`` forever. That makes the cache node-local, so ``--buildkit-node`` pins the
@@ -854,7 +850,7 @@ gone, which is half the reason ``BUILDKIT_IMAGE`` is pinned at all), and each ha
 
 .. code-block:: bash
 
-   vast exec cluster setup rke2 \
+   vast cluster setup rke2 \
      --buildkit-cache-max 150GB \        # ceiling on the cache
      --buildkit-cache-min-free 50GB \    # free space kept on the filesystem
      --buildkit-cache-reserved 100GB      # cache kept even when old
@@ -907,7 +903,7 @@ Job Queueing with Kueue
 -----------------------
 
 Cluster jobs are queued by `Kueue <https://kueue.sigs.k8s.io/>`_, which ``vast
-execution cluster setup`` installs and sizes to the cluster. It admits jobs only
+cluster setup`` installs and sizes to the cluster. It admits jobs only
 when there is CPU and memory for them — and GPUs, on a cluster that has them — so a
 large campaign cannot oversubscribe the nodes, and several campaigns launched at once
 share the cluster instead of fighting over it. There is nothing to configure: every job
@@ -919,7 +915,7 @@ asks for a resource the ClusterQueue does not cover is not rejected — it is **
 indefinitely**, and a suspended job still counts as active, so a campaign would report
 "still running" forever with nothing to show. RoboVAST therefore checks coverage before
 creating any job and fails with the remedy instead. If you see that error, re-run
-``vast execution cluster setup`` (or ``upgrade``, which reconciles the queues too).
+``vast cluster setup`` (or ``upgrade``, which reconciles the queues too).
 
 **Older campaigns finish first.** When several campaigns run at once, Kueue admits the
 one that started earliest first. Every job carries a priority derived from its campaign's
@@ -944,7 +940,7 @@ reclaims the slots as they free. That is the intended trade: the alternative is 
 the cluster to hold capacity for a campaign that is not yet asking for it.
 
 **Jobs waiting is normal.** A campaign whose jobs sit in the queue is healthy: it
-is waiting for capacity, not stuck. ``vast execution cluster monitor``, the web UI
+is waiting for capacity, not stuck. ``vast cluster monitor``, the web UI
 and ``list_campaign_jobs`` report such jobs as ``waiting`` — a status of its own,
 distinct from ``pending`` (a pod exists and is being scheduled) and from ``blocked``
 (the job cannot start and needs a human). Kueue's own reason rides along as the
@@ -1001,7 +997,7 @@ which is what makes it look like a concurrency bug rather than an arithmetic one
 
 Campaign pods are deliberately *not* subtracted: those are Kueue's to account for, and
 taking off the ones that happen to be running would shrink the quota permanently to fit
-one moment's load. Re-run ``vast execution cluster setup`` (or ``upgrade``) after adding
+one moment's load. Re-run ``vast cluster setup`` (or ``upgrade``) after adding
 or removing anything long-lived on the nodes — the quota is a snapshot, not a watch.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
@@ -1019,8 +1015,7 @@ it can do reaches the setting that fixes it. On RKE2/k3s, reserve it in
      - "kube-reserved=cpu=1,memory=2Gi"
 
 Applying it restarts the kubelet, which restarts every pod on the node: do it in a
-maintenance window, not while campaigns are running. Afterwards re-run ``vast execution
-cluster setup`` so the quota follows the new ``allocatable`` (``kubectl get node <name>
+maintenance window, not while campaigns are running. Afterwards re-run ``vast cluster setup`` so the quota follows the new ``allocatable`` (``kubectl get node <name>
 -o jsonpath='{.status.allocatable.cpu}'`` shows it took effect). This is independent of
 the subtraction above and complements it: the kubelet reservation protects the machine,
 the subtraction protects the schedule.
@@ -1083,7 +1078,7 @@ busy
    look the same in ten minutes as in one, so the batch fails after **60 seconds**
    (``BLOCKED_GRACE_SECONDS``) with Kubernetes' own message.
 
-The job *listing* (``vast execution cluster monitor``, the web UI, ``list_campaign_jobs``)
+The job *listing* (``vast cluster monitor``, the web UI, ``list_campaign_jobs``)
 reports all three, and a busy job appears there as ``pending`` carrying Kubernetes'
 message as its detail. ``pending`` is the literal truth about such a job — its pod exists
 and has not started — and the reason it has not started is worth reading without being
@@ -1133,10 +1128,10 @@ the ``--context`` flag to any cluster sub-command to select a specific context
 .. code-block:: bash
 
    # Use the currently active context (default)
-   vast execution cluster run
+   vast workspace run
 
    # Explicitly target a context
-   vast execution cluster run --context gcp-c4
+   vast workspace run --context gcp-c4
 
 The ``--context`` flag is available on ``setup``, ``run``, ``monitor``,
 ``run-cleanup``, and ``cleanup``.
@@ -1195,8 +1190,8 @@ Running the same config on two clusters:
 
 .. code-block:: bash
 
-   vast execution cluster run --context gcp-c4
-   vast execution cluster run --context local
+   vast workspace run --context gcp-c4
+   vast workspace run --context local
 
 
 Cloud Provider Configurations
@@ -1249,12 +1244,12 @@ loudly rather than inventing one.
 
 .. code-block:: bash
 
-   vast exec cluster setup gcp \
+   vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results \
      -o gcs_access_key=GOOG... -o gcs_secret_key=...
 
    # or with a service-account key file instead of HMAC keys:
-   vast exec cluster setup gcp \
+   vast cluster setup gcp \
      -o gcs_bucket=my-robovast-results -o gcs_key_file=./sa-key.json
 
 Available options:
@@ -1309,7 +1304,7 @@ volume — data persists as long as the pod is alive.
 
 .. code-block:: bash
 
-   vast execution cluster setup rke2
+   vast cluster setup rke2
 
 **Notes:**
 
@@ -1340,12 +1335,12 @@ and local integration tests.
 
 .. code-block:: bash
 
-   vast execution cluster setup minikube
+   vast cluster setup minikube
 
 **Notes:**
 
 * No archiver sidecar — it is not included in the minikube manifest.  Use
-  ``vast execution cluster download-cleanup`` to remove S3 buckets after
+  ``vast cluster store-cleanup`` to remove S3 buckets after
   processing results via ``kubectl port-forward``.
 * ``emptyDir`` storage means all data is lost if the pod restarts.
 
@@ -1415,8 +1410,7 @@ How it works
 ^^^^^^^^^^^^
 
 Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share
-when done* in the web UI, pass ``--upload-to-share`` to ``vast execution cluster
-run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
+when done* in the web UI, pass ``--upload-to-share`` to ``vast workspace run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
 no separate archiver pod is involved.
 
 When the toggle is set, the driver — the moment the scenario runs finish and
@@ -1452,7 +1446,7 @@ up as ``postprocessed`` where the campaign-end upload sent ``raw``.
 
 **Watching it.** The campaign enters the ``sharing`` phase and publishes live progress
 into its status (``extra.upload``), which the campaign view renders as a bar and
-``vast exec cluster monitor`` prints. Because the archive is gzipped on the fly its
+``vast cluster monitor`` prints. Because the archive is gzipped on the fly its
 compressed length is unknown until the last byte, so the **bar measures the campaign
 bytes going into the archive** (``source_done``/``source_total``) and the bytes actually
 sent are reported beside it — the two differ by the compression ratio. A provider or lane
@@ -1518,8 +1512,7 @@ Progress output
 
 The tar+gzip stream and upload run in the driver; a single-line progress bar
 (transferred size and rate — no percentage, since the streamed archive's length is
-not known up front) is written to the campaign log — view it with ``vast execution
-cluster monitor`` or the web UI log panel:
+not known up front) is written to the campaign log — view it with ``vast cluster monitor`` or the web UI log panel:
 
 .. code-block:: text
 

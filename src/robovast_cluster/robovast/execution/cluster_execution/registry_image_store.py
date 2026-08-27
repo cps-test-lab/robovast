@@ -105,7 +105,7 @@ class RegistryImageStore(ImageBuildStore):
             raise ImageStoreUnavailable(
                 f"cannot tell whether {ref.identity} is built: this deployment's image "
                 f"registry did not answer. That is an infrastructure problem — check the "
-                f"registry and its credentials (vast exec cluster setup) rather than "
+                f"registry and its credentials (vast cluster setup) rather than "
                 f"rebuilding.")
         return state == PRESENT
 
@@ -235,7 +235,7 @@ class RegistryImageStore(ImageBuildStore):
     def _resolve_registry_objects(self, registry):
         """Fill in the push/pull Secret and CA ConfigMap by *looking for them*.
 
-        Their names are fixed constants written by ``vast exec cluster setup``, so the
+        Their names are fixed constants written by ``vast cluster setup``, so the
         ``ROBOVAST_REGISTRY_{PUSH,PULL}_SECRET`` / ``_CA_CONFIGMAP`` variables were never
         carrying a name — only the fact that setup had created the object, since
         referencing a Secret that does not exist keeps the pod from starting. Setup writes

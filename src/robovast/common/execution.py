@@ -429,7 +429,7 @@ def resolve_controller_image(explicit: str | None = None,
     """Resolve the robovast-controller image (the ``vast serve`` Deployment).
 
     Cluster-side and never per-campaign: this image is chosen when the service is
-    deployed, so it takes the project from the environment ``vast exec cluster
+    deployed, so it takes the project from the environment ``vast cluster
     upgrade`` runs in.
     """
     return _resolve_image(MEMBER_CONTROLLER, explicit=explicit,
@@ -980,7 +980,7 @@ def get_campaign(name: str = "campaign") -> str:
     Returns:
         A string of the form ``<name>-YYYY-MM-DD-HHMMSScc`` where *cc* are
         hundredths of a second.  The extra precision virtually eliminates
-        campaign-ID collisions when multiple ``vast exec cluster run``
+        campaign-ID collisions when multiple ``vast cluster run``
         invocations start in the same second.
     """
     now = datetime.datetime.now()

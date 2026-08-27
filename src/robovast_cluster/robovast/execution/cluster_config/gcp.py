@@ -23,7 +23,7 @@ is still deployed for archive workflows.
 
 Required ``-o`` options at ``setup`` time::
 
-    vast execution cluster setup gcp \\
+    vast cluster setup gcp \\
         -o gcs_bucket=<BUCKET_NAME> \\
         -o gcs_access_key=<HMAC_ACCESS_KEY> \\
         -o gcs_secret_key=<HMAC_SECRET_KEY> \\

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """What an operator hands a user must be installable by that user.
 
-``vast exec cluster token`` prints the onboarding block an operator copies to somebody
+``vast service token`` prints the onboarding block an operator copies to somebody
 who will *drive* the service: a URL, a token, and the commands to connect. It told them
 ``pip install robovast`` -- 88 packages and ~290 MB of simulator, dataframe and Kubernetes
 machinery, to run four HTTP verbs against a service that does the actual work.
@@ -23,20 +23,20 @@ from click.testing import CliRunner
 
 @pytest.fixture
 def handover(monkeypatch):
-    """The block `vast exec cluster token` prints, without a cluster."""
+    """The block `vast service token` prints, without a cluster."""
     from unittest.mock import MagicMock, patch
 
-    # The group belongs to robovast-client now; `token` reaches it through the
-    # `robovast.cluster_plugins` entry point. Invoking it from here therefore exercises
-    # the whole three-level chain (root -> exec -> cluster -> token) end to end, which is
-    # the thing most likely to break silently after a pyproject edit.
-    from robovast.client.cluster_cli import cluster
+    # The `service` group is robovast-client's; `token` reaches it from robovast-cluster
+    # through the `robovast.service_plugins` entry point. Invoking it from here therefore
+    # exercises that crossing end to end -- the thing most likely to break silently after a
+    # pyproject edit, and the reason this group is allowed to span two distributions at all.
+    from robovast.client.service_cli import service
 
     with patch.multiple(
             "robovast.execution.cluster_execution.service_deploy",
             existing_auth_token=MagicMock(return_value="tok-123"),
             published_url=MagicMock(return_value="https://robovast.example.org")):
-        result = CliRunner().invoke(cluster, ["token", "-n", "default"])
+        result = CliRunner().invoke(service, ["token", "-n", "default"])
     assert result.exit_code == 0, result.output
     return result.output
 

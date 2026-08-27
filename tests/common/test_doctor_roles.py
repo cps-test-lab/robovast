@@ -114,7 +114,7 @@ def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
 
     reported = {c.name for c in checks}
     assert not reported & {"kubectl", "helm"}, (
-        "a client-only install was asked for the binaries `vast exec cluster setup` "
+        "a client-only install was asked for the binaries `vast cluster setup` "
         "shells out to, and it has no `setup` to shell out")
     assert {c.name for c in _fatal(checks)} == {"login", "service", "vast on PATH"}, (
         "only the client half may be fatal here -- that is the user's real problem")
@@ -155,7 +155,7 @@ def test_a_failing_optional_client_check_does_not_make_the_operator_half_fatal(
     monkeypatch.setattr(doc, "check_client", lambda: [
         doc.Check("login", True, "https://svc.example"),
         doc.Check("image builds", False, "unavailable on this service",
-                  "run 'vast exec cluster upgrade'", optional=True),
+                  "run 'vast service upgrade'", optional=True),
     ])
     monkeypatch.setattr(doc, "check_cluster", lambda ctx=None: [
         doc.Check("kubeconfig", False, "no kubeconfig"),

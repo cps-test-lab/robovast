@@ -1516,7 +1516,7 @@ def _mount_ui(app) -> None:
 
 
 #: Where the origin comes from, for a service that was deployed rather than started by
-#: hand: ``vast exec cluster setup`` bakes it from the Ingress, because an in-pod service is
+#: hand: ``vast cluster setup`` bakes it from the Ingress, because an in-pod service is
 #: given no RBAC to read its own. Named here as well as in the cluster lane that writes it,
 #: since this is the side that reads it and the core must not import a lane.
 PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
@@ -1550,7 +1550,7 @@ def startup_banner(base_url: str, token: str, *, ephemeral: bool,
     A **browser** gets a link with the token in it, so "no token was configured" is
     answered by something to click rather than a secret to hunt for -- the shape Jupyter
     has used for years. An **agent** cannot click, so it gets the registration command
-    instead, rendered by the same helper ``vast login`` and ``vast exec cluster token``
+    instead, rendered by the same helper ``vast login`` and ``vast service token``
     use: three places hand out access to this service and the header set must not drift
     between them.
 
@@ -1628,7 +1628,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     Every request needs the shared token; when none is configured one is minted and
     printed as a clickable login URL, so there is no unauthenticated mode to start by
     accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
-    deliberate act (``vast exec cluster setup --ingress-host``, which insists on TLS).
+    deliberate act (``vast cluster setup --ingress-host``, which insists on TLS).
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.

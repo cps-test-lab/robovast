@@ -489,7 +489,7 @@ def _check_kueue_admission(namespace, required_resources=()):
     """One pass of :func:`verify_kueue_admission_ready` (no retry, config already loaded)."""
     from robovast.common.errors import CampaignConfigError
     custom_api = client.CustomObjectsApi()
-    remedy = ("Run 'vast execution cluster setup' to (re)create the Kueue queues, "
+    remedy = ("Run 'vast cluster setup' to (re)create the Kueue queues, "
               "or point the campaign at the namespace that has them.")
 
     local_queue = _queue_object(custom_api, "localqueues", KUEUE_QUEUE_NAME,
@@ -1178,7 +1178,7 @@ def _ensure_kueue_crds(ctx_helm, ctx_kubectl, timeout=120):
                 f"even after recovery: {not_ready}. The ClusterQueue cannot be "
                 "created, so jobs would run unmanaged (no admission control)."
                 + (f"\nThe recovery itself failed: {detail}" if detail else "")
-                + "\nRun `vast execution cluster cleanup` and then `setup` again."
+                + "\nRun `vast cluster cleanup` and then `setup` again."
             )
 
 
@@ -1450,7 +1450,7 @@ def delete_kueue_crds(kube_context=None, timeout_s=120.0):
 
     raise RuntimeError(
         f"these {KUEUE_WORKLOAD_GROUP} CRDs would not delete: {', '.join(remaining)}. "
-        "The next 'vast exec cluster setup' will fail on them ('invalid ownership "
+        "The next 'vast cluster setup' will fail on them ('invalid ownership "
         "metadata'). Remove them with "
         f"'kubectl delete crd {' '.join(remaining)}' and check for instances stuck "
         "with finalizers.")

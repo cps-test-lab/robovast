@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """``apply_manifests`` must survive objects that are already there.
 
-``vast exec cluster setup --force`` is the documented way to move a live cluster to a
+``vast cluster setup --force`` is the documented way to move a live cluster to a
 new version, and it re-applies each flavor's MinIO manifest over the pod it created the
 previous time. The 409 handler logged ``"already exists, skipping creation"`` and then
 re-raised regardless -- the ``raise`` sat outside its ``if`` -- so every re-run against a

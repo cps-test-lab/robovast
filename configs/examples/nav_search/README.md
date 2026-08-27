@@ -123,7 +123,7 @@ minutes per campaign.
 
 ```console
 vast workspace init . --name nav-search
-vast execution local run           # or start it through the service / MCP
+vast workspace run           # or start it through the service / MCP
 ```
 
 Pilot through **`nav_grid.vast`** — `config_filter` is refused for search campaigns (a

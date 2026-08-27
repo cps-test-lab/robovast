@@ -80,7 +80,7 @@ class Phase(StrEnum):
     # here: a campaign taken in from an archive or from the share enters at this phase
     # and, when what arrived was raw, rolls straight on into ``postprocessing``. It is
     # in the enum rather than off to one side so that everything that already knows
-    # "live" -- ``vast wait``, the busy guard, the campaign view -- treats an import
+    # "live" -- ``vast campaign wait``, the busy guard, the campaign view -- treats an import
     # like any other work in progress without being told about imports.
     IMPORTING = "importing"
     POSTPROCESSING = "postprocessing"
@@ -176,7 +176,7 @@ class HealthFinding(BaseModel):
 
     ``level`` decides what happens, and only these two mean anything here:
 
-    * ``error`` — the run is not doing what it was started to do. Ends a ``vast wait``
+    * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
       still holds ``running`` for its whole life.
     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
@@ -330,7 +330,7 @@ class Status(BaseModel):
 #: check that will be skipped.
 STALL_NEXT_STEP = ("ask what the job is doing with get_job_state, then what it is repeating "
                    "with summarize=True on its log (get_job_log / get_campaign_log, or "
-                   "`vast exec log`), then reproduce the configuration with exec_in_container "
+                   "`vast campaign log`), then reproduce the configuration with exec_in_container "
                    "-- a fault that does not reproduce there is environmental rather than in "
                    "the config")
 
@@ -367,7 +367,7 @@ NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so t
 #: ``ControllerState._progress_signal``) — neither of which a phase that runs no runs can move.
 #: So the clock could only ever run out: converting a large campaign's rosbags legitimately
 #: outlasts any single run, and judging that against the per-run budget reported every such
-#: campaign as stalled while it was healthily postprocessing — and ended ``vast wait`` at exit 4
+#: campaign as stalled while it was healthily postprocessing — and ended ``vast campaign wait`` at exit 4
 #: with the advice to go inspect a job that had already succeeded. ``{phase}`` is named because
 #: the useful next read differs per phase, and the age is re-described because ``set_phase``
 #: restarts ``progress_since`` on every phase change: outside ``running`` it *is* the phase's age.

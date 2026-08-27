@@ -123,7 +123,7 @@ def test_deploy_service_forwards_the_ingress_options(monkeypatch):
     """Regression: the flags reached service_manifests but not deploy_service.
 
     `service_manifests` was tested directly, so the gap was invisible until
-    `vast exec cluster setup --ingress-host` was run against a real cluster and died on
+    `vast cluster setup --ingress-host` was run against a real cluster and died on
     an unexpected-keyword TypeError before it reached the API server.
     """
     import inspect

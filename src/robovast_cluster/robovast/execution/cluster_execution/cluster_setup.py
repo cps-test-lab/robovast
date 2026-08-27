@@ -377,12 +377,12 @@ def setup_server(config_name=None, list_configs=False, force=False,
         raise RuntimeError(
             f"Cluster is already set up with '{existing_config}' config{key_label}.\n"
             "To roll out a new image or refresh credentials, use:\n"
-            "    vast exec cluster upgrade\n"
+            "    vast service upgrade\n"
             "It recovers this cluster's own settings and cannot lose them, which a\n"
             "re-run of `setup` can: setup takes --ingress-host/--registry-* as\n"
             "arguments and re-provisions with whatever it is given this time.\n"
             "To genuinely re-provision, pass --force (supply the original flags too),\n"
-            "or 'vast exec cluster cleanup' first to start from nothing."
+            "or 'vast cluster cleanup' first to start from nothing."
         )
 
     # Before anything is installed or deployed. A refused Ingress combination is a pure

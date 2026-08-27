@@ -94,7 +94,7 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                 logger.warning(
                     f"{kind}/{name} already exists and was left as it is; a changed "
                     f"spec (e.g. new node labels) does not take effect until it is "
-                    f"removed. `vast exec cluster cleanup` deletes it.")
+                    f"removed. `vast cluster cleanup` deletes it.")
     except ApiException as e:
         raise RuntimeError(f"Failed to apply manifest: {e.reason}") from e
     except Exception as e:

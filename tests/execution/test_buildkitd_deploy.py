@@ -424,7 +424,7 @@ def test_a_claim_that_vanished_is_refused_rather_than_downgraded(monkeypatch):
 
 def test_the_module_exports_everything_its_callers_import():
     """A deferred import fails at the moment it runs, not at load, and this one runs inside
-    `vast exec cluster upgrade` -- so a missing name here is an ImportError partway through an
+    `vast service upgrade` -- so a missing name here is an ImportError partway through an
     upgrade rather than anything a test of this module would notice.
 
     It has already happened once: a cleanup that removed an unused helper truncated the file at
@@ -522,7 +522,7 @@ def test_apply_accepts_every_setting_that_can_be_handed_to_it():
         f"buildkitd_storage_from_cluster can return {sorted(recoverable - accepted)}, which "
         "apply_buildkitd does not accept -- upgrade would raise TypeError")
 
-    # The same contract on the other side: what `vast exec cluster setup` collects.
+    # The same contract on the other side: what `vast cluster setup` collects.
     from_cli = {"storage_class", "storage_path", "storage_size", "node_selector",
                 "gc_max_used", "gc_min_free", "gc_reserved"}
     assert from_cli <= accepted, (

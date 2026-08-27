@@ -77,8 +77,8 @@ class RegistryConfig:
         return ("this cluster has nowhere to push it. RoboVAST runs its own "
                 "registry in the service pod, reached over the service's own Ingress, and "
                 "this service's registry prefix is unset. If the service is published, "
-                "'vast exec cluster upgrade' re-bakes the prefix from the live Ingress; if "
-                "it is not published at all, re-run 'vast exec cluster setup' with "
+                "'vast service upgrade' re-bakes the prefix from the live Ingress; if "
+                "it is not published at all, re-run 'vast cluster setup' with "
                 "--ingress-host. 'vast doctor -n <namespace>' says which.")
 
 
@@ -177,7 +177,7 @@ class BaseConfig(object):
     def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
         """Verify the storage infrastructure is ready before launching a run.
 
-        Called by ``vast exec cluster run`` after the cluster config is resolved.
+        Called by a campaign launch after the cluster config is resolved.
         Configs that deploy in-cluster storage (e.g. the embedded MinIO pod for
         ``rke2``) override this to confirm it is running and raise a
         :class:`RuntimeError` with a remediation hint otherwise.
@@ -306,7 +306,7 @@ class BaseConfig(object):
     def get_registry_config(self) -> RegistryConfig:
         """Return the registry config for agent-built experiment images.
 
-        Configured at ``vast exec cluster setup`` (registry prefix + push/pull
+        Configured at ``vast cluster setup`` (registry prefix + push/pull
         Secrets). The default is **disabled** (no registry) — in-cluster image
         builds are unavailable until a deployment provides one. Environment
         overrides ease dev/minikube setups (and CI):

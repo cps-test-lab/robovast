@@ -831,7 +831,7 @@ class UpgradeInfo(BaseModel):
     **This is a roll, not a reconciliation.** It stamps the Deployment's restart annotation
     and nothing else: RBAC, the Kueue queues, the registry Ingress route, the credential
     Secrets and the build daemon are untouched, so a version needing a permission the last
-    one did not will deploy and then 403 at runtime. ``vast exec cluster upgrade`` is the
+    one did not will deploy and then 403 at runtime. ``vast service upgrade`` is the
     command that reconciles all of it, and the one a consumer must name. The Secrets in
     particular can *never* be done from in here: they are rebuilt from the operator's
     environment, which the pod does not have.
@@ -855,7 +855,7 @@ class UpgradeInfo(BaseModel):
     upgrade_available: Optional[bool] = None
     #: Campaigns this service is still driving. A roll replaces the pod their controller
     #: runs in, which is why this is a warning and not a note -- the same reasoning
-    #: ``vast exec cluster upgrade --no-restart`` exists for.
+    #: ``vast service upgrade --no-restart`` exists for.
     active_campaigns: list[CampaignSummary] = Field(default_factory=list)
 
 
@@ -2546,7 +2546,7 @@ class RobovastInterface(ABC):
 
         The campaign is registered at phase ``importing`` before any bytes move — its id is
         read from the archive's member list, or from the share object's name — so it appears
-        in the campaign view while it is still arriving, and ``vast wait`` follows it like
+        in the campaign view while it is still arriving, and ``vast campaign wait`` follows it like
         any other work.
 
         A failed import is **kept**, as a failed campaign: registering it is what made it

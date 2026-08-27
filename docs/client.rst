@@ -30,87 +30,119 @@ than a truncated one.
 What you can do with it
 =======================
 
+Every group is named after what it acts on, so the group tells you what you are touching.
+
 .. list-table::
    :header-rows: 1
-   :widths: 34 66
+   :widths: 40 60
 
    * - Command
      - Does
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
-   * - ``vast exec cluster run``
-     - **Launch a campaign.** Pushes the project and starts it on the service's lane.
-       Add ``--wait-and-download`` to block until it finishes and pull the results down.
-   * - ``vast exec cluster stop|stop-job|log``
-     - Stop a campaign, kill one wedged job, read a campaign's infrastructure log.
-   * - ``vast workspace init|update|list|delete``
-     - Push a project directory to the service; re-sync it after edits.
+   * - ``vast workspace init|update|download|list|delete``
+     - Move a directory into a service workspace, and back out again.
+   * - ``vast workspace validate|preview``
+     - Check a project, and see what its sweep expands to — both before spending compute.
+   * - ``vast workspace run <ws> [vast]``
+     - **Launch a campaign.** The one way to run a ``.vast``. ``--push DIR`` pushes and
+       launches in one step; ``--wait-and-download`` blocks and pulls the results down.
+   * - ``vast campaign list|status``
+     - What has run, and where one campaign has got to.
+   * - ``vast campaign wait <id>``
+     - Block until a campaign is genuinely over. The exit code is the answer.
+   * - ``vast campaign stop|stop-job|log``
+     - Stop a campaign, kill one wedged job, read its infrastructure log.
+   * - ``vast campaign rerun <id>``
+     - Launch a new campaign from what a past one recorded. ``--check`` reports whether it
+       can be, and costs nothing.
+   * - ``vast campaign download <id>``
+     - Pull a campaign's archive down as a ``.tar.gz``.
+   * - ``vast service info|resources``
+     - Which service is answering and which code it runs; whether the lane has room.
+   * - ``vast service log``
+     - What the *service itself* has been doing. ``-f`` follows.
+   * - ``vast service restart``
+     - Roll the deployed service onto the newest image at its tag, through its own API —
+       no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
+   * - ``vast cluster store-cleanup``
+     - Remove result buckets from the service's object store.
+   * - ``vast container exec|stop``
+     - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
      - Read and write single files by address.
    * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
-   * - ``vast wait <campaign-id>``
-     - Block until a campaign is genuinely over.
-   * - ``vast image wait <build-id>…``
-     - Block until every named image build is done. A build whose pod cannot start (image
-       pull, capacity) fails within a minute rather than being waited out.
-   * - ``vast exec cluster download-cleanup``
-     - Remove result buckets from the service's object store.
-   * - ``vast service-log``
-     - Print what the *service itself* has been doing. ``-f`` follows.
-   * - ``vast exec cluster restart``
-     - Roll the deployed service onto the newest image at its tag, through its own API —
-       no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
 
-Authoring, validating and querying results are available to an **agent** through the
-service's MCP endpoint, which needs nothing installed at all — see :ref:`mcp`.
-``vast login`` prints the ``claude mcp add`` line that registers it.
+That is the whole loop — validate, preview, launch, wait, fetch — and none of it needs the
+core. What the core adds is *local analysis*: ``vast config`` reads and expands a ``.vast``
+on your disk, ``vast results`` computes over a results tree. Neither drives a service, which
+is why neither is here.
+
+An **agent** reaches the same service through its MCP endpoint, which needs nothing
+installed at all — see :ref:`mcp`. ``vast login`` prints the ``claude mcp add`` line that
+registers it. The two are not alternatives with a gap between them: the control verbs are
+deliberately on both sides, and each side additionally owns what only it can do — bulk bytes
+and long waits here, results queries and diff-based authoring there.
+
 
 .. _client-partial-surface:
 
 What is absent, and what is only partly here
 ============================================
 
-**Absent:** ``vast serve``, ``vast init``, ``vast config``, ``vast results``. They are not
+**Absent:** ``vast serve``, ``vast config``, ``vast results``, ``vast ui``. They are not
 hidden or disabled — the distribution does not register them, so ``vast --help`` on a
 client install lists exactly what it can run. That is the point of installing it alone.
 
-**Partly here:** ``vast exec``. The rule is the same one, applied a level down — a
-subcommand exists exactly when something that can perform it is installed:
+**Partly here:** ``vast cluster`` and ``vast service``. The rule is the same one, applied a
+level down — a subcommand exists exactly when something that can perform it is installed:
 
-* ``vast exec cluster run|stop|stop-job|log|download-cleanup`` ship with the client. Every
-  one of them only *drives* a service, so a client install runs them completely.
-* ``vast exec cluster setup|cleanup|upgrade|token|run-cleanup|monitor`` arrive with
-  ``robovast-cluster``. They need a kubeconfig, an API server or a cluster Secret.
-* ``vast exec local`` arrives with ``robovast``. It needs Docker.
+* ``vast cluster store-cleanup`` and ``vast service log|info|resources|restart`` ship with
+  the client. Every one of them only *drives* a service, so a client install runs them
+  completely.
+* ``vast cluster setup|cleanup|jobs-cleanup|monitor`` and ``vast service upgrade|token``
+  arrive with ``robovast-cluster``. They need a kubeconfig, an API server or a cluster
+  Secret.
 
-So ``vast exec --help`` on a client install lists ``cluster`` and not ``local``, and
-``vast exec cluster --help`` lists ``run`` and not ``setup``. Nothing is stubbed and
-nothing fails on use.
+So ``vast cluster --help`` on a client install lists ``store-cleanup`` and not ``setup``.
+Nothing is stubbed and nothing fails on use.
 
-``monitor`` is the one worth a word, because ``run`` used to point at it. It is a live,
-job-level dashboard over *every* campaign, and its fallback view reads the Jobs from your
-kubeconfig — which is what keeps it on the operator's side. A client install watches a
-campaign with ``vast wait`` (one campaign, phase by phase, with an exit code) and the web
-UI, which between them show everything monitor's service view did.
+Both groups spanning two distributions is the design, not an accident: a group is named
+after the **object** it acts on, not after what you installed. ``vast service restart`` and
+``vast service upgrade`` both act on the deployed service; one needs a URL and a token, the
+other an API server. Grouping them by what they touch keeps the name honest and lets
+``--help`` differ per install.
 
-.. note::
-
-   ``vast init`` is a core verb, so on a client-only install the way to name a project is
-   the global ``-V`` flag::
-
-      vast -V my-experiment/my.vast exec cluster run --description "pilot"
-
-   Every command that needs a ``.vast`` accepts it, and it needs no ``.robovast_project``.
+``monitor`` is the one worth a word. It is a live, job-level dashboard over *every*
+campaign, and its fallback view reads the Jobs from your kubeconfig — which is what keeps it
+on the operator's side. A client install watches a campaign with ``vast campaign wait`` (one
+campaign, phase by phase, with an exit code), asks ``vast campaign list|status``, and has
+the web UI; between them they show everything monitor's service view did.
 
 
-Pushing a project
-=================
+Running a campaign
+==================
 
-A service cannot read your disk, so getting a project to it is a **shell** step rather
-than something an agent tool can do:
+Three words are worth keeping apart, because the commands do:
+
+**workspace**
+   a directory on the service holding files and possibly several ``.vast`` files.
+
+**project**
+   one ``.vast`` and the files it references. A workspace holds as many as you like.
+
+**campaign**
+   an instance created from a ``.vast``.
+
+So a campaign runs a *workspace's project*, and the pair (workspace, path) names it. That
+is the only project binding the service accepts, and ``vast workspace run`` takes exactly
+that pair — as does the MCP tool, argument for argument.
+
+A service cannot read your disk, so getting the files to it is a **shell** step rather than
+something an agent tool can do:
 
 .. code-block:: bash
 
@@ -124,17 +156,37 @@ agent's context, and one command keeps the workspace and your directory in agree
 Files under a name starting with ``.`` are skipped, as is ``results/`` — the same rule the
 service applies when it lists a workspace, so a push and a listing cannot disagree.
 
+Then check it, and run it:
+
+.. code-block:: bash
+
+   vast workspace validate my-experiment my.vast   # every problem at once
+   vast workspace preview  my-experiment my.vast   # how many configurations is that?
+   vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
+
+Omit the path when the workspace holds exactly one ``.vast`` and the service will resolve
+it, naming the candidates if there are several. ``--push DIR`` does the push and the launch
+in one command, creating the workspace if the name is free — the two-step form above is the
+same thing spelled out.
+
+**Set** ``--description``. It is one line saying what the run is *for*, and it is what tells
+two same-day ``<name>-<timestamp>`` campaigns apart in ``vast campaign list`` and the web UI.
+
+Nothing here needs a project file or a current directory. There is no ambient project at
+all: every command names its own input, so nothing in a parent directory of your CWD decides
+which ``.vast`` runs.
+
 
 Waiting for a campaign
 ======================
 
-A campaign can run for days, so nothing blocks a request on one. ``vast wait`` polls the
+A campaign can run for days, so nothing blocks a request on one. ``vast campaign wait`` polls the
 service and exits when the campaign is genuinely finished — past postprocessing, not
 merely past its last run:
 
 .. code-block:: bash
 
-   vast wait basic-nav-2026-08-16-101500
+   vast campaign wait basic-nav-2026-08-16-101500
 
 **The exit code is the answer:**
 
@@ -186,14 +238,14 @@ On a client install it checks what a client has: a stored login, that the servic
 that ``vast`` resolves in a fresh login shell, and that the symlink points at a live
 interpreter. A capability you have not installed is reported once, as advisory — you get
 ``cluster support: not installed``, and not the ``kubectl`` and ``helm`` that only
-``vast exec cluster setup`` shells out to, because there is no ``setup`` here to run them.
+``vast cluster setup`` shells out to, because there is no ``setup`` here to run them.
 A client install lacking them is not a broken one, so they cannot fail the command.
 
 When the failure is the *service's* and not yours, its own log is now readable:
 
 .. code-block:: bash
 
-   vast service-log -f
+   vast service log -f
 
 Not a campaign's log — this is the service process, and several failures in RoboVAST are
 diagnosable only from it (a build whose reason "lived only in the service log", a scene
@@ -208,7 +260,7 @@ process cannot outlive the process.
 
 ``vast login`` symlinks ``vast`` into a directory already on your login shell's PATH, so a
 shell that activated no virtualenv — a new terminal, or an agent's — can run it. That is
-what makes ``vast wait`` reachable from an agent harness. Pass ``--no-link`` to manage
+what makes ``vast campaign wait`` reachable from an agent harness. Pass ``--no-link`` to manage
 PATH yourself; ``vast doctor`` will tell you if the link later goes stale.
 
 

@@ -20,7 +20,7 @@ Executes local Docker campaigns by driving
 :func:`robovast.execution.controller.run_batch_campaign` in a background thread,
 serving live status from the same
 :class:`~robovast.execution.control_server.ControllerState` the cluster controller
-uses. This backs ``vast exec local run`` (mode 1); campaigns die with the process.
+uses. This backs ``vast workspace run run`` (mode 1); campaigns die with the process.
 :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService`
         subclasses this, reusing
 its driver-hosting shape and overriding only the launch hooks.
@@ -273,7 +273,7 @@ def _no_timeout_note(raw_config: dict) -> str:
 
     ``execution.timeout`` is what makes ``stalled`` a verdict rather than ``null``, and
     ``null`` is the one answer nobody acts on: a campaign that declared no budget gets no
-    stall verdict, and so ``vast wait`` can never end on one. Told here because the fix is
+    stall verdict, and so ``vast campaign wait`` can never end on one. Told here because the fix is
     a line in the ``.vast`` and this is the last moment before the compute is spent; four
     minutes into a wedged sweep it is only an explanation.
 
@@ -286,7 +286,7 @@ def _no_timeout_note(raw_config: dict) -> str:
     if not isinstance(execution, dict) or declared_per_run_seconds(execution):
         return ""
     return ("this project declares no execution.timeout, so no stall verdict is possible "
-            "for it — `vast wait` cannot end on one, and get_campaign_status reports "
+            "for it — `vast campaign wait` cannot end on one, and get_campaign_status reports "
             "stalled: null, which is not 'healthy'. Declare it to get a verdict. (A "
             "simulator that reports on itself is unaffected: its own findings still end "
             "the wait.)")
@@ -580,7 +580,7 @@ class LocalTransport(RobovastInterface):
         ``.robovast_project`` in the *service's* CWD. That branch ignored ``vast_path``
         entirely, so a caller naming one ``.vast`` silently got whichever one had been
         initialized -- a campaign that ran the wrong simulator and looked successful.
-        Its stated justification ("``vast exec local run`` back-compat") was false:
+        Its stated justification ("``vast workspace run run`` back-compat") was false:
         that command drives the controller in-process and never reaches this method.
         """
         if not workspace_id:
