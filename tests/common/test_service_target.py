@@ -3,8 +3,8 @@
 """Unit tests for the shared service-target resolver.
 
 Two ways in, in order: a service answering on the conventional local port, then the one
-``vast login`` stored. A cluster verb that finds neither errors, while
-``ui``/``workspace`` fall back to the in-process local store.
+``vast login`` stored. Finding neither is an error for every command: the client is a
+frontend, so there is no in-process store to fall back to.
 
 This used to be *one* way in, with the narrowness itself asserted below. That was right
 while the only way to reach a remote service was a tunnel to the local port; it could
@@ -18,7 +18,7 @@ import click
 import pytest
 
 from robovast.client import service_target as st
-from robovast.service.client import HTTPTransport, LocalTransport
+from robovast.service.client import HTTPTransport
 
 
 def test_detected_service_url_probes_conventional_port(monkeypatch):
@@ -47,18 +47,26 @@ def test_service_client_follows_detected_service(monkeypatch):
         assert "detected" in label
 
 
-def test_service_client_local_when_no_service(monkeypatch):
-    monkeypatch.setattr(st, "_service_alive", lambda url: False)
-    with st.service_client() as (client, label):
-        assert isinstance(client, LocalTransport)
-        assert label.startswith("this machine")
+def test_service_client_raises_when_no_service_answers(monkeypatch):
+    """No service is a missing dependency, for every verb -- not a second implementation.
 
-
-def test_service_client_require_service_raises_when_none(monkeypatch):
+    This used to yield a ``LocalTransport`` unless the caller passed
+    ``require_service=True``, so with nothing listening ``workspace init`` wrote into a
+    local store while ``workspace run`` refused: one command name, two systems, chosen by
+    what happened to be on the port. The parameter is gone rather than defaulted, so a
+    caller cannot ask for the old behaviour back.
+    """
     monkeypatch.setattr(st, "_service_alive", lambda url: False)
     with pytest.raises(click.ClickException, match="No robovast-service found"):
-        with st.service_client(require_service=True):
+        with st.service_client():
             pass
+
+
+def test_service_client_has_no_serviceless_switch():
+    """No keyword re-opens the in-process path -- the check a reader would otherwise
+    have to do by reading every call site."""
+    import inspect
+    assert "require_service" not in inspect.signature(st.service_client).parameters
 
 
 def test_target_options_names_no_service():

@@ -36,9 +36,13 @@ Ingress itself is broken, ``kubectl port-forward svc/robovast-service 8800:8800`
 puts a service on the conventional port, and the first rule above finds it — that is
 kubectl's feature, not one this module has to wrap.
 
-When nothing answers: ``workspace`` acts on this machine in-process (its local store),
-while a cluster verb (``require_service=True``) errors rather than silently running
-local Docker.
+When nothing answers, every command here errors. There is no in-process fallback: this
+package is a **frontend**, and a campaign, a workspace and the files under them live in
+whichever service you talk to. ``require_service`` used to make that per-verb, defaulting
+to off -- so with no service, ``workspace init`` quietly wrote into a local store while
+``workspace run`` refused, and the same command name meant two different systems depending
+on what happened to be listening. Launching was already service-only; this is the rest of
+the loop agreeing with it.
 """
 
 import contextlib
@@ -100,15 +104,16 @@ def target_options(func):
 
 
 @contextlib.contextmanager
-def service_client(namespace='default', context=None, *, require_service=False):
-    """Yield ``(client, label)`` for the resolved service.
+def service_client(namespace='default', context=None):
+    """Yield ``(client, label)`` for the resolved service, or raise if none answers.
 
     See the module docstring for the two ways in. Every caller prints the resolved
     target, so which service answered is never left implicit.
 
-    ``require_service=True`` makes a command that finds none raise instead of yielding a
-    local-Docker client — used by the cluster verbs, which must never silently run
-    locally.
+    There is no serviceless mode to fall into. The client speaks HTTP to a service and
+    nothing else, so "no service" is a missing dependency to report, not a second
+    implementation to switch to -- which is what makes a command mean the same thing on
+    both lanes, and on a client-only install as on a full one.
 
     *namespace* and *context* are accepted and unused here; commands still take them for
     the Kubernetes operations they perform themselves.
@@ -121,24 +126,14 @@ def service_client(namespace='default', context=None, *, require_service=False):
     from robovast.service.http_client import RobovastClient
 
     url = detected_service_url()
-
-    if not url and require_service:
+    if not url:
         raise click.ClickException(
-            "No robovast-service found. Cluster operations go through the service.\n"
-            "Either start one here ('vast serve --backend cluster'), or point at the "
-            "deployed one ('vast login https://robovast.<domain>').")
+            "No robovast-service found. Every campaign, workspace and file lives in a "
+            "service, so this command has nothing to act on until one answers.\n"
+            "Start one here ('vast serve'), or point at the deployed one "
+            "('vast login https://robovast.<domain>').")
 
-    client = RobovastClient(url)
-    if url:
-        label = f"service ({url}) [detected]"
-    else:
-        # Only a full install reaches here -- with no URL, `RobovastClient` returns the
-        # in-process transport, and refuses outright when there is none. So the store
-        # path, which describes that transport and not this layer, is read *after* the
-        # client exists rather than imported by a distribution that has no store.
-        from robovast.service.workspaces import default_workspaces_root
-        label = f"this machine, in-process (store: {default_workspaces_root()})"
-    yield client, label
+    yield RobovastClient(url), f"service ({url}) [detected]"
 
 
 def echo_target(label):

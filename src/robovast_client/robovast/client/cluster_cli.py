@@ -75,8 +75,7 @@ def store_cleanup(campaign, force, namespace, context):
     """
     try:
         from robovast.service.interface import CleanupDataRequest
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             res = client.cleanup_campaign_data(
                 CleanupDataRequest(campaign_id=campaign, force=force))

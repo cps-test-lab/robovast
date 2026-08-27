@@ -830,8 +830,7 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
             # Bucket cleanup runs server-side: the service owns the object-store
             # credentials and the authoritative live-campaign guard.
             from robovast.service.interface import CleanupDataRequest
-            with service_client(namespace, context,
-                                require_service=True) as (client, target):
+            with service_client(namespace, context) as (client, target):
                 _echo_target(target)
                 res = client.cleanup_campaign_data(
                     CleanupDataRequest(campaign_id=campaign, force=force))

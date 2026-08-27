@@ -73,8 +73,7 @@ def stop(campaign, namespace, context):
     usual. A no-op if nothing is running.
     """
     try:
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             campaign_id = campaign or _sole_running_campaign(client)
             if campaign_id is None:
@@ -115,8 +114,7 @@ def stop_job(job_name, campaign, reason, namespace, context):
     as neither passes nor failures.
     """
     try:
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             campaign_id = campaign or _sole_running_campaign(client)
             if campaign_id is None:
@@ -149,46 +147,22 @@ def log(campaign, follow, namespace, context):
 
     The same divider-separated stream the web UI and MCP show — the variation
     (config-generation), run (controller) and postprocessing phases in order, each
-    under a ``===== PHASE =====`` divider. Goes through the robovast-service when
-    one is reachable (the conventional local port, else the ``vast login`` record);
-    otherwise reads the campaign from disk, which needs the full ``robovast``
-    distribution.
+    under a ``===== PHASE =====`` divider.
+
+    One reader, over HTTP. This used to fall back to assembling the log from a campaign
+    directory when no service answered -- which needed the core installed, took a path
+    where every other verb takes a campaign id, and so was a second implementation of
+    "read the log" that a client-only install could not reach anyway.
     """
     try:
-        from robovast.service.http_client import HTTPTransport
         with service_client(namespace, context) as (client, target):
             _echo_target(target)
-            if isinstance(client, HTTPTransport):
-                campaign_id = campaign or _sole_running_campaign(client)
-                if campaign_id is None:
-                    click.echo("No running campaign found; pass --campaign.")
-                    return
-                tail_chunks(lambda o: client.get_campaign_logs(campaign_id, o),
-                            lambda text: click.echo(text, nl=False), follow=follow)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                click.echo("No running campaign found; pass CAMPAIGN.")
                 return
-
-            # No service reachable: read the campaign directory directly. That reader is
-            # part of the core, so on a client-only install this is a capability that is
-            # not installed rather than a failure -- say so, and name what provides it.
-            try:
-                from robovast.common.campaign_logs import assemble_log_from_dir
-            except ImportError as exc:
-                raise click.ClickException(
-                    "No robovast-service reachable, and reading a campaign off disk "
-                    "needs the full 'robovast' distribution. Run 'vast login <url>' to "
-                    "use a service instead.") from exc
-            if not campaign:
-                raise ValueError(
-                    "No robovast-service reachable; pass --campaign (name or path) "
-                    "to read a campaign on disk.")
-            if not os.path.isabs(campaign):
-                raise ValueError(
-                    "No robovast-service reachable, so this reads the campaign off disk "
-                    f"-- pass an absolute path to it rather than the name {campaign!r}. "
-                    "Nothing here knows which results directory a bare name belongs to.")
-            campaign_dir = campaign
-            text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
-            click.echo(text, nl=False)
+            tail_chunks(lambda o: client.get_campaign_logs(campaign_id, o),
+                        lambda text: click.echo(text, nl=False), follow=follow)
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
     # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
@@ -489,7 +463,7 @@ def list_cmd(limit, namespace, context):
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context, require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             listed = client.list_campaigns(ListCampaignsRequest(limit=limit)).campaigns
     except Exception as e:  # noqa: BLE001
@@ -516,7 +490,7 @@ def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer
     request open for that is a different thing from asking once.
     """
     try:
-        with service_client(namespace, context, require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
@@ -561,8 +535,7 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
     from robovast.service.interface import \
         RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context,
-                            require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
@@ -593,7 +566,7 @@ def download_cmd(campaign, dest, namespace, context):  # pylint: disable=redefin
         from robovast.service.project_push import \
             download_campaign_archive  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context, require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             target = dest or os.path.join(os.getcwd(), f"{campaign}.tar.gz")
             written = download_campaign_archive(client, campaign, target)

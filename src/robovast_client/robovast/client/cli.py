@@ -528,8 +528,7 @@ def workspace_validate(workspace, vast_path, no_world_check, namespace, context)
         from robovast.service.project_push import \
             _resolve_workspace_id  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             report = client.validate_project(
@@ -569,8 +568,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
         from robovast.service.project_push import \
             _resolve_workspace_id  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             preview = client.preview_configurations(
@@ -680,8 +678,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
         project_tag = image_project_tag if image_project_tag is not None else os.environ.get(
             'ROBOVAST_PROJECT_TAG', '')
 
-        with service_client(namespace, context,
-                            require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
 
             if push_dir is not None:

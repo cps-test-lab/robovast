@@ -57,10 +57,7 @@ def service_log(follow, namespace, context):
     process cannot outlive the process.
     """
     try:
-        # require_service, because there is no such thing as the log of a service that is
-        # not running: with no URL this layer yields an in-process transport, which has no
-        # serving process whose stderr this would be.
-        with service_client(namespace, context, require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
                         lambda text: click.echo(text, nl=False), follow=follow)
@@ -106,7 +103,7 @@ def restart(yes, wait, namespace, context):
     and names them. ``--yes`` skips the question.
     """
     try:
-        with service_client(namespace, context, require_service=True) as (client, target):
+        with service_client(namespace, context) as (client, target):
             _echo_target(target)
             info = client.upgrade_info()
             if not info.supported:
@@ -185,7 +182,7 @@ def info(namespace, context):
     it as a revision is a live trap.
     """
     try:
-        with service_client(namespace, context, require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             version = client.version()
     except Exception as e:  # noqa: BLE001
@@ -215,7 +212,7 @@ def resources(namespace, context):
     reported more cores in use than the cluster had.
     """
     try:
-        with service_client(namespace, context, require_service=True) as (client, label):
+        with service_client(namespace, context) as (client, label):
             _echo_target(label)
             usage = client.resource_usage()
     except Exception as e:  # noqa: BLE001

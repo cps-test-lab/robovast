@@ -541,7 +541,7 @@ def export_cmd(campaign_id):
     from robovast.service.interface import \
         RunShareRequest  # pylint: disable=import-outside-toplevel
 
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         click.echo(f"Exporting {campaign_id} to the share via {label} ...")
         result = client.run_share(RunShareRequest(campaign_id=campaign_id))
     click.echo(("✓ " if result.ok else "✗ ") + (result.message or ""))
@@ -586,7 +586,7 @@ def import_cmd(campaigns, force, rebuild_store):
     wanted = [(arg, campaign_from_ui_link(arg)) for arg in campaigns]
 
     started, failed = [], False
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         click.echo(f"Importing {len(wanted)} campaign(s) from the share via {label} ...")
         for arg, from_link in wanted:
             if from_link:

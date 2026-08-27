@@ -171,8 +171,9 @@ def import_cmd(archive, force, rebuild_store):
     campaign view.
 
     There is no local-only mode. Import means "into a service" -- that is where the tracked
-    phase, the log and the chained postprocessing are. A results directory with no service
-    is postprocessed in place with ``vast results postprocess -r <dir>``.
+    phase, the log and the chained postprocessing are, and since postprocessing is itself a
+    service operation (``vast campaign postprocess``) there is nothing a results directory
+    outside one could be postprocessed *by*.
     """
     from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
         echo_target, service_client)
@@ -182,7 +183,7 @@ def import_cmd(archive, force, rebuild_store):
         push_campaign_archive  # pylint: disable=import-outside-toplevel
 
     path = Path(archive)
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         echo_target(label)
         click.echo(f"uploading {path.name} ({_fmt_size(path.stat().st_size)}) ...")
         staged = push_campaign_archive(client, path)
@@ -496,7 +497,7 @@ def download_cmd(campaigns, output, force):
     out_dir = Path(output) if output else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    with service_client(require_service=True) as (client, label):
+    with service_client() as (client, label):
         click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
         written = skipped = 0
         for campaign_id in campaigns:
@@ -533,24 +534,6 @@ def download_cmd(campaigns, output, force):
     click.echo("  ".join(parts))
 
 
-def _require_service_client():
-    """Resolve the reachable robovast-service client, or raise a clean UsageError.
-
-    The service-routed campaign operations (reprocess, delete) all go through it —
-    it owns the backend (local Docker / cluster + object store), so the CLI needs
-    no kubeconfig or object-store credentials of its own.
-    """
-    from robovast.client.service_target import \
-        detected_service_url  # pylint: disable=import-outside-toplevel
-    url = detected_service_url()
-    if not url:
-        raise click.UsageError(
-            "No robovast-service is reachable. Start one with 'vast serve' (local) "
-            "or tunnel to a cluster service first.")
-    from robovast.service.client import RobovastClient  # pylint: disable=import-outside-toplevel
-    return RobovastClient(url)
-
-
 @results.command(name='delete')
 @click.argument('campaign', metavar='CAMPAIGN')
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
@@ -571,9 +554,12 @@ def delete_campaign_cmd(campaign, yes):
             f"Permanently delete campaign '{campaign}'? This cannot be undone."):
         click.echo("Aborted.")
         return
-    client = _require_service_client()
+    from robovast.client.service_target import (  # pylint: disable=import-outside-toplevel
+        echo_target, service_client)
     try:
-        res = client.delete_campaign(campaign)
+        with service_client() as (client, label):
+            echo_target(label)
+            res = client.delete_campaign(campaign)
     except Exception as exc:
         handle_cli_exception(exc)
         return
