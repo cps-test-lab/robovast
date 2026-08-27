@@ -159,31 +159,67 @@ The setup command:
 Pinning pods to a node pool
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The control pod's node selector comes from
-``execution.kubernetes.control.node_labels`` (see :doc:`configuration`) and is baked into
-the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
-read:
-
-``execution.kubernetes.jobs.node_labels`` confines campaign jobs to a node pool. It is
-read at the same setup and recorded in the service's environment, because the admission
-controller is what enforces it: the controller counts free capacity only on nodes inside
-the pool, and every job pod carries the labels as a ``nodeSelector`` so kube-scheduler is
-bound by the same rule the accounting assumed. Its previous implementation was Kueue's
-ResourceFlavor, and for one release after Kueue was retired setup refused it.
+Both node pools are set on the **setup command**, never in a ``.vast``. A ``.vast``
+describes a campaign; which machines a cluster's pods may run on is a property of the
+cluster, and carrying it in a campaign file put a deploy's lasting, cluster-wide decisions
+somewhere that travels with an experiment.
 
 .. code-block:: bash
 
-   vast -V my_campaign.vast execution cluster setup rke2
+   vast execution cluster setup rke2 \
+       --jobs-node-label node-pool=primary \
+       --control-node-label node-pool=extra
 
-Without ``-V`` no node selectors are deployed (logged at INFO) and pods schedule
-wherever Kubernetes puts them. A project's ``.vast`` is deliberately *not* consulted: a
-``.robovast_project`` is found by walking up to the filesystem root, so one several
-directories above the CWD would otherwise pin a cluster's pods — or, if it names a
-``.vast`` that has since moved, fail the deploy over a file nobody mentioned.
+``--jobs-node-label`` confines campaign jobs. It is recorded in the service's environment,
+because the admission controller is what enforces it: the controller counts free capacity
+only on nodes inside the pool, and every job pod carries the labels as a ``nodeSelector``
+so kube-scheduler is bound by the same rule the accounting assumed. Neither half suffices
+alone — filtering capacity would leave the scheduler free to place outside the pool, and
+stamping alone would have admission reserving room on nodes the pods cannot reach. Its
+previous implementation was Kueue's ResourceFlavor, and for one release after Kueue was
+retired setup refused it.
 
-A named ``.vast`` that cannot be read is an error rather than a silent "no labels" — a
-config that fails to load cannot be asked whether labels were intended, and guessing
-"none" would scatter job and control pods across arbitrary nodes.
+``--control-node-label`` places RoboVAST's own infrastructure pods. It narrows rather than
+decides: these are ANDed with the node-local data placement setup chooses (see below).
+
+Both are repeatable, and both are written on **every** setup. Omitting one therefore
+*clears* what a previous setup configured rather than preserving it, which is what keeps
+the command the whole truth about the cluster. With neither given, pods schedule wherever
+Kubernetes puts them.
+
+.. _cluster-cpu-governor:
+
+Pinning the clock
+^^^^^^^^^^^^^^^^^
+
+``--performance-governor`` sets the nodes' CPU governor to ``performance``. Off by default:
+unlike everything else setup installs, this reconfigures the host rather than reporting
+something about it.
+
+Worth setting on a cluster used for measurement. A node on a scaling governor runs faster
+the busier it is, so every per-node figure a campaign records — CPU usage, realtime factor,
+run duration — becomes a function of how much else happened to be running. Measured on one
+node, one scenario, varying only concurrency:
+
+===============  ===============  ==============
+concurrent jobs  realtime factor  run duration
+===============  ===============  ==============
+1                0.28             never finished
+2                0.38             252 s
+5                0.81             117 s
+===============  ===============  ==============
+
+Two consequences, neither guessable from a campaign's own numbers. **A lightly loaded
+campaign is the slow case**, so a small pilot can sit near its timeout where a full sweep
+is comfortable. And any measurement taken while a node was quiet describes a state ordinary
+runs never meet.
+
+It installs a privileged DaemonSet with the host's ``/sys`` mounted writable, confined to
+the job node pool when one is configured. Managed Kubernetes (GKE, EKS, AKS) generally
+forbids that and setup says so rather than continuing — and there node auto-repair would
+undo it anyway, so set it through the node image instead. Leaving it unset is supported:
+RoboVAST reports a ``cpu_governor_scaling`` warning per campaign, so the effect shows up in
+the results rather than silently.
 
 .. _cluster-node-local-storage:
 

@@ -1142,93 +1142,43 @@ Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
 kubernetes.jobs.node_labels
 ''''''''''''''''''''''''''''
 
-**Type:** Dictionary (label key-value pairs)
+**Removed from the** ``.vast``. The node pool campaign jobs may run on is now a setup
+option::
 
-**Required:** No
+   vast execution cluster setup <config> --jobs-node-label KEY=VALUE
 
-The node pool campaign jobs may run on. Applied as a ``nodeSelector`` on every job pod --
-which is what this page always claimed and, until the admission controller existed, was
-not true: the value used to feed the ``nodeLabels`` of Kueue's ``ResourceFlavor``, and for
-one release after Kueue was retired ``setup`` refused the setting outright rather than
-accepting it and doing nothing.
+Repeatable, and written on every setup — omitting it *clears* a previously configured pool
+rather than preserving it.
 
-**Both halves are enforced, and neither is sufficient alone.** The admission controller
-counts free capacity only on nodes inside the pool, so it never promises room on a machine
-the jobs may not use; and each pod carries the labels, so kube-scheduler is bound by the
-same rule the accounting assumed. The per-run node pin is ANDed onto the pool, narrowing
-it rather than replacing it.
+It moved because it is a property of the **cluster**, not of a campaign. Carrying it here
+put a deploy's lasting, cluster-wide decisions in a file that travels with an experiment,
+and it let one campaign's file describe which machines every other campaign could use.
 
-Read only from a ``.vast`` named explicitly with ``vast -V <file>``, and applied at
-``vast execution cluster setup``: it is a property of the cluster, so it is recorded in
-the service's environment rather than carried by a campaign. A campaign-level override
-would let one campaign widen the pool every other campaign is confined to. Removing the
-setting and re-running ``setup`` clears it.
-
-.. code-block:: yaml
-
-   execution:
-     kubernetes:
-       jobs:
-         node_labels:
-           node-pool: primary
-
-Tainting still works and answers a different question -- it keeps *everything* off a node
-unless it tolerates the taint, where this confines *campaign jobs* to a pool:
-
-.. code-block:: bash
-
-   kubectl taint nodes <node> dedicated=other:NoSchedule
-
-kubernetes.control
-""""""""""""""""""
-
-**Type:** Dictionary
-
-**Required:** No
-
-Settings applied to RoboVAST's own infrastructure pods, as opposed to the
-campaign's job pods. (The name predates the current architecture: the
-per-campaign controller pod it was written for no longer exists.)
+What it does is unchanged, and both halves are enforced: the admission controller counts
+free capacity only on nodes inside the pool, so it never promises room on a machine the
+jobs may not use; and each pod carries the labels as a ``nodeSelector``, so kube-scheduler
+is bound by the same rule the accounting assumed. The per-run node pin is ANDed onto the
+pool, narrowing it rather than replacing it. Its previous implementation was the
+``nodeLabels`` of Kueue's ``ResourceFlavor``, and for one release after Kueue was retired
+``setup`` refused the setting outright. See :ref:`cluster-node-labels`.
 
 kubernetes.control.node_labels
 '''''''''''''''''''''''''''''''
 
-**Type:** Dictionary (label key-value pairs)
+**Removed from the** ``.vast``, for the same reason and at the same time::
 
-**Required:** No
+   vast execution cluster setup <config> --control-node-label KEY=VALUE
 
-Node selector labels added to RoboVAST's own pods, so the orchestration
-workload runs on a separate, lighter node pool and does not compete with
-simulation jobs for resources.
+Places RoboVAST's own infrastructure pods, as opposed to the campaign's job pods. Narrows
+rather than decides: these are ANDed with the node-local data placement setup chooses (see
+:ref:`cluster-node-local-storage`). On their own they would still let the pod float within
+the pool, which is the same problem at a smaller scale.
 
-**Narrows, rather than decides.** Which single node holds this deployment's
-node-local data is decided at setup and recorded as a node label (see
-:ref:`cluster-node-local-storage`); these labels are ANDed with it, bounding
-the pool that choice may be made from. On their own they would still let the
-pod float within the pool, which is the same problem at a smaller scale.
+**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)::
 
-Read only from a ``.vast`` named explicitly with ``vast -V <file>``.
-
-.. code-block:: yaml
-
-   execution:
-     kubernetes:
-       control:
-         node_labels:
-           node-pool: extra
-
-**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)
-
-.. code-block:: yaml
-
-   execution:
-     kubernetes:
-       jobs:
-         node_labels:
-           node-pool: primary
-       control:
-         node_labels:
-           node-pool: extra
+   vast execution cluster setup rke2 \
+       --jobs-node-label node-pool=primary \
+       --control-node-label node-pool=extra
 
 
 Results Processing Section
