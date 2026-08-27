@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deploy the persistent ``robovast-service`` into a cluster (mode 3).
+"""Deploy the persistent ``robovast-service`` into a cluster (the cluster mode).
 
 This is the in-cluster counterpart of ``vast serve``: a long-lived Deployment
 running the same FastAPI app (:mod:`robovast.service.app`), reached over a
@@ -1401,7 +1401,7 @@ def published_host(namespace="default", kube_context=None):
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None):
     """Env that tells the in-cluster ClusterService how to reach the object store.
 
-    The service (mode 3) reconstructs the same cluster config the controller
+    The service (the cluster mode) reconstructs the same cluster config the controller
     uses, so ``create_campaign`` can stage inputs and controllers can pull them.
 
     ``kube_context`` records the context this service was deployed with, so the

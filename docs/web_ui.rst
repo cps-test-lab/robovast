@@ -758,7 +758,7 @@ Build the UI once, then start the service:
 
 Open the service URL in a browser and you get the UI; the REST API is served
 same-origin under the same URL (OpenAPI at ``/docs``). The in-cluster service
-ships the same build in its image, so mode 3 needs no extra step.
+ships the same build in its image, so the cluster service needs no extra step.
 
 Accessing it — ``vast ui``
 --------------------------

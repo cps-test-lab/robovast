@@ -150,10 +150,10 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     ``--rebuild-ui`` forces it). Ways it makes the port live:
 
     * **local** (default off-cluster) — runs the app in-process: local Docker +
-      local filesystem (mode 2). Run it on your machine or a remote VM reached
+      local filesystem. Run it on your machine or a remote VM reached
       over an SSH tunnel.
     * **cluster** (default in-pod) — runs the app in-process, driving each
-      campaign against Kubernetes Jobs (mode 3); this is what the in-cluster
+      campaign against Kubernetes Jobs; this is what the in-cluster
       ``robovast-service`` Deployment runs. Run it **off-cluster** with
       ``--backend cluster -x <context>`` to debug the driver locally while
       scenarios execute in that cluster — the cluster config is read from the

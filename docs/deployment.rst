@@ -19,12 +19,11 @@ shortcut that opens a browser at that port; it starts nothing.
 default, so a single tunnel to ``8800`` reaches the web UI, the REST API, *and*
 MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`).
 
-* **Local-only, no service** — ``vast workspace run``. One-shot local Docker
-  run, no persistent service (mode 1). CLI only.
-* **Local service** — ``vast serve``. Persistent local service; web UI + CLI +
-  MCP share its state (mode 2). ``vast ui`` opens it.
+* **Local service** — ``vast serve``. Persistent local service on its Docker lane; web UI
+  + CLI + MCP share its state (mode 1). ``vast ui`` opens it, and ``vast workspace run``
+  launches through it exactly as it would through a remote one.
 * **Cluster service** — ``vast cluster setup --ingress-host …`` deploys and
-  publishes it (mode 3); users then reach it in a browser, or with ``vast login
+  publishes it (mode 2); users then reach it in a browser, or with ``vast login
   <url>`` for the CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.**
   In-pod, the Deployment runs ``vast serve --backend cluster``; run ``vast serve
   --backend cluster -x <context>`` off-cluster to debug the driver locally against a
@@ -53,12 +52,7 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
 The three modes
 ---------------
 
-**Mode 1 — in-process** (``vast workspace run``)
-    No service process; the CLI/MCP call the interface directly over
-    ``LocalTransport``. Local Docker, local filesystem, sequential. Zero-config;
-    the campaign dies with the client. This is the default for one-shot runs.
-
-**Mode 2 — single-host service** (``vast serve``)
+**Mode 1 — single-host service** (``vast serve``)
     The same FastAPI app running persistently with the Docker backend and the
     **local filesystem** as its durable home. Campaigns survive client exit, and
     the CLI, MCP server, and web UI share one workspace/campaign state. Runs on
@@ -68,7 +62,7 @@ The three modes
 
        vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
 
-**Mode 3 — cluster service** (in-cluster Deployment)
+**Mode 2 — cluster service** (in-cluster Deployment)
     ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
     ClusterIP Service. It **drives each campaign in-process** (one worker thread
     per campaign) over the Kubernetes backend, creating the scenario Jobs itself,
@@ -76,8 +70,13 @@ The three modes
     pod. In-pod, ``vast serve`` auto-detects the cluster backend
     (``--backend auto`` → ``cluster`` when ``KUBERNETES_SERVICE_HOST`` is set).
 
-Choosing a mode: mode 1 for a quick local run; mode 2 for a persistent local or
-single-VM service (no Kubernetes); mode 3 for scaled, parallel execution.
+Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2
+for scaled, parallel execution.
+
+There is no serviceless mode. There used to be a third, in-process one -- the CLI calling
+the interface directly, with no service, no workspace and no ``CampaignOrigin`` -- and it is
+gone: a campaign runs a *workspace's* project through a service, and a local service on its
+Docker lane is the same path as a remote one, differing only in which service answers.
 
 Access matrix
 -------------

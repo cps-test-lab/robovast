@@ -495,7 +495,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     )
 
     # Deploy the persistent robovast-service (Deployment + ClusterIP Service +
-    # its own RBAC) so clients drive campaigns over HTTP (mode 3), reached via
+    # its own RBAC) so clients drive campaigns over HTTP (the cluster mode), reached via
     # `kubectl port-forward svc/robovast-service`. Requires a controller image
     # that contains the `robovast.service` package + `vast serve`; set
     # ROBOVAST_PROJECT to run the family from your own registry.

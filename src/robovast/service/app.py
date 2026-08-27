@@ -21,8 +21,8 @@ implementation and exposes it over the :class:`~robovast.service.interface.Route
 contract, so the same app serves:
 
 * a **local** ``vast serve`` (impl = :class:`~robovast.service.client.LocalTransport`,
-  Docker backend, local filesystem) — persistent single-host service (mode 2);
-* a **cluster** deployment (impl = the cluster service core) — mode 3.
+  Docker backend, local filesystem) — a persistent single-host service;
+* a **cluster** deployment (impl = the cluster service core).
 
 This generalizes the per-campaign FastAPI control channel in
 :mod:`robovast.execution.control_server` into a persistent, campaign-spanning

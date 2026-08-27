@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``ClusterService`` — the in-cluster service core (mode 3).
+"""``ClusterService`` — the in-cluster service core (the cluster mode).
 
 Runs inside the ``robovast-service`` Deployment and drives every cluster campaign
 **in this process**, exactly as :class:`~robovast.service.client.LocalTransport`
