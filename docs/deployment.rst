@@ -62,6 +62,37 @@ The three modes
 
        vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
 
+    It can run **from a venv or from its container image**, and that choice — not the lane
+    it drives — decides whether it can roll itself onto newer bytes. A venv service is
+    "however it was installed and started", so ``vast service upgrade`` refuses, naming
+    that. A containerised one has an image, so it can:
+
+    .. code-block:: bash
+
+       export ROBOVAST_ROOT=$PWD/robovast-data
+       export ROBOVAST_AUTH_TOKEN=$(openssl rand -hex 16)
+       docker compose -f container/service/docker-compose.yml up -d
+
+    That is the **same image** the cluster Deployment runs, so a local campaign executes
+    pinned, digest-identified bytes exactly as a cluster one does — the one image in the
+    pipeline whose provenance a local run could not previously state.
+
+    .. _deployment-sibling-paths:
+
+    **Every bind path must be identity-mapped.** The service is a *sibling* of the
+    containers it starts, sharing the host's daemon through a mounted socket rather than
+    running one of its own. So every path it hands that daemon is resolved on the **host**,
+    while the same path is also traversed by the service itself and by the ``run.sh`` it
+    generates. Both readings agree only when the path means one thing on both sides — which
+    is what mounting it at the same absolute path (``-v /data:/data``) buys.
+
+    Getting it wrong does not raise. The daemon creates an empty directory at the path it
+    cannot find, mounts *that*, and the campaign runs and produces nothing. So the service is
+    told which paths are identity-mapped (``ROBOVAST_IDENTITY_MOUNTS``) and refuses at
+    startup — naming the path and the mount to add — rather than leaving you to find the
+    empty directory hours later. ``TMPDIR`` belongs inside the mapped root too: every staging
+    directory the lane binds is a ``mkdtemp()``, so one setting covers them all.
+
 **Mode 2 — cluster service** (in-cluster Deployment)
     ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
     ClusterIP Service. It **drives each campaign in-process** (one worker thread
@@ -70,8 +101,9 @@ The three modes
     pod. In-pod, ``vast serve`` auto-detects the cluster backend
     (``--backend auto`` → ``cluster`` when ``KUBERNETES_SERVICE_HOST`` is set).
 
-Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2
-for scaled, parallel execution.
+Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2 for
+scaled, parallel execution. Within mode 1, the container form when you want the provenance
+and the self-restart, the venv form for an editable checkout you are changing between runs.
 
 There is no serviceless mode -- no third, in-process one where the CLI calls the interface
 directly, with no service, no workspace and no ``CampaignOrigin``. A campaign runs a

@@ -12,9 +12,12 @@ defined by its *object*, not by what you installed. ``restart`` needs only a URL
 token, so it ships with the client; ``upgrade`` and ``token`` reach an API server, so they
 attach from ``robovast-cluster``. What ``--help`` lists therefore depends on the install.
 
-Some verbs do not apply to every deployment, and say so rather than pretending. A service
-started in a venv is "however it was installed and started", so it has no image to roll:
-``upgrade`` refuses, naming that, instead of reporting a capability it does not have.
+Some verbs do not apply to every deployment, and say so rather than pretending. Whether a
+service can roll itself onto newer bytes depends on **how it was started**, not on the lane
+it drives: one running from a container image can be replaced by a newer one, while one
+running from a venv is "however it was installed and started" and has nothing to roll.
+``upgrade`` refuses in the second case, naming that, instead of reporting a capability it
+does not have.
 """
 
 
