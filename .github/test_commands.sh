@@ -92,15 +92,17 @@ for cmd in "${commands[@]}"; do
 done
 
 
+# Run from a directory that is not the checkout, so a verb that silently fell back to an
+# ambient project would fail here rather than pass on the repo it happened to be run in.
 cd "$TEMP_DIR"
-vast init "$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
-vast config validate
-vast config info
-vast config list
+VAST="$ORIGINAL_DIR/configs/examples/growth_sim/growth_sim.vast"
+vast config validate "$VAST"
+vast config info "$VAST"
+vast config list "$VAST"
 vast config variation-types
-vast config generate ./test_generated
+vast config generate "$VAST" ./test_generated
 # No `vast config variation-points` here: it reads the variation points out of the
-# scenario files, and growth_sim -- the example this initializes -- is a plain simulation
+# scenario files, and growth_sim -- the example used here -- is a plain simulation
 # with no scenario at all, so the command correctly fails with "No scenario file found".
 
 
