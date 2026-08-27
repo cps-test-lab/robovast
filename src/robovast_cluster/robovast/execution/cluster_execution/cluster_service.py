@@ -769,8 +769,15 @@ class ClusterService(LocalTransport):
                 # The cluster config comes along so an autoscaling deployment is sized
                 # by what it can become rather than by the nodes it currently has --
                 # see ClusterBudgetProvider._declared_total.
+                # The node pool campaign jobs are confined to. Counted here AND stamped
+                # on every job pod: filtering capacity alone would leave kube-scheduler
+                # free to place outside the pool, and stamping alone would have admission
+                # promise room on nodes the pods may not use.
+                from .node_placement import job_node_pool
+
                 self._admission = AdmissionController(ClusterBudgetProvider(
-                    _core, cluster_config=self._cluster_config(),
+                    _core, node_selector=job_node_pool(),
+                    cluster_config=self._cluster_config(),
                     kube_context=self.kube_context))
             return self._admission
 

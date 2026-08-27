@@ -86,6 +86,47 @@ CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "N
 #: chosen".
 NODE_ID_LABEL = "robovast.io/node-id"
 
+#: The node pool campaign jobs may run on, as ``{label: value}`` -- what
+#: ``execution.kubernetes.jobs.node_labels`` means now.
+#:
+#: It reaches the running service through this env var rather than through a ``.vast``,
+#: because it is a property of the CLUSTER and not of a campaign: a per-campaign override
+#: would let one campaign widen the pool every other one is confined to. ``setup_server``
+#: reads the operator's file and stamps it here, which is the same path the headroom figures
+#: take.
+#:
+#: Two consumers, and both are needed for it to mean anything. The budget provider counts
+#: only matching nodes, so nothing outside the pool is ever offered as capacity; and every
+#: job pod carries the same labels as a real ``nodeSelector``, so the scheduler is bound by
+#: the same rule the accounting assumed. Filtering capacity alone would leave kube-scheduler
+#: free to place outside the pool; stamping alone would have admission promising room on
+#: nodes the pods may not use.
+JOB_NODE_POOL_ENV = "ROBOVAST_JOB_NODE_LABELS"
+
+
+def job_node_pool() -> dict:
+    """The configured pool, or ``{}`` for "every node" -- see :data:`JOB_NODE_POOL_ENV`.
+
+    Raises rather than falling back on a value it cannot parse: a typo that silently became
+    "every node" would scatter a campaign across machines the operator had excluded, and the
+    symptom appears nowhere near the cause.
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    raw = (os.environ.get(JOB_NODE_POOL_ENV) or "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{JOB_NODE_POOL_ENV}={raw!r} is not JSON: {exc}") from exc
+    if not isinstance(value, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError(f"{JOB_NODE_POOL_ENV}={raw!r} must be a JSON object of "
+                         "label -> value strings")
+    return value
+
 DATA_NODE_LABEL = "robovast.io/data-node"
 
 #: The node holding the shared build daemon's cache. Its own label because the cache is the

@@ -164,10 +164,12 @@ The control pod's node selector comes from
 the cluster at setup. Name that ``.vast`` explicitly — it is the only config setup will
 read:
 
-``execution.kubernetes.jobs.node_labels`` no longer exists and setup **fails** on a config
-that sets it: it was implemented by Kueue's ResourceFlavor. To keep campaign jobs off
-particular machines, taint those machines — job pods carry the campaign toleration, so an
-untainted pool still takes them.
+``execution.kubernetes.jobs.node_labels`` confines campaign jobs to a node pool. It is
+read at the same setup and recorded in the service's environment, because the admission
+controller is what enforces it: the controller counts free capacity only on nodes inside
+the pool, and every job pod carries the labels as a ``nodeSelector`` so kube-scheduler is
+bound by the same rule the accounting assumed. Its previous implementation was Kueue's
+ResourceFlavor, and for one release after Kueue was retired setup refused it.
 
 .. code-block:: bash
 

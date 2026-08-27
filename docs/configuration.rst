@@ -1142,17 +1142,38 @@ Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
 kubernetes.jobs.node_labels
 ''''''''''''''''''''''''''''
 
-**Removed.** ``vast execution cluster setup`` now **fails** when a config sets this,
-rather than accepting it and doing nothing.
+**Type:** Dictionary (label key-value pairs)
 
-It was implemented by the ``nodeLabels`` of Kueue's ``ResourceFlavor``, and Kueue has
-been retired -- so there is nothing left to apply it to. This documentation also never
-matched the implementation: it described a ``nodeSelector`` on the Job pod spec, which
-is not where the value went.
+**Required:** No
 
-To keep campaign jobs off particular machines, **taint the nodes that should not run
-them**. Job pods carry the campaign toleration (``dedicated=batch:NoSchedule``), so an
-untainted pool still takes them:
+The node pool campaign jobs may run on. Applied as a ``nodeSelector`` on every job pod --
+which is what this page always claimed and, until the admission controller existed, was
+not true: the value used to feed the ``nodeLabels`` of Kueue's ``ResourceFlavor``, and for
+one release after Kueue was retired ``setup`` refused the setting outright rather than
+accepting it and doing nothing.
+
+**Both halves are enforced, and neither is sufficient alone.** The admission controller
+counts free capacity only on nodes inside the pool, so it never promises room on a machine
+the jobs may not use; and each pod carries the labels, so kube-scheduler is bound by the
+same rule the accounting assumed. The per-run node pin is ANDed onto the pool, narrowing
+it rather than replacing it.
+
+Read only from a ``.vast`` named explicitly with ``vast -V <file>``, and applied at
+``vast execution cluster setup``: it is a property of the cluster, so it is recorded in
+the service's environment rather than carried by a campaign. A campaign-level override
+would let one campaign widen the pool every other campaign is confined to. Removing the
+setting and re-running ``setup`` clears it.
+
+.. code-block:: yaml
+
+   execution:
+     kubernetes:
+       jobs:
+         node_labels:
+           node-pool: primary
+
+Tainting still works and answers a different question -- it keeps *everything* off a node
+unless it tolerates the taint, where this confines *campaign jobs* to a pool:
 
 .. code-block:: bash
 

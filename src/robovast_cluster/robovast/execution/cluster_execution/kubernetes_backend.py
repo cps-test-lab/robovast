@@ -89,7 +89,7 @@ from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
 from .kubernetes_gpu import GPU_RESOURCE
 from robovast.common.config import SCENARIO_CONTAINER
 from .manifests import JOB_TEMPLATE, MAIN_CONTAINER_NAME
-from .node_placement import NODE_ID_LABEL
+from .node_placement import NODE_ID_LABEL, job_node_pool
 
 logger = logging.getLogger(__name__)
 
@@ -1099,16 +1099,34 @@ class BatchJobRunner:
                         self._batch_tag, node_id)
         return calibration
 
+    def _pin(self, manifest, node_id):
+        """Confine the pod to the operator's node pool, then to the node admission chose.
+
+        Both, in that order, and both ANDed onto whatever the spec already carried. The pool
+        is ``execution.kubernetes.jobs.node_labels`` -- the setting whose only implementation
+        used to be Kueue's ResourceFlavor, and which the documentation always described as a
+        pod ``nodeSelector``. It is one now.
+
+        The pool must reach the pod, not just the accounting: the budget provider counts only
+        nodes inside it, so a pod free to land outside would be running on capacity nothing
+        reserved. The pin then narrows the pool rather than widening it -- a selector that
+        replaced the pool would defeat the very confinement it was placed inside.
+        """
+        spec = manifest['spec']['template']['spec']
+        selector = {**(spec.get('nodeSelector') or {}), **job_node_pool()}
+        if node_id:
+            selector[NODE_ID_LABEL] = node_id
+        if selector:
+            spec['nodeSelector'] = selector
+        return manifest
+
     def _create_probe(self, base, key, output_dir, node_id=None):
         """Create one probe Job. Signature matches the queue's create callback."""
         manifest = probe_manifest(
             base, job_name=key,
             params_file=f"/config/{probe_tag(node_id or self._probes.get(key))}.params.yaml",
             output_dir=f"/out/{output_dir}")
-        if node_id:
-            spec = manifest['spec']['template']['spec']
-            spec['nodeSelector'] = {**(spec.get('nodeSelector') or {}),
-                                    NODE_ID_LABEL: node_id}
+        self._pin(manifest, node_id)
         try:
             self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
                                                         body=manifest)
@@ -1978,14 +1996,9 @@ class BatchJobRunner:
             # exactly the nodes calibration was supposed to help.
             manifest = self.create_job_manifest(
                 job, total_jobs, node_figures=self._node_figures(node_id))
-            if node_id:
-                # Pinned to the node admission reserved room on, so the placement and the
-                # reservation are one decision. ANDed with whatever the spec already carries
-                # (an operator's node pool), never replacing it: a pin that widened the set of
-                # acceptable nodes would defeat the pool it was placed inside.
-                spec = manifest['spec']['template']['spec']
-                spec['nodeSelector'] = {**(spec.get('nodeSelector') or {}),
-                                        NODE_ID_LABEL: node_id}
+            # Pinned to the node admission reserved room on, inside the operator's node
+            # pool, so the placement and the reservation are one decision. See _pin.
+            self._pin(manifest, node_id)
             try:
                 self.k8s_batch_client.create_namespaced_job(namespace=self.namespace,
                                                             body=manifest)
