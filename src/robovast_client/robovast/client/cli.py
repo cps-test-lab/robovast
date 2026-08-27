@@ -545,6 +545,88 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
                 click.echo(f"  {namespace_name} {row.get('name')}: {values}")
 
 
+@workspace.command('validate')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--no-world-check', is_flag=True,
+              help='Skip the world check, which builds the model in a container. Faster, '
+                   'and the only part of validation that costs more than a moment.')
+@target_options
+def workspace_validate(workspace, vast_path, no_world_check, namespace, context):  # pylint: disable=redefined-outer-name
+    """Check a project before spending any compute on it.
+
+    Reports **every** problem at once rather than the first, because they fail
+    independently and fixing them one launch at a time is the expensive way to find out.
+
+    Computed service-side: the checks need the config schema, the scenario parser and
+    (unless ``--no-world-check``) the simulator, none of which a client install has. So
+    this works the same whether the service is local or remote.
+    """
+    try:
+        from robovast.service.project_push import \
+            _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+
+        with service_client(namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            workspace_id = _resolve_workspace_id(client, workspace)
+            report = client.validate_project(
+                workspace_id, path=vast_path, check_world=not no_world_check)
+
+            for problem in report.problems:
+                where = " ".join(p for p in (problem.config, problem.field) if p)
+                location = f" [{where}]" if where else ""
+                click.echo(f"  {problem.stage}{location}: {problem.message}")
+
+            if not report.valid:
+                raise click.ClickException(
+                    f"{len(report.problems)} problem(s) — fix them and validate again.")
+            click.echo(
+                f"✓ valid: {report.configs} configuration(s) × "
+                f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
+@workspace.command('preview')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@click.option('--max-configs', type=int, default=0, show_default=True,
+              help='Show at most this many configurations (0 = all).')
+@target_options
+def workspace_preview(workspace, vast_path, max_configs, namespace, context):  # pylint: disable=redefined-outer-name
+    """Show what the sweep expands to, without running any of it.
+
+    The answer to "how many configurations will this be" — asked before a launch rather
+    than discovered from a campaign that turned out to be ten times the intended size.
+    """
+    try:
+        from robovast.service.project_push import \
+            _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+
+        with service_client(namespace, context,
+                            require_service=True) as (client, target):
+            _echo_target(target)
+            workspace_id = _resolve_workspace_id(client, workspace)
+            preview = client.preview_configurations(
+                workspace_id, max_configs=max_configs, path=vast_path)
+            for configuration in preview.configurations:
+                click.echo(f"  {configuration.name}")
+            if preview.truncated:
+                click.echo(f"  … (--max-configs {max_configs} reached)")
+            click.echo(f"{preview.configs} configuration(s) × "
+                       f"{preview.runs_per_config} run(s) = "
+                       f"{preview.total_trials} trial(s)")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @workspace.command('run')
 @click.argument('workspace', metavar='WORKSPACE')
 @click.argument('vast_path', metavar='[VAST]', required=False, default='')

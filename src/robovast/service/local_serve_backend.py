@@ -17,9 +17,9 @@ class LocalServeBackend:
     storage = "local filesystem"
 
     def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None):  # noqa: ARG002 - the lane ignores the cluster ones
+              workspace_dir=None, results_dir=None):  # noqa: ARG002 - the lane ignores the cluster ones
         # Imported here, not at module level: listing the available lanes must not pull
         # in the in-process server (see robovast.service.serve_backends).
         from robovast.service.local_transport import \
             LocalTransport  # pylint: disable=import-outside-toplevel
-        return LocalTransport(workspace_dir=workspace_dir)
+        return LocalTransport(workspace_dir=workspace_dir, results_dir=results_dir)

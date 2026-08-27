@@ -499,7 +499,11 @@ class LocalTransport(RobovastInterface):
     #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
     _JOB_LOG_CACHE_MAX = 128
 
-    def __init__(self, store=None, workspace_dir=None):
+    def __init__(self, store=None, workspace_dir=None, results_dir=None):
+        #: Where local campaigns land, when the caller pinned one (``vast serve
+        #: --results-dir``). ``None`` leaves it to the service-owned default; see
+        #: :meth:`_campaigns_root`.
+        self._results_dir = results_dir
         self._campaigns: dict[str, _LocalCampaign] = {}
         self._lock = threading.Lock()
         # Incremental job-log tails, so a log panel polling twice a second folds in only
@@ -599,9 +603,11 @@ class LocalTransport(RobovastInterface):
         under ``<workspace>/results`` instead would both hide them from the
         service's readers and let ``delete_workspace`` take the campaigns with it.
 
-        The precedence lives in :func:`~robovast.common.results_root.local_results_root`,
-        shared with the MCP results reader so the two cannot disagree about where a
-        campaign is.
+        ``vast serve --results-dir`` wins when it was given: the caller naming a directory
+        on the serve host is the most specific answer there is, and it is the only one now
+        that a project file no longer binds a results dir. Otherwise the precedence lives in
+        :func:`~robovast.common.results_root.local_results_root`, shared with the MCP results
+        reader so the two cannot disagree about where a campaign is.
 
         Pure path resolver — the dir is materialized lazily by ``CampaignStore``
         on first run, so simply asking where campaigns live (e.g. from
@@ -609,6 +615,8 @@ class LocalTransport(RobovastInterface):
         creates a stray local directory.
         """
         from robovast.common.results_root import local_results_root
+        if self._results_dir:
+            return Path(self._results_dir)
         return local_results_root(self.store.registry.root)
 
     def _project_for_workspace(self, workspace_id: str, vast_path: str = ""):

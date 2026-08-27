@@ -213,6 +213,13 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='Also expose the MCP server at /mcp on this same port, so one '
                    'URL and one token cover the web UI, the REST API, and the MCP '
                    'tools together. Pass --no-mcp to serve the API without them.')
+@click.option('--results-dir', 'results_dir', default=None, metavar='DIR',
+              type=click.Path(file_okay=False),
+              help='Where campaigns this service runs land, on the serve host. Only the '
+                   'local Docker lane has one -- a cluster campaign\'s results live in '
+                   'the object store. Omitted, a service-owned directory beside the '
+                   'workspaces store is used, which is stable but not where you were '
+                   'looking; name one to choose.')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
               callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
@@ -225,7 +232,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
 def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
-          workspace_dir, mount_mcp):
+          results_dir, workspace_dir, mount_mcp):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
     This is the one command that puts a service on ``127.0.0.1:8800``; while it
@@ -293,7 +300,8 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
         from robovast.service.workspaces import WorkspaceStore
         store = WorkspaceStore(workspace_dir=workspace_dir)
     impl = lane.build(in_pod=in_pod, context=context, namespace=k8s_namespace,
-                      store=store, workspace_dir=workspace_dir)
+                      store=store, workspace_dir=workspace_dir,
+                      results_dir=os.path.abspath(results_dir) if results_dir else None)
     storage = lane.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""

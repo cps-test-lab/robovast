@@ -194,3 +194,100 @@ def test_push_never_claims_a_ws_id_as_a_new_name(client, monkeypatch, tmp_path):
     _invoke('ws-does-not-exist', 'a.vast', '--push', str(project))
     assert client.created == []
     assert client.request.workspace_id == "ws-does-not-exist"
+
+
+# -- validate / preview: the two steps that come before a launch --------------
+
+
+class _CheckingClient(_Client):
+    """Adds the two pre-launch reads to the recording client above."""
+
+    def __init__(self, report=None, preview=None):
+        super().__init__()
+        self.report = report
+        self.preview = preview
+        self.asked = {}
+
+    def validate_project(self, workspace_id, path="", check_world=True):
+        self.asked = {"workspace_id": workspace_id, "path": path,
+                      "check_world": check_world}
+        return self.report
+
+    def preview_configurations(self, workspace_id, max_configs=0, path=""):
+        self.asked = {"workspace_id": workspace_id, "max_configs": max_configs,
+                      "path": path}
+        return self.preview
+
+
+@pytest.fixture
+def checking(monkeypatch):
+    holder = {}
+
+    @contextlib.contextmanager
+    def _cm(*_a, **_k):
+        yield holder["service"], "test target"
+
+    monkeypatch.setattr("robovast.client.cli.service_client", _cm)
+    return holder
+
+
+def _report(valid, problems=()):
+    from robovast.service.interface import ValidationProblem, ValidationReport
+    return ValidationReport(
+        valid=valid, configs=2, runs_per_config=3, total_trials=6,
+        problems=[ValidationProblem(**p) for p in problems])
+
+
+def test_validate_reports_every_problem_not_just_the_first(checking):
+    checking["service"] = _CheckingClient(report=_report(False, [
+        {"stage": "schema", "config": "hall-1", "field": "speed",
+         "message": "must be a number"},
+        {"stage": "scenario", "message": "no such action 'drive'"},
+    ]))
+    result = CliRunner().invoke(root_cli.workspace, ['validate', 'my-experiment'])
+    assert result.exit_code != 0
+    # Both, because they fail independently and fixing them one launch at a time is
+    # the expensive way to find out.
+    assert "must be a number" in result.output
+    assert "no such action" in result.output
+    assert "hall-1 speed" in result.output
+
+
+def test_validate_reports_the_trial_count_when_it_passes(checking):
+    checking["service"] = _CheckingClient(report=_report(True))
+    result = CliRunner().invoke(root_cli.workspace,
+                                ['validate', 'my-experiment', 'a.vast'])
+    assert result.exit_code == 0, result.output
+    assert "6 trial(s)" in result.output
+    assert checking["service"].asked["path"] == "a.vast"
+
+
+def test_no_world_check_is_forwarded(checking):
+    checking["service"] = _CheckingClient(report=_report(True))
+    CliRunner().invoke(root_cli.workspace,
+                       ['validate', 'my-experiment', '--no-world-check'])
+    assert checking["service"].asked["check_world"] is False
+
+
+def test_preview_lists_the_configurations_and_the_trial_count(checking):
+    from robovast.service.interface import PreviewConfiguration, PreviewResponse
+    checking["service"] = _CheckingClient(preview=PreviewResponse(
+        configs=2, runs_per_config=5, total_trials=10,
+        configurations=[PreviewConfiguration(name="hall-1"),
+                        PreviewConfiguration(name="hall-2")]))
+    result = CliRunner().invoke(root_cli.workspace, ['preview', 'my-experiment'])
+    assert result.exit_code == 0, result.output
+    assert "hall-1" in result.output and "hall-2" in result.output
+    assert "10 trial(s)" in result.output
+
+
+def test_preview_says_when_it_truncated(checking):
+    from robovast.service.interface import PreviewConfiguration, PreviewResponse
+    checking["service"] = _CheckingClient(preview=PreviewResponse(
+        configs=99, runs_per_config=1, total_trials=99, truncated=True,
+        configurations=[PreviewConfiguration(name="hall-1")]))
+    result = CliRunner().invoke(root_cli.workspace,
+                                ['preview', 'my-experiment', '--max-configs', '1'])
+    assert result.exit_code == 0, result.output
+    # A silent cap reads as "that is all there is", which is the one thing it is not.
+    assert "max-configs" in result.output
