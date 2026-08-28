@@ -266,7 +266,7 @@ def test_a_running_batch_is_not_reported_as_queued():
         "suppressing the verdict while jobs run would hide a genuine stall")
 
 
-def test_the_chosen_node_reaches_the_manifest_as_a_nodeSelector():
+def test_the_chosen_node_reaches_the_manifest_as_a_node_selector():
     """The pin has to arrive on the pod, or the reservation is a promise about a node the
     scheduler is free to ignore -- which is the fragmentation this replaced, with extra steps.
     """
